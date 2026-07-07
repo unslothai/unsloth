@@ -325,6 +325,47 @@ def test_make_filter_fn(monkeypatch):
     assert keep(types.SimpleNamespace(), "no_attrs") is False
 
 
+def test_require_bf16_schemes_excludes_nvfp4():
+    # fp8 and mxfp8 assert a bf16 weight (torchao 0.17 / B200: "PerRow quantization only works for
+    # bfloat16 ..." and "Only supporting bf16 out dtype ..."), so they gate on it; nvfp4 quantises an
+    # fp32 weight fine, so it is NOT gated (leaving its large fp32 projections quantised, not dense).
+    from core.inference.diffusion_transformer_quant import (
+        _REQUIRE_BF16_SCHEMES,
+        TQ_FP8,
+        TQ_MXFP8,
+        TQ_NVFP4,
+        TQ_INT8,
+    )
+
+    assert TQ_FP8 in _REQUIRE_BF16_SCHEMES
+    assert TQ_MXFP8 in _REQUIRE_BF16_SCHEMES
+    assert TQ_NVFP4 not in _REQUIRE_BF16_SCHEMES
+    assert TQ_INT8 not in _REQUIRE_BF16_SCHEMES
+
+
+def test_make_filter_fn_require_bf16_skips_non_bf16(monkeypatch):
+    # fp8 / mxfp8 assert a bf16 weight, so require_bf16 must skip a fp32 Linear (which Wan / Hunyuan
+    # video DiTs keep) while keeping the bf16 ones -- otherwise a single fp32 layer raises inside
+    # quantize_ and no-ops the whole pass. int8 and nvfp4 leave it off (they quantise fp32 fine).
+    torch = types.ModuleType("torch")
+    torch.bfloat16, torch.float32 = "bf16", "fp32"
+
+    class _Lin:
+        def __init__(self, i, o, dtype):
+            self.in_features, self.out_features = i, o
+            self.weight = types.SimpleNamespace(dtype = dtype)
+
+    torch.nn = types.SimpleNamespace(Linear = _Lin)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    gated = make_filter_fn(512, require_bf16 = True)
+    assert gated(_Lin(1024, 4096, torch.bfloat16), "blocks.0.attn.to_q") is True
+    assert gated(_Lin(1024, 4096, torch.float32), "blocks.0.attn.to_q") is False  # fp32 -> skip
+    assert gated(types.SimpleNamespace(in_features = 1024, out_features = 4096), "no_weight") is False
+    # int8 (require_bf16 off, the default) still quantises the fp32 linear.
+    assert make_filter_fn(512)(_Lin(1024, 4096, torch.float32), "blocks.0.attn.to_q") is True
+
+
 def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
     # The int8 path skips the large M=1 AdaLN modulation / conditioning-embedder projections
     # (they crash torch._int_mm's M>16), while keeping the attention / FFN compute layers and

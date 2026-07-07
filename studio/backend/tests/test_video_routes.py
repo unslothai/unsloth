@@ -53,6 +53,7 @@ def _unloaded_status():
         "attention_backend": None,
         "transformer_cache": None,
         "transformer_quant": None,
+        "text_encoder_quant": None,
         "has_audio": False,
         "defaults": None,
         "resolved": None,
@@ -73,6 +74,7 @@ class _FakeBackend:
         family_override = None,
         model_kind = None,
         transformer_quant = None,
+        text_encoder_quant = None,
     ):
         # Mirror the real backend's cheap validation so the route's
         # validate-before-evict ordering is exercised.
@@ -289,6 +291,35 @@ def test_load_rejects_bad_transformer_quant_422(client):
     assert resp.status_code == 422
 
 
+def test_load_threads_text_encoder_quant(client):
+    # The load-time text_encoder_quant field reaches the backend (the video path now
+    # quantises the dense companion encoder, not just the DiT).
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "q.gguf",
+            "text_encoder_quant": "fp8",
+        },
+    )
+    assert resp.status_code == 200
+    kwargs = video_module.get_video_backend().last_load_kwargs
+    assert kwargs.get("text_encoder_quant") == "fp8"
+
+
+def test_load_rejects_bad_text_encoder_quant_422(client):
+    # text_encoder_quant is a Literal, so an unknown scheme is a 422 at request validation.
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "q.gguf",
+            "text_encoder_quant": "bogus",
+        },
+    )
+    assert resp.status_code == 422
+
+
 def test_load_progress_route(client):
     idle = client.get("/api/inference/video/load-progress")
     assert idle.status_code == 200 and idle.json()["phase"] is None
@@ -497,3 +528,26 @@ def test_routes_require_auth():
     app.include_router(video_router, prefix = "/api/inference")
     unauth = TestClient(app)
     assert unauth.get("/api/inference/video/status").status_code in (401, 403)
+
+
+def test_export_endpoint_validation(client, monkeypatch):
+    # Unknown format is a 400 before any work happens.
+    resp = client.get("/api/inference/video/gallery/x/export?format=avi")
+    assert resp.status_code == 400
+    # Unknown id is a 404.
+    resp = client.get("/api/inference/video/gallery/does-not-exist/export?format=gif")
+    assert resp.status_code == 404
+
+    # A missing codec surfaces as 501 with the transcoder's message.
+    def _boom(video_id, fmt):
+        raise RuntimeError("WebM export needs the 'av' package (PyAV).")
+
+    monkeypatch.setattr(gallery_module, "transcode", _boom)
+    client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
+    )
+    video = client.post("/api/inference/video/generate", json = {"prompt": "a"}).json()["video"]
+    resp = client.get(f"/api/inference/video/gallery/{video['id']}/export?format=webm")
+    assert resp.status_code == 501
+    assert "PyAV" in resp.json()["detail"]

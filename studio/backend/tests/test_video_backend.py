@@ -18,7 +18,7 @@ from core.inference.video import (
     get_video_backend,
     resolve_video_model_kind,
 )
-from core.inference.video_families import VIDEO_NOT_LOADED_MSG
+from core.inference.video_families import VIDEO_CANCELLED_MSG, VIDEO_NOT_LOADED_MSG
 
 
 class _FakeDtype:
@@ -144,6 +144,9 @@ class _FakeWanDiT:
 
     def enable_cache(self, config) -> None:
         self.cache_config = config
+
+    def disable_cache(self) -> None:
+        self.cache_config = None
 
     def set_attention_backend(self, backend) -> None:
         self.attention = backend
@@ -278,6 +281,86 @@ class _FakeWanPipelineSingle:
         return _FakeWanPipeMoE() if moe else _FakeWanPipeSingle()
 
 
+# ── HunyuanVideo-1.5 fakes: the __call__ signature has NO guidance kwarg and NO
+# callback_on_step_end (matching pipeline_hunyuan_video1_5.py in diffusers 0.39),
+# a guider object carries the CFG scale, and the denoise loop drives
+# scheduler.step -- so the guider write and the scheduler-wrap progress/cancel
+# paths actually exercise.
+
+
+class _FakeHV15Scheduler:
+    def __init__(self) -> None:
+        self.calls = 0
+        # Test hook fired from the ORIGINAL step (i.e. inside the wrapped call),
+        # letting a test cancel mid-denoise exactly as a user request would land.
+        self.on_step = None
+
+    def step(self, *args, **kwargs):
+        self.calls += 1
+        if self.on_step is not None:
+            self.on_step(self.calls)
+        return object()
+
+
+class _FakeHV15Pipe:
+    def __init__(self) -> None:
+        self.vae = _FakeWanVae()
+        self.transformer = _FakeWanDiT()
+        self.scheduler = _FakeHV15Scheduler()
+        self.guider = types.SimpleNamespace(guidance_scale = 6.0)
+        self.components = {"transformer": self.transformer, "vae": self.vae}
+        self.moved_to = None
+        self.last_kwargs = None
+        self.hooks_freed = 0
+
+    def maybe_free_model_hooks(self):
+        self.hooks_freed += 1
+
+    def to(self, device):
+        self.moved_to = device
+        return self
+
+    def enable_vae_tiling(self) -> None:
+        self.vae.tiled = True
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        negative_prompt = None,
+        height = None,
+        width = None,
+        num_frames = None,
+        num_inference_steps = None,
+        generator = None,
+        **kwargs,
+    ):
+        self.last_kwargs = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "num_inference_steps": num_inference_steps,
+            "width": width,
+            "height": height,
+            "num_frames": num_frames,
+            **kwargs,
+        }
+        for _ in range(int(num_inference_steps or 1)):
+            self.scheduler.step()
+        frames = [[object() for _ in range(int(num_frames or 1))]]
+        return types.SimpleNamespace(frames = frames, audio = None)
+
+
+class _FakeHV15Pipeline:
+    last: dict = {}
+    instance = None
+
+    @classmethod
+    def from_pretrained(cls, repo, **kwargs):
+        _FakeHV15Pipeline.last = {"repo": repo, **kwargs}
+        _FakeHV15Pipeline.instance = _FakeHV15Pipe()
+        return _FakeHV15Pipeline.instance
+
+
 @pytest.fixture
 def fake_runtime(monkeypatch):
     torch = types.ModuleType("torch")
@@ -296,6 +379,8 @@ def fake_runtime(monkeypatch):
     # Wan2.2: one pipeline class serves both families (it dispatches on the repo id).
     diffusers.WanPipeline = _FakeWanPipelineSingle
     diffusers.WanTransformer3DModel = _FakeTransformer
+    diffusers.HunyuanVideo15Pipeline = _FakeHV15Pipeline
+    diffusers.HunyuanVideo15Transformer3DModel = _FakeTransformer
     diffusers.FirstBlockCacheConfig = lambda threshold = None: ("fbcache", threshold)
 
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -727,6 +812,52 @@ def test_generate_progress_and_cancel_idle(fake_runtime):
     assert backend.cancel_generate() is False
 
 
+def test_hv15_guider_and_scheduler_progress(fake_runtime):
+    # HunyuanVideo-1.5: no guidance kwarg (CFG set on the guider), no step
+    # callback (progress via the scheduler.step wrapper, restored afterwards).
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        model_kind = "pipeline",
+    )
+    assert status["family"] == "hunyuanvideo-1.5"
+    assert status["has_audio"] is False
+    assert status["defaults"]["frame_step"] == 4
+
+    pipe = _FakeHV15Pipeline.instance
+    result = backend.generate(
+        prompt = "a fox in the snow", steps = 4, guidance = 3.5, num_frames = 9, fps = 24
+    )
+    assert "guidance_scale" not in pipe.last_kwargs
+    assert "callback_on_step_end" not in pipe.last_kwargs
+    assert pipe.guider.guidance_scale == 3.5
+    # One wrapped tick per denoise step, then the original method back in place.
+    assert pipe.scheduler.calls == 4
+    assert pipe.scheduler.step.__func__ is _FakeHV15Scheduler.step
+    assert result["num_frames"] == 9 and result["has_audio"] is False
+
+
+def test_hv15_cancel_unwinds_scheduler_loop(fake_runtime):
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        model_kind = "pipeline",
+    )
+    pipe = _FakeHV15Pipeline.instance
+    # Cancel lands during the FIRST real step; the next wrapped call must raise out
+    # of the denoise loop and generate() must surface the cancelled sentinel.
+    pipe.scheduler.on_step = lambda n: backend.cancel_generate() if n == 1 else None
+    with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+        backend.generate(prompt = "a fox", steps = 4)
+    assert pipe.scheduler.calls == 1
+    # The wrapper must restore scheduler.step even on the exception path.
+    assert pipe.scheduler.step.__func__ is _FakeHV15Scheduler.step
+    # The exception unwound pipe.__call__ before its own end-of-call cleanup, so
+    # generate() must have freed the offload hooks itself (VRAM would otherwise
+    # stay onloaded until the next request).
+    assert pipe.hooks_freed == 1
+
+
 def test_singleton():
     assert get_video_backend() is get_video_backend()
 
@@ -747,6 +878,66 @@ def test_load_wan_ti2v_5b_pipeline(fake_runtime):
     assert status["defaults"]["frame_step"] == 4
     assert status["transformer_quant"] is None
     assert _FakeWanPipelineSingle.last["repo"] == "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+
+
+def test_video_dense_speed_defaults_to_compile_profile(fake_runtime):
+    # A clip denoise amortises the one-time compile within a single run, so an
+    # UNSET speed on a dense (pipeline) load resolves to `default` -- never `max`,
+    # never `off`. Explicit "off" is still honored verbatim.
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert status["speed_mode"] == "default"
+    assert status["resolved"]["speed_mode"]["source"] == "auto"
+    backend.unload()
+    status_off = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "off"
+    )
+    assert status_off["speed_mode"] == "off"
+    assert status_off["resolved"]["speed_mode"]["source"] == "explicit"
+
+
+def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
+    # Unset step cache is AUTO, decided from the model's default schedule: Wan's
+    # 50-step default engages FBCache at load; the LTX distilled 8-step default
+    # keeps it off. Both are re-checked per generation (toggle test below).
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert status["transformer_cache"] == "fbcache"
+    assert status["resolved"]["transformer_cache"]["source"] == "auto"
+    backend.unload()
+
+    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
+    status2 = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    assert status2["transformer_cache"] is None
+    assert status2["resolved"]["transformer_cache"]["source"] == "auto"
+    backend.unload()
+
+
+def test_video_step_cache_auto_toggles_on_actual_steps(fake_runtime):
+    # The AUTO decision follows the ACTUAL step count of each generation: a
+    # few-step request drops the load-time cache, a many-step request restores
+    # it. An explicit "off" never toggles.
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert backend.status()["transformer_cache"] == "fbcache"
+    backend.generate(prompt = "a sloth", steps = 8)
+    assert backend.status()["transformer_cache"] is None
+    backend.generate(prompt = "a sloth", steps = 30)
+    assert backend.status()["transformer_cache"] == "fbcache"
+    backend.unload()
+
+    backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", transformer_cache = "off"
+    )
+    assert backend.status()["transformer_cache"] is None
+    backend.generate(prompt = "a sloth", steps = 30)
+    assert backend.status()["transformer_cache"] is None
+    backend.unload()
 
 
 def test_wan_frame_snapping_4k_plus_1(fake_runtime):
@@ -931,6 +1122,57 @@ def test_wan_a14b_dense_quant_applies_to_both_dits(fake_runtime, monkeypatch):
     # Both experts were passed to quantize_transformer, in that order.
     assert quantised == [pipe.transformer, pipe.transformer_2]
     assert status["transformer_quant"] == "int8"
+
+
+def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
+    # Offload hooks move modules with Module.to(), which torchao quantized tensors
+    # reject (observed as a hard crash on the A14B gate run). When the memory plan
+    # resolves to any offload policy, quant must be SKIPPED, not attempted: the
+    # load succeeds dense and the resolved record explains why.
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    quantised = []
+
+    def _fake_quant(
+        view,
+        target,
+        *,
+        mode,
+        family,
+        logger = None,
+    ):
+        quantised.append(view.transformer)
+        return "int8"
+
+    monkeypatch.setattr(video_mod, "quantize_transformer", _fake_quant)
+    # The CPU fake target never plans an offload, so force one at the plan seam
+    # (frozen dataclass -> dataclasses.replace) and stub the apply step, which
+    # would otherwise call offload hooks the fake pipe does not have.
+    import dataclasses
+
+    real_plan = video_mod.plan_diffusion_memory
+    monkeypatch.setattr(
+        video_mod,
+        "plan_diffusion_memory",
+        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
+    )
+    monkeypatch.setattr(
+        video_mod,
+        "apply_memory_plan",
+        lambda pipe, plan, device = None, logger = None: ("model", True),
+    )
+
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+    )
+    assert status["offload_policy"] == "model"
+    assert quantised == []
+    assert status["transformer_quant"] is None
+    assert "offload moves the DiT" in status["resolved"]["transformer_quant"]["reason"]
 
 
 def test_wan_a14b_partial_quant_fails_the_load(fake_runtime, monkeypatch):
@@ -1131,6 +1373,21 @@ def test_base_download_files_ltx23_keeps_only_shared_components():
     assert not any(
         n.startswith(("vae/", "connectors/", "latent_upsampler/", "transformer/")) for n in names
     )
+
+
+def test_hv15_720p_repo_gets_720p_family_defaults():
+    # The 720p repack is trusted, but it must resolve its OWN family entry: the
+    # generic hunyuanvideo-1.5 entry would default generation to 832x480.
+    from core.inference.video_families import detect_video_family
+
+    fam = detect_video_family("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v")
+    assert fam is not None and fam.name == "hunyuanvideo-1.5-720p"
+    assert fam.resolution_presets[0] == (1280, 720)
+    assert fam.base_repo.endswith("720p_t2v")
+    # The 480p repo keeps the original entry.
+    fam480 = detect_video_family("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v")
+    assert fam480 is not None and fam480.name == "hunyuanvideo-1.5"
+    assert fam480.resolution_presets[0] == (832, 480)
 
 
 def test_predownload_base_honors_cancel_between_files(monkeypatch):

@@ -119,18 +119,26 @@ def normalize_speed_mode(value: Optional[str]) -> str:
     return normalized
 
 
-def resolve_speed_mode(value: Optional[str], *, is_gguf: bool) -> str:
+def resolve_speed_mode(
+    value: Optional[str],
+    *,
+    is_gguf: bool,
+    dense_default: str = SPEED_OFF,
+) -> str:
     """The effective speed mode when the caller leaves it UNSET (``None``).
 
     A GGUF model defaults to ``default``: it compiles only the hot dequant op chain
     (~70-80% of eager GGUF time) for ~1.24-1.64x at a small one-time compile and zero
     extra VRAM -- a cheap, always-amortising win whose numeric perturbation sits well
     below the quantisation noise floor (the dequant graph is unchanged, just
-    Inductor-fused). A dense (non-GGUF) model stays ``off`` / bit-identical, since there
-    compile would be the only source of drift. An explicit value -- including ``"off"``
-    -- is always honored verbatim."""
+    Inductor-fused). A dense (non-GGUF) model resolves to ``dense_default``: the image
+    backend keeps ``off`` at load (bit-identical first generations, with its own
+    deferred engagement after repeated use), while the video backend passes ``default``
+    -- a clip denoise runs long enough that the one-time compile always amortises
+    within a single generation. An explicit value -- including ``"off"`` -- is always
+    honored verbatim."""
     if value is None:
-        return SPEED_DEFAULT if is_gguf else SPEED_OFF
+        return SPEED_DEFAULT if is_gguf else dense_default
     return normalize_speed_mode(value)
 
 

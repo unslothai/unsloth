@@ -465,6 +465,209 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert backend.is_loaded is False
 
 
+def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_path, monkeypatch):
+    # Dense models with speed unset stay bit-identical eager for the first two
+    # generations; the 3rd engages the `default` profile mid-session (repeated
+    # use amortises the one-time compile), upgrading attention alongside it.
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(
+        dmod,
+        "apply_speed_optims",
+        lambda pipe, target, **k: {"compiled": k.get("speed_mode") == "default"},
+    )
+    monkeypatch.setattr(dmod, "apply_attention_backend", lambda pipe, backend, logger = None: backend)
+    monkeypatch.setattr(
+        dmod,
+        "select_attention_backend",
+        lambda target, requested, speed_active = False: ("_native_cudnn" if speed_active else None),
+    )
+    monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "qwen-image",
+    )
+    assert status["speed_mode"] == "off"
+    assert status["resolved"]["speed_mode"]["value"] == "deferred"
+    assert status["resolved"]["speed_mode"]["source"] == "auto"
+
+    backend.generate(prompt = "one")
+    backend.generate(prompt = "two")
+    assert backend.status()["speed_mode"] == "off"  # first two stay exact eager
+    backend.generate(prompt = "three")
+    status3 = backend.status()
+    assert status3["speed_mode"] == "default"
+    assert "compiled" in status3["speed_optims"]
+    assert status3["attention_backend"] == "_native_cudnn"
+    assert status3["resolved"]["speed_mode"]["value"] == "default"
+
+    # An explicit "off" is pinned: no deferral, still eager after 3 generations.
+    backend.unload()
+    status_off = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "qwen-image",
+        speed_mode = "off",
+    )
+    assert status_off["resolved"]["speed_mode"]["value"] == "off"
+    for p in ("a", "b", "c"):
+        backend.generate(prompt = p)
+    assert backend.status()["speed_mode"] == "off"
+    backend.unload()
+
+
+def test_deferred_speed_skips_when_lora_requested(fake_runtime, tmp_path, monkeypatch):
+    # A compiled transformer rejects LoRA (supports_lora is False once compiled), and _apply_loras
+    # raises before its unchanged-selection no-op, so engaging the deferred compile on a generation
+    # that requests a LoRA would permanently break every LoRA generation on this load. The deferral
+    # must skip while a LoRA is requested and engage only on a later LoRA-free generation.
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    engaged: list = []
+
+    def fake_engage(self, state):
+        engaged.append(state.generation_count)
+        state.speed_deferred = False  # mirror the real helper: engage once, then clear
+
+    monkeypatch.setattr(DiffusionBackend, "_engage_deferred_speed", fake_engage)
+    # LoRA loading is covered elsewhere; stub it so this test needs no adapter file.
+    monkeypatch.setattr(DiffusionBackend, "_apply_loras", lambda self, state, loras, cancel: None)
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "qwen-image",
+    )
+    backend.generate(prompt = "one")
+    backend.generate(prompt = "two")
+    # 3rd generation requests a LoRA: the deferral must be skipped (pipe stays eager, LoRA-capable).
+    backend.generate(prompt = "three", loras = [("adapter", 1.0)])
+    assert engaged == []
+    # 4th generation without a LoRA: the deferral now engages (the guard is LoRA-specific, not off).
+    backend.generate(prompt = "four")
+    assert len(engaged) == 1
+
+
+def test_deferred_speed_skips_while_adapter_attached(fake_runtime, tmp_path, monkeypatch):
+    # Even a generation that requests NO LoRA must defer the compile while an adapter from a PRIOR
+    # generation is still attached: _apply_loras runs AFTER the engage, so compiling here would bake
+    # the resident adapter into the graph and the subsequent unload (swallowed on a compiled pipe)
+    # would leave it active forever -- silent wrong output. Defer until _apply_loras clears it.
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    engaged: list = []
+
+    def fake_engage(self, state):
+        engaged.append(state.generation_count)
+        state.speed_deferred = False
+
+    monkeypatch.setattr(DiffusionBackend, "_engage_deferred_speed", fake_engage)
+
+    # Track the attached set on the pipe, mirroring the real _apply_loras marker (_unsloth_loras).
+    def fake_apply(self, state, loras, cancel):
+        specs = [(i, w) for (i, w) in (loras or []) if w != 0]
+        state.pipe._unsloth_loras = tuple(specs)
+
+    monkeypatch.setattr(DiffusionBackend, "_apply_loras", fake_apply)
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "qwen-image",
+    )
+    # Gens 1-2 attach an adapter, so it is still resident going into gen 3.
+    backend.generate(prompt = "one", loras = [("adapter", 1.0)])
+    backend.generate(prompt = "two", loras = [("adapter", 1.0)])
+    # Gen 3 requests NO LoRA but the adapter is still attached -> defer (no compile-with-adapter).
+    backend.generate(prompt = "three")
+    assert engaged == []
+    # Gen 3's _apply_loras([]) cleared the adapter; gen 4 is genuinely LoRA-free -> engage.
+    backend.generate(prompt = "four")
+    assert len(engaged) == 1
+
+
+def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, monkeypatch):
+    # A dense model loaded with Speed left on Auto but Attention explicitly pinned
+    # (e.g. "native" to avoid cuDNN) must KEEP that choice when the 3rd generation
+    # engages the deferred `default` profile. The auto cuDNN upgrade only applies when
+    # attention was left on auto -- never when the caller pinned a backend.
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(
+        dmod,
+        "apply_speed_optims",
+        lambda pipe, target, **k: {"compiled": k.get("speed_mode") == "default"},
+    )
+    monkeypatch.setattr(dmod, "apply_attention_backend", lambda pipe, backend, logger = None: backend)
+
+    # A select mock that -- unlike a bare "auto -> cuDNN" stub -- HONORS an explicit
+    # request: "native" stays on the default (None) even under a speed profile, and only
+    # a left-unset ("auto"/None) request upgrades to cuDNN when speed is active.
+    def fake_select(
+        target,
+        requested,
+        speed_active = False,
+    ):
+        if requested in (None, "", "auto"):
+            return "_native_cudnn" if speed_active else None
+        if str(requested).lower() in ("native", "sdpa"):
+            return None
+        return requested
+
+    monkeypatch.setattr(dmod, "select_attention_backend", fake_select)
+    monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "qwen-image",
+        attention_backend = "native",
+    )
+    backend.generate(prompt = "one")
+    backend.generate(prompt = "two")
+    backend.generate(prompt = "three")  # deferred profile engages here
+    status = backend.status()
+    assert status["speed_mode"] == "default"  # the compile profile still engaged
+    assert "compiled" in status["speed_optims"]
+    # The pinned "native" survived: NOT silently upgraded to cuDNN.
+    assert status["attention_backend"] is None
+    assert status["resolved"]["attention_backend"]["value"] == "native"
+    assert status["resolved"]["attention_backend"]["source"] == "explicit"
+
+    # Control: with attention left on auto, the same 3rd-generation deferral DOES upgrade
+    # to cuDNN -- so the assertion above is not vacuously passing.
+    backend.unload()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "qwen-image",
+    )
+    for p in ("a", "b", "c"):
+        backend.generate(prompt = p)
+    assert backend.status()["attention_backend"] == "_native_cudnn"
+    backend.unload()
+
+
 def _tiny_png_b64() -> str:
     import base64
     import io

@@ -14,6 +14,12 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -33,6 +39,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { InfoHint } from "@/components/ui/info-hint";
 import { ModelSelector } from "@/components/assistant-ui/model-selector";
 import { VIDEO_GEN_TASKS } from "@/components/assistant-ui/model-selector/pickers";
+import {
+  VIDEO_CATALOG,
+  catalogToModelOptions,
+  loadSpecFor,
+} from "@/components/assistant-ui/model-selector/model-catalog";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -51,6 +62,7 @@ import {
   cancelVideoGeneration,
   clearVideoGallery,
   deleteGalleryVideo,
+  fetchGalleryVideoExport,
   fetchGalleryVideoObjectUrl,
   generateVideo,
   getVideoGallery,
@@ -61,52 +73,13 @@ import {
   unloadVideoModel,
 } from "./api";
 
-// How to load a curated non-GGUF (safetensors) video model. "pipeline" = a full diffusers
-// repo (from_pretrained). The backend gates these to unsloth/* repos plus the official
-// family base repos. Keyed by repo id so the load handler knows the kind.
-type PipelineSpec = { kind: "pipeline"; filename?: string };
-const PIPELINE_MODELS: Record<string, PipelineSpec> = {
-  "Lightricks/LTX-2": { kind: "pipeline" },
-  // Wan2.2 diffusers base repos (no GGUF variant yet): loaded as full pipelines. TI2V-5B
-  // is a single-DiT 720p-class model; T2V-A14B is the dual-expert MoE. The backend gates
-  // these to the Wan-AI base repos (see _TRUSTED_NON_GGUF_VIDEO_REPOS).
-  "Wan-AI/Wan2.2-TI2V-5B-Diffusers": { kind: "pipeline" },
-  "Wan-AI/Wan2.2-T2V-A14B-Diffusers": { kind: "pipeline" },
-};
-
-// A curated GGUF picker entry: isGguf true expands its .gguf files in the quant expander
-// (like the image GGUF repos), and the backend resolves the pipeline + base repo from the id.
-const ggufModel = (id: string, name: string): ModelOption => ({
-  id,
-  name,
-  description: "Text-to-video · GGUF",
-  isGguf: true,
-});
-
-// A curated non-GGUF pipeline entry (isGguf false -> no quant expander, direct load).
-const pipelineModel = (id: string, name: string, description: string): ModelOption => ({
-  id,
-  name,
-  description,
-  isGguf: false,
-});
-
-// Curated text-to-video models the picker recommends. The chat ModelSelector also surfaces
-// any other on-device video GGUF (via the VIDEO_GEN_TASKS filter).
-const VIDEO_MODELS: ModelOption[] = [
-  ggufModel("unsloth/LTX-2.3-GGUF", "LTX 2.3 distilled"),
-  pipelineModel("Lightricks/LTX-2", "LTX 2 (base, bf16)", "Text-to-video with audio · Safetensors"),
-  pipelineModel(
-    "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-    "Wan 2.2 TI2V 5B",
-    "Text-to-video 720p · Safetensors",
-  ),
-  pipelineModel(
-    "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
-    "Wan 2.2 T2V A14B (MoE)",
-    "Text-to-video, dual-expert · Safetensors",
-  ),
-];
+// Curated models come from the shared catalog: one canonical group per model
+// with its artifacts as data (the HunyuanVideo group carries both the 480p and
+// 720p repacks), and the load kind per artifact via loadSpecFor (replacing the
+// old PIPELINE_MODELS table). The picker renders groups with a format second
+// level -- which also finally surfaces LTX-2.3 in Recommended (its HF
+// pipeline_tag is image-to-video, so the live text-to-video listing missed it).
+const VIDEO_MODELS: ModelOption[] = catalogToModelOptions(VIDEO_CATALOG);
 
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most
 // specific first. The distilled model wants very few steps and no guidance; the full base
@@ -120,6 +93,9 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   // Wan2.2 pipelines default to 50 steps at CFG 5.0 (WanPipeline defaults, verified in
   // diffusers 0.39). The backend supplies the fps per family (24 for TI2V-5B, 16 for A14B).
   { match: "wan", steps: 50, guidance: 5 },
+  // HunyuanVideo-1.5 runs 50 steps; guidance 6 matches the guider the repo ships
+  // (the backend writes it onto the guider component, there is no pipeline kwarg).
+  { match: "hunyuanvideo", steps: 50, guidance: 6 },
 ];
 
 function defaultsFor(repoId: string): { steps: number; guidance: number } {
@@ -164,21 +140,43 @@ const galleryCache: {
 const PAGE_SIZE = 50;
 
 // Export filename, e.g. Unsloth_video_20260624-143005_123.mp4.
-function exportFilename(video: GalleryVideo): string {
+type VideoExportFormat = "mp4" | "webm" | "gif";
+
+function exportFilename(video: GalleryVideo, format: VideoExportFormat = "mp4"): string {
   const d = new Date(video.created_at);
   const p = (n: number) => String(n).padStart(2, "0");
   const stamp = Number.isNaN(d.getTime())
     ? "unknown"
     : `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
       `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-  return `Unsloth_video_${stamp}_${video.seed}.mp4`;
+  return `Unsloth_video_${stamp}_${video.seed}.${format}`;
 }
 
-function downloadVideo(src: string, video: GalleryVideo) {
+function saveBlobUrl(href: string, filename: string) {
   const link = document.createElement("a");
-  link.href = src;
-  link.download = exportFilename(video);
+  link.href = href;
+  link.download = filename;
   link.click();
+}
+
+// MP4 saves the already-fetched original bytes; WebM / GIF are transcoded by
+// the backend on demand (501 with a readable reason when the codec is absent).
+async function downloadVideo(
+  src: string,
+  video: GalleryVideo,
+  format: VideoExportFormat = "mp4",
+) {
+  if (format === "mp4") {
+    saveBlobUrl(src, exportFilename(video, format));
+    return;
+  }
+  const blob = await fetchGalleryVideoExport(video.id, format);
+  const url = URL.createObjectURL(blob);
+  try {
+    saveBlobUrl(url, exportFilename(video, format));
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
 }
 
 function formatTimestamp(iso: string): string {
@@ -519,7 +517,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const [attentionBackend, setAttentionBackend] = useState<
     "auto" | "native" | "cudnn" | "flash3" | "sage"
   >("auto");
-  const [transformerCache, setTransformerCache] = useState<"off" | "fbcache">("off");
+  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
+  const [transformerQuant, setTransformerQuant] = useState<
+    "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
+  >("auto");
   // The last load descriptor, so "Reapply" can reload the same model with new advanced
   // options without the user re-picking it from the dropdown.
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
@@ -542,6 +543,12 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const [videos, setVideos] = useState<GalleryVideo[]>(() => galleryCache.videos);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
+  // Autoplay replays per selected clip (3 total plays, then pause). Reset on
+  // every selection change so a new generation or pick gets its own 3 plays.
+  const playCountRef = useRef(0);
+  useEffect(() => {
+    playCountRef.current = 0;
+  }, [selectedId]);
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
     Object.fromEntries(galleryCache.srcById),
   );
@@ -712,6 +719,29 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   useEffect(() => {
     void loadGallery();
   }, [loadGallery]);
+
+  // WebM/GIF go through a server-side transcode that can take a few seconds
+  // (and 501s with a readable reason when the codec is missing), so wrap the
+  // helper with progress + error toasts; MP4 saves instantly.
+  const handleDownload = useCallback(
+    async (src: string, video: GalleryVideo, format: "mp4" | "webm" | "gif") => {
+      if (format === "mp4") {
+        void downloadVideo(src, video, format);
+        return;
+      }
+      const toastId = toast.loading(`Converting to ${format.toUpperCase()}…`);
+      try {
+        await downloadVideo(src, video, format);
+        toast.dismiss(toastId);
+      } catch (err) {
+        toast.dismiss(toastId);
+        toast.error(
+          err instanceof Error ? err.message : `Failed to export ${format}`,
+        );
+      }
+    },
+    [],
+  );
 
   const handleDelete = useCallback(async (id: string) => {
     try {
@@ -908,7 +938,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           memory_mode: memoryMode === "auto" ? undefined : memoryMode,
           speed_mode: speedMode === "auto" ? undefined : speedMode,
           attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
-          transformer_cache: transformerCache === "off" ? undefined : transformerCache,
+          transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
+          transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
         });
       } catch (err) {
         dismissLoadToast();
@@ -928,6 +959,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       speedMode,
       attentionBackend,
       transformerCache,
+      transformerQuant,
     ],
   );
 
@@ -945,10 +977,15 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       // Ignore picks while a load/generation/unload is in flight.
       if (busy !== null) return;
       // Curated non-GGUF model: load as a full pipeline.
-      const spec = PIPELINE_MODELS[id];
-      if (spec) {
+      const spec = loadSpecFor(id, VIDEO_CATALOG);
+      if (spec && spec.kind !== "gguf") {
         setQuant(null);
-        const d = defaultsFor(id);
+        // The distilled variant lives in the single-file checkpoint name
+        // (ltx-2.3-...-distilled...), not the repo id, so include the filename when
+        // seeding defaults -- mirroring the GGUF branch below. Without it these
+        // distilled BF16/FP8 entries fall through to the generic LTX 40-step/CFG-4
+        // defaults instead of the distilled 8-step/guidance-1 schedule.
+        const d = defaultsFor(spec.filename ? `${id}/${spec.filename}` : id);
         setSteps(d.steps);
         setGuidance(d.guidance);
         void handleLoad(id, { kind: spec.kind, filename: spec.filename });
@@ -1141,7 +1178,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       />
       <AdvancedSelect
         label="Speed"
-        hint="Auto picks per model (GGUF compiles near-losslessly, dense stays eager). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
+        hint="Auto compiles every model at load: a clip takes minutes to denoise, so the one-time compile always pays for itself within a single run. eager = fused kernels, no compile. max adds TF32 + fused QKV."
         badge={<ResolvedBadge status={status} controlKey="speed_mode" />}
         value={speedMode}
         onValueChange={(v) => setSpeedMode(v as typeof speedMode)}
@@ -1153,9 +1190,36 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           ["max", "Max"],
         ]}
       />
+      {/* The dense transformer_quant fast path only engages on a full-pipeline load; a
+          GGUF / single-file checkpoint already carries its own precision, so gate the
+          control and otherwise show why it is unavailable. */}
+      {!status?.loaded || status.model_kind === "pipeline" ? (
+        <AdvancedSelect
+          label="Precision"
+          hint="How the model computes. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) by quantising the transformer onto low-precision tensor cores, and keeps plain bf16 when the device or memory plan can't take it. Off always runs bf16."
+          badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
+          value={transformerQuant}
+          onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
+          options={[
+            ["auto", "Auto (fastest for GPU)"],
+            ["none", "Off (bf16)"],
+            ["fp8", "FP8"],
+            ["int8", "INT8"],
+            ["nvfp4", "NVFP4 (Blackwell)"],
+            ["mxfp8", "MXFP8 (Blackwell)"],
+          ]}
+        />
+      ) : (
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+            Precision
+          </span>
+          <span className="text-xs text-muted-foreground/60">Full-pipeline models only</span>
+        </div>
+      )}
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (small quality cost)."
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention: fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -1169,11 +1233,12 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       />
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models. Leave off for few-step distilled models."
+        hint="First-Block-Cache reuses the transformer tail across steps for many-step models. Auto turns it on at 20+ steps and off for few-step distilled models, re-checked per clip."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
         options={[
+          ["auto", "Auto"],
           ["off", "Off"],
           ["fbcache", "First-Block-Cache"],
         ]}
@@ -1207,6 +1272,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             variant="ghost"
             className="!h-[34px]"
             task={VIDEO_GEN_TASKS}
+            catalog={VIDEO_CATALOG}
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}
           />
@@ -1366,16 +1432,27 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           <div className="relative flex flex-1 items-center justify-center overflow-auto p-6">
             {selected && selectedSrc ? (
               <>
-                {/* The first video element in the app. autoPlay + loop + muted + playsInline
-                    so it plays inline without a gesture; controls let the user scrub/unmute. */}
+                {/* The first video element in the app. autoPlay + muted + playsInline so
+                    it plays inline without a gesture; controls let the user scrub/unmute.
+                    Instead of a bare `loop`, onEnded replays up to 3 total plays then
+                    pauses -- an endlessly looping clip is distracting once you've seen
+                    it. The counter resets per selection (`key` remounts the element). */}
                 <video
                   key={selected.id}
                   src={selectedSrc}
                   controls
                   autoPlay
-                  loop
                   muted
                   playsInline
+                  onPlay={() => {
+                    playCountRef.current += 1;
+                  }}
+                  onEnded={(e) => {
+                    if (playCountRef.current < 3) {
+                      e.currentTarget.currentTime = 0;
+                      void e.currentTarget.play();
+                    }
+                  }}
                   className="max-h-full max-w-full rounded-xl object-contain shadow-sm"
                 />
                 {selected.has_audio && (
@@ -1387,15 +1464,31 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                 {/* Actions grouped in one glass toolbar so they stay legible over any clip. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
                   <RecipePopover video={selected} onRestore={restoreSettings} active={active} />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="gap-1.5"
-                    onClick={() => downloadVideo(selectedSrc, selected)}
-                  >
-                    <HugeiconsIcon icon={Download01Icon} className="size-4" />
-                    Download
-                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild={true}>
+                      <Button size="sm" variant="ghost" className="gap-1.5">
+                        <HugeiconsIcon icon={Download01Icon} className="size-4" />
+                        Download
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        onClick={() => void handleDownload(selectedSrc, selected, "mp4")}
+                      >
+                        MP4 (original{selected.has_audio ? ", keeps audio" : ""})
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => void handleDownload(selectedSrc, selected, "webm")}
+                      >
+                        WebM (web embeds)
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => void handleDownload(selectedSrc, selected, "gif")}
+                      >
+                        GIF (preview, no audio)
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   <Button
                     size="sm"
                     variant="ghost"
@@ -1488,8 +1581,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                       <Spinner className="size-4 text-muted-foreground" />
                     </span>
                   )}
-                  {/* A terse caption strip so cards read at a glance. */}
-                  <span className="relative z-10 truncate bg-gradient-to-t from-black/70 to-transparent px-1 pb-0.5 pt-2 text-left text-[9px] font-medium text-white">
+                  {/* A terse caption strip so cards read at a glance. Left/bottom
+                      padding clears the rounded-lg corner and the selection border
+                      so the leading "5.0s" is never clipped by the curve. */}
+                  <span className="relative z-10 truncate bg-gradient-to-t from-black/70 to-transparent px-2 pb-1 pt-2 text-left text-[9px] font-medium leading-none text-white">
                     {clipMeta(video)}
                   </span>
                   {/* Selection marker on a non-focusable overlay. */}

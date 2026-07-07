@@ -165,3 +165,43 @@ def test_list_skips_corrupt_sidecar():
     gallery.save(_mp4(), _meta(prompt = "ours"))
     listed = gallery.list_videos()
     assert [r["prompt"] for r in listed] == ["ours"]
+
+
+def _real_mp4_bytes() -> bytes:
+    # A real (tiny) MP4 for the transcode tests: 8 frames of flat color at
+    # 32x32, encoded with mpeg4 (bundled in every PyAV build, unlike libx264).
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    import io
+
+    buf = io.BytesIO()
+    with av.open(buf, "w", format = "mp4") as out:
+        stream = out.add_stream("mpeg4", rate = 8)
+        stream.width = 32
+        stream.height = 32
+        stream.pix_fmt = "yuv420p"
+        for i in range(8):
+            frame = av.VideoFrame.from_ndarray(
+                np.full((32, 32, 3), i * 30, dtype = np.uint8), format = "rgb24"
+            )
+            for packet in stream.encode(frame):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+    return buf.getvalue()
+
+
+def test_transcode_gif_and_webm_produce_real_containers():
+    record = gallery.save(_real_mp4_bytes(), _meta())
+    gif = gallery.transcode(record["id"], "gif")
+    assert gif is not None and gif.startswith(b"GIF8")
+    webm = gallery.transcode(record["id"], "webm")
+    # EBML magic: WebM is a Matroska container.
+    assert webm is not None and webm[:4] == b"\x1a\x45\xdf\xa3"
+
+
+def test_transcode_unknown_id_and_bad_format():
+    assert gallery.transcode("does-not-exist", "gif") is None
+    record = gallery.save(_real_mp4_bytes(), _meta())
+    with pytest.raises(ValueError):
+        gallery.transcode(record["id"], "avi")

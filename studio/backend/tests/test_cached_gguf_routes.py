@@ -260,6 +260,45 @@ def test_list_cached_models_skips_non_suffix_repo_when_gguf_files_exist(monkeypa
     assert result["cached"] == []
 
 
+def test_list_cached_models_prefers_complete_over_larger_partial(monkeypatch, tmp_path):
+    # The same repo cached in two roots: a LARGER but PARTIAL copy must not shadow a SMALLER but
+    # COMPLETE one. The picker drops partial rows, so picking the partial winner by size alone would
+    # make a usable model vanish from On Device. Completeness wins over size.
+    complete = _repo(
+        "Org/Dup",
+        [_file("model.safetensors", 10_000)],
+        tmp_path / "root_a" / "models--Org--Dup",
+    )
+    partial = _repo(
+        "Org/Dup",
+        [_file("model.safetensors", 15_000)],
+        tmp_path / "root_b" / "models--Org--Dup",
+    )
+
+    # The larger copy (root_b) is the partial one; the smaller (root_a) is complete.
+    monkeypatch.setattr(
+        models_route,
+        "_cached_repo_partial",
+        lambda repo_id, repo_cache_dir = None: "root_b" in str(repo_cache_dir),
+    )
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info: None)
+    # List the partial (larger) FIRST, so the old size-only rule would have picked it.
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [partial, complete])],
+    )
+
+    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+
+    assert len(result["cached"]) == 1
+    row = result["cached"][0]
+    assert row["repo_id"] == "Org/Dup"
+    # The COMPLETE (smaller) copy won: it is not flagged partial and carries its 10_000 size.
+    assert row.get("partial") is not True
+    assert row["size_bytes"] == 10_000
+
+
 def test_list_cached_gguf_includes_mixed_repo_with_gguf_and_safetensors(monkeypatch, tmp_path):
     """Mixed repo still surfaces in cached-gguf as a GGUF download."""
     mixed = _repo(
@@ -863,3 +902,37 @@ def test_delete_cached_refuses_video_loaded_repo(monkeypatch):
     except HTTPException as e:
         assert e.status_code == 400
         assert "Unload the model before deleting" in e.detail
+
+
+def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
+    # The partial probe must be scoped to the snapshot row being listed. Unscoped, the scan
+    # spans every HF cache root, so a stale .incomplete copy in one root would flag a complete
+    # copy living in another root as partial and hide the usable model from the picker. Verify
+    # _cached_repo_partial forwards the snapshot dir (matching the sibling inventory paths).
+    import hub.utils.inventory_scan as scan
+
+    calls = []
+
+    def _fake(
+        repo_type,
+        repo_id,
+        repo_cache_dir = None,
+    ):
+        calls.append((repo_type, repo_id, repo_cache_dir))
+        return False
+
+    monkeypatch.setattr(scan, "is_snapshot_partial", _fake)
+    snapshot_dir = Path("/root_a/models--Org--Repo/snapshots/abc")
+    assert models_route._cached_repo_partial("Org/Repo", snapshot_dir) is False
+    assert calls == [("model", "Org/Repo", snapshot_dir)]
+
+    # When that specific snapshot is partial, the row is flagged.
+    monkeypatch.setattr(scan, "is_snapshot_partial", lambda *a, **k: True)
+    assert models_route._cached_repo_partial("Org/Repo", snapshot_dir) is True
+
+    # A probe error is swallowed (never hides a usable repo over a scan glitch).
+    def _boom(*a, **k):
+        raise RuntimeError("scan glitch")
+
+    monkeypatch.setattr(scan, "is_snapshot_partial", _boom)
+    assert models_route._cached_repo_partial("Org/Repo", snapshot_dir) is False

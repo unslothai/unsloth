@@ -323,6 +323,9 @@ export interface CachedModelRepo {
   /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo
    * (model_index.json present), so the chat picker can hide it. Absent = chat. */
   task?: string | null;
+  /** True when the snapshot is incomplete (a cancelled/partial download). Such a
+   * repo must not count as downloaded, or a click re-downloads the full weights. */
+  partial?: boolean;
 }
 
 export async function listCachedModels(

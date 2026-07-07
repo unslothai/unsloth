@@ -91,6 +91,10 @@ def test_resolve_speed_mode_gguf_auto_default():
     assert resolve_speed_mode("off", is_gguf = True) == SPEED_OFF
     assert resolve_speed_mode("max", is_gguf = True) == SPEED_MAX
     assert resolve_speed_mode("max", is_gguf = False) == SPEED_MAX
+    # The video backend passes a dense default of `default` (clips amortise the
+    # compile within one run); it must not affect GGUF or explicit values.
+    assert resolve_speed_mode(None, is_gguf = False, dense_default = SPEED_DEFAULT) == SPEED_DEFAULT
+    assert resolve_speed_mode("off", is_gguf = False, dense_default = SPEED_DEFAULT) == SPEED_OFF
 
 
 # ── compile gating ────────────────────────────────────────────────────────────

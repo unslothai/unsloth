@@ -30,6 +30,7 @@ family's official base repos, or a local path the user explicitly picked.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import os
 import tempfile
@@ -42,7 +43,14 @@ from typing import Any, Optional
 from loggers import get_logger
 
 from .diffusion_attention import apply_attention_backend, select_attention_backend
-from .diffusion_cache import apply_step_cache, normalize_transformer_cache
+from .diffusion_cache import (
+    FBCACHE_MIN_STEPS,
+    TC_AUTO,
+    TC_FBCACHE,
+    apply_step_cache,
+    maybe_toggle_step_cache,
+    normalize_transformer_cache,
+)
 from .diffusion_device import resolve_diffusion_device_target
 from .diffusion_memory import (
     apply_memory_plan,
@@ -64,11 +72,13 @@ from .diffusion_speed import (
 )
 from .diffusion_auto_policy import _QUANT_STEADY_FACTOR, build_resolved_record
 from .diffusion_transformer_quant import (
+    TQ_AUTO,
     dense_transformer_supported,
     normalize_transformer_quant,
     quantize_transformer,
     select_transformer_quant_scheme,
 )
+from .diffusion_precision import normalize_te_quant, quantize_text_encoders
 from .video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_NOT_LOADED_MSG,
@@ -101,6 +111,11 @@ _TRUSTED_NON_GGUF_VIDEO_REPOS = frozenset(
         # remote code, so allowed as full (pipeline-kind) loads like the LTX-2 bases.
         "wan-ai/wan2.2-ti2v-5b-diffusers",
         "wan-ai/wan2.2-t2v-a14b-diffusers",
+        # HunyuanVideo-1.5 community Diffusers repacks (tencent's own repo is the
+        # original non-diffusers layout: config.json, no model_index.json, so it
+        # cannot load through HunyuanVideo15Pipeline at all).
+        "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
+        "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-720p_t2v",
     }
 )
 
@@ -171,6 +186,37 @@ def _picked_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[str]:
         return None
 
 
+class _VideoGenerationCancelled(Exception):
+    """Unwinds a denoise loop that has no cooperative interrupt (no step callback);
+    generate() maps it to the VIDEO_CANCELLED_MSG sentinel the routes 409 on."""
+
+
+@contextlib.contextmanager
+def _scheduler_step_progress(pipe: Any, on_step: Any):
+    """Progress + cancellation for pipelines WITHOUT callback_on_step_end.
+
+    HunyuanVideo15Pipeline exposes no per-step callback, but every denoise step
+    makes exactly one ``scheduler.step`` call, so wrapping that method gives the
+    same per-step tick the callback path gets. ``on_step`` receives the 1-based
+    step count and may raise (_VideoGenerationCancelled) to abort the loop. The
+    original method is always restored, even when the pipeline raises.
+    """
+    scheduler = pipe.scheduler
+    original = scheduler.step
+    count = {"n": 0}
+
+    def _step(*args: Any, **kwargs: Any) -> Any:
+        count["n"] += 1
+        on_step(count["n"])
+        return original(*args, **kwargs)
+
+    scheduler.step = _step
+    try:
+        yield
+    finally:
+        scheduler.step = original
+
+
 def _detect_load_family(
     repo_id: str, gguf_filename: Optional[str], family_override: Optional[str]
 ) -> Optional[VideoFamily]:
@@ -227,11 +273,22 @@ class _VideoLoadState:
     backend_flags: Optional[dict] = None
     attention_backend: Optional[str] = None
     transformer_cache: Optional[str] = None
+    # True when the cache decision was AUTO on a cache-capable DiT: generate() then
+    # re-checks the actual step count and toggles FBCache across FBCACHE_MIN_STEPS.
+    # An explicit request (off / fbcache) is never toggled.
+    cache_auto: bool = False
+    # Inputs the generation-time toggle re-applies (quantised threshold + override).
+    cache_quant_active: bool = False
+    cache_threshold: Optional[float] = None
     # Dense transformer quant actually engaged ("int8" | "fp8" | "nvfp4" | "mxfp8") or
     # None. Mirrors the image backend's _LoadState.transformer_quant: on a pipeline-kind
     # load the dense DiT(s) can be torchao-quantised in place onto the low-precision
     # tensor cores; None means they run at their loaded (bf16) precision.
     transformer_quant: Optional[str] = None
+    # Text-encoder quant actually engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4") or None.
+    # The companion text encoder (UMT5 / Gemma3 / Qwen2.5-VL) loads dense bf16 and is often the
+    # largest resident component; this shrinks it in place, mirroring the image backend.
+    text_encoder_quant: Optional[str] = None
     resolved: Optional[dict] = None
 
 
@@ -336,6 +393,7 @@ class VideoBackend:
         family_override: Optional[str] = None,
         model_kind: Optional[str] = None,
         transformer_quant: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
     ) -> VideoFamily:
         """Cheap, network-free validation shared by the route and the load path."""
         kind = resolve_video_model_kind(gguf_filename, model_kind)
@@ -395,6 +453,9 @@ class VideoBackend:
         # only on pipeline-kind loads (the dense DiT from the base repo); an ignored value
         # on a gguf/single_file load is left to the loader, matching the image backend.
         normalize_transformer_quant(transformer_quant)
+        # Reject a malformed text_encoder_quant the same way (applies to any load kind: the dense
+        # text encoder is resident for pipeline / gguf / single_file alike).
+        normalize_te_quant(text_encoder_quant)
         _ensure_mp4_encoder_available()
         return fam
 
@@ -414,6 +475,7 @@ class VideoBackend:
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
         transformer_quant: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
         model_kind: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
@@ -425,6 +487,7 @@ class VideoBackend:
             family_override = family_override,
             model_kind = model_kind,
             transformer_quant = transformer_quant,
+            text_encoder_quant = text_encoder_quant,
         )
         with self._lock:
             if self._loading is not None and self._loading.error is None:
@@ -448,6 +511,7 @@ class VideoBackend:
                 transformer_cache = transformer_cache,
                 transformer_cache_threshold = transformer_cache_threshold,
                 transformer_quant = transformer_quant,
+                text_encoder_quant = text_encoder_quant,
                 model_kind = model_kind,
                 _load_token = token,
             ),
@@ -760,6 +824,7 @@ class VideoBackend:
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
         transformer_quant: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
         model_kind: Optional[str] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
@@ -774,6 +839,7 @@ class VideoBackend:
             family_override = family_override,
             model_kind = model_kind,
             transformer_quant = transformer_quant,
+            text_encoder_quant = text_encoder_quant,
         )
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
@@ -814,6 +880,20 @@ class VideoBackend:
         # pick a resident plan that OOMs inside from_pretrained. GGUF weights
         # stay quantised on disk and in memory, so only dense estimates scale.
         dtype_scale = 2.0 if device != "cpu" and dtype is torch.float32 else 1.0
+
+        # Precision tri-state, mirroring the image backend: an UNSET request (or
+        # "auto") hands the decision to the hardware ladder -- on a dense-capable
+        # GPU the quantised DiT (int8 minimum, fp8 on data-center silicon) is
+        # faster at the same resident-or-better footprint. An explicit
+        # "none"/"off" pins dense bf16 and an explicit scheme pins that scheme.
+        # Only the pipeline kind can engage it (gguf/single_file checkpoints
+        # already carry their own precision), and the offload guard below still
+        # skips it when the plan moves the DiT.
+        if transformer_quant is None or str(transformer_quant).strip().lower() in (
+            "",
+            "auto",
+        ):
+            transformer_quant = TQ_AUTO
 
         # ── memory plan: family-table resident estimate + frames-aware headroom.
         device_memory = snapshot_device_memory(target)
@@ -978,7 +1058,28 @@ class VideoBackend:
         # the DiT dense. Quant must precede compile (dynamic quant is ~30x slower eager),
         # so it runs before apply_speed_optims below -- same order as diffusion.py.
         transformer_quant_engaged: Optional[str] = None
+        quant_skipped_for_offload = False
         if (
+            kind == "pipeline"
+            and normalize_transformer_quant(transformer_quant) is not None
+            and dense_transformer_supported(target)
+            and plan.offload_policy != "none"
+        ):
+            # Offload hooks move modules with Module.to(), which torchao quantized
+            # tensors reject (aten._has_compatible_shallow_copy_type is
+            # unimplemented) -- observed as a hard crash on the Wan2.2-A14B gate
+            # run, where the 114 GB dual DiT plans model offload. A dense DiT
+            # under offload beats a crashed one, so quant is skipped, surfaced in
+            # the resolved record, and the user can force it by pinning a
+            # resident memory mode.
+            logger.info(
+                "video.transformer_quant: skipped (offload policy '%s' moves the "
+                "DiT via Module.to(), unsupported for torchao quantized tensors); "
+                "pin a resident memory mode to combine quant with this model",
+                plan.offload_policy,
+            )
+            quant_skipped_for_offload = True
+        elif (
             kind == "pipeline"
             and normalize_transformer_quant(transformer_quant) is not None
             and dense_transformer_supported(target)
@@ -1016,12 +1117,34 @@ class VideoBackend:
         if quant_replanned and transformer_quant_engaged is None:
             plan = bf16_plan
 
+        # ── dense text-encoder quant (opt-in): the DiT arrives quantised in a GGUF, but the
+        # companion encoder (Gemma3 / UMT5 / Qwen2.5-VL) loads dense bf16 from the base repo and
+        # is often the largest resident component. Quantise it in place, mirroring the image
+        # backend (diffusion.py): applied for every kind (the encoder is dense regardless of how
+        # the DiT was sourced) and before placement so the offload hooks move the smaller weights.
+        # Best-effort: quantize_text_encoders leaves any encoder it can't cast dense. int8 needs a
+        # per-family keep-bf16 schedule, so the family name is passed.
+        text_encoder_quant_engaged = quantize_text_encoders(
+            pipe,
+            target,
+            mode = text_encoder_quant,
+            family = fam.name,
+            offload_active = plan.offload_policy != "none",
+            logger = logger,
+        )
+
         # ── optimisation layers, in the image backend's order: step cache FIRST
         # (compile keys its fullgraph decision off an active cache: FBCache hooks
         # graph-break, so compiling fullgraph before installing the cache crashes
         # the first cached generation), then attention, the speed profile, and
         # placement/offload last.
-        effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
+        # A clip denoise runs minutes, so even a dense (non-GGUF) load amortises the
+        # one-time regional compile within a single generation: unset resolves to the
+        # near-lossless `default` profile for every kind. Explicit values (incl.
+        # "off") are honored verbatim, and `max` is never an auto choice.
+        effective_speed = resolve_speed_mode(
+            speed_mode, is_gguf = kind == "gguf", dense_default = SPEED_DEFAULT
+        )
         # A torchao-quantised DiT must be compiled (eager dynamic quant is ~30x slower and
         # would lose to the bf16 it replaced), so force at least the regional-compile
         # profile when quant engaged and the effective speed was off, matching diffusion.py.
@@ -1037,23 +1160,55 @@ class VideoBackend:
         # (_run_load's error handler calls _rollback_precommit_globals with this
         # token). Registered BEFORE the first mutating call.
         self._precommit_globals = (_load_token, backend_flags)
-        # Run the step cache per expert so both denoisers cache; the engaged mode is
-        # identical across experts.
+        # Step cache tri-state, mirroring the image backend: unset / "auto" lets the
+        # step-count policy decide (engage when this model's DEFAULT schedule reaches
+        # FBCACHE_MIN_STEPS, re-checked against the actual step count per generation);
+        # explicit "off" / "fbcache" are pinned and never toggled. Run it per expert
+        # so both denoisers cache; the engaged mode is identical across experts.
+        cache_request = normalize_transformer_cache(transformer_cache)
+        cache_auto = transformer_cache is None or cache_request == TC_AUTO
+        # GGUF checkpoints and torchao-quantised DiTs both need the higher quantised
+        # threshold for the cache to still trigger over the quant noise.
+        cache_quant_active = kind == "gguf" or transformer_quant_engaged is not None
+        default_cache_steps: Optional[int] = None
+        if cache_auto:
+            default_cache_steps, _ = default_video_generation_params(gguf_filename, repo_id, base)
+            cache_request = TC_FBCACHE if default_cache_steps >= FBCACHE_MIN_STEPS else None
         cache_engaged = None
         for view in views:
             engaged = apply_step_cache(
                 view,
-                mode = normalize_transformer_cache(transformer_cache),
+                mode = cache_request,
                 threshold = transformer_cache_threshold,
                 # A quantized transformer's block residuals are larger, so it needs the
                 # higher FBCache trigger threshold to cache at all. Mirror the image path
                 # (diffusion.py): both an engaged transformer_quant AND a GGUF checkpoint
-                # (quantized weights) count as quant-active here.
-                quant_active = transformer_quant_engaged is not None or kind == "gguf",
+                # (quantized weights) count as quant-active here (cache_quant_active, L1172).
+                quant_active = cache_quant_active,
                 logger = logger,
             )
             if view is pipe:
                 cache_engaged = engaged
+        # The auto decision can flip at generation time, but only on a DiT that
+        # supports caching at all (a non-CacheMixin transformer can never engage).
+        cache_may_toggle = cache_auto and callable(
+            getattr(getattr(pipe, "transformer", None), "enable_cache", None)
+        )
+        if cache_auto:
+            if cache_engaged:
+                cache_reason = (
+                    f"auto: {default_cache_steps}-step default schedule reaches "
+                    f"{FBCACHE_MIN_STEPS}; re-checked per generation"
+                )
+            elif cache_request is not None:
+                cache_reason = "auto: model does not support step caching"
+            else:
+                cache_reason = (
+                    f"auto: {default_cache_steps}-step default schedule is below "
+                    f"{FBCACHE_MIN_STEPS}; re-checked per generation"
+                )
+        else:
+            cache_reason = "requested"
         attention_engaged = None
         speed_optims: tuple = ()
         for view in views:
@@ -1076,7 +1231,10 @@ class VideoBackend:
                 is_gguf = gguf_transformer,
                 family = fam,
                 speed_mode = effective_speed,
-                cache_active = cache_engaged is not None,
+                # An auto cache that could still engage mid-session also drops
+                # fullgraph: enabling FBCache under a fullgraph-compiled DiT would
+                # crash the first cached generation.
+                cache_active = cache_engaged is not None or cache_may_toggle,
                 offload_active = plan.offload_policy != "none",
             )
             if view is pipe:
@@ -1117,7 +1275,9 @@ class VideoBackend:
                     effective_speed,
                     "quantized transformer requires compile"
                     if transformer_quant_engaged is not None
-                    else "GGUF video loads default to the near-lossless compile profile",
+                    else "clip denoises amortise the one-time compile within a single run"
+                    if speed_mode is None
+                    else "requested",
                 ),
                 "attention_backend": (
                     attention_backend,
@@ -1125,16 +1285,28 @@ class VideoBackend:
                     "cuDNN fused attention on NVIDIA when a speed profile is active",
                 ),
                 "transformer_cache": (
-                    transformer_cache,
+                    None if cache_auto else transformer_cache,
                     cache_engaged or "off",
-                    "step cache engages on many-step schedules only",
+                    cache_reason,
                 ),
                 "transformer_quant": (
                     transformer_quant,
                     transformer_quant_engaged or "off",
                     "dense DiT(s) torchao-quantised onto the low-precision tensor cores"
                     if transformer_quant_engaged is not None
-                    else "not engaged (dense bf16 DiT loaded)",
+                    else (
+                        "skipped: offload moves the DiT, unsupported for torchao "
+                        "tensors; pin a resident memory mode to combine them"
+                        if quant_skipped_for_offload
+                        else "not engaged (dense bf16 DiT loaded)"
+                    ),
+                ),
+                "text_encoder_quant": (
+                    text_encoder_quant,
+                    text_encoder_quant_engaged or "off",
+                    "dense text encoder quantised in place"
+                    if text_encoder_quant_engaged is not None
+                    else "not engaged (dense bf16 text encoder loaded)",
                 ),
             }
         )
@@ -1164,7 +1336,11 @@ class VideoBackend:
                 backend_flags = backend_flags,
                 attention_backend = attention_engaged,
                 transformer_cache = cache_engaged,
+                cache_auto = cache_may_toggle,
+                cache_quant_active = cache_quant_active,
+                cache_threshold = transformer_cache_threshold,
                 transformer_quant = transformer_quant_engaged,
+                text_encoder_quant = text_encoder_quant_engaged,
                 resolved = resolved,
             )
             # Ownership of the globals transferred to _state / _teardown_state.
@@ -1269,12 +1445,19 @@ class VideoBackend:
                 kwargs: dict[str, Any] = {
                     "prompt": prompt,
                     "num_inference_steps": steps,
-                    fam.cfg_kwarg: guidance,
                     "width": width,
                     "height": height,
                     "num_frames": frames,
                     "generator": generator,
                 }
+                if fam.guidance_via_guider:
+                    # HunyuanVideo-1.5: __call__ has no guidance kwarg at all; the
+                    # CFG scale is a plain attribute on the pipeline's guider
+                    # component, set per request. Near-1 scales auto-disable CFG
+                    # inside the guider itself (_is_cfg_enabled's is_close check).
+                    pipe.guider.guidance_scale = float(guidance)
+                else:
+                    kwargs[fam.cfg_kwarg] = guidance
                 if negative_prompt and "negative_prompt" in call_params:
                     kwargs["negative_prompt"] = negative_prompt
                 # LTX-2 takes frame_rate (it shapes the audio track length); other
@@ -1304,25 +1487,83 @@ class VideoBackend:
                     "error": None,
                 }
 
-                def _on_step(p, step_index, timestep, callback_kwargs):
-                    if cancel.is_set():
-                        p._interrupt = True
-                        return callback_kwargs
-                    done = step_index + 1
+                def _tick(done: int) -> None:
                     elapsed = time.monotonic() - started
                     self._gen.update(
                         step = done,
                         eta_seconds = (elapsed / max(1, done)) * max(0, steps - done),
                     )
+
+                def _on_step(p, step_index, timestep, callback_kwargs):
+                    if cancel.is_set():
+                        p._interrupt = True
+                        return callback_kwargs
+                    _tick(step_index + 1)
                     return callback_kwargs
+
+                def _on_scheduler_step(done: int) -> None:
+                    # No cooperative _interrupt here: without a callback the pipeline
+                    # never checks it, so cancellation must unwind the denoise loop
+                    # via an exception (mapped to the cancelled sentinel below).
+                    if cancel.is_set():
+                        raise _VideoGenerationCancelled()
+                    _tick(done)
 
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
+                    progress_ctx = contextlib.nullcontext()
+                else:
+                    # HunyuanVideo-1.5 has no step callback; every scheduler.step
+                    # call is exactly one denoise step, so wrap it for progress +
+                    # cancel and restore it afterwards.
+                    progress_ctx = _scheduler_step_progress(pipe, _on_scheduler_step)
 
+                # An AUTO cache decision is re-checked against the ACTUAL step count,
+                # mirroring the image backend: a many-step request gains FBCache even
+                # when the load's default schedule kept it off, and a few-step request
+                # drops it. Explicit choices never toggle. Runs per view so a dual-DiT
+                # MoE toggles both experts.
+                if state.cache_auto:
+                    toggled = state.transformer_cache
+                    for view in _views_for(pipe, fam):
+                        toggled = maybe_toggle_step_cache(
+                            view,
+                            steps = steps,
+                            quant_active = state.cache_quant_active,
+                            threshold = state.cache_threshold,
+                            logger = logger,
+                        )
+                    if toggled != state.transformer_cache:
+                        # _VideoLoadState is frozen (loads swap it as one unit); this
+                        # tracks the pipe-level toggle that already happened so
+                        # status() reports the true cache state.
+                        object.__setattr__(state, "transformer_cache", toggled)
+                        entry = (state.resolved or {}).get("transformer_cache")
+                        if isinstance(entry, dict):
+                            entry["value"] = toggled or "off"
+                            entry["reason"] = (
+                                f"auto: {steps}-step generation "
+                                + ("reaches" if toggled else "is below")
+                                + f" {FBCACHE_MIN_STEPS}"
+                            )
                 if state.transformer_cache:
                     self._reset_step_cache(pipe)
-                with torch.inference_mode():
-                    output = pipe(**kwargs)
+                try:
+                    with torch.inference_mode(), progress_ctx:
+                        output = pipe(**kwargs)
+                except _VideoGenerationCancelled:
+                    # This cancel unwinds pipe.__call__ by exception (the scheduler
+                    # wrapper has no cooperative _interrupt), skipping the pipeline's
+                    # end-of-call maybe_free_model_hooks(); under model/group offload
+                    # the currently-onloaded modules would otherwise stay on the GPU
+                    # until the next request touches them.
+                    free_hooks = getattr(pipe, "maybe_free_model_hooks", None)
+                    if callable(free_hooks):
+                        try:
+                            free_hooks()
+                        except Exception:  # noqa: BLE001 -- cleanup is best-effort
+                            pass
+                    raise RuntimeError(VIDEO_CANCELLED_MSG) from None
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
 
@@ -1453,6 +1694,7 @@ class VideoBackend:
                 "attention_backend": None,
                 "transformer_cache": None,
                 "transformer_quant": None,
+                "text_encoder_quant": None,
                 "has_audio": False,
                 "defaults": None,
                 "resolved": None,
@@ -1480,6 +1722,7 @@ class VideoBackend:
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_quant": state.transformer_quant,
+            "text_encoder_quant": state.text_encoder_quant,
             "has_audio": fam.has_audio,
             "defaults": {
                 "steps": default_steps,
