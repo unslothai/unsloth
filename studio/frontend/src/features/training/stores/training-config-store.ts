@@ -826,7 +826,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
           set({
             datasetStreaming: true,
-            ...forceTrainOnCompletionsOffPatch(),
+            ...(dropsTrainOnCompletions ? forceTrainOnCompletionsOffPatch() : {}),
             evalSteps: dropsEval ? 0 : state.evalSteps,
           });
 
