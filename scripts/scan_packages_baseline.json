@@ -1545,6 +1545,22 @@
       "severity": "HIGH",
       "evidence": "Obfusc: L52:     compiled = compile(source=pysrc, filename=filename, mode='exec')\nExec: L53:     exec(compiled, globs, globs)",
       "evidence_hash": "c429e4c977a61db6b7c717b5a552fce74eda622213e49eb5467a3782fd746fb9"
+    },
+    {
+      "package": "multiprocess",
+      "file": "multiprocess/forkserver.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L6: import socket sha256:6c707119169286c9a798e2c8d13a48614e481d8a503950916fd4ffb4c94d3182",
+      "evidence_hash": "50fec0f0522a8e4e636bf348b752002d7935d8455af31fb78c6f11e2eba19f6d"
+    },
+    {
+      "package": "multiprocess",
+      "file": "multiprocess/tests/__init__.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L3569:                     os.dup2(conn.fileno(), i) | L3601:                          \"test needs os.dup2()\") | L3619:             os.dup2(fd, newfd) | L20: import socket sha256:c824dc0f409f242420c3fbb324790c53cb3078d2c8b07ee8f2a05694b01c2946",
+      "evidence_hash": "3878a2b430c175dbc5877a95195bfe52f9588ff73fb74e2261ed5e33087915ad"
     }
   ]
 }
