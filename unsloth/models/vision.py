@@ -37,6 +37,7 @@ from ._utils import (
     _get_text_only_config,
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
+    _select_moe_detection_targets,
     set_task_config_attr,
 )
 from ._utils import *
@@ -1703,6 +1704,16 @@ class FastBaseModel:
             )
         else:
             _audio_kwargs = {}
+        # Remember the caller's ORIGINAL explicit leaf list for MoE expert
+        # detection. When an explicit list is routed through get_peft_regex for
+        # family scoping below, the generated regex carries get_peft_regex's full
+        # "mlp|feed_forward|ffn|dense" component block even when the caller named
+        # only attention leaves (q/k/v/o_proj). Keying expert detection on that
+        # regex would train the experts for an attention-only request. The
+        # original list carries the true leaf intent, so use it for MoE detection;
+        # only the auto (None / "all-linear") path relies on the regex, whose mlp
+        # block is the sole remaining MLP-intent signal on fused-expert models.
+        _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -1780,9 +1791,21 @@ class FastBaseModel:
             loftq_config, lora_dropout, bias, init_lora_weights, model
         )
 
-        # Auto-detect MoE models and populate target_parameters for expert layers
+        # Auto-detect MoE models and populate target_parameters for expert layers.
+        # Prefer the caller's ORIGINAL explicit leaf list over the scoped regex so an
+        # attention-only request does not train experts via get_peft_regex's mlp block,
+        # but only when MLP and language families are both still in scope. If the caller
+        # scoped MLP or language OFF (finetune_mlp_modules / finetune_language_layers
+        # False), the scoped regex already dropped the experts, so honor it instead of
+        # re-introducing the original list's gate/up/down leaves.
         if target_parameters is None:
-            target_parameters = get_moe_target_parameters(model, target_modules)
+            _moe_targets = _select_moe_detection_targets(
+                _moe_detect_target,
+                target_modules,
+                finetune_mlp_modules = finetune_mlp_modules,
+                finetune_language_layers = finetune_language_layers,
+            )
+            target_parameters = get_moe_target_parameters(model, _moe_targets)
 
         if finetune_last_n_layers is not None and layers_to_transform is None:
             _total_layers = _get_total_transformer_layers(model)
@@ -2281,3 +2304,16 @@ def check_dataset_for_missing_videos(
         warnings.warn(error_msg, stacklevel = 2)
 
     return missing
+
+
+# Auto-enable grouped-GEMM MoE (transformers<5 ModuleList experts); see llama.py.
+try:
+    from unsloth_zoo.temporary_patches.moe_grouped_modulelist import wrap_loader_for_grouped_moe
+    FastBaseModel.from_pretrained = staticmethod(
+        wrap_loader_for_grouped_moe(FastBaseModel.from_pretrained)
+    )
+    FastBaseModel.get_peft_model = staticmethod(
+        wrap_loader_for_grouped_moe(FastBaseModel.get_peft_model)
+    )
+except Exception:
+    pass

@@ -91,6 +91,17 @@ def test_chat_settings_payload_accepts_fast_mode_presets():
     assert dumped["customPresets"][0]["params"]["fastMode"] is True
 
 
+def test_chat_settings_payload_accepts_nudge_tool_calls():
+    # extra="forbid" 400s PUT /api/chat/settings on unknown keys, so the
+    # frontend's persisted nudgeToolCalls needs a payload field (like
+    # autoHealToolCalls).
+    payload = chat_history.ChatSettingsPayload.model_validate(
+        {"autoHealToolCalls": True, "nudgeToolCalls": False}
+    )
+    dumped = payload.model_dump(exclude_unset = True)
+    assert dumped == {"autoHealToolCalls": True, "nudgeToolCalls": False}
+
+
 def test_chat_inference_settings_covers_frontend_persisted_fields():
     # Drift guard: every InferenceParams field the UI persists (all but
     # checkpoint) must exist on ChatInferenceSettings, else extra="forbid"
