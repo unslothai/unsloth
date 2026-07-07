@@ -365,6 +365,79 @@ def test_reasoning_before_structured_tool_closes_think_block(monkeypatch):
     assert content_before_tool[-1] == "<think>Let me search.</think>"
 
 
+def _replay_route_reasoning_extractor(cumulatives: list[str]) -> tuple[str, str]:
+    """Replay the route's cumulative suffix-diff + reasoning extractor (the
+    shared core of routes/inference.py gguf_stream_chunks and the tool-loop
+    consumer) over content snapshots. Returns (visible, reasoning)."""
+    from routes.inference import _ResponsesReasoningExtractor
+
+    extractor = _ResponsesReasoningExtractor(parse_think_markers = True)
+    prev_text = ""
+    visible: list[str] = []
+    reasoning: list[str] = []
+    for cumulative in cumulatives:
+        new_text = cumulative[len(prev_text) :]
+        prev_text = cumulative
+        if not new_text:
+            continue
+        reasoning_delta, visible_delta = extractor.feed(new_text)
+        if reasoning_delta:
+            reasoning.append(reasoning_delta)
+        if visible_delta:
+            visible.append(visible_delta)
+    final_reasoning, final_visible = extractor.finish()
+    if final_reasoning:
+        reasoning.append(final_reasoning)
+    if final_visible:
+        visible.append(final_visible)
+    return "".join(visible), "".join(reasoning)
+
+
+def test_reasoning_only_route_output_matches_no_tool_path(monkeypatch):
+    # Parity contract: a reasoning-only reply must reach the client identically
+    # whether tools are on or off. Both generators stream <think> live then
+    # resolve to the bare reasoning text; the route's suffix-diff + extractor
+    # must therefore produce the same (visible, reasoning) split for both.
+    stream = [
+        _sse({"reasoning_content": "The capital"}),
+        _sse({"reasoning_content": " of France is Paris."}),
+        _done(),
+    ]
+
+    tool_backend = _make_backend(monkeypatch, [list(stream)], [])
+    _patch_monotonic(monkeypatch, [1.0, 2.0, 2.0])
+    tool_cumulatives = [
+        e["text"]
+        for e in tool_backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "capital of France?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+        if e.get("type") == "content"
+    ]
+
+    no_tool_backend = _make_backend(monkeypatch, [list(stream)], [])
+    no_tool_cumulatives = [
+        y
+        for y in no_tool_backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "capital of France?"}],
+        )
+        if isinstance(y, str)
+    ]
+
+    # Both paths stream the reasoning live with the same leading shape. (Raw
+    # yield lists aren't compared verbatim: the tool path emits a pre-existing
+    # duplicate trailing event that the route's suffix-diff dedupes.)
+    assert tool_cumulatives[:3] == no_tool_cumulatives[:3]
+    # The contract that matters: identical route-level output.
+    tool_out = _replay_route_reasoning_extractor(tool_cumulatives)
+    no_tool_out = _replay_route_reasoning_extractor(no_tool_cumulatives)
+    assert tool_out == no_tool_out
+    # Pin the shared contract so a change to either path shows up here.
+    _visible, reasoning = tool_out
+    assert reasoning == "The capital of France is Paris."
+
+
 def test_reasoning_before_bare_json_tool_closes_think_block(monkeypatch):
     # _drain_silently sibling of the structured-tool close: a bare-JSON tool call
     # with a live reasoning prefix must also close </think> before draining, and
