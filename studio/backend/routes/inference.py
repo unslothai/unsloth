@@ -1768,10 +1768,8 @@ def _enables_code_execution_tool(tools: list[dict]) -> bool:
     (python/terminal). Used to scope the ``confirm_code_execution`` stream
     requirement so a request that never exposes code execution isn't rejected."""
     from core.inference.tools import CODE_EXECUTION_TOOL_NAMES
-
     return any(
-        (t.get("function") or {}).get("name") in CODE_EXECUTION_TOOL_NAMES
-        for t in (tools or [])
+        (t.get("function") or {}).get("name") in CODE_EXECUTION_TOOL_NAMES for t in (tools or [])
     )
 
 

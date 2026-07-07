@@ -1063,8 +1063,7 @@ def run_safetensors_tool_loop(
             needs_confirm = (
                 bool(confirm_tool_calls)
                 or (
-                    bool(confirm_code_execution)
-                    and decision.tool_name in CODE_EXECUTION_TOOL_NAMES
+                    bool(confirm_code_execution) and decision.tool_name in CODE_EXECUTION_TOOL_NAMES
                 )
             ) and not bypass_permissions
             approval_id = new_approval_id() if needs_confirm else ""
