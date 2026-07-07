@@ -271,16 +271,19 @@ def _ambient_hf_token() -> Optional[str]:
 
 
 def _llama_backend_active() -> bool:
-    """True when this install embeds via the llama-server (GGUF) backend."""
-    from core.rag import config as rag_config
+    """True when this install actually embeds via the llama-server (GGUF) backend.
+
+    Delegates to the embeddings module so a runtime fallback from
+    sentence-transformers to llama-server (after a torch/CUDA load or encode
+    failure) is honored: in that state the process loads only inert GGUF, so the
+    ST pickle gate below must not hard-block a repo whose GGUF companion is clean.
+    Before any backend is built this still reflects the resolver."""
     from core.rag import embeddings
 
     try:
-        raw = (rag_config.EMBED_BACKEND or "auto").strip().lower()
-        key = embeddings._resolve_auto() if raw in embeddings._AUTO_ALIASES else raw
+        return embeddings.active_backend_is_llama()
     except Exception:  # noqa: BLE001 - backend probe must never block saving
         return False
-    return key in embeddings._LLAMA_ALIASES
 
 
 def _resolves_as_local_gguf(model: str) -> bool:

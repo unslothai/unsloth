@@ -376,6 +376,34 @@ def _reset_backend() -> None:
         _backend_key = None
 
 
+def active_backend_is_llama() -> bool:
+    """True when this process actually embeds via the llama-server (GGUF) backend.
+
+    Reflects the ACTUAL built backend once one exists: an ``auto`` install that
+    resolves to sentence-transformers but then falls back to llama-server at
+    runtime (``_build_st_backend_or_fallback`` on a torch/CUDA load failure, or
+    ``_switch_to_llama_fallback`` on an encode failure) loads only inert GGUF, so
+    callers gating on the ST pickle must see llama here. Before any backend is
+    built, defers to the resolver (``auto`` -> ``_resolve_auto()``, else the raw
+    key) exactly as a fresh process would. Never raises: a backend probe must not
+    block saving a model."""
+    try:
+        with _backend_lock:
+            backend = _backend
+        if backend is not None:
+            try:
+                from .embed_llama_server import LlamaServerBackend
+            except Exception:  # noqa: BLE001 - llama plumbing import must never block
+                LlamaServerBackend = None
+            if LlamaServerBackend is not None and isinstance(backend, LlamaServerBackend):
+                return True
+        raw = (config.EMBED_BACKEND or "auto").strip().lower()
+        key = _resolve_auto() if raw in _AUTO_ALIASES else raw
+        return key in _LLAMA_ALIASES
+    except Exception:  # noqa: BLE001 - a backend probe must never block saving
+        return False
+
+
 def warm(model_name: str | None = None) -> None:
     """Eagerly load the embedder so the first real request isn't slow."""
     _get_backend().warm(model_name = model_name)

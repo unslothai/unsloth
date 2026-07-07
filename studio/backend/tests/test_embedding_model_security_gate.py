@@ -132,6 +132,79 @@ def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
     assert saved.get("model") == "attacker/flagged-st-clean-gguf"
 
 
+def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
+    # auto resolves to sentence-transformers (GPU present) but the embedder fell back to
+    # llama-server at runtime (torch/CUDA load or encode failure), so the process now loads
+    # only inert GGUF. The real _llama_backend_active() must reflect that cached fallback,
+    # so a flagged ST repo with a clean GGUF companion must not be hard-blocked here.
+    import core.rag.embeddings as embeddings
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    # Simulate the runtime fallback: the process-wide backend is a LlamaServerBackend even
+    # though the auto resolver would still say sentence-transformers.
+    monkeypatch.setattr(embeddings, "_backend", LlamaServerBackend())
+    monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
+    monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ())
+
+    saved: dict = {}
+    monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
+    monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
+    monkeypatch.setattr(settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v))
+    # Deliberately do NOT monkeypatch settings._llama_backend_active: this test exercises the
+    # real delegation to embeddings.active_backend_is_llama() so the cached fallback is honored.
+    monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
+    monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))
+    monkeypatch.setattr(settings, "get_stored_embedding_model", lambda: saved.get("model"))
+
+    called = {"scanned": False}
+    mod = _types.ModuleType("utils.security")
+
+    def _fail(*a, **k):
+        called["scanned"] = True
+        return _Decision(True)
+
+    mod.evaluate_file_security = _fail
+    mod.security_load_subdirs = lambda *a, **k: ()
+    monkeypatch.setitem(sys.modules, "utils.security", mod)
+
+    app = FastAPI()
+    app.include_router(settings.router)
+    app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    c = TestClient(app, raise_server_exceptions = False)
+    r = c.put(
+        "/embedding-model",
+        json = {"embedding_model": "attacker/flagged-st-clean-gguf", "force": True},
+    )
+    assert r.status_code == 200
+    assert called["scanned"] is False  # the ST pickle scan never ran on the llama fallback
+    assert saved.get("model") == "attacker/flagged-st-clean-gguf"
+
+
+def test_active_backend_is_llama_reflects_cache_and_resolver(monkeypatch):
+    # active_backend_is_llama() reports the ACTUAL built backend when one exists, and defers
+    # to the resolver (fresh-process behavior) when none has been built yet.
+    import core.rag.embeddings as embeddings
+    import core.rag.config as rag_config
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    # A cached llama backend wins even when auto would resolve to sentence-transformers.
+    monkeypatch.setattr(rag_config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
+    monkeypatch.setattr(embeddings, "_backend", LlamaServerBackend())
+    assert embeddings.active_backend_is_llama() is True
+
+    # No cached backend -> the resolver decides, unchanged from before.
+    monkeypatch.setattr(embeddings, "_backend", None)
+    assert embeddings.active_backend_is_llama() is False  # auto -> sentence-transformers
+
+    monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "llama-server")
+    assert embeddings.active_backend_is_llama() is True  # auto -> llama-server
+
+    # An explicit (non-auto) key is honored verbatim without a cached backend.
+    monkeypatch.setattr(rag_config, "EMBED_BACKEND", "llama-server")
+    assert embeddings.active_backend_is_llama() is True
+
+
 def test_settings_scan_scopes_module_subdirs(monkeypatch):
     # The settings scan must pass the ST module dirs (0_Transformer/) as load roots so a
     # pickle directly under one blocks; assert those subdirs reach evaluate_file_security.
