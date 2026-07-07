@@ -777,6 +777,34 @@ def _cached_hf_snapshot_file(
     return None
 
 
+def _snapshot_has_all_shards(
+    main_path: str, main_filename: str, shards: Iterable[str], expected_sizes: dict[str, int]
+) -> bool:
+    """True when every shard sits beside ``main_path`` in the same cache snapshot.
+
+    llama.cpp loads a split GGUF by resolving its siblings from the main shard's
+    directory, so a cached main shard is only safe to reuse when the rest of the
+    set is co-located; otherwise the caller must fetch the whole set together.
+    """
+    root = Path(main_path)
+    for _ in [part for part in main_filename.replace("\\", "/").split("/") if part]:
+        root = root.parent
+    for shard in shards:
+        parts = [part for part in shard.replace("\\", "/").split("/") if part]
+        if not parts or any(part in (".", "..") for part in parts):
+            return False
+        sibling = root.joinpath(*parts)
+        try:
+            if not sibling.is_file():
+                return False
+            expected = expected_sizes.get(shard)
+            if expected and sibling.stat().st_size < expected:
+                return False
+        except OSError:
+            return False
+    return True
+
+
 def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
     m = _SHARD_FULL_RE.match(first_shard)
     if not m:
@@ -4083,6 +4111,16 @@ class LlamaCppBackend:
                     gguf_filename,
                     expected_size = expected_sizes.get(gguf_filename),
                 )
+                if (
+                    local_path is not None
+                    and gguf_extra_shards
+                    and not _snapshot_has_all_shards(
+                        local_path, gguf_filename, gguf_extra_shards, expected_sizes
+                    )
+                ):
+                    # The cached main shard's siblings are missing or split across
+                    # snapshots; fetch the whole set together so they stay co-located.
+                    local_path = None
             if local_path is None:
                 local_path = hf_hub_download_with_xet_fallback(
                     hf_repo,
@@ -4092,18 +4130,10 @@ class LlamaCppBackend:
                     on_status = lambda m: logger.info(m),
                     force_download = force,
                 )
-            for shard in gguf_extra_shards:
-                if cancel_event.is_set():
-                    raise RuntimeError("Cancelled")
-                logger.info(f"Resolving GGUF shard: {shard}")
-                shard_path = None
-                if not force:
-                    shard_path = _cached_hf_snapshot_file(
-                        hf_repo,
-                        shard,
-                        expected_size = expected_sizes.get(shard),
-                    )
-                if shard_path is None:
+                for shard in gguf_extra_shards:
+                    if cancel_event.is_set():
+                        raise RuntimeError("Cancelled")
+                    logger.info(f"Resolving GGUF shard: {shard}")
                     hf_hub_download_with_xet_fallback(
                         hf_repo,
                         shard,
