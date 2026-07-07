@@ -203,6 +203,7 @@ def main():
     ap.add_argument("--max-seq-length", type = int, default = 2048)
     ap.add_argument("--is-vlm", action = "store_true")
     ap.add_argument("--trust-remote-code", action = "store_true")
+    ap.add_argument("--trust-remote-code-tokenizer", action = "store_true")
     ap.add_argument("--variant", default = "", help = "weight-filename variant for the output shards")
     args = ap.parse_args()
 
@@ -232,7 +233,11 @@ def main():
     model.eval()
     # A tokenizer may be absent if the caller saved it separately; only calibration needs one.
     try:
-        tokenizer = auto_proc.from_pretrained(args.model, trust_remote_code = args.trust_remote_code)
+        # The tokenizer/processor has its own trust flag: consent for one component must not
+        # let the other's custom code run.
+        tokenizer = auto_proc.from_pretrained(
+            args.model, trust_remote_code = args.trust_remote_code_tokenizer
+        )
     except Exception:
         if args.needs_calibration:
             raise RuntimeError(
@@ -245,6 +250,10 @@ def main():
     # expert even if the sample set does not route tokens to all of them.
     is_moe = _is_moe(getattr(model, "config", None))
     ignore = ["lm_head"]
+    # Skip the same modules RedHatAI/NVIDIA skip for the Qwen3.5 / Qwen3-Next family (these also have
+    # shapes not divisible by the grouped-scheme group_size, which would otherwise error). No-ops
+    # elsewhere. Hybrid linear attention, VLM vision tower, and the MTP/speculative head.
+    ignore += ["re:.*\\.linear_attn\\..*", "re:.*\\.visual\\..*", "re:.*mtp.*"]
     if is_moe:
         # Keep MoE routing layers unquantized: the router gate and (Qwen) shared-expert gate.
         ignore += ["re:.*\\.gate$", "re:.*\\.shared_expert_gate$"]

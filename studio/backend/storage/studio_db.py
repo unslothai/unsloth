@@ -22,7 +22,15 @@ logger = logging.getLogger(__name__)
 from typing import Any, Iterable, Optional
 
 
-from utils.paths import project_workspaces_root, studio_db_path, ensure_dir
+from utils.paths import (
+    ensure_dir,
+    project_workspaces_root,
+    studio_db_path,
+)
+from utils.paths.external_media import is_linux_run_media_path
+from utils.paths.sensitive import (
+    contains_sensitive_path_component as _shared_contains_sensitive_path_component,
+)
 from utils.training_runs import extract_project_name
 
 
@@ -59,6 +67,14 @@ def _denied_path_prefixes() -> list[str]:
         pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
         return [os.path.normcase(p) for p in [win, pf, pf86]]
     return []
+
+
+def _contains_sensitive_path_component(path: str) -> bool:
+    return _shared_contains_sensitive_path_component(path)
+
+
+def contains_sensitive_path_component(path: str) -> bool:
+    return _contains_sensitive_path_component(path)
 
 
 _schema_lock = threading.Lock()
@@ -915,6 +931,8 @@ def add_scan_folder(path: str) -> dict:
         raise ValueError("Path must be a directory, not a file")
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
+    if _contains_sensitive_path_component(normalized):
+        raise ValueError("Credential or configuration directories are not allowed")
 
     # Windows: normcase for the denylist check but store original casing
     # so consumers see the native drive-letter casing (e.g. C:\Models).
@@ -922,6 +940,8 @@ def add_scan_folder(path: str) -> dict:
     check = os.path.normcase(normalized) if is_win else normalized
     for prefix in _denied_path_prefixes():
         if check == prefix or check.startswith(prefix + os.sep):
+            if prefix == "/run" and is_linux_run_media_path(check):
+                continue
             raise ValueError(f"Path under {prefix} is not allowed")
 
     conn = get_connection()

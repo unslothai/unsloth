@@ -10,3 +10,9 @@ transformers>=4.57.6
 # anyio that also ImportErrors on TaskHandle and 500s the server. An override
 # wins the fight, so force one consistent <4.14 here too.
 anyio<4.14.0
+
+# mlx-lm 0.31.3 regressed QK-norm archs (gemma4 / qwen3_5): strict load_weights
+# rejects q_norm/k_norm, so those checkpoints fail to load. mlx-lm #1242.
+# The override also drops it from transitive resolution; keep the >=0.22.0 floor
+# (mirrors mlx_repair.py _MLX_MIN_VERSIONS) or the resolver could go below it.
+mlx-lm>=0.22.0,!=0.31.3
