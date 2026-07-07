@@ -3442,6 +3442,40 @@ class TestInstallShDropinPersistence:
         assert "profile.d/unsloth-rocm-wsl.sh" in body
 
 
+_STRIXHALO_WSL_PATH = PACKAGE_ROOT / "scripts" / "install_rocm_wsl_strixhalo.sh"
+
+
+class TestWslRerouteNvidiaGuard:
+    """_maybe_reroute_strixhalo_to_2404 must skip the AMD reroute when a usable NVIDIA GPU is
+    present (hybrid AMD+NVIDIA hosts): the NVIDIA probe runs before the AMD/WMI signal."""
+
+    def test_reroute_guards_usable_nvidia_before_amd_signal(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        start = source.find("_maybe_reroute_strixhalo_to_2404()")
+        assert start != -1
+        body = source[start : start + 1400]
+        nv = body.find("_rr_nvsmi")
+        wmi = body.find("_wsl_amd_gpu_name")
+        assert nv != -1, "reroute must probe nvidia-smi to skip the AMD reroute on NVIDIA hosts"
+        assert wmi != -1
+        # The NVIDIA guard must precede the AMD/WMI signal and return early.
+        assert nv < wmi
+        assert body.find("return 0", nv) < wmi
+
+
+class TestStrixhaloGfxOverridePipefail:
+    """The UNSLOTH_WSL_GFX override check must use a consuming grep, not grep -q: under
+    `set -o pipefail` an early -q exit SIGPIPEs printf and misreports the arch on large output."""
+
+    def test_gfx_override_uses_consuming_grep(self):
+        source = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
+        idx = source.find('grep -E "Name:[[:space:]]*${GFX}')
+        assert idx != -1, "GFX override must use a consuming grep -E (not grep -q)"
+        line = source[idx : source.find("\n", idx)]
+        assert ">/dev/null" in line
+        assert 'grep -qE "Name:[[:space:]]*${GFX}' not in source
+
+
 class TestLlamaCppRuntimeWslOrdering:
     """The serve-time launcher mirrors binary_env: system HIP before the bundle dir on WSL."""
 

@@ -252,8 +252,9 @@ if [ -z "$_detected_gfx" ]; then
     printf '%s\n' "$_rocminfo_out" | head -25 >&2 || true
     die "rocminfo did not enumerate any GPU agent. Most common cause: the Windows AMD driver predates production ROCDXG -- update Adrenalin (install.ps1 offers this), reboot, and re-run."
 fi
-# If the caller pinned an arch honour it (sanity-check), otherwise adopt what we found.
-if [ -n "$GFX" ] && ! printf '%s\n' "$_rocminfo_out" | grep -qE "Name:[[:space:]]*${GFX}([^0-9]|$)"; then
+# Honour a caller-pinned arch (sanity-check via a consuming grep, not grep -q: under
+# pipefail -q would SIGPIPE printf on large output and misreport the arch); else adopt.
+if [ -n "$GFX" ] && ! printf '%s\n' "$_rocminfo_out" | grep -E "Name:[[:space:]]*${GFX}([^0-9]|$)" >/dev/null; then
     die "rocminfo enumerated '${_detected_gfx}' but not the requested UNSLOTH_WSL_GFX='${GFX}'."
 fi
 GFX="${GFX:-$_detected_gfx}"
