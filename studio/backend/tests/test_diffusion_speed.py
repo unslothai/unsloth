@@ -177,6 +177,7 @@ class _Pipe:
         *,
         with_compile = False,
         with_fuse = False,
+        with_second_dit = False,
     ) -> None:
         self.vae = types.SimpleNamespace(mem_format = None, to = self._vae_to)
         self.transformer = types.SimpleNamespace()
@@ -186,6 +187,12 @@ class _Pipe:
             self.fuse_qkv_projections = self._fuse
         self.compiled = False
         self.fused = False
+        # A dual-DiT family (Ideogram) carries a second denoiser expert that runs every step.
+        self.second_compiled = False
+        if with_second_dit:
+            self.unconditional_transformer = types.SimpleNamespace()
+            if with_compile:
+                self.unconditional_transformer.compile_repeated_blocks = self._compile2
 
     def _vae_to(self, *, memory_format):
         self.vae.mem_format = memory_format
@@ -193,6 +200,9 @@ class _Pipe:
     def _compile(self, **kwargs):
         self.compiled = True
         self.compile_kwargs = kwargs
+
+    def _compile2(self, **kwargs):
+        self.second_compiled = True
 
     def _fuse(self):
         self.fused = True
@@ -216,6 +226,20 @@ def test_speed_off_applies_nothing(monkeypatch):
     assert pipe.vae.mem_format is None and pipe.compiled is False
     # off must not touch any process-wide flag (bit-identical reference path).
     assert torch.backends.cudnn.benchmark is False
+
+
+def test_speed_compiles_both_dits_for_dual_dit_family(monkeypatch):
+    # A dual-DiT family (Ideogram: transformer + unconditional_transformer) runs BOTH DiTs each
+    # denoise step, so the regional block compile must engage on both, not just the first --
+    # otherwise the second DiT runs eager while status reports compile as engaged.
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    pipe = _Pipe(with_compile = True, with_second_dit = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True
+    assert pipe.compiled is True and pipe.second_compiled is True
 
 
 def test_speed_default_dense_falls_back_to_regional_compile(monkeypatch):

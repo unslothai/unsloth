@@ -100,6 +100,11 @@ const SAFETENSORS_MODELS: Record<string, SafetensorsSpec> = {
   "unsloth/Z-Image-Turbo-unsloth-bnb-4bit": { kind: "pipeline" },
   // Krea 2 Turbo: official vendor repo (bf16 pipeline), on the backend allowlist.
   "krea/Krea-2-Turbo": { kind: "pipeline" },
+  // Ideogram 4: official vendor pipelines, on the backend allowlist. No bf16 repo
+  // exists: -fp8 stores its two DiTs as raw float8 (highest precision; ~46 GB
+  // resident after the bf16 cast); -nf4-diffusers is the bnb-4bit export (~11 GB).
+  "ideogram-ai/ideogram-4-fp8": { kind: "pipeline" },
+  "ideogram-ai/ideogram-4-nf4-diffusers": { kind: "pipeline" },
   "unsloth/Qwen-Image-2512-unsloth-bnb-4bit": { kind: "pipeline" },
   "unsloth/Qwen-Image-2512-FP8": {
     kind: "single_file",
@@ -135,6 +140,12 @@ const MODELS: ModelOption[] = [
     "Safetensors · bnb-4bit",
   ),
   safetensors("krea/Krea-2-Turbo", "Krea 2 Turbo", "Safetensors · bf16"),
+  safetensors("ideogram-ai/ideogram-4-fp8", "Ideogram 4 (FP8)", "Safetensors · fp8"),
+  safetensors(
+    "ideogram-ai/ideogram-4-nf4-diffusers",
+    "Ideogram 4 (bnb-4bit)",
+    "Safetensors · bnb-4bit",
+  ),
   safetensors(
     "unsloth/Qwen-Image-2512-unsloth-bnb-4bit",
     "Qwen-Image 2512 (bnb-4bit)",
@@ -227,6 +238,10 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   { match: "flux.2-dev", steps: 28, guidance: 4 },
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 20, guidance: 4 },
+  // Ideogram 4's model-card settings (48 steps, guidance 7). At exactly these
+  // defaults the backend keeps the pipeline's recommended tapered guidance schedule
+  // instead of a flat constant.
+  { match: "ideogram", steps: 48, guidance: 7 },
   // SDXL: Turbo is distilled (few steps, no CFG); base/full SDXL wants ~30 steps and
   // real CFG (~7). "sdxl-turbo" must precede the generic "sdxl" substring match.
   { match: "sdxl-turbo", steps: 3, guidance: 0 },

@@ -49,6 +49,13 @@ class DiffusionFamily:
     # rather than ``transformer_class.from_single_file`` + a companion base repo.
     # DiT families leave this False (their single file is transformer-only).
     single_file_is_pipeline: bool = False
+    # True for families whose full pipeline assembles MULTIPLE denoiser modules that a
+    # transformer-only file cannot supply (Ideogram 4 pairs a conditional ``transformer``
+    # with a separate ``unconditional_transformer``): there is no single-file or GGUF
+    # artifact carrying both, so only a full ``pipeline`` load is valid. The single-file /
+    # GGUF branches build just one transformer and would assemble a pipeline missing its
+    # second DiT, so validate_load_request rejects those kinds for such a family up front.
+    pipeline_only: bool = False
     # Optional diffusers pipeline classes for image-conditioned workflows. The backend
     # builds these around the ALREADY-loaded transformer/VAE/text-encoder via
     # ``Pipeline.from_pipe`` (no extra weights, no reload), so a family only needs the
@@ -314,6 +321,28 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # unvalidated upstream, so keep the fp16 fallback off like z-image.
         fp16_incompatible = True,
     ),
+    # Ideogram 4 (diffusers >= 0.39): a 34-layer single-stream flow-matching DiT PAIR --
+    # the conditional transformer plus a separate ``unconditional_transformer`` driving
+    # its dual-branch CFG (both ~9B params, so memory planning must count two DiTs) --
+    # with a Qwen3-VL text encoder. The vendor publishes no bf16 checkpoint:
+    # ideogram-4-fp8 stores the DiTs as raw float8 tensors (from_pretrained upcasts
+    # them to the compute dtype) and is the highest-precision artifact, so it is the
+    # family base; ideogram-4-nf4-diffusers / ideogram-4-nf4 (identical contents)
+    # carry bnb-4bit quantization_configs the pipeline kind re-applies automatically.
+    # All three repos are gated="auto" on the Hub, so a load may need the user's HF
+    # token. No GGUF variant and no sd.cpp mapping, so the no-GPU route falls back to
+    # diffusers. CFG quirk: the pipeline takes EITHER guidance_scale OR a per-step
+    # guidance_schedule (see the loader's IDEOGRAM4 branch in diffusion.py).
+    DiffusionFamily(
+        name = "ideogram-4",
+        pipeline_class = "Ideogram4Pipeline",
+        transformer_class = "Ideogram4Transformer2DModel",
+        base_repo = "ideogram-ai/ideogram-4-fp8",
+        aliases = ("ideogram4", "ideogram-v4", "ideogram"),
+        # Two DiTs assembled per-component (conditional + unconditional_transformer), so
+        # there is no transformer-only single-file / GGUF load for this family.
+        pipeline_only = True,
+    ),
     # SDXL is the one U-Net family here: the denoiser is ``pipe.unet``
     # (UNet2DConditionModel), not a DiT ``pipe.transformer``, and a single-file
     # ``.safetensors`` is the WHOLE pipeline rather than a transformer-only file.
@@ -351,6 +380,38 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
 def trainable_family_names() -> tuple[str, ...]:
     """Names of families Studio can train a LoRA on, in registry order."""
     return tuple(fam.name for fam in _FAMILIES if fam.trainable)
+
+
+# The family whose CFG runs through a guidance_scale/guidance_schedule pair rather
+# than a plain guidance_scale (the loader special-cases the call, like krea-2's
+# per-component assembly). Named here so the two modules cannot drift apart.
+IDEOGRAM4_FAMILY_NAME = "ideogram-4"
+
+
+# Models Studio deliberately does NOT support, with the reason surfaced verbatim in
+# the load error (instead of the generic unknown-family message, which reads like a
+# detection gap). Keyed by a lowercase substring of the repo id. The bar for support
+# is a diffusers pipeline: HunyuanImage-3.0 is an 80B autoregressive MoE loaded via
+# AutoModelForCausalLM + trust_remote_code -- there is nothing for this backend to
+# assemble, and remote-code execution is out of the question for a load path.
+_EXCLUDED_MODELS: tuple[tuple[str, str], ...] = (
+    (
+        # "-3" scoped: the reason is 3.0-specific, and a future HunyuanImage 2.x with a
+        # diffusers pipeline must fall through to normal (unknown-family) handling.
+        "hunyuanimage-3",
+        "HunyuanImage-3.0 has no diffusers pipeline (it is an 80B autoregressive MoE "
+        "that requires trust_remote_code), so Studio does not support it.",
+    ),
+)
+
+
+def excluded_model_reason(repo_id: str) -> Optional[str]:
+    """The stated reason ``repo_id`` is unsupported, or None when it is simply unknown."""
+    needle = (repo_id or "").lower()
+    for token, reason in _EXCLUDED_MODELS:
+        if _token_in_needle(token, needle):
+            return reason
+    return None
 
 
 # Editing / inpaint checkpoints share an arch keyword but need a different
@@ -478,6 +539,10 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.2-dev", 28, 4.0),
     ("qwen-image", 20, 4.0),
     ("z-image", 20, 4.0),
+    # Ideogram 4's model-card settings: 48 steps, guidance 7 (its recommended
+    # schedule tapers the last 3 steps to 3.0 -- the loader keeps that taper when
+    # the request matches these defaults exactly; see the IDEOGRAM4 branch).
+    ("ideogram", 48, 7.0),
     # SDXL: Turbo is distilled (few steps, no CFG); base/full SDXL wants ~30 steps and
     # real CFG (~7). "sdxl-turbo" must precede the generic "sdxl" substring match.
     ("sdxl-turbo", 3, 0.0),

@@ -31,9 +31,11 @@ from utils.hardware import clear_gpu_cache
 from .diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
+    IDEOGRAM4_FAMILY_NAME,
     DiffusionFamily,
     default_generation_params,
     detect_family_for_pick,
+    excluded_model_reason,
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
@@ -43,6 +45,7 @@ from .diffusion_device import (
     diffusion_device_target_from_torch_device,
     resolve_diffusion_device_target,
 )
+from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
@@ -91,7 +94,11 @@ from .diffusion_prequant import (
     load_prequantized_transformer,
     resolve_prequant_source,
 )
-from .diffusion_auto_policy import build_resolved_record, resolve_dense_quant_candidate
+from .diffusion_auto_policy import (
+    build_resolved_record,
+    family_bf16_components_gb,
+    resolve_dense_quant_candidate,
+)
 from .diffusion_transformer_quant import (
     TQ_AUTO,
     DEFAULT_MIN_LINEAR_FEATURES,
@@ -228,6 +235,13 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         # training LoRAs on (train on Raw, run adapters on Turbo).
         "krea/krea-2-turbo",
         "krea/krea-2-raw",
+        # Ideogram 4: official vendor repos, safetensors-only diffusers pipelines, no
+        # remote code. The vendor ships no bf16 checkpoint: -fp8 stores the two DiTs
+        # as raw float8 (highest precision available, the family base); the two nf4
+        # repos are identical bnb-4bit exports (both listed so either id loads).
+        "ideogram-ai/ideogram-4-fp8",
+        "ideogram-ai/ideogram-4-nf4",
+        "ideogram-ai/ideogram-4-nf4-diffusers",
     }
 )
 
@@ -554,6 +568,12 @@ class DiffusionBackend:
         kind = resolve_model_kind(gguf_filename, model_kind)
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:
+            # A deliberately-excluded model gets its stated reason, not the generic
+            # unknown-family message (which reads like a detection gap and invites a
+            # family_override retry that would fail deeper and less clearly).
+            excluded = excluded_model_reason(repo_id)
+            if excluded:
+                raise ValueError(f"'{repo_id}' cannot be loaded: {excluded}")
             raise ValueError(
                 f"'{repo_id}' is not a supported diffusion image model. Supported families: "
                 f"{', '.join(supported_family_names())}. If this is a variant of one of them, "
@@ -569,6 +589,17 @@ class DiffusionBackend:
             raise ValueError(
                 f"'{fam.name}' checkpoints are whole-pipeline single files and have no GGUF "
                 f"transformer variant; load the .safetensors pipeline instead of a GGUF."
+            )
+        # A family that assembles MULTIPLE denoisers per-component (Ideogram 4's dual
+        # DiTs) has no transformer-only single-file or GGUF path: those kinds build one
+        # transformer and would assemble a pipeline missing its second DiT (or fail deep
+        # in from_pretrained). Reject them here -- before the route evicts the current
+        # model -- so only a full pipeline load reaches the per-component loader.
+        if kind in ("gguf", "single_file") and fam.pipeline_only:
+            raise ValueError(
+                f"'{fam.name}' loads only as a full diffusers pipeline (it assembles "
+                f"multiple transformers), not from a single-file or GGUF checkpoint; "
+                f"select the pipeline repo."
             )
         # Non-GGUF loads (a single-file safetensors transformer, or a full pipeline)
         # are gated to the unsloth org or a local path -- they fetch + deserialise
@@ -1197,6 +1228,12 @@ class DiffusionBackend:
                             # line cannot parse; assemble the pipeline per-component
                             # (see diffusion_krea2.py for the exact compat story).
                             pipe = load_krea2_pipeline(repo_id, dtype, hf_token = hf_token)
+                        elif fam.name == IDEOGRAM4_FAMILY_NAME:
+                            # The ideogram repos ship the same transformers-5.x style Qwen
+                            # text stack as krea (rope under rope_parameters, a slow-only
+                            # tokenizer pin without its vocab files), so this family is
+                            # assembled per-component too (see diffusion_ideogram4.py).
+                            pipe = load_ideogram4_pipeline(repo_id, dtype, hf_token = hf_token)
                         else:
                             pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
                             if hf_token:
@@ -1707,6 +1744,39 @@ class DiffusionBackend:
                 cached = self._cache_bytes(repo_id) if repo_id else 0
             cached_mib = int(cached // (1024 * 1024)) if cached else None
             model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
+            # A repo can store weights in a NARROWER dtype than they occupy after the
+            # loader's torch_dtype cast: ideogram-4's base repo ships its two DiTs as
+            # raw float8, so the cached bytes undershoot the bf16-resident footprint
+            # by ~2x and auto planning would pick a resident placement that OOMs.
+            # When the family size table knows the bf16-resident total for THIS repo
+            # (the family base -- prequant repos like the bnb-4bit exports have
+            # different ids and really do stay compressed), plan against the larger
+            # of the two estimates.
+            is_narrow_base = bool(repo_id) and repo_id.strip().lower() == fam.base_repo.lower()
+            if (
+                not is_narrow_base
+                and fam.name == IDEOGRAM4_FAMILY_NAME
+                and local_repo is not None
+                and local_repo.is_dir()
+            ):
+                # A LOCAL directory mirror of the fp8 base never string-matches base_repo,
+                # so detect the fp8 layout from its transformer shard headers and reserve
+                # the bf16 footprint too (a local nf4 mirror has no fp8 scales and stays
+                # compressed). Header-only read, so this stays cheap and network-free.
+                is_narrow_base = ideogram4_repo_is_fp8(repo_id)
+            if is_narrow_base:
+                table = family_bf16_components_gb(fam, fam.base_repo)
+                if table is not None:
+                    # family_bf16_components_gb is a network-free constant, so reserve the bf16
+                    # footprint even when the cache-derived estimate is absent (empty blob cache,
+                    # or a best-effort download probe that swallowed a transient HF error and
+                    # returned nothing). Otherwise model_dense_mib stays None and the planner
+                    # reads "size unknown -> stay resident", so the ~54 GB fp8 pipeline plans a
+                    # resident placement and OOMs a card that offload would have fit.
+                    table_mib = int(sum(table) * (1000.0**3) / (1024.0 * 1024.0))
+                    model_dense_mib = (
+                        table_mib if model_dense_mib is None else max(model_dense_mib, table_mib)
+                    )
             companion_mib = None
         else:
             if transformer_resident_override_mib is not None:
@@ -2261,6 +2331,18 @@ class DiffusionBackend:
                     # share this call's seed, drawn sequentially from one generator.
                     "num_images_per_prompt": batch_size,
                 }
+                if state.family.name == IDEOGRAM4_FAMILY_NAME:
+                    # Ideogram 4 drives CFG through EITHER a constant guidance_scale OR
+                    # a per-step guidance_schedule; its check_inputs rejects the call
+                    # when both are set, and the schedule DEFAULTS to the recommended
+                    # 45x7.0 + 3x3.0 polish taper (valid only at exactly 48 steps). At
+                    # the family's advertised defaults, drop the constant so the
+                    # recommended taper engages; any other request nulls the schedule
+                    # so the constant broadcasts legally to the chosen step count.
+                    if steps == 48 and abs(float(guidance) - 7.0) < 1e-6:
+                        kwargs.pop(state.family.cfg_kwarg, None)
+                    else:
+                        kwargs["guidance_schedule"] = None
                 if init_pil is not None:
                     # Reference with extra images passes the whole list (FLUX.2 combines them);
                     # every other workflow takes the single image.

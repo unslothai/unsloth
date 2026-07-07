@@ -66,9 +66,36 @@ class ResolvedLora:
 
 # Curated, family-tagged catalog of known-good diffusion LoRAs. Kept intentionally small
 # and data-driven; extend as unsloth hosts/curates more. Entries are HF repos with a
-# single-file weight. (Left minimal on purpose -- local discovery is the primary source,
-# and users can also reference any public HF LoRA repo id directly.)
-_CURATED: tuple[LoraCatalogEntry, ...] = ()
+# single-file weight. (Local discovery remains a primary source, and users can also
+# reference any public HF LoRA repo id directly.)
+
+
+def _krea2_lora(style: str, display_name: str) -> LoraCatalogEntry:
+    """One official krea/Krea-2-LoRA-* style adapter. All nine follow the same repo
+    shape (a single ``{style}.safetensors`` at the root) and are trained on Krea-2-Raw
+    for use on Krea-2-Turbo, per Krea's release guidance."""
+    return LoraCatalogEntry(
+        id = f"krea/Krea-2-LoRA-{style}",
+        display_name = display_name,
+        source = "hub",
+        fmt = "safetensors",
+        families = ("krea-2",),
+        repo_id = f"krea/Krea-2-LoRA-{style}",
+        weight_name = f"{style}.safetensors",
+    )
+
+
+_CURATED: tuple[LoraCatalogEntry, ...] = (
+    _krea2_lora("retroanime", "Krea 2 Retro Anime"),
+    _krea2_lora("neondrip", "Krea 2 Neon Drip"),
+    _krea2_lora("darkbrush", "Krea 2 Dark Brush"),
+    _krea2_lora("softwatercolor", "Krea 2 Soft Watercolor"),
+    _krea2_lora("dotmatrix", "Krea 2 Dot Matrix"),
+    _krea2_lora("rainywindow", "Krea 2 Rainy Window"),
+    _krea2_lora("vintagetarot", "Krea 2 Vintage Tarot"),
+    _krea2_lora("sunsetblur", "Krea 2 Sunset Blur"),
+    _krea2_lora("kidsdrawing", "Krea 2 Kids Drawing"),
+)
 
 
 def loras_dir() -> Path:

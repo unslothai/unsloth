@@ -177,6 +177,17 @@ def test_apply_sets_backend():
     assert engaged == "_native_cudnn" and t.set_to == "_native_cudnn"
 
 
+def test_apply_sets_backend_on_both_dits():
+    # A dual-DiT family (Ideogram) runs transformer + unconditional_transformer each step, so the
+    # backend must be set on BOTH; otherwise the second DiT keeps the native default while status
+    # reports the requested kernel as engaged.
+    t1, t2 = _FakeTransformer(), _FakeTransformer()
+    pipe = types.SimpleNamespace(transformer = t1, unconditional_transformer = t2)
+    engaged = apply_attention_backend(pipe, "_native_cudnn")
+    assert engaged == "_native_cudnn"
+    assert t1.set_to == "_native_cudnn" and t2.set_to == "_native_cudnn"
+
+
 def test_apply_falls_back_on_unavailable_kernel(monkeypatch):
     # an unavailable kernel must not fail the load -> returns None (diffusers default).
     monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
