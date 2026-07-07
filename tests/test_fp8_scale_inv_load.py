@@ -397,6 +397,70 @@ def test_skips_shape_incompatible_local_scale():
     assert not hasattr(model.fp8, "weight_scale_inv")
 
 
+def test_restores_multielement_scale_without_local_placeholder():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.ones((2, 1), dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert torch.equal(model.fp8.weight_scale_inv, torch.ones((2, 1), dtype = torch.float16))
+
+
+def test_restores_fbgemm_weight_scale_tensor():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale": torch.full((2, 1), 2.0, dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert torch.equal(model.fp8.weight_scale, torch.full((2, 1), 2.0, dtype = torch.float16))
+
+
+def test_restore_accepts_cache_download_selection_kwargs():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.25], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+            cache_dir = checkpoint_dir,
+            force_download = False,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+
+
 class _Fp8Expert(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -511,7 +575,13 @@ def test_loader_passes_selected_artifact_knobs_to_fp8_restore():
         ):
             continue
         keyword_names = {kw.arg for kw in node.keywords}
-        if {"subfolder", "variant", "use_safetensors"}.issubset(keyword_names):
+        if {
+            "subfolder",
+            "variant",
+            "use_safetensors",
+            "cache_dir",
+            "force_download",
+        }.issubset(keyword_names):
             hit_count += 1
 
     assert hit_count == 2

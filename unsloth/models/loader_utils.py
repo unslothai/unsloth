@@ -414,6 +414,7 @@ def _model_has_real_fp8_modules(model):
 
 
 _FP8_SCALE_SUFFIXES = (
+    ("weight_scale", ".weight_scale"),
     ("weight_scale_inv", ".weight_scale_inv"),
     ("gate_up_proj_scale_inv", ".gate_up_proj_scale_inv"),
     ("down_proj_scale_inv", ".down_proj_scale_inv"),
@@ -573,6 +574,8 @@ def _restore_missing_fp8_weight_scale_inv(
     subfolder = None,
     variant = None,
     use_safetensors = None,
+    cache_dir = None,
+    force_download = False,
 ):
     """Find checkpointed `.weight_scale_inv` tensors and restore missing runtime tensors on FP8 modules.
 
@@ -591,6 +594,8 @@ def _restore_missing_fp8_weight_scale_inv(
         subfolder = subfolder,
         variant = variant,
         use_safetensors = use_safetensors,
+        cache_dir = cache_dir,
+        force_download = force_download,
     )
     if len(scaled_tensors) == 0:
         return 0, 0
@@ -623,9 +628,6 @@ def _restore_missing_fp8_weight_scale_inv(
             skipped += 1
             continue
         if isinstance(reference, torch.Tensor) and reference.shape != scale_tensor.shape:
-            skipped += 1
-            continue
-        if not isinstance(reference, torch.Tensor) and scale_tensor.numel() != 1:
             skipped += 1
             continue
 
