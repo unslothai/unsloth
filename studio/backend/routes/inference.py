@@ -7480,7 +7480,9 @@ async def openai_chat_completions(
                 if heal_openai_message(_msg, _sf_heal, payload.tools):
                     _finish = "tool_calls"
                 elif nudge_enabled(payload.nudge_tool_calls):
-                    _data = {"choices": [{"message": {"role": "assistant", "content": _visible_text}}]}
+                    _data = {
+                        "choices": [{"message": {"role": "assistant", "content": _visible_text}}]
+                    }
                     if nudge_should_retry(_data, _sf_heal, payload.tools):
                         # A failed retry must not 500 the request; keep the first
                         # response (GGUF nudge parity). The retry's generate()
@@ -7504,7 +7506,11 @@ async def openai_chat_completions(
                             if _retry_reasoning:
                                 retry_msg["reasoning_content"] = _retry_reasoning
                             if heal_openai_message(retry_msg, _sf_heal, payload.tools):
-                                _visible_text, _msg, _finish = _retry_visible, retry_msg, "tool_calls"
+                                _visible_text, _msg, _finish = (
+                                    _retry_visible,
+                                    retry_msg,
+                                    "tool_calls",
+                                )
                             else:
                                 # Retry produced no healable call -> first response wins.
                                 stats_holder["stats"] = _first_stats
