@@ -160,7 +160,14 @@ function exportCollectionJsonl(prompts: PromptEntry[], lists: PromptListEntry[])
 // preserved the original faithfully in argsText.
 function toolCallExportArgs(p: Record<string, unknown>): unknown {
   const argsText = p.argsText;
-  if (typeof argsText !== "string") return p.args;
+  // chat-adapter's serializeAssistantToolCallPart treats an empty string
+  // the same as a missing argsText -- falling back to
+  // JSON.stringify(args ?? {}) -- because the streaming path can produce
+  // a no-argument tool call with argsText === "" and args === {}. Mirror
+  // that same fallback here, or a streamed no-args call would re-export
+  // as the literal string "" instead of the "{}" that replay actually
+  // sends and that export produced before this helper existed.
+  if (typeof argsText !== "string" || argsText.length === 0) return p.args;
   try {
     return JSON.parse(argsText);
   } catch {
@@ -317,7 +324,18 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
       } else if (p.type === "tool-call") {
         const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${toolCalls.length}`;
         const name = typeof p.toolName === "string" ? p.toolName : "unknown";
-        const argsStr = p.args != null ? JSON.stringify(p.args) : (typeof p.argsText === "string" ? p.argsText : "{}");
+        // Mirror serializeAssistantToolCallPart / toolCallExportArgs:
+        // argsText (when present and non-empty) is the authoritative raw
+        // value for replay, since `p.args` is coerced to {} for any
+        // non-object decoded value (null, a raw JSON string) just to
+        // safely render a key/value UI. Preferring p.args here (as long
+        // as it's non-null, which the coerced {} always is) meant Raw
+        // JSONL export silently turned a real null/string tool-call args
+        // value into "{}" on every import -> Raw JSONL export.
+        const argsStr =
+          typeof p.argsText === "string" && p.argsText.length > 0
+            ? p.argsText
+            : JSON.stringify(p.args ?? {});
         toolCalls.push({ id, type: "function", function: { name, arguments: argsStr } });
         if (p.result !== undefined && p.result !== null) {
           const resultStr = typeof p.result === "string" ? p.result : JSON.stringify(p.result);
@@ -783,11 +801,17 @@ function textToContentParts(value: string, role: string): Record<string, unknown
   // all -- or genuine leading blank lines before the first block -- is
   // never touched.
   const pushChunk = (chunk: string, afterMatch: boolean) => {
-    // The join contentBlocksToText inserts between blocks is always the
-    // literal two-byte sequence "\n\n" -- plain Array.prototype.join,
-    // never adapted for CRLF -- so the leading strip below only ever needs
-    // to match that exact sequence.
-    const withoutJoin = afterMatch ? chunk.replace(/^\n\n/, "") : chunk;
+    // contentBlocksToText's own join is always the literal two-byte
+    // sequence "\n\n" -- plain Array.prototype.join, never adapted for
+    // CRLF -- but a file that's been wholesale LF->CRLF normalized after
+    // export (e.g. re-saved on Windows) turns every "\n" into "\r\n",
+    // including this join separator, into "\r\n\r\n". Both
+    // openThinkingRegex and closeThinkingRegex already accept that
+    // CRLF-normalized form for the boundary itself (via "\r?\n\r?\n"),
+    // so the strip here has to accept it too, or the join survives as a
+    // spurious leading blank paragraph on whatever text follows a
+    // reasoning block's close.
+    const withoutJoin = afterMatch ? chunk.replace(/^\r?\n\r?\n/, "") : chunk;
     if (withoutJoin === "") return;
 
     // Split into "islands" at genuine encoder block boundaries only, not
@@ -913,77 +937,104 @@ function textToContentParts(value: string, role: string): Record<string, unknown
     flushText();
   };
 
-  // A reasoning block's own content can legitimately contain the literal
+  // A [thinking] block's own content can legitimately contain the literal
   // text "[thinking]"/"[/thinking]" as part of a blank-line-delimited
-  // example (e.g. a model explaining the format it was trained on), and
-  // separately, ordinary *visible* text right after a real close can just
-  // as legitimately mention "[/thinking]" on its own. Neither "always take
-  // the first close" nor "always take the last close before the next open"
-  // handles both: the first swallows an embedded fake close into visible
-  // text, the second swallows visible text (that merely mentions the tag)
-  // into reasoning.
+  // example (a model explaining the format it was trained on), or an
+  // ordinary, never-properly-closed mention of the tag name (the model
+  // just talking about the format without actually invoking a new one).
+  // Distinguishing a genuine nested pair from an incidental unclosed
+  // mention -- so a real outer wrapper still resolves via its own real
+  // close either way -- needs two passes plus a domain-specific tie-break,
+  // not a single depth counter (which can't "give back" a count once an
+  // open turns out to never close) and not generic bracket-repair (whose
+  // usual convention discards the *earliest* dangling open, the opposite
+  // of what's wanted here: the outermost, earliest wrapper is what the
+  // API actually emitted around real hidden reasoning, so it should be
+  // the one presumed genuine whenever there's a shortage of closes).
   //
-  // What actually distinguishes them is nesting: a complete embedded
-  // example doesn't change how many opens are still waiting on a close; a
-  // real close is the one that brings that count back to zero. For each
-  // open, count depth forward from that open's own position (an open bumps
-  // depth up, a close brings it down, the close that returns depth to 0 is
-  // this open's real end) -- a single shared left-to-right pass can't do
-  // this correctly, because an open with no close ever after it (e.g. a
-  // training file of many literal, never-closed "[thinking]" markers) has
-  // no way to "give up" its claim on depth, so it silently absorbs every
-  // close that belongs to a real block appearing later in the value. A
-  // per-open scan avoids that: each open's depth count is independent, so
-  // unrelated unclosed siblings can't blot out a real block after them.
-  //
-  // The tradeoff is that a per-open scan is quadratic in the number of
-  // literal, never-closed markers, since each one independently rescans
-  // the rest of the value looking for a close that isn't there. The short
-  // circuit below covers exactly that reported case cheaply: if the value
-  // contains no "[/thinking]"-shaped close at all, no open anywhere can
-  // possibly resolve, so skip scanning entirely and fall through to plain
-  // text. A lone embedded close with no paired open is the one residual
-  // case none of this can resolve syntactically, same as before either of
-  // the nesting fixes existed.
+  // Pass 1 (forward): a close with no still-open marker before it has
+  // nothing to pair with at all -- mark it invalid (stray/literal).
+  // Tie-break: with N opens and only M (< N) valid closes, treat the
+  // *earliest* M opens as the real ones and the *latest* (N - M) as
+  // incidental literal mentions -- consistent with a model being most
+  // likely to genuinely close the outermost wrapper it started, and only
+  // ever accidentally leave a deeper, later mention hanging.
+  // Pass 2 (forward): the kept opens and valid closes are now guaranteed
+  // to pair up completely (equal counts, and pass 1 already ensured every
+  // valid close has enough preceding opens), so an ordinary shared depth
+  // counter -- attributing to whichever open is currently outermost -- is
+  // unambiguous. No per-open rescanning, no recursion, no off-by-one
+  // resync: every pass is one linear walk over the precomputed matches.
+  const opens: RegExpExecArray[] = [];
+  {
+    const probe = new RegExp(openThinkingRegex.source, "g");
+    let m: RegExpExecArray | null;
+    while ((m = probe.exec(value)) !== null) opens.push(m);
+  }
+  const closes: RegExpExecArray[] = [];
+  {
+    const probe = new RegExp(closeThinkingRegex.source, "g");
+    let m: RegExpExecArray | null;
+    while ((m = probe.exec(value)) !== null) closes.push(m);
+  }
+
+  const validCloses: RegExpExecArray[] = [];
+  {
+    let oi = 0;
+    let ci = 0;
+    let unmatchedOpens = 0;
+    while (oi < opens.length || ci < closes.length) {
+      const nextOpen = oi < opens.length ? opens[oi] : null;
+      const nextClose = ci < closes.length ? closes[ci] : null;
+      if (nextOpen && (!nextClose || nextOpen.index < nextClose.index)) {
+        unmatchedOpens += 1;
+        oi += 1;
+      } else if (nextClose) {
+        if (unmatchedOpens > 0) {
+          unmatchedOpens -= 1;
+          validCloses.push(nextClose);
+        }
+        ci += 1;
+      } else {
+        break;
+      }
+    }
+  }
+
+  // validCloses.length can never exceed opens.length -- each valid close
+  // consumed exactly one unit of credit from a preceding open above --
+  // so keeping the first validCloses.length opens (by position, since
+  // `opens` is already in left-to-right match order) and dropping the
+  // rest is always in range.
+  const keptOpens = opens.slice(0, validCloses.length);
+
   let lastIndex = 0;
   let hadMatch = false;
-  if (closeThinkingRegex.test(value)) {
-    closeThinkingRegex.lastIndex = 0;
-    let openMatch: RegExpExecArray | null;
-    while ((openMatch = openThinkingRegex.exec(value)) !== null) {
-      const contentStart = openMatch.index + openMatch[0].length;
-      const nestedOpenProbe = new RegExp(openThinkingRegex.source, "g");
-      const nestedCloseProbe = new RegExp(closeThinkingRegex.source, "g");
-      nestedOpenProbe.lastIndex = contentStart;
-      nestedCloseProbe.lastIndex = contentStart;
-      let depth = 1;
-      let pendingOpen = nestedOpenProbe.exec(value);
-      let pendingClose = nestedCloseProbe.exec(value);
-      let realClose: RegExpExecArray | null = null;
-      while (pendingClose !== null) {
-        if (pendingOpen !== null && pendingOpen.index < pendingClose.index) {
-          depth += 1;
-          nestedOpenProbe.lastIndex = pendingOpen.index + pendingOpen[0].length;
-          pendingOpen = nestedOpenProbe.exec(value);
-          continue;
-        }
-        depth -= 1;
-        if (depth === 0) {
-          realClose = pendingClose;
-          break;
-        }
-        nestedCloseProbe.lastIndex = pendingClose.index + 1;
-        pendingClose = nestedCloseProbe.exec(value);
-      }
-      if (!realClose) {
-        openThinkingRegex.lastIndex = openMatch.index + 1;
+  {
+    let oi = 0;
+    let ci = 0;
+    let depth = 0;
+    let outermostOpen: RegExpExecArray | null = null;
+    while (oi < keptOpens.length || ci < validCloses.length) {
+      const nextOpen = oi < keptOpens.length ? keptOpens[oi] : null;
+      const nextClose = ci < validCloses.length ? validCloses[ci] : null;
+      if (nextOpen && (!nextClose || nextOpen.index < nextClose.index)) {
+        if (depth === 0) outermostOpen = nextOpen;
+        depth += 1;
+        oi += 1;
         continue;
       }
-      pushChunk(value.slice(lastIndex, openMatch.index), hadMatch);
-      parts.push({ type: "reasoning", text: value.slice(contentStart, realClose.index) });
-      lastIndex = realClose.index + realClose[0].length;
-      hadMatch = true;
-      openThinkingRegex.lastIndex = lastIndex;
+      if (!nextClose) break;
+      depth -= 1;
+      if (depth === 0 && outermostOpen) {
+        const contentStart = outermostOpen.index + outermostOpen[0].length;
+        pushChunk(value.slice(lastIndex, outermostOpen.index), hadMatch);
+        parts.push({ type: "reasoning", text: value.slice(contentStart, nextClose.index) });
+        lastIndex = nextClose.index + nextClose[0].length;
+        hadMatch = true;
+        outermostOpen = null;
+      }
+      ci += 1;
     }
   }
   pushChunk(value.slice(lastIndex), hadMatch);
