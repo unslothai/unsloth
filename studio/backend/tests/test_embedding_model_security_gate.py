@@ -193,7 +193,14 @@ def test_active_backend_is_llama_reflects_cache_and_resolver(monkeypatch):
     monkeypatch.setattr(embeddings, "_backend", LlamaServerBackend())
     assert embeddings.active_backend_is_llama() is True
 
+    # A cached ST backend reports False even when the resolver now picks llama, so its
+    # pickle stays gated (the cached backend, not the resolver, is what actually embeds).
+    monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "llama-server")
+    monkeypatch.setattr(embeddings, "_backend", embeddings._SentenceTransformersBackend())
+    assert embeddings.active_backend_is_llama() is False
+
     # No cached backend -> the resolver decides, unchanged from before.
+    monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
     monkeypatch.setattr(embeddings, "_backend", None)
     assert embeddings.active_backend_is_llama() is False  # auto -> sentence-transformers
 

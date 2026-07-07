@@ -391,12 +391,15 @@ def active_backend_is_llama() -> bool:
         with _backend_lock:
             backend = _backend
         if backend is not None:
+            # A backend exists: report what it ACTUALLY is. A concrete
+            # sentence-transformers backend must return False even if the
+            # resolver would now pick llama, so its pickle stays gated. If the
+            # llama import fails we cannot be llama, so fall to the safe False.
             try:
                 from .embed_llama_server import LlamaServerBackend
             except Exception:  # noqa: BLE001 - llama plumbing import must never block
-                LlamaServerBackend = None
-            if LlamaServerBackend is not None and isinstance(backend, LlamaServerBackend):
-                return True
+                return False
+            return isinstance(backend, LlamaServerBackend)
         raw = (config.EMBED_BACKEND or "auto").strip().lower()
         key = _resolve_auto() if raw in _AUTO_ALIASES else raw
         return key in _LLAMA_ALIASES
