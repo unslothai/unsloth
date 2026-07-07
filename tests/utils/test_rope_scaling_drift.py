@@ -285,6 +285,35 @@ def test_extended_rotary_reads_config_factor():
     )
 
 
+def test_extended_rotary_reads_rope_parameters_v5():
+    # transformers v5 stores scaling under rope_parameters (rope_scaling is a
+    # back-compat shim that may be removed); the factor must still be read.
+    from types import SimpleNamespace
+
+    from unsloth.models.llama import LlamaExtendedRotaryEmbedding
+
+    rot = object.__new__(LlamaExtendedRotaryEmbedding)
+    rot.base = ROPE_THETA
+    rot.dim = HEAD_DIM
+    rot._unsloth_rope_config = SimpleNamespace(
+        rope_scaling = None,
+        rope_parameters = {
+            "rope_type": "llama3",
+            "factor": 32.0,
+            "low_freq_factor": 1.0,
+            "high_freq_factor": 4.0,
+            "original_max_position_embeddings": 8192,
+        },
+    )
+    vanilla = _vanilla_inv_freq()
+    scaled = rot._apply_inv_freq_scaling(vanilla).reshape(-1)
+    ratio = float(vanilla[-1]) / float(scaled[-1])
+    assert abs(ratio - 32.0) < 1e-3, (
+        f"Extended rotary ignored rope_parameters factor 32 (ratio {ratio}); v5 "
+        "keeps the factor under rope_parameters, not rope_scaling."
+    )
+
+
 def _cos_at_position(rot, position):
     """cos row at one position, built like _set_cos_sin_cache but CPU-only."""
     inv_freq = rot.inv_freq.float().cpu()

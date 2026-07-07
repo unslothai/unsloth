@@ -1932,8 +1932,13 @@ class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
     def _apply_inv_freq_scaling(self, freqs: torch.Tensor):
         # llama3 factors from config; Llama-3.1 defaults when built without one
         # (legacy codegen path). Hardcoding 8 is wrong for e.g. Llama-3.2 (32).
+        # v5 renames rope_scaling -> rope_parameters; read either so the factor
+        # survives even if the rope_scaling back-compat shim is dropped.
+        config = getattr(self, "_unsloth_rope_config", None)
         rope_scaling = _rope_scaling_as_dict(
-            getattr(getattr(self, "_unsloth_rope_config", None), "rope_scaling", None) or {}
+            getattr(config, "rope_scaling", None)
+            or getattr(config, "rope_parameters", None)
+            or {}
         )
         scale_factor = rope_scaling.get("factor", 8)
         low_freq_factor = rope_scaling.get("low_freq_factor", 1)
