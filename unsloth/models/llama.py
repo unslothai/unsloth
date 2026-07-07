@@ -1936,9 +1936,7 @@ class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
         # survives even if the rope_scaling back-compat shim is dropped.
         config = getattr(self, "_unsloth_rope_config", None)
         rope_scaling = _rope_scaling_as_dict(
-            getattr(config, "rope_scaling", None)
-            or getattr(config, "rope_parameters", None)
-            or {}
+            getattr(config, "rope_scaling", None) or getattr(config, "rope_parameters", None) or {}
         )
         scale_factor = rope_scaling.get("factor", 8)
         low_freq_factor = rope_scaling.get("low_freq_factor", 1)
