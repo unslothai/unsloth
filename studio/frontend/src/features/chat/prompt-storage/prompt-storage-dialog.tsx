@@ -730,8 +730,8 @@ function textToContentParts(value: string, role: string): Record<string, unknown
   // trailing blank lines (see pushChunk's `afterMatch` handling for the
   // mirror case on the trailing side, where the separator isn't consumable
   // this way because whatever follows isn't necessarily another match).
-  const thinkingRegex =
-    /(?:^|\r?\n\r?\n)\[thinking\]\r?\n([\s\S]*?)\r?\n\[\/thinking\](?=\r?\n\r?\n|$)/g;
+  const openThinkingRegex = /(?:^|\r?\n\r?\n)\[thinking\]\r?\n/g;
+  const closeThinkingRegex = /\r?\n\[\/thinking\](?=\r?\n\r?\n|$)/g;
 
   // Segments between (or around) thinking blocks may still contain a
   // tool-call blob alongside plain text, both joined with blank lines. Keep
@@ -870,12 +870,49 @@ function textToContentParts(value: string, role: string): Record<string, unknown
 
   let lastIndex = 0;
   let hadMatch = false;
-  let match: RegExpExecArray | null;
-  while ((match = thinkingRegex.exec(value)) !== null) {
-    pushChunk(value.slice(lastIndex, match.index), hadMatch);
-    parts.push({ type: "reasoning", text: match[1] });
-    lastIndex = thinkingRegex.lastIndex;
+  let openMatch: RegExpExecArray | null;
+  while ((openMatch = openThinkingRegex.exec(value)) !== null) {
+    const contentStart = openMatch.index + openMatch[0].length;
+
+    // A reasoning block's own content can legitimately contain the literal
+    // text "[/thinking]" followed by a blank line -- e.g. a model
+    // explaining the format it was trained on -- which a naive lazy match
+    // would mistake for the wrapper's real close, truncating the
+    // reasoning early and leaking the remainder as plain (visible) text.
+    // The real close can never be past the *next* genuine "[thinking]"
+    // open boundary (or the end of the value), so search only within that
+    // window, and take the LAST valid close in it rather than the first --
+    // an embedded false close is never the actual wrapper boundary.
+    const nextOpenProbe = new RegExp(openThinkingRegex.source, "g");
+    nextOpenProbe.lastIndex = contentStart;
+    const nextOpenMatch = nextOpenProbe.exec(value);
+    const windowEnd = nextOpenMatch ? nextOpenMatch.index : value.length;
+
+    closeThinkingRegex.lastIndex = contentStart;
+    let lastClose: RegExpExecArray | null = null;
+    let closeMatch: RegExpExecArray | null;
+    while ((closeMatch = closeThinkingRegex.exec(value)) !== null) {
+      if (closeMatch.index >= windowEnd) break;
+      lastClose = closeMatch;
+      closeThinkingRegex.lastIndex = closeMatch.index + 1;
+    }
+
+    if (!lastClose) {
+      // No real close before the next block (or end of value) -- this
+      // "[thinking]" was never actually closed (malformed/truncated
+      // export), so it isn't a genuine wrapper. Leave it as literal text:
+      // resume scanning right after this open match instead of consuming
+      // it, without touching `lastIndex`/pushing anything, so it stays
+      // embedded in whatever chunk eventually gets flushed as plain text.
+      openThinkingRegex.lastIndex = openMatch.index + 1;
+      continue;
+    }
+
+    pushChunk(value.slice(lastIndex, openMatch.index), hadMatch);
+    parts.push({ type: "reasoning", text: value.slice(contentStart, lastClose.index) });
+    lastIndex = lastClose.index + lastClose[0].length;
     hadMatch = true;
+    openThinkingRegex.lastIndex = lastIndex;
   }
   pushChunk(value.slice(lastIndex), hadMatch);
 
