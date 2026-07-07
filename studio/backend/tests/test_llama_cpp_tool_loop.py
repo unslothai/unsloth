@@ -251,9 +251,7 @@ def test_streamed_reasoning_answer_emits_backend_summary(monkeypatch):
     summary_index = next(
         i for i, event in enumerate(events) if event["type"] == "reasoning_summary"
     )
-    final_content_index = max(
-        i for i, event in enumerate(events) if event["type"] == "content"
-    )
+    final_content_index = max(i for i, event in enumerate(events) if event["type"] == "content")
     assert summary_index < final_content_index
     assert events[summary_index]["duration_ms"] == 62000
 
@@ -357,9 +355,7 @@ def test_reasoning_before_structured_tool_closes_think_block(monkeypatch):
     )
 
     tool_start_index = next(i for i, e in enumerate(events) if e["type"] == "tool_start")
-    content_before_tool = [
-        e["text"] for e in events[:tool_start_index] if e["type"] == "content"
-    ]
+    content_before_tool = [e["text"] for e in events[:tool_start_index] if e["type"] == "content"]
     # Reasoning streamed live, then closed before the tool -- balanced block.
     assert content_before_tool[0] == "<think>Let me search."
     assert content_before_tool[-1] == "<think>Let me search.</think>"
@@ -468,9 +464,7 @@ def test_reasoning_before_bare_json_tool_closes_think_block(monkeypatch):
     )
 
     tool_start_index = next(i for i, e in enumerate(events) if e["type"] == "tool_start")
-    content_before_tool = [
-        e["text"] for e in events[:tool_start_index] if e["type"] == "content"
-    ]
+    content_before_tool = [e["text"] for e in events[:tool_start_index] if e["type"] == "content"]
     assert content_before_tool[0] == "<think>Searching now."
     assert content_before_tool[-1] == "<think>Searching now.</think>"
     # The bare-JSON call text was drained, never surfaced as content.
