@@ -36,6 +36,7 @@ class _FakeBackend:
         gguf_filename = None,
         family_override = None,
         model_kind = None,
+        base_repo = None,
     ):
         # Mirror the real backend's cheap validation so the route's
         # validate-before-evict ordering is exercised.
@@ -49,6 +50,12 @@ class _FakeBackend:
         if kind != "gguf" and not model_path.lower().startswith("unsloth/"):
             raise ValueError(
                 f"Non-GGUF diffusion loads are restricted to unsloth/* repos; got '{model_path}'."
+            )
+        # A client-supplied base_repo clears the same trust bar (mirrors the real backend's
+        # gate), so the route's validate-before-evict rejects an untrusted companion base.
+        if base_repo and base_repo.strip() and not base_repo.lower().startswith("unsloth/"):
+            raise ValueError(
+                f"base_repo is restricted to unsloth/* repos (or a local path); got '{base_repo}'."
             )
         fam = detect_family(model_path, family_override)
         if fam is None:
@@ -192,7 +199,7 @@ def test_load_generate_status_unload_roundtrip(client):
         json = {
             "model_path": "unsloth/Z-Image-Turbo-GGUF",
             "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
-            "base_repo": "base/repo",
+            "base_repo": "unsloth/Z-Image-base",
         },
     )
     assert loaded.status_code == 200
@@ -218,6 +225,23 @@ def test_load_generate_status_unload_roundtrip(client):
 
     unloaded = client.post("/api/inference/images/unload")
     assert unloaded.status_code == 200 and unloaded.json()["loaded"] is False
+    assert client.get("/api/inference/images/status").json()["loaded"] is False
+
+
+def test_load_rejects_untrusted_base_repo(client):
+    # A trusted GGUF model_path paired with an untrusted remote base_repo is rejected at the
+    # route (validate runs before the GPU handoff), so an authenticated client cannot make the
+    # server fetch and deserialize an arbitrary companion repo, and no model is loaded/evicted.
+    r = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+            "base_repo": "evil/companions",
+        },
+    )
+    assert r.status_code == 400
+    assert "base_repo" in r.json()["detail"]
     assert client.get("/api/inference/images/status").json()["loaded"] is False
 
 

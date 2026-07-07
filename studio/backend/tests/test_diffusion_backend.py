@@ -1210,6 +1210,29 @@ def test_load_sdxl_rejects_untrusted_repo(fake_runtime):
         backend.load_pipeline("randomorg/my-sdxl-merge", family_override = "sdxl")
 
 
+def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
+    # A companion base_repo also loads via from_pretrained, so a trusted GGUF model_path must
+    # not smuggle in an arbitrary remote base: base_repo clears the same trust bar as a non-GGUF
+    # repo id (mirrors the video loader), and the check runs before any GPU handoff.
+    backend = DiffusionBackend()
+    with pytest.raises(ValueError, match = "base_repo"):
+        backend.validate_load_request(
+            "unsloth/Qwen-Image-2512-GGUF",
+            gguf_filename = "x.gguf",
+            model_kind = "gguf",
+            base_repo = "evil/companions",
+        )
+    # A local base_repo (already on disk) still passes the gate.
+    (tmp_path / "model_index.json").write_text("{}")
+    fam = backend.validate_load_request(
+        "unsloth/Qwen-Image-2512-GGUF",
+        gguf_filename = "x.gguf",
+        model_kind = "gguf",
+        base_repo = str(tmp_path),
+    )
+    assert fam is not None
+
+
 def test_detect_family_rejects_layered():
     # Qwen-Image-Layered needs a dedicated pipeline (additional_t_cond); it must be
     # rejected so it fails fast at load instead of crashing at the first denoise step.

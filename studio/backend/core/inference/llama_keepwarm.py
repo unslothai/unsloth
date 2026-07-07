@@ -61,6 +61,13 @@ _INFERENCE_SUFFIXES = (
     "/responses",
     "/generate/stream",  # Studio's own streaming route on the same llama-server
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
+    # Image/video generation holds a multi-GB diffusion/video pipeline for the whole request.
+    # Tracking them here lets other_inference_request_count() see an in-flight generation, so an
+    # API-key training start is refused (409) before its unload cancels the generation. endswith
+    # so the GET *-progress and */cancel variants are not matched.
+    "/images/generate",  # /api/inference/images/generate
+    "/images/generations",  # /v1/images/generations (+ /api/inference/images/generations)
+    "/video/generate",  # /api/inference/video/generate
 )
 
 

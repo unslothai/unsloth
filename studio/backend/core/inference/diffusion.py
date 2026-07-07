@@ -577,6 +577,7 @@ class DiffusionBackend:
         gguf_filename: Optional[str] = None,
         family_override: Optional[str] = None,
         model_kind: Optional[str] = None,
+        base_repo: Optional[str] = None,
     ) -> DiffusionFamily:
         """Cheap, network-free validation shared by the route (before it evicts the
         chat model) and the load paths, so an unloadable pick fails BEFORE the GPU
@@ -627,6 +628,16 @@ class DiffusionBackend:
             raise ValueError(
                 f"Non-GGUF diffusion loads are restricted to unsloth/* repos (or a local "
                 f"path); got '{repo_id}'. Pass a gguf_filename to load a GGUF instead."
+            )
+        # A companion base repo also loads via from_pretrained (its diffusers pipeline is
+        # assembled around the GGUF/single-file transformer), so it must clear the same trust
+        # bar as a non-GGUF repo_id -- otherwise a trusted GGUF model_path could smuggle in an
+        # arbitrary remote base that gets downloaded and deserialised. Gate it here (before the
+        # route evicts the resident model), mirroring the video loader's base_repo check.
+        if base_repo and base_repo.strip() and not _is_trusted_diffusion_repo(base_repo):
+            raise ValueError(
+                f"base_repo is restricted to unsloth/* repos (or a local path); got "
+                f"'{base_repo}'."
             )
         # Reject a bad LOCAL pick now (the same checks the load would hit later), so
         # the route never evicts a working chat model for a request that can't load.
@@ -714,6 +725,10 @@ class DiffusionBackend:
         # A blank token (the Studio default when none is configured) must mean
         # "anonymous", not an explicit empty credential the Hub rejects with 401.
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
+        # base_repo is gated at the /images/load route's pre-eviction validate_load_request
+        # (the client entry point); the re-validation here is a redundant cheap-fail guard for
+        # the resolved repo/family, so it does not re-gate base_repo (which internal callers pass
+        # through already-validated).
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
@@ -1029,6 +1044,9 @@ class DiffusionBackend:
         # token here too (direct callers bypass begin_load): a blank string must
         # load anonymously, not 401 as an explicit empty credential.
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
+        # base_repo is gated at the route before eviction (validate_load_request there); this
+        # direct-load re-validation only cheap-fails the resolved repo/family, so it does not
+        # re-gate an already-validated base_repo.
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,

@@ -816,6 +816,21 @@ def test_free_gpu_for_diffusion_training_unloads_video(monkeypatch):
     assert gpu_arbiter.VIDEO in released
 
 
+def test_keepwarm_tracks_image_video_generation_paths():
+    # The API-key training-start guard uses other_inference_request_count(), which only sees
+    # paths the keepwarm middleware tracks. Image/video generation must be tracked so a training
+    # start is refused (409) while one is in-flight rather than its unload cancelling it; the GET
+    # *-progress and */cancel variants must stay untracked.
+    from core.inference.llama_keepwarm import _is_inference_path
+
+    assert _is_inference_path("/api/inference/images/generate")
+    assert _is_inference_path("/v1/images/generations")
+    assert _is_inference_path("/api/inference/video/generate")
+    assert not _is_inference_path("/api/inference/images/generate-progress")
+    assert not _is_inference_path("/api/inference/video/generate-progress")
+    assert not _is_inference_path("/api/inference/video/generate/cancel")
+
+
 def test_import_example_partial_failure_leaves_no_partial_dataset(
     client, dataset_roots, monkeypatch
 ):

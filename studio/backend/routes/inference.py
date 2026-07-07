@@ -11948,6 +11948,7 @@ async def load_diffusion_model(
             gguf_filename = request.gguf_filename,
             family_override = request.family_override,
             model_kind = kind,
+            base_repo = request.base_repo,
         )
         # Refuse while training is running: a multi-GB diffusion pipeline would
         # compete with the training subprocess for VRAM. The chat path does the

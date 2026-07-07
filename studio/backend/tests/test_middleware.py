@@ -183,6 +183,23 @@ class TestMaxBodyMiddleware:
         assert cap == upload_request_limit_bytes()  # DB-aware cap + multipart overhead
         assert cap > default_request_body_limit_bytes()  # not the plain default body cap
 
+    def test_v1_surface_is_body_protected(self, main_module):
+        # /images/generations is mounted at both /api/inference and /v1; the /v1 alias (and every
+        # other /v1 POST route) must be body-capped via the /v1 blanket prefix, or an unbounded
+        # ImageGenerationRequest.prompt buffers outside the Studio request limit. Also confirms
+        # the blanket did not drop protection for the original /v1 chat/completions route.
+        for path in (
+            "/v1/images/generations",
+            "/v1/audio/generate",
+            "/v1/embeddings",
+            "/v1/responses",
+            "/v1/messages",
+            "/v1/chat/completions",
+        ):
+            assert any(
+                path.startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES
+            ), path
+
     def test_upload_passthrough_rejects_declared_body_over_dedicated_cap(self, main_module):
         app = _make_protected_app(
             128,

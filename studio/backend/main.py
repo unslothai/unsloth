@@ -727,8 +727,11 @@ from utils.upload_limits import (  # noqa: E402
 )
 
 _BODY_PROTECTED_PREFIXES = (
-    "/v1/chat/completions",
-    "/v1/completions",
+    # Blanket-protect the whole OpenAI-compatible /v1 surface, like /api/inference below: every
+    # /v1 POST route (chat/completions, completions, images/generations, audio, embeddings,
+    # responses, messages, ...) buffers a JSON body and none is a multipart-upload passthrough,
+    # so a single prefix caps them all -- an enumerated list silently left new routes uncapped.
+    "/v1",
     "/p/",
     "/api/inference",
     "/api/data-recipe",
