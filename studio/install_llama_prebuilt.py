@@ -515,6 +515,8 @@ class InstallReleasePlan:
 
 PrebuiltFallback = _core.PrebuiltFallback
 BusyInstallConflict = _core.BusyInstallConflict
+class ValidationLaunchUnavailable(RuntimeError):
+    pass
 
 
 class ExistingInstallSatisfied(RuntimeError):
@@ -2344,7 +2346,18 @@ def resolve_source_build_plan(
     )
 
 
-def run_capture(
+def _subprocess_failure(command: list[str], exc: BaseException) -> PrebuiltFallback:
+    name = command[0] if command else "subprocess"
+    if isinstance(exc, FileNotFoundError):
+        return PrebuiltFallback(f"{name} was not found")
+    if isinstance(exc, PermissionError):
+        return PrebuiltFallback(f"{name} was not executable")
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return PrebuiltFallback(f"{name} timed out after {exc.timeout} seconds")
+    return PrebuiltFallback(f"{name} launch failed: {exc}")
+
+
+def _run_subprocess_capture(
     command: list[str],
     *,
     timeout: int = 30,
@@ -2360,19 +2373,32 @@ def run_capture(
         and os.path.basename(command[0]).lower().startswith("amd-smi")
     ):
         env = {**(os.environ if env is None else env), "__COMPAT_LAYER": "RunAsInvoker"}
-    result = subprocess.run(
-        command,
-        capture_output = True,
-        text = True,
-        timeout = timeout,
-        env = env,
-        **windows_hidden_subprocess_kwargs(),
-    )
+    try:
+        result = subprocess.run(
+            command,
+            capture_output = True,
+            text = True,
+            timeout = timeout,
+            env = env,
+            **windows_hidden_subprocess_kwargs(),
+        )
+    except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired) as exc:
+        raise _subprocess_failure(command, exc) from exc
     if check and result.returncode != 0:
         raise subprocess.CalledProcessError(
             result.returncode, command, result.stdout, result.stderr
         )
     return result
+
+
+def run_capture(
+    command: list[str],
+    *,
+    timeout: int = 30,
+    check: bool = False,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return _run_subprocess_capture(command, timeout = timeout, check = check, env = env)
 
 
 def _list_rocm_gfx_targets(out: str) -> list[str]:
@@ -3355,13 +3381,7 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
     hipconfig = shutil.which("hipconfig")
     if hipconfig:
         try:
-            result = subprocess.run(
-                [hipconfig, "--version"],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                timeout = 5,
-            )
+            result = run_capture([hipconfig, "--version"], timeout = 5)
             if result.returncode == 0:
                 raw = (result.stdout or "").strip().split("\n")[0]
                 parts = raw.split(".")
@@ -3383,13 +3403,7 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         if not _exe:
             continue
         try:
-            _result = subprocess.run(
-                [_exe, *_cmd[1:]],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                timeout = 5,
-            )
+            _result = run_capture([_exe, *_cmd[1:]], timeout = 5)
         except Exception:
             continue
         if _result.returncode != 0 or not _result.stdout.strip():
@@ -4766,7 +4780,7 @@ def _bwrap_can_sandbox(bwrap_path: str) -> bool:
         return cached
     ok = False
     try:
-        result = subprocess.run(
+        result = run_capture(
             [
                 bwrap_path,
                 "--ro-bind",
@@ -4776,8 +4790,6 @@ def _bwrap_can_sandbox(bwrap_path: str) -> bool:
                 "--die-with-parent",
                 _resolve_command_path("true") or "/bin/true",
             ],
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
             env = _linux_validation_launcher_env({}),
             timeout = 20,
         )
@@ -5351,14 +5363,14 @@ def build_validation_sandbox_plan(
         return _ValidationLaunchPlan(
             command = command,
             env = launcher_env,
-            action = _VALIDATION_LAUNCH_FALLBACK,
+            action = _VALIDATION_LAUNCH_SKIP,
             purpose = purpose,
             sandbox_kind = "linux_bwrap",
-            reason = "No Linux sandbox adapter was available for downloaded-binary validation",
+            reason = "No Linux sandbox adapter was available; skip downloaded-binary validation",
             payload_command = command,
             payload_env = env,
-            network_policy = _VALIDATION_NETWORK_POLICY_DIRECT,
-            server_probe_mode = _VALIDATION_SERVER_PROBE_MODE_HOST,
+            network_policy = None,
+            server_probe_mode = None,
         )
 
     if _host_is_macos(host):
@@ -5432,16 +5444,48 @@ def build_validation_sandbox_plan(
     )
 
 
-def _run_validation_capture(
-    plan: _ValidationLaunchPlan, *, timeout: int
-) -> subprocess.CompletedProcess[str]:
+def _unavailable_validation_launch(plan: _ValidationLaunchPlan) -> ValidationLaunchUnavailable:
+    reason = plan.reason or f"{plan.purpose} launch was skipped by sandbox policy"
+    return ValidationLaunchUnavailable(reason)
+
+
+def _run_validation_launch(
+    plan: _ValidationLaunchPlan,
+    *,
+    timeout: int | None = None,
+    stdout = None,
+    popen: bool = False,
+) -> subprocess.CompletedProcess[str] | subprocess.Popen[str]:
     if plan.is_skipped:
-        raise PrebuiltFallback(f"{plan.purpose} launch was skipped by sandbox policy")
+        raise _unavailable_validation_launch(plan)
     if plan.is_fallback:
         if plan.reason is None:
             raise PrebuiltFallback("validation launch skipped due to missing sandbox")
         raise PrebuiltFallback(plan.reason)
+    if popen:
+        try:
+            return subprocess.Popen(
+                plan.command,
+                stdout = stdout,
+                stderr = subprocess.STDOUT,
+                text = True,
+                env = plan.env,
+                **_validation_server_kwargs(),
+                **windows_hidden_subprocess_kwargs(),
+            )
+        except (FileNotFoundError, PermissionError) as exc:
+            raise _subprocess_failure(plan.command, exc) from exc
+    if timeout is None:
+        raise ValueError("timeout is required for captured validation launches")
     return run_capture(plan.command, timeout = timeout, env = plan.env)
+
+
+def _run_validation_capture(
+    plan: _ValidationLaunchPlan, *, timeout: int
+) -> subprocess.CompletedProcess[str]:
+    result = _run_validation_launch(plan, timeout = timeout)
+    assert isinstance(result, subprocess.CompletedProcess)
+    return result
 
 
 def _parse_ldd_missing_libraries(output: str) -> list[str]:
@@ -5454,6 +5498,10 @@ def _parse_ldd_missing_libraries(output: str) -> list[str]:
         if library and library not in missing:
             missing.append(library)
     return missing
+
+
+def _ldd_output_is_static_binary(output: str) -> bool:
+    return "not a dynamic executable" in output.lower()
 
 
 def _run_validation_ldd_probe(binary_path: Path, *, env: dict[str, str]) -> LinuxLibraryProbeResult:
@@ -5496,6 +5544,13 @@ def _run_validation_ldd_probe(binary_path: Path, *, env: dict[str, str]) -> Linu
         stderr = result.stderr if result.stderr else ""
         if stderr:
             reason = f"{reason} {stderr}" if reason else stderr
+        if _ldd_output_is_static_binary(reason):
+            return LinuxLibraryProbeResult(
+                status = _LINUX_LDD_PROBE_OK,
+                missing = [],
+                reason = "static executable",
+                output = result.stdout + result.stderr,
+            )
         if not reason:
             reason = "ldd probe failed"
         return LinuxLibraryProbeResult(
@@ -5518,21 +5573,8 @@ def _run_validation_popen(
     stdout,
     timeout: int | None = None,  # kept for parity with current validate_server call shape
 ) -> subprocess.Popen[str]:
-    if plan.is_skipped:
-        raise PrebuiltFallback(f"{plan.purpose} launch was skipped by sandbox policy")
-    if plan.is_fallback:
-        if plan.reason is None:
-            raise PrebuiltFallback("validation launch skipped due to missing sandbox")
-        raise PrebuiltFallback(plan.reason)
-    return subprocess.Popen(
-        plan.command,
-        stdout = stdout,
-        stderr = subprocess.STDOUT,
-        text = True,
-        env = plan.env,
-        **_validation_server_kwargs(),
-        **windows_hidden_subprocess_kwargs(),
-    )
+    process = _run_validation_launch(plan, stdout = stdout, popen = True)
+    return process  # type: ignore[return-value]
 
 
 def linux_missing_libraries(binary_path: Path, *, env: dict[str, str] | None = None) -> list[str]:
@@ -6193,6 +6235,7 @@ def validate_quantize(
     host: HostInfo,
     *,
     runtime_line: str | None = None,
+    require_launch: bool = False,
 ) -> None:
     env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line)
     plan = build_validation_sandbox_plan(
@@ -6204,7 +6247,13 @@ def validate_quantize(
         purpose = _VALIDATION_PURPOSE_QUANTIZE,
         env = env,
     )
-    result = _run_validation_capture(plan, timeout = 120)
+    try:
+        result = _run_validation_capture(plan, timeout = 120)
+    except ValidationLaunchUnavailable as exc:
+        if require_launch:
+            raise PrebuiltFallback(f"llama-quantize validation unavailable: {exc}") from exc
+        log(f"llama-quantize validation skipped: {exc}")
+        return
     if result.returncode != 0 or not quantized_path.exists() or quantized_path.stat().st_size == 0:
         combined = result.stdout + ("\n" + result.stderr if result.stderr else "")
         # Backstop for prebuilts the static minos scan could not read: a dyld
@@ -6226,6 +6275,7 @@ def validate_server(
     *,
     runtime_line: str | None = None,
     install_kind: str | None = None,
+    require_launch: bool = False,
 ) -> None:
     last_failure: PrebuiltFallback | None = None
     gpu_backend: Literal["cuda", "rocm"] | None = None
@@ -6299,10 +6349,16 @@ def validate_server(
         )
         if plan.server_probe_mode == _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX:
             started_at = time.time()
-            result = _run_validation_capture(
-                plan,
-                timeout = _LINUX_SERVER_VALIDATION_HELPER_CAPTURE_TIMEOUT_SECONDS,
-            )
+            try:
+                result = _run_validation_capture(
+                    plan,
+                    timeout = _LINUX_SERVER_VALIDATION_HELPER_CAPTURE_TIMEOUT_SECONDS,
+                )
+            except ValidationLaunchUnavailable as exc:
+                if require_launch:
+                    raise PrebuiltFallback(f"llama-server validation unavailable: {exc}") from exc
+                log(f"llama-server validation skipped: {exc}")
+                return
             output = (result.stdout or "") + (result.stderr or "")
             if result.returncode == 0:
                 return
@@ -6327,10 +6383,18 @@ def validate_server(
         process: subprocess.Popen[str] | None = None
         try:
             with log_path.open("w", encoding = "utf-8", errors = "replace") as log_handle:
-                process = _run_validation_popen(
-                    plan,
-                    stdout = log_handle,
-                )
+                try:
+                    process = _run_validation_popen(
+                        plan,
+                        stdout = log_handle,
+                    )
+                except ValidationLaunchUnavailable as exc:
+                    if require_launch:
+                        raise PrebuiltFallback(
+                            f"llama-server validation unavailable: {exc}"
+                        ) from exc
+                    log(f"llama-server validation skipped: {exc}")
+                    return
                 # For the caller that spawned this script: a validation server is
                 # its grandchild, so a crash here leaves it holding the GPU and
                 # the staged files with nothing recording where it is.
@@ -7597,7 +7661,8 @@ def validate_prebuilt_choice(
     # staged_validation_enabled() (constant or UNSLOTH_LLAMA_STAGED_VALIDATION),
     # disabled for now. The check and the source-build fallback it triggers are
     # kept intact; flip the flag / env to restore it (#5854).
-    if choice.expected_sha256 is None or staged_validation_enabled():
+    smoke_validation_required = choice.expected_sha256 is None
+    if smoke_validation_required or staged_validation_enabled():
         # Only branch that reads the probe, so this is where a lazy one is fetched.
         probe_path = resolve_validation_model(probe)
         validate_quantize(
@@ -7607,6 +7672,7 @@ def validate_prebuilt_choice(
             install_dir,
             host,
             runtime_line = choice.runtime_line,
+            require_launch = smoke_validation_required,
         )
         validate_server(
             server_path,
@@ -7615,8 +7681,9 @@ def validate_prebuilt_choice(
             install_dir,
             runtime_line = choice.runtime_line,
             install_kind = choice.install_kind,
+            require_launch = smoke_validation_required,
         )
-        log(f"staged prebuilt validation succeeded for {choice.name}")
+        log(f"staged prebuilt validation completed for {choice.name}")
     return server_path, quantize_path
 
 
