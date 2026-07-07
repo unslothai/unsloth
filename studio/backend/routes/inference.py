@@ -1150,7 +1150,13 @@ from core.inference.key_exchange import decrypt_api_key
 from core.inference.model_ids import public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
-from core.inference.tool_call_parser import _strip_function_xml_calls, _strip_mistral_closed_calls
+from core.inference.tool_call_parser import (
+    _strip_function_xml_calls,
+    _strip_gemma_wrapperless_calls,
+    _strip_glm_calls,
+    _strip_mistral_closed_calls,
+)
+from core.inference.tool_call_parser import TOOL_XML_SIGNALS as _PARSER_TOOL_SIGNALS
 from core.inference.passthrough_healing import (
     StreamToolCallHealer,
     heal_gate,
@@ -1309,8 +1315,8 @@ async def artifact_preview_frame(allow_network: bool = False):
     )
 
 
-# Whitespace/escape-tolerant bare-JSON tool-template detector: matches pretty-printed and
-# JSON-escaped ``{"name":`` plus the ``"function"`` alias.
+# Whitespace/escape-tolerant bare-JSON tool-template detector (matches pretty-printed and
+# JSON-escaped ``{"name":`` plus the ``"function"`` alias), mirroring the parser's tolerance.
 _BARE_JSON_NAME_MARKER_RE = _re.compile(r'\{\s*\\?"(?:name|function)\\?"\s*:')
 
 
@@ -1324,15 +1330,16 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         model_identifier = model_id,
         log_source = "safetensors",
     )
-    # Markers the parser recognises; drop the pill if a template advertises tools but uses none.
-    # The bare-JSON ``{"name":`` form is matched whitespace-tolerantly below.
+    # Markers any supported parser recognises (template advertises tools but
+    # uses none -> drop the pill). Reuse the parser's own signal list so this
+    # gate never drifts (a hand-maintained copy lost the DeepSeek variants);
+    # ``<arg_key>`` is GLM's unique signal, absent from the shared set. The
+    # bare-JSON ``{"name":`` form is matched below with the whitespace/escape-
+    # tolerant ``_BARE_JSON_NAME_MARKER_RE`` so pretty-printed or escaped
+    # templates are not mis-classified as tool-less.
     _PARSER_MARKERS = (
-        "<tool_call>",
-        "<function=",
-        "<function name=",
-        "<|python_tag|>",
-        "[TOOL_CALLS]",
-        "<|tool_call>",
+        *_PARSER_TOOL_SIGNALS,
+        "<arg_key>",
     )
     if (
         flags.get("supports_tools")
@@ -1710,23 +1717,31 @@ def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     return nudge + " " + _RAG_GROUNDING_NUDGE
 
 
-# Strip tool-call markup the speculative buffer in core/inference/llama_cpp.py
-# split across the visible/DRAIN boundary. Leak shapes:
+# Strip leaked tool-call markup: every shared-parser format plus the leak shapes
+# llama_cpp.py's speculative buffer splits across the visible/DRAIN boundary:
 #   1. well-formed `<tool_call>...</tool_call>` / `<function=...>...</function>`
 #   2. orphan opening to EOF (close was DRAINED)
 #   3. bare orphan close (open was DRAINED)
 #   4. tail-only `</parameter>` (outer close truncated by EOS); anchored to
 #      `\Z` so mid-text `<parameter>` in user code samples survives.
-#   5. Mistral `[TOOL_CALLS]name{json}` / rehearsal `name[ARGS]{json}`: strips the
-#      balanced JSON (one level), or a truncated tail to `\Z` like the orphan XML.
+#   5. Mistral `[TOOL_CALLS]name{json}` / rehearsal `name[ARGS]{json}`: the balanced
+#      scan removes the whole call (a non-greedy regex would truncate nested JSON).
+# DeepSeek/GLM/Kimi envelopes are covered by the parser's own arms/scans, so a signal
+# we parse is never left un-stripped; the DeepSeek opener alternation is the parser's own.
+from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
+
 _TOOL_XML_RE = _re.compile(
-    # Hyphen in the name char-class matches MCP tool names with dashes
-    # (mcp__srv__list-issues) that would otherwise leak past this strip.
-    # The ``<|python_tag|>`` arm runs to the next REAL Llama sentinel or EOF, so a literal
-    # ``<|...|>`` token in an argument (e.g. ``<|cite|>``) doesn't truncate the strip.
-    # ``<function=name>`` plus the ``<function name="name">`` attribute form; name class mirrors the parser.
-    # A CLOSED ``<function=...>...</function>`` extends to the last ``</function>`` before the next
-    # opener (so a literal ``</function>`` in a value can't truncate); this arm runs first.
+    # Arm order/notes: the closed ``<function=...>`` arm runs first and extends
+    # to the call's REAL close so a literal ``</function>`` in a value does not
+    # leak the tail; the combined arm still catches ``<tool_call>`` and orphan
+    # tails. The python_tag arm bounds only on REAL Llama control sentinels
+    # (stopping at any ``<|`` truncated on literal ``<|x|>`` tokens in values).
+    # The last arms cover DeepSeek envelopes (all opener variants), Kimi section
+    # blocks, and bare Kimi calls. Name class ``[\w.\-]`` mirrors the parser.
+    # Those three arms carry a call-shaped lookahead (matching the parser's
+    # ``_TOOL_ALL_PATS``): a prose answer that merely mentions a marker
+    # (``See <|tool_call_begin|> in the docs``) is only stripped when a real
+    # call actually follows the marker, or the marker is a bare fragment at EOF.
     r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>(?:(?!<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>).)*</function>'
     r'|<(?:tool_call|function(?:=[\w.\-]+|\s+name="[\w.\-]+"))>.*?(?:</(?:tool_call|function)>|\Z)'
     r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
@@ -1742,7 +1757,15 @@ _TOOL_XML_RE = _re.compile(
     # Rehearsal: balanced/truncated body or bare marker at EOS only (prose ``foo[ARGS]``
     # survives); NAME captured as ``reh`` for the inactive-name display gate.
     r"|(?<!\[CALL_ID\])\b(?P<reh>[\w-]+)\[ARGS\]\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\{.*\Z|\Z)"
-    # ``</param>`` is the attribute-form alias of ``</parameter>``; strip a tail-only orphan.
+    # DeepSeek envelopes (all opener variants), Kimi section blocks, and bare Kimi calls;
+    # each arm carries a call-shaped lookahead so prose merely mentioning a marker survives.
+    r"|"
+    + _DS_OPEN_SRC
+    + r"(?=\s*(?:<｜tool▁call▁begin｜>|function)|\s*$).*?(?:<｜tool▁calls▁end｜>|\Z)"
+    r"|<\|tool_calls_section_begin\|>(?=\s*<\|tool_call_begin\|>|\s*$).*?(?:<\|tool_calls_section_end\|>|\Z)"
+    r"|<\|tool_call_begin\|>(?=\s*[A-Za-z_][\w.\-]*:\d|\s*$).*?(?:<\|tool_call_end\|>|\Z)"
+    # ``</param>`` is the attribute-form alias of ``</parameter>`` (the parser accepts
+    # both); strip a tail-only orphan close of either spelling.
     r"|</(?:parameter|param)>\s*\Z",
     _re.DOTALL,
 )
@@ -1757,6 +1780,20 @@ _TOOL_XML_CLOSED_RE = _re.compile(
     r"|\[/TOOL_CALLS\]",
     _re.DOTALL,
 )
+
+
+def _gemma_strip_gate(tools) -> set:
+    """Enabled tool NAMES gating the wrapper-less Gemma strip (mirrors the
+    parser/loop gate: only an enabled ``call:foo{...}`` is a call). With NO tools
+    enabled this returns an EMPTY set, not ``None``: every ``call:NAME{...}`` is
+    then prose, and ``None`` would strip-all and delete a legitimate answer."""
+    names = {
+        (t.get("function") or {}).get("name")
+        for t in (tools or [])
+        if isinstance(t, dict) and isinstance(t.get("function"), dict)
+    }
+    names.discard(None)
+    return names
 
 
 def _display_tool_name_gate(active_tools):
@@ -1777,18 +1814,21 @@ def _strip_tool_xml_for_display(
     text: str,
     *,
     auto_heal_tool_calls: bool,
-    enabled_tool_names = None,
+    enabled_tool_names: Optional[set] = None,
 ) -> str:
     """Apply route-level XML leak cleanup only when Auto-Heal is enabled.
 
-    ``enabled_tool_names`` (when not None) gates the ambiguous bare-rehearsal
-    ``NAME[ARGS]{...}`` strip on the active tool list, mirroring the loop-level gate:
-    an inactive NAME is prose, not a call, so it is preserved. The ``[TOOL_CALLS]``
-    control-token arms strip unconditionally regardless of NAME."""
+    Mirrors the parser-side segment scan: balanced strips first (Mistral, gated Gemma
+    wrapper-less, GLM real-close, guarded function-XML close at each call's REAL terminator
+    so literal markup inside a value is data), then the ``_TOOL_XML_RE`` arms cover the
+    DeepSeek / Kimi / orphan forms. ``<think>`` blocks are preserved verbatim and the
+    ``\\Z``-anchored tail arms run only on the last segment (prose ``foo[ARGS]`` before a
+    block survives). ``enabled_tool_names`` (when not None) gates the ambiguous bare-rehearsal
+    ``NAME[ARGS]{...}`` and wrapper-less Gemma ``call:NAME{...}`` strips on the active tool
+    list; an inactive NAME is prose and is kept. The ``[TOOL_CALLS]`` control-token arms strip
+    unconditionally regardless of NAME."""
     if not auto_heal_tool_calls:
         return text
-    # Balanced-brace strip first, then the regex arms; think blocks preserved and tail arms
-    # run only on the last segment (prose ``foo[ARGS]`` before a block survives).
     from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
 
     def _keep_inactive_rehearsal(m) -> str:
@@ -1801,11 +1841,14 @@ def _strip_tool_xml_for_display(
         return ""
 
     def _strip_segment(seg: str, is_last: bool) -> str:
+        # Scan strips close at each call's REAL terminator (a literal ``</function>`` or a
+        # nested marker quoted inside a value cannot truncate the strip); the regex arms below
+        # cover the attribute form and the DeepSeek / Kimi / orphan families.
+        seg = _strip_mistral_closed_calls(seg)
         seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
-        # Parser-accurate function-XML scan: each ``<function=...>`` closes at its first
-        # NON-data ``</function>``, so a literal ``</function>`` (or nested ``<function=...>``)
-        # quoted inside a ``<parameter>`` value cannot truncate the strip. The regex arms below
-        # then cover the attribute form and the other markup families.
+        if is_last:
+            seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
+        seg = _strip_glm_calls(seg, final = is_last)
         seg = _strip_function_xml_calls(seg, final = is_last)
         if is_last:
             return _TOOL_XML_RE.sub(_keep_inactive_rehearsal, seg)
@@ -1814,11 +1857,15 @@ def _strip_tool_xml_for_display(
     return strip_outside_think(text, _strip_segment)
 
 
-def _strip_tool_xml(text: str) -> str:
-    # Mistral balanced-brace + guarded function-XML pre-strip, then the regex sweep. The one
-    # raw regex sub lives in _strip_tool_xml_for_display, so every route cleanup site shares it.
-    text = _strip_function_xml_calls(_strip_mistral_closed_calls(text), final = True)
-    return _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+def _strip_tool_xml(text: str, enabled_tool_names: Optional[set] = None) -> str:
+    # Mistral balanced-brace pre-strip (kept explicit so the regression guards see it), then
+    # the shared think-aware display strip -- the one raw _TOOL_XML_RE.sub lives inside
+    # _strip_tool_xml_for_display, so every route cleanup site shares it. ``enabled_tool_names``
+    # gates the Gemma wrapper-less strip; ``None`` strips every closed call.
+    text = _strip_mistral_closed_calls(text)
+    return _strip_tool_xml_for_display(
+        text, auto_heal_tool_calls = True, enabled_tool_names = enabled_tool_names
+    )
 
 
 logger = get_logger(__name__)

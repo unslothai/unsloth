@@ -2055,7 +2055,8 @@ class TestReasoningPrefilledExtractor:
         assert visible == "\n\nanswer"
 
     def test_prefilled_stray_open_tag_is_suppressed(self):
-        # T7: a re-emitted literal <think> inside prefilled reasoning is dropped, not leaked.
+        # T7: a re-emitted literal <think> inside prefilled reasoning is dropped,
+        # not leaked into the drawer (covers enable_thinking_effort full-tag output).
         reasoning, visible = _extract_responses_reasoning(
             "a<think>b</think>c",
             parse_think_markers = True,
