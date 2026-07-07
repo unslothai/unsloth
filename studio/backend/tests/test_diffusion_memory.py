@@ -448,6 +448,68 @@ def test_apply_group_falls_back_to_model_without_transformer():
     assert effective == OFFLOAD_MODEL and "model_offload" in pipe.calls
 
 
+def _install_fake_torch_and_hooks(monkeypatch, apply_group_offloading):
+    """Fake torch.nn.Module + diffusers.hooks.apply_group_offloading for _apply_group_offload."""
+    import sys
+
+    class _Mod:  # stands in for a torch.nn.Module instance (a streamed transformer)
+        pass
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.nn = types.SimpleNamespace(Module = _Mod)
+    fake_torch.device = lambda d: types.SimpleNamespace(type = str(d).split(":")[0])
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    if "diffusers" not in sys.modules:
+        monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
+    fake_hooks = types.ModuleType("diffusers.hooks")
+    fake_hooks.apply_group_offloading = apply_group_offloading
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", fake_hooks)
+    return _Mod
+
+
+def test_apply_group_partial_hooks_propagates_not_crash_fallback(monkeypatch):
+    # A dual-DiT pipe whose second transformer fails group offload AFTER the first installed
+    # hooks is left in a partial group-offload state that enable_model_cpu_offload rejects. The
+    # applier must PROPAGATE the failure (load fails with the real cause) instead of returning
+    # False and letting the caller's whole-module fallback crash on the partially-hooked pipe.
+    import core.inference.diffusion_memory as mem
+
+    calls = {"n": 0}
+
+    def _apply(module, **kw):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise RuntimeError("OOM on second DiT")
+
+    Mod = _install_fake_torch_and_hooks(monkeypatch, _apply)
+
+    class _DualPipe:
+        transformer = Mod()
+        transformer_2 = Mod()
+        components: dict = {}
+
+    with pytest.raises(RuntimeError, match = "OOM on second DiT"):
+        mem._apply_group_offload(_DualPipe(), "cuda", logger = None)
+    assert calls["n"] == 2  # first installed hooks, second failed -> propagated
+
+
+def test_apply_group_single_transformer_failure_falls_back(monkeypatch):
+    # A single-DiT pipe whose group offload fails with NO hooks installed must still return
+    # False so the caller falls back cleanly to whole-module offload.
+    import core.inference.diffusion_memory as mem
+
+    def _apply(module, **kw):
+        raise RuntimeError("OOM before any hook")
+
+    Mod = _install_fake_torch_and_hooks(monkeypatch, _apply)
+
+    class _SinglePipe:
+        transformer = Mod()
+        components: dict = {}
+
+    assert mem._apply_group_offload(_SinglePipe(), "cuda", logger = None) is False
+
+
 def test_apply_group_fallback_enables_vae_tiling():
     # A balanced/group plan keeps the VAE resident (tiling off); when group offload can't
     # engage and we drop to whole-module offload, the applier must turn VAE tiling ON to

@@ -2851,8 +2851,20 @@ def _resolve_base_repo(
 ) -> str:
     """The companion diffusers repo: caller's base, else the GGUF repo's own
     ``base_model`` tag, else the family fallback. Shared by both load paths so a
-    direct ``load_pipeline`` call resolves the variant base the same way."""
-    return resolve_base_repo(fam, (base_repo or "").strip() or _hf_base_model(repo_id, hf_token))
+    direct ``load_pipeline`` call resolves the variant base the same way.
+
+    The base loads via ``from_pretrained``, so it must be trusted -- an explicit
+    base_repo is already gated at ``validate_load_request``, but the ``base_model``
+    card tag is attacker-controlled metadata on any remote GGUF repo, so a tag that
+    is not unsloth/allowlisted/local is dropped in favour of the curated family
+    default (never fed to ``from_pretrained``), closing the pickle-deserialisation
+    vector the ControlNet path already guards with evaluate_file_security."""
+    base = (base_repo or "").strip()
+    if not base:
+        tag = _hf_base_model(repo_id, hf_token)
+        if tag and _is_trusted_diffusion_repo(tag):
+            base = tag
+    return resolve_base_repo(fam, base)
 
 
 def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:

@@ -245,6 +245,28 @@ def test_load_rejects_untrusted_base_repo(client):
     assert client.get("/api/inference/images/status").json()["loaded"] is False
 
 
+def test_unload_keeps_ownership_when_a_model_is_still_resident(client, monkeypatch):
+    # The unload route must drop DIFFUSION ownership only when nothing is resident. If a
+    # concurrent load re-established residency while the (slow) unload ran, releasing would
+    # clear the newer load's claim and a later chat load would skip eviction and OOM.
+    backend = diffusion_module.get_diffusion_backend()
+    gpu_arbiter._owner = gpu_arbiter.DIFFUSION
+
+    # Simulate a concurrent load having re-loaded: unload leaves the engine resident.
+    backend.loaded = True
+    monkeypatch.setattr(backend, "unload", lambda: {**_unloaded_status(), "loaded": True})
+    r = client.post("/api/inference/images/unload")
+    assert r.status_code == 200
+    assert gpu_arbiter.current_owner() == gpu_arbiter.DIFFUSION  # ownership retained
+
+    # The normal case (nothing resident after unload) still releases ownership.
+    monkeypatch.setattr(backend, "unload", lambda: {**_unloaded_status(), "loaded": False})
+    backend.loaded = False
+    r = client.post("/api/inference/images/unload")
+    assert r.status_code == 200
+    assert gpu_arbiter.current_owner() is None
+
+
 def test_generate_batch_size_persists_each_image(client):
     client.post(
         "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}

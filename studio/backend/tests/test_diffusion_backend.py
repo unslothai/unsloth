@@ -20,6 +20,7 @@ from core.inference.diffusion import (
     DiffusionBackend,
     _LoadState,
     _base_file_downloaded,
+    _resolve_base_repo,
     _resolve_diffusion_compute_dtype,
 )
 
@@ -1231,6 +1232,35 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
         base_repo = str(tmp_path),
     )
     assert fam is not None
+
+
+def test_resolve_base_repo_drops_untrusted_card_tag(monkeypatch):
+    # When no base_repo is passed, the base is resolved from the GGUF repo's base_model card
+    # tag -- attacker-controlled metadata on any remote repo -- and then loaded via
+    # from_pretrained. An untrusted tag must be dropped in favour of the curated family default,
+    # so an attacker GGUF repo cannot point the base at an arbitrary repo to be deserialized.
+    import core.inference.diffusion as dmod
+
+    fam = detect_family("unsloth/FLUX.1-dev-GGUF")
+    # A malicious card tag is ignored -> the family default base is used instead.
+    monkeypatch.setattr(dmod, "_hf_base_model", lambda repo_id, hf_token: "attacker/evil-pipeline")
+    assert (
+        _resolve_base_repo("attacker/flux.1-evil-GGUF", None, fam, None) == fam.base_repo
+    )
+    # A trusted (allowlisted) card tag is still honoured, so variant resolution is not regressed.
+    monkeypatch.setattr(
+        dmod, "_hf_base_model", lambda repo_id, hf_token: "black-forest-labs/FLUX.1-dev"
+    )
+    assert (
+        _resolve_base_repo("unsloth/FLUX.1-dev-GGUF", None, fam, None)
+        == "black-forest-labs/FLUX.1-dev"
+    )
+    # An explicit trusted base_repo wins over the card tag; an explicit untrusted one is caught
+    # earlier at validate_load_request (covered by test_validate_gates_untrusted_base_repo).
+    assert (
+        _resolve_base_repo("unsloth/FLUX.1-dev-GGUF", "unsloth/custom-base", fam, None)
+        == "unsloth/custom-base"
+    )
 
 
 def test_detect_family_rejects_layered():

@@ -516,6 +516,7 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return False
+    installed = 0  # streamed modules that already carry group-offload hooks
     try:
         import inspect
 
@@ -567,8 +568,24 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
                 comp.to(onload)
         for module in streamed.values():
             apply_group_offloading(module, **gkwargs)
+            installed += 1
         return True
     except Exception as exc:  # noqa: BLE001 — fall back to whole-module offload
+        if installed:
+            # A dual-DiT pipeline where an earlier streamed module already got its group-offload
+            # hooks but a later one failed leaves the pipe in a PARTIAL group-offload state, which
+            # diffusers' enable_model_cpu_offload rejects -- so the whole-module fallback the
+            # caller would run next crashes instead of loading. Propagate the real failure here so
+            # the load fails with its actual cause (e.g. the OOM) rather than a misleading hook
+            # error; the "no hooks installed" cases below still fall back cleanly.
+            if logger is not None:
+                logger.warning(
+                    "diffusion.memory: group offload failed after installing hooks on %d "
+                    "module(s) (%s); cannot fall back to whole-module offload",
+                    installed,
+                    exc,
+                )
+            raise
         if logger is not None:
             logger.warning(
                 "diffusion.memory: group offload failed (%s); falling back to "

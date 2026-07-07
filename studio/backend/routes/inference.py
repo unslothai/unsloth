@@ -12205,7 +12205,13 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
     from core.inference.gpu_arbiter import release, DIFFUSION
 
     status_dict = await asyncio.to_thread(get_active_diffusion_engine().unload)
-    release(DIFFUSION)
+    # Drop DIFFUSION ownership only if nothing is resident again: a concurrent /images/load
+    # that re-acquired DIFFUSION while this (slow) unload ran must keep ownership, or a later
+    # chat load would see no owner, skip eviction, and OOM against the newly resident pipeline.
+    # release() is owner-guarded and identity-less, so an unconditional release here would clear
+    # the newer load's claim.
+    if not get_active_diffusion_engine().is_loaded:
+        release(DIFFUSION)
     return DiffusionStatusResponse(**annotate_status(status_dict))
 
 
