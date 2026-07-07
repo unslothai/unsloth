@@ -589,6 +589,32 @@ def _find_fp8_scale_inv_tensors(
     ]
 
 
+# Projection tensors kept by weightless FP8 experts (FP8Experts /
+# FbgemmFp8Llama4TextExperts) in place of a top-level `weight`.
+_FP8_PROJECTION_ATTRS = ("gate_up_proj", "gate_proj", "up_proj", "down_proj")
+
+
+def _fp8_projection_device(module, attr_name):
+    """Device of the projection tensor a dropped-placeholder scale belongs to, else None.
+
+    Weightless FP8 experts store projections like `gate_up_proj`/`down_proj` instead of a
+    top-level `weight`, so a restored scale must land on the projection's device. The scanner
+    opens safetensors on CPU, so falling back to the checkpoint tensor's device would register
+    a CPU buffer next to CUDA projections and the expert forward would hit a device mismatch.
+    """
+    for suffix in ("_scale_inv", "_scale"):
+        if attr_name.endswith(suffix):
+            projection = getattr(module, attr_name[: -len(suffix)], None)
+            if isinstance(projection, torch.Tensor):
+                return projection.device
+            break
+    for proj_name in _FP8_PROJECTION_ATTRS:
+        projection = getattr(module, proj_name, None)
+        if isinstance(projection, torch.Tensor):
+            return projection.device
+    return None
+
+
 def _restore_missing_fp8_weight_scale_inv(
     model: torch.nn.Module,
     model_name: str,
@@ -648,13 +674,15 @@ def _restore_missing_fp8_weight_scale_inv(
         ):
             skipped += 1
             continue
-        target_device = (
-            reference.device
-            if isinstance(reference, torch.Tensor)
-            else weight.device
-            if isinstance(weight, torch.Tensor)
-            else scale_tensor.device
-        )
+        if isinstance(reference, torch.Tensor):
+            target_device = reference.device
+        elif isinstance(weight, torch.Tensor):
+            target_device = weight.device
+        else:
+            projection_device = _fp8_projection_device(module, attr_name)
+            target_device = (
+                projection_device if projection_device is not None else scale_tensor.device
+            )
         if target_device.type == "meta":
             skipped += 1
             continue

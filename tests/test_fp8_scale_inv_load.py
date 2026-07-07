@@ -642,6 +642,43 @@ def test_restores_missing_weightless_fp8_expert_scale_tensors():
     )
 
 
+class _ProjectionFp8Expert(torch.nn.Module):
+    """Weightless FP8 expert that keeps projections (like FbgemmFp8Llama4TextExperts) instead
+    of a top-level weight, with its scale placeholder dropped."""
+
+    def __init__(self, device):
+        super().__init__()
+        self.gate_up_proj = torch.zeros(4, 8, dtype = torch.float8_e4m3fn, device = device)
+        self.down_proj = torch.zeros(4, 8, dtype = torch.float8_e4m3fn, device = device)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason = "needs a non-CPU device to prove scale lands on the projection device",
+)
+def test_restores_projection_expert_scale_on_projection_device():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.expert = _ProjectionFp8Expert(device = "cuda:0")
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"expert.gate_up_proj_scale_inv": torch.full((4,), 2.0, dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    # Scanner opens on CPU; the restored buffer must follow the CUDA projection, not the
+    # checkpoint tensor, or the expert forward hits a device mismatch. #6749
+    assert model.expert.gate_up_proj_scale_inv.device.type == "cuda"
+
+
 def test_restores_fp8_scale_alias_tensors():
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
