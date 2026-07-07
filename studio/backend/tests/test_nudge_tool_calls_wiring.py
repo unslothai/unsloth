@@ -23,10 +23,19 @@ Mechanism (verified here without loading a model):
 
 import inspect
 
-from core.inference.inference import InferenceBackend
 from core.inference.llama_cpp import LlamaCppBackend
 from core.inference.orchestrator import InferenceOrchestrator
 from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+try:
+    # core.inference.inference imports unsloth at module scope, which requires
+    # unsloth_zoo. The dependency-light backend CI matrix job does not install
+    # it, so the safetensors InferenceBackend is folded into the checks below
+    # only when the unsloth stack is importable (local runs / full CI); the
+    # other entry points are always checked.
+    from core.inference.inference import InferenceBackend
+except ImportError:
+    InferenceBackend = None
 
 
 def _params(fn):
@@ -37,12 +46,14 @@ def test_shared_loop_accepts_nudge_flag():
     assert "nudge_tool_calls" in _params(run_safetensors_tool_loop)
 
 
-def test_all_three_backends_accept_the_flag():
-    for method in (
-        InferenceBackend.generate_chat_completion_with_tools,
+def test_backends_accept_the_flag():
+    methods = [
         InferenceOrchestrator.generate_chat_completion_with_tools,
         LlamaCppBackend.generate_chat_completion_with_tools,
-    ):
+    ]
+    if InferenceBackend is not None:  # safetensors path; needs the unsloth stack
+        methods.append(InferenceBackend.generate_chat_completion_with_tools)
+    for method in methods:
         assert "nudge_tool_calls" in _params(method), method.__qualname__
 
 
@@ -50,10 +61,10 @@ def test_delegating_backends_forward_the_flag_to_the_shared_loop():
     # safetensors (in-process transformers) and MLX (parent-process orchestrator)
     # both delegate to run_safetensors_tool_loop; GGUF runs its own in-file loop
     # and consumes the flag directly (asserted separately by the gate test).
-    for method in (
-        InferenceBackend.generate_chat_completion_with_tools,
-        InferenceOrchestrator.generate_chat_completion_with_tools,
-    ):
+    methods = [InferenceOrchestrator.generate_chat_completion_with_tools]
+    if InferenceBackend is not None:  # safetensors path; needs the unsloth stack
+        methods.append(InferenceBackend.generate_chat_completion_with_tools)
+    for method in methods:
         src = inspect.getsource(method)
         assert "nudge_tool_calls = nudge_tool_calls" in src, method.__qualname__
 
