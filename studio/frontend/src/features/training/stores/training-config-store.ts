@@ -124,7 +124,6 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isCheckingDataset",
   "isDatasetImage",
   "isDatasetAudio",
-  "trainOnCompletions",
   "maxPositionEmbeddings",
   "s3Config",
 ]);
@@ -200,6 +199,7 @@ function streamingCompatiblePatch(
 
   if (willStream && state.trainOnCompletions) {
     patch.trainOnCompletions = false;
+    patch.trainOnCompletionsManuallySet = false;
   }
 
   if (willStream && !hasSeparateStreamingEvalSplit(state)) {
@@ -440,7 +440,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             // are tuned for standard LoRA and would clobber CPT settings.
             const cptOverrides =
               get().trainingMethod === "cpt"
-                ? getCptModelDefaultsPatch()
+                ? learningRateManuallySet
+                  ? getCptTrainingPatch()
+                  : getCptModelDefaultsPatch()
                 : {};
 
             set({
@@ -820,6 +822,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           set({
             datasetStreaming: true,
             trainOnCompletions: false,
+            trainOnCompletionsManuallySet: false,
             evalSteps: dropsEval ? 0 : state.evalSteps,
           });
 
@@ -979,7 +982,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 13,
+      version: 14,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -1045,6 +1048,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         if (version < 13) {
           s.trainOnCompletionsManuallySet = false;
           s.learningRateManuallySet = false;
+        }
+        if (version < 14 && typeof s.trainOnCompletions !== "boolean") {
+          s.trainOnCompletionsManuallySet = false;
         }
         return s as unknown as TrainingConfigStore;
       },
