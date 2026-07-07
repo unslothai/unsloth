@@ -53,6 +53,11 @@ _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
 _next_is_python=false
+_next_is_llama_cpp_dir=false
+# Seed from the environment so a caller who exports UNSLOTH_LOCAL_LLAMA_CPP_DIR
+# (the documented piped-install style) is honored; the --with-llama-cpp-dir
+# flag below overrides it when given.
+_WITH_LLAMA_CPP_DIR="${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}"
 for arg in "$@"; do
     if [ "$_next_is_package" = true ]; then
         PACKAGE_NAME="$arg"
@@ -64,6 +69,11 @@ for arg in "$@"; do
         _next_is_python=false
         continue
     fi
+    if [ "$_next_is_llama_cpp_dir" = true ]; then
+        _WITH_LLAMA_CPP_DIR="$arg"
+        _next_is_llama_cpp_dir=false
+        continue
+    fi
     case "$arg" in
         --local) STUDIO_LOCAL_INSTALL=true ;;
         --package) _next_is_package=true ;;
@@ -72,6 +82,7 @@ for arg in "$@"; do
         --no-torch) _NO_TORCH_FLAG=true ;;
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
+        --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
     esac
 done
 
@@ -253,6 +264,10 @@ if [ "$_next_is_package" = true ]; then
 fi
 if [ "$_next_is_python" = true ]; then
     echo "❌ ERROR: --python requires a version argument (e.g. --python 3.12)." >&2
+    exit 1
+fi
+if [ "$_next_is_llama_cpp_dir" = true ]; then
+    echo "❌ ERROR: --with-llama-cpp-dir requires a path argument." >&2
     exit 1
 fi
 
@@ -447,8 +462,12 @@ _on_install_exit() {
     if [ "$_status" -ne 0 ]; then
         _restore_studio_venv_replacement
     fi
+    [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
     exit "$_status"
 }
+# Empty so an inherited value can never reach the trap's rm; only a temp dir
+# this script creates below (Apple Silicon, spaced path) is ever removed.
+_UV_OVERRIDE_TMPDIR=""
 trap _on_install_exit EXIT
 
 # ── Helper: download a URL to a file (supports curl and wget) ──
@@ -1423,10 +1442,35 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
 fi
 
+# Apple Silicon: exclude broken mlx-lm 0.31.3 (QK-norm load regression for
+# gemma4 / qwen3_5; mlx-lm #1242). A curl-piped install has no overrides file
+# and skips the guarded MLX step (SKIP_STUDIO_BASE=1), so this is the only cover.
+_MLX_LM_EXCLUDE_ARG=""
+
 # Apple Silicon: override mlx-vlm / mlx-lm's transformers pin (see overrides file).
 if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    _MLX_LM_EXCLUDE_ARG="mlx-lm!=0.31.3"
     _OVERRIDES_FILE="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)/studio/backend/requirements/single-env/overrides-darwin-arm64.txt"
     if [ -f "$_OVERRIDES_FILE" ]; then
+        # uv splits UV_OVERRIDE on whitespace, so a repo path with whitespace
+        # truncates it and aborts every later uv call (issue #6503). Hand uv a copy.
+        case "$_OVERRIDES_FILE" in
+            *[[:space:]]*)
+                _UV_OVERRIDE_TMPDIR=$(mktemp -d 2>/dev/null) || _UV_OVERRIDE_TMPDIR=""
+                case "$_UV_OVERRIDE_TMPDIR" in
+                    "") ;;
+                    *[[:space:]]*) rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true; _UV_OVERRIDE_TMPDIR="" ;;
+                    *)
+                        if cp "$_OVERRIDES_FILE" "$_UV_OVERRIDE_TMPDIR/overrides-darwin-arm64.txt" 2>/dev/null; then
+                            _OVERRIDES_FILE="$_UV_OVERRIDE_TMPDIR/overrides-darwin-arm64.txt"
+                        else
+                            rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
+                            _UV_OVERRIDE_TMPDIR=""
+                        fi
+                        ;;
+                esac
+                ;;
+        esac
         export UV_OVERRIDE="$_OVERRIDES_FILE"
     fi
 fi
@@ -1439,6 +1483,81 @@ elif [ "$OS" = "macos" ]; then
 fi
 tauri_diag_marker "$_TAURI_INITIAL_GPU_BRANCH" "none"
 
+# AMD GPU name from the Windows host via WMI, or empty. Discrete cards aren't in
+# /proc/cpuinfo, so ask Windows. Cached ("-" = negative), self-contained, bounded
+# to 10s. Defined here so the reroute below can use it before _run_bounded exists.
+_WSL_AMD_GPU_NAME_CACHE=""
+_wsl_amd_gpu_name() {
+    if [ -n "$_WSL_AMD_GPU_NAME_CACHE" ]; then
+        [ "$_WSL_AMD_GPU_NAME_CACHE" = "-" ] && return 1
+        printf '%s' "$_WSL_AMD_GPU_NAME_CACHE"; return 0
+    fi
+    command -v powershell.exe >/dev/null 2>&1 || { _WSL_AMD_GPU_NAME_CACHE="-"; return 1; }
+    _wag_ps="(Get-CimInstance Win32_VideoController | Where-Object { \$_.Name -match 'AMD|Radeon' } | Select-Object -First 1).Name"
+    if command -v timeout >/dev/null 2>&1; then
+        _wag_n="$(timeout 10 powershell.exe -NoProfile -Command "$_wag_ps" 2>/dev/null | tr -d '\r\n\000')"
+    else
+        _wag_n="$(powershell.exe -NoProfile -Command "$_wag_ps" 2>/dev/null | tr -d '\r\n\000')"
+    fi
+    if [ -n "$_wag_n" ]; then _WSL_AMD_GPU_NAME_CACHE="$_wag_n"; printf '%s' "$_wag_n"; return 0; fi
+    _WSL_AMD_GPU_NAME_CACHE="-"; return 1
+}
+
+# ── Bounded command runner ──
+# Runs a command under a 10s timeout when the `timeout` binary is available,
+# otherwise runs it unbounded. Keeps a wedged nvidia-smi (blocking during
+# driver init or after a reset) from hanging the installer: a timed-out probe
+# exits nonzero and is treated exactly like a failed probe. No-op semantics on
+# hosts without `timeout` (e.g. macOS) or when the probe is healthy.
+_run_bounded() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10 "$@"
+    else
+        "$@"
+    fi
+}
+
+# Returns 0 (true) when CUDA_VISIBLE_DEVICES is set to "" or "-1", i.e. every
+# NVIDIA device is deliberately hidden (mixed AMD+NVIDIA hosts steering work to
+# the AMD card). Unset means all devices visible. nvidia-smi ignores this env
+# var, so the probes below cannot see the distinction on their own.
+_cvd_hides_nvidia() {
+    [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ] || return 1
+    _cvd_trim=$(printf '%s' "$CUDA_VISIBLE_DEVICES" | tr -d '[:space:]')
+    [ -z "$_cvd_trim" ] || [ "$_cvd_trim" = "-1" ]
+}
+
+# ── NVIDIA usable-GPU helper ──
+# Returns 0 (true) if an NVIDIA GPU is present and usable.
+# Primary probe: nvidia-smi -L. Fallback: /proc/driver/nvidia/gpus/ sysfs,
+# which the NVIDIA driver populates on Linux regardless of nvidia-smi state
+# -- handles PATH gaps, subprocess timeouts, and driver init races that
+# could otherwise cause nvidia-smi to fail and silence NVIDIA detection.
+# A GPU hidden via CUDA_VISIBLE_DEVICES=""/-1 counts as NOT usable (matches
+# install_llama_prebuilt.py has_usable_nvidia), so AMD/CPU routing still runs.
+_has_usable_nvidia_gpu() {
+    if _cvd_hides_nvidia; then
+        return 1
+    fi
+    _nvsmi=""
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        _nvsmi="nvidia-smi"
+    elif [ -x "/usr/bin/nvidia-smi" ]; then
+        _nvsmi="/usr/bin/nvidia-smi"
+    fi
+    if [ -n "$_nvsmi" ]; then
+        if _run_bounded "$_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+            return 0
+        fi
+    fi
+    # Fallback: NVIDIA driver exposes one subdir per GPU under this path.
+    if [ -d /proc/driver/nvidia/gpus ] && \
+       [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
+        return 0
+    fi
+    return 1
+}
+
 # Strix Halo ROCm-on-WSL only targets Ubuntu 24.04. On a newer distro (e.g. 26.04)
 # with a 24.04 distro present, re-run the install there and stop; else fall through
 # to CPU + the `wsl --install` hint below (never auto-create a distro). Runs before
@@ -1449,7 +1568,15 @@ _maybe_reroute_strixhalo_to_2404() {
     [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
     [ "${UNSLOTH_WSL_REROUTED:-0}" = "1" ] && return 0
     [ -e /dev/dxg ] || return 0
-    grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
+    # A usable NVIDIA GPU (common on hybrid AMD+NVIDIA hosts) means the CUDA path works on
+    # this distro, so don't reroute for AMD. _has_usable_nvidia_gpu (moved above) honors
+    # CUDA_VISIBLE_DEVICES=""/-1 and the /proc/driver/nvidia fallback for PATH/timeout gaps.
+    if _has_usable_nvidia_gpu; then return 0; fi
+    # Strix APUs show in /proc/cpuinfo; discrete cards don't, so also try WMI. Either reroutes.
+    if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null \
+       && ! _wsl_amd_gpu_name >/dev/null 2>&1; then
+        return 0
+    fi
     # Already ROCm-on-WSL? leave a working GPU alone, whatever the version.
     if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
         return 0
@@ -1534,17 +1661,15 @@ _maybe_reroute_strixhalo_to_2404() {
 _maybe_reroute_strixhalo_to_2404 || true
 
 # ── Check system dependencies ──
-# cmake and git are needed by unsloth studio setup to build the GGUF inference
-# engine (llama.cpp). build-essential and libcurl-dev are also needed on Linux.
+# cmake/git are only needed to *build* llama.cpp from source. Studio downloads a
+# prebuilt by default, and setup.sh self-skips the source build when they're
+# absent -- so macOS doesn't block on cmake (requiring it would force a manual
+# Homebrew install). Linux keeps requiring them; its package manager has them.
 tauri_log "STEP" "Checking system dependencies"
-MISSING=""
-
-command -v cmake >/dev/null 2>&1 || MISSING="$MISSING cmake"
-command -v git   >/dev/null 2>&1 || MISSING="$MISSING git"
 
 case "$OS" in
     macos)
-        # Xcode Command Line Tools provide the C/C++ compiler
+        # Xcode Command Line Tools provide the C/C++ compiler and git.
         if ! xcode-select -p >/dev/null 2>&1; then
             echo ""
             echo "==> Xcode Command Line Tools are required."
@@ -1553,8 +1678,19 @@ case "$OS" in
             echo "    After the installation completes, please re-run this script."
             exit 1
         fi
+        # cmake is only needed for a source build; the default prebuilt path
+        # doesn't use it, so its absence is not fatal -- no Homebrew prerequisite.
+        if command -v cmake >/dev/null 2>&1; then
+            step "deps" "all system dependencies found"
+        else
+            step "deps" "using prebuilt llama.cpp (cmake not found)" "$C_WARN"
+            substep "Install cmake only if you want a source build: brew install cmake"
+        fi
         ;;
     linux|wsl)
+        MISSING=""
+        command -v cmake >/dev/null 2>&1 || MISSING="$MISSING cmake"
+        command -v git   >/dev/null 2>&1 || MISSING="$MISSING git"
         # curl or wget is needed for downloads; check both
         if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
             MISSING="$MISSING curl"
@@ -1562,27 +1698,12 @@ case "$OS" in
         command -v gcc  >/dev/null 2>&1 || MISSING="$MISSING build-essential"
         # libcurl dev headers for llama.cpp HTTPS support
         command -v curl-config >/dev/null 2>&1 || MISSING="$MISSING libcurl4-openssl-dev"
-        ;;
-esac
 
-MISSING=$(echo "$MISSING" | sed 's/^ *//')
-
-if [ -n "$MISSING" ]; then
-    echo ""
-    step "deps" "missing: $MISSING" "$C_WARN"
-    substep "These are needed to build the GGUF inference engine."
-
-    case "$OS" in
-        macos)
-            if ! command -v brew >/dev/null 2>&1; then
-                echo ""
-                echo "    Homebrew is required to install them."
-                echo "    Install Homebrew from https://brew.sh then re-run this script."
-                exit 1
-            fi
-            brew install $MISSING </dev/null
-            ;;
-        linux|wsl)
+        MISSING=$(echo "$MISSING" | sed 's/^ *//')
+        if [ -n "$MISSING" ]; then
+            echo ""
+            step "deps" "missing: $MISSING" "$C_WARN"
+            substep "These are needed to build the GGUF inference engine."
             if command -v apt-get >/dev/null 2>&1; then
                 _smart_apt_install $MISSING
             else
@@ -1597,12 +1718,12 @@ if [ -n "$MISSING" ]; then
                 echo "      openSUSE:   sudo zypper install cmake git gcc gcc-c++ make libcurl-devel"
                 exit 1
             fi
-            ;;
-    esac
-    echo ""
-else
-    step "deps" "all system dependencies found"
-fi
+            echo ""
+        else
+            step "deps" "all system dependencies found"
+        fi
+        ;;
+esac
 
 # ── Install uv ──
 tauri_log "STEP" "Installing uv package manager"
@@ -1618,6 +1739,21 @@ export UV_COMPILE_BYTECODE_TIMEOUT
 export UV_HTTP_RETRIES
 : "${UV_HTTP_TIMEOUT:=180}"
 export UV_HTTP_TIMEOUT
+
+# macOS: trust the system Keychain so uv uses SecureTransport instead of rustls.
+# Required behind TLS-inspecting proxies (Cisco Umbrella, Zscaler, etc.) which
+# present their own CA certificate. rustls (uv's default) ignores the Keychain
+# and rejects intercepted connections with "invalid peer certificate: UnknownIssuer".
+# Set both vars: UV_SYSTEM_CERTS is the modern one (uv >= 0.11), UV_NATIVE_TLS the
+# legacy one understood by uv 0.8.16-0.10.x, which the installer keeps if already
+# present (UV_MIN_VERSION) and which ignores UV_SYSTEM_CERTS. Mirror the choice onto
+# both so it works on either uv. Opt out with UV_SYSTEM_CERTS=0.
+if [ "$OS" = "macos" ]; then
+    : "${UV_SYSTEM_CERTS:=1}"
+    : "${UV_NATIVE_TLS:=$UV_SYSTEM_CERTS}"
+fi
+[ -n "${UV_SYSTEM_CERTS:-}" ] && export UV_SYSTEM_CERTS
+[ -n "${UV_NATIVE_TLS:-}" ] && export UV_NATIVE_TLS
 
 version_ge() {
     # returns 0 if $1 >= $2
@@ -1901,61 +2037,6 @@ _has_amd_rocm_gpu() {
         # 560+) can register KFD topology nodes with non-zero gpu_id but
         # vendor_id 4318 (0x10DE). Require AMD vendor to avoid misrouting
         # NVIDIA-only hosts to the ROCm install path.
-        return 0
-    fi
-    return 1
-}
-
-# ── Bounded command runner ──
-# Runs a command under a 10s timeout when the `timeout` binary is available,
-# otherwise runs it unbounded. Keeps a wedged nvidia-smi (blocking during
-# driver init or after a reset) from hanging the installer: a timed-out probe
-# exits nonzero and is treated exactly like a failed probe. No-op semantics on
-# hosts without `timeout` (e.g. macOS) or when the probe is healthy.
-_run_bounded() {
-    if command -v timeout >/dev/null 2>&1; then
-        timeout 10 "$@"
-    else
-        "$@"
-    fi
-}
-
-# Returns 0 (true) when CUDA_VISIBLE_DEVICES is set to "" or "-1", i.e. every
-# NVIDIA device is deliberately hidden (mixed AMD+NVIDIA hosts steering work to
-# the AMD card). Unset means all devices visible. nvidia-smi ignores this env
-# var, so the probes below cannot see the distinction on their own.
-_cvd_hides_nvidia() {
-    [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ] || return 1
-    _cvd_trim=$(printf '%s' "$CUDA_VISIBLE_DEVICES" | tr -d '[:space:]')
-    [ -z "$_cvd_trim" ] || [ "$_cvd_trim" = "-1" ]
-}
-
-# ── NVIDIA usable-GPU helper ──
-# Returns 0 (true) if an NVIDIA GPU is present and usable.
-# Primary probe: nvidia-smi -L. Fallback: /proc/driver/nvidia/gpus/ sysfs,
-# which the NVIDIA driver populates on Linux regardless of nvidia-smi state
-# -- handles PATH gaps, subprocess timeouts, and driver init races that
-# could otherwise cause nvidia-smi to fail and silence NVIDIA detection.
-# A GPU hidden via CUDA_VISIBLE_DEVICES=""/-1 counts as NOT usable (matches
-# install_llama_prebuilt.py has_usable_nvidia), so AMD/CPU routing still runs.
-_has_usable_nvidia_gpu() {
-    if _cvd_hides_nvidia; then
-        return 1
-    fi
-    _nvsmi=""
-    if command -v nvidia-smi >/dev/null 2>&1; then
-        _nvsmi="nvidia-smi"
-    elif [ -x "/usr/bin/nvidia-smi" ]; then
-        _nvsmi="/usr/bin/nvidia-smi"
-    fi
-    if [ -n "$_nvsmi" ]; then
-        if _run_bounded "$_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
-            return 0
-        fi
-    fi
-    # Fallback: NVIDIA driver exposes one subdir per GPU under this path.
-    if [ -d /proc/driver/nvidia/gpus ] && \
-       [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
         return 0
     fi
     return 1
@@ -2274,19 +2355,19 @@ _persist_rocm_wsl_dropin() {
     fi
 }
 
+# _wsl_amd_gpu_name is defined earlier so both the reroute and this bootstrap can use it.
 _maybe_bootstrap_rocm_wsl() {
     [ "${OS:-}" = "wsl" ] || return 0
     [ "${SKIP_TORCH:-false}" = "false" ] || return 0
     [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
     # Leave any already-usable GPU completely alone (NVIDIA, or working ROCm).
     if _has_usable_nvidia_gpu; then return 0; fi
-    # "Usable ROCm" here = rocminfo enumerates the gfx1151 agent. Don't use the
-    # generic _has_amd_rocm_gpu: its broad gfx match accepts "gfx11-generic" and
-    # would skip this bootstrap while the real GPU is still unusable. awk consumes
-    # all input, so rocminfo isn't SIGPIPE'd like `grep -q` would under pipefail.
+    # Usable ROCm = rocminfo enumerates a real GPU agent: gfx[1-9] (excludes gfx000,
+    # the CPU agent) and not the "gfx11-generic" fallback. awk consumes all input so
+    # rocminfo isn't SIGPIPE'd like `grep -q` under pipefail.
     _ensure_rocm_probe_env
     if command -v rocminfo >/dev/null 2>&1 && \
-       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx1151/{found=1} END{exit !found}'; then
+       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9]/ && !/generic/{found=1} END{exit !found}'; then
         # rocminfo may work only via the transient env _ensure_rocm_probe_env
         # just set, which dies with the installer. Persist the drop-in so login
         # shells (Studio, llama.cpp) inherit it -- else a reinstall over an
@@ -2296,9 +2377,12 @@ _maybe_bootstrap_rocm_wsl() {
     fi
     # WSL GPU passthrough device must exist (present on any WSL2 GPU host).
     [ -e /dev/dxg ] || return 0
-    # Only Strix Halo (gfx1151): rocminfo can't tell us the arch yet, so match
-    # the CPU model string WSL exposes (e.g. "AMD Ryzen AI Max+ ... Radeon 8060S").
-    grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
+    # Strix APUs show in /proc/cpuinfo (the CPU model); discrete cards don't, so also
+    # ask the Windows host. Either signal suffices; the bootstrap detects arch from rocminfo.
+    if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null \
+       && ! _wsl_amd_gpu_name >/dev/null 2>&1; then
+        return 0
+    fi
     command -v bash >/dev/null 2>&1 || return 0
 
     # Fast path: already configured (librocdxg present) but launched from a
@@ -2316,7 +2400,8 @@ _maybe_bootstrap_rocm_wsl() {
     fi
 
     echo ""
-    substep "Detected AMD Strix Halo (Radeon 8000S) in WSL with no ROCm runtime yet." "$C_WARN"
+    _rw_gpu="$(_wsl_amd_gpu_name 2>/dev/null || true)"; [ -n "$_rw_gpu" ] || _rw_gpu="an AMD GPU"
+    substep "Detected ${_rw_gpu} in WSL with no ROCm runtime yet." "$C_WARN"
     substep "Setting up ROCm-on-WSL (ROCm 7.2 + librocdxg) automatically to enable this GPU."
     substep "One-time, uses sudo and a large download. (skip: re-run with UNSLOTH_SKIP_ROCM_WSL_SETUP=1)"
 
@@ -2621,7 +2706,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6"
+            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -2632,9 +2717,11 @@ if [ "$_MIGRATED" = true ]; then
             run_install_cmd_retry "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
         fi
     else
+        # Pin mlx-lm away from 0.31.3 here too: a curl-piped migration has no
+        # overrides file, so UV_OVERRIDE is unset and this positional is the only cover.
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6"
+            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" ${_MLX_LM_EXCLUDE_ARG:-}
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2838,7 +2925,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6"
+            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -2856,7 +2943,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6"
+            --upgrade-package unsloth "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -2865,7 +2952,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
         run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth -- "$PACKAGE_NAME"
+            --upgrade-package unsloth -- "$PACKAGE_NAME" ${_MLX_LM_EXCLUDE_ARG:-}
     fi
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
@@ -2888,7 +2975,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.6.6" "unsloth>=2026.6.8" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.6.7" "unsloth>=2026.6.9" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -2991,6 +3078,13 @@ _run_setup_with_studio_home() {
         "$@"
     fi
 }
+if [ -n "$_WITH_LLAMA_CPP_DIR" ]; then
+    if [ ! -d "$_WITH_LLAMA_CPP_DIR" ]; then
+        echo "[ERROR] --with-llama-cpp-dir path does not exist: $_WITH_LLAMA_CPP_DIR" >&2
+        exit 1
+    fi
+    _WITH_LLAMA_CPP_DIR="$(CDPATH= cd -P -- "$_WITH_LLAMA_CPP_DIR" && pwd -P)"
+fi
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     _run_setup_with_studio_home env \
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
@@ -2999,6 +3093,7 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
+    UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 else
     # Explicitly reset STUDIO_LOCAL_INSTALL / STUDIO_LOCAL_REPO so a stale
@@ -3013,6 +3108,7 @@ else
     STUDIO_LOCAL_INSTALL=0 \
     STUDIO_LOCAL_REPO= \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
+    UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 fi
 
@@ -3160,6 +3256,7 @@ if [ -t 1 ]; then
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
             substep "(add -H 0.0.0.0 to allow network / cloud access)"
+            substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
             echo ""
             ;;
     esac
@@ -3181,5 +3278,6 @@ else
         substep "unsloth studio -p 8888"
     fi
     substep "(add -H 0.0.0.0 to allow network / cloud access)"
+    substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
     echo ""
 fi

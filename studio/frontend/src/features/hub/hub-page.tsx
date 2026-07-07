@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
+import { hfModelFitsDevice } from "@/components/assistant-ui/model-selector/recommended-fit";
 import { useHubInventory } from "@/features/hub/inventory";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo } from "@/hooks/use-gpu-info";
@@ -14,7 +19,10 @@ import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scro
 import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { cn } from "@/lib/utils";
 import { usePlatformStore } from "@/config/env";
-import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import {
+  hfApiToken,
+  useHfTokenStore,
+} from "@/features/hub/stores/hf-token-store";
 import {
   getInferenceStatus,
   isExternalModelId,
@@ -90,18 +98,19 @@ const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
 const OWNER_SCOPE_STORAGE_KEY = "unsloth.hub.ownerScope";
 
-/** Discover browsing scope: only the unsloth org (default) or the whole Hub. */
+/** Discover browsing scope: the whole Hub (default) or only the unsloth org. */
 export type OwnerScope = "unsloth" | "all";
 
 function readOwnerScopePreference(): OwnerScope {
   if (typeof window === "undefined") {
-    return "unsloth";
+    return "all";
   }
   try {
     const value = window.localStorage.getItem(OWNER_SCOPE_STORAGE_KEY);
-    return value === "all" ? "all" : "unsloth";
+    // Default to the whole Hub; only honor an explicit "unsloth" preference.
+    return value === "unsloth" ? "unsloth" : "all";
   } catch {
-    return "unsloth";
+    return "all";
   }
 }
 
@@ -319,6 +328,9 @@ export function ModelsPage() {
   const activeCheckpoint =
     checkpoint && !isExternalModelId(checkpoint) ? checkpoint : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  // Shared with the chat model selector: list only models sized for this device.
+  const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
+  const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
 
   useEffect(() => {
     let cancelled = false;
@@ -550,6 +562,7 @@ export function ModelsPage() {
   const deferredDebouncedQuery = useDeferredValue(debouncedQuery);
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
+  const apiHfToken = hfApiToken(debouncedHfToken);
   const deferredFormatFilter = useDeferredValue(formatFilter);
   const deferredCapabilityFilter = useDeferredValue(capabilityFilter);
 
@@ -604,7 +617,7 @@ export function ModelsPage() {
     handleRetrySearch,
   } = useDiscoverSearch({
     debouncedQuery,
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
     isDiscoverTab,
     isDatasetMode,
     sortBy: effectiveSort,
@@ -618,7 +631,7 @@ export function ModelsPage() {
     channelId: isChannelListMode ? activeChannelId : null,
     results,
     isLoading,
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
   });
 
   const {
@@ -688,7 +701,12 @@ export function ModelsPage() {
         !isHiddenModelId(row.id) &&
         matchesFormat(detectResultFormat(row.result), effectiveDiscoverFormat) &&
         matchesCapability(row.capabilities, deferredCapabilityFilter) &&
-        (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)),
+        (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
+        // Models already on disk stay visible regardless of device fit,
+        // matching the chat model selector.
+        (!fitOnDeviceOnly ||
+          row.isAvailableOnDevice ||
+          hfModelFitsDevice(row.result, gpu)),
     );
   }, [
     discoverRows,
@@ -696,12 +714,14 @@ export function ModelsPage() {
     effectiveDiscoverFormat,
     deferredCapabilityFilter,
     activeChannel,
+    fitOnDeviceOnly,
+    gpu,
   ]);
 
   const listRows = filteredDiscoverRows;
 
   const hubFeed = useHubFeed({
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
     online,
     enabled: isFeedMode,
     deviceType,
@@ -715,8 +735,21 @@ export function ModelsPage() {
         effectiveLocalRows,
       )
         .filter((row) => !isHiddenModelId(row.id))
-        .filter((row) => matchesFormat(row.result.isGguf, "gguf")),
-    [hubFeed.trending.results, modelDiscoveryInventorySignature],
+        .filter((row) => matchesFormat(row.result.isGguf, "gguf"))
+        // Same fit filter as the main Discover list, so the feed carousel
+        // honors the toggle too.
+        .filter(
+          (row) =>
+            !fitOnDeviceOnly ||
+            row.isAvailableOnDevice ||
+            hfModelFitsDevice(row.result, gpu),
+        ),
+    [
+      hubFeed.trending.results,
+      modelDiscoveryInventorySignature,
+      fitOnDeviceOnly,
+      gpu,
+    ],
   );
   const feedRows = useMemo(() => {
     if (!isFeedMode) return [];
@@ -907,7 +940,7 @@ export function ModelsPage() {
     filteredCachedRows,
     filteredLocalRows,
     results: selectionResults,
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
     online,
   });
 
@@ -1052,11 +1085,15 @@ export function ModelsPage() {
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
 
   const gpuLabel = gpu.available
-    ? `${Math.floor(gpu.memoryTotalGb)} GB`
+    ? `${Math.round(gpu.memoryTotalGb)} GiB`
     : "Unavailable";
   const ramLabel =
-    gpu.systemRamAvailableGb > 0
-      ? `${Math.floor(gpu.systemRamAvailableGb)} GB`
+    gpu.systemRamTotalGb > 0
+      ? `${Math.round(gpu.systemRamTotalGb)} GiB`
+      : "Unavailable";
+  const coreLabel =
+    gpu.cpuCore > 0 && gpu.cpuThread > 0
+      ? `${gpu.cpuCore}/${gpu.cpuThread}`
       : "Unavailable";
 
   const openNewChat = useCallback(() => {
@@ -1083,11 +1120,32 @@ export function ModelsPage() {
         openNewChat();
         return;
       }
+      // Detach any leftover staged pick first so its edited knobs (e.g. a custom
+      // context length) don't leak into this load -- mirrors the chat page's
+      // detachStaged(); keepDownload keeps any staged download running.
+      useChatRuntimeStore.getState().abandonStagedModel({ keepDownload: true });
+      // Load-on-selection skips the chat sheet, so seed this GGUF pick's saved
+      // load knobs here the way the sheet's restore effect would; otherwise the
+      // remembered config is silently ignored on the Hub run path. keepSpeculative
+      // then honors the restored speculative choice across the switch.
+      const remembered =
+        opts.ggufVariant != null || selectedModel.isGguf
+          ? loadRememberedLoadSettings(
+              rememberedLoadSettingsKey({
+                id: runId,
+                ggufVariant: opts.ggufVariant,
+              }),
+            )
+          : null;
+      if (remembered) {
+        useChatRuntimeStore.getState().applyRememberedLoadSettings(remembered);
+      }
       void selectModel({
         id: runId,
         ggufVariant: opts.ggufVariant,
         isDownloaded,
         expectedBytes: opts.expectedBytes,
+        keepSpeculative: remembered != null,
         throwOnError: true,
       })
         .then(() => {
@@ -1399,6 +1457,7 @@ export function ModelsPage() {
           isDataset={isDatasetMode}
           gpuLabel={gpuLabel}
           ramLabel={ramLabel}
+          coreLabel={coreLabel}
           activeCheckpoint={activeCheckpoint}
           activeGgufVariant={activeGgufVariant}
           onTitleClick={handleResetToDiscover}
@@ -1418,6 +1477,8 @@ export function ModelsPage() {
           onFormatFilterChange={setFormatFilter}
           capabilityFilter={capabilityFilter}
           onCapabilityFilterChange={setCapabilityFilter}
+          fitOnDeviceOnly={fitOnDeviceOnly}
+          onFitOnDeviceOnlyChange={setFitOnDeviceOnly}
           onManageLocalFolders={handleManageLocalFolders}
           onOpenFineTune={() => handleOpenList("finetune")}
         />

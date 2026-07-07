@@ -14,6 +14,21 @@ export interface RememberedLoadSettings {
   tensorParallel: boolean;
 }
 
+// Storage key for a pick's remembered settings. The remembered knobs are
+// VRAM-budget driven (context override, KV-cache dtype, tensor-parallel), so the
+// right values differ per quant. An HF repo collapses all its GGUF variants into
+// one `id`, so fold the variant in to scope settings per quant. Local .gguf
+// paths key by their file path (already file-specific); native drag-drop files
+// key by display label, so same-named files in different folders share an entry.
+export function rememberedLoadSettingsKey(selection: {
+  id: string;
+  ggufVariant?: string | null;
+}): string {
+  return selection.ggufVariant
+    ? `${selection.id}::${selection.ggufVariant}`
+    : selection.id;
+}
+
 function readAll(): Record<string, RememberedLoadSettings> {
   try {
     return JSON.parse(localStorage.getItem(KEY) ?? "{}");
@@ -31,24 +46,24 @@ function writeAll(all: Record<string, RememberedLoadSettings>) {
 }
 
 export function loadRememberedLoadSettings(
-  modelId: string,
+  key: string,
 ): RememberedLoadSettings | null {
-  return readAll()[modelId] ?? null;
+  return readAll()[key] ?? null;
 }
 
 export function saveRememberedLoadSettings(
-  modelId: string,
+  key: string,
   settings: RememberedLoadSettings,
 ) {
   const all = readAll();
-  all[modelId] = settings;
+  all[key] = settings;
   writeAll(all);
 }
 
-export function clearRememberedLoadSettings(modelId: string) {
+export function clearRememberedLoadSettings(key: string) {
   const all = readAll();
-  if (modelId in all) {
-    delete all[modelId];
+  if (key in all) {
+    delete all[key];
     writeAll(all);
   }
 }

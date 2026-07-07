@@ -37,6 +37,18 @@ $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
 $DefaultLlamaForceCompileRef = "master"
 
+# Corporate-mirror / proxy escape hatch for the frontend npm/bun install (#6491).
+# studio/frontend/.npmrc pins registry=https://registry.npmjs.org/ as a supply-chain
+# lock, which overrides a corporate user's ~/.npmrc proxy and causes 403s behind a
+# firewall. UNSLOTH_NPM_REGISTRY is a deliberate opt-in: when set we splat it as
+# `--registry <url>` into every npm/bun install. `--registry` is the highest-precedence
+# override for BOTH tools and leaves min-release-age / save-exact in force. Empty array
+# (the default) splats to nothing, so normal installs are unchanged.
+$NpmRegistryArgs = @()
+if ($env:UNSLOTH_NPM_REGISTRY) {
+    $NpmRegistryArgs = @('--registry', $env:UNSLOTH_NPM_REGISTRY)
+}
+
 # Verbose can be enabled either by CLI flag or by UNSLOTH_VERBOSE=1.
 $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
 foreach ($a in $args) {
@@ -875,6 +887,41 @@ function substep {
         Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
     }
     Write-StudioStdoutMirror ("  {0,-15}{1}" -f "", $Message)
+}
+
+function Show-NpmRegistryHint {
+    # Print actionable guidance when a frontend/OXC npm/bun install fails and the
+    # registry lock is the likely cause (corporate firewall/proxy). No-op once the
+    # user has opted in via UNSLOTH_NPM_REGISTRY. We never switch registries
+    # automatically -- we only guide.
+    if ($env:UNSLOTH_NPM_REGISTRY) { return }
+    $mirror = $env:NPM_CONFIG_REGISTRY
+    if (-not $mirror) {
+        # Read npm config from a dir with no project .npmrc so the frontend's pinned
+        # registry= does not mask the user's ~/.npmrc / global mirror.
+        $pushed = $false
+        try {
+            Push-Location ([System.IO.Path]::GetTempPath()) -ErrorAction Stop
+            $pushed = $true
+            $mirror = (& npm config get registry 2>$null | Out-String).Trim()
+        } catch { $mirror = "" } finally { if ($pushed) { Pop-Location } }
+    }
+    if ($mirror -in @("", "undefined", "null", "https://registry.npmjs.org", "https://registry.npmjs.org/")) {
+        $mirror = ""
+    }
+    Write-Host ""
+    step "frontend" "registry.npmjs.org looks blocked (corporate firewall/proxy?)" "Yellow"
+    if ($mirror) {
+        substep "Studio pins the public npm registry; your mirror is being ignored."
+        substep "Detected a registry in your npm config:"
+        substep "  $mirror"
+        substep "Re-run pointing Studio at it:"
+        substep "  `$env:UNSLOTH_NPM_REGISTRY='$mirror'; .\install.ps1 --local"
+    } else {
+        substep "If you use a private mirror/proxy, point Studio at it and re-run:"
+        substep "  `$env:UNSLOTH_NPM_REGISTRY='https://your-mirror.example/api/npm/'; .\install.ps1 --local"
+    }
+    substep "(min-release-age and save-exact stay enforced.)"
 }
 
 # ─────────────────────────────────────────────
@@ -2113,7 +2160,7 @@ if ($NeedNodeForSetup) {
             substep "installing bun (faster frontend package installs)..."
             $prevEAP_bun = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
-            Invoke-SetupCommand { npm install -g bun --allow-scripts=bun } | Out-Null
+            Invoke-SetupCommand { npm install -g bun --allow-scripts=bun @NpmRegistryArgs } | Out-Null
             $ErrorActionPreference = $prevEAP_bun
             Refresh-Environment
             # Refresh-Environment rebuilds PATH (Machine;User;current), demoting the
@@ -2173,7 +2220,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     # the cache + retry once before falling back to npm.
     if ($UseBun) {
         Write-Host "   Using bun for package install (faster)" -ForegroundColor DarkGray
-        $bunExit = Invoke-SetupCommand { bun install }
+        $bunExit = Invoke-SetupCommand { bun install @NpmRegistryArgs }
         # On Windows, .bin/ entries vary by package manager:
         #   npm  → tsc, tsc.cmd, tsc.ps1
         #   bun  → tsc.exe, tsc.bunx
@@ -2187,7 +2234,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
                 Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
             }
             Invoke-SetupCommand { bun pm cache rm } | Out-Null
-            $bunExit = Invoke-SetupCommand { bun install }
+            $bunExit = Invoke-SetupCommand { bun install @NpmRegistryArgs }
             $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
             $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
             if ($bunExit -ne 0 -or -not $hasTsc -or -not $hasVite) {
@@ -2206,13 +2253,14 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         }
     }
     if (-not $UseBun) {
-        $npmExit = Invoke-SetupCommand { npm install }
+        $npmExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
         if ($npmExit -ne 0) {
             Pop-Location
             $ErrorActionPreference = $prevEAP_npm
             foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
             Write-Host "[ERROR] npm install failed (exit code $npmExit)" -ForegroundColor Red
             Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
+            Show-NpmRegistryHint
             exit 1
         }
     }
@@ -2249,11 +2297,12 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $prevEAP_oxc = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
-    $oxcInstallExit = Invoke-SetupCommand { npm install }
+    $oxcInstallExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
     if ($oxcInstallExit -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
         Write-Host "[ERROR] OXC validator npm install failed (exit code $oxcInstallExit)" -ForegroundColor Red
+        Show-NpmRegistryHint
         exit 1
     }
     Pop-Location
@@ -2596,6 +2645,28 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
         step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
+        # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
+        # $_PkgName itself is current; the fast path above would otherwise
+        # never reach install_python_stack's anyio repair (#6797).
+        $_anyioBad = $false
+        try {
+            & python -c "
+import re, sys
+from importlib.metadata import version, PackageNotFoundError
+try:
+    parts = version('anyio').split('.')
+    major = int(parts[0])
+    minor = int(re.sub(r'[^0-9].*', '', parts[1])) if len(parts) > 1 else 0
+except (PackageNotFoundError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if (major, minor) >= (4, 14) else 1)
+" 2>$null
+            if ($LASTEXITCODE -eq 0) { $_anyioBad = $true }
+        } catch {}
+        if ($_anyioBad) {
+            substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..." "Cyan"
+            $SkipPythonDeps = $false
+        }
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to
         # date" path would leave the user on CPU torch with Train/Export disabled.
@@ -3109,7 +3180,86 @@ if ($LlamaPr) {
     $SkipPrebuiltInstall = $true
 }
 
-if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
+$LocalLlamaCppLinked = $false
+$LocalLlamaCppSrc = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR
+if ($LocalLlamaCppSrc) {
+    if (-not (Test-Path -LiteralPath $LocalLlamaCppSrc -PathType Container)) {
+        step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $LocalLlamaCppSrc" "Red"
+        exit 1
+    }
+    $ResolvedLocal = (Resolve-Path -LiteralPath $LocalLlamaCppSrc).Path
+    # Reusing a local dir disables both the prebuilt download and the source
+    # build, so a runnable llama-server.exe must already be present. Accept any
+    # layout LlamaCppBackend._layout_candidates() resolves (root-level, build\bin,
+    # or build\bin\Release) so the flag never rejects a tree Studio could run.
+    $LocalLlamaServerFound = $false
+    foreach ($_cand in @(
+            (Join-Path $ResolvedLocal "llama-server.exe"),
+            (Join-Path $ResolvedLocal "build\bin\llama-server.exe"),
+            (Join-Path $ResolvedLocal "build\bin\Release\llama-server.exe"))) {
+        if (Test-Path -LiteralPath $_cand) { $LocalLlamaServerFound = $true; break }
+    }
+    if ($ResolvedLocal -eq $LlamaCppDir) {
+        # Points at the canonical install location itself: never delete-then-link
+        # onto itself. Reuse an existing build here (skip prebuilt + source) so the
+        # staged prebuilt installer can't replace a build the user asked to reuse;
+        # if nothing is built yet, fall through to the normal install.
+        if ($LocalLlamaServerFound) {
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR is the canonical install location and already holds a build; reusing it" "Yellow"
+            $LocalLlamaCppLinked = $true
+            $NeedLlamaSourceBuild = $false
+        } else {
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location with nothing built there yet; running the normal install" "Yellow"
+        }
+    } else {
+        # Fail clearly rather than junction an unbuilt or wrong-platform checkout
+        # and leave Studio with no usable binary.
+        if (-not $LocalLlamaServerFound) {
+            step "llama.cpp" "no llama-server.exe under $ResolvedLocal (looked for .\llama-server.exe, .\build\bin and .\build\bin\Release) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "Red"
+            exit 1
+        }
+        # If the target is already a junction/symlink (e.g. a previous
+        # --with-llama-cpp-dir run), delete only the link via DirectoryInfo.Delete().
+        # Remove-Item -Recurse -Force on a reparse point can traverse the link and
+        # wipe the user's real llama.cpp directory on PowerShell 5.1. Dropping the
+        # stale link here also keeps the custom-home ownership check below idempotent.
+        # Use Get-Item -Force (not Test-Path): a *broken* junction whose target was
+        # moved/deleted makes Test-Path return false, which would leave the dangling
+        # link in place and make mklink below fail; Get-Item still resolves it so we
+        # can remove it and relink to a new valid directory.
+        $existing = Get-Item -LiteralPath $LlamaCppDir -Force -ErrorAction SilentlyContinue
+        if ($existing -and ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            $existing.Delete()
+        }
+        if ($StudioHomeIsCustom) {
+            Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
+        }
+        if (Test-Path -LiteralPath $LlamaCppDir) {
+            Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
+            # A locked/in-use tree can silently survive removal (SilentlyContinue
+            # masks it). Don't then junction/copy over a half-present dir; mirror the
+            # prebuilt path's active-process handling and stop with a clear message.
+            if (Test-Path -LiteralPath $LlamaCppDir) {
+                step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
+                substep "Close Studio or other llama.cpp users and retry" "Yellow"
+                exit 3
+            }
+        }
+        cmd /c "mklink /J `"$LlamaCppDir`" `"$ResolvedLocal`"" 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            substep "Could not create directory junction; copying instead..." "Yellow"
+            Copy-Item -Recurse -LiteralPath $ResolvedLocal -Destination $LlamaCppDir
+        }
+        Write-Host ""
+        step "llama.cpp" "linked local directory: $ResolvedLocal"
+        $LocalLlamaCppLinked = $true
+        $NeedLlamaSourceBuild = $false
+    }
+}
+
+if ($LocalLlamaCppLinked) {
+    # local directory linked above; skip prebuilt install
+} elseif ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-Host ""
     substep "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" "Yellow"
     $NeedLlamaSourceBuild = $true
@@ -3319,7 +3469,8 @@ if (Test-Path -LiteralPath $LlamaServerBin) {
 
 # Install build tools now (last resort) rather than eagerly in Phase 1, so the
 # prebuilt path stays fast. Same condition as the if/elseif chain below: a source
-# build runs only when needed and no usable binary is already present.
+# build runs only when needed and no usable binary is already present. A linked
+# local dir sets $NeedLlamaSourceBuild = $false, so this no-ops for that path.
 $WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and `
     -not ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master")
 if ($WillBuildLlamaFromSource) {
@@ -3328,7 +3479,13 @@ if ($WillBuildLlamaFromSource) {
     $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 }
 
-if (-not $NeedLlamaSourceBuild) {
+if ($LocalLlamaCppLinked) {
+    # Local dir linked above -- honor the flag's contract: skip BOTH the prebuilt
+    # download and the source build. Falling through here would run CMake inside
+    # the user's checkout (via the junction) when it lacks build\bin\Release\llama-server.exe.
+    Write-Host ""
+    step "llama.cpp" "linked (skipping build)"
+} elseif (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     step "llama.cpp" "prebuilt (validated)"
 } elseif ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
@@ -3704,35 +3861,49 @@ if (-not $NeedLlamaSourceBuild) {
         $CmakeArgs += '-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:LIBCMT'
         # CUDA flags -- only if GPU available, otherwise explicitly disable
         if ($HasNvidiaSmi -and $NvccPath) {
-            $CmakeArgs += '-DGGML_CUDA=ON'
-            # Accept a host MSVC newer than nvcc's whitelist; a fresh toolkit
-            # (e.g. CUDA 13.3) otherwise aborts with "#error -- unsupported
-            # Microsoft Visual Studio version!". Mirrors the Linux fix. Via env
-            # (covers the configure probe + build), after Refresh-Environment, idempotent.
-            $nvccAllowFlag = '-allow-unsupported-compiler'
-            if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
-                $env:NVCC_PREPEND_FLAGS = $nvccAllowFlag
-            } elseif ($env:NVCC_PREPEND_FLAGS -notlike "*$nvccAllowFlag*") {
-                $env:NVCC_PREPEND_FLAGS = "$($env:NVCC_PREPEND_FLAGS) $nvccAllowFlag"
-            }
-            substep "NVCC_PREPEND_FLAGS = $env:NVCC_PREPEND_FLAGS"
-            $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
-            $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
-            $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
-            if ($CudaArch) {
-                # Validate nvcc actually supports this architecture
-                if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
-                    $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
-                } else {
-                    # GPU arch too new for this toolkit -- fall back to highest supported.
-                    # PTX forward-compatibility will JIT-compile for the actual GPU at runtime.
-                    $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
-                    if ($maxArch) {
-                        $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
-                        substep "GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" "Yellow"
-                        substep "Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" "Yellow"
+            # UNSLOTH_LLAMA_CUDA_ARCHS (e.g. "120" or "89;86") forces the build
+            # arch and wins over detection, matching setup.sh.
+            $CudaArchOverride = if ($env:UNSLOTH_LLAMA_CUDA_ARCHS) { ($env:UNSLOTH_LLAMA_CUDA_ARCHS -replace '\s', '') } else { '' }
+            if ((-not $CudaArch) -and (-not $CudaArchOverride)) {
+                # No detectable compute capability (#5854): -DGGML_CUDA=ON with no
+                # arch builds a PTX-only binary, so build CPU instead. Mirrors the
+                # Linux fix; set UNSLOTH_LLAMA_CUDA_ARCHS=120 to force a CUDA build.
+                substep "could not detect a CUDA compute capability; building CPU llama.cpp instead of a PTX-only binary (set UNSLOTH_LLAMA_CUDA_ARCHS=120 to force a CUDA build)." "Yellow"
+                $CmakeArgs += '-DGGML_CUDA=OFF'
+            } else {
+                $CmakeArgs += '-DGGML_CUDA=ON'
+                # Accept a host MSVC newer than nvcc's whitelist; a fresh toolkit
+                # (e.g. CUDA 13.3) otherwise aborts with "#error -- unsupported
+                # Microsoft Visual Studio version!". Mirrors the Linux fix. Via env
+                # (covers the configure probe + build), after Refresh-Environment, idempotent.
+                $nvccAllowFlag = '-allow-unsupported-compiler'
+                if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
+                    $env:NVCC_PREPEND_FLAGS = $nvccAllowFlag
+                } elseif ($env:NVCC_PREPEND_FLAGS -notlike "*$nvccAllowFlag*") {
+                    $env:NVCC_PREPEND_FLAGS = "$($env:NVCC_PREPEND_FLAGS) $nvccAllowFlag"
+                }
+                substep "NVCC_PREPEND_FLAGS = $env:NVCC_PREPEND_FLAGS"
+                $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
+                $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
+                $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
+                if ($CudaArchOverride) {
+                    # Forced arch wins verbatim (no nvcc validation), matching setup.sh.
+                    $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArchOverride"
+                } elseif ($CudaArch) {
+                    # Validate nvcc actually supports this architecture
+                    if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
+                        $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
+                    } else {
+                        # GPU arch too new for this toolkit -- fall back to highest supported.
+                        # PTX forward-compatibility will JIT-compile for the actual GPU at runtime.
+                        $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
+                        if ($maxArch) {
+                            $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
+                            substep "GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" "Yellow"
+                            substep "Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" "Yellow"
+                        }
+                        # else: omit flag entirely, let cmake pick defaults
                     }
-                    # else: omit flag entirely, let cmake pick defaults
                 }
             }
         } else {

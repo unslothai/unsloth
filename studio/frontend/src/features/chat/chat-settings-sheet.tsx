@@ -21,6 +21,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   clearRememberedLoadSettings,
   loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
   saveRememberedLoadSettings,
 } from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import {
@@ -73,7 +74,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown, ExternalLink } from "lucide-react";
+import { Braces, ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { Fragment, type ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -115,8 +116,30 @@ import type { InferenceParams } from "./types/runtime";
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
 
+const PROMPT_VARIABLE_PATTERN = /{{\s*[a-zA-Z_$][a-zA-Z0-9_$.-]*\s*}}/;
+
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
+}
+
+function getPromptVariablesError(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return null;
+    }
+  } catch {
+    return "Use valid JSON, for example { \"env\": \"staging\" }.";
+  }
+  return "Variables must be a JSON object.";
+}
+
+function hasPromptVariableSyntax(prompt: string): boolean {
+  return PROMPT_VARIABLE_PATTERN.test(prompt);
 }
 
 /**
@@ -579,6 +602,9 @@ export function ChatSettingsPanel({
   );
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
+  const applyRememberedLoadSettings = useChatRuntimeStore(
+    (s) => s.applyRememberedLoadSettings,
+  );
   const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const setTensorParallel = useChatRuntimeStore((s) => s.setTensorParallel);
@@ -613,25 +639,16 @@ export function ChatSettingsPanel({
   // the saved per-model settings on stage, so the sheet opens with what was used
   // last time; the tick reflects whether a saved entry exists.
   const [remember, setRemember] = useState(false);
-  const pendingId = pendingSelection?.id ?? null;
+  // Keyed per quant: a different variant of the same repo has its own settings.
+  const pendingKey = pendingSelection
+    ? rememberedLoadSettingsKey(pendingSelection)
+    : null;
   useEffect(() => {
-    if (!pendingId) return;
-    const saved = loadRememberedLoadSettings(pendingId);
+    if (!pendingKey) return;
+    const saved = loadRememberedLoadSettings(pendingKey);
     setRemember(saved != null);
-    if (!saved) return;
-    setCustomContextLength(saved.contextLength);
-    setKvCacheDtype(saved.kvCacheDtype);
-    setSpeculativeType(saved.speculativeType ?? "auto");
-    setSpecDraftNMax(saved.specDraftNMax);
-    setTensorParallel(saved.tensorParallel);
-  }, [
-    pendingId,
-    setCustomContextLength,
-    setKvCacheDtype,
-    setSpeculativeType,
-    setSpecDraftNMax,
-    setTensorParallel,
-  ]);
+    if (saved) applyRememberedLoadSettings(saved);
+  }, [pendingKey, applyRememberedLoadSettings]);
   // While staging, the sheet reflects the STAGED model, so its header context
   // takes precedence over the loaded model's (which may differ or be larger).
   const baseContext = pendingIsGguf ? stagedContextLength : ggufContextLength;
@@ -660,6 +677,8 @@ export function ChatSettingsPanel({
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
+  const [systemVariablesDraft, setSystemVariablesDraft] = useState("");
+  const [systemVariablesOpen, setSystemVariablesOpen] = useState(false);
   // When the prompt overflows the inline box, clicking opens the popup editor.
   const systemPromptBoxRef = useRef<HTMLTextAreaElement>(null);
   const [systemPromptOverflows, setSystemPromptOverflows] = useState(false);
@@ -702,7 +721,12 @@ export function ChatSettingsPanel({
       }),
     [activePreset, hasUnsavedPresetChanges, presetNameInput, presets],
   );
-  const systemPromptEditorDirty = systemPromptDraft !== params.systemPrompt;
+  const systemVariablesError = getPromptVariablesError(systemVariablesDraft);
+  const currentSystemPrompt = params.systemPrompt ?? "";
+  const currentSystemVariables = params.systemVariables ?? "";
+  const systemPromptEditorDirty =
+    systemPromptDraft !== currentSystemPrompt ||
+    systemVariablesDraft !== currentSystemVariables;
   const showPromptCacheTtlControl = Boolean(
     activeExternalProvider &&
       supportsProviderPromptCacheTtl(activeExternalProvider.providerType),
@@ -813,12 +837,32 @@ export function ChatSettingsPanel({
   }
 
   function openSystemPromptEditor() {
-    setSystemPromptDraft(params.systemPrompt);
+    setSystemPromptDraft(currentSystemPrompt);
+    setSystemVariablesDraft(currentSystemVariables);
+    setSystemVariablesOpen(
+      currentSystemVariables.trim().length > 0 ||
+        hasPromptVariableSyntax(currentSystemPrompt),
+    );
     setSystemPromptEditorOpen(true);
   }
 
   function saveSystemPromptEditor() {
-    set("systemPrompt")(systemPromptDraft);
+    if (systemVariablesError) {
+      toast.error("Fix prompt variables before saving", {
+        description: systemVariablesError,
+      });
+      return;
+    }
+    const nextParams = {
+      ...params,
+      systemPrompt: systemPromptDraft,
+      systemVariables: systemVariablesDraft.trim(),
+    };
+    const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
+      ? getPresetSource(activePreset)
+      : "modified";
+    setActivePresetSource(nextSource);
+    onParamsChange(nextParams);
     setSystemPromptEditorOpen(false);
   }
 
@@ -866,12 +910,12 @@ export function ChatSettingsPanel({
   useEffect(() => {
     const el = systemPromptBoxRef.current;
     setSystemPromptOverflows(
-      params.systemPrompt.length > 0 &&
+      currentSystemPrompt.length > 0 &&
         el != null &&
         el.clientHeight > 0 &&
         el.scrollHeight > el.clientHeight + 1,
     );
-  }, [params.systemPrompt, open]);
+  }, [currentSystemPrompt, open]);
 
   const settingsScrollRef = useRef<HTMLDivElement>(null);
 
@@ -1213,9 +1257,11 @@ export function ChatSettingsPanel({
                       type="button"
                       onClick={() => {
                         // Persist (or clear) this model's load knobs before loading.
-                        // Save the explicit context override only (null = auto), so
-                        // restoring never forces the native context into an OOM.
-                        const pid = pendingSelection?.id;
+                        // Context is stored as the override (null = auto), never the
+                        // resolved native value, so restoring can't force an OOM.
+                        const pid = pendingSelection
+                          ? rememberedLoadSettingsKey(pendingSelection)
+                          : null;
                         if (pid) {
                           if (remember) {
                             saveRememberedLoadSettings(pid, {
@@ -1541,7 +1587,7 @@ export function ChatSettingsPanel({
           >
             <textarea
               ref={systemPromptBoxRef}
-              value={params.systemPrompt}
+              value={currentSystemPrompt}
               onChange={(e) => set("systemPrompt")(e.target.value)}
               onMouseDown={(e) => {
                 // Overflowing prompt: click opens the popup editor instead.
@@ -1563,6 +1609,7 @@ export function ChatSettingsPanel({
             />
           </div>
         </CollapsibleSection>
+
 
         <CollapsibleSection label="Sampling" defaultOpen={true}>
           <div className="flex flex-col gap-5 pt-1">
@@ -1685,6 +1732,7 @@ export function ChatSettingsPanel({
           <CollapsibleSection label="Tools">
             <div className="flex flex-col gap-5 pt-1">
               <AutoHealToolCallsToggle />
+              <NudgeToolCallsToggle />
               <ConfirmToolCallsToggle />
               <BypassPermissionsToggle />
               <MaxToolCallsSlider />
@@ -1715,20 +1763,96 @@ export function ChatSettingsPanel({
               the preset.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
+          <div className="space-y-3">
             <div className="space-y-0.5 px-0.5">
-              <div className="text-[11px] font-medium">Prompt editor</div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[11px] font-medium">Prompt editor</div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSystemVariablesOpen((open) => !open)}
+                  className="h-7 gap-1.5 rounded-full px-2.5 text-[11px] text-muted-foreground"
+                  aria-expanded={systemVariablesOpen}
+                >
+                  <Braces className="size-3.5" />
+                  Variables
+                  <ChevronDown
+                    className={cn(
+                      "size-3.5 transition-transform",
+                      systemVariablesOpen && "rotate-180",
+                    )}
+                  />
+                </Button>
+              </div>
               <p className="text-[11px] text-muted-foreground">
                 Use this for longer edits. Save writes back to the active
-                configuration only.
+                configuration only. Insert variables with {"{{ env }}"}.
               </p>
             </div>
+            {systemVariablesOpen ? (
+              <div className="space-y-2 px-0.5">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="space-y-0.5">
+                    <div className="text-[11px] font-medium">
+                      Prompt variables
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Define values as JSON below, then use each key in your
+                      prompt, like {"{{ env }}"}.
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    <span className="text-[10px] text-muted-foreground">
+                      Built-in, fill in automatically
+                    </span>
+                    <div className="flex flex-wrap justify-end gap-1">
+                      {["{{$date}}", "{{$time}}", "{{$now}}"].map((token) => (
+                        <span
+                          key={token}
+                          title={`${token} is replaced automatically when you send`}
+                          className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
+                        >
+                          {token}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <Textarea
+                  value={systemVariablesDraft}
+                  onChange={(event) =>
+                    setSystemVariablesDraft(event.target.value)
+                  }
+                  placeholder='{ "env": "staging", "version": "v2.3.1" }'
+                  fieldSizing="fixed"
+                  className={cn(
+                    "min-h-24 border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0",
+                    systemVariablesError &&
+                      "ring-1 ring-destructive focus-visible:ring-destructive",
+                  )}
+                  rows={5}
+                  aria-label="Prompt variables JSON"
+                  aria-invalid={Boolean(systemVariablesError)}
+                />
+                {systemVariablesError ? (
+                  <p className="px-1 text-[11px] text-destructive">
+                    {systemVariablesError}
+                  </p>
+                ) : (
+                  <p className="px-1 text-[11px] text-muted-foreground">
+                    Names you don&apos;t define are left unchanged, so a stray
+                    {" {{ typo }} "}stays visible in the prompt.
+                  </p>
+                )}
+              </div>
+            ) : null}
             <Textarea
               value={systemPromptDraft}
               onChange={(event) => setSystemPromptDraft(event.target.value)}
               placeholder="You are a helpful assistant..."
               fieldSizing="fixed"
-              className="min-h-[24rem] max-h-[50vh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
+              className="min-h-[20rem] max-h-[48vh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
               rows={14}
             />
           </div>
@@ -1747,7 +1871,8 @@ export function ChatSettingsPanel({
                 type="button"
                 variant="ghost"
                 onClick={() => {
-                  setSystemPromptDraft(params.systemPrompt);
+                  setSystemPromptDraft(currentSystemPrompt);
+                  setSystemVariablesDraft(currentSystemVariables);
                   setSystemPromptEditorOpen(false);
                 }}
               >
@@ -1756,7 +1881,9 @@ export function ChatSettingsPanel({
               <Button
                 type="button"
                 onClick={saveSystemPromptEditor}
-                disabled={!systemPromptEditorDirty}
+                disabled={
+                  !systemPromptEditorDirty || Boolean(systemVariablesError)
+                }
               >
                 Save
               </Button>
@@ -1775,7 +1902,9 @@ export function ChatSettingsPanel({
             <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
           </SheetHeader>
-          <div className="flex h-full flex-col">{settingsContent}</div>
+          <div data-tour="chat-settings" className="flex h-full flex-col">
+            {settingsContent}
+          </div>
         </SheetContent>
       </Sheet>
     );
@@ -1783,7 +1912,15 @@ export function ChatSettingsPanel({
 
   return (
     <aside
-      className={`relative z-50 shrink-0 h-full overflow-hidden bg-panel-surface text-panel-surface-fg font-heading ${open ? "w-[17rem] border-l border-sidebar-border" : "w-0"}`}
+      data-tour="chat-settings"
+      className={cn(
+        "relative z-50 shrink-0 overflow-hidden bg-panel-surface text-panel-surface-fg font-heading",
+        open ? "w-[17rem] border-l border-sidebar-border" : "w-0",
+      )}
+      style={{
+        height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
+        marginTop: "var(--studio-custom-titlebar-height, 0px)",
+      }}
     >
       <div className="h-full w-full">{settingsContent}</div>
     </aside>
@@ -1865,6 +2002,30 @@ function AutoHealToolCallsToggle() {
         className="panel-switch"
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
+      />
+    </div>
+  );
+}
+
+function NudgeToolCallsToggle() {
+  const nudgeToolCalls = useChatRuntimeStore((s) => s.nudgeToolCalls);
+  const setNudgeToolCalls = useChatRuntimeStore((s) => s.setNudgeToolCalls);
+
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Nudge Tool Calls
+        </span>
+        <InfoHint>
+          When a tool call cannot be repaired, re-ask the model once so the
+          intended tool still runs. API requests stay opt-in.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch"
+        checked={nudgeToolCalls}
+        onCheckedChange={setNudgeToolCalls}
       />
     </div>
   );

@@ -1221,6 +1221,8 @@ _WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "work
 _EXPORT_WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "export" / "worker.py"
 # Shared torchao Windows-ROCm stub used by both workers.
 _TORCHAO_STUB_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "_torchao_stub.py"
+# RAG embedder -- runs in the main backend process and also needs the stub.
+_EMBEDDINGS_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "rag" / "embeddings.py"
 # Wheel-probe script literal lives in wheel_utils after the resolver refactor.
 _WHEEL_UTILS_PATH = PACKAGE_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py"
 
@@ -1471,12 +1473,14 @@ class TestHardwareAmdBranching:
         assert "from . import amd" in source
 
     def test_hardware_branches_on_is_rocm_for_utilization(self):
-        """get_gpu_utilization dispatches to amd.py via _smi_query when IS_ROCM."""
+        """get_gpu_utilization dispatches visible metrics through amd.py on ROCm."""
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
-        assert '_smi_query("get_primary_gpu_utilization"' in func_body
+        assert "_smi_query(" in func_body
+        assert '"get_visible_gpu_utilization"' in func_body
+        assert "_reconcile_rocm_unified_memory" in func_body
         smi = source[
             source.find("def _smi_query") : source.find("\ndef ", source.find("def _smi_query") + 1)
         ]
@@ -2292,6 +2296,70 @@ class TestRocmTorchInstalledEnvVar:
         mock_bnb.assert_not_called()
 
 
+class TestWindowsRocmTorchaoGuard:
+    """Verify the torchao skip can detect an installed Windows ROCm torch build."""
+
+    def test_installed_torch_is_windows_rocm_accepts_rocm_probe(self):
+        rv = MagicMock()
+        rv.returncode = 0
+        rv.stdout = "yes"
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod.subprocess, "run", return_value = rv),
+        ):
+            assert stack_mod._installed_torch_is_windows_rocm() is True
+
+    def test_installed_torch_is_windows_rocm_rejects_non_rocm_probe(self):
+        rv = MagicMock()
+        rv.returncode = 0
+        rv.stdout = ""
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod.subprocess, "run", return_value = rv),
+        ):
+            assert stack_mod._installed_torch_is_windows_rocm() is False
+
+    def test_installed_torch_is_windows_rocm_is_non_windows_noop(self):
+        with patch.object(stack_mod, "IS_WINDOWS", False):
+            assert stack_mod._installed_torch_is_windows_rocm() is False
+
+    @patch.object(stack_mod, "_repair_bad_anyio")
+    @patch.object(stack_mod, "_ensure_rocm_torch")
+    @patch.object(stack_mod, "_ensure_cuda_torch")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True)
+    @patch.object(stack_mod, "run")
+    @patch.object(stack_mod, "pip_install")
+    def test_install_python_stack_skips_torchao_when_windows_rocm_torch_is_installed(
+        self, mock_pip, mock_run, mock_has_nvidia, mock_cuda, mock_rocm, mock_anyio, tmp_path
+    ):
+        unstructured_plugin = tmp_path / "unstructured"
+        github_plugin = tmp_path / "github"
+        unstructured_plugin.mkdir()
+        github_plugin.mkdir()
+
+        subprocess_result = MagicMock()
+        subprocess_result.returncode = 0
+        subprocess_result.stdout = ""
+
+        with (
+            patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}),
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod, "IS_MACOS", False),
+            patch.object(stack_mod, "IS_MAC_ARM", False),
+            patch.object(stack_mod, "NO_TORCH", False),
+            patch.object(stack_mod, "_rocm_windows_torch_installed", False),
+            patch.object(stack_mod, "_bootstrap_uv", return_value = False),
+            patch.object(stack_mod, "_installed_torch_is_windows_rocm", return_value = True),
+            patch.object(stack_mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin),
+            patch.object(stack_mod, "LOCAL_DD_GITHUB_PLUGIN", github_plugin),
+            patch.object(stack_mod.subprocess, "run", return_value = subprocess_result),
+        ):
+            assert stack_mod.install_python_stack() == 0
+
+        installed_specs = [str(arg) for call in mock_pip.call_args_list for arg in call.args]
+        assert not any("torchao" in arg for arg in installed_specs)
+
+
 # TEST: worker.py -- Windows ROCm patches (source-level checks)
 
 
@@ -2327,6 +2395,13 @@ class TestWorkerWindowsRocmPatches:
     def test_export_worker_calls_shared_torchao_stub(self):
         """export/worker.py must invoke the same shared torchao stub entrypoint."""
         source = _EXPORT_WORKER_PATH.read_text(encoding = "utf-8")
+        assert "install_torchao_windows_rocm_stub()" in source
+
+    def test_embedder_calls_shared_torchao_stub(self):
+        """embeddings.py must install the stub before importing sentence-transformers:
+        it runs in the main process (not a stubbed worker), so otherwise transformers
+        -> torchao crashes on Windows ROCm and the embedder drops to llama-server."""
+        source = _EMBEDDINGS_PATH.read_text(encoding = "utf-8")
         assert "install_torchao_windows_rocm_stub()" in source
 
     def test_torchao_stub_uses_stub_type_meta(self):
@@ -3351,8 +3426,9 @@ class TestInstallShDropinPersistence:
     def test_gate5_early_return_persists_dropin(self):
         """The rocminfo-already-works early return must call the persist helper before returning."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        # The persist call must precede `return 0` at the rocminfo gfx1151 gate.
-        gate = source.find("Name:[[:space:]]*gfx1151")
+        # The persist call must precede `return 0` at the rocminfo GPU-agent gate
+        # (uniquely identified by the `!/generic/` clause the other probes lack).
+        gate = source.find("Name:[[:space:]]*gfx[1-9]/ && !/generic/")
         assert gate != -1
         window = source[gate : gate + 900]
         assert "_persist_rocm_wsl_dropin" in window
@@ -3364,6 +3440,49 @@ class TestInstallShDropinPersistence:
         body = source[body_start : body_start + 1200]
         assert "librocdxg.so" in body
         assert "profile.d/unsloth-rocm-wsl.sh" in body
+
+
+_STRIXHALO_WSL_PATH = PACKAGE_ROOT / "scripts" / "install_rocm_wsl_strixhalo.sh"
+
+
+class TestWslRerouteNvidiaGuard:
+    """_maybe_reroute_strixhalo_to_2404 must skip the AMD reroute on hybrid AMD+NVIDIA hosts by
+    reusing _has_usable_nvidia_gpu (CUDA_VISIBLE_DEVICES-aware + /proc/driver/nvidia fallback),
+    which must be defined before the reroute's call site so it is actually available."""
+
+    def test_reroute_calls_nvidia_helper_before_amd_signal(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        start = source.find("_maybe_reroute_strixhalo_to_2404()")
+        assert start != -1
+        body = source[start : start + 1200]
+        nv = body.find("_has_usable_nvidia_gpu")
+        wmi = body.find("_wsl_amd_gpu_name")
+        assert nv != -1, "reroute must consult _has_usable_nvidia_gpu before deciding to reroute"
+        assert wmi != -1
+        # The NVIDIA guard must precede the AMD/WMI signal and return early.
+        assert nv < wmi
+        assert body.find("return 0", nv) < wmi
+
+    def test_nvidia_helper_and_deps_defined_before_reroute_callsite(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        call = source.find("\n_maybe_reroute_strixhalo_to_2404 || true")
+        assert call != -1
+        for fn in ("_run_bounded() {", "_cvd_hides_nvidia() {", "_has_usable_nvidia_gpu() {"):
+            idx = source.find(fn)
+            assert idx != -1 and idx < call, f"{fn} must be defined before the reroute call"
+
+
+class TestStrixhaloGfxOverridePipefail:
+    """The UNSLOTH_WSL_GFX override check must use a consuming grep, not grep -q: under
+    `set -o pipefail` an early -q exit SIGPIPEs printf and misreports the arch on large output."""
+
+    def test_gfx_override_uses_consuming_grep(self):
+        source = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
+        idx = source.find('grep -E "Name:[[:space:]]*${GFX}')
+        assert idx != -1, "GFX override must use a consuming grep -E (not grep -q)"
+        line = source[idx : source.find("\n", idx)]
+        assert ">/dev/null" in line
+        assert 'grep -qE "Name:[[:space:]]*${GFX}' not in source
 
 
 class TestLlamaCppRuntimeWslOrdering:

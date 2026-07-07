@@ -163,7 +163,7 @@ jobs:
             'pytest==9.0.3' \
             'pytest-asyncio==1.3.0' \
             'httpx==0.28.1'
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch==2.10.0'
           # github.com occasionally 500s on the git fetch; retry the
           # zoo install so a single upstream blip does not fail CI.
@@ -231,41 +231,126 @@ jobs:
             tests/studio/test_is_mlx_dispatch_gate.py \
             tests/studio/test_mlx_training_worker_behaviors.py
 
-      # Studio prebuilt llama.cpp install + GGUF inference. Mirrors the
-      # path Studio's setup.sh takes on macOS since #5963: plan against
-      # the unslothai/llama.cpp fork's latest release, which ships the
-      # bin-macos-arm64 bundle plus the llama-prebuilt-manifest.json the
-      # default policy reads. After install, downloads a small published
-      # GGUF (unsloth/gemma-3-270m-it-GGUF, Q4_K_M) and validates
-      # llama-server /completion end to end. An install failure or a
-      # non-zero binary exit is an Unsloth/Studio bug.
-      - name: Studio prebuilt llama.cpp install + GGUF inference (Mac M1)
+      # Real MLX training + inference smoke test. Trains
+      # unsloth/gemma-3-270m-it for 7 deterministic LoRA steps
+      # (batch_size=2, gradient_accumulation_steps=3) on a single
+      # repeated row ("<<HELLO!!>> My name is Unsloth!"), then saves
+      # the trained model in 3 export formats. The `train` subcommand
+      # captures per-phase timing + peak GPU + peak RSS into
+      # train_metrics.json so we can detect regressions across CI runs.
+      - name: MLX export round-trip — TRAIN + SAVE 3 formats
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          # install_llama_prebuilt.py hits the GitHub releases API to
-          # resolve the asset URL. Anonymous calls share the runner-IP
-          # rate-limit bucket and 403 quickly -- pass the workflow's
-          # automatic GITHUB_TOKEN to bump us to the 5000/hr authenticated
-          # bucket.
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          mkdir -p mlx_workdir
+          # Authenticate llama.cpp's release-API lookup (anonymous 403s on rate-limit);
+          # read-only GITHUB_TOKEN scoped here only, never to steps that run binaries.
+          GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
+          python tests/studio/run_real_mlx_smoke.py train \
+            --workdir "$PWD/mlx_workdir"
+
+      # Each reload step runs in a FRESH Python process to confirm
+      # the cold-start path users would hit in production also works
+      # (not just the in-memory continuation of a still-running
+      # trainer). FastMLXModel.from_pretrained gets called from
+      # scratch; mx.random is re-seeded; per-step timing + peak
+      # memory are emitted to {format}_reload_metrics.json next to
+      # the saved dir.
+      - name: MLX export round-trip — RELOAD LoRA (fresh process)
+        env:
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          python tests/studio/run_real_mlx_smoke.py reload \
+            --format lora \
+            --dir "$PWD/mlx_workdir/lora"
+
+      - name: MLX export round-trip — RELOAD merged_16bit (fresh process)
+        env:
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          python tests/studio/run_real_mlx_smoke.py reload \
+            --format merged \
+            --dir "$PWD/mlx_workdir/merged_16bit"
+
+      # GGUF reload uses the llama-cli binary that save_pretrained_gguf
+      # built. If save_pretrained_gguf was skipped during train (e.g.
+      # llama.cpp's convert_hf_to_gguf asserts on the model's tokenizer
+      # vocab -- a downstream llama.cpp limitation, not an unsloth_zoo
+      # bug), this step emits a workflow warning and exits 0 so the
+      # LoRA + merged_16bit assertions remain the gating signal.
+      - name: MLX export round-trip — RELOAD GGUF via llama-cli (fresh process)
+        env:
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          if python -c "import json,sys; m=json.load(open('mlx_workdir/train_metrics.json')); sys.exit(0 if m.get('gguf_supported') else 1)"; then
+            python tests/studio/run_real_mlx_smoke.py reload \
+              --format gguf \
+              --dir "$PWD/mlx_workdir/gguf"
+          else
+            REASON=$(python -c "import json; m=json.load(open('mlx_workdir/train_metrics.json')); print(m.get('gguf_skip_reason') or 'unknown')")
+            echo "::warning title=GGUF round-trip skipped::${REASON}"
+            echo "GGUF export was skipped during the train phase. Reason:"
+            echo "  ${REASON}"
+            echo "Continuing without failing the job; the LoRA + merged_16bit"
+            echo "reload assertions are still gating this PR."
+          fi
+
+      # Print all metrics JSON files so regressions are visible in the
+      # job log. always() so we get telemetry even if a reload step
+      # asserted gibberish.
+      - name: MLX export round-trip — aggregate metrics
+        if: always()
+        run: |
+          for f in mlx_workdir/train_metrics.json \
+                   mlx_workdir/lora_reload_metrics.json \
+                   mlx_workdir/merged_reload_metrics.json \
+                   mlx_workdir/gguf_reload_metrics.json; do
+            echo "=== $f ==="
+            cat "$f" 2>/dev/null || echo "(missing)"
+            echo
+          done
+
+      # Validates the macOS prebuilt path Studio's setup.sh uses (#5963): install the
+      # unslothai/llama.cpp fork's latest release, download a small public GGUF, and
+      # check llama-server /completion end to end. Split and placed last so the
+      # untrusted binary runs only in the final smoke step, after every HF_TOKEN step,
+      # leaving no token-bearing step or shared workspace for a tampered prebuilt to
+      # corrupt. GH_TOKEN: releases API; HF_TOKEN (withheld on PR): probe + GGUF fetch.
+      - name: Studio prebuilt llama.cpp install + GGUF download (Mac M1)
+        env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           set -euo pipefail
           INSTALL_DIR="$HOME/.unsloth-studio-prebuilt-test/llama.cpp"
           rm -rf "$INSTALL_DIR"
-          # Mirror studio/setup.sh on macOS (the install.sh user path):
-          # it plans against the unslothai/llama.cpp fork's latest
-          # release with no policy or tag flags.
+          # Download only -- no llama-quantize / llama-server launch in this step.
           python studio/install_llama_prebuilt.py \
             --install-dir "$INSTALL_DIR" \
             --published-repo unslothai/llama.cpp
+          mkdir -p /tmp/ggufs
+          bash .github/scripts/hf-download-with-retry.sh \
+            'unsloth/gemma-3-270m-it-GGUF' \
+            'gemma-3-270m-it-Q4_K_M.gguf' \
+            /tmp/ggufs
 
-          # Studio bundles only llama-server + llama-quantize from the
-          # prebuilt (not llama-cli) -- inference goes through
-          # llama-server's HTTP /completion endpoint. Validate both:
-          # llama-quantize --help proves the dynamic libs link, then
-          # spin up llama-server and POST a /completion request on a
-          # tiny published GGUF.
+      # Final step: runs the downloaded binaries with no secrets present, and clears
+      # the GitHub Actions command files so a tampered prebuilt cannot influence the job.
+      - name: Studio prebuilt llama.cpp GGUF inference smoke (Mac M1)
+        run: |
+          set -euo pipefail
+          unset GITHUB_ENV GITHUB_PATH GITHUB_OUTPUT GITHUB_STEP_SUMMARY
+          INSTALL_DIR="$HOME/.unsloth-studio-prebuilt-test/llama.cpp"
+          # Studio bundles only llama-server + llama-quantize (not llama-cli);
+          # inference goes through llama-server's HTTP /completion endpoint.
           LLAMA_SERVER="$INSTALL_DIR/build/bin/llama-server"
           LLAMA_QUANT="$INSTALL_DIR/build/bin/llama-quantize"
           [ -x "$LLAMA_SERVER" ] || { echo "::error::llama-server missing at $LLAMA_SERVER"; find "$INSTALL_DIR/build" -type f | head -40; exit 1; }
@@ -273,12 +358,6 @@ jobs:
           echo "llama-server : $LLAMA_SERVER"
           echo "llama-quantize: $LLAMA_QUANT"
           "$LLAMA_QUANT" --help >/dev/null && echo "  llama-quantize loads OK"
-
-          mkdir -p /tmp/ggufs
-          bash .github/scripts/hf-download-with-retry.sh \
-            'unsloth/gemma-3-270m-it-GGUF' \
-            'gemma-3-270m-it-Q4_K_M.gguf' \
-            /tmp/ggufs
 
           PORT=18080
           echo "=== starting llama-server on 127.0.0.1:$PORT ==="
@@ -322,82 +401,3 @@ jobs:
             exit 1
           fi
           echo "OK: Studio prebuilt llama.cpp on Mac M1 + GGUF /completion works"
-
-      # Real MLX training + inference smoke test. Trains
-      # unsloth/gemma-3-270m-it for 7 deterministic LoRA steps
-      # (batch_size=2, gradient_accumulation_steps=3) on a single
-      # repeated row ("<<HELLO!!>> My name is Unsloth!"), then saves
-      # the trained model in 3 export formats. The `train` subcommand
-      # captures per-phase timing + peak GPU + peak RSS into
-      # train_metrics.json so we can detect regressions across CI runs.
-      - name: MLX export round-trip — TRAIN + SAVE 3 formats
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          UNSLOTH_COMPILE_DISABLE: '1'
-        run: |
-          mkdir -p mlx_workdir
-          python tests/studio/run_real_mlx_smoke.py train \
-            --workdir "$PWD/mlx_workdir"
-
-      # Each reload step runs in a FRESH Python process to confirm
-      # the cold-start path users would hit in production also works
-      # (not just the in-memory continuation of a still-running
-      # trainer). FastMLXModel.from_pretrained gets called from
-      # scratch; mx.random is re-seeded; per-step timing + peak
-      # memory are emitted to {format}_reload_metrics.json next to
-      # the saved dir.
-      - name: MLX export round-trip — RELOAD LoRA (fresh process)
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          UNSLOTH_COMPILE_DISABLE: '1'
-        run: |
-          python tests/studio/run_real_mlx_smoke.py reload \
-            --format lora \
-            --dir "$PWD/mlx_workdir/lora"
-
-      - name: MLX export round-trip — RELOAD merged_16bit (fresh process)
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          UNSLOTH_COMPILE_DISABLE: '1'
-        run: |
-          python tests/studio/run_real_mlx_smoke.py reload \
-            --format merged \
-            --dir "$PWD/mlx_workdir/merged_16bit"
-
-      # GGUF reload uses the llama-cli binary that save_pretrained_gguf
-      # built. If save_pretrained_gguf was skipped during train (e.g.
-      # llama.cpp's convert_hf_to_gguf asserts on the model's tokenizer
-      # vocab -- a downstream llama.cpp limitation, not an unsloth_zoo
-      # bug), this step emits a workflow warning and exits 0 so the
-      # LoRA + merged_16bit assertions remain the gating signal.
-      - name: MLX export round-trip — RELOAD GGUF via llama-cli (fresh process)
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          if python -c "import json,sys; m=json.load(open('mlx_workdir/train_metrics.json')); sys.exit(0 if m.get('gguf_supported') else 1)"; then
-            python tests/studio/run_real_mlx_smoke.py reload \
-              --format gguf \
-              --dir "$PWD/mlx_workdir/gguf"
-          else
-            REASON=$(python -c "import json; m=json.load(open('mlx_workdir/train_metrics.json')); print(m.get('gguf_skip_reason') or 'unknown')")
-            echo "::warning title=GGUF round-trip skipped::${REASON}"
-            echo "GGUF export was skipped during the train phase. Reason:"
-            echo "  ${REASON}"
-            echo "Continuing without failing the job; the LoRA + merged_16bit"
-            echo "reload assertions are still gating this PR."
-          fi
-
-      # Print all metrics JSON files so regressions are visible in the
-      # job log. always() so we get telemetry even if a reload step
-      # asserted gibberish.
-      - name: MLX export round-trip — aggregate metrics
-        if: always()
-        run: |
-          for f in mlx_workdir/train_metrics.json \
-                   mlx_workdir/lora_reload_metrics.json \
-                   mlx_workdir/merged_reload_metrics.json \
-                   mlx_workdir/gguf_reload_metrics.json; do
-            echo "=== $f ==="
-            cat "$f" 2>/dev/null || echo "(missing)"
-            echo
-          done

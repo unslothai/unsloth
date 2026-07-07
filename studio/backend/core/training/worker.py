@@ -44,6 +44,7 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
 
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
+from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
@@ -1252,32 +1253,48 @@ def _adapt_for_mlx_vlm(
     return adapted
 
 
-_MLX_STUDIO_OPTIM_MAP = {
-    "adamw_8bit": "adamw",
-    "paged_adamw_8bit": "adamw",
-    "adamw_bnb_8bit": "adamw",
-    "paged_adamw_32bit": "adamw",
-    "adamw_torch": "adamw",
-    "adamw_torch_fused": "adamw",
-    "adamw": "adamw",
-    "adafactor": "adafactor",
-    "sgd": "sgd",
-    "adam": "adam",
-    "muon": "muon",
-    "lion": "lion",
-}
 _MLX_STUDIO_LR_SCHEDULERS = {"linear", "cosine", "constant"}
 
 
+# Fallback alias map mirroring unsloth_zoo._normalize_mlx_optimizer_name, used
+# only when mlx (Apple Silicon) is not importable so Studio config validation
+# still works on non-MLX hosts. The zoo function stays the source of truth.
+_MLX_STUDIO_ADAMW_ALIASES = frozenset(
+    (
+        "adamw_8bit",
+        "paged_adamw_8bit",
+        "adamw_bnb_8bit",
+        "paged_adamw_32bit",
+        "adamw_torch",
+        "adamw_torch_fused",
+        "paged_adamw",
+        "adamw_32bit",
+        "adamw_hf",
+        "adamw_anyprecision",
+        "adamw_apex_fused",
+    )
+)
+_MLX_STUDIO_NATIVE_OPTIMIZERS = ("adafactor", "adamw", "adam", "sgd", "muon", "lion")
+
+
 def _normalize_mlx_studio_optimizer(value):
-    raw = str(value or "adamw_8bit").strip().lower()
     try:
-        return _MLX_STUDIO_OPTIM_MAP[raw]
-    except KeyError:
-        supported = ", ".join(sorted(_MLX_STUDIO_OPTIM_MAP))
-        raise ValueError(
-            f"Unsupported optimizer for MLX training: {value!r}. " f"Supported values: {supported}."
-        )
+        from unsloth_zoo.mlx.trainer import _normalize_mlx_optimizer_name
+        return _normalize_mlx_optimizer_name(value or "adamw_8bit")
+    except (ImportError, ValueError):
+        # Missing mlx, or an older unsloth-zoo whose normalizer lacks CUDA/TRL
+        # aliases: map common adamw_* names locally so notebook defaults work.
+        opt = str(getattr(value, "value", value) or "adamw_8bit").strip().lower()
+        opt = opt.rsplit(".", 1)[-1].replace("-", "_")
+        if opt in _MLX_STUDIO_ADAMW_ALIASES:
+            opt = "adamw"
+        if opt not in _MLX_STUDIO_NATIVE_OPTIMIZERS:
+            supported = ", ".join(_MLX_STUDIO_NATIVE_OPTIMIZERS)
+            raise ValueError(
+                f"Unsupported optimizer for MLX training: {value!r}. "
+                f"Supported optimizers: {supported}."
+            )
+        return opt
 
 
 def _normalize_mlx_studio_scheduler(value):
@@ -1787,11 +1804,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # ── 5. Build output dir ──
     # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
-    from utils.paths import resolve_output_dir, ensure_dir, default_run_dir_name
+    from utils.paths import resolve_output_dir, ensure_dir
 
     output_dir = config.get("output_dir", "")
     if not output_dir:
-        output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
+        output_dir = build_default_output_dir_name(
+            model_name,
+            config.get("project_name"),
+        )
     output_dir = str(resolve_output_dir(output_dir))
     ensure_dir(Path(output_dir))
 
@@ -3019,7 +3039,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             resume_from_checkpoint
         )
         if not output_dir:
-            output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
+            output_dir = build_default_output_dir_name(
+                model_name,
+                config.get("project_name"),
+            )
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
 
@@ -3500,7 +3523,10 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         resume_from_checkpoint
     )
     if not output_dir:
-        output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
+        output_dir = build_default_output_dir_name(
+            model_name,
+            config.get("project_name"),
+        )
     output_dir = str(resolve_output_dir(output_dir))
 
     num_epochs = config.get("num_epochs", 2)

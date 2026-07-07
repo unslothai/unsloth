@@ -8,6 +8,10 @@ import {
   type ModelOption,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
+import {
+  loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -508,7 +512,7 @@ function CompareShell({
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
         <div
           data-tour="chat-compare-view"
-          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col md:flex-row"
+          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col pt-[var(--studio-content-top-inset,0px)] md:flex-row"
         >
           {children}
         </div>
@@ -602,7 +606,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           handleName="lora"
           borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
           header={
-            <div className="shrink-0 px-3 py-1.5 text-start md:text-end">
+            <div className="shrink-0 px-3 py-1.5 text-start md:text-end md:pr-[calc(4rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned
               </span>
@@ -646,11 +650,16 @@ function GeneralCompareHeader({
   // Controlled so the body-portaled popover can't linger over another tab off-route.
   const active = useChatActive();
   const [selectorOpen, setSelectorOpen] = useState(false);
+  const { pinned } = useSidebar();
   return (
     <div
       className={cn(
-        "flex h-[48px] shrink-0 items-start pt-[11px] gap-2 bg-background",
-        side === "left" ? "pl-12 pr-3 md:pl-2" : "pl-3 pr-12",
+        "pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+        side === "left"
+          ? pinned
+            ? "pl-12 pr-3 md:pl-2"
+            : "pl-12 pr-3 md:pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
+          : "pl-3 pr-[calc(3rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
       )}
     >
       <ModelSelector
@@ -663,7 +672,7 @@ function GeneralCompareHeader({
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         variant="ghost"
-        className="max-w-[80%] !h-[34px]"
+        className="pointer-events-auto max-w-[80%] !h-[var(--studio-chat-control-height,34px)]"
         open={active && selectorOpen}
         onOpenChange={(open) => setSelectorOpen(active && open)}
       />
@@ -1275,13 +1284,18 @@ export function ChatPage({
     selectModelRef.current = selectModel;
   }, [refresh, selectModel]);
   // Load a cached autoLoad pick once its download finishes. The sheet was never
-  // opened, so on a load failure just drop the orphaned staged knobs.
+  // opened, so on a load failure just drop the orphaned staged knobs. The knobs
+  // were already seeded on stage, so keepSpeculative only when a config was
+  // saved -- otherwise the standing speculative preference should win.
   autoLoadStagedRef.current = (pending) => {
+    const remembered = loadRememberedLoadSettings(
+      rememberedLoadSettingsKey(pending),
+    );
     void selectModel({
       ...pending,
       isDownloaded: true,
       forceReload: true,
-      keepSpeculative: false,
+      keepSpeculative: remembered != null,
       throwOnError: true,
     }).catch(() => {
       const store = useChatRuntimeStore.getState();
@@ -1648,10 +1662,21 @@ export function ChatPage({
         (!hasGgufSource(selection) && !wantManagerDownload) ||
         (store.loadOnSelection && selection.isDownloaded)
       ) {
-        // Detach any staged pick first so its edited knobs don't leak into this
-        // immediate load. Detach (not abandon) keeps its download running.
+        // Detach any staged pick first so its edited knobs (e.g. a custom
+        // context length) don't leak into this immediate load -- resolveLoad
+        // reads customContextLength before checking the target is GGUF. Detach
+        // (not abandon) keeps its download running.
         detachStaged();
-        await selectModel(selection);
+        // Load-on-selection skips the sheet, so seed the saved knobs here the
+        // way the sheet's restore effect would; the switch would otherwise reset
+        // the remembered speculative choice (keepSpeculative below prevents it).
+        const remembered = hasGgufSource(selection)
+          ? loadRememberedLoadSettings(rememberedLoadSettingsKey(selection))
+          : null;
+        if (remembered) store.applyRememberedLoadSettings(remembered);
+        await selectModel(
+          remembered ? { ...selection, keepSpeculative: true } : selection,
+        );
         return;
       }
       // Loads can't queue behind each other, but a download is independent: if
@@ -2029,7 +2054,7 @@ export function ChatPage({
     () => setSettingsOpen(false),
     [setSettingsOpen],
   );
-  const { isMobile } = useSidebar();
+  const { isMobile, pinned } = useSidebar();
 
   const enterCompare = useCallback(() => {
     viewBeforeCompareRef.current = { ...search };
@@ -2357,19 +2382,23 @@ export function ChatPage({
             beneath it, instead of a hard cut. */}
         {view.mode !== "compare" && (
           <div
-            aria-hidden={true}
-            className="pointer-events-none absolute left-0 right-[10px] top-[48px] z-20 h-6 bg-gradient-to-b from-background to-[rgb(from_var(--background)_r_g_b/0)]"
+            aria-hidden
+            className="pointer-events-none absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
           className={cn(
-            "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
-            isMobile ? "pl-12 pr-1.5" : "pl-2",
+            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[10px] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            isMobile
+              ? "pl-12"
+              : pinned
+                ? "pl-2"
+                : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
-              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-2",
+              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
-          <div className="flex items-center gap-1">
+          <div className="pointer-events-auto flex items-center gap-1">
             {view.mode !== "compare" && (
               <ModelSelector
                 models={models}
@@ -2389,13 +2418,23 @@ export function ChatPage({
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
-                className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
+                className="max-w-[62vw] !pr-3 sm:max-w-none !h-[var(--studio-chat-control-height,34px)]"
               />
+            )}
+            {incognito && view.mode === "single" && (
+              <div className="flex h-[var(--studio-chat-control-height,34px)] shrink-0 items-center gap-1.5 self-center rounded-full bg-primary/10 px-2.5 font-medium text-[13px] text-primary">
+                <HugeiconsIcon
+                  icon={BubbleChatTemporaryIcon}
+                  strokeWidth={2}
+                  className="size-3.5"
+                />
+                <span>Temporary</span>
+              </div>
             )}
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"
-                className="flex h-[34px] min-w-0 items-center gap-1.5 self-center text-[13.5px] tracking-nav text-muted-foreground"
+                className="flex h-[var(--studio-chat-control-height,34px)] min-w-0 items-center gap-1.5 self-center text-[13.5px] tracking-nav text-muted-foreground"
               >
                 <ProjectSwitcher
                   currentProject={currentProject}
@@ -2454,7 +2493,7 @@ export function ChatPage({
               </div>
             ) : null}
           </div>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="pointer-events-auto ml-auto flex items-center gap-2">
             {view.mode === "single" && contextUsage ? (
               <ContextUsageBar
                 used={contextUsage.totalTokens}
@@ -2464,7 +2503,7 @@ export function ChatPage({
                 cacheWrites={contextUsage.cacheWriteTokens}
                 promptTokens={contextUsage.promptTokens}
                 completionTokens={contextUsage.completionTokens}
-                className="h-[34px]"
+                className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
             {view.mode === "single" && (
@@ -2474,7 +2513,7 @@ export function ChatPage({
                     type="button"
                     onClick={toggleIncognito}
                     className={cn(
-                      "flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       incognito
                         ? "bg-primary/10 text-primary hover:bg-primary/15"
                         : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
@@ -2504,9 +2543,8 @@ export function ChatPage({
                   <button
                     type="button"
                     onClick={() => setSettingsOpen(true)}
-                    className="flex h-[34px] w-[34px] translate-x-[2px] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex size-[var(--studio-chat-control-height,34px)] translate-x-[2px] cursor-pointer items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label="Open run settings"
-                    data-tour="chat-settings"
                   >
                     <HugeiconsIcon
                       icon={LayoutAlignRightIcon}

@@ -99,6 +99,7 @@ function Install-UnslothStudio {
     $TauriMode = $false
     $SkipTorch = $false
     $ShortcutsOnly = $false
+    $WithLlamaCppDir = ""
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
         switch ($argList[$i]) {
@@ -115,6 +116,14 @@ function Install-UnslothStudio {
                     return (Exit-InstallFailure "--package requires an argument.")
                 }
                 $PackageName = $argList[$i]
+            }
+            "--with-llama-cpp-dir" {
+                $i++
+                if ($i -ge $argList.Count) {
+                    Write-Host "[ERROR] --with-llama-cpp-dir requires a path argument." -ForegroundColor Red
+                    return (Exit-InstallFailure "--with-llama-cpp-dir requires a path argument.")
+                }
+                $WithLlamaCppDir = $argList[$i]
             }
         }
     }
@@ -2146,7 +2155,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -2160,7 +2169,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2226,7 +2235,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -2238,7 +2247,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -2266,7 +2275,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.6.6" "unsloth>=2026.6.8" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.6.7" "unsloth>=2026.6.9" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -2430,6 +2439,13 @@ exit 0
     }
     $studioArgs = @('studio', 'setup')
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
+    if ($WithLlamaCppDir) {
+        if (-not (Test-Path -LiteralPath $WithLlamaCppDir -PathType Container)) {
+            Write-Host "[ERROR] --with-llama-cpp-dir path does not exist: $WithLlamaCppDir" -ForegroundColor Red
+            return (Exit-InstallFailure "--with-llama-cpp-dir path does not exist.")
+        }
+        $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = (Resolve-Path -LiteralPath $WithLlamaCppDir).Path
+    }
     $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED = "1"
     # Hand the venv interpreter to setup.ps1 so it reuses the Python we already
     # resolved and built the venv with, instead of re-probing the system (which
@@ -2445,6 +2461,7 @@ exit 0
         } else {
             Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
         }
+        Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
     }
@@ -2595,6 +2612,7 @@ exit 0
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
             substep "(add -H 0.0.0.0 to allow network / cloud access)"
+            substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
             Write-Host ""
         }
     } else {
@@ -2615,6 +2633,7 @@ exit 0
             substep "unsloth studio -p 8888"
         }
         substep "(add -H 0.0.0.0 to allow network / cloud access)"
+        substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
         Write-Host ""
     }
 }

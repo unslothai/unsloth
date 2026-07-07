@@ -47,7 +47,7 @@ except ImportError:
     from utils.paths import resolve_dataset_path
 
 # Auth
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 
 from utils.utils import log_and_http_error
 
@@ -67,6 +67,11 @@ class TrainingStopRequest(PydanticBaseModel):
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+# Consecutive 1s polls without a step update that count as a stall. Applied only
+# once stepping: the pre-first-step phase (model load + tokenization) can take far
+# longer, and timing out there made a healthy long-prep run look frozen.
+_PROGRESS_STALL_TIMEOUT_POLLS = 1800  # ~30 min at 1 poll/sec
 
 
 def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset") -> list[str]:
@@ -109,7 +114,9 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
 
 @router.post("/start")
 async def start_training(
-    request: TrainingStartRequest, current_subject: str = Depends(get_current_subject)
+    request: TrainingStartRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """
     Start a training job.
@@ -119,6 +126,22 @@ async def start_training(
     """
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
+
+        # When Studio is driven as an inference API (API-key auth), refuse to start
+        # training while a request is in flight: training frees VRAM by unloading
+        # the chat model, which would kill the stream. The Studio UI (session auth)
+        # still starts training and coexists/frees VRAM as before. (A mixed UI+API
+        # session is not yet special-cased.)
+        if via_api_key is True:
+            from core.inference.llama_keepwarm import other_inference_request_count
+            if other_inference_request_count(current_request_counted = False) > 0:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "Cannot start training over the API while an inference request is in "
+                        "progress. Wait for it to finish, or start training from the Studio UI."
+                    ),
+                )
 
         # No in-process ensure_transformers_version(): the subprocess
         # (worker.py) activates the correct version before importing ML libs.
@@ -250,6 +273,7 @@ async def start_training(
         # Convert request to backend kwargs.
         training_kwargs = {
             "model_name": request.model_name,
+            "project_name": request.project_name,
             "training_type": request.training_type,
             "hf_token": request.hf_token or "",
             "load_in_4bit": request.load_in_4bit,
@@ -833,9 +857,20 @@ async def stream_training_progress(
         # ── Live polling loop ────────────────────────────────────
         last_step = resume_from_step if resume_from_step is not None else -1
         no_update_count = 0
-        max_no_updates = 1800  # Timeout after 30 min (large models need compile time)
+        # The stall timeout applies only once the run is stepping (pre-step prep
+        # may legitimately emit no step for a long time). On reconnect to an
+        # already-stepping run, seed from the resume point / history, else a worker
+        # that hangs after step N never times out for a client that reconnects past it.
+        seen_live_step = (resume_from_step is not None and resume_from_step > 0) or bool(
+            backend.step_history
+        )
 
         while backend.is_training_active():
+            # Client gone: end the generator without falling through to the final
+            # "complete" frame, which a buffered/proxy consumer could otherwise read
+            # as a finished run while training is still active.
+            if await request.is_disconnected():
+                return
             try:
                 tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
                 live_step = (getattr(tp_inner, "step", 0) or 0) if tp_inner else 0
@@ -871,6 +906,7 @@ async def stream_training_progress(
                         )
                         last_step = current_step
                         no_update_count = 0
+                        seen_live_step = True
                     else:
                         no_update_count += 1
                         # Heartbeat every 10 seconds.
@@ -913,8 +949,9 @@ async def stream_training_progress(
                             event_id = 0,
                         )
 
-                # Timeout check
-                if no_update_count > max_no_updates:
+                # Fires only once stepping: a long pre-first-step prep phase is not
+                # a stall, and ending the stream there made a healthy run look frozen.
+                if seen_live_step and no_update_count > _PROGRESS_STALL_TIMEOUT_POLLS:
                     logger.warning("Progress stream timeout - no updates received")
                     tp_timeout = getattr(
                         getattr(backend, "trainer", None), "training_progress", None
