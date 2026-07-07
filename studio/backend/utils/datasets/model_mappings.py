@@ -487,7 +487,7 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
     },
     "qwen3-thinking": {
         "instruction": "<|im_start|>user\n",
-        "response": "<|im_start|>assistant\n<think>\n\n",
+        "response": "<|im_start|>assistant\n<think>",
     },
     "qwen3": {
         "instruction": "<|im_start|>user\n",
