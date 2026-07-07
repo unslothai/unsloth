@@ -408,16 +408,39 @@ fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
     desktop_capability_stale_reason(capability).is_none()
 }
 
+/// Cheap launchability guard for the cached fast path. A matching capability
+/// fingerprint only proves the binary's path/size/mtime/markers are unchanged,
+/// not that it can still be executed: the executable bit may have been cleared
+/// without touching mtime/size. When the binary is clearly not launchable, skip
+/// the cache shortcut and fall back to the CLI help probe so preflight reports
+/// Stale/repair instead of letting a later backend start fail confusingly.
+#[cfg(unix)]
+fn managed_bin_is_executable(bin: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    match fs::metadata(bin) {
+        Ok(metadata) => metadata.permissions().mode() & 0o111 != 0,
+        // If we cannot stat the binary, let the CLI probe decide.
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn managed_bin_is_executable(_bin: &Path) -> bool {
+    true
+}
+
 pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     let started = Instant::now();
-    if let Some(fingerprint) = managed_bin_fingerprint(&bin) {
-        if read_cached_capability(&fingerprint).is_some() {
-            info!(
-                "Managed preflight: using cached desktop capability for {:?} in {}ms",
-                bin,
-                started.elapsed().as_millis()
-            );
-            return ManagedProbe::Ready { bin };
+    if managed_bin_is_executable(&bin) {
+        if let Some(fingerprint) = managed_bin_fingerprint(&bin) {
+            if read_cached_capability(&fingerprint).is_some() {
+                info!(
+                    "Managed preflight: using cached desktop capability for {:?} in {}ms",
+                    bin,
+                    started.elapsed().as_millis()
+                );
+                return ManagedProbe::Ready { bin };
+            }
         }
     }
 

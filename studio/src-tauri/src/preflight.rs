@@ -670,6 +670,51 @@ exit 1
         remove_managed_capability_cache();
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_cli_capability_cache_hit_rechecks_executable() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("cache-hit-exec");
+
+        remove_managed_capability_cache();
+        let fake = fake_cli(
+            "cap-cache-exec",
+            r#"#!/bin/sh
+if [ "$1" = "-h" ]; then exit 0; fi
+if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":1,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"version":"2026.5.3"}'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let bin = fake.bin.clone();
+
+        // Prime the capability cache with a successful full probe.
+        assert!(matches!(
+            probe_managed_bin(bin.clone()).await,
+            ManagedProbe::Ready { .. }
+        ));
+
+        // Clearing the executable bit leaves the fingerprint (path/size/mtime/
+        // markers) unchanged, so the cache still "matches", but the binary can
+        // no longer launch. Preflight must not report Ready from cache; it falls
+        // back to the CLI help probe, which fails to spawn and yields Stale.
+        let mut perms = fs::metadata(&bin).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&bin, perms).unwrap();
+
+        assert!(matches!(
+            probe_managed_bin(bin.clone()).await,
+            ManagedProbe::Stale { .. }
+        ));
+
+        remove_managed_capability_cache();
+    }
+
     const EXPECTED_ROOT_ID: &str =
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const OTHER_ROOT_ID: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

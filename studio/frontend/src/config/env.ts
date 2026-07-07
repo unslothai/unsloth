@@ -54,6 +54,16 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   isChatOnly: () => get().chatOnly,
 }));
 
+// A fetch that can only produce a browser fallback (unauthenticated response or
+// backend error) must not overwrite an authoritative server-reported platform
+// that already resolved. The post-render fetchDeviceType() in main.tsx runs
+// before auth is ready and can resolve after the authed root-route/provider
+// fetches; letting it write would reset deviceType, cloudflareUrl/serverUrl/
+// secure, and fetched. Forced refreshes are explicit re-reads, so they still write.
+function shouldKeepAuthoritativePlatform(force?: boolean): boolean {
+  return !force && usePlatformStore.getState().fetched;
+}
+
 // `force` re-reads /api/health even if cached, to pick up a late-arriving tunnel URL.
 export async function fetchDeviceType(options?: {
   force?: boolean;
@@ -81,6 +91,14 @@ export async function fetchDeviceType(options?: {
         server_url?: string | null;
         secure?: boolean;
       };
+      // A late unauthenticated response (no device_type) would only write the
+      // browser fallback, so keep an authoritative result that already landed.
+      if (
+        data.device_type === undefined &&
+        shouldKeepAuthoritativePlatform(options?.force)
+      ) {
+        return usePlatformStore.getState().deviceType;
+      }
       const deviceType = data.device_type ?? detectLocalPlatform();
       const chatOnly = data.chat_only ?? false;
       const chatOnlyReason = data.chat_only_reason ?? null;
@@ -101,7 +119,11 @@ export async function fetchDeviceType(options?: {
   } catch {
     // Backend not ready: use client-side detection so chat-only guard works
     // on initial load (important for macOS). Keep fetched=false so a later
-    // call retries against the backend.
+    // call retries against the backend. But a late non-forced failure must not
+    // wipe an authoritative platform that already resolved.
+    if (shouldKeepAuthoritativePlatform(options?.force)) {
+      return usePlatformStore.getState().deviceType;
+    }
     const deviceType = detectLocalPlatform();
     const chatOnly = deviceType === "mac";
     usePlatformStore.setState({ deviceType, chatOnly, fetched: false });
