@@ -117,7 +117,10 @@ import {
   CHAT_TOOLS_ENABLED_KEY,
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   hasGgufSource,
+  hasLoadedGgufSource,
+  hasUsableNativePathToken,
   isDownloadableHubRepo,
+  isNativePathTokenExpired,
   loadOptionalBool,
   pendingSelectionMatches,
   useChatRuntimeStore,
@@ -1760,6 +1763,7 @@ export function ChatPage({
         isDownloaded: selection.isDownloaded,
         expectedBytes: selection.expectedBytes,
         nativePathToken: selection.nativePathToken,
+        nativePathTokenExpiresAtMs: selection.nativePathTokenExpiresAtMs,
         isGguf: selection.isGguf,
         isHubRepo: wantManagerDownload || undefined,
         autoLoad: store.loadOnSelection,
@@ -1774,6 +1778,7 @@ export function ChatPage({
       await stageOrLoad({
         id: label,
         nativePathToken: intent.path.token,
+        nativePathTokenExpiresAtMs: intent.path.expiresAtMs,
         isDownloaded: true,
         loadingDescription,
         forceReload: true,
@@ -1946,6 +1951,7 @@ export function ChatPage({
           ggufMaxContextLength: null,
           ggufNativeContextLength: null,
           activeNativePathToken: null,
+          activeNativePathTokenExpiresAtMs: null,
           // Clear previous-model counters, else the relaxed external-provider
           // render gate shows stale stats until the next completion.
           contextUsage: null,
@@ -2155,6 +2161,28 @@ export function ChatPage({
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
+  const activeNativePathTokenExpiresAtMs = useChatRuntimeStore(
+    (s) => s.activeNativePathTokenExpiresAtMs,
+  );
+  useEffect(() => {
+    if (activeNativePathTokenExpiresAtMs == null) return;
+    const clearExpiredActiveToken = () => {
+      const state = useChatRuntimeStore.getState();
+      if (
+        state.activeNativePathToken &&
+        isNativePathTokenExpired(state.activeNativePathTokenExpiresAtMs)
+      ) {
+        useChatRuntimeStore.setState({ activeNativePathToken: null });
+      }
+    };
+    const delay = activeNativePathTokenExpiresAtMs - Date.now();
+    if (delay <= 0) {
+      clearExpiredActiveToken();
+      return;
+    }
+    const timer = window.setTimeout(clearExpiredActiveToken, delay + 1);
+    return () => window.clearTimeout(timer);
+  }, [activeNativePathTokenExpiresAtMs]);
   const externalModels = useMemo<ExternalModelOption[]>(
     () =>
       [...externalProvidersForChat]
@@ -2672,15 +2700,36 @@ export function ChatPage({
           const state = useChatRuntimeStore.getState();
           const checkpoint = state.params.checkpoint;
           if (checkpoint) {
-            const isLoadedGguf =
-              state.activeGgufVariant != null ||
-              state.activeNativePathToken != null ||
-              checkpoint.toLowerCase().endsWith(".gguf") ||
-              state.ggufContextLength != null;
+            const isLoadedGguf = hasLoadedGgufSource(state);
+            const isDirectGguf = checkpoint.toLowerCase().endsWith(".gguf");
+            const hasNativeToken = hasUsableNativePathToken({
+              nativePathToken: state.activeNativePathToken,
+              nativePathTokenExpiresAtMs: state.activeNativePathTokenExpiresAtMs,
+            });
+            if (
+              isLoadedGguf &&
+              state.activeGgufVariant == null &&
+              !isDirectGguf &&
+              !hasNativeToken
+            ) {
+              useChatRuntimeStore.setState({ activeNativePathToken: null });
+              const message =
+                "Pick or drop the local .gguf file again before applying settings.";
+              useChatRuntimeStore.getState().setModelsError(message);
+              toast.error("Local model selection expired", {
+                description: message,
+              });
+              return;
+            }
             selectModel({
               id: checkpoint,
               ggufVariant: state.activeGgufVariant ?? undefined,
-              nativePathToken: state.activeNativePathToken ?? undefined,
+              nativePathToken: hasNativeToken
+                ? (state.activeNativePathToken ?? undefined)
+                : undefined,
+              nativePathTokenExpiresAtMs: hasNativeToken
+                ? state.activeNativePathTokenExpiresAtMs
+                : undefined,
               forceReload: true,
               isDownloaded: true,
               isGguf: isLoadedGguf,

@@ -9,6 +9,7 @@ import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 
 import { fetchGgufContextLength } from "../api/chat-api";
 import {
+  isNativePathTokenExpired,
   isPendingGguf,
   pendingSelectionMatches,
   useChatRuntimeStore,
@@ -67,7 +68,14 @@ export function useStagedModelPreparation(opts?: {
   const fetchContextMetadata = useCallback(async () => {
     const current = useChatRuntimeStore.getState().pendingSelection;
     if (!current?.id || !isPendingGguf(current)) return;
-    const { id, ggufVariant, nativePathToken } = current;
+    const { id, ggufVariant, nativePathToken, nativePathTokenExpiresAtMs } =
+      current;
+    if (
+      nativePathToken &&
+      isNativePathTokenExpired(nativePathTokenExpiresAtMs)
+    ) {
+      return;
+    }
     try {
       const contextLength = await fetchGgufContextLength({
         model_path: id,

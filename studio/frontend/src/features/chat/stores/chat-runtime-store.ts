@@ -450,6 +450,9 @@ export type PendingModelSelection = {
   /** Native (drag-drop / picked-from-disk) GGUF: the path token used to read
    *  the header and to load. Absent for HF-repo models. */
   nativePathToken?: string;
+  /** Expiry for the native path token. Native tokens are short-lived grants,
+   *  not durable loaded-model identities. */
+  nativePathTokenExpiresAtMs?: number | null;
   /** Direct local .gguf file (custom folder / LM Studio): a GGUF source even
    *  though it carries neither an HF variant nor a native path token. */
   isGguf?: boolean;
@@ -474,6 +477,47 @@ export function hasGgufSource(x: {
 }): boolean {
   return (
     x.ggufVariant != null || x.nativePathToken != null || x.isGguf === true
+  );
+}
+
+export function isNativePathTokenExpired(
+  expiresAtMs?: number | null,
+  now = Date.now(),
+): boolean {
+  return (
+    typeof expiresAtMs === "number" &&
+    Number.isFinite(expiresAtMs) &&
+    expiresAtMs <= now
+  );
+}
+
+export function hasUsableNativePathToken(x: {
+  nativePathToken?: string | null;
+  nativePathTokenExpiresAtMs?: number | null;
+}): boolean {
+  return (
+    typeof x.nativePathToken === "string" &&
+    x.nativePathToken.length > 0 &&
+    !isNativePathTokenExpired(x.nativePathTokenExpiresAtMs)
+  );
+}
+
+export function hasLoadedGgufSource(x: {
+  activeGgufVariant?: string | null;
+  activeNativePathToken?: string | null;
+  activeNativePathTokenExpiresAtMs?: number | null;
+  ggufContextLength?: number | null;
+  params: { checkpoint: string };
+}): boolean {
+  return (
+    x.activeGgufVariant != null ||
+    hasUsableNativePathToken({
+      nativePathToken: x.activeNativePathToken,
+      nativePathTokenExpiresAtMs: x.activeNativePathTokenExpiresAtMs,
+    }) ||
+    x.activeNativePathTokenExpiresAtMs != null ||
+    x.params.checkpoint.toLowerCase().endsWith(".gguf") ||
+    x.ggufContextLength != null
   );
 }
 
@@ -716,6 +760,7 @@ type ChatRuntimeStore = {
   } | null;
   modelLoading: boolean;
   activeNativePathToken: string | null;
+  activeNativePathTokenExpiresAtMs: number | null;
   hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
@@ -1141,6 +1186,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   contextUsage: null,
   modelLoading: false,
   activeNativePathToken: null,
+  activeNativePathTokenExpiresAtMs: null,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -1326,6 +1372,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       },
       activeGgufVariant: null,
       activeNativePathToken: null,
+      activeNativePathTokenExpiresAtMs: null,
       pendingSelection: null,
       ggufContextLength: null,
       ggufMaxContextLength: null,

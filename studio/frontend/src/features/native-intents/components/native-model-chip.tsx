@@ -11,6 +11,7 @@ interface NativeModelChipProps {
   onLoad: (selection: {
     id: string;
     nativePathToken: string;
+    nativePathTokenExpiresAtMs: number;
     isDownloaded: boolean;
     loadingDescription: string;
     forceReload: boolean;
@@ -43,6 +44,7 @@ export function NativeModelChip({
       await onLoad({
         id: label,
         nativePathToken: intent.path.token,
+        nativePathTokenExpiresAtMs: intent.path.expiresAtMs,
         isDownloaded: true,
         loadingDescription: "Loading selected local GGUF model.",
         forceReload: true,

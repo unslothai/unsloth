@@ -106,6 +106,7 @@ import {
   providerSupportsFastMode,
 } from "./provider-capabilities";
 import {
+  hasLoadedGgufSource,
   isPendingGguf,
   pendingSelectionMatches,
   useChatRuntimeStore,
@@ -551,10 +552,17 @@ export function ChatSettingsPanel({
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
   );
-  const isLoadedGguf =
-    activeGgufVariant != null ||
-    activeNativePathToken != null ||
-    params.checkpoint.toLowerCase().endsWith(".gguf");
+  const activeNativePathTokenExpiresAtMs = useChatRuntimeStore(
+    (s) => s.activeNativePathTokenExpiresAtMs,
+  );
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const isLoadedGguf = hasLoadedGgufSource({
+    activeGgufVariant,
+    activeNativePathToken,
+    activeNativePathTokenExpiresAtMs,
+    ggufContextLength,
+    params,
+  });
   // While a pick is staged the sheet configures *that* model, so its GGUF-ness
   // (not the currently loaded model's) decides whether the GGUF-only controls
   // show. Otherwise a staged non-GGUF Hub repo would inherit the loaded GGUF's
@@ -599,7 +607,6 @@ export function ChatSettingsPanel({
     (s) => s.loadedSpecDraftNMax,
   );
   const currentCheckpoint = params.checkpoint;
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const ggufMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
