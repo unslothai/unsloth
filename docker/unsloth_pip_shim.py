@@ -457,12 +457,7 @@ def main():
         # `-r`-only cell no-ops (has_target stays False) and an attached
         # `-c`/`-e`/`-P` value bypasses _KEEP. Split the 2-char flag from its
         # value and reuse the separated-form handling.
-        if (
-            len(tok) > 2
-            and tok[0] == "-"
-            and tok[1] != "-"
-            and tok[:2] in _ATTACHED_SHORT_FLAGS
-        ):
+        if len(tok) > 2 and tok[0] == "-" and tok[1] != "-" and tok[:2] in _ATTACHED_SHORT_FLAGS:
             _sflag, _sval = tok[:2], tok[2:]
             if _sflag in _REQ_FILE_FLAGS:
                 _req_path, _req_rec, _req_drp = _filter_requirements_file(_sval)

@@ -225,8 +225,7 @@ def test_index_url_value_flag_kept_verbatim(shim):
 def test_editable_protected_in_requirements_file_dropped(shim, tmp_path):
     req = tmp_path / "reqs.txt"
     req.write_text(
-        "-e git+https://github.com/unslothai/unsloth.git#egg=unsloth\n"
-        "snac==1.2.0\n",
+        "-e git+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n",
         encoding = "utf-8",
     )
     execd, _ = _run(shim, "pip", ["-r", str(req)])
@@ -239,8 +238,7 @@ def test_editable_protected_in_requirements_file_dropped(shim, tmp_path):
 def test_editable_attached_protected_in_requirements_file_dropped(shim, tmp_path):
     req = tmp_path / "reqs.txt"
     req.write_text(
-        "-egit+https://github.com/unslothai/unsloth.git#egg=unsloth\n"
-        "snac==1.2.0\n",
+        "-egit+https://github.com/unslothai/unsloth.git#egg=unsloth\nsnac==1.2.0\n",
         encoding = "utf-8",
     )
     execd, _ = _run(shim, "pip", ["-r", str(req)])
@@ -255,9 +253,7 @@ def test_editable_unprotected_in_requirements_file_kept(shim, tmp_path):
     # (torch dropped); only protected editables are stripped.
     req = tmp_path / "reqs.txt"
     req.write_text(
-        "-e ./localpkg\n"
-        "torch==2.11.0\n"
-        "snac==1.2.0\n",
+        "-e ./localpkg\ntorch==2.11.0\nsnac==1.2.0\n",
         encoding = "utf-8",
     )
     execd, _ = _run(shim, "pip", ["-r", str(req)])
