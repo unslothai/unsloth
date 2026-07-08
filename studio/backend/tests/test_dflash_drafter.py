@@ -240,6 +240,19 @@ def test_dflash_does_not_engage_in_forced_mtp_mode(monkeypatch):
     assert "draft-dflash" not in flags
 
 
+def test_dflash_does_not_engage_for_vision_loads(monkeypatch):
+    # DFlash multimodal drafting is unsupported upstream: a dflash sibling beside
+    # a VLM must not emit --model-draft (it would abort alongside --mmproj).
+    _, flags = _emit(
+        monkeypatch,
+        _CAPS_WITH_DFLASH,
+        dflash_draft_path = "/d/dflash.gguf",
+        is_vision = True,
+    )
+    assert "draft-dflash" not in flags
+    assert "--model-draft" not in flags
+
+
 # ── Reload-dedup bounce ──────────────────────────────────────────────
 
 
@@ -390,6 +403,22 @@ def test_hf_load_with_snapshot_dflash_sibling_does_not_thrash(tmp_path):
 
     req = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
     backend = _route_dedup_backend(str(weight), hf_repo = "unsloth/Qwen3-4B-GGUF")
+    assert routes._request_matches_loaded_settings(req, backend) is True
+
+
+def test_vision_load_with_dflash_sibling_does_not_thrash(tmp_path):
+    # A VLM suppresses DFlash, so its stored path stays None; a detected sibling
+    # must not be compared against it (that would reload every /load).
+    routes = _load_inference_routes_module()
+    from models.inference import LoadRequest
+
+    weight = tmp_path / "Qwen3-VL-4B-Q4_K_M.gguf"
+    weight.touch()
+    (tmp_path / "dflash-Qwen3-VL-4B.gguf").touch()
+
+    req = LoadRequest(model_path = str(weight))
+    backend = _route_dedup_backend(str(weight), hf_repo = None)
+    backend._is_vision = True
     assert routes._request_matches_loaded_settings(req, backend) is True
 
 

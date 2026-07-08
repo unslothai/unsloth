@@ -1140,7 +1140,11 @@ export function ChatSettingsPanel({
                                 (llamaUpdateStatus?.update_available
                                   ? " Update llama.cpp to enable it."
                                   : "")
-                              : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
+                              : specFallbackReason === "dflash_drafter_incompatible"
+                                ? "This DFlash drafter is not compatible with the installed llama.cpp (it is likely a fork build). Convert or replace it with an upstream-format drafter; updating llama.cpp will not help."
+                                : specFallbackReason === "dflash_runtime_error"
+                                  ? "DFlash could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
+                                  : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
                                 (llamaUpdateStatus?.update_available
                                   ? " Update llama.cpp to enable it."
                                   : "")}

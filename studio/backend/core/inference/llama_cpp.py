@@ -6433,6 +6433,7 @@ class LlamaCppBackend:
                     binary = binary,
                     mtp_draft_path = launch_mtp_draft_path,
                     dflash_draft_path = launch_dflash_draft_path,
+                    is_vision = effective_is_vision,
                 )
                 # Remember where the spec block sits so a drafter-load failure
                 # can be retried with these flags swapped out (see below).
@@ -6926,6 +6927,19 @@ class LlamaCppBackend:
                             "is the cause"
                         )
                         self._spec_fallback_reason = "runtime_error"
+                    # A DFlash-only load reaches this retry only when the binary
+                    # already supports draft-dflash (else _emit_dflash set
+                    # binary_no_dflash without emitting), so an unknown-arch crash
+                    # means the drafter is a fork build (arch dflash-draft) upstream
+                    # cannot load -- an update won't help; the user needs a converted
+                    # drafter. Map to DFlash-specific reasons so the UI shows the
+                    # right guidance instead of MTP copy / a useless update button.
+                    if _spec_requested_dflash and not _spec_requested_mtp:
+                        self._spec_fallback_reason = (
+                            "dflash_drafter_incompatible"
+                            if self._spec_fallback_reason == "binary_outdated"
+                            else "dflash_runtime_error"
+                        )
                     _drafter = (
                         Path(launch_mtp_draft_path or launch_dflash_draft_path).name
                         if (launch_mtp_draft_path or launch_dflash_draft_path)
@@ -7086,6 +7100,7 @@ class LlamaCppBackend:
         binary: Optional[str],
         mtp_draft_path: Optional[str] = None,
         dflash_draft_path: Optional[str] = None,
+        is_vision: bool = False,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
 
@@ -7149,8 +7164,10 @@ class LlamaCppBackend:
         )
         # DFlash is always a separate drafter (never an embedded head), so the
         # only signal is a resolved drafter path. Mutually exclusive with MTP:
-        # llama-server takes one --model-draft.
-        is_dflash_model = bool(dflash_draft_path)
+        # llama-server takes one --model-draft. Not on vision loads: DFlash
+        # multimodal drafting is unsupported upstream, so emitting --model-draft
+        # alongside --mmproj would abort the server.
+        is_dflash_model = bool(dflash_draft_path) and not is_vision
         user_owns_spec_type = _extra_args_set_spec_type(extra_args)
         _mtp_size_b = _extract_model_size_b(model_identifier)
         # The sub-3B regression is an embedded-head cost; a separate drafter
