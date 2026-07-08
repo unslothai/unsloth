@@ -2155,7 +2155,8 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
             # literal string "None" in the emitted text. In a [[...]] block only
             # the first column gates the block, so a later column can still be
             # None here; required columns can be None too. Coercing at the source
-            # covers both, and leaves the "" gate below unchanged.
+            # covers both; since None is now "", the gate below only needs to
+            # test for "" (an empty first column still drops the block).
             row_values = {
                 column: ("" if (value := examples[column][row_idx]) is None else value)
                 for column in columns

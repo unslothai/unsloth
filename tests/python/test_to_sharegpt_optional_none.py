@@ -87,3 +87,11 @@ def test_required_column_none_does_not_render_none():
     )
     assert out[0] == "Location: Paris,  end"
     assert "None" not in out[0]
+
+
+def test_optional_block_falsy_but_present_gating_value_still_renders():
+    # The gate keeps a block whenever the first column is not "". A falsy but
+    # real value (0) must not be treated as absent, so the block still renders.
+    merged_prompt = "Count: [[{n}]]!"
+    out = _render(merged_prompt, ["n"], {"n": [0]})
+    assert out[0] == "Count: 0!"
