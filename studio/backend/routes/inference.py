@@ -3243,7 +3243,6 @@ def _estimate_gguf_required_gb(
             # it keeps the full remote size (the safe over-estimate).
             if gpu_memory_mode == "manual" and gpu_layers >= 0:
                 from hub.utils.gguf import resolve_local_gguf_path
-
                 cached_main = resolve_local_gguf_path(repo, variant)
                 if cached_main:
                     frac = _manual_gpu_layer_fraction(cached_main, gpu_layers)
