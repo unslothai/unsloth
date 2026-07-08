@@ -1393,3 +1393,67 @@ def test_parameter_scale_restore_preserves_metadata_and_identity():
         model.fp8.weight_scale_inv.detach(),
         torch.tensor([1.0], dtype = torch.float16),
     )
+
+
+def test_variant_snapshot_patterns_exclude_alternate_component_safetensors():
+    loader_utils = _load_loader_utils()
+    patterns = loader_utils._fp8_scale_snapshot_allow_patterns(variant = "fp8")
+    # Default variant model shards and index are covered.
+    assert any(fnmatch.fnmatch("model.fp8.safetensors", p) for p in patterns)
+    assert any(fnmatch.fnmatch("model.fp8-00001-of-00002.safetensors", p) for p in patterns)
+    assert any(fnmatch.fnmatch("model.safetensors.index.fp8.json", p) for p in patterns)
+    # A stray alternate-component variant safetensors must NOT be pulled by the broad glob.
+    assert not any(fnmatch.fnmatch("adapter.fp8.safetensors", p) for p in patterns)
+    assert not any(fnmatch.fnmatch("vision_tower.fp8.safetensors", p) for p in patterns)
+
+
+def test_restores_scale_when_placeholder_is_meta_but_weight_is_live():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
+    # Placeholder dropped to meta (device-map/low-memory) while the weight is materialized.
+    model.fp8.register_buffer(
+        "weight_scale_inv", torch.empty(1, dtype = torch.float16, device = "meta")
+    )
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.5], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert model.fp8.weight_scale_inv.device.type == "cpu"
+    assert torch.equal(
+        model.fp8.weight_scale_inv, torch.tensor([1.5], dtype = torch.float16)
+    )
+
+
+def test_restores_static_activation_scale():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.activation_scale": torch.tensor([0.25], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert hasattr(model.fp8, "activation_scale")
+    assert torch.equal(
+        model.fp8.activation_scale, torch.tensor([0.25], dtype = torch.float16)
+    )

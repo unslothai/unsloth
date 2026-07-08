@@ -442,6 +442,13 @@ _FP8_SCALE_SUFFIXES = (
     ("gate_up_proj_scale_inv", ".gate_up_proj_scale_inv"),
     ("down_proj_scale", ".down_proj_scale"),
     ("down_proj_scale_inv", ".down_proj_scale_inv"),
+    # Static-activation FP8 checkpoints carry activation scales the expert forward reads when
+    # activation_scheme == "static"; restore them too so a dropped placeholder is repaired. #6749
+    ("activation_scale", ".activation_scale"),
+    ("gate_proj_activation_scale", ".gate_proj_activation_scale"),
+    ("up_proj_activation_scale", ".up_proj_activation_scale"),
+    ("gate_up_proj_activation_scale", ".gate_up_proj_activation_scale"),
+    ("down_proj_activation_scale", ".down_proj_activation_scale"),
 )
 
 
@@ -535,12 +542,16 @@ def _fp8_scale_snapshot_allow_patterns(
     if use_safetensors is False:
         return []
     if variant:
-        # Cover single-file and sharded variant forms; transformers applies the variant before
-        # the shard suffix, so a sharded shard is `model.<variant>-00001-of-00002.safetensors`. #6749
+        # Default model/pytorch_model variant artifacts plus index, not bare *.{variant}
+        # globs that would also pull alternate component safetensors; custom shard names come
+        # from the index-extra pass. Transformers applies the variant before the shard suffix. #6749
         patterns = [
-            f"*.{variant}.safetensors",
-            f"*.{variant}-*.safetensors",
-            f"*.safetensors.index.{variant}.json",
+            f"model.{variant}.safetensors",
+            f"pytorch_model.{variant}.safetensors",
+            f"model.{variant}-*-of-*.safetensors",
+            f"pytorch_model.{variant}-*-of-*.safetensors",
+            f"model.safetensors.index.{variant}.json",
+            f"pytorch_model.safetensors.index.{variant}.json",
         ]
     else:
         # Default (non-variant) model/pytorch_model artifacts plus index, not a bare
@@ -773,7 +784,14 @@ def _restore_missing_fp8_weight_scale_inv(
         ):
             skipped += 1
             continue
-        if isinstance(reference, torch.Tensor):
+        # Prefer a materialized device: a meta scale placeholder can sit next to an already
+        # loaded weight (device-map/low-memory), so fall back to the live weight/projection
+        # device rather than skipping on the placeholder's meta device. #6749
+        if isinstance(reference, torch.Tensor) and reference.device.type != "meta":
+            target_device = reference.device
+        elif isinstance(weight, torch.Tensor) and weight.device.type != "meta":
+            target_device = weight.device
+        elif isinstance(reference, torch.Tensor):
             target_device = reference.device
         elif isinstance(weight, torch.Tensor):
             target_device = weight.device
