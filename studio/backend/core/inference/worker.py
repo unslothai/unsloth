@@ -13,6 +13,7 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 from __future__ import annotations
 
 import base64
+import json
 from loggers import get_logger
 import os
 import queue as _queue
@@ -25,6 +26,9 @@ from typing import Any
 
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
+
+_SHARE_OBJECT_MAX_BYTES = 1 << 20
+_SHARE_OBJECT_ERROR_SIZE = -1
 
 # studio/backend root, prepended to sys.path so the spawned subprocess can
 # import the utils/core packages.
@@ -73,6 +77,17 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         resp_queue.put(response)
     except (OSError, ValueError) as exc:
         logger.error("Failed to send response: %s", exc)
+
+
+def _encode_share_object(obj: Any) -> bytes:
+    data = json.dumps(obj, separators = (",", ":"), ensure_ascii = False).encode("utf-8")
+    if len(data) > _SHARE_OBJECT_MAX_BYTES:
+        raise ValueError("Distributed object share payload is too large")
+    return data
+
+
+def _decode_share_object(data: Any) -> Any:
+    return json.loads(bytes(data.tolist()).decode("utf-8"))
 
 
 def _clean_token(value: str | None) -> str | None:
@@ -329,14 +344,18 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
         try:
-            success = backend.load_model(
-                config = mc,
-                max_seq_length = config.get("max_seq_length", 2048),
-                load_in_4bit = load_in_4bit,
-                hf_token = hf_token,
-                trust_remote_code = trust_remote_code,
-                gpu_ids = config.get("resolved_gpu_ids"),
-            )
+            load_kwargs = {
+                "config": mc,
+                "max_seq_length": config.get("max_seq_length", 2048),
+                "load_in_4bit": load_in_4bit,
+                "hf_token": hf_token,
+                "trust_remote_code": trust_remote_code,
+                "gpu_ids": config.get("resolved_gpu_ids"),
+            }
+            if getattr(backend, "device", None) == "mlx":
+                load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
+                load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
+            success = backend.load_model(**load_kwargs)
         finally:
             heartbeat_stop.set()
 
@@ -514,6 +533,67 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             resp_queue,
             {
                 "type": "gen_error",
+                "request_id": request_id,
+                "error": str(exc),
+                "stack": traceback.format_exc(limit = 20),
+            },
+        )
+
+
+def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
+    """Share a small Python object across MLX distributed ranks."""
+    request_id = cmd.get("request_id", "")
+    group = getattr(backend, "_distributed_group", None)
+    rank = int(getattr(backend, "_distributed_rank", 0) or 0)
+    world_size = int(getattr(backend, "_distributed_world_size", 1) or 1)
+    obj = cmd.get("object")
+
+    try:
+        if group is None or world_size <= 1:
+            shared = obj
+        else:
+            import mlx.core as mx
+            if rank == 0:
+                if obj is None:
+                    mx.eval(mx.distributed.all_sum(mx.array(0), group = group))
+                    shared = None
+                else:
+                    try:
+                        data = mx.array(_encode_share_object(obj), dtype = mx.uint8)
+                    except Exception:
+                        mx.eval(
+                            mx.distributed.all_sum(
+                                mx.array(_SHARE_OBJECT_ERROR_SIZE),
+                                group = group,
+                            )
+                        )
+                        raise
+                    mx.eval(mx.distributed.all_sum(mx.array(data.size), group = group))
+                    mx.eval(mx.distributed.all_sum(data, group = group))
+                    shared = obj
+            else:
+                size = int(mx.distributed.all_sum(mx.array(0), group = group).item())
+                if size == _SHARE_OBJECT_ERROR_SIZE:
+                    raise RuntimeError("Failed to share distributed object")
+                if size == 0:
+                    shared = None
+                else:
+                    data = mx.zeros(size, dtype = mx.uint8)
+                    data = mx.distributed.all_sum(data, group = group)
+                    shared = _decode_share_object(data)
+        _send_response(
+            resp_queue,
+            {
+                "type": "shared",
+                "request_id": request_id,
+                "object": shared,
+            },
+        )
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "share_error",
                 "request_id": request_id,
                 "error": str(exc),
                 "stack": traceback.format_exc(limit = 20),
@@ -720,9 +800,29 @@ def run_inference_process(
                 exc,
             )
         try:
-            from core.inference.mlx_inference import MLXInferenceBackend
+            from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
 
             backend = MLXInferenceBackend()
+            if config.get("mlx_distributed"):
+                group, rank, size = _init_mlx_distributed()
+                config["_mlx_distributed_group"] = group
+                if size <= 1:
+                    # A singleton group (MLX built without distributed support,
+                    # or an invalid launch env/hostfile) would leave nonzero ranks
+                    # looping forever on share_distributed_object. Fail the load
+                    # instead of silently continuing without sharding.
+                    raise RuntimeError(
+                        "MLX distributed launch requested but initialized a singleton "
+                        "group (size 1). Ensure the installed MLX has distributed "
+                        "support and the launch environment/hostfile is valid, or run "
+                        "without distributed."
+                    )
+                logger.info(
+                    "MLX distributed initialized in worker: rank=%s size=%s mode=%s",
+                    rank,
+                    size,
+                    config.get("mlx_parallel_mode"),
+                )
             _send_response(
                 resp_queue,
                 {"type": "status", "message": "Loading model..."},
@@ -764,6 +864,8 @@ def run_inference_process(
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
                     _handle_generate(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "share_object":
+                    _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
                     if backend.active_model_name:
                         backend.unload_model(backend.active_model_name)
@@ -976,6 +1078,9 @@ def run_inference_process(
                 if _drain_skip_generate(cmd, resp_queue, drain_event):
                     continue
                 _handle_generate(backend, cmd, resp_queue, cancel_event)
+
+            elif cmd_type == "share_object":
+                _handle_share_object(backend, cmd, resp_queue)
 
             elif cmd_type == "load":
                 if backend.active_model_name:

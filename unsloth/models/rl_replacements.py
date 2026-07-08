@@ -1203,6 +1203,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
                     self._autocast_dtype = torch.float16
 
+            compute_aux_loss = kwargs.get("compute_aux_loss", None)
+
             pixel_values, image_grid_thw = (
                 kwargs.get("pixel_values", None),
                 kwargs.get("image_grid_thw", None),
@@ -1846,7 +1848,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _extra_vision_kwargs["mm_token_type_ids"] = mm_token_type_ids_chunk
                     with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
                         if pixel_values is None:
-                            logits_chunk = unwrapped_model(
+                            outputs = unwrapped_model(
                                 input_ids = input_ids_chunk,
                                 attention_mask = attention_mask_chunk,
                                 pixel_values = pixel_values_chunk,
@@ -1854,7 +1856,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
                                 **_extra_vision_kwargs,
-                            ).logits
+                            )
+
+                            logits_chunk = outputs.logits
+                            del outputs  # free hidden_states before chunked log-softmax
 
                             completion_input_ids_chunk = input_ids_chunk[
                                 :, -(logits_to_keep + max_left_pad) :
@@ -1876,7 +1881,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         else:
                             # Essentially, for VLMs we do not go via the optimized path in models/,
                             # so we don't encounter the Flash Attn left-padding issue.
-                            logits_chunk = unwrapped_model(
+                            outputs = unwrapped_model(
                                 input_ids = input_ids_chunk,
                                 attention_mask = attention_mask_chunk,
                                 pixel_values = pixel_values_chunk,
@@ -1885,7 +1890,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 image_sizes = image_sizes_chunk,
                                 logits_to_keep = logits_to_keep + 1,
                                 **_extra_vision_kwargs,
-                            ).logits
+                            )
+
+                            logits_chunk = outputs.logits
+                            del outputs  # free hidden_states before chunked log-softmax
 
                             logits_chunk = logits_chunk[:, :-1, :]
                             completion_input_ids_chunk = input_ids_chunk[:, -logits_to_keep:]
@@ -1914,11 +1922,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     all_logprobs_list.append(logprobs_chunk)
                 if logprobs is None:  # padded fallback when packing was not used
                     logprobs = torch.cat(all_logprobs_list, dim = 0)
+
                 entropies = None
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
-
-            return logprobs.detach(), entropies  # logps, entropies
+            # aux loss is unused: it is off by default (router_aux_loss_coef set to 0 in models/rl.py)
+            # and explicit opt-in is rejected at trainer init, so this is always None (kept in the
+            # return for TRL >= 1.7.0's 3-tuple contract).
+            aux_loss = None
+            return logprobs.detach(), entropies, aux_loss  # logps, entropies, aux_loss
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
             # See https://github.com/huggingface/trl/issues/2770
@@ -1937,6 +1949,24 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # return  logps #  compute logprobs for the input tokens
 
     function = inspect.getsource(_get_per_token_logps_and_entropies)
+    if trl_version < Version("1.7.0"):
+        # TRL < 1.7.0 unpacks (logps, entropies) at every call site; TRL >= 1.7.0
+        # always unpacks (logps, entropies, aux_loss). Drop the aux_loss element so
+        # the return arity matches the installed TRL. Regex tolerates comment /
+        # whitespace drift on the return line; fail loud if the anchor ever stops
+        # matching rather than silently shipping a 3-tuple to older TRL.
+        new_function, n = re.subn(
+            r"return (logprobs\.detach\(\), entropies), aux_loss[^\n]*",
+            r"return \1  # logps, entropies",
+            function,
+        )
+        if n != 1:
+            raise RuntimeError(
+                "Unsloth GRPO: could not downgrade the per-token-logps return to a "
+                f"2-tuple for TRL {trl_version} (matched {n} times, expected 1). The "
+                "return line changed; update the arity gate in rl_replacements.py."
+            )
+        function = new_function
     return function
 
 

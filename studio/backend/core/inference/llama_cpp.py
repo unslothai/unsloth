@@ -3975,7 +3975,11 @@ class LlamaCppBackend:
         # Auto-size (0): the visual server probes the largest context that fits this GPU's VRAM
         # (capped at the training context). An explicit in-range n_ctx overrides it.
         maxtok = n_ctx if (n_ctx and 0 < n_ctx <= 65536) else 0
-        gpu = os.environ.get("DG_GPU", "0")
+        # No visible CUDA GPU: a genuine CPU host, or a GPU host masked with
+        # CUDA_VISIBLE_DEVICES="" to force CPU serving. Keep the visual-server child
+        # CPU-masked (empty --gpu) so the shim does not re-expose GPU 0 via its default.
+        cpu_only = self._effective_gpu_count() == 0
+        gpu = "" if cpu_only else os.environ.get("DG_GPU", "0")
 
         cmd = list(shim_cmd) + [
             "--gguf",
@@ -3995,6 +3999,12 @@ class LlamaCppBackend:
         # refuses to load unless UNSLOTH_IS_PRESENT is set (normally by `import
         # unsloth`). The shim never imports unsloth, so set it here as unsloth does.
         env["UNSLOTH_IS_PRESENT"] = "1"
+        # The shim's `import unsloth_zoo` aborts in get_device_type() ("needs a GPU")
+        # when no accelerator is visible, even though it only drives the CPU
+        # visual-server binary and does no torch GPU work. Allow the CPU device so the
+        # runner starts; the visual server still runs on the CPU llama.cpp build.
+        if cpu_only:
+            env.setdefault("UNSLOTH_ALLOW_CPU", "1")
         env["DG_VISUAL_BIN"] = visual_bin
         env["DG_GPU"] = gpu
         # The file-override shim imports its sibling visual_engine; put its dir on PYTHONPATH.
