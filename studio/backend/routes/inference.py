@@ -3152,30 +3152,35 @@ def _estimate_gguf_required_gb(
     cache for local files (unreadable pre-download for remote). None when nothing
     resolves so the caller default-denies.
 
-    Manual mode with a pinned ``gpu_layers`` keeps only that fraction of layers
-    (weights + their KV) on the GPU and spills the rest to system RAM, so the
-    GPU-resident estimate is scaled down by the offloaded fraction -- otherwise a
-    low/zero gpu_layers config is wrongly blocked as full residency. A large
-    ``--n-cpu-moe`` saves still more VRAM, but that isn't credited here: the guard
-    must not *under*-estimate and OOM the training run."""
+    Manual mode with a pinned ``gpu_layers`` keeps only that fraction of the main
+    model's layers (weights + their KV) on the GPU and spills the rest to system
+    RAM, so the main-model estimate is scaled down by the offloaded fraction --
+    otherwise a low/zero gpu_layers config is wrongly blocked as full residency.
+    Companions (mmproj / a separate MTP drafter) offload to the GPU by default
+    regardless of the main ``--gpu-layers``, so they are always charged in full,
+    never scaled -- else a ``gpu_layers=0`` manual load reports near-zero VRAM yet
+    still puts them on the GPU and can OOM training. A large ``--n-cpu-moe`` saves
+    still more VRAM, but that isn't credited here: the guard must not
+    *under*-estimate and OOM the training run."""
     try:
-        total_bytes = 0
         main = getattr(config, "gguf_file", None)
+        main_bytes = 0
         if main and Path(main).is_file():
-            total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
+            main_bytes = LlamaCppBackend._get_gguf_size_bytes(str(main))
+        companion_bytes = 0
         for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
-                total_bytes += Path(f).stat().st_size
-        if total_bytes > 0:
-            resident_gb = total_bytes / (1024**3) + _estimate_gguf_kv_gb(
+                companion_bytes += Path(f).stat().st_size
+        if main_bytes > 0 or companion_bytes > 0:
+            main_gb = main_bytes / (1024**3) + _estimate_gguf_kv_gb(
                 main, max_seq_length, llama_extra_args, n_parallel
             )
             if main and gpu_memory_mode == "manual" and gpu_layers >= 0:
                 frac = _manual_gpu_layer_fraction(str(main), gpu_layers)
                 if frac is not None:
-                    resident_gb *= frac
-            return resident_gb
+                    main_gb *= frac
+            return main_gb + companion_bytes / (1024**3)
 
         repo = getattr(config, "gguf_hf_repo", None)
         variant = getattr(config, "gguf_variant", None)

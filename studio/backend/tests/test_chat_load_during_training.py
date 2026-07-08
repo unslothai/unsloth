@@ -642,6 +642,31 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 )
         self.assertAlmostEqual(gb, 1000 / (1024**3), places = 9)
 
+    def test_manual_charges_companions_in_full_not_scaled_by_gpu_layers(self):
+        # A companion (mmproj / separate MTP drafter) is GPU-resident regardless of
+        # the main --gpu-layers, so it must not be scaled by the fraction. At
+        # gpu_layers=0 the old code scaled the whole sum to ~0 GB (an OOM risk); now
+        # only the main term zeros out.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            main = Path(d) / "model.gguf"
+            main.write_bytes(b"x" * 1000)
+            drafter = Path(d) / "mtp-model.gguf"
+            drafter.write_bytes(b"y" * 3000)
+            cfg = self._local_gguf_cfg(main)
+            cfg.gguf_mtp_file = str(drafter)
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 5.0),
+                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
+            ):
+                gb = self.route._estimate_gguf_required_gb(
+                    cfg, gpu_memory_mode = "manual", gpu_layers = 0
+                )
+        # main (weights + KV) scaled to 0; the 3000-byte companion stands in full.
+        self.assertAlmostEqual(gb, 3000 / (1024**3), places = 9)
+        self.assertGreater(gb, 0.0)  # regression guard: not silently ~0
+
     def test_manual_gpu_layer_fraction_clamps_and_reads_layers(self):
         # _manual_gpu_layer_fraction imports read_gguf_staged_dims lazily, so
         # patch it at its source module.

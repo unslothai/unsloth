@@ -5294,6 +5294,16 @@ class LlamaCppBackend:
                         "than 2 GPUs are in use; ignoring (needs >= 2)."
                     )
                     tensor_parallel = False
+                # Drop TP for manual + Auto layers before the cache-drop below (like
+                # the <2-GPU guard above), so a requested quantized KV survives into
+                # the --fit load rather than being stripped for a tensor attempt.
+                if tensor_parallel and gpu_memory_mode == "manual" and gpu_layers < 0:
+                    logger.info(
+                        "Manual mode with Auto layers hands memory management to "
+                        "llama.cpp --fit, which is incompatible with tensor "
+                        "parallelism; ignoring the tensor split."
+                    )
+                    tensor_parallel = False
                 # Tensor mode aborts on a quantized KV cache, so drop it for the
                 # tensor attempt (and strip any inherited/explicit --cache-type
                 # that would re-impose it when appended last). Layer split does
@@ -5446,15 +5456,9 @@ class LlamaCppBackend:
                     # True. An explicit context is honored (--fit optimizes around
                     # it); 0 lets --fit size it.
                     if gpu_memory_mode == "manual" and gpu_layers < 0:
-                        if tensor_parallel:
-                            logger.info(
-                                "Manual mode with Auto layers hands memory "
-                                "management to llama.cpp --fit, which is "
-                                "incompatible with tensor parallelism; ignoring "
-                                "the tensor split."
-                            )
+                        # Tensor parallelism was already dropped above (before the
+                        # cache-drop), so a quantized KV survives into this --fit load.
                         gpus = []
-                        tensor_parallel = False
                         effective_ctx = requested_ctx if requested_ctx > 0 else 0
                         original_ctx = effective_ctx
                         # --fit aborts under --split-mode tensor; a raw extras

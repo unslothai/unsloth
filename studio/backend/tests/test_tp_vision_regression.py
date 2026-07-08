@@ -132,8 +132,9 @@ _ALLOWED_TP_DROP_GUARDS = {
     # Capacity: pooled usable VRAM can't hold weights + MTP reserve -> layer split.
     "_tp_weight_budget_mib <= _tp_required_mib",
     # Manual mode, Auto layers: --fit owns memory and is incompatible with a
-    # tensor split, so TP is dropped (surfaced via logger.info) (#6414).
-    "gpu_memory_mode == 'manual' and gpu_layers < 0",
+    # tensor split, so TP is dropped (surfaced via logger.info) before the
+    # cache-drop, so a quantized KV survives into the --fit load (#6414).
+    "tensor_parallel and gpu_memory_mode == 'manual' and (gpu_layers < 0)",
     # Manual mode, explicit layers: a tensor split still needs >= 2 GPUs in use.
     "tensor_parallel and gpu_memory_mode == 'manual' and (gpu_layers >= 0) and (self._effective_gpu_count(sorted(gpu_ids) if gpu_ids else None) < 2)",
 }

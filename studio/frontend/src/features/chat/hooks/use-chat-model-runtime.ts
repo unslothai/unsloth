@@ -31,6 +31,7 @@ import {
   pendingSelectionMatches,
   persistGpuMemoryModeOnLoad,
   readPersistedSpeculativeType,
+  reconcilePersistedGpuIds,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
@@ -575,7 +576,13 @@ export function useChatModelRuntime() {
           let loadGpuLayers = stateBeforeUnload.gpuLayers;
           let loadNCpuMoe = stateBeforeUnload.nCpuMoe;
           let loadSplitRatio = stateBeforeUnload.splitRatio;
-          let loadSelectedGpuIds = stateBeforeUnload.selectedGpuIds;
+          // Reconcile the persisted pick against the GPUs present now (the device
+          // cache is populated by load time, unlike an early remember-restore that
+          // no-ops), so a stale cross-host / now-hidden pick is dropped before
+          // /load rather than rejected there. validateGpuIds derives from this too.
+          let loadSelectedGpuIds = reconcilePersistedGpuIds(
+            stateBeforeUnload.selectedGpuIds,
+          );
           let loadSpeculativeType = stateBeforeUnload.speculativeType;
           let loadSpecDraftNMax = stateBeforeUnload.specDraftNMax;
           try {
@@ -588,8 +595,8 @@ export function useChatModelRuntime() {
             // context can exceed maxSeqLength, so sizing on raw maxSeqLength could
             // pass, unload, then have /load refuse it. Uses the click-time
             // snapshot (same values loadModel uses below), so the two agree.
-            // It must also mirror what /load does on a cross-model switch: the
-            // reset below clears the per-model Auto-layers context pin + GPU pick, and
+            // Mirror what /load does on a cross-model switch: the reset below
+            // clears the per-model Auto-layers context pin + GPU pick, and
             // Manual+Auto sizes context through resolveFitMaxSeqLength.
             // gpuMemoryMode is a standing preference, kept across the switch.
             const resetsPerModelSettings = Boolean(
