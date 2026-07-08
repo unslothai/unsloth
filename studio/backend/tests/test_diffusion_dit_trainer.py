@@ -302,3 +302,17 @@ def test_train_precision_modes_newer_blackwell_has_mxfp8(monkeypatch):
     _patch_capability(monkeypatch, (12, 0))
     modes, _ = train_precision_modes()
     assert "mxfp8" in modes
+
+
+def test_train_precision_modes_pre_ampere_is_nf4_only(monkeypatch):
+    # A pre-Ampere GPU EMULATES bf16 (is_bf16_supported() True) but has no native bf16 tensor
+    # cores; the DiT trainer requires native bf16, so /info must offer nf4 only. Otherwise it
+    # advertises a start that evicts resident models and then fails the trainer's bf16 guard.
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)  # emulation reports True
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (7, 5))  # Turing
+    modes, recommended = train_precision_modes()
+    assert modes == ["nf4"]
+    assert recommended == "nf4"

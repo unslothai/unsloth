@@ -142,18 +142,39 @@ def test_bf16_unsupported_reason(monkeypatch):
     assert bf16_unsupported_reason("sdxl") is None
     assert bf16_unsupported_reason("") is None
 
-    # A DiT family on a CUDA GPU without bf16 -> a clear reason.
+    # A DiT family on a pre-Ampere CUDA GPU -> a clear reason. Pre-Ampere cards EMULATE bf16 and
+    # report is_bf16_supported() True, so the gate is native compute capability (major >= 8), not
+    # is_bf16_supported() -- otherwise the emulation case would slip through and evict-then-fail.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)  # emulation reports True
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (7, 5))  # Turing
     assert "bfloat16" in (bf16_unsupported_reason("flux.1") or "")
 
-    # A bf16-capable GPU -> no reason.
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    # A NATIVE bf16-capable GPU (Ampere+) -> no reason.
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
     assert bf16_unsupported_reason("qwen-image") is None
 
     # A CPU-only host (fp32 fallback for import/unit tests) -> no reason even for a DiT family.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert bf16_unsupported_reason("z-image") is None
+
+
+def test_native_bf16_supported_gates_on_capability(monkeypatch):
+    # Native bf16 is gated by compute capability (Ampere major >= 8), NOT is_bf16_supported(),
+    # which defaults to counting pre-Ampere emulation. A Turing card that emulates bf16 is
+    # correctly reported unsupported; Ampere+ is supported; a CPU-only host is always False.
+    import torch
+
+    from core.training.diffusion_train_common import native_bf16_supported
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)  # emulation reports True
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (7, 5))  # Turing
+    assert native_bf16_supported() is False
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))  # Ampere
+    assert native_bf16_supported() is True
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert native_bf16_supported() is False
 
 
 def test_training_precision_preflight_error(monkeypatch):
@@ -164,14 +185,17 @@ def test_training_precision_preflight_error(monkeypatch):
 
     from core.training.diffusion_train_common import training_precision_preflight_error
 
-    # Present a bf16-capable CUDA GPU so the int8 gate (not the bf16 gate) is what we exercise.
+    # Present a NATIVE bf16-capable CUDA GPU (Ampere+, cap major >= 8) so the int8 gate (not the
+    # bf16 gate) is what we exercise. bf16 is gated by capability, not is_bf16_supported() (which
+    # counts pre-Ampere emulation).
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 6))
 
-    # The bf16 gate takes precedence: a non-bf16 GPU rejects any DiT precision first.
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
+    # The bf16 gate takes precedence: a pre-Ampere GPU (emulated bf16) rejects any DiT precision.
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (7, 5))
     assert "bfloat16" in (training_precision_preflight_error("flux.1", "int8") or "")
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 6))
 
     # Explicit int8 on a DiT family with a NON-functional torchao -> a clear int8 reason
     # (its _int8_quantize_base has no fallback, so the child would otherwise raise post-eviction).

@@ -52,6 +52,7 @@ from core.training.diffusion_train_common import (
     _restore_perf_flags,
     discover_image_caption_pairs,
     has_functional_torchao,
+    native_bf16_supported,
     PermutationBatchSampler,
     repo_is_prequantized,
     resolve_train_steps,
@@ -1237,8 +1238,10 @@ def run_dit_lora_training(
     # The flow-matching + 4-bit path is bf16 throughout (fp32 on a CPU-only box, which is
     # unsupported for real runs but keeps import/unit tests architecture-agnostic).
     # Fail fast on pre-Ampere CUDA (T4/V100/RTX 20xx): bf16 compute is required and the run
-    # would otherwise die deep in model load with an opaque dtype error.
-    if device == "cuda" and not torch.cuda.is_bf16_supported():
+    # would otherwise die deep in model load with an opaque dtype error. Gate on NATIVE bf16
+    # (capability major >= 8) -- is_bf16_supported() counts pre-Ampere emulation as supported,
+    # which is what this guard exists to reject; shared with the /info modes + start preflight.
+    if device == "cuda" and not native_bf16_supported():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
             "this CUDA device does not support bf16."

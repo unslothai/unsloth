@@ -213,7 +213,7 @@ def train_precision_modes() -> tuple[list[str], str]:
     recommended = "nf4"
     try:
         import torch
-        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        if native_bf16_supported():
             modes.append("bf16")
             torchao_ok = has_functional_torchao()
             if torchao_ok:
@@ -292,6 +292,28 @@ _FAMILY_VRAM_NOTES = {
 _DIT_TRAIN_FAMILIES = frozenset({"flux.1", "qwen-image", "z-image", "krea-2"})
 
 
+def native_bf16_supported() -> bool:
+    """True only when the live CUDA GPU provides NATIVE bf16 compute, not pre-Ampere emulation.
+
+    ``torch.cuda.is_bf16_supported()`` defaults to counting EMULATED bf16, which every pre-Ampere
+    CUDA card (T4 / V100 / RTX 20xx) reports as supported even though the DiT trainer needs real
+    Ampere-or-newer bf16. Gate NVIDIA on compute capability major >= 8 instead -- the same #6658
+    fix the inference device resolver (``diffusion_device.py``) already uses; ROCm has no such
+    quirk, so ``is_bf16_supported()`` is trustworthy there. Never raises -- a probe failure or a
+    no-CUDA host returns False. Shared by the /info modes, the start preflight, and the trainer
+    guard so all three stay in sync."""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return False
+        is_rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
+        if is_rocm:
+            return bool(torch.cuda.is_bf16_supported())
+        return torch.cuda.get_device_capability()[0] >= 8
+    except Exception:  # noqa: BLE001 -- no torch / probe failure -> treat as unsupported
+        return False
+
+
 def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
     """Return a user-facing error string if ``resolved_family`` needs bf16 compute that the
     live GPU cannot provide, else None. The DiT trainer requires a bf16-capable GPU (Ampere
@@ -302,7 +324,7 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
         return None
     try:
         import torch
-        if torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
+        if torch.cuda.is_available() and not native_bf16_supported():
             return (
                 "This trainer requires a bfloat16-capable GPU (Ampere or newer); this CUDA "
                 "device does not support bf16. Train the DiT families on a newer GPU."
