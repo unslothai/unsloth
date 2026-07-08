@@ -67,7 +67,6 @@ from core.tool_healing import (
     _strip_bracket_tag_calls,
     apply_tool_strip_patterns,
     strip_outside_think,
-    strip_tool_call_markup,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
