@@ -20,6 +20,7 @@ from core.inference.diffusion import (
     DiffusionBackend,
     _LoadState,
     _base_file_downloaded,
+    _clamp_max_side,
     _resolve_base_repo,
     _resolve_diffusion_compute_dtype,
 )
@@ -40,6 +41,22 @@ from core.inference.diffusion_families import (
 
 
 # Pure family helpers
+
+
+def test_clamp_max_side_bounds_oversized_init():
+    # img2img / inpaint derive the OUTPUT size from the uploaded image; an oversized upload
+    # (up to the 4096/side decode cap = 4x the txt2img 2048 ceiling) would drive an OOM-scale
+    # latent. _clamp_max_side bounds the longest side to 2048, preserving aspect ratio.
+    from PIL import Image
+
+    # A 12MP-shaped landscape photo -> longest side clamped to 2048, 4:3 aspect preserved.
+    out = _clamp_max_side(Image.new("RGB", (4096, 3072)), 2048)
+    assert out.size == (2048, 1536)
+    # A portrait upload clamps on its longest (height) side.
+    assert _clamp_max_side(Image.new("RGB", (1000, 4000)), 2048).size == (512, 2048)
+    # An image already within bound is returned unchanged (no needless resample).
+    small = Image.new("RGB", (768, 512))
+    assert _clamp_max_side(small, 2048) is small
 
 
 def test_detect_family_from_repo_id():

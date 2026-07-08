@@ -21,6 +21,7 @@ from core.inference.diffusion_precision import (
     TE_QUANT_INT8,
     TE_QUANT_NVFP4,
     _cast_int8_selective,
+    _cast_nvfp4,
     _keep_bf16_block_fqns,
     normalize_te_quant,
     quantize_text_encoders,
@@ -68,13 +69,20 @@ def _stub_casters(monkeypatch, recorder):
     hooks.apply_layerwise_casting = lambda module, **kw: recorder.append(("fp8", module))
     monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
     monkeypatch.setitem(sys.modules, "diffusers.hooks.layerwise_casting", casting)
-    # torchao nvfp4
+    # torchao nvfp4 -- quantize_ now receives the vision-tower exclusion filter_fn; accept + ignore.
     tq = types.ModuleType("torchao.quantization")
-    tq.quantize_ = lambda module, config: recorder.append(("nvfp4", module))
+    tq.quantize_ = lambda module, config, filter_fn = None: recorder.append(("nvfp4", module))
     mx = types.ModuleType("torchao.prototype.mx_formats")
     mx.NVFP4WeightOnlyConfig = lambda: "nvfp4cfg"
     monkeypatch.setitem(sys.modules, "torchao.quantization", tq)
     monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", mx)
+    # _cast_nvfp4 / _cast_fp8_dynamic pull the shared linear filter from the transformer-quant module.
+    dtq = types.ModuleType("core.inference.diffusion_transformer_quant")
+    dtq.DEFAULT_MIN_LINEAR_FEATURES = 512
+    dtq.make_filter_fn = lambda min_features, exclude = (), *, require_bf16 = False: (
+        lambda module, fqn = "": True
+    )
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", dtq)
 
 
 # ── normalisation ─────────────────────────────────────────────────────────────
@@ -308,7 +316,7 @@ def _stub_transformer_quant(monkeypatch, captured):
     dtq._make_quant_config = lambda scheme, *a, **k: f"cfg:{scheme}"
     dtq.exclude_tokens_for_scheme = lambda scheme: ("modulation",)
 
-    def _make_filter_fn(min_features, exclude_name_tokens = ()):
+    def _make_filter_fn(min_features, exclude_name_tokens = (), *, require_bf16 = False):
         def _f(module, fqn = ""):
             return not any(tok in fqn for tok in exclude_name_tokens)
 
@@ -329,6 +337,10 @@ def _stub_transformer_quant(monkeypatch, captured):
 
     tq.quantize_ = _quantize_
     monkeypatch.setitem(sys.modules, "torchao.quantization", tq)
+    # _cast_nvfp4 builds its config from here.
+    mx = types.ModuleType("torchao.prototype.mx_formats")
+    mx.NVFP4WeightOnlyConfig = lambda: "nvfp4cfg"
+    monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", mx)
 
 
 def test_int8_filter_keeps_blocks_and_towers_dense(monkeypatch):
@@ -353,3 +365,26 @@ def test_int8_filter_keeps_blocks_and_towers_dense(monkeypatch):
     assert ff(object(), "visual.blocks.0.attn.qkv") is False
     assert ff(object(), "lm_head") is False
     assert ff(object(), "model.decoder.wo") is False
+
+
+def test_nvfp4_filter_keeps_vision_tower_dense(monkeypatch):
+    # Weight-only NVFP4 on a text encoder must exclude the VLM vision tower / lm_head / T5 "wo"
+    # like the int8 / fp8 torchao TE modes -- 4-bit-ing a qwen-image(-edit) Qwen2.5-VL image tower
+    # degrades the edit/image conditioning the sibling schemes deliberately protect. Before the fix
+    # _cast_nvfp4 quantised every nn.Linear (no filter_fn), so the tower was silently 4-bit.
+    _stub_torch(monkeypatch)
+    captured: dict = {}
+    _stub_transformer_quant(monkeypatch, captured)
+    enc = types.SimpleNamespace(_keep_in_fp32_modules = ["wo"])
+
+    _cast_nvfp4(enc, _target())
+
+    assert captured["config"] == "nvfp4cfg"
+    ff = captured["filter_fn"]
+    assert ff is not None  # a filter is passed now, not None (which quantised everything)
+    # Vision tower / lm_head / T5 wo stay bf16; an interior projection still quantises.
+    assert ff(object(), "visual.blocks.0.attn.qkv") is False
+    assert ff(object(), "vision_tower.encoder.layers.0.mlp.fc1") is False
+    assert ff(object(), "lm_head") is False
+    assert ff(object(), "model.decoder.wo") is False
+    assert ff(object(), "model.layers.5.self_attn.q_proj") is True

@@ -243,6 +243,27 @@ def _snap_to_multiple(img: Any, multiple: int = 16) -> Any:
     return img
 
 
+def _clamp_max_side(img: Any, max_side: int) -> Any:
+    """Downscale a PIL image so its longest side is <= ``max_side``, preserving aspect ratio
+    (high-quality resample); a no-op when it already fits.
+
+    img2img / inpaint take their OUTPUT size from the uploaded image, so without a bound an
+    oversized upload (up to the 4096/side decode cap -- 4x the txt2img 2048 ceiling, ~16x the
+    area) drives a proportionally larger latent and O(n^2) attention that OOMs the transformer/
+    VAE on a normal card, surfacing only as an opaque 500. Clamping the longest side to the same
+    2048 ceiling txt2img enforces (and upscale caps to) keeps these workflows bounded."""
+    from PIL import Image
+
+    w, h = img.size
+    longest = max(w, h)
+    if longest <= max_side:
+        return img
+    scale = max_side / float(longest)
+    nw = max(1, int(round(w * scale)))
+    nh = max(1, int(round(h * scale)))
+    return img.resize((nw, nh), Image.LANCZOS)
+
+
 # A small allowlist of well-known official base repos that may load as a full
 # (non-GGUF) pipeline even though they are not under ``unsloth/``. These are
 # safetensors-only checkpoints from their original publisher (no pickle, no remote
@@ -2675,6 +2696,12 @@ class DiffusionBackend:
                 # txt2img/reference use the validated slider size; upscale already produced a /16
                 # target. The mask is matched to the snapped image so inpaint stays aligned.
                 if init_pil is not None and workflow in ("img2img", "inpaint", "edit"):
+                    # img2img/inpaint derive the OUTPUT size from the uploaded image, so bound the
+                    # longest side to txt2img's own 2048 ceiling first -- otherwise a normal phone
+                    # photo (up to the 4096/side decode cap) drives an OOM-scale latent and an
+                    # opaque 500. edit is exempt: its pipeline resizes the input to ~1MP internally.
+                    if workflow in ("img2img", "inpaint"):
+                        init_pil = _clamp_max_side(init_pil, 2048)
                     init_pil = _snap_to_multiple(init_pil, 16)
                     if mask_pil is not None and mask_pil.size != init_pil.size:
                         from PIL import Image as _PILImage

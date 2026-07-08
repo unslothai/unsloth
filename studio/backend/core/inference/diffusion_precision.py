@@ -288,9 +288,19 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
 def _cast_nvfp4(encoder: Any, target: Any) -> None:
     # Weight-only NVFP4: linear weights become 4-bit (packed) NVFP4 tensors and run
     # on Blackwell FP4 tensor cores; norms / embeddings (not nn.Linear) are untouched.
+    # Exclude the VLM vision tower / lm_head / T5 wo and the sub-512 projections, exactly like
+    # the int8 / fp8 torchao TE modes -- 4-bit-ing a VLM encoder's image tower (qwen-image /
+    # qwen-image-edit's Qwen2.5-VL) degrades the image/edit conditioning the sibling schemes
+    # deliberately protect, and require_bf16 skips any non-bf16 Linear the encoder keeps so the
+    # NVFP4 (scaled_mm-family) cast engages on the bf16 linears instead of aborting the pass.
     from torchao.quantization import quantize_
     from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
-    quantize_(encoder, NVFP4WeightOnlyConfig())
+    from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES, make_filter_fn
+
+    filter_fn = make_filter_fn(
+        DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True
+    )
+    quantize_(encoder, NVFP4WeightOnlyConfig(), filter_fn = filter_fn)
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:
