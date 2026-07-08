@@ -829,6 +829,24 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
                 if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
             ]
             custom_models = _generic
+            if folder.get("recursive"):
+                from hub.services.models.local_inventory import iter_recursive_scan_dirs
+
+                seen = {(m.path, m.model_format, m.format_variant) for m in custom_models}
+                for subdir in iter_recursive_scan_dirs(folder_path):
+                    if len(custom_models) >= _MAX_MODELS_PER_FOLDER:
+                        break
+                    for m in _scan_models_dir(
+                        subdir,
+                        limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
+                    ):
+                        key = (m.path, m.model_format, m.format_variant)
+                        if key in seen or any(
+                            p in (".studio_links", "ollama_links") for p in Path(m.path).parts
+                        ):
+                            continue
+                        seen.add(key)
+                        custom_models.append(m)
             if len(custom_models) < _MAX_MODELS_PER_FOLDER:
                 custom_models += _scan_ollama_dir(
                     folder_path,
@@ -937,7 +955,7 @@ async def add_scan_folder_endpoint(
     from storage.studio_db import add_scan_folder
 
     try:
-        folder = add_scan_folder(body.path)
+        folder = add_scan_folder(body.path, body.recursive)
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
         # Forward the curated, path-free validation message.

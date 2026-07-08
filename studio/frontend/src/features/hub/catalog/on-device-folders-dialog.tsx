@@ -3,6 +3,7 @@
 
 import { FolderBrowser } from "@/components/assistant-ui/model-selector/folder-browser";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -60,6 +61,7 @@ export function OnDeviceFoldersDialog({
 }) {
   const [folders, setFolders] = useState<ScanFolderInfo[]>([]);
   const [path, setPath] = useState("");
+  const [recursive, setRecursive] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -119,8 +121,9 @@ export function OnDeviceFoldersDialog({
       setPending("add");
       setError(null);
       try {
-        const folder = await addScanFolder(nextPath);
+        const folder = await addScanFolder(nextPath, recursive);
         setPath("");
+        setRecursive(false);
         mutationVersionRef.current += 1;
         setFolders((current) => {
           const withoutDuplicate = current.filter((row) => row.id !== folder.id);
@@ -138,7 +141,7 @@ export function OnDeviceFoldersDialog({
         setPending(null);
       }
     },
-    [handleInventoryChanged, pending],
+    [handleInventoryChanged, pending, recursive],
   );
 
   // Scan folders are arbitrary paths that may be moved or deleted after they
@@ -262,6 +265,20 @@ export function OnDeviceFoldersDialog({
                     Add
                   </Button>
                 </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="scan-subfolders"
+                  checked={recursive}
+                  onCheckedChange={(v) => setRecursive(!!v)}
+                />
+                <label
+                  htmlFor="scan-subfolders"
+                  className="text-[12px] text-muted-foreground"
+                >
+                  Also scan sub-folders
+                </label>
               </div>
             </div>
 

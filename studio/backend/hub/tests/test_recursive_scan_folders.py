@@ -1,0 +1,151 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import os
+import sqlite3
+
+from hub.services.models import local_inventory
+from hub.storage import scan_folders
+
+
+def _make_model_dir(path):
+    path.mkdir(parents = True)
+    (path / "config.json").write_text("{}")
+    (path / "model.safetensors").write_bytes(b"\0" * 8)
+
+
+def test_walker_yields_nested_dirs_and_prunes_model_dirs(tmp_path):
+    _make_model_dir(tmp_path / "a" / "b" / "model-x")
+    (tmp_path / "plain" / "deeper").mkdir(parents = True)
+
+    yielded = list(local_inventory.iter_recursive_scan_dirs(tmp_path))
+
+    assert tmp_path / "a" in yielded
+    assert tmp_path / "a" / "b" in yielded
+    assert tmp_path / "plain" in yielded
+    assert tmp_path / "plain" / "deeper" in yielded
+    assert tmp_path / "a" / "b" / "model-x" not in yielded
+
+
+def test_walker_skips_hidden_and_link_dirs(tmp_path):
+    (tmp_path / ".studio_links" / "x").mkdir(parents = True)
+    (tmp_path / "ollama_links" / "y").mkdir(parents = True)
+    (tmp_path / "kept").mkdir()
+
+    yielded = list(local_inventory.iter_recursive_scan_dirs(tmp_path))
+
+    assert yielded == [tmp_path / "kept"]
+
+
+def test_walker_respects_depth_cap(tmp_path):
+    deep = tmp_path
+    for i in range(12):
+        deep = deep / f"d{i}"
+    deep.mkdir(parents = True)
+
+    yielded = list(local_inventory.iter_recursive_scan_dirs(tmp_path, max_depth = 3))
+
+    assert tmp_path / "d0" / "d1" / "d2" in yielded
+    assert all(len(p.parts) - len(tmp_path.parts) <= 3 for p in yielded)
+
+
+def test_walker_respects_entry_limit(tmp_path):
+    for i in range(30):
+        (tmp_path / f"dir{i:02d}").mkdir()
+
+    yielded = list(local_inventory.iter_recursive_scan_dirs(tmp_path, entry_limit = 10))
+
+    assert len(yielded) <= 10
+
+
+def test_walker_does_not_follow_symlinks(tmp_path):
+    (tmp_path / "real").mkdir()
+    os.symlink(tmp_path, tmp_path / "real" / "loop")
+
+    yielded = list(local_inventory.iter_recursive_scan_dirs(tmp_path))
+
+    assert tmp_path / "real" in yielded
+    assert tmp_path / "real" / "loop" not in yielded
+
+
+def test_scan_custom_folder_finds_nested_models_only_when_recursive(tmp_path):
+    _make_model_dir(tmp_path / "vendor" / "family" / "model-deep")
+    _make_model_dir(tmp_path / "model-shallow")
+
+    flat = local_inventory._scan_custom_folder(tmp_path)
+    flat_paths = {m.path for m in flat}
+    assert any("model-shallow" in p for p in flat_paths)
+    assert not any("model-deep" in p for p in flat_paths)
+
+    recursive = local_inventory._scan_custom_folder(tmp_path, recursive = True)
+    recursive_paths = {m.path for m in recursive}
+    assert any("model-shallow" in p for p in recursive_paths)
+    assert any("model-deep" in p for p in recursive_paths)
+
+
+def test_scan_custom_folder_recursive_does_not_duplicate(tmp_path):
+    _make_model_dir(tmp_path / "sub" / "model-a")
+
+    recursive = local_inventory._scan_custom_folder(tmp_path, recursive = True)
+
+    matches = [m for m in recursive if "model-a" in m.path]
+    assert len(matches) == 1
+
+
+def _tmp_connection_factory(db_path):
+    def _connect():
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    return _connect
+
+
+def test_add_scan_folder_round_trips_recursive(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        scan_folders, "get_connection", _tmp_connection_factory(tmp_path / "studio.db")
+    )
+    monkeypatch.setattr(scan_folders, "_schema_ready", False)
+    monkeypatch.setattr(scan_folders, "_denied_path_prefixes", lambda: [])
+    target = tmp_path / "models"
+    target.mkdir()
+
+    folder = scan_folders.add_scan_folder(str(target), recursive = True)
+    assert folder["recursive"] == 1
+
+    listed = scan_folders.list_scan_folders()
+    assert [f["recursive"] for f in listed] == [1]
+
+    updated = scan_folders.add_scan_folder(str(target), recursive = False)
+    assert updated["recursive"] == 0
+    assert [f["recursive"] for f in scan_folders.list_scan_folders()] == [0]
+
+
+def test_schema_migrates_existing_table(tmp_path, monkeypatch):
+    db_path = tmp_path / "studio.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE scan_folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO scan_folders (path, created_at) VALUES (?, ?)",
+        ("/somewhere", "2026-01-01T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(scan_folders, "get_connection", _tmp_connection_factory(db_path))
+    monkeypatch.setattr(scan_folders, "_schema_ready", False)
+
+    listed = scan_folders.list_scan_folders()
+    assert listed[0]["recursive"] == 0
+
+    monkeypatch.setattr(scan_folders, "_schema_ready", False)
+    listed_again = scan_folders.list_scan_folders()
+    assert listed_again[0]["recursive"] == 0

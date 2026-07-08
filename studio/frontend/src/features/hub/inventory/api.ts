@@ -139,6 +139,7 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
+  recursive?: number;
 }
 
 export interface BrowseEntry {
@@ -294,11 +295,14 @@ export async function listScanFolders(): Promise<ScanFolderInfo[]> {
   return data.folders;
 }
 
-export async function addScanFolder(path: string): Promise<ScanFolderInfo> {
+export async function addScanFolder(
+  path: string,
+  recursive = false,
+): Promise<ScanFolderInfo> {
   const response = await authFetch("/api/hub/scan-folders", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, recursive }),
   });
   const folder = await parseJsonOrThrow<ScanFolderInfo>(response);
   bumpInventoryVersion();
