@@ -87,6 +87,7 @@ __all__ = [
     "is_moe_model",
     "get_moe_target_parameters",
     "get_moe_target_modules",
+    "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
@@ -4125,22 +4126,65 @@ def get_moe_target_modules(model, target_modules = None) -> List[str]:
     if not hasattr(model, "named_modules"):
         return []
 
+    # Scope the returned suffixes to the requested projection leaves, matching
+    # get_moe_target_parameters: gate_proj/up_proj/gate_up_proj map to the fused
+    # gate_up ModuleList (e.g. gate_up_projs); down_proj maps to the down ModuleList
+    # (e.g. down_projs). A down-only (or gate/up-only) request must not pull in the
+    # other projection.
+    want_gate_up = bool(target_set & {"gate_proj", "up_proj", "gate_up_proj"})
+    want_down = "down_proj" in target_set
+
     targets = set()
     for name, module in model.named_modules():
         if not isinstance(module, torch.nn.ModuleList) or len(module) == 0:
             continue
         parent, _, leaf = name.rpartition(".")
         # ModuleList directly under an ``experts`` container, holding only Linear
-        # leaves (bnb Linear4bit / Linear8bitLt subclass nn.Linear).
+        # leaves (bnb Linear4bit / Linear8bitLt subclass nn.Linear). After PEFT has
+        # wrapped the experts the child is a LoRA layer whose ``base_layer`` is the
+        # Linear, so accept that too (keeps this idempotent across a re-wrapped model).
         if not parent.endswith("experts"):
             continue
-        if not all(isinstance(child, torch.nn.Linear) for child in module):
+        if not all(
+            isinstance(child, torch.nn.Linear)
+            or isinstance(getattr(child, "base_layer", None), torch.nn.Linear)
+            for child in module
+        ):
+            continue
+        # Honor the requested subset: classify the ModuleList by projection role.
+        leaf_lower = leaf.lower()
+        is_down = "down" in leaf_lower
+        is_gate_up = (not is_down) and ("gate" in leaf_lower or "up" in leaf_lower)
+        if is_down and not want_down:
+            continue
+        if is_gate_up and not want_gate_up:
             continue
         # One entry per expert index; ``leaf.<i>`` matches expert i in every layer.
         for expert_index in range(len(module)):
             targets.add(f"{leaf}.{expert_index}")
 
     return sorted(targets)
+
+
+def warn_if_zoo_cannot_merge_moe_experts():
+    """Warn once when the installed unsloth_zoo cannot fold per-expert Linear MoE LoRA
+    into a merged_16bit checkpoint. Older zoo releases keep the fused gate_up_proj /
+    down_proj tensors and drop the per-expert gate_up_projs.<i> / down_projs.<i> deltas,
+    so save_pretrained_merged("merged_16bit") would silently lose the expert training
+    (the LoRA adapter itself still saves and reloads correctly)."""
+    try:
+        from unsloth_zoo import saving_utils as _saving_utils
+        # _fold_perexpert_lora_into_fused is the helper that folds these experts.
+        if hasattr(_saving_utils, "_fold_perexpert_lora_into_fused"):
+            return
+    except Exception:
+        return  # cannot introspect zoo -> stay quiet rather than false-alarm
+    logger.warning_once(
+        "Unsloth: the installed unsloth_zoo will not fold these per-expert experts into "
+        "a merged_16bit checkpoint, so save_pretrained_merged('merged_16bit') would drop "
+        "the expert LoRA. Upgrade unsloth_zoo to merge them; saving the LoRA adapter is "
+        "unaffected."
+    )
 
 
 def _select_moe_detection_targets(

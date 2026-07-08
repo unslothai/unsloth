@@ -1834,6 +1834,7 @@ class FastBaseModel:
                 f"Unsloth: Detected MoE model with per-expert Linear experts. "
                 f"Enabling LoRA on {len(_moe_module_targets)} expert projection modules."
             )
+            warn_if_zoo_cannot_merge_moe_experts()
 
         if finetune_last_n_layers is not None and layers_to_transform is None:
             _total_layers = _get_total_transformer_layers(model)
