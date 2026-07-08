@@ -2270,6 +2270,23 @@ class LlamaCppBackend:
         return True
 
     @staticmethod
+    def _visible_devices_mask(env_name: str) -> Optional[set[int]]:
+        """Physical indices a ``*_VISIBLE_DEVICES`` mask permits, or None if unset.
+
+        ``if x.strip()`` filters trailing-comma masks ("0,1,"); an empty mask
+        ("") yields an empty set -> all devices hidden, distinct from an unset
+        var (None -> no mask). Shared by the nvidia-smi (CUDA_VISIBLE_DEVICES)
+        and Vulkan (GGML_VK_VISIBLE_DEVICES) probes so the convention lives once.
+        """
+        raw = os.environ.get(env_name)
+        if raw is None:
+            return None
+        try:
+            return set(int(x.strip()) for x in raw.split(",") if x.strip())
+        except ValueError:
+            return None
+
+    @staticmethod
     def _get_gpu_free_memory(binary: Optional[str] = None) -> list[tuple[int, int]]:
         """Query free memory per GPU. Returns ``(gpu_index, free_mib)`` sorted by
         index; empty if no supported GPU is reachable. Thin wrapper over
@@ -2319,18 +2336,17 @@ class LlamaCppBackend:
 
         On a Vulkan build, the ggml Vulkan probe is authoritative so the
         returned indices are Vulkan ordinals (the space the GPU pin writes to
-        ``GGML_VK_VISIBLE_DEVICES``); it reports free only, so ``total`` is 0
-        and the fit falls back to the free*frac budget. Otherwise nvidia-smi /
-        torch cover NVIDIA + AMD ROCm.
+        ``GGML_VK_VISIBLE_DEVICES``). It reports ``total`` for discrete cards so
+        the fit reserves absolute headroom like CUDA/ROCm, and leaves ``total``
+        0 for an iGPU (shared system RAM) so the fit falls back to free*frac.
+        Otherwise nvidia-smi / torch cover NVIDIA + AMD ROCm.
 
         Returns (gpu_index, free_mib, total_mib) sorted by index; empty if no
-        supported GPU is reachable. ``total`` lets the fit reserve absolute headroom.
+        supported GPU is reachable.
         """
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if LlamaCppBackend._is_vulkan_backend(binary):
-            return [
-                (idx, free, 0) for idx, free in LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
-            ]
+            return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
             result = subprocess.run(
@@ -2346,16 +2362,7 @@ class LlamaCppBackend:
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
-                allowed: Optional[set[int]] = None
-                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-                if cvd is not None:
-                    try:
-                        # `if x.strip()` filters trailing-comma masks ("0,1,").
-                        # Empty mask (CVD="") yields an empty set -> all GPUs
-                        # filtered out, per codebase convention.
-                        allowed = set(int(x.strip()) for x in cvd.split(",") if x.strip())
-                    except ValueError:
-                        pass
+                allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
                 gpus: list[tuple[int, int, int]] = []
                 for line in result.stdout.strip().splitlines():
                     parts = [p.strip() for p in line.split(",")]
@@ -2421,17 +2428,20 @@ class LlamaCppBackend:
             return []
 
     @staticmethod
-    def _get_gpu_free_memory_vulkan(binary: Optional[str] = None) -> list[tuple[int, int]]:
-        """Query free VRAM per device via the bundled ggml Vulkan backend.
+    def _get_gpu_free_memory_vulkan(binary: Optional[str] = None) -> list[tuple[int, int, int]]:
+        """Query free (and total) VRAM per device via the bundled ggml Vulkan backend.
 
         Loads ``libggml-vulkan`` in a short-lived subprocess and calls
         ``ggml_backend_vk_get_device_memory`` for each device, so no Vulkan
         instance is created in this process. Returns list of
-        (device_index, free_mib) sorted by index, where the index is ggml's
-        own Vulkan device ordinal (the space ``GGML_VK_VISIBLE_DEVICES``
+        (device_index, free_mib, total_mib) sorted by index, where the index is
+        ggml's own Vulkan device ordinal (the space ``GGML_VK_VISIBLE_DEVICES``
         expects). Integrated GPUs leave a per-device host-RAM margin (see
-        ``_apply_igpu_host_reserve_mib``). Returns [] when no Vulkan build is
-        installed or no device is reachable.
+        ``_apply_igpu_host_reserve_mib``) and report total 0 (shared RAM is not
+        a VRAM budget); discrete cards pass their real total through. A user-set
+        ``GGML_VK_VISIBLE_DEVICES`` filters the enumerated devices, mirroring the
+        nvidia-smi path's ``CUDA_VISIBLE_DEVICES`` handling. Returns [] when no
+        Vulkan build is installed or no device is reachable.
         """
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
@@ -2472,16 +2482,29 @@ class LlamaCppBackend:
             logger.debug(f"vulkan GPU probe failed: {e}")
             return []
 
-        gpus: list[tuple[int, int]] = []
+        # Honor a user-set GGML_VK_VISIBLE_DEVICES like the nvidia-smi path
+        # honors CUDA_VISIBLE_DEVICES: the probe enumerates ggml's full, unmasked
+        # device list (its ordinals are the mask's own space), so a device the
+        # user hid must be dropped here, else the fit could rank and the launch
+        # could pin a GPU the user reserved.
+        allowed = LlamaCppBackend._visible_devices_mask("GGML_VK_VISIBLE_DEVICES")
+
+        gpus: list[tuple[int, int, int]] = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
-            if len(parts) != 3:
+            if len(parts) != 4:
                 continue
             try:
                 idx = int(parts[0])
                 free_mib = int(parts[1]) // (1024 * 1024)
                 is_igpu = parts[2] == "1"
+                # iGPU "total" is shared system RAM, not a VRAM budget -> keep 0
+                # so the fit stays on free*frac (the flat host reserve below is
+                # its headroom); a discrete card passes its real total through.
+                total_mib = 0 if is_igpu else int(parts[3]) // (1024 * 1024)
             except ValueError:
+                continue
+            if allowed is not None and idx not in allowed:
                 continue
             capped = _apply_igpu_host_reserve_mib(free_mib, is_igpu)
             if capped < free_mib:
@@ -2490,12 +2513,12 @@ class LlamaCppBackend:
                     f"RAM; reserving {free_mib - capped}MiB host headroom "
                     f"({free_mib}->{capped}MiB usable)"
                 )
-            gpus.append((idx, capped))
+            gpus.append((idx, capped, total_mib))
         gpus.sort(key = lambda g: g[0])
         if gpus:
             logger.info(
                 "Vulkan GPU memory detected: "
-                + ", ".join(f"VK{idx}={free}MiB" for idx, free in gpus)
+                + ", ".join(f"VK{idx}={free}MiB" for idx, free, _total in gpus)
             )
         return gpus
 

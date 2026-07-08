@@ -8,10 +8,12 @@ Covers the post-probe handling in
 
   * integrated GPUs (probe reports is_igpu=1) leave a flat per-device host
     margin matching llama.cpp's --fit-target, so context auto-sizing can't
-    over-commit shared RAM,
-  * discrete GPUs (is_igpu=0) are left untouched,
+    over-commit shared RAM, and report total 0 (shared RAM is not a budget),
+  * discrete GPUs (is_igpu=0) keep their free untouched and pass their real
+    total through so the fit can reserve absolute headroom,
   * an inherited ``GGML_VK_VISIBLE_DEVICES`` is stripped before probing so
-    enumeration stays in ggml's canonical full-device space.
+    enumeration stays in ggml's canonical full-device space, then honored by
+    filtering out the hidden devices from the result.
 
 The ggml Vulkan library is never loaded: subprocess.run is mocked to emit
 the tab-separated lines the real ``_vulkan_probe.py`` would print.
@@ -86,45 +88,74 @@ def _mock_probe(rows: list[str], captured_env: dict | None = None):
     return mock.patch("subprocess.run", side_effect = fake_run)
 
 
-def _row(idx: int, free_bytes: int, is_igpu: int) -> str:
-    return f"{idx}\t{free_bytes}\t{is_igpu}"
+def _row(idx: int, free_bytes: int, is_igpu: int, total_bytes: int = 0) -> str:
+    return f"{idx}\t{free_bytes}\t{is_igpu}\t{total_bytes}"
 
 
 def test_integrated_gpu_leaves_host_margin(tmp_path):
     binary = _make_vulkan_install(tmp_path)
     # iGPU with 30 GiB free; reserve a flat 1024 MiB (llama.cpp --fit-target).
-    rows = [_row(0, 30 * GIB, is_igpu = 1)]
+    # total stays 0: shared system RAM is not a VRAM budget for the fit.
+    rows = [_row(0, 30 * GIB, is_igpu = 1, total_bytes = 32 * GIB)]
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
-    assert gpus == [(0, 30 * 1024 - 1024)], gpus
+    assert gpus == [(0, 30 * 1024 - 1024, 0)], gpus
 
 
-def test_discrete_gpu_free_is_untouched(tmp_path):
+def test_discrete_gpu_free_is_untouched_and_total_passed_through(tmp_path):
     binary = _make_vulkan_install(tmp_path)
-    rows = [_row(0, 23 * GIB, is_igpu = 0)]
+    # 6 GiB free on a partially occupied 24 GiB card: free is untouched and the
+    # real total flows through so the fit reserves absolute headroom (CUDA/ROCm
+    # parity) instead of the looser free*frac budget.
+    rows = [_row(0, 6 * GIB, is_igpu = 0, total_bytes = 24 * GIB)]
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
-    assert gpus == [(0, 23 * 1024)], gpus
+    assert gpus == [(0, 6 * 1024, 24 * 1024)], gpus
 
 
 def test_large_discrete_gpu_is_untouched(tmp_path):
     binary = _make_vulkan_install(tmp_path)
     # A 48 GiB discrete card stays untouched regardless of size; only the
     # iGPU flag triggers the host margin, never a VRAM/RAM ratio.
-    rows = [_row(0, 47 * GIB, is_igpu = 0)]
+    rows = [_row(0, 47 * GIB, is_igpu = 0, total_bytes = 48 * GIB)]
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
-    assert gpus == [(0, 47 * 1024)], gpus
+    assert gpus == [(0, 47 * 1024, 48 * 1024)], gpus
 
 
-def test_inherited_visible_devices_mask_is_stripped(tmp_path, monkeypatch):
+def test_inherited_visible_devices_mask_is_stripped_from_probe_env(tmp_path, monkeypatch):
     binary = _make_vulkan_install(tmp_path)
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
     captured: dict = {}
-    rows = [_row(0, 23 * GIB, is_igpu = 0)]
+    rows = [_row(0, 23 * GIB, is_igpu = 0, total_bytes = 24 * GIB)]
     with _mock_probe(rows, captured_env = captured):
         LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
     assert "GGML_VK_VISIBLE_DEVICES" not in captured, captured
+
+
+def test_inherited_visible_devices_mask_filters_hidden_device(tmp_path, monkeypatch):
+    binary = _make_vulkan_install(tmp_path)
+    # The user hid device 0 (GGML_VK_VISIBLE_DEVICES=1). The probe still
+    # enumerates the full unmasked list, but the reader must drop device 0 so
+    # the fit and pin can't select a GPU the user reserved (CUDA parity).
+    monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
+    rows = [
+        _row(0, 8 * GIB, is_igpu = 0, total_bytes = 24 * GIB),
+        _row(1, 6 * GIB, is_igpu = 0, total_bytes = 24 * GIB),
+    ]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [(1, 6 * 1024, 24 * 1024)], gpus
+
+
+def test_empty_visible_devices_mask_hides_all(tmp_path, monkeypatch):
+    binary = _make_vulkan_install(tmp_path)
+    # An empty mask hides every device, matching the CUDA_VISIBLE_DEVICES="" convention.
+    monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "")
+    rows = [_row(0, 8 * GIB, is_igpu = 0, total_bytes = 24 * GIB)]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [], gpus
 
 
 if __name__ == "__main__":

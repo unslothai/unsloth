@@ -105,6 +105,27 @@ def test_published_repo_for_host():
     )
 
 
+def test_force_cpu_clears_all_gpu_attributes_including_intel():
+    # --cpu-fallback is the "select the CPU prebuilt even when a GPU is present"
+    # escape hatch. It must drop EVERY GPU attribute, including has_intel_gpu, or
+    # the planner still prepends the Vulkan asset on an Intel-GPU host.
+    host = _host(
+        is_linux = True,
+        is_x86_64 = True,
+        has_usable_nvidia = True,
+        has_physical_nvidia = True,
+        has_rocm = True,
+        rocm_gfx_target = "gfx1100",
+        has_intel_gpu = True,
+    )
+    forced = ilp._apply_host_overrides(host, force_cpu = True)
+    assert forced.has_usable_nvidia is False
+    assert forced.has_physical_nvidia is False
+    assert forced.has_rocm is False
+    assert forced.rocm_gfx_target is None
+    assert forced.has_intel_gpu is False
+
+
 def test_macos_intel_and_arm_both_route_to_fork():
     # macOS uses the unslothai fork's own Mac prebuilts for BOTH arm64 and Intel;
     # there is no longer any upstream-on-macOS default path, so the obsolete

@@ -1,13 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Standalone free-VRAM probe for the bundled ggml Vulkan backend.
 
 Run in a short-lived subprocess (``python _vulkan_probe.py <bindir>``) so the
 Vulkan instance never lives in the long-running backend process. Loads the
 bundled ggml Vulkan backend from ``<bindir>`` and prints one
-``<idx>\\t<free_bytes>\\t<is_igpu>`` line per device to stdout. The indices
-are ggml's own Vulkan device ordinals (the space GGML_VK_VISIBLE_DEVICES
-expects), which need not match nvidia-smi order. ``is_igpu`` is ``1`` for an
-integrated GPU (shared system RAM) and ``0`` otherwise, taken from ggml's own
-device type so the reader needn't guess from VRAM-vs-RAM ratios.
+``<idx>\\t<free_bytes>\\t<is_igpu>\\t<total_bytes>`` line per device to stdout.
+The indices are ggml's own Vulkan device ordinals (the space
+GGML_VK_VISIBLE_DEVICES expects), which need not match nvidia-smi order.
+``is_igpu`` is ``1`` for an integrated GPU (shared system RAM) and ``0``
+otherwise, taken from ggml's own device type so the reader needn't guess from
+VRAM-vs-RAM ratios. ``total_bytes`` is the device-local heap size, which the
+reader uses to reserve absolute headroom on a discrete card (parity with the
+CUDA/ROCm fit); it is ignored for an iGPU, whose "VRAM" is shared system RAM.
 
 Uses only the standard library so it stays runnable as a bare script without
 importing the backend package.
@@ -92,10 +98,8 @@ def main() -> int:
     rows = []
     for i in range(count):
         free, total = ctypes.c_size_t(0), ctypes.c_size_t(0)
-        # total is a required out-param of the C call but unused: the reader
-        # leaves a flat per-device margin, not a fraction of total.
         lib.ggml_backend_vk_get_device_memory(i, ctypes.byref(free), ctypes.byref(total))
-        rows.append("%d\t%d\t%d" % (i, free.value, int(igpu[i])))
+        rows.append("%d\t%d\t%d\t%d" % (i, free.value, int(igpu[i]), total.value))
     sys.stdout.write("\n".join(rows))
     return 0
 
