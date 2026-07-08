@@ -40,6 +40,43 @@ def _positive_int_or_none(value: Any) -> Optional[int]:
     return value_int if value_int > 0 else None
 
 
+def _nonnegative_int_or_none(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value_int if value_int >= 0 else None
+
+
+_MLX_MPI_DISTRIBUTED_ENV_PAIRS = (
+    ("OMPI_COMM_WORLD_RANK", "OMPI_COMM_WORLD_SIZE"),
+    ("PMI_RANK", "PMI_SIZE"),
+    ("PMIX_RANK", "PMIX_SIZE"),
+    ("MPI_RANK", "MPI_WORLD_SIZE"),
+    ("MV2_COMM_WORLD_RANK", "MV2_COMM_WORLD_SIZE"),
+)
+
+
+def _mlx_distributed_launch_detected() -> bool:
+    if _nonnegative_int_or_none(os.environ.get("MLX_RANK")) is not None:
+        world_size = _positive_int_or_none(os.environ.get("MLX_WORLD_SIZE"))
+        if world_size is not None and world_size > 1:
+            return True
+        return bool(
+            os.environ.get("MLX_HOSTFILE")
+            or os.environ.get("MLX_IBV_DEVICES")
+            or os.environ.get("MLX_JACCL_COORDINATOR")
+            or (os.environ.get("NCCL_HOST_IP") and os.environ.get("NCCL_PORT"))
+        )
+    return any(
+        _nonnegative_int_or_none(os.environ.get(rank_env)) is not None
+        and (_positive_int_or_none(os.environ.get(size_env)) or 0) > 1
+        for rank_env, size_env in _MLX_MPI_DISTRIBUTED_ENV_PAIRS
+    )
+
+
 def _install_httpcore_asyncgen_silencer() -> None:
     """Silence benign httpx/httpcore asyncgen GC noise on Python 3.13.
 
@@ -3426,6 +3463,15 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 status_code = 400,
                 detail = "gpu_ids is not supported for GGUF models yet.",
             )
+        if not config.is_gguf and _mlx_distributed_launch_detected():
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "Studio does not support distributed MLX inference under "
+                    "mlx.launch. Use `mlx.launch ... unsloth chat` or run Studio "
+                    "without the distributed launcher."
+                ),
+            )
 
         # Effective quantization (LoRA can flip 4-bit -> 16-bit); guard + load reuse it.
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
@@ -6053,14 +6099,13 @@ async def openai_chat_completions(
     # free-form sampling. Guided decoding does not require ``supports_tools`` --
     # the grammar machinery is independent of tool-call parsing.
     _has_response_format = _extract_response_format(payload) is not None
-    _tools_passthrough = llama_backend.supports_tools and (
-        (payload.tools and len(payload.tools) > 0) or _has_tool_messages
-    )
-    if (
-        using_gguf
-        and not _effective_enable_tools(payload)
-        and (_tools_passthrough or _has_response_format)
-    ):
+    _tools_passthrough = getattr(
+        llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
+    ) and ((payload.tools and len(payload.tools) > 0) or _has_tool_messages)
+    # DiffusionGemma keeps supports_tools off, so the server-side tool loop can't
+    # claim the request; fall through to client passthrough, matching /v1/messages.
+    _server_tool_loop = _effective_enable_tools(payload) and llama_backend.supports_tools
+    if using_gguf and not _server_tool_loop and (_tools_passthrough or _has_response_format):
         if _wants_multiple_choices(payload):
             raise _reject_unsupported_n("GGUF tool or response_format passthrough")
         if payload.audio_base64:
@@ -10222,7 +10267,9 @@ async def anthropic_messages(
         and not _has_image
     )
     client_tools = (
-        not server_tools and len(openai_client_tools) > 0 and llama_backend.supports_tools
+        not server_tools
+        and len(openai_client_tools) > 0
+        and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
 
     # Anthropic tool_choice.disable_parallel_tool_use caps the response to a

@@ -81,11 +81,6 @@ import {
   TestTube01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  exportConversationRawJsonl,
-  exportConversationCsv,
-  exportConversationShareGPT,
-} from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { listStoredChatThreads } from "@/features/chat/utils/chat-history-storage";
 import {
   Tooltip,
@@ -173,6 +168,36 @@ const TestTubeOutlineIcon = TestTube01Icon.slice(
   0,
   3,
 ) as typeof TestTube01Icon;
+
+
+type ConversationExportFormat = "raw-jsonl" | "csv" | "sharegpt-jsonl";
+
+const CHAT_EXPORT_OPTIONS: Array<{
+  label: string;
+  format: ConversationExportFormat;
+}> = [
+  { label: "Raw JSONL", format: "raw-jsonl" },
+  { label: "CSV", format: "csv" },
+  { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
+];
+
+async function exportConversationByFormat(
+  threadId: string,
+  format: ConversationExportFormat,
+): Promise<void> {
+  const exports = await import(
+    "@/features/chat/prompt-storage/prompt-storage-dialog"
+  );
+  switch (format) {
+    case "raw-jsonl":
+      return exports.exportConversationRawJsonl(threadId);
+    case "csv":
+      return exports.exportConversationCsv(threadId);
+    case "sharegpt-jsonl":
+      return exports.exportConversationShareGPT(threadId);
+  }
+}
+
 
 function runStatusDotClass(status: TrainingRunSummary["status"]): string {
   switch (status) {
@@ -899,11 +924,7 @@ export function AppSidebar() {
                 <span>Export</span>
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
-                {[
-                  { label: "Raw JSONL", fn: exportConversationRawJsonl },
-                  { label: "CSV", fn: exportConversationCsv },
-                  { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
-                ].map(({ label, fn }) => (
+                {CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
                   <DropdownMenuItem
                     key={label}
                     onSelect={async () => {
@@ -911,7 +932,9 @@ export function AppSidebar() {
                         const ids = item.type === "single"
                           ? [item.id]
                           : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
-                        await Promise.all(ids.map((id) => fn(id)));
+                        await Promise.all(
+                          ids.map((id) => exportConversationByFormat(id, format)),
+                        );
                       } catch {
                         toast.error("Export failed.");
                       }
@@ -1549,9 +1572,6 @@ export function AppSidebar() {
                   >
                     <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
                     <span>{t("shell.navigation.api")}</span>
-                    <span className="ml-auto rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
-                      {t("common.new")}
-                    </span>
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     ref={anchorRef as React.Ref<HTMLDivElement>}
