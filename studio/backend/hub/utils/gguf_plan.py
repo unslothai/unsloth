@@ -144,7 +144,10 @@ def preferred_dflash_sibling(siblings: Sequence) -> Optional[object]:
     ]
     if not candidates:
         return None
-    return sorted(candidates, key = lambda s: (_is_full_precision_gguf(getattr(s, "rfilename")), getattr(s, "rfilename")))[0]
+    return sorted(
+        candidates,
+        key = lambda s: (_is_full_precision_gguf(getattr(s, "rfilename")), getattr(s, "rfilename")),
+    )[0]
 
 
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
