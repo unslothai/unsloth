@@ -48,6 +48,21 @@ reasoning_effort: {{ reasoning_effort }}
 """
 
 
+# DeepSeek-V4-Flash: an enable_thinking on/off gate PLUS a reasoning_effort
+# 'max' preamble. The shipped template only *branches* on 'max' ('high' renders
+# identically to thinking-on-without-the-preamble), so the literal scan alone
+# would surface only ['max']; the classifier adds 'high' for deepseek-v4 to
+# expose the encoder's full none/high/max ladder.
+DEEPSEEK_V4_TEMPLATE = (
+    "{%- if not thinking is defined %}"
+    "{%- if enable_thinking is defined %}{%- set thinking = enable_thinking %}"
+    "{%- else %}{%- set thinking = false %}{%- endif %}{%- endif %}\n"
+    "{%- if thinking and reasoning_effort == 'max' %}"
+    "{{- 'Reasoning Effort: Absolute maximum' }}{%- endif %}\n"
+    "{%- for message in messages %}{{- message.content }}{%- endfor %}"
+)
+
+
 PLAIN_TEMPLATE = """
 {%- for message in messages %}
   {{- message.role + ': ' + message.content + '\\n' }}
@@ -88,6 +103,29 @@ def test_detect_reasoning_flags_none_template_returns_all_false():
     assert flags["supports_preserve_thinking"] is False
     assert flags["reasoning_always_on"] is False
     assert flags["reasoning_style"] == "enable_thinking"
+
+
+def test_detect_reasoning_flags_deepseek_v4_exposes_none_high_max():
+    """DeepSeek-V4-Flash: enable_thinking gate + reasoning_effort 'max' preamble.
+    Classified as the hybrid style with the full none/high/max ladder even
+    though the template only branches on 'max'."""
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    flags = detect_reasoning_flags(DEEPSEEK_V4_TEMPLATE, "unsloth/DeepSeek-V4-Flash-GGUF")
+    assert flags["supports_reasoning"] is True
+    assert flags["reasoning_style"] == "enable_thinking_effort"
+    assert flags["reasoning_effort_levels"] == ["high", "max"]
+    assert flags["reasoning_always_on"] is False
+
+
+def test_detect_reasoning_flags_non_deepseek_v4_effort_only_max_not_injected():
+    """The 'high' injection is scoped to deepseek-v4: a different model whose
+    template only branches on 'max' keeps ['max'] (no phantom 'high')."""
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    flags = detect_reasoning_flags(DEEPSEEK_V4_TEMPLATE, "vendor/OtherHybrid-GGUF")
+    assert flags["reasoning_style"] == "enable_thinking_effort"
+    assert flags["reasoning_effort_levels"] == ["max"]
 
 
 def test_detect_safetensors_features_passes_template_through_to_classifier():

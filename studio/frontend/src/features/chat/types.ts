@@ -36,6 +36,7 @@ export interface ThreadRecord {
   projectId?: string | null;
   archived: boolean;
   createdAt: number;
+  updatedAt?: number;
   /**
    * OpenAI shell tool container id from a prior response. When set, the
    * next turn reuses it via `environment.type="container_reference"` so
