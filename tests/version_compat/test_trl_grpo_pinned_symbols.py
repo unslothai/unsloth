@@ -575,7 +575,9 @@ def test_trl_grpo_peft_ref_adapter_block_contract(tag: str):
     remain present -- the tightened regex must NOT swallow it (PR #6904). The
     `elif` block shape appeared in TRL 1.4.0, so this contract runs from there."""
     if not _tag_ge(tag, "1.4.0"):
-        pytest.skip(f"{tag}: pre-1.4.0 uses the `if is_peft_available()...` form (rl.py 0.27 branch)")
+        pytest.skip(
+            f"{tag}: pre-1.4.0 uses the `if is_peft_available()...` form (rl.py 0.27 branch)"
+        )
     src = fetch_text("huggingface/trl", tag, "trl/trainer/grpo_trainer.py")
     assert src is not None
     assert "elif is_peft_model(model) and args.beta != 0.0:" in src, (
