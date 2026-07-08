@@ -1415,8 +1415,15 @@ def openclaw(
         launch = launch,
     )
     openclaw_args = list(ctx.args)
-    if not openclaw_args or openclaw_args[0].startswith("-"):
-        openclaw_args = ["tui", "--local", *openclaw_args]
+    # Default a bare `unsloth start openclaw` to the local TUI. Anything the caller
+    # passes through is forwarded verbatim so OpenClaw parses it under its own grammar
+    # (openclaw [global-flags] <command> [options]): an explicit subcommand, a global
+    # flag that must precede the command such as --profile/--dev, or a tui option. We
+    # cannot reinterpret those safely because a leading "--flag value" is ambiguous
+    # between a global (`--profile test`) and a tui option (`--message hi`); prepending
+    # `tui --local` would break the global form, so only the empty case is defaulted.
+    if not openclaw_args:
+        openclaw_args = ["tui", "--local"]
     command = ["openclaw", *openclaw_args]
     install_hint = (
         "iwr -useb https://openclaw.ai/install.ps1 | iex"
