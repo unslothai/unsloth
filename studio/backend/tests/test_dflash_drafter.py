@@ -13,6 +13,7 @@ reload-dedup bounce when the drafter appears / changes / disappears.
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -29,7 +30,11 @@ from utils.models.model_config import (
     detect_gguf_model,
     detect_mtp_file,
 )
-from core.inference.llama_cpp import LlamaCppBackend, _is_companion_gguf_path
+from core.inference.llama_cpp import (
+    LlamaCppBackend,
+    _extra_args_requests_dflash,
+    _is_companion_gguf_path,
+)
 
 
 # ── Companion predicate + layering mirrors ───────────────────────────
@@ -262,3 +267,98 @@ def test_already_in_target_state_reloads_when_dflash_drafter_removed(tmp_path):
     weight.touch()
     backend = _dflash_backend(str(weight), "/old/dflash-Qwen3-4B.gguf")
     assert _in_target(backend, str(weight), None) is False
+
+
+# ── User-supplied --spec-type draft-dflash in extras ─────────────────
+
+
+def test_extra_args_requests_dflash():
+    # Auto-detect emits draft-dflash in spec_flags; a manually supplied drafter
+    # only shows up here, so the crash-recovery retry must key off it too (like
+    # MTP's _extra_args_requests_mtp), else a user drafter that aborts the
+    # server fails the whole load instead of retrying without speculation.
+    assert _extra_args_requests_dflash(["--spec-type", "draft-dflash"]) is True
+    assert _extra_args_requests_dflash(["--spec-type=draft-dflash"]) is True
+    assert _extra_args_requests_dflash(["--spec-type", "draft-mtp"]) is False
+    assert _extra_args_requests_dflash(["--model-draft", "/d/dflash.gguf"]) is False
+    assert _extra_args_requests_dflash(None) is False
+    # A CLI flag wins over the env, matching llama.cpp / _effective_spec_type.
+    assert (
+        _extra_args_requests_dflash([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-dflash"}) is True
+    )
+    assert (
+        _extra_args_requests_dflash(
+            ["--spec-type", "draft-mtp"], env = {"LLAMA_ARG_SPEC_TYPE": "draft-dflash"}
+        )
+        is False
+    )
+
+
+# ── Route reload-dedup: HF must not thrash on a snapshot dflash sibling ───
+
+
+def _load_inference_routes_module():
+    """Load routes/inference.py directly, bypassing routes/__init__.py (which
+    imports every router, dragging in unrelated deps)."""
+    route_path = Path(_BACKEND_DIR) / "routes" / "inference.py"
+    spec = importlib.util.spec_from_file_location(
+        "dflash_drafter_inference_routes", route_path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _route_dedup_backend(gguf_path, *, hf_repo):
+    backend = LlamaCppBackend()
+    backend._process = _FakeProcess()
+    backend._healthy = True
+    backend._model_identifier = "unsloth/Qwen3-4B-GGUF"
+    backend._hf_variant = "Q4_K_M"
+    backend._requested_n_ctx = 0
+    backend._cache_type_kv = None
+    backend._tensor_parallel = False
+    backend._layer_preserves_tensor_intent = False
+    backend._requested_spec_mode = "auto"
+    backend._spec_fallback_reason = None
+    backend._chat_template_override = None
+    backend._extra_args = None
+    backend._gguf_path = gguf_path
+    backend._hf_repo = hf_repo
+    backend._mtp_draft_path = None
+    backend._dflash_draft_path = None
+    return backend
+
+
+def test_hf_load_with_snapshot_dflash_sibling_does_not_thrash(tmp_path):
+    # A dflash-*.gguf sits in the HF snapshot dir, but HF loads never populate
+    # dflash_draft_path (no -hf auto-resolve yet). The route dedup must NOT
+    # compare the detected sibling against the permanently-None stored path,
+    # or every duplicate /load reloads the server (never converges).
+    routes = _load_inference_routes_module()
+    from models.inference import LoadRequest
+
+    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
+    weight.touch()
+    (tmp_path / "dflash-Qwen3-4B.gguf").touch()
+
+    req = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
+    backend = _route_dedup_backend(str(weight), hf_repo = "unsloth/Qwen3-4B-GGUF")
+    assert routes._request_matches_loaded_settings(req, backend) is True
+
+
+def test_local_load_still_reloads_when_dflash_sibling_appears(tmp_path):
+    # The HF guard must not weaken the local path: a dflash sibling that
+    # resolves next to a local weight with no stored drafter still reloads.
+    routes = _load_inference_routes_module()
+    from models.inference import LoadRequest
+
+    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
+    weight.touch()
+    (tmp_path / "dflash-Qwen3-4B.gguf").touch()
+
+    req = LoadRequest(model_path = str(weight))
+    backend = _route_dedup_backend(str(weight), hf_repo = None)
+    assert routes._request_matches_loaded_settings(req, backend) is False

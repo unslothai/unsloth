@@ -1169,6 +1169,17 @@ def _extra_args_requests_mtp(
     return any(p.strip().lower() in ("mtp", "draft-mtp") for p in value.split(","))
 
 
+def _extra_args_requests_dflash(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True if the effective --spec-type selects DFlash (draft-dflash), so a
+    user-supplied drafter that aborts the server shares MTP's retry path."""
+    value = _effective_spec_type(extra_args, env)
+    if not value:
+        return False
+    return any(p.strip().lower() == "draft-dflash" for p in value.split(","))
+
+
 def _extra_args_requests_separate_draft(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -6819,8 +6830,12 @@ class LlamaCppBackend:
                 # DFlash uses the same separate-drafter spawn as MTP and can
                 # abort the server the same way (binary predates the arch, or
                 # the drafter GGUF fails to build), so it shares the retry path
-                # below. Not part of the MTP+tensor probe/watchdog above.
-                _spec_requested_dflash = any("dflash" in str(t).lower() for t in spec_flags)
+                # below. Not part of the MTP+tensor probe/watchdog above. Like
+                # MTP, honor a user-supplied --spec-type draft-dflash in extras
+                # (auto-detect emits it in spec_flags; a manual drafter does not).
+                _spec_requested_dflash = any(
+                    "dflash" in str(t).lower() for t in spec_flags
+                ) or _extra_args_requests_dflash(extra_args, env = _launch_spec_env)
                 # Is the launched server actually running MTP+tensor? Gates the
                 # probe/watchdog/recovery; cleared if the MTP-drop fallback wins.
                 _mtp_active_for_launched_server = bool(
@@ -6921,9 +6936,12 @@ class LlamaCppBackend:
                         + ["--spec-default"]
                         + cmd[_spec_start + len(spec_flags) :]
                     )
-                    # User/env MTP survives in the tail; llama.cpp takes the last
-                    # spec flag, so a trailing --spec-default overrides it too.
-                    if _extra_args_requests_mtp(extra_args, env = _launch_spec_env):
+                    # User/env MTP or DFlash survives in the tail; llama.cpp
+                    # takes the last spec flag, so a trailing --spec-default
+                    # overrides it too.
+                    if _extra_args_requests_mtp(
+                        extra_args, env = _launch_spec_env
+                    ) or _extra_args_requests_dflash(extra_args, env = _launch_spec_env):
                         fallback_cmd.append("--spec-default")
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
                     if healthy:

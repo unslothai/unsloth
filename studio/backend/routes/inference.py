@@ -2600,7 +2600,14 @@ def _request_matches_loaded_settings(
                 return False
     # Same for the DFlash drafter (auto mode only, no forced "dflash" UI mode):
     # a dflash-*.gguf added/removed next to the weights changes --model-draft.
-    if req_mode == "auto" and llama_backend.gguf_path:
+    # Local loads only: HF loads never populate dflash_draft_path (no -hf
+    # auto-resolve yet), but gguf_path is the resolved snapshot file, so a
+    # dflash-*.gguf sibling in the snapshot dir would be detected and compared
+    # against a permanently-None stored path -- a reload every /load. The
+    # backend _already_in_target_state skips its DFlash check for HF the same
+    # way (it receives gguf_path=None). MTP above is immune: it IS -hf wired,
+    # so the stored path matches the detected sibling.
+    if req_mode == "auto" and llama_backend.gguf_path and not llama_backend.hf_repo:
         effective_extras = (
             request.llama_extra_args
             if request.llama_extra_args is not None
