@@ -53,9 +53,9 @@ def test_cuda_spec_bounds(monkeypatch, index, allowed, rejected):
     mod = _load_module(monkeypatch)
     spec = _spec_of(mod._CUDA_TORCH_PKG_SPEC[index])
     for v in allowed:
-        assert spec.contains(v, prereleases=True), f"{v} should satisfy {spec}"
+        assert spec.contains(v, prereleases = True), f"{v} should satisfy {spec}"
     for v in rejected:
-        assert not spec.contains(v, prereleases=True), f"{v} should not satisfy {spec}"
+        assert not spec.contains(v, prereleases = True), f"{v} should not satisfy {spec}"
 
 
 def test_cuda_spec_matches_rocm72_upper_bound(monkeypatch):
@@ -71,6 +71,6 @@ def test_cuda_spec_matches_rocm72_upper_bound(monkeypatch):
         raise AssertionError(f"no upper bound in {pkg_spec!r}")
 
     for cuda_pkg, rocm_pkg in zip(mod._CUDA_TORCH_PKG_SPEC, rocm72):
-        assert _upper(cuda_pkg) == _upper(rocm_pkg), (
-            f"CUDA {cuda_pkg!r} upper bound must match rocm7.2 {rocm_pkg!r}"
-        )
+        assert _upper(cuda_pkg) == _upper(
+            rocm_pkg
+        ), f"CUDA {cuda_pkg!r} upper bound must match rocm7.2 {rocm_pkg!r}"
