@@ -1126,11 +1126,7 @@ def _is_mtp_drafter(path: str) -> bool:
     if not p.endswith(".gguf"):
         return False
     name = p.rsplit("/", 1)[-1]
-    return (
-        name.startswith("mtp-")
-        or "/mtp/" in f"/{p}"
-        or bool(_DFLASH_DRAFTER_RE.search(name))
-    )
+    return name.startswith("mtp-") or "/mtp/" in f"/{p}" or bool(_DFLASH_DRAFTER_RE.search(name))
 
 
 # Family tokens for #5347's filename fallback. Lowercase; order irrelevant.
@@ -1431,9 +1427,7 @@ def detect_dflash_file(path: str, search_root: Optional[str] = None) -> Optional
             candidates = [
                 c for c in (stem[: m.start()].strip("-_."), stem[m.end() :].strip("-_.")) if c
             ]
-            if weight_name is not None and not any(
-                weight_name.startswith(c) for c in candidates
-            ):
+            if weight_name is not None and not any(weight_name.startswith(c) for c in candidates):
                 continue
             try:
                 if f.is_file():

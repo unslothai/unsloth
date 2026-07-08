@@ -808,11 +808,7 @@ def _is_companion_gguf_path(path: str) -> bool:
     if "mmproj" in p:
         return True
     name = p.rsplit("/", 1)[-1]
-    return (
-        name.startswith("mtp-")
-        or "/mtp/" in f"/{p}"
-        or bool(_DFLASH_DRAFTER_RE.search(name))
-    )
+    return name.startswith("mtp-") or "/mtp/" in f"/{p}" or bool(_DFLASH_DRAFTER_RE.search(name))
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)

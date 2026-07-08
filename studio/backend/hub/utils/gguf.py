@@ -110,11 +110,7 @@ def is_mtp_drafter_path(path: str) -> bool:
     if not p.endswith(".gguf"):
         return False
     name = p.rsplit("/", 1)[-1]
-    return (
-        name.startswith("mtp-")
-        or "/mtp/" in f"/{p}"
-        or bool(_DFLASH_DRAFTER_RE.search(name))
-    )
+    return name.startswith("mtp-") or "/mtp/" in f"/{p}" or bool(_DFLASH_DRAFTER_RE.search(name))
 
 
 def is_gguf_filename(filename: str) -> bool:
