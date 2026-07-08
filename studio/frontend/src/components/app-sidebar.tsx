@@ -1572,9 +1572,6 @@ export function AppSidebar() {
                   >
                     <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
                     <span>{t("shell.navigation.api")}</span>
-                    <span className="ml-auto rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
-                      {t("common.new")}
-                    </span>
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     ref={anchorRef as React.Ref<HTMLDivElement>}
