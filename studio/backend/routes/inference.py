@@ -2541,14 +2541,15 @@ def _request_matches_loaded_settings(
         and not _extra_args_set_spec_type(effective_extra)
     ):
         return False
-    # A DFlash drafter that failed (incompatible fork build, or a runtime crash)
-    # left a fallback server. A same-settings reload must retry so a replaced or
-    # fixed drafter at the same path engages -- otherwise the path compare below
-    # dedupes on the unchanged name and the fallback sticks (the
-    # dflash_drafter_incompatible message tells the user to replace the drafter).
-    # These reasons are DFlash-specific, so fire regardless of mode or whether
-    # the spec came from Auto or validated extra args (both can hit the failure).
+    # A DFlash load that fell back (binary lacked draft-dflash, a fork-format
+    # drafter, or a runtime crash) left a fallback server. A same-settings reload
+    # must retry so a newer llama.cpp (after `unsloth studio update`) or a
+    # replaced/fixed drafter at the same path engages -- otherwise the path
+    # compare below dedupes on the unchanged name and the fallback sticks. These
+    # reasons are DFlash-specific, so fire regardless of mode or whether the spec
+    # came from Auto or validated extra args (both can hit the failure).
     if llama_backend.spec_fallback_reason in (
+        "binary_no_dflash",
         "dflash_drafter_incompatible",
         "dflash_runtime_error",
     ):

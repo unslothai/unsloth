@@ -7619,6 +7619,17 @@ class LlamaCppBackend:
         ):
             return False
 
+        # A prior DFlash fallback (binary lacked draft-dflash, a fork-format
+        # drafter, or a runtime crash) must not dedupe: a newer binary after an
+        # update, or a replaced/fixed drafter at the same path, needs a reload to
+        # engage. Mirrors the route guard for direct/CLI callers (which bypass it).
+        if self._spec_fallback_reason in (
+            "binary_no_dflash",
+            "dflash_drafter_incompatible",
+            "dflash_runtime_error",
+        ):
+            return False
+
         # spec_draft_n_max only matters when a model-draft variant is engaged
         # (draft-mtp or draft-dflash). Compare on the resolved spec so an Auto
         # request promoted to a drafter still bounces a reload when n_max changes.

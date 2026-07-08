@@ -352,6 +352,22 @@ def test_already_in_target_state_dedups_same_dflash_drafter(tmp_path):
     assert _in_target(backend, str(weight), str(drafter)) is True
 
 
+@pytest.mark.parametrize(
+    "reason",
+    ["binary_no_dflash", "dflash_drafter_incompatible", "dflash_runtime_error"],
+)
+def test_already_in_target_state_bypasses_after_dflash_fallback(tmp_path, reason):
+    # Backend parity with the route guard: a prior DFlash fallback must not
+    # dedupe, so a direct/CLI reload retries after an update or a fixed drafter.
+    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
+    weight.touch()
+    drafter = tmp_path / "dflash-Qwen3-4B.gguf"
+    drafter.touch()
+    backend = _dflash_backend(str(weight), str(drafter))
+    backend._spec_fallback_reason = reason
+    assert _in_target(backend, str(weight), str(drafter)) is False
+
+
 def test_already_in_target_state_reloads_when_dflash_drafter_appears(tmp_path):
     # Loaded without a drafter; a dflash sibling now resolves -> must reload.
     weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
@@ -533,10 +549,14 @@ def test_dflash_reload_dedup_finds_root_sibling(tmp_path):
     assert routes._request_matches_loaded_settings(req, backend) is True
 
 
-def test_dflash_failure_forces_reload_to_retry_replaced_drafter(tmp_path):
-    # After a DFlash drafter failed (incompatible fork build), a same-settings
-    # reload must retry so a replaced/converted file at the same path engages,
-    # instead of deduping to the fallback server.
+@pytest.mark.parametrize(
+    "reason",
+    ["binary_no_dflash", "dflash_drafter_incompatible", "dflash_runtime_error"],
+)
+def test_dflash_failure_forces_reload_to_retry(tmp_path, reason):
+    # After any DFlash fallback (old binary, fork-format drafter, runtime crash),
+    # a same-settings reload must retry so a newer binary or a replaced drafter
+    # engages, instead of deduping to the fallback server.
     routes = _load_inference_routes_module()
     from models.inference import LoadRequest
 
@@ -547,7 +567,7 @@ def test_dflash_failure_forces_reload_to_retry_replaced_drafter(tmp_path):
 
     backend = _route_dedup_backend(str(weight), hf_repo = None)
     backend._dflash_draft_path = str(drafter.resolve())
-    backend._spec_fallback_reason = "dflash_drafter_incompatible"
+    backend._spec_fallback_reason = reason
     req = LoadRequest(model_path = str(weight))
     assert routes._request_matches_loaded_settings(req, backend) is False
 
