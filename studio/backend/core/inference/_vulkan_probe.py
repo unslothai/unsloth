@@ -83,9 +83,14 @@ def main() -> int:
     else:
         base_name, vk_name = "libggml-base.so", "libggml-vulkan.so"
 
+    # RTLD_GLOBAL exposes ggml-base's symbols to ggml-vulkan on POSIX. It is
+    # defined on every platform (0 where the dlopen flag doesn't exist, e.g.
+    # Windows, where CDLL ignores mode and uses LoadLibraryEx); getattr keeps
+    # that explicit and defensive.
+    _rtld_global = getattr(ctypes, "RTLD_GLOBAL", 0)
     try:
-        base = ctypes.CDLL(os.path.join(bindir, base_name), mode = ctypes.RTLD_GLOBAL)
-        lib = ctypes.CDLL(os.path.join(bindir, vk_name), mode = ctypes.RTLD_GLOBAL)
+        base = ctypes.CDLL(os.path.join(bindir, base_name), mode = _rtld_global)
+        lib = ctypes.CDLL(os.path.join(bindir, vk_name), mode = _rtld_global)
     except OSError as e:
         print(f"ggml-vulkan load failed: {e}", file = sys.stderr)
         return 1
