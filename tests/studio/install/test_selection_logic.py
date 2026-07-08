@@ -3594,8 +3594,9 @@ class TestLinuxArm64ForkFallsBackToSource:
         assert plans == ["plan"]
 
     def test_arm64_cpu_on_ggml_org_is_not_blocked(self, monkeypatch):
-        # CPU-only arm64 routes to ggml-org, so the guard must not fire; it reaches the
-        # iterator (empty here -> generic message).
+        # ggml-org is reachable only via an explicit --published-repo override now,
+        # but the guard must still not fire on arm64 there; it reaches the iterator
+        # (empty here -> generic message).
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_release_payloads_by_time",
@@ -3621,7 +3622,7 @@ class TestLinuxArm64ForkFallsBackToSource:
 
 
 class TestCpuFallback:
-    """--cpu-fallback drops GPU attributes so the host's OS/arch CPU prebuilt is selected, letting an arm64 GPU host install ggml-org's arm64 CPU build when its source build produced no binary."""
+    """--cpu-fallback drops GPU attributes so the host's OS/arch CPU prebuilt is selected, letting an arm64 GPU host install the fork's arm64 CPU bundle when its source build produced no binary."""
 
     _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 

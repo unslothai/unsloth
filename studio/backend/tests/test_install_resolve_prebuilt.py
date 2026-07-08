@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""install_llama_prebuilt.py: host->repo mapping and the --resolve-prebuilt mode.
+"""install_llama_prebuilt.py: the --resolve-prebuilt probe (plans against the fork
+by default; --published-repo overrides).
 
 These back the in-app update for source-build (markerless) installs: the backend
 asks the installer whether an official prebuilt exists for this host without
