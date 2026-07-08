@@ -334,7 +334,8 @@ function convertLatexDelimiters(content: string): {
       // Keep the opener's leading indentation so a `$$` block inside a list item
       // stays in the container instead of breaking out at column 0. Only when the
       // opener is whitespace-prefixed, so inline `text \[x\]` keeps column 0.
-      const lineStart = content.lastIndexOf("\n", match.index - 1) + 1;
+      const lineStart =
+        match.index > 0 ? content.lastIndexOf("\n", match.index - 1) + 1 : 0;
       const prefix = content.slice(lineStart, match.index);
       const indent = /^\s*$/.test(prefix) ? prefix : "";
       wrapped = `\n${indent}$$\n${indent}${body}\n${indent}$$\n`;
