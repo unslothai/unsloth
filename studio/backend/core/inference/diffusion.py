@@ -91,6 +91,7 @@ from .diffusion_cache import (
     normalize_transformer_cache,
 )
 from .diffusion_precision import TE_QUANT_AUTO, normalize_te_quant, quantize_text_encoders
+from .diffusion_vae_quant import VAE_QUANT_AUTO, normalize_vae_quant, quantize_vae
 from .diffusion_prequant import (
     load_prequantized_transformer,
     resolve_prequant_source,
@@ -388,6 +389,10 @@ class _LoadState:
     backend_flags_before: Optional[dict] = None
     # Text-encoder quantisation actually engaged: "fp8" | "nvfp4" | None (Phase 2B/2C).
     text_encoder_quant: Optional[str] = None
+    # VAE quantisation actually engaged: "fp8" (layerwise storage) | "fp8_dynamic" (torchao
+    # conv compute) | None. When set, the resident VAE holds fp8 tensor subclasses, so the
+    # img2img/inpaint _align_vae_dtype re-cast must be skipped (it would corrupt them).
+    vae_quant: Optional[str] = None
     # Transformer quant actually engaged on the opt-in dense fast path: "int8" | "fp8"
     # | "nvfp4" | "mxfp8" | None. None means the default GGUF transformer was loaded.
     transformer_quant: Optional[str] = None
@@ -801,6 +806,7 @@ class DiffusionBackend:
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        vae_quant: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         transformer_quant_fast_accum: Optional[bool] = None,
         transformer_prequant_path: Optional[str] = None,
@@ -849,6 +855,7 @@ class DiffusionBackend:
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
                 text_encoder_quant = text_encoder_quant,
+                vae_quant = vae_quant,
                 transformer_quant = transformer_quant,
                 transformer_quant_fast_accum = transformer_quant_fast_accum,
                 transformer_prequant_path = transformer_prequant_path,
@@ -1167,6 +1174,7 @@ class DiffusionBackend:
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        vae_quant: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         transformer_quant_fast_accum: Optional[bool] = None,
         transformer_prequant_path: Optional[str] = None,
@@ -1208,12 +1216,18 @@ class DiffusionBackend:
         normalize_attention_backend(attention_backend)
         normalize_transformer_cache(transformer_cache)
         normalize_te_quant(text_encoder_quant)
+        normalize_vae_quant(vae_quant)
         # text_encoder_quant tri-state, mirroring transformer_quant: UNSET (None / "") -> auto,
         # which picks the best accurate TE scheme for this GPU + family (fp8_dynamic / int8 /
         # layerwise fp8) or stays dense when none qualifies. An explicit "none"/"off" pins the
         # encoder dense; an explicit scheme forces it. So the shipped default is auto.
         if text_encoder_quant is None or str(text_encoder_quant).strip() == "":
             text_encoder_quant = TE_QUANT_AUTO
+        # vae_quant tri-state, same contract: UNSET -> auto (fp8_dynamic conv compute on resident
+        # fp8-GEMM silicon that passes the conv probe, else layerwise fp8, else dense); none/off ->
+        # dense; an explicit scheme forces it.
+        if vae_quant is None or str(vae_quant).strip() == "":
+            vae_quant = VAE_QUANT_AUTO
         # For a full pipeline the repo itself supplies every component, so it is its
         # own base; the single-file kinds resolve the companion base diffusers repo.
         base = (
@@ -1731,6 +1745,18 @@ class DiffusionBackend:
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
+                    # Quantise the dense VAE (opt-in fp8 layerwise / fp8_dynamic torchao conv),
+                    # also before placement so the offload hooks move the smaller weights. The
+                    # image families do not force-fp32 their VAE; auto skips torchao under offload.
+                    vae_quant_engaged = quantize_vae(
+                        pipe,
+                        target,
+                        mode = vae_quant,
+                        family = fam.name,
+                        offload_active = plan.offload_policy != OFFLOAD_NONE,
+                        force_fp32 = False,
+                        logger = logger,
+                    )
 
                     # Apply the placement planned above (from MEASURED free device memory vs
                     # the model's estimated resident size). apply_memory_plan returns the
@@ -1778,6 +1804,15 @@ class DiffusionBackend:
                                 if text_encoder_quant == TE_QUANT_AUTO
                                 else "requested",
                             ),
+                            "vae_quant": (
+                                vae_quant,
+                                vae_quant_engaged or "off",
+                                "dense (no accurate scheme for this GPU / disabled)"
+                                if vae_quant_engaged is None
+                                else "auto-selected for this GPU + family"
+                                if vae_quant == VAE_QUANT_AUTO
+                                else "requested",
+                            ),
                             "attention_backend": (
                                 attention_backend,
                                 attention_engaged or "native",
@@ -1823,6 +1858,7 @@ class DiffusionBackend:
                         speed_optims = tuple(k for k, v in speed_applied.items() if v),
                         backend_flags_before = backend_flags_before,
                         text_encoder_quant = te_quant,
+                        vae_quant = vae_quant_engaged,
                         transformer_quant = transformer_quant_engaged,
                         attention_backend = attention_engaged,
                         attention_request = attention_backend,
@@ -2231,7 +2267,9 @@ class DiffusionBackend:
         return pipe
 
     @staticmethod
-    def _align_vae_dtype(pipe: Any, denoiser_attr: str = "transformer") -> None:
+    def _align_vae_dtype(
+        pipe: Any, denoiser_attr: str = "transformer", vae_quant: Optional[str] = None
+    ) -> None:
         """Cast the VAE to the denoiser's compute dtype before an image-conditioned
         call. The img2img/inpaint pipelines VAE-encode the input image at the text-
         encoder dtype (bf16), but a prior txt2img DECODE may have left the shared VAE
@@ -2239,7 +2277,14 @@ class DiffusionBackend:
         (bf16 image vs fp32 VAE). Re-aligning here is safe: our families run bf16 or
         fp32 only (the fp16 guard promotes fp16), and a later txt2img decode re-upcasts
         as needed. ``denoiser_attr`` is ``pipe.transformer`` for DiT families and
-        ``pipe.unet`` for SDXL. Best-effort; a no-op when already aligned."""
+        ``pipe.unet`` for SDXL. Best-effort; a no-op when already aligned.
+
+        Skipped when ``vae_quant`` engaged: a quantised VAE holds fp8 tensor subclasses
+        that mishandle ``.to(dtype=...)`` (torchao rejects it), so the re-cast would
+        corrupt the weights. The VAE already runs at the compute dtype under fp8, so the
+        alignment is unnecessary there anyway."""
+        if vae_quant is not None:
+            return
         denoiser = getattr(pipe, denoiser_attr, None)
         vae = getattr(pipe, "vae", None)
         if denoiser is None or vae is None:
@@ -2724,7 +2769,9 @@ class DiffusionBackend:
                 if init_pil is not None:
                     # Keep the VAE encode dtype consistent with the input image.
                     # state.family is always a DiffusionFamily, which defines denoiser_attr.
-                    self._align_vae_dtype(pipe, state.family.denoiser_attr)
+                    # A quantised VAE (fp8 tensor subclasses) must NOT be re-cast, so pass the
+                    # engaged scheme through to skip the re-align in that case.
+                    self._align_vae_dtype(pipe, state.family.denoiser_attr, state.vae_quant)
 
                 # Pipelines vary in which kwargs they accept (img2img derives size from the
                 # input image and may reject width/height; a distilled pipe may take no
@@ -3007,6 +3054,7 @@ class DiffusionBackend:
                 "speed_mode": None,
                 "speed_optims": [],
                 "text_encoder_quant": None,
+                "vae_quant": None,
                 "transformer_quant": None,
                 "attention_backend": None,
                 "transformer_cache": None,
@@ -3032,6 +3080,7 @@ class DiffusionBackend:
             "speed_mode": state.speed_mode,
             "speed_optims": list(state.speed_optims),
             "text_encoder_quant": state.text_encoder_quant,
+            "vae_quant": state.vae_quant,
             "transformer_quant": state.transformer_quant,
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,

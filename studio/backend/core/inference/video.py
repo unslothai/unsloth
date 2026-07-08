@@ -79,6 +79,7 @@ from .diffusion_transformer_quant import (
     select_transformer_quant_scheme,
 )
 from .diffusion_precision import TE_QUANT_AUTO, normalize_te_quant, quantize_text_encoders
+from .diffusion_vae_quant import VAE_QUANT_AUTO, normalize_vae_quant, quantize_vae
 from .video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_NOT_LOADED_MSG,
@@ -289,6 +290,10 @@ class _VideoLoadState:
     # The companion text encoder (UMT5 / Gemma3 / Qwen2.5-VL) loads dense bf16 and is often the
     # largest resident component; this shrinks it in place, mirroring the image backend.
     text_encoder_quant: Optional[str] = None
+    # VAE quant actually engaged ("fp8" layerwise | "fp8_dynamic" torchao conv) or None. The
+    # convolutional decoder (Conv2d/Conv3d) shrinks in place; the vae_force_fp32 families
+    # (Wan) never quantise (force_fp32 -> dense). Mirrors the image backend's _LoadState.
+    vae_quant: Optional[str] = None
     resolved: Optional[dict] = None
 
 
@@ -394,6 +399,7 @@ class VideoBackend:
         model_kind: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        vae_quant: Optional[str] = None,
     ) -> VideoFamily:
         """Cheap, network-free validation shared by the route and the load path."""
         kind = resolve_video_model_kind(gguf_filename, model_kind)
@@ -517,6 +523,8 @@ class VideoBackend:
         # Reject a malformed text_encoder_quant the same way (applies to any load kind: the dense
         # text encoder is resident for pipeline / gguf / single_file alike).
         normalize_te_quant(text_encoder_quant)
+        # Same for vae_quant (the dense VAE is resident for every load kind).
+        normalize_vae_quant(vae_quant)
         _ensure_mp4_encoder_available()
         return fam
 
@@ -537,6 +545,7 @@ class VideoBackend:
         transformer_cache_threshold: Optional[float] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        vae_quant: Optional[str] = None,
         model_kind: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
@@ -549,6 +558,7 @@ class VideoBackend:
             model_kind = model_kind,
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            vae_quant = vae_quant,
         )
         with self._lock:
             if self._loading is not None and self._loading.error is None:
@@ -573,6 +583,7 @@ class VideoBackend:
                 transformer_cache_threshold = transformer_cache_threshold,
                 transformer_quant = transformer_quant,
                 text_encoder_quant = text_encoder_quant,
+                vae_quant = vae_quant,
                 model_kind = model_kind,
                 _load_token = token,
             ),
@@ -886,6 +897,7 @@ class VideoBackend:
         transformer_cache_threshold: Optional[float] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        vae_quant: Optional[str] = None,
         model_kind: Optional[str] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
@@ -901,6 +913,7 @@ class VideoBackend:
             model_kind = model_kind,
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            vae_quant = vae_quant,
         )
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         # text_encoder_quant tri-state (mirrors the image backend + transformer_quant): UNSET
@@ -908,6 +921,10 @@ class VideoBackend:
         # "none"/"off" pins the encoder dense; a scheme forces it. So the shipped default is auto.
         if text_encoder_quant is None or str(text_encoder_quant).strip() == "":
             text_encoder_quant = TE_QUANT_AUTO
+        # vae_quant tri-state, same contract. The vae_force_fp32 families (Wan) keep the VAE dense
+        # regardless (quantize_vae's force_fp32 gate), so auto is safe as the shipped default.
+        if vae_quant is None or str(vae_quant).strip() == "":
+            vae_quant = VAE_QUANT_AUTO
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
 
         with self._lock:
@@ -1206,6 +1223,19 @@ class VideoBackend:
             offload_active = plan.offload_policy != "none",
             logger = logger,
         )
+        # Quantise the dense convolutional VAE (opt-in fp8 layerwise / fp8_dynamic torchao conv).
+        # The vae_force_fp32 families (Wan) run the VAE in fp32 for numerical stability, so
+        # force_fp32 pins them dense (quantising the fp32 VAE bands the decode); auto skips the
+        # torchao mode under offload. Best-effort: a failure leaves the VAE dense.
+        vae_quant_engaged = quantize_vae(
+            pipe,
+            target,
+            mode = vae_quant,
+            family = fam.name,
+            offload_active = plan.offload_policy != "none",
+            force_fp32 = getattr(fam, "vae_force_fp32", False),
+            logger = logger,
+        )
 
         # ── optimisation layers, in the image backend's order: step cache FIRST
         # (compile keys its fullgraph decision off an active cache: FBCache hooks
@@ -1383,6 +1413,15 @@ class VideoBackend:
                         if text_encoder_quant_engaged is not None
                         else "not engaged (dense bf16 text encoder loaded)",
                     ),
+                    "vae_quant": (
+                        vae_quant,
+                        vae_quant_engaged or "off",
+                        "dense VAE quantised in place"
+                        if vae_quant_engaged is not None
+                        else "not engaged (fp32 VAE family / offload / disabled -> dense)"
+                        if getattr(fam, "vae_force_fp32", False)
+                        else "not engaged (dense VAE loaded)",
+                    ),
                 }
             )
 
@@ -1416,6 +1455,7 @@ class VideoBackend:
                     cache_threshold = transformer_cache_threshold,
                     transformer_quant = transformer_quant_engaged,
                     text_encoder_quant = text_encoder_quant_engaged,
+                    vae_quant = vae_quant_engaged,
                     resolved = resolved,
                 )
                 # Ownership of the globals transferred to _state / _teardown_state.
@@ -1770,6 +1810,7 @@ class VideoBackend:
                 "transformer_cache": None,
                 "transformer_quant": None,
                 "text_encoder_quant": None,
+                "vae_quant": None,
                 "has_audio": False,
                 "defaults": None,
                 "resolved": None,
@@ -1798,6 +1839,7 @@ class VideoBackend:
             "transformer_cache": state.transformer_cache,
             "transformer_quant": state.transformer_quant,
             "text_encoder_quant": state.text_encoder_quant,
+            "vae_quant": state.vae_quant,
             "has_audio": fam.has_audio,
             "defaults": {
                 "steps": default_steps,

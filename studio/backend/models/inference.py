@@ -1758,6 +1758,15 @@ class DiffusionLoadRequest(BaseModel):
         "cc>=8.0), or nvfp4 (~4x smaller, Blackwell sm_100+). none/off keeps it dense bf16. A "
         "memory-vs-quality tradeoff (shifts fine detail); pairs well with balanced mode.",
     )
+    vae_quant: Optional[Literal["auto", "none", "off", "fp8", "fp8_dynamic"]] = Field(
+        None,
+        description = "Quantise the VAE (image decoder). auto (the default when unset) picks the "
+        "best accurate scheme for this GPU + family: fp8_dynamic (torchao PER-TENSOR fp8 COMPUTE "
+        "on the conv tensor cores, cc >= 8.9, resident only) where a conv probe passes, else "
+        "layerwise fp8 (diffusers 8-bit storage, cc >= 8.9, survives offload), else dense. The "
+        "3-channel RGB head + output norms always stay dense. There is no int8 (no Conv3d int8 "
+        "kernel). none/off keeps the VAE dense bf16; an explicit scheme forces it.",
+    )
     transformer_quant: Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]] = (
         Field(
             None,
@@ -2117,6 +2126,9 @@ class DiffusionStatusResponse(BaseModel):
     text_encoder_quant: Optional[str] = Field(
         None, description = "Text-encoder quantisation engaged: fp8 | nvfp4 | null"
     )
+    vae_quant: Optional[str] = Field(
+        None, description = "VAE quantisation engaged: fp8 | fp8_dynamic | null"
+    )
     transformer_quant: Optional[str] = Field(
         None,
         description = "Transformer quant engaged on the dense fast path: int8 | fp8 | "
@@ -2364,6 +2376,15 @@ class VideoLoadRequest(BaseModel):
         "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only (Blackwell "
         "sm_100+). none/off keeps the encoder dense. Mirrors the image backend's field.",
     )
+    vae_quant: Optional[Literal["auto", "none", "off", "fp8", "fp8_dynamic"]] = Field(
+        None,
+        description = "Quantise the VAE (video decoder). auto (the default when unset) picks the "
+        "best accurate scheme for this GPU + family: fp8_dynamic (torchao PER-TENSOR fp8 COMPUTE "
+        "on the Conv2d/Conv3d tensor cores, cc >= 8.9, resident only), else layerwise fp8 "
+        "(diffusers 8-bit storage, cc >= 8.9, survives offload), else dense. The fp32-VAE families "
+        "(Wan) always stay dense. No int8 (no Conv3d int8 kernel). none/off keeps it dense; an "
+        "explicit scheme forces it. Mirrors the image backend's field.",
+    )
 
     @field_validator("attention_backend", mode = "before")
     @classmethod
@@ -2534,6 +2555,11 @@ class VideoStatusResponse(BaseModel):
         description = "Text-encoder quant engaged: fp8 | fp8_dynamic | int8 | nvfp4 | null "
         "(null = the dense bf16 encoder is loaded). An int8 request without a per-family "
         "keep-bf16 schedule is reported as the fp8 it fell back to.",
+    )
+    vae_quant: Optional[str] = Field(
+        None,
+        description = "VAE quant engaged: fp8 | fp8_dynamic | null (null = the dense VAE is "
+        "loaded; the fp32-VAE families always report null).",
     )
     has_audio: bool = Field(
         False, description = "Whether the loaded family produces a synchronized audio track"
