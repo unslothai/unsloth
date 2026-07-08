@@ -203,12 +203,20 @@ export function parseSeedConfig(
     unstructuredFileSizes?: number[];
     unstructured_chunk_size?: string;
     unstructured_chunk_overlap?: string;
+    preserveUnstructuredUploads?: boolean;
   },
 ): SeedConfig | null {
   if (!seedConfigRaw) {
     return null;
   }
-  const parsed = parseSeedSettings(seedConfigRaw);
+  const parsed = { ...parseSeedSettings(seedConfigRaw) };
+  if (
+    parsed.seed_source_type === "unstructured" &&
+    options?.preserveUnstructuredUploads !== true
+  ) {
+    parsed.hf_path = "";
+    parsed.resolved_paths = [];
+  }
   let sourceType: SeedSourceType = "hf";
   if (parsed.seed_source_type === "hf") {
     sourceType = "hf";

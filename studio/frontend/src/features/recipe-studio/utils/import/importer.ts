@@ -491,6 +491,7 @@ export function importRecipePayload(
       unstructuredFileSizes: uiUnstructuredFileSizes,
       unstructured_chunk_size: uiUnstructuredChunkSize,
       unstructured_chunk_overlap: uiUnstructuredChunkOverlap,
+      preserveUnstructuredUploads,
     });
     if (seedConfig) {
       applyAdvancedOpen(seedConfig, uiAdvancedOpenByNode);
