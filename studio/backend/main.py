@@ -313,7 +313,7 @@ from hub.utils.download_registry import (
 from routes.settings import router as settings_router
 from routes.prompts import router as prompts_router
 from auth import storage
-from auth.authentication import get_current_subject
+from auth.authentication import get_current_subject, is_host_session
 from utils.hardware import (
     detect_hardware,
     get_device,
@@ -326,6 +326,7 @@ from utils.cache_cleanup import clear_unsloth_compiled_cache
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
 from utils.update_status import (
+    get_host_only_update_status,
     get_studio_install_source_status,
     get_studio_update_status,
 )
@@ -1047,8 +1048,15 @@ def studio_install_source(_current_subject: str = Depends(get_current_subject)):
 
 
 @app.get("/api/studio/update-status")
-def studio_update_status(_current_subject: str = Depends(get_current_subject)):
+def studio_update_status(
+    _current_subject: str = Depends(get_current_subject),
+    host_session: bool = Depends(is_host_session),
+):
     """Return source-aware manual update status for browser-served Studio."""
+    # Updating Studio is a host-machine action, so a remote client is never
+    # prompted (the install command it would copy runs on the host, not here).
+    if not host_session:
+        return get_host_only_update_status(UNSLOTH_VERSION)
     return get_studio_update_status(UNSLOTH_VERSION)
 
 

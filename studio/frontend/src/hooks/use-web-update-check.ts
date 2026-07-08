@@ -15,6 +15,7 @@ const INSTALL_SOURCE_KEY = "install_source";
 const LATEST_VERSION_KEY = "latest_version";
 const CURRENT_VERSION_KEY = "current_version";
 const CHECKED_AT_KEY = "checked_at";
+const HOST_ONLY_KEY = "host_only";
 
 type ApiObject = Record<string, unknown>;
 
@@ -49,6 +50,12 @@ function toDisplayableUpdateStatus(value: unknown): WebUpdateStatus | null {
   }
 
   const status = value as ApiObject;
+  // A remote (non-host) client never sees the update prompt: the install
+  // command it would copy runs on the host, not here. The backend already
+  // suppresses the notification; this mirrors it explicitly.
+  if (status[HOST_ONLY_KEY] === true) {
+    return null;
+  }
   const latestVersion = stringField(status, LATEST_VERSION_KEY);
   const currentVersion = stringField(status, CURRENT_VERSION_KEY);
   const checkedAt = stringField(status, CHECKED_AT_KEY);

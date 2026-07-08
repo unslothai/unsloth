@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import ipaddress
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 
@@ -94,6 +95,46 @@ def is_desktop_access_token(token: str) -> bool:
         return False
 
     return payload.get("sub") == subject and payload.get("desktop") is True
+
+
+def _is_loopback_host(host: Optional[str]) -> bool:
+    try:
+        return bool(host) and ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def is_host_session(request: Request) -> bool:
+    """True when a request originates from the host-local Studio session.
+
+    The update endpoints install or swap binaries on the host machine, so they
+    must be restricted to that machine: a remote LAN or web client, even with a
+    valid JWT, must not see or trigger them.
+
+    Primary signal is the ``desktop`` JWT claim, minted only by the host's
+    ``/api/auth/desktop-login`` and stable behind a reverse proxy. As a secondary
+    signal a loopback socket peer counts as host-local, but only when the request
+    carries no forwarding header: behind the managed Cloudflare tunnel (or any
+    reverse proxy) every remote visitor's socket peer is loopback, so a
+    ``CF-Connecting-IP`` / ``X-Forwarded-For`` header means the real client is
+    elsewhere and loopback no longer proves locality.
+    """
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        parts = auth_header.split(None, 1)
+        if (
+            len(parts) == 2
+            and parts[0].lower() == "bearer"
+            and is_desktop_access_token(parts[1])
+        ):
+            return True
+
+    client = request.client
+    if not client or not _is_loopback_host(client.host):
+        return False
+    if request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for"):
+        return False
+    return True
 
 
 def create_refresh_token(subject: str, *, desktop: bool = False) -> str:

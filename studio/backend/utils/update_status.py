@@ -107,6 +107,22 @@ def get_studio_install_source_status(current_version: str) -> dict[str, Any]:
     )
 
 
+def get_host_only_update_status(current_version: str) -> dict[str, Any]:
+    """Return a non-actionable status for a remote (non-host) caller.
+
+    Updating Studio is a host-machine action, so a remote client must not be
+    prompted. Skip the PyPI/source probes and report a host-only status with
+    the notification suppressed.
+    """
+    return _status_response(
+        current_version = current_version,
+        latest_version = None,
+        install_source = "unknown",
+        reason = "host_only",
+        host_only = True,
+    )
+
+
 def get_studio_update_status(current_version: str) -> dict[str, Any]:
     """Return public, read-only update status for the web UI."""
     install_source = detect_install_source()
@@ -275,6 +291,7 @@ def _status_response(
     update_available: bool = False,
     can_show_web_notification: bool = False,
     checked_at: str | None = None,
+    host_only: bool = False,
 ) -> dict[str, Any]:
     return {
         "current_version": current_version,
@@ -286,6 +303,7 @@ def _status_response(
         "checked_at": checked_at or _utc_now_iso(),
         "reason": reason,
         "error": error,
+        "host_only": host_only,
     }
 
 

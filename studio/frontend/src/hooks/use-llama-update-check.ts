@@ -27,6 +27,9 @@ export interface LlamaUpdateJob {
 export interface LlamaUpdateStatus {
   supported: boolean;
   update_available: boolean;
+  // True when the backend is talking to a remote (non-host) client: the update
+  // swaps the host's binary, so it is never actionable here.
+  host_only: boolean;
   installed_tag: string | null;
   latest_tag: string | null;
   // Prebuilt download size in bytes, if known.
@@ -41,6 +44,7 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
   return {
     supported: s.supported === true,
     update_available: s.update_available === true,
+    host_only: s.host_only === true,
     installed_tag: typeof s.installed_tag === "string" ? s.installed_tag : null,
     latest_tag: typeof s.latest_tag === "string" ? s.latest_tag : null,
     update_size_bytes:
@@ -138,6 +142,13 @@ export function useLlamaUpdateCheck({
     (next: LlamaUpdateStatus | null) => {
       if (!next) return;
       setStatus(next);
+      // A remote client never sees or applies the update. The backend is the
+      // authoritative gate; mirror it here so a future flag change can't
+      // surface an update (or another tab's job) on a non-host client.
+      if (next.host_only) {
+        setVisible(false);
+        return;
+      }
       if (next.job.state === "running") {
         // Another tab is applying; show progress here too.
         setApplying(true);

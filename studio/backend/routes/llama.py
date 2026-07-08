@@ -16,10 +16,10 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from auth.authentication import get_current_subject
+from auth.authentication import get_current_subject, is_host_session
 from utils.llama_cpp_update import get_update_status, start_update
 
 router = APIRouter()
@@ -56,6 +56,11 @@ class LlamaUpdateStatusResponse(BaseModel):
     source_build: bool = Field(
         False, description = "True when there is no marker (source build) but a prebuilt is offered."
     )
+    host_only: bool = Field(
+        False,
+        description = "True when the caller is not the host-local session; the update is "
+        "actionable only on the machine running Studio, so it is hidden here.",
+    )
     update_size_bytes: Optional[int] = Field(
         None, description = "Download size of the prebuilt Update would fetch, in bytes."
     )
@@ -75,15 +80,29 @@ async def llama_update_status(
         False, description = "Bypass the 24h release cache for an explicit check."
     ),
     current_subject: str = Depends(get_current_subject),
+    host_session: bool = Depends(is_host_session),
 ) -> LlamaUpdateStatusResponse:
+    # The update swaps the host's llama.cpp binary, so a remote client gets a
+    # non-actionable, host-only status: no host probe, no GitHub read, no tags.
+    if not host_session:
+        return LlamaUpdateStatusResponse(host_only = True)
     # Off the event loop: detection may probe the host and read GitHub.
-    status = await asyncio.to_thread(get_update_status, force_refresh = force_refresh)
-    return LlamaUpdateStatusResponse(**status)
+    result = await asyncio.to_thread(get_update_status, force_refresh = force_refresh)
+    return LlamaUpdateStatusResponse(**result)
 
 
 @router.post("/update", response_model = LlamaUpdateActionResponse)
 async def llama_update(
     current_subject: str = Depends(get_current_subject),
+    host_session: bool = Depends(is_host_session),
 ) -> LlamaUpdateActionResponse:
+    # Authoritative security gate: the swap runs an installer on the host, so a
+    # remote client (stale banner, crafted/replayed request) must never trigger
+    # it, independent of the banner being hidden.
+    if not host_session:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "llama.cpp updates can only be run from the host machine.",
+        )
     action = await asyncio.to_thread(start_update)
     return LlamaUpdateActionResponse(**action)
