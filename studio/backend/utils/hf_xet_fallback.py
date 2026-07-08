@@ -52,6 +52,7 @@ def _load_shared() -> bool:
             return _shared_available
         try:
             import unsloth_zoo.hf_xet_fallback as shared
+
             _shared = shared
             _shared_available = True
             _shared_import_error = None
@@ -67,6 +68,7 @@ def _load_shared() -> bool:
             _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
             try:
                 import unsloth_zoo.hf_xet_fallback as shared
+
                 _shared = shared
                 _shared_available = True
                 _shared_import_error = None
