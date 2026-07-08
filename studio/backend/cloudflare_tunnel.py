@@ -49,6 +49,16 @@ def _windows_hidden_kwargs() -> dict:
     return {"creationflags": flags} if flags else {}
 
 
+def _lifetime_kwargs() -> dict:
+    """Bind cloudflared to the parent's lifetime (Linux PDEATHSIG). Lazy +
+    best-effort so this module still loads standalone (storage_roots-style)."""
+    try:
+        from utils.process_lifetime import child_popen_kwargs
+        return child_popen_kwargs()
+    except Exception:
+        return {}
+
+
 def _asset_name() -> Optional[Tuple[str, bool]]:
     """(release asset filename, is_tgz) for this OS/arch, or None if unsupported."""
     system = platform.system().lower()
@@ -233,6 +243,7 @@ class CloudflareTunnel:
                 errors = "replace",
                 bufsize = 1,
                 **_windows_hidden_kwargs(),
+                **_lifetime_kwargs(),
             )
             self._proc = proc
         threading.Thread(

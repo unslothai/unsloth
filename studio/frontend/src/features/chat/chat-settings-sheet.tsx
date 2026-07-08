@@ -17,6 +17,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  clearRememberedLoadSettings,
+  loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
+  saveRememberedLoadSettings,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import {
   Dialog,
   DialogContent,
@@ -52,25 +59,22 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Slider } from "@/components/ui/slider";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { InfoHint } from "@/components/ui/info-hint";
+import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { cn } from "@/lib/utils";
 import {
   ArrowTurnBackwardIcon,
   Edit03Icon,
-  InformationCircleIcon,
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown, ExternalLink } from "lucide-react";
+import { Braces, ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { Fragment, type ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -101,42 +105,41 @@ import {
   providerSupportsBuiltinCodeExecution,
   providerSupportsFastMode,
 } from "./provider-capabilities";
-import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import {
+  isPendingGguf,
+  pendingSelectionMatches,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
 import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
 import type { InferenceParams } from "./types/runtime";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
 
+const PROMPT_VARIABLE_PATTERN = /{{\s*[a-zA-Z_$][a-zA-Z0-9_$.-]*\s*}}/;
+
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
 
-export function InfoHint({ children }: { children: ReactNode }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label="More info"
-          className="inline-flex size-4 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-[#383835] dark:hover:text-[#e8e8e8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <HugeiconsIcon
-            icon={InformationCircleIcon}
-            strokeWidth={1.75}
-            className="size-3.5"
-          />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent
-        side="left"
-        sideOffset={8}
-        className="tooltip-compact [&_span>svg]:hidden! duration-0 max-w-64"
-      >
-        {children}
-      </TooltipContent>
-    </Tooltip>
-  );
+function getPromptVariablesError(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return null;
+    }
+  } catch {
+    return "Use valid JSON, for example { \"env\": \"staging\" }.";
+  }
+  return "Variables must be a JSON object.";
+}
+
+function hasPromptVariableSyntax(prompt: string): boolean {
+  return PROMPT_VARIABLE_PATTERN.test(prompt);
 }
 
 /**
@@ -173,6 +176,7 @@ function NumericValueInput({
   className,
   ariaLabel,
   size: sizeAttr,
+  disabled = false,
 }: {
   value: number;
   min?: number;
@@ -183,6 +187,7 @@ function NumericValueInput({
   className?: string;
   ariaLabel?: string;
   size?: number;
+  disabled?: boolean;
 }) {
   const [focused, setFocused] = useState(false);
   const [draft, setDraft] = useState("");
@@ -205,6 +210,7 @@ function NumericValueInput({
     <input
       type="text"
       inputMode="decimal"
+      disabled={disabled}
       size={sizeAttr}
       /* Fixed 4ch pill; grows only when a longer value would clip. */
       style={{ width: `calc(${Math.max(displayed.length, 4)}ch + 18px)` }}
@@ -466,6 +472,20 @@ interface ChatSettingsPanelProps {
    */
   externalProviderType?: string | null;
   onReloadModel?: () => void;
+  /** The in-flight load (id + GGUF variant + native path token), or null when
+   *  idle. Used to show a loading state for the staged pick only — not for an
+   *  unrelated load or a cancel's background unload. */
+  loadingModel?: {
+    id: string;
+    ggufVariant?: string | null;
+    nativePathToken?: string | null;
+  } | null;
+  /** Loads the staged `pendingSelection` (deferred "Load on selection" flow). */
+  onLoadPendingModel?: () => void;
+  /** Download progress (0–1) for a staged GGUF being fetched, or null when idle. */
+  stagedDownloadFraction?: number | null;
+  /** Cancels the in-flight staged download (paired with abandoning the stage). */
+  onCancelStagedDownload?: () => void;
 }
 
 export function ChatSettingsPanel({
@@ -479,6 +499,10 @@ export function ChatSettingsPanel({
   onExternalProviderChange,
   externalProviderType = null,
   onReloadModel,
+  loadingModel = null,
+  onLoadPendingModel,
+  stagedDownloadFraction,
+  onCancelStagedDownload,
 }: ChatSettingsPanelProps) {
   // Local models show every knob; providerCapabilities is only consulted when
   // isExternalModel. Unknown providers fall back to the OpenAI-compat shape via
@@ -493,17 +517,55 @@ export function ChatSettingsPanel({
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
-  const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const pendingSelection = useChatRuntimeStore((s) => s.pendingSelection);
+  // "Loading" only when the in-flight load IS this staged pick (full id + GGUF
+  // variant + native token match), not an unrelated load or a cancel's
+  // background unload. The variant matters: a different quant of the same repo
+  // staged mid-load must not read as this one loading.
+  const stagedLoading =
+    loadingModel != null &&
+    pendingSelectionMatches(pendingSelection, {
+      id: loadingModel.id,
+      ggufVariant: loadingModel.ggufVariant,
+      nativePathToken: loadingModel.nativePathToken,
+    });
+  // Load settings are snapshotted at click time; lock them while loading.
+  const modelControlsDisabled = stagedLoading;
+  const abandonStagedModel = useChatRuntimeStore((s) => s.abandonStagedModel);
+  const resetModelSettingsToLoaded = useChatRuntimeStore(
+    (s) => s.resetModelSettingsToLoaded,
+  );
+  // A staged GGUF pick (deferred load) shows the GGUF load knobs so they can be
+  // set before the single load.
+  const pendingIsGguf = isPendingGguf(pendingSelection);
+  // Short, human-readable name for the staged pick (HF ids carry an org prefix;
+  // native picks are already a display label). Drives the "staged, not loaded"
+  // callout so it's obvious the selection hasn't loaded yet.
+  const stagedLabel = (() => {
+    const id = pendingSelection?.id ?? "";
+    const slash = id.lastIndexOf("/");
+    const base = slash >= 0 ? id.slice(slash + 1) : id;
+    return base || id;
+  })();
+  const isLoadedGguf =
+    useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  // While a pick is staged the sheet configures *that* model, so its GGUF-ness
+  // (not the currently loaded model's) decides whether the GGUF-only controls
+  // show. Otherwise a staged non-GGUF Hub repo would inherit the loaded GGUF's
+  // context/KV/speculative controls.
+  const isGguf = pendingSelection != null ? pendingIsGguf : isLoadedGguf;
+  // The Model section (and Load button) shows for any staged pick, even when the
+  // currently active model is external.
   const hasModelContent =
-    !isExternalModel && (isGguf || Boolean(params.checkpoint));
+    pendingSelection != null ||
+    (!isExternalModel && (isGguf || Boolean(params.checkpoint)));
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const setSpeculativeType = useChatRuntimeStore((s) => s.setSpeculativeType);
   const loadedSpeculativeType = useChatRuntimeStore(
     (s) => s.loadedSpeculativeType,
   );
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
-  // "binary_no_mtp" / "binary_outdated" mean a newer prebuilt would re-enable
-  // MTP; "runtime_error" means the current build cannot run it (no update push).
+  // Only binary fallback states are solved by a newer prebuilt.
   const mtpUpdatable =
     specFallbackReason === "binary_no_mtp" ||
     specFallbackReason === "binary_outdated";
@@ -515,8 +577,11 @@ export function ChatSettingsPanel({
   const handleMtpUpdate = useCallback(async () => {
     const result = await applyLlamaUpdate();
     if (result.ok) {
+      const reloadHint = result.reloadRequired
+        ? " Reload your model to enable MTP."
+        : "";
       toast.success(
-        `llama.cpp updated to ${result.tag ?? "the latest build"}. Reload your model to enable MTP.`,
+        `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
       );
     } else {
       toast.error(`llama.cpp update failed: ${result.error ?? "unknown error"}`);
@@ -526,9 +591,6 @@ export function ChatSettingsPanel({
   const setSpecDraftNMax = useChatRuntimeStore((s) => s.setSpecDraftNMax);
   const loadedSpecDraftNMax = useChatRuntimeStore(
     (s) => s.loadedSpecDraftNMax,
-  );
-  const modelRequiresTrustRemoteCode = useChatRuntimeStore(
-    (s) => s.modelRequiresTrustRemoteCode,
   );
   const currentCheckpoint = params.checkpoint;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
@@ -540,11 +602,20 @@ export function ChatSettingsPanel({
   );
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
+  const applyRememberedLoadSettings = useChatRuntimeStore(
+    (s) => s.applyRememberedLoadSettings,
+  );
   const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const setTensorParallel = useChatRuntimeStore((s) => s.setTensorParallel);
   const loadedTensorParallel = useChatRuntimeStore(
     (s) => s.loadedTensorParallel,
+  );
+  const chatTemplateOverride = useChatRuntimeStore(
+    (s) => s.chatTemplateOverride,
+  );
+  const loadedChatTemplateOverride = useChatRuntimeStore(
+    (s) => s.loadedChatTemplateOverride,
   );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const setCustomContextLength = useChatRuntimeStore(
@@ -560,24 +631,54 @@ export function ChatSettingsPanel({
   const setActivePreset = useChatRuntimeStore((s) => s.setActivePreset);
   const settingsHydrated = useChatRuntimeStore((s) => s.settingsHydrated);
 
-  const ctxDisplayValue = customContextLength ?? ggufContextLength ?? "";
-  const ctxMaxValue = ggufNativeContextLength ?? ggufContextLength ?? null;
+  // A staged (not-yet-loaded) GGUF carries its own header context length on
+  // pendingSelection, so the slider can use the staged model's real ceiling
+  // without reading the loaded model's `ggufContextLength`.
+  const stagedContextLength = pendingSelection?.contextLength ?? null;
+  // "Remember settings next time" tick for a staged model. Seeds the store from
+  // the saved per-model settings on stage, so the sheet opens with what was used
+  // last time; the tick reflects whether a saved entry exists.
+  const [remember, setRemember] = useState(false);
+  // Keyed per quant: a different variant of the same repo has its own settings.
+  const pendingKey = pendingSelection
+    ? rememberedLoadSettingsKey(pendingSelection)
+    : null;
+  useEffect(() => {
+    if (!pendingKey) return;
+    const saved = loadRememberedLoadSettings(pendingKey);
+    setRemember(saved != null);
+    if (saved) applyRememberedLoadSettings(saved);
+  }, [pendingKey, applyRememberedLoadSettings]);
+  // While staging, the sheet reflects the STAGED model, so its header context
+  // takes precedence over the loaded model's (which may differ or be larger).
+  const baseContext = pendingIsGguf ? stagedContextLength : ggufContextLength;
+  const baseNativeContext = pendingIsGguf
+    ? stagedContextLength
+    : ggufNativeContextLength;
+  // Context controls render once we actually have a ceiling: for a staged GGUF,
+  // once its header metadata arrives (post-download); otherwise post-load.
+  const showContextControl = pendingIsGguf
+    ? stagedContextLength != null
+    : isLoadedGguf;
+  const stagedDownloading =
+    stagedDownloadFraction != null && stagedDownloadFraction < 1;
+  const ctxDisplayValue = customContextLength ?? baseContext ?? "";
+  const ctxMaxValue = baseNativeContext ?? baseContext ?? null;
   const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
   const ctxDirty = customContextLength !== null;
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
   const tpDirty = tensorParallel !== (loadedTensorParallel ?? false);
+  // A saved chat-template override is a reload-time setting too, so surface
+  // Apply for a template-only edit (otherwise it could never be applied).
+  const templateDirty = chatTemplateOverride !== loadedChatTemplateOverride;
   const modelSettingsDirty =
-    kvDirty || ctxDirty || specDirty || specDraftDirty || tpDirty;
-  const loadedChatTemplateOverride = useChatRuntimeStore(
-    (s) => s.loadedChatTemplateOverride,
-  );
-  const setChatTemplateOverride = useChatRuntimeStore(
-    (s) => s.setChatTemplateOverride,
-  );
+    kvDirty || ctxDirty || specDirty || specDraftDirty || tpDirty || templateDirty;
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
+  const [systemVariablesDraft, setSystemVariablesDraft] = useState("");
+  const [systemVariablesOpen, setSystemVariablesOpen] = useState(false);
   // When the prompt overflows the inline box, clicking opens the popup editor.
   const systemPromptBoxRef = useRef<HTMLTextAreaElement>(null);
   const [systemPromptOverflows, setSystemPromptOverflows] = useState(false);
@@ -620,11 +721,12 @@ export function ChatSettingsPanel({
       }),
     [activePreset, hasUnsavedPresetChanges, presetNameInput, presets],
   );
-  const systemPromptEditorDirty = systemPromptDraft !== params.systemPrompt;
-  const trustRemoteCodeMissing =
-    Boolean(currentCheckpoint) &&
-    modelRequiresTrustRemoteCode &&
-    !(params.trustRemoteCode ?? false);
+  const systemVariablesError = getPromptVariablesError(systemVariablesDraft);
+  const currentSystemPrompt = params.systemPrompt ?? "";
+  const currentSystemVariables = params.systemVariables ?? "";
+  const systemPromptEditorDirty =
+    systemPromptDraft !== currentSystemPrompt ||
+    systemVariablesDraft !== currentSystemVariables;
   const showPromptCacheTtlControl = Boolean(
     activeExternalProvider &&
       supportsProviderPromptCacheTtl(activeExternalProvider.providerType),
@@ -735,12 +837,32 @@ export function ChatSettingsPanel({
   }
 
   function openSystemPromptEditor() {
-    setSystemPromptDraft(params.systemPrompt);
+    setSystemPromptDraft(currentSystemPrompt);
+    setSystemVariablesDraft(currentSystemVariables);
+    setSystemVariablesOpen(
+      currentSystemVariables.trim().length > 0 ||
+        hasPromptVariableSyntax(currentSystemPrompt),
+    );
     setSystemPromptEditorOpen(true);
   }
 
   function saveSystemPromptEditor() {
-    set("systemPrompt")(systemPromptDraft);
+    if (systemVariablesError) {
+      toast.error("Fix prompt variables before saving", {
+        description: systemVariablesError,
+      });
+      return;
+    }
+    const nextParams = {
+      ...params,
+      systemPrompt: systemPromptDraft,
+      systemVariables: systemVariablesDraft.trim(),
+    };
+    const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
+      ? getPresetSource(activePreset)
+      : "modified";
+    setActivePresetSource(nextSource);
+    onParamsChange(nextParams);
     setSystemPromptEditorOpen(false);
   }
 
@@ -788,12 +910,12 @@ export function ChatSettingsPanel({
   useEffect(() => {
     const el = systemPromptBoxRef.current;
     setSystemPromptOverflows(
-      params.systemPrompt.length > 0 &&
+      currentSystemPrompt.length > 0 &&
         el != null &&
         el.clientHeight > 0 &&
         el.scrollHeight > el.clientHeight + 1,
     );
-  }, [params.systemPrompt, open]);
+  }, [currentSystemPrompt, open]);
 
   const settingsScrollRef = useRef<HTMLDivElement>(null);
 
@@ -816,7 +938,7 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Close run settings"
                 >
                   <HugeiconsIcon
@@ -846,8 +968,23 @@ export function ChatSettingsPanel({
         {hasModelContent && (
         <CollapsibleSection label="Model" defaultOpen={true} first>
           <div className="flex flex-col gap-4 pt-1">
+            {pendingSelection && (
+              <Alert className="rounded-[14px] border-primary/30 bg-primary/5 px-3 py-2">
+                <AlertTitle className="text-[12px] font-medium">
+                  {stagedLoading
+                    ? `Loading ${stagedLabel}…`
+                    : `${stagedLabel} is staged, not loaded yet`}
+                </AlertTitle>
+                <AlertDescription className="text-[11.5px] leading-[1.45] text-muted-foreground">
+                  {stagedLoading
+                    ? "Applying your settings."
+                    : "Set the options below, then choose Load model to load it."}
+                </AlertDescription>
+              </Alert>
+            )}
             {isGguf && (
               <>
+                {showContextControl && (
                 <div className="space-y-3.5">
                   <div className="flex items-center justify-between gap-3">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -857,18 +994,19 @@ export function ChatSettingsPanel({
                       value={
                         typeof ctxDisplayValue === "number"
                           ? ctxDisplayValue
-                          : (ggufContextLength ?? 0)
+                          : (baseContext ?? 0)
                       }
                       min={128}
                       max={ctxMaxValue ?? undefined}
                       step={1}
                       onChange={(v) => {
                         setCustomContextLength(
-                          v === (ggufContextLength ?? 0) ? null : v,
+                          v === (baseContext ?? 0) ? null : v,
                         );
                       }}
                       ariaLabel="Context Length"
                       size={8}
+                      disabled={modelControlsDisabled}
                     />
                   </div>
                   <Slider
@@ -879,17 +1017,18 @@ export function ChatSettingsPanel({
                       Math.min(
                         typeof ctxDisplayValue === "number"
                           ? ctxDisplayValue
-                          : (ggufContextLength ?? 4096),
+                          : (baseContext ?? 4096),
                         ctxMaxValue ?? 4096,
                       ),
                     ]}
                     onValueChange={([v]) => {
                       const snapped = Math.round(v);
                       setCustomContextLength(
-                        snapped === (ggufContextLength ?? 0) ? null : snapped,
+                        snapped === (baseContext ?? 0) ? null : snapped,
                       );
                     }}
                     className="panel-slider"
+                    disabled={modelControlsDisabled}
                   />
                   {ggufMaxContextLength != null &&
                     typeof ctxDisplayValue === "number" &&
@@ -901,6 +1040,7 @@ export function ChatSettingsPanel({
                       </p>
                     )}
                 </div>
+                )}
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -914,6 +1054,7 @@ export function ChatSettingsPanel({
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
                     <Select
+                      disabled={modelControlsDisabled}
                       value={kvCacheDtype ?? "f16"}
                       onValueChange={(v) => {
                         setKvCacheDtype(v === "f16" ? null : v);
@@ -937,6 +1078,8 @@ export function ChatSettingsPanel({
                     </Select>
                   </div>
                 </div>
+                {isGguf && (
+                  <>
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -951,6 +1094,7 @@ export function ChatSettingsPanel({
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
                     <Select
+                      disabled={modelControlsDisabled}
                       value={speculativeType ?? "auto"}
                       onValueChange={(v) => {
                         setSpeculativeType(v);
@@ -984,12 +1128,16 @@ export function ChatSettingsPanel({
                     speculativeType === "mtp+ngram") && (
                     <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-[12px] leading-[1.4] text-nav-fg/80">
                       <p>
-                        {specFallbackReason === "runtime_error"
+                        {specFallbackReason === "mla_mtp_disabled"
+                          ? "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Select MTP above to force it."
+                          : specFallbackReason === "runtime_error"
                           ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
-                          : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
-                            (llamaUpdateStatus?.update_available
-                              ? " Update llama.cpp to enable it."
-                              : "")}
+                          : specFallbackReason === "drafter_not_found"
+                            ? "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
+                            : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
+                              (llamaUpdateStatus?.update_available
+                                ? " Update llama.cpp to enable it."
+                                : "")}
                       </p>
                       {mtpUpdatable && llamaUpdateStatus?.update_available && (
                         <Button
@@ -1021,6 +1169,7 @@ export function ChatSettingsPanel({
                     </div>
                     <input
                       type="number"
+                      disabled={modelControlsDisabled}
                       min={1}
                       max={16}
                       step={1}
@@ -1044,6 +1193,8 @@ export function ChatSettingsPanel({
                     />
                   </div>
                 )}
+                  </>
+                )}
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1059,48 +1210,99 @@ export function ChatSettingsPanel({
                     className="panel-switch shrink-0"
                     checked={tensorParallel}
                     onCheckedChange={setTensorParallel}
+                    disabled={modelControlsDisabled}
                     data-test-id="tensor-parallel-switch"
                   />
                 </div>
               </>
             )}
-            {!isGguf && params.checkpoint && (
-              <>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                      Enable custom code
-                    </span>
-                    <InfoHint>
-                      Run custom Python from the model repo (e.g. Nemotron).
-                      Only enable for trusted sources.
-                    </InfoHint>
-                  </div>
-                  <Switch
-                    className="panel-switch shrink-0"
-                    checked={params.trustRemoteCode ?? false}
-                    onCheckedChange={set("trustRemoteCode")}
-                  />
-                </div>
-                {trustRemoteCodeMissing && (
-                  <Alert className="rounded-[14px] border-amber-200/70 bg-amber-50/70 px-3 py-2 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/35 dark:text-amber-100">
-                    <AlertTitle className="text-[12px] font-medium">
-                      Keep custom code enabled for this model
-                    </AlertTitle>
-                    <AlertDescription className="text-[11.5px] leading-[1.45] text-amber-800 dark:text-amber-200">
-                      This model requires custom code to load. You can edit the
-                      toggle, but loading will stay blocked until it is turned
-                      back on.
-                    </AlertDescription>
-                  </Alert>
-                )}
-              </>
-            )}
+            {/* No persistent "enable custom code" toggle: it is consented per model
+                via the load-time review dialog. */}
             {/* Apply/Reset belongs to the model-reload settings above (context
                 length, KV cache, speculative decoding). Render it here, before
                 the Chat Template row, so it never reads as attached to Chat
-                Template (which is edited via its own dialog). */}
-            {modelSettingsDirty && (
+                Template (which is edited via its own dialog). When a model is
+                staged (deferred load), Load/Cancel takes its place: there's
+                nothing loaded to "apply" against yet. */}
+            {pendingSelection ? (
+              <div className="flex flex-col gap-4">
+                {stagedDownloading && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Downloading…{" "}
+                    {Math.round((stagedDownloadFraction ?? 0) * 100)}%
+                  </p>
+                )}
+                <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-[12px] text-muted-foreground">
+                  <Checkbox
+                    className="size-3.5 rounded-full [&_[data-slot=checkbox-indicator]_svg]:size-2.5"
+                    checked={remember}
+                    onCheckedChange={(v) => setRemember(v === true)}
+                  />
+                  Remember settings next time
+                </label>
+                {stagedLoading ? (
+                  // Mid-load: nothing to load or abandon until it settles, so disable.
+                  <Button
+                    type="button"
+                    disabled
+                    size="sm"
+                    className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav bg-primary text-primary-foreground hover:bg-primary/90"
+                  >
+                    <Spinner className="size-3.5" />
+                    Loading…
+                  </Button>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        // Persist (or clear) this model's load knobs before loading.
+                        // Context is stored as the override (null = auto), never the
+                        // resolved native value, so restoring can't force an OOM.
+                        const pid = pendingSelection
+                          ? rememberedLoadSettingsKey(pendingSelection)
+                          : null;
+                        if (pid) {
+                          if (remember) {
+                            saveRememberedLoadSettings(pid, {
+                              contextLength: customContextLength,
+                              kvCacheDtype,
+                              speculativeType,
+                              specDraftNMax,
+                              tensorParallel,
+                            });
+                          } else {
+                            clearRememberedLoadSettings(pid);
+                          }
+                        }
+                        onLoadPendingModel?.();
+                      }}
+                      // Disabled while a different model is mid-load: selectModel
+                      // refuses a concurrent load, so the click could only toast.
+                      disabled={stagedDownloading || loadingModel != null}
+                      size="sm"
+                      className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav bg-primary text-primary-foreground hover:bg-primary/90"
+                    >
+                      {loadingModel != null ? "Another model loading…" : "Load model"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        // Cancel abandons the stage; if a download is mid-flight,
+                        // stop it too rather than leaving it running headless.
+                        if (stagedDownloading) onCancelStagedDownload?.();
+                        abandonStagedModel();
+                      }}
+                      className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav text-muted-foreground"
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ) : modelSettingsDirty ? (
               <div className="flex flex-wrap gap-1.5">
                 <Button
                   type="button"
@@ -1114,20 +1316,13 @@ export function ChatSettingsPanel({
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => {
-                    setCustomContextLength(null);
-                    setKvCacheDtype(loadedKvCacheDtype);
-                    setSpeculativeType(loadedSpeculativeType);
-                    setSpecDraftNMax(loadedSpecDraftNMax);
-                    setTensorParallel(loadedTensorParallel ?? false);
-                    setChatTemplateOverride(loadedChatTemplateOverride);
-                  }}
+                  onClick={() => resetModelSettingsToLoaded()}
                   className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"
                 >
                   Reset
                 </Button>
               </div>
-            )}
+            ) : null}
             <ChatTemplateFields />
           </div>
         </CollapsibleSection>
@@ -1392,7 +1587,7 @@ export function ChatSettingsPanel({
           >
             <textarea
               ref={systemPromptBoxRef}
-              value={params.systemPrompt}
+              value={currentSystemPrompt}
               onChange={(e) => set("systemPrompt")(e.target.value)}
               onMouseDown={(e) => {
                 // Overflowing prompt: click opens the popup editor instead.
@@ -1414,6 +1609,7 @@ export function ChatSettingsPanel({
             />
           </div>
         </CollapsibleSection>
+
 
         <CollapsibleSection label="Sampling" defaultOpen={true}>
           <div className="flex flex-col gap-5 pt-1">
@@ -1509,21 +1705,21 @@ export function ChatSettingsPanel({
                   : 64
               }
               max={
-                isExternalModel
+                // A staged GGUF caps to its own context even over an active
+                // external model (the staged model is what will load).
+                !pendingIsGguf && isExternalModel
                   ? getExternalMaxOutputTokens(
                       externalProviderType,
                       externalSelection?.modelId,
                     )
-                  : isGguf && ggufContextLength
-                    ? ggufContextLength
+                  : isGguf && baseContext
+                    ? baseContext
                     : 32768
               }
               step={64}
               onChange={set("maxTokens")}
               displayValue={
-                isGguf &&
-                ggufContextLength &&
-                params.maxTokens >= ggufContextLength
+                isGguf && baseContext && params.maxTokens >= baseContext
                   ? "Max"
                   : undefined
               }
@@ -1536,6 +1732,7 @@ export function ChatSettingsPanel({
           <CollapsibleSection label="Tools">
             <div className="flex flex-col gap-5 pt-1">
               <AutoHealToolCallsToggle />
+              <NudgeToolCallsToggle />
               <ConfirmToolCallsToggle />
               <BypassPermissionsToggle />
               <MaxToolCallsSlider />
@@ -1566,20 +1763,96 @@ export function ChatSettingsPanel({
               the preset.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
+          <div className="space-y-3">
             <div className="space-y-0.5 px-0.5">
-              <div className="text-[11px] font-medium">Prompt editor</div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[11px] font-medium">Prompt editor</div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSystemVariablesOpen((open) => !open)}
+                  className="h-7 gap-1.5 rounded-full px-2.5 text-[11px] text-muted-foreground"
+                  aria-expanded={systemVariablesOpen}
+                >
+                  <Braces className="size-3.5" />
+                  Variables
+                  <ChevronDown
+                    className={cn(
+                      "size-3.5 transition-transform",
+                      systemVariablesOpen && "rotate-180",
+                    )}
+                  />
+                </Button>
+              </div>
               <p className="text-[11px] text-muted-foreground">
                 Use this for longer edits. Save writes back to the active
-                configuration only.
+                configuration only. Insert variables with {"{{ env }}"}.
               </p>
             </div>
+            {systemVariablesOpen ? (
+              <div className="space-y-2 px-0.5">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="space-y-0.5">
+                    <div className="text-[11px] font-medium">
+                      Prompt variables
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Define values as JSON below, then use each key in your
+                      prompt, like {"{{ env }}"}.
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    <span className="text-[10px] text-muted-foreground">
+                      Built-in, fill in automatically
+                    </span>
+                    <div className="flex flex-wrap justify-end gap-1">
+                      {["{{$date}}", "{{$time}}", "{{$now}}"].map((token) => (
+                        <span
+                          key={token}
+                          title={`${token} is replaced automatically when you send`}
+                          className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
+                        >
+                          {token}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <Textarea
+                  value={systemVariablesDraft}
+                  onChange={(event) =>
+                    setSystemVariablesDraft(event.target.value)
+                  }
+                  placeholder='{ "env": "staging", "version": "v2.3.1" }'
+                  fieldSizing="fixed"
+                  className={cn(
+                    "min-h-24 border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0",
+                    systemVariablesError &&
+                      "ring-1 ring-destructive focus-visible:ring-destructive",
+                  )}
+                  rows={5}
+                  aria-label="Prompt variables JSON"
+                  aria-invalid={Boolean(systemVariablesError)}
+                />
+                {systemVariablesError ? (
+                  <p className="px-1 text-[11px] text-destructive">
+                    {systemVariablesError}
+                  </p>
+                ) : (
+                  <p className="px-1 text-[11px] text-muted-foreground">
+                    Names you don&apos;t define are left unchanged, so a stray
+                    {" {{ typo }} "}stays visible in the prompt.
+                  </p>
+                )}
+              </div>
+            ) : null}
             <Textarea
               value={systemPromptDraft}
               onChange={(event) => setSystemPromptDraft(event.target.value)}
               placeholder="You are a helpful assistant..."
               fieldSizing="fixed"
-              className="min-h-[24rem] max-h-[50vh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
+              className="min-h-[20rem] max-h-[48vh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
               rows={14}
             />
           </div>
@@ -1598,7 +1871,8 @@ export function ChatSettingsPanel({
                 type="button"
                 variant="ghost"
                 onClick={() => {
-                  setSystemPromptDraft(params.systemPrompt);
+                  setSystemPromptDraft(currentSystemPrompt);
+                  setSystemVariablesDraft(currentSystemVariables);
                   setSystemPromptEditorOpen(false);
                 }}
               >
@@ -1607,7 +1881,9 @@ export function ChatSettingsPanel({
               <Button
                 type="button"
                 onClick={saveSystemPromptEditor}
-                disabled={!systemPromptEditorDirty}
+                disabled={
+                  !systemPromptEditorDirty || Boolean(systemVariablesError)
+                }
               >
                 Save
               </Button>
@@ -1626,7 +1902,9 @@ export function ChatSettingsPanel({
             <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
           </SheetHeader>
-          <div className="flex h-full flex-col">{settingsContent}</div>
+          <div data-tour="chat-settings" className="flex h-full flex-col">
+            {settingsContent}
+          </div>
         </SheetContent>
       </Sheet>
     );
@@ -1634,7 +1912,15 @@ export function ChatSettingsPanel({
 
   return (
     <aside
-      className={`relative z-50 shrink-0 h-full overflow-hidden bg-panel-surface text-panel-surface-fg font-heading ${open ? "w-[17rem] border-l border-sidebar-border" : "w-0"}`}
+      data-tour="chat-settings"
+      className={cn(
+        "relative z-50 shrink-0 overflow-hidden bg-panel-surface text-panel-surface-fg font-heading",
+        open ? "w-[17rem] border-l border-sidebar-border" : "w-0",
+      )}
+      style={{
+        height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
+        marginTop: "var(--studio-custom-titlebar-height, 0px)",
+      }}
     >
       <div className="h-full w-full">{settingsContent}</div>
     </aside>
@@ -1721,6 +2007,30 @@ function AutoHealToolCallsToggle() {
   );
 }
 
+function NudgeToolCallsToggle() {
+  const nudgeToolCalls = useChatRuntimeStore((s) => s.nudgeToolCalls);
+  const setNudgeToolCalls = useChatRuntimeStore((s) => s.setNudgeToolCalls);
+
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Nudge Tool Calls
+        </span>
+        <InfoHint>
+          When a tool call cannot be repaired, re-ask the model once so the
+          intended tool still runs. API requests stay opt-in.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch"
+        checked={nudgeToolCalls}
+        onCheckedChange={setNudgeToolCalls}
+      />
+    </div>
+  );
+}
+
 function ConfirmToolCallsToggle() {
   const confirmToolCalls = useChatRuntimeStore((s) => s.confirmToolCalls);
   const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
@@ -1740,7 +2050,7 @@ function ConfirmToolCallsToggle() {
         </div>
         {bypassPermissions ? (
           <span className="text-[11px] text-muted-foreground">
-            Overridden by Bypass Permissions
+            Overridden by Bypass permissions
           </span>
         ) : null}
       </div>
@@ -1766,7 +2076,7 @@ function BypassPermissionsToggle() {
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-            Bypass Permissions
+            Bypass permissions
           </span>
           <InfoHint>
             Dangerous. Runs every tool call with no confirmation and disables
@@ -1784,16 +2094,16 @@ function BypassPermissionsToggle() {
         />
       </div>
       {bypassPermissions ? (
-        <span className="text-[11px] text-destructive">
+        <span className="text-[11px] text-bypass">
           Tool calls run with no confirmation and no sandbox.
         </span>
       ) : null}
       <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>Enable Bypass Permissions?</AlertDialogTitle>
+            <AlertDialogTitle>Enable Bypass permissions?</AlertDialogTitle>
             <AlertDialogDescription>
-              Bypass Permissions is dangerous since the AI model might delete,
+              Bypass permissions is dangerous since the AI model might delete,
               corrupt your machine, and or cause real world damage to you or the
               world - only accept if you are certain
             </AlertDialogDescription>

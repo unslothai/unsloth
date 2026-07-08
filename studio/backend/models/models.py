@@ -53,6 +53,24 @@ class CheckpointListResponse(BaseModel):
     )
 
 
+class ExportSizeResponse(BaseModel):
+    """Model fp16/bf16-equivalent size; size fields are null when unknown."""
+
+    model: str = Field(..., description = "Model id or path the estimate was computed for")
+    fp16_bytes: Optional[int] = Field(
+        None,
+        description = "Estimated FP16/BF16-equivalent on-disk size in bytes, or null if unknown",
+    )
+    total_params: Optional[int] = Field(
+        None,
+        description = "Estimated total parameter count (fp16_bytes // 2), or null if unknown",
+    )
+    source: str = Field(
+        "unavailable",
+        description = "How the estimate was derived (e.g. safetensors, config, local, vllm, unavailable)",
+    )
+
+
 class ModelDetails(BaseModel):
     """Model configuration and metadata; used for both list and detail views"""
 
@@ -118,8 +136,12 @@ class GgufVariantDetail(BaseModel):
     filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
     quant: str = Field(..., description = "Quantization label (e.g., 'Q4_K_M')")
     size_bytes: int = Field(0, description = "File size in bytes")
+    download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
+    )
+    update_available: bool = Field(
+        False, description = "Whether a newer version of this variant is available on HF"
     )
 
 
@@ -136,6 +158,10 @@ class GgufVariantsResponse(BaseModel):
     default_variant: Optional[str] = Field(
         None, description = "Recommended default quantization variant"
     )
+    context_length: Optional[int] = Field(
+        None,
+        description = "Native max context from GGUF metadata; set once a variant is downloaded",
+    )
 
 
 class LocalModelInfo(BaseModel):
@@ -151,6 +177,11 @@ class LocalModelInfo(BaseModel):
     model_id: Optional[str] = Field(
         None,
         description = "HF repo id for cached models, e.g. org/model",
+    )
+    model_format: Optional[str] = Field(
+        None,
+        description = "Detected weights format ('gguf' when known). Lets the UI "
+        "classify scanned folders whose name lacks a -GGUF suffix.",
     )
     updated_at: Optional[float] = Field(
         None,

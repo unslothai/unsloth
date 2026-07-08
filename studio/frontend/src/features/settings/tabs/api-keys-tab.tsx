@@ -14,8 +14,10 @@ import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
+import { ApiMonitorConsole } from "../components/api-monitor-console";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
+import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
 import { UsageExamples } from "../components/usage-examples";
 
@@ -166,7 +168,11 @@ export function ApiKeysTab() {
         )}
       </section>
 
+      <ApiMonitorConsole />
+
       <UsageExamples apiKey={revealed} />
+
+      <ModelAutoSwitchSection />
 
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">

@@ -361,6 +361,29 @@ def test_studio_default_rejects_parallel_when_subcommand_invoked():
     ), f"error message must show the corrected invocation; got: {combined}"
 
 
+def test_studio_default_rejects_api_only_when_subcommand_invoked():
+    """`unsloth studio --api-only run ...` would silently serve the UI (the
+    parent's --api-only never reaches run). The callback rejects with exit 2
+    and points at the subcommand flag."""
+    studio_mod = _load_run_command()
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.add_typer(studio_mod.studio_app, name = "studio")
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["studio", "--api-only", "run", "--model", "X"])
+    assert result.exit_code == 2, (
+        f"expected exit 2 when --api-only is on studio group with a "
+        f"subcommand invoked; got {result.exit_code}; output={result.output!r}"
+    )
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "--api-only" in combined, combined
+    assert (
+        "run --api-only" in combined
+    ), f"error message must show the corrected invocation; got: {combined}"
+
+
 def test_studio_default_default_parallel_with_subcommand_does_not_error():
     """Omitting --parallel on the group must still let subcommands
     run; the group's default 1 is benign."""
@@ -445,3 +468,81 @@ def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value):
     assert (
         captured.get("llama_parallel_slots") == value
     ), f"run_server got llama_parallel_slots={captured.get('llama_parallel_slots')!r}, expected {value}"
+
+
+# --api-only: serve API only (no UI). Both re-exec and in-venv paths must carry it.
+
+
+def test_api_only_option_is_registered():
+    studio_mod = _load_run_command()
+    import inspect
+
+    opt = inspect.signature(studio_mod.run).parameters["api_only"].default
+    assert "--api-only" in set(getattr(opt, "param_decls", []) or [])
+    assert getattr(opt, "default", None) is False  # opt-in; plain run keeps the UI
+
+
+@pytest.mark.parametrize(
+    "extra,present",
+    [
+        (["--api-only"], True),
+        (["--secure", "--api-only"], True),  # secure headless path
+        ([], False),
+    ],
+)
+def test_reexec_forwards_api_only(monkeypatch, extra, present):
+    """`--api-only` (and only when typed) must reach the re-exec'd child."""
+    result, captured = _invoke_run(monkeypatch, _BASE + extra)
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert ("--api-only" in argv) is present, argv
+
+
+@pytest.mark.parametrize("extra,expected", [(["--api-only"], True), ([], False)])
+def test_in_venv_path_passes_api_only_to_run_server(monkeypatch, extra, expected):
+    """In-venv path must forward --api-only to run_server(api_only=...)."""
+    studio_mod = _load_run_command()
+
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    monkeypatch.setattr(sys, "prefix", str(fake_venv))
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
+
+    from unsloth_cli import _tool_policy as _tp_mod
+
+    monkeypatch.setattr(
+        _tp_mod,
+        "resolve_tool_policy",
+        lambda host, flag, yes, silent: False if flag is None else bool(flag),
+    )
+
+    captured: dict = {}
+
+    def fake_run_server(**kwargs):
+        captured.update(kwargs)
+        raise _RunServerCaptured(kwargs)
+
+    fake_backend_run = sys.modules.setdefault(
+        "studio.backend.run", _types_module("studio.backend.run")
+    )
+    fake_backend_run.run_server = fake_run_server
+    fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
+    monkeypatch.setattr(studio_mod, "_RUN_MODULE", fake_backend_run)
+
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command(
+        context_settings = {
+            "allow_extra_args": True,
+            "ignore_unknown_options": True,
+        },
+    )(studio_mod.run)
+    CliRunner().invoke(app, _BASE + extra, catch_exceptions = True)
+
+    assert (
+        captured.get("api_only") is expected
+    ), f"run_server got api_only={captured.get('api_only')!r}, expected {expected}"
+    # Headless serving must suppress the Tauri-only TAURI_PORT line.
+    assert (
+        captured.get("emit_tauri_port") is False
+    ), f"run_server got emit_tauri_port={captured.get('emit_tauri_port')!r}, expected False"

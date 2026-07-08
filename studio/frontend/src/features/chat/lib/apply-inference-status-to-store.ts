@@ -3,14 +3,19 @@
 
 import { getInferenceStatus } from "../api/chat-api";
 import { mergeBackendRecommendedInference } from "../presets/preset-policy";
+import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import {
   CHAT_REASONING_ENABLED_KEY,
-  loadOptionalBool,
   type ReasoningEffort,
+  type ReasoningStyle,
+  loadOptionalBool,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
-import { isMultimodalResponse, type InferenceStatusResponse } from "../types/api";
+import {
+  type InferenceStatusResponse,
+  isMultimodalResponse,
+} from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
@@ -29,7 +34,10 @@ export function normalizeSpeculativeType(
     return "ngram";
   }
   if (s === "mtp+ngram") return "mtp+ngram";
-  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+  const parts = s
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
   const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
   const hasNgram = parts.some(
     (p) => p === "ngram" || p === "ngram-mod" || p === "ngram-simple",
@@ -47,6 +55,38 @@ export function clampLocalReasoningEffort(
     return value;
   }
   return "low";
+}
+
+/**
+ * Reasoning capability fields derived from a model load/status response.
+ *
+ * Centralises the effort-levels + can-disable derivation so every load path
+ * (main load, status sync, shared/Compare composer, first-chat auto-load) agrees:
+ * a hybrid GLM-style `enable_thinking_effort` model keeps its high|max|Off
+ * controls no matter which path loaded it, instead of falling back to the
+ * default low|medium|high and losing Max/Off.
+ */
+export function reasoningCapsFromLoad(resp: {
+  reasoning_style?: ReasoningStyle | null;
+  reasoning_effort_levels?: string[] | null;
+}): {
+  reasoningStyle: ReasoningStyle;
+  reasoningEffortLevels: readonly ReasoningEffort[];
+  supportsReasoningOff: boolean;
+} {
+  const reasoningStyle: ReasoningStyle =
+    resp.reasoning_style ?? "enable_thinking";
+  const reasoningEffortLevels: readonly ReasoningEffort[] =
+    resp.reasoning_effort_levels && resp.reasoning_effort_levels.length > 0
+      ? (resp.reasoning_effort_levels as ReasoningEffort[])
+      : (["low", "medium", "high"] as const);
+  // enable_thinking and enable_thinking_effort can both be turned off; only the
+  // pure gpt-oss-style reasoning_effort is always-on.
+  return {
+    reasoningStyle,
+    reasoningEffortLevels,
+    supportsReasoningOff: reasoningStyle !== "reasoning_effort",
+  };
 }
 
 export function resolveInferenceCheckpointId(
@@ -110,9 +150,11 @@ export function applyActiveModelStatusToStore(
   const supportsReasoning = status.supports_reasoning ?? false;
   const reasoningAlwaysOn = status.reasoning_always_on ?? false;
   const reasoningStyle = status.reasoning_style ?? "enable_thinking";
+  // GLM-5.2-style models report their own effort levels (e.g. high|max);
+  // everything else keeps the default low/medium/high.
   const reasoningEffortLevels =
-    reasoningStyle === "reasoning_effort"
-      ? (["low", "medium", "high"] as const)
+    status.reasoning_effort_levels && status.reasoning_effort_levels.length > 0
+      ? (status.reasoning_effort_levels as ReasoningEffort[])
       : (["low", "medium", "high"] as const);
   const supportsPreserveThinking = status.supports_preserve_thinking ?? false;
   const supportsTools = status.supports_tools ?? false;
@@ -128,13 +170,20 @@ export function applyActiveModelStatusToStore(
     : null;
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const prevState = useChatRuntimeStore.getState();
-  const clampedReasoningEffort = clampLocalReasoningEffort(
-    prevState.reasoningEffort,
-  );
+  const clampedReasoningEffort =
+    reasoningStyle === "enable_thinking_effort"
+      ? clampReasoningEffortToLevels(
+          prevState.reasoningEffort,
+          reasoningEffortLevels,
+        )
+      : clampLocalReasoningEffort(prevState.reasoningEffort);
   const nextDefaultChatTemplate =
     status.chat_template === undefined
       ? prevState.defaultChatTemplate
       : status.chat_template;
+  // While a load is in flight, performLoad owns the load params. Seeding them
+  // from a stale poll here would clobber the values the load dialog just set.
+  const seedLoadParams = !prevState.modelLoading;
 
   useChatRuntimeStore.setState({
     supportsReasoning,
@@ -154,27 +203,37 @@ export function applyActiveModelStatusToStore(
     ggufContextLength: currentGgufContextLength,
     ggufMaxContextLength,
     ggufNativeContextLength,
+    // A non-GGUF status must also drop a stale native-path token: without this the
+    // isGguf OR (activeGgufVariant || activeNativePathToken || ggufContextLength)
+    // stays true after switching from a native GGUF to a transformers model, so a
+    // Codex-only detection would auto-select for a model its preflight rejects. A real
+    // GGUF load reports is_gguf: true, so its token is preserved (the load path owns it).
+    ...(status.is_gguf ? {} : { activeNativePathToken: null }),
     modelRequiresTrustRemoteCode: status.requires_trust_remote_code ?? false,
     defaultChatTemplate: nextDefaultChatTemplate,
     loadedIsMultimodal: isMultimodalResponse(status),
     loadedIsDiffusion: status.is_diffusion ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
-    ...(prevState.loadedSpeculativeType === null && {
-      speculativeType: currentSpecType,
-      loadedSpeculativeType: currentSpecType,
-    }),
-    ...(status.spec_draft_n_max !== undefined &&
+    ...(seedLoadParams &&
+      prevState.loadedSpeculativeType === null && {
+        speculativeType: currentSpecType,
+        loadedSpeculativeType: currentSpecType,
+      }),
+    ...(seedLoadParams &&
+      status.spec_draft_n_max !== undefined &&
       prevState.loadedSpecDraftNMax === null &&
       prevState.specDraftNMax === null && {
         specDraftNMax: status.spec_draft_n_max ?? null,
         loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
       }),
-    ...(status.cache_type_kv !== undefined &&
+    ...(seedLoadParams &&
+      status.cache_type_kv !== undefined &&
       prevState.loadedKvCacheDtype === null && {
         kvCacheDtype: status.cache_type_kv,
         loadedKvCacheDtype: status.cache_type_kv,
       }),
-    ...(status.tensor_parallel !== undefined &&
+    ...(seedLoadParams &&
+      status.tensor_parallel !== undefined &&
       prevState.loadedTensorParallel === null && {
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
@@ -198,7 +257,7 @@ export function applyActiveModelStatusToStore(
     const mid = checkpointId.toLowerCase();
     if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
       const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
-      if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
+      if (sizeMatch && Number.parseFloat(sizeMatch[1]) < 9) {
         reasoningDefault = false;
       }
     }
@@ -234,8 +293,7 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
   }
 
   // Re-check after the await: keep a checkpoint the user picked meanwhile.
-  const previousCheckpoint =
-    useChatRuntimeStore.getState().params.checkpoint;
+  const previousCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
   if (previousCheckpoint) {
     return true;
   }

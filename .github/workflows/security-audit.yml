@@ -434,7 +434,7 @@ jobs:
 
       # ─────────────────────────────────────────────────────────────
       # Semgrep: design-flaw detection (catches what regex-pattern
-      # scanning of malicious authors cannot — first-party logic bugs
+      # scanning of malicious authors cannot, e.g. first-party logic bugs
       # like langchain-core CVE-2025-68664 dumps/dumpd injection,
       # n8n CVE-2025-68668 _pyodide.eval_code sandbox escape, marimo
       # CVE-2026-39987 unauth WebSocket).
@@ -849,10 +849,13 @@ jobs:
           grep -q "Standalone pre-install package scanner" scripts/scan_packages.py
 
       - name: Scan declared + transitive Python deps
-        # scan_packages.py exits 1 on CRITICAL/HIGH findings, 0 on
-        # clean. We swallow the exit because the baseline isn't
-        # triaged yet; surface the findings in the workflow summary.
-        # Drop continue-on-error after the first clean run on main.
+        # scan_packages.py exits 1 on NON-baselined CRITICAL/HIGH
+        # findings, 0 otherwise. It scans code-only (docstrings and
+        # comments are blanked first) and suppresses reviewed
+        # known-good findings via scripts/scan_packages_baseline.json,
+        # so legitimate-library noise no longer red-fails the gate.
+        # The step stays advisory until SCAN_ENFORCE=1 (see env below);
+        # then PIPESTATUS propagates the scanner's exit code.
         #
         # `--with-deps` walks PyPI metadata to enumerate every
         # transitive dep the declared set would install, then scans
@@ -869,6 +872,14 @@ jobs:
         # downloads in exchange for wall-clock parallelism.
         env:
           SHARD_FILES: ${{ matrix.shard.files }}
+          # Enforcement switch. "1" = blocking: a non-baselined CRITICAL/HIGH
+          # fails the build. scan_packages.py scans code-only (docstrings/comments
+          # stripped), fetches sdist-only packages directly from PyPI (no build)
+          # so every shard resolves, and honors the reviewed allowlist at
+          # scripts/scan_packages_baseline.json, so only NON-baselined
+          # CRITICAL/HIGH cause its exit 1. The committed baseline makes all three
+          # shards exit 0 today; set this back to "0" to return to advisory.
+          SCAN_ENFORCE: "1"
         run: |
           set +e
           mkdir -p logs
@@ -884,12 +895,14 @@ jobs:
             fi
           done
           echo "::endgroup::"
+          rc=0
           if [ ${#REQ_ARGS[@]} -eq 0 ]; then
             echo "[security-audit] shard ${{ matrix.shard.id }}: no PyPI specs, nothing to scan" \
               | tee "$LOG"
           else
             python scripts/scan_packages.py --with-deps "${REQ_ARGS[@]}" \
               2>&1 | tee "$LOG"
+            rc=${PIPESTATUS[0]}
           fi
           {
             echo "## scan_packages :: shard ${{ matrix.shard.id }}"
@@ -897,11 +910,19 @@ jobs:
             echo "### Files in this shard"
             for f in $SHARD_FILES; do echo "- audit-reqs/$f.txt"; done
             echo
+            echo "scan_packages.py exit code: $rc (enforce=$SCAN_ENFORCE)"
+            echo
             echo '### Findings (tail)'
             echo '```'
             tail -200 "$LOG"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # Advisory by default; blocking once SCAN_ENFORCE=1 and the baseline
+          # is committed. PIPESTATUS is captured above so `tee` does not mask the
+          # scanner's exit code.
+          if [ "$SCAN_ENFORCE" = "1" ]; then
+            exit "$rc"
+          fi
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: always()
@@ -975,24 +996,37 @@ jobs:
           python3 -c "import ast; ast.parse(open('scripts/scan_npm_packages.py').read())"
 
       - name: Scan npm tarballs (declared + transitive, no install)
-        # The script exits 1 on HIGH/CRITICAL findings; we capture the
-        # full log and surface it in the step summary either way. It
-        # never runs `npm install`, never executes anything from a
-        # downloaded tarball, and only fetches from registry.npmjs.org.
-        # Initially non-blocking so the baseline can settle; drop
-        # continue-on-error once the baseline is clean for a week.
+        # scan_npm_packages.py exits 1 on NON-baselined HIGH/CRITICAL
+        # findings, 0 otherwise. It scans code-only (JS/TS comments are
+        # blanked first) and honors a reviewed allowlist at
+        # scripts/scan_npm_packages_baseline.json. It never runs
+        # `npm install`, never executes anything from a downloaded
+        # tarball, and only fetches from registry.npmjs.org. The npm
+        # corpus is clean (the baseline is empty), so the gate is
+        # enforcing (SCAN_ENFORCE=1) and any new finding fails the build.
+        env:
+          SCAN_ENFORCE: "1"
         run: |
-          set -o pipefail
+          set +e
           LOG=logs-scan-npm.txt
           python3 scripts/scan_npm_packages.py 2>&1 | tee "$LOG"
+          rc=${PIPESTATUS[0]}
           {
             echo "## scan_npm_packages"
+            echo
+            echo "scan_npm_packages.py exit code: $rc (enforce=$SCAN_ENFORCE)"
             echo
             echo '### Findings (tail)'
             echo '```'
             tail -300 "$LOG"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # Blocking: the npm corpus is clean, so any non-baselined
+          # HIGH/CRITICAL is new and should fail the build. PIPESTATUS is
+          # captured above so `tee` does not mask the scanner's exit code.
+          if [ "$SCAN_ENFORCE" = "1" ]; then
+            exit "$rc"
+          fi
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: always()

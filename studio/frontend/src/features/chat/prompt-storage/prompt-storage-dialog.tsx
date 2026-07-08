@@ -15,7 +15,6 @@ import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   BookmarkIcon,
-  CheckIcon,
   DownloadIcon,
   GripVerticalIcon,
   LayoutListIcon,
@@ -26,6 +25,7 @@ import {
   UploadIcon,
   XIcon,
 } from "lucide-react";
+import { Tick02Icon } from "@/lib/tick-icon";
 import {
   type ReactElement,
   useCallback,
@@ -1276,7 +1276,7 @@ function PromptCard({
             <XIcon className="size-3.5 mr-1" />Cancel
           </Button>
           <Button size="sm" onClick={handleSave}>
-            <CheckIcon className="size-3.5 mr-1" />Save
+            <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save
           </Button>
         </div>
       </div>
@@ -1387,7 +1387,7 @@ function NewPromptForm({ onClose, onRefresh }: { onClose: () => void; onRefresh:
           <XIcon className="size-3.5 mr-1" />Cancel
         </Button>
         <Button size="sm" onClick={handleSave} disabled={!text.trim()}>
-          <CheckIcon className="size-3.5 mr-1" />Save Prompt
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save Prompt
         </Button>
       </div>
     </div>
@@ -1486,7 +1486,7 @@ function PromptListCard({
             onClick={handleSave}
             disabled={items.filter((t) => t.trim()).length === 0}
           >
-            <CheckIcon className="size-3.5 mr-1" />Save List
+            <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save List
           </Button>
         </div>
       </div>
@@ -1637,7 +1637,7 @@ function NewPromptListForm({ onClose, onRefresh }: { onClose: () => void; onRefr
           onClick={handleSave}
           disabled={items.filter((t) => t.trim()).length === 0}
         >
-          <CheckIcon className="size-3.5 mr-1" />Save Prompt List
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save Prompt List
         </Button>
       </div>
     </div>

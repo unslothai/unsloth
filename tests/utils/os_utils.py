@@ -33,12 +33,10 @@ def check_package_installed(package_name, package_manager = None):
 
     try:
         if package_manager == "apt":
-            # Check with dpkg
             result = subprocess.run(["dpkg", "-l", package_name], capture_output = True, text = True)
             return result.returncode == 0
 
         elif package_manager in ["yum", "dnf"]:
-            # Check with rpm
             result = subprocess.run(["rpm", "-q", package_name], capture_output = True, text = True)
             return result.returncode == 0
 

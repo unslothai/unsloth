@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Verification tests for PR #6269 (training-worker namespace-shadow guard).
+"""Verification tests for PR #6269 (namespace-shadow guard).
 
-`_ensure_real_packages` (core/training/trainer.py) drops namespace-package
+`ensure_real_packages` (core/import_guards.py) drops namespace-package
 shadow dirs (a `unsloth`/`unsloth_zoo` dir with no __init__.py on sys.path)
 before `from unsloth import ...`. Order matters: `unsloth.__init__` runs its
 ROCm/Windows bnb fixes before importing unsloth_zoo, so the guard must import
 unsloth first. Each test runs the real guard (ast-extracted from source, no
 GPU/torch) in a subprocess, with fake packages reachable only via a meta path
 finder to mimic an editable/PEP 660 install where the shadow wins.
+
+Originally defined in core/training/trainer.py; extracted to the shared
+core/import_guards.py so the inference, export and embedding workers reuse it.
 """
 
 import json
@@ -21,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-TRAINER_PY = Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py"
+GUARD_PY = Path(__file__).resolve().parents[1] / "core" / "import_guards.py"
 
 
 # ── fake package bodies ──────────────────────────────────────────────
@@ -62,17 +65,17 @@ _DRIVER = textwrap.dedent(
 
     cfg = json.load(open(sys.argv[1]))
 
-    # Extract the real _ensure_real_packages from trainer.py source without
-    # importing the heavy module or its `from unsloth import ...` line.
-    src = open(cfg["trainer_py"]).read()
+    # Extract the real ensure_real_packages from import_guards.py source
+    # without importing the heavy module or its `from unsloth import ...` line.
+    src = open(cfg["guard_py"]).read()
     tree = ast.parse(src)
     fn = next(n for n in tree.body
-              if isinstance(n, ast.FunctionDef) and n.name == "_ensure_real_packages")
+              if isinstance(n, ast.FunctionDef) and n.name == "ensure_real_packages")
     mod = ast.Module(body=[fn], type_ignores=[])
     ast.fix_missing_locations(mod)
     ns = {"os": os, "sys": sys}
-    exec(compile(mod, cfg["trainer_py"], "exec"), ns)
-    _ensure_real_packages = ns["_ensure_real_packages"]
+    exec(compile(mod, cfg["guard_py"], "exec"), ns)
+    _ensure_real_packages = ns["ensure_real_packages"]
 
     # Under -S site-packages is off, so a shadow root placed first wins the
     # path finder; the real packages come only from the meta finder below.
@@ -148,7 +151,7 @@ def _run(
     shadow_roots,
     real: bool,
     names = ("unsloth_zoo", "unsloth"),
-    trainer_py: Path = TRAINER_PY,
+    guard_py: Path = GUARD_PY,
     raise_on_invalidate: bool = False,
 ):
     order_file = tmp_path / "order.txt"
@@ -159,7 +162,7 @@ def _run(
         _make_real_pkg(real_root)
 
     cfg = {
-        "trainer_py": str(trainer_py),
+        "guard_py": str(guard_py),
         "shadow_roots": [str(r) for r in shadow_roots],
         "real_root": str(real_root) if real else None,
         "names": list(names),

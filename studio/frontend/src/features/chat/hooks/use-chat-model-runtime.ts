@@ -3,6 +3,7 @@
 
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import {
   notifyNative,
@@ -24,11 +25,15 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import {
+  isLocalModelPath,
+  pendingSelectionMatches,
   readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
+  type ReasoningEffort,
 } from "../stores/chat-runtime-store";
+import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import {
   applyActiveModelStatusToStore,
   clampLocalReasoningEffort,
@@ -43,22 +48,45 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import { isExternalModelId } from "../external-providers";
+import { cancelStagedModelDownload } from "@/features/hub";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
 } from "../types/runtime";
 
-type SelectedModelInput = {
+export type SelectedModelInput = {
   id: string;
   isLora?: boolean;
   ggufVariant?: string;
+  /** Where the pick came from (e.g. "hub", "local", "external"). Used to decide
+   *  whether an uncached repo should download via the Hub manager. */
+  source?: string;
+  /** Uncached non-GGUF HF repo staged for a snapshot download (variant null). */
+  isHubRepo?: boolean;
   loadingDescription?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
   forceReload?: boolean;
   nativePathToken?: string;
+  /** Direct local .gguf file (no HF variant / native token) — still a GGUF
+   *  source, so the staging flow treats it as one. */
+  isGguf?: boolean;
   throwOnError?: boolean;
+  /** Keep the current speculative-decoding choice across the model switch
+   *  instead of resetting it to the standing preference. Set by the deferred
+   *  ("Load on selection") Load, where the user picked it for this model. */
+  keepSpeculative?: boolean;
 };
+
+// Approved fingerprints by checkpoint, so a rollback after a failed switch can resend
+// the pinned approval the worker requires instead of being blocked.
+const approvedRemoteCodeFingerprints = new Map<string, string>();
+function rememberApprovedRemoteCode(
+  checkpoint: string,
+  fingerprint: string | null,
+): void {
+  if (fingerprint) approvedRemoteCodeFingerprints.set(checkpoint, fingerprint);
+}
 
 const MODEL_LOAD_TOAST_CLASSNAMES = {
   toast: "chat-model-load-toast items-center gap-2.5",
@@ -213,7 +241,7 @@ function toLoraSummary(lora: {
 }
 
 function getTrustRemoteCodeRequiredMessage(modelName: string): string {
-  return `${modelName} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`;
+  return `${modelName} was not loaded because its custom code was not approved. Load it again to review the code and approve it.`;
 }
 
 export function useChatModelRuntime() {
@@ -224,6 +252,9 @@ export function useChatModelRuntime() {
   const setLoras = useChatRuntimeStore((state) => state.setLoras);
   const setParams = useChatRuntimeStore((state) => state.setParams);
   const setModelsError = useChatRuntimeStore((state) => state.setModelsError);
+  const setLastModelLoadError = useChatRuntimeStore(
+    (state) => state.setLastModelLoadError,
+  );
   const setCheckpoint = useChatRuntimeStore((state) => state.setCheckpoint);
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
 
@@ -232,6 +263,7 @@ export function useChatModelRuntime() {
     displayName: string;
     isDownloaded?: boolean;
     isCachedLora?: boolean;
+    ggufVariant?: string | null;
     nativePathToken?: string | null;
   } | null>(null);
   const [loadToastDismissed, setLoadToastDismissed] = useState(false);
@@ -280,14 +312,18 @@ export function useChatModelRuntime() {
     [],
   );
 
-  const refresh = useCallback(async (options?: { signal?: AbortSignal }) => {
+  const refresh = useCallback(async (options?: {
+    signal?: AbortSignal;
+    includeLoras?: boolean;
+  }) => {
     const signal = options?.signal;
+    const includeLoras = options?.includeLoras ?? true;
     setModelsError(null);
     try {
       const [listRes, statusRes, lorasRes] = await Promise.all([
         listModels(),
         getInferenceStatus(),
-        listLoras(),
+        includeLoras ? listLoras() : Promise.resolve(null),
       ]);
 
       // Cancellation can land while the requests above are in flight. Bail
@@ -295,7 +331,9 @@ export function useChatModelRuntime() {
       if (signal?.aborted) return;
 
       setModels(listRes.models.map(toChatModelSummary));
-      setLoras(lorasRes.loras.map(toLoraSummary));
+      if (lorasRes) {
+        setLoras(lorasRes.loras.map(toLoraSummary));
+      }
 
       const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
       const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
@@ -370,18 +408,59 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.forceReload ?? false;
       const nativePathToken =
         typeof selection === "string" ? undefined : selection.nativePathToken;
+      const explicitIsGguf =
+        typeof selection === "string" ? undefined : selection.isGguf;
       const throwOnError =
         typeof selection === "string" ? false : selection.throwOnError ?? false;
+      const keepSpeculative =
+        typeof selection === "string" ? false : selection.keepSpeculative ?? false;
+      // Picking/loading any model abandons a staged (deferred) selection.
+      // Before the early-returns below so even a no-op re-select clears the
+      // stage.
+      const staged = useChatRuntimeStore.getState().pendingSelection;
+      if (staged) {
+        // Loading a DIFFERENT model abandons this stage. Loading the staged pick
+        // ITSELF keeps it so the sidebar can show its load settings (context, KV
+        // cache, …) during the load. Cleared on success below; on failure it's
+        // left staged so the user can retry (see onLoadPendingModel's catch).
+        const loadingStagedPick = pendingSelectionMatches(staged, {
+          id: modelId,
+          ggufVariant,
+          nativePathToken,
+        });
+        if (!loadingStagedPick) {
+          cancelStagedModelDownload(staged);
+          useChatRuntimeStore.getState().setPendingSelection(null);
+        }
+      }
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
         return;
       }
-      // Prevent duplicate loads if already loading this model
-      if (
-        loadingModelRef.current?.id === modelId &&
-        (loadingModelRef.current?.nativePathToken ?? null) === (nativePathToken ?? null)
-      )
+      // A load is already in flight. If it's this exact pick (id + GGUF variant +
+      // native path token), ignore the duplicate click. If it's a DIFFERENT model
+      // -- crucially including a different GGUF variant of the same repo, which the
+      // old id+token-only guard wrongly treated as a duplicate and silently
+      // no-op'd -- don't start a second concurrent load (the load path has no clean
+      // supersession) and don't silently swallow the request: surface it so the
+      // user knows to wait for, or cancel, the in-flight load. Centralized here so
+      // every entry point is covered, not just the staged Load button.
+      const inFlightLoad = loadingModelRef.current;
+      if (inFlightLoad) {
+        const loadingSamePick =
+          inFlightLoad.id === modelId &&
+          (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
+          (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
+        if (loadingSamePick) return;
+        const message =
+          "Another model is already loading. Wait for it to finish or cancel it first.";
+        setModelsError(message);
+        if (throwOnError) throw new Error(message);
+        toast.info("Another model is already loading", {
+          description: "Wait for it to finish or cancel it first.",
+        });
         return;
+      }
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
@@ -391,6 +470,7 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.isDownloaded ?? false;
       const model = models.find((entry) => entry.id === modelId);
       const lora = loras.find((entry) => entry.id === modelId);
+      const isGguf = explicitIsGguf ?? model?.isGguf ?? false;
       const loraIsAdapter = lora?.exportType === "lora";
       const isLora =
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
@@ -416,8 +496,7 @@ export function useChatModelRuntime() {
         : undefined;
       const previousIsLora =
         previousModel?.isLora ?? (previousLora?.exportType === "lora");
-      // Covers Unix absolute (/), relative (./  ../), tilde (~/), Windows drive (C:\), UNC (\\server)
-      const isLocal = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(modelId);
+      const isLocal = isLocalModelPath(modelId);
       const isCachedLora = isLora && isLocal;
       const loadingDescription = [
         currentCheckpoint ? "Switching models." : null,
@@ -428,12 +507,14 @@ export function useChatModelRuntime() {
         .filter(Boolean)
         .join(" ");
       setModelsError(null);
+      setLastModelLoadError(null); // clear prior failed-load marker
       setLoadToastDismissedState(false);
       const loadInfo = {
         id: modelId,
         displayName,
         isDownloaded,
         isCachedLora,
+        ggufVariant: ggufVariant ?? null,
         nativePathToken: nativePathToken ?? null,
       };
       setLoadingModel(loadInfo);
@@ -453,7 +534,8 @@ export function useChatModelRuntime() {
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
           const stateBeforeUnload = useChatRuntimeStore.getState();
-          const trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
+          let trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
+          let approvedRemoteCodeFingerprint: string | null = null;
           const maxSeqLength = stateBeforeUnload.params.maxSeqLength;
           const previousIsGguf =
             previousModel?.isGguf === true
@@ -467,23 +549,69 @@ export function useChatModelRuntime() {
             stateBeforeUnload.modelRequiresTrustRemoteCode;
           const previousActiveNativePathToken =
             stateBeforeUnload.activeNativePathToken;
+          // Snapshot the load settings at click time, before the awaits below
+          // (validation, the trust dialog, unload). For a staged Load these knobs
+          // stay editable and a sheet-close revert (abandonStagedModel) can fire
+          // mid-load; reading them live just before loadModel would let the load
+          // use post-click values. The model-switch speculative reset below
+          // updates this snapshot in lock-step so non-staged loads are unchanged.
+          const loadChatTemplateOverride = stateBeforeUnload.chatTemplateOverride;
+          const loadKvCacheDtype = stateBeforeUnload.kvCacheDtype;
+          const loadCustomContextLength = stateBeforeUnload.customContextLength;
+          const loadGgufContextLength = stateBeforeUnload.ggufContextLength;
+          const loadTensorParallel = stateBeforeUnload.tensorParallel;
+          const loadActivePresetSource = stateBeforeUnload.activePresetSource;
+          const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
+          let loadSpeculativeType = stateBeforeUnload.speculativeType;
+          let loadSpecDraftNMax = stateBeforeUnload.specDraftNMax;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
             const validateNativePathLease = nativePathToken
               ? (await consumeNativePathToken(nativePathToken, "validate-model")).nativePathLease
               : undefined;
+            // Validate with the same effective context /load uses: a GGUF native
+            // context can exceed maxSeqLength, so sizing on raw maxSeqLength could
+            // pass, unload, then have /load refuse it. Uses the click-time
+            // snapshot (same values loadModel uses below), so the two agree.
+            const validateMaxSeqLength = resolveLoadMaxSeqLength({
+              modelId,
+              ggufVariant,
+              customContextLength: loadCustomContextLength,
+              ggufContextLength: loadGgufContextLength,
+              currentCheckpoint,
+              activeGgufVariant: loadActiveGgufVariant,
+              maxSeqLength,
+              presetSource: loadActivePresetSource,
+            });
             const validation = await validateModel({
               model_path: modelId,
               nativePathLease: validateNativePathLease,
               hf_token: hfToken,
-              max_seq_length: maxSeqLength,
+              max_seq_length: validateMaxSeqLength,
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
             });
-            if (validation.requires_trust_remote_code && !trustRemoteCode) {
-              throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
+            // Open the consent dialog when the model needs custom-code consent or has a
+            // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the
+            // worker requires a matching fingerprint that only the dialog produces.
+            if (
+              validation.requires_trust_remote_code
+              || validation.requires_security_review
+            ) {
+              const approved = await confirmRemoteCodeIfNeeded({
+                modelName: modelId,
+                hfToken,
+                requiresTrustRemoteCode: true,
+                onApprove: (fp) => {
+                  trustRemoteCode = true;
+                  approvedRemoteCodeFingerprint = fp;
+                },
+              });
+              if (!approved) {
+                throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
+              }
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
             const loadNativePathLease = nativePathToken
@@ -501,7 +629,10 @@ export function useChatModelRuntime() {
             // can't follow the user onto a model without an MTP head.
             // spec_draft_n_max is MTP-only and always resets. The loaded
             // shadow is seeded too, preventing a transient dirty Apply state.
-            if (currentCheckpoint && currentCheckpoint !== modelId) {
+            // keepSpeculative skips this for a staged Load: the user picked the
+            // mode for this model on the sidebar, so honor it (the backend still
+            // falls back at runtime if the model has no MTP head).
+            if (currentCheckpoint && currentCheckpoint !== modelId && !keepSpeculative) {
               const persistedSpeculativeType = readPersistedSpeculativeType();
               useChatRuntimeStore.setState({
                 speculativeType: persistedSpeculativeType,
@@ -509,31 +640,23 @@ export function useChatModelRuntime() {
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
               });
+              loadSpeculativeType = persistedSpeculativeType;
+              loadSpecDraftNMax = null;
             }
 
-            const {
-              chatTemplateOverride,
-              kvCacheDtype,
-              customContextLength,
-              ggufContextLength,
-              speculativeType,
-              specDraftNMax,
-              tensorParallel,
-              activePresetSource,
-              activeGgufVariant,
-            } = useChatRuntimeStore.getState();
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,
               ggufVariant,
-              customContextLength,
-              ggufContextLength,
+              isGguf,
+              customContextLength: loadCustomContextLength,
+              ggufContextLength: loadGgufContextLength,
               currentCheckpoint,
-              activeGgufVariant,
+              activeGgufVariant: loadActiveGgufVariant,
               maxSeqLength,
-              presetSource: activePresetSource,
+              presetSource: loadActivePresetSource,
             });
             const effectiveChatTemplateOverride =
-              chatTemplateOverride?.trim() ? chatTemplateOverride : null;
+              loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
             const loadResponse = await loadModel({
               model_path: modelId,
               nativePathLease: loadNativePathLease,
@@ -543,11 +666,12 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: trustRemoteCode,
+              approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
               chat_template_override: effectiveChatTemplateOverride,
-              cache_type_kv: kvCacheDtype,
-              speculative_type: speculativeType,
-              spec_draft_n_max: specDraftNMax,
-              tensor_parallel: tensorParallel,
+              cache_type_kv: loadKvCacheDtype,
+              speculative_type: loadSpeculativeType,
+              spec_draft_n_max: loadSpecDraftNMax,
+              tensor_parallel: loadTensorParallel,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -557,7 +681,7 @@ export function useChatModelRuntime() {
             // The load applied this spec mode, so persist the user's standing
             // preference now (the requested intent, not the resolved echo;
             // saveSpeculativeType keeps only the universal auto/ngram/off).
-            saveSpeculativeType(speculativeType);
+            saveSpeculativeType(loadSpeculativeType);
 
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(
@@ -600,20 +724,28 @@ export function useChatModelRuntime() {
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
             const supportsReasoning = loadResponse.supports_reasoning ?? false;
             const supportsTools = loadResponse.supports_tools ?? false;
+            // GLM-5.2-style models report their own effort levels (e.g.
+            // high|max); everything else keeps the default low/medium/high.
             const reasoningEffortLevels =
-              reasoningStyle === "reasoning_effort"
-                ? (["low", "medium", "high"] as const)
+              loadResponse.reasoning_effort_levels &&
+              loadResponse.reasoning_effort_levels.length > 0
+                ? (loadResponse.reasoning_effort_levels as ReasoningEffort[])
                 : (["low", "medium", "high"] as const);
             const existingReasoningEffort = useChatRuntimeStore.getState().reasoningEffort;
-            const clampedReasoningEffort = clampLocalReasoningEffort(
-              existingReasoningEffort,
-            );
+            const clampedReasoningEffort =
+              reasoningStyle === "enable_thinking_effort"
+                ? clampReasoningEffortToLevels(
+                    existingReasoningEffort,
+                    reasoningEffortLevels,
+                  )
+                : clampLocalReasoningEffort(existingReasoningEffort);
             const ggufMaxContextLength = reportedMaxCtx;
             const nextReasoningEnabled = reasoningAlwaysOn
               ? true
               : reloadingSameModel && supportsReasoning
                 ? stateBeforeUnload.reasoningEnabled
                 : reasoningDefault;
+            rememberApprovedRemoteCode(modelId, approvedRemoteCodeFingerprint);
             useChatRuntimeStore.setState({
               ggufContextLength: nativeCtx,
               ggufMaxContextLength,
@@ -686,6 +818,25 @@ export function useChatModelRuntime() {
               }
             }
             await refresh({ signal: abortCtrl.signal });
+            // A successful load owns the shared (pick-unscoped) settings fields,
+            // so any surviving stage is stale: the just-loaded pick itself, or a
+            // pick queued for a different model mid-load whose knobs this load
+            // overwrote. Drop it. Only a DIFFERENT pick's download needs
+            // cancelling; the loaded pick's is already consumed, and cancelling
+            // it inside its post-complete linger window would flicker its card.
+            const staleStage = useChatRuntimeStore.getState().pendingSelection;
+            if (staleStage) {
+              if (
+                !pendingSelectionMatches(staleStage, {
+                  id: modelId,
+                  ggufVariant,
+                  nativePathToken,
+                })
+              ) {
+                cancelStagedModelDownload(staleStage);
+              }
+              useChatRuntimeStore.getState().setPendingSelection(null);
+            }
           } catch (error) {
             // Skip rollback if user cancelled -- model is already being unloaded.
             if (abortCtrl.signal.aborted) throw error;
@@ -714,6 +865,9 @@ export function useChatModelRuntime() {
                   gguf_variant: previousVariant,
                   trust_remote_code:
                     previousModelRequiresTrustRemoteCode || trustRemoteCode,
+                  // Resend the previous model's pinned approval so restoring it is not re-blocked.
+                  approved_remote_code_fingerprint:
+                    approvedRemoteCodeFingerprints.get(previousCheckpoint) ?? null,
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
@@ -846,8 +1000,8 @@ export function useChatModelRuntime() {
 
             if (prog.progress > 0 && prog.progress < 1) {
               hasShownProgress = true;
-              const dlGb = prog.downloaded_bytes / (1024 ** 3);
-              const totalGb = prog.expected_bytes / (1024 ** 3);
+              const dlGb = prog.downloaded_bytes / 1e9;
+              const totalGb = prog.expected_bytes / 1e9;
               const pct = Math.round(prog.progress * 100);
               const progressLabel = composeProgressLabel(
                 dlGb,
@@ -879,7 +1033,7 @@ export function useChatModelRuntime() {
               prog.progress === 0
             ) {
               hasShownProgress = true;
-              const dlGb = prog.downloaded_bytes / (1024 ** 3);
+              const dlGb = prog.downloaded_bytes / 1e9;
               const est = estimate(dlSamples, prog.downloaded_bytes, 0);
               const rateSuffix =
                 est.stable ? ` • ${formatRate(est.rate)}` : "";
@@ -937,8 +1091,10 @@ export function useChatModelRuntime() {
               return;
             }
             if (prog.bytes_total <= 0) return; // nothing useful to render
-            const loadedGb = prog.bytes_loaded / (1024 ** 3);
-            const totalGb = prog.bytes_total / (1024 ** 3);
+            // Decimal GB (1e9) so the total matches the file size Hugging Face
+            // reports and the model-picker shows, not the smaller base-1024 GiB.
+            const loadedGb = prog.bytes_loaded / 1e9;
+            const totalGb = prog.bytes_total / 1e9;
             const pct = Math.min(99, Math.round(prog.fraction * 100));
             const est = estimate(mmapSamples, prog.bytes_loaded, prog.bytes_total);
             const base = `${loadedGb.toFixed(1)} of ${totalGb.toFixed(1)} GB in memory`;
@@ -1043,6 +1199,7 @@ export function useChatModelRuntime() {
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
+        setLastModelLoadError(message); // load-specific failure for the attach gates
         if (throwOnError) {
           throw error instanceof Error ? error : new Error(message);
         }
@@ -1058,6 +1215,7 @@ export function useChatModelRuntime() {
       resetLoadingUi,
       setLoadToastDismissedState,
       setModelsError,
+      setLastModelLoadError,
       setParams,
     ],
   );

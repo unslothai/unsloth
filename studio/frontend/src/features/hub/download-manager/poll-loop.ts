@@ -124,8 +124,8 @@ function withDownloadTimeout<T>(
 }
 
 export function hasObservedExpectedBytes(job: ManagedDownload): boolean {
-  // Finalized bytes only: a partial whose `.incomplete` blob merely reached the
-  // expected size must not count as finished; the backend must also verify it on disk.
+  // Finalized bytes only: an `.incomplete` blob hitting expected size isn't
+  // finished until the backend verifies it's usable on disk.
   return (
     job.expectedBytes > 0 &&
     job.completedBytes >= job.expectedBytes &&
@@ -149,9 +149,9 @@ export function resolveProgressUpdate(
   const isGgufVariantJob =
     job.kind === DOWNLOAD_KIND.MODEL && job.variant !== null;
   const backendOwnsGgufProgress = isGgufVariantJob && reported > 0;
-  // GGUF totals are backend-owned (non-monotonic). Snapshots keep the displayed
-  // total monotonic to absorb jitter, but a fresh attempt (generation changed:
-  // XET redownload, restart, re-adoption) drops the stale high-water mark.
+  // GGUF totals are backend-owned (non-monotonic); snapshots stay monotonic to
+  // absorb jitter, but a generation bump (XET redownload, restart, re-adoption)
+  // must drop the stale high-water mark and snap to the new run's bytes.
   const trustBackend = backendOwnsGgufProgress || opts.resetMonotonic === true;
   const expected = trustBackend
     ? reported > 0
@@ -177,9 +177,9 @@ export function resolveProgressUpdate(
         ? downloadedBytes / expected
         : 0;
   const cappedFraction = Math.min(rawFraction, MAX_PROGRESS_FRACTION);
-  // Keep the GGUF variant bar monotonic: its backend progress is recomputed from
-  // the shared per-repo blobs/ dir each poll, so a sibling quant or generation
-  // bump can make one reading dip. A fresh download resets via startJob's seed.
+  // Keep the GGUF variant bar monotonic: backend progress is recomputed from the
+  // shared per-repo blobs/ dir, so a sibling quant, generation bump, or
+  // no-metadata poll can dip one reading. Resets via startJob's seed fraction.
   const fraction = isGgufVariantJob
     ? Math.max(cappedFraction, job.fraction)
     : cappedFraction;
@@ -257,9 +257,9 @@ export function finalize(
     notify(job, "onCancelled", 0);
     removeJob(key);
   } else if (outcome === "complete") {
-    // Reconcile to the largest known figure so a terminal status arriving before
-    // the final progress poll doesn't leave a stale sub-total: downloaded ==
-    // completed >= expected, fraction 1, and report that figure to listeners.
+    // A terminal "complete" arriving before the final progress poll must not
+    // leave a stale sub-total. Reconcile to the largest known figure so
+    // downloaded == completed >= expected, fraction 1, and report that.
     const bytes = Math.max(
       opts.bytes ?? 0,
       job.downloadedBytes,
@@ -690,7 +690,7 @@ export async function startJob(
       });
       return;
     }
-    // A cancel pressed during this apiStart round-trip can land before the job is
+    // A cancel during this apiStart round-trip can land before the job is
     // claimable; re-issue against the accepted generation.
     if (rt.cancelRequested && result.accepted) {
       reissueDroppedStartCancel(req, result.generation);

@@ -64,9 +64,10 @@ export function useTransportMode(): [
   }, []);
 
   const set = useCallback((next: TransportMode) => {
-    // Persist first, reflect after: the engine reads getTransportMode() fresh from
-    // localStorage at download time, so an optimistic setMode() before a failed
-    // write would show the new transport while downloads still used the old one.
+    // Persist first, reflect after: the engine reads getTransportMode() fresh
+    // from localStorage at download time, so an optimistic setMode() before a
+    // failed write (private mode / quota) would show the new transport while
+    // downloads still used the old one. On failure leave everything untouched.
     try {
       window.localStorage.setItem(STORAGE_KEY, next);
     } catch {

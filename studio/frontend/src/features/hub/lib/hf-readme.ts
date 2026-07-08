@@ -17,13 +17,14 @@ interface ReadmeCacheEntry {
   promise: Promise<FetchedReadme | null>;
   // Epoch ms after which the result is refetched. 404s and transient failures
   // are cached briefly (transient shorter) so absence/outage can recover;
-  // positive results and pending requests never expire within the session.
+  // positive and pending results never expire within the session.
   staleAt: number;
 }
 
 const cache = new LruMap<string, ReadmeCacheEntry>(64);
 
-// Bound each request so a stalled HF connection aborts and surfaces as a transient failure.
+// Bound each request so a stalled HF connection aborts and surfaces as a
+// transient failure, matching the dataset-size and owner-avatar helpers.
 const README_FETCH_TIMEOUT_MS = 10_000;
 const README_NEGATIVE_TTL_MS = 5 * 60_000;
 const README_TRANSIENT_TTL_MS = 30_000;

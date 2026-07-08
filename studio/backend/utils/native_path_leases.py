@@ -83,6 +83,15 @@ def child_env_without_native_path_secret(env: Mapping[str, str] | None = None) -
 def run_without_native_path_secret(target: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     """Run a multiprocessing child target without the native path lease secret."""
 
+    # Runs in the spawned child: bind it to the parent's death (Linux), since
+    # multiprocessing children cannot be given a preexec_fn by the parent. Shared
+    # entrypoint for the inference/export/training/data-recipe workers.
+    try:
+        from utils.process_lifetime import bind_current_process_to_parent_lifetime
+        bind_current_process_to_parent_lifetime()
+    except Exception:
+        pass
+
     global _CACHED_LEASE_SECRET, _SCRUB_SAVED_SECRET
     os.environ.pop(LEASE_SECRET_ENV, None)
     _CACHED_LEASE_SECRET = None

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import subprocess
@@ -20,9 +21,25 @@ from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_cache_state import EXIT_CANCELLED
 from hub.utils.state_dir import RepoType
 
+logger = logging.getLogger(__name__)
+
 
 def backend_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent
+
+
+def resolve_effective_use_xet(use_xet: bool) -> bool:
+    """Downgrade an Xet request to HTTP when hf_xet is unavailable, so a defaulted
+    or explicit Xet request never hard-fails on installs without the Xet extra."""
+    if not use_xet:
+        return False
+    reason = download_registry.download_transport_unavailable_reason(
+        download_registry.TRANSPORT_XET
+    )
+    if reason is None:
+        return True
+    logger.warning("Xet transport unavailable, falling back to HTTP: %s", reason)
+    return False
 
 
 def resolve_transport(use_xet: bool) -> str:
@@ -297,25 +314,50 @@ def register_worker(
     worker_token = hf_token
 
     def _watch() -> None:
-        finalize_worker_exit(
-            registry,
-            key,
-            proc,
-            hf_token = worker_token,
-            label = label,
-            log_prefix = log_prefix,
-            logger = logger,
-            repo_type = repo_type,
-            repo_id = repo_id,
-            transport = transport,
-        )
-        if registry.get_job(key).state in ("error", "cancelled"):
-            download_registry.purge_empty_marker_dir(
-                repo_type,
-                repo_id,
-                download_registry.variant_from_key(key),
+        try:
+            finalize_worker_exit(
+                registry,
+                key,
+                proc,
+                hf_token = worker_token,
+                label = label,
+                log_prefix = log_prefix,
+                logger = logger,
+                repo_type = repo_type,
+                repo_id = repo_id,
+                transport = transport,
             )
-        hf_cache_scan.invalidate_hf_cache_scans()
+        except Exception:
+            # finalize_worker_exit is the only thing that clears running/cancelling;
+            # if it raises, force a terminal state so claim() isn't blocked until restart.
+            logger.exception("download watcher crashed for %s", key)
+            # finalize may have raised before reaping the worker; terminate the
+            # still-registered Popen first, else the terminal set_job clears the
+            # repo guard and a live worker would race a retry on the same repo.
+            try:
+                kill_and_reap_process(proc, label = label, logger = logger)
+            except Exception:
+                logger.exception("failed to reap worker after watcher crash for %s", key)
+            try:
+                registry.drop_process(key, proc)
+            except Exception:
+                logger.exception("failed to drop worker after watcher crash for %s", key)
+            try:
+                registry.set_job(key, "error", "download watcher crashed")
+            except Exception:
+                logger.exception("failed to mark %s errored after watcher crash", key)
+        finally:
+            try:
+                if registry.get_job(key).state in ("error", "cancelled"):
+                    download_registry.purge_empty_marker_dir(
+                        repo_type,
+                        repo_id,
+                        download_registry.variant_from_key(key),
+                    )
+            except Exception:
+                logger.exception("post-finalize marker cleanup failed for %s", key)
+            finally:
+                hf_cache_scan.invalidate_hf_cache_scans()
 
     threading.Thread(target = _watch, name = watch_name, daemon = True).start()
     return True

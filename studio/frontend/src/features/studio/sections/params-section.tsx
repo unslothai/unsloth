@@ -229,6 +229,24 @@ export function ParamsSection(): ReactElement {
           : "h-studio-config-column"} duration-150`}
       >
         <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              {t("studio.params.projectName")}
+              <span className="text-[10px] font-normal text-muted-foreground/70">
+                {t("studio.params.optional")}
+              </span>
+            </span>
+            <Input
+              value={store.projectName || ""}
+              onChange={(event) => store.setProjectName(event.target.value)}
+              placeholder="customer-support-lora"
+              maxLength={80}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              {t("studio.params.projectNameDescription")}
+            </p>
+          </div>
+
           {/* Max Steps / Epochs */}
           <div className="flex flex-col gap-2">
             <div
@@ -1067,11 +1085,22 @@ export function ParamsSection(): ReactElement {
                       <Checkbox
                         id="trainOnCompletions"
                         checked={store.trainOnCompletions}
+                        disabled={store.datasetStreaming}
                         onCheckedChange={(v) => store.setTrainOnCompletions(!!v)}
                       />
                       <label
                         htmlFor="trainOnCompletions"
-                        className="text-xs cursor-pointer text-muted-foreground"
+                        aria-disabled={store.datasetStreaming || undefined}
+                        title={
+                          store.datasetStreaming
+                            ? "Not available while dataset streaming is enabled."
+                            : undefined
+                        }
+                        className={`text-xs text-muted-foreground ${
+                          store.datasetStreaming
+                            ? "cursor-not-allowed opacity-60"
+                            : "cursor-pointer"
+                        }`}
                       >
                         {t("studio.params.assistantCompletionsOnly")}
                       </label>

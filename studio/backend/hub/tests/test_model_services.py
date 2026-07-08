@@ -78,6 +78,28 @@ class TestExtractQuantToken:
         assert labels == {"Q4_K_M", "Q8_0"}
 
 
+def test_big_endian_detection_ignores_model_name_be_token():
+    assert gguf.is_big_endian_gguf_path("model-Q4_K_M-be.gguf", "Q4_K_M")
+    assert gguf.is_big_endian_gguf_path("model-Q4_K_M_be_infill.gguf", "Q4_K_M")
+    assert not gguf.is_big_endian_gguf_path("foo-be-Q4_K_M.gguf", "Q4_K_M")
+    assert not gguf.is_big_endian_gguf_path("Q4_K_M/foo-be.gguf", "Q4_K_M")
+    assert gguf.pick_best_gguf(["model-Q4_K_M-be.gguf", "model-Q4_K_M.gguf"]) == (
+        "model-Q4_K_M.gguf"
+    )
+
+
+def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
+    (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"y" * 10)
+
+    variants, has_vision = gguf.list_local_gguf_variants(str(tmp_path))
+
+    assert has_vision is False
+    assert [(v.quant, v.filename, v.size_bytes) for v in variants] == [
+        ("Q4_K_M", "model-Q4_K_M.gguf", 10)
+    ]
+
+
 @pytest.mark.parametrize("repo_id", ["bert-base-uncased", "owner/repo"])
 def test_repo_id_validation_accepts_hf_repo_id_contract(repo_id):
     assert paths.is_valid_repo_id(repo_id)
@@ -192,6 +214,16 @@ def test_resolve_browse_target_rejects_sensitive_dir(tmp_path):
     assert exc_info.value.status_code == 403
 
 
+def test_resolve_browse_target_rejects_sensitive_root(tmp_path):
+    ssh = tmp_path / "home" / ".ssh"
+    ssh.mkdir(parents = True)
+
+    with pytest.raises(HTTPException) as exc_info:
+        folder_browser._resolve_browse_target(str(ssh), [ssh])
+
+    assert exc_info.value.status_code == 403
+
+
 def test_browse_folders_hides_sensitive_dirs(monkeypatch, tmp_path):
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents = True)
@@ -203,6 +235,73 @@ def test_browse_folders_hides_sensitive_dirs(monkeypatch, tmp_path):
     names = {entry.name for entry in response.entries}
     assert "models" in names
     assert ".ssh" not in names
+
+
+def test_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    media_root = tmp_path / "run" / "media" / "dspofu" / "nvmeB"
+    model_dir = media_root / "modelsAI" / "gguf" / "qwen3.6"
+    home.mkdir()
+    model_dir.mkdir(parents = True)
+    monkeypatch.setattr(folder_browser.Path, "home", lambda: home)
+    monkeypatch.setattr(folder_browser, "linux_run_media_mount_roots", lambda: [media_root])
+    monkeypatch.setattr(folder_browser, "_resolve_hf_cache_dir", lambda: tmp_path / "missing-hf")
+    monkeypatch.setattr(scan_folders, "list_scan_folders", lambda: [])
+    monkeypatch.setattr(folder_browser, "well_known_model_dirs", lambda: [])
+
+    allowlist = folder_browser._build_browse_allowlist()
+
+    assert media_root.resolve() in allowlist
+    assert folder_browser._resolve_browse_target(str(model_dir), allowlist) == model_dir.resolve()
+
+
+def test_get_models_folder_response_creates_and_returns_dir(monkeypatch, tmp_path):
+    # The endpoint creates the cache dir on demand so the desktop "Open folder"
+    # action works even before the first download.
+    target = tmp_path / "hub"
+    monkeypatch.setattr(local_inventory, "_resolve_hf_cache_dir", lambda: target)
+
+    response = local_inventory.get_models_folder_response()
+
+    assert response == {"path": str(target)}
+    assert target.is_dir()
+
+
+def test_get_models_folder_response_reports_create_failure(monkeypatch, tmp_path):
+    target = tmp_path / "hub"
+    target.write_text("not a directory")
+    monkeypatch.setattr(local_inventory, "_resolve_hf_cache_dir", lambda: target)
+
+    with pytest.raises(HTTPException) as exc_info:
+        local_inventory.get_models_folder_response()
+
+    assert exc_info.value.status_code == 500
+    assert "Failed to create models folder" in exc_info.value.detail
+
+
+def test_get_models_folder_response_requires_directory(monkeypatch, tmp_path):
+    class MissingPath:
+        def __init__(self, value: Path):
+            self.value = value
+
+        def mkdir(self, *, parents: bool, exist_ok: bool):
+            assert parents is True
+            assert exist_ok is True
+
+        def is_dir(self):
+            return False
+
+        def __str__(self):
+            return str(self.value)
+
+    target = MissingPath(tmp_path / "hub")
+    monkeypatch.setattr(local_inventory, "_resolve_hf_cache_dir", lambda: target)
+
+    with pytest.raises(HTTPException) as exc_info:
+        local_inventory.get_models_folder_response()
+
+    assert exc_info.value.status_code == 500
+    assert "not a directory" in exc_info.value.detail
 
 
 def test_contained_link_path_confines_to_link_dir(tmp_path):
@@ -348,6 +447,22 @@ def test_gguf_variant_requirements_include_split_files_and_preferred_mmproj():
         "model-Q4_K_M-00002-of-00002.gguf",
         "mmproj-F16.gguf",
     )
+
+
+def test_gguf_variant_requirements_skip_big_endian_sibling():
+    requirements = gguf_variants._build_gguf_variant_requirements(
+        [
+            _sibling("model-Q4_K_M-be.gguf", 100, "main-be"),
+            _sibling("model-Q4_K_M.gguf", 10, "main-le"),
+        ]
+    )
+
+    req = requirements["q4_k_m"]
+
+    assert req.main_size_bytes == 10
+    assert req.main_hashes == frozenset({"main-le"})
+    assert req.main_filenames == frozenset({"model-Q4_K_M.gguf"})
+    assert req.target_filenames == ("model-Q4_K_M.gguf",)
 
 
 def test_worker_gguf_variant_plan_matches_service_requirement(monkeypatch):
@@ -1588,6 +1703,34 @@ def test_variant_partial_accepts_variant_filtered_legacy_hashes(monkeypatch, tmp
         "Q5_K_M",
         incomplete_blob_hashes = {"main-q4"},
         variant_blob_hashes = frozenset({"main-q5"}),
+    )
+
+
+def test_variant_partial_accepts_completed_variant_in_non_latest_snapshot(monkeypatch, tmp_path):
+    """A verified GGUF update can prune an older snapshot and make that old
+    directory the newest by mtime. The variant is still complete when another
+    snapshot satisfies its manifest."""
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    repo_dir = tmp_path / "cache" / "models--Org--Repo"
+    old_snapshot = repo_dir / "snapshots" / "old"
+    new_snapshot = repo_dir / "snapshots" / "new"
+    old_snapshot.mkdir(parents = True)
+    new_snapshot.mkdir(parents = True)
+    (old_snapshot / "model-Q8_0.gguf").write_bytes(b"sibling")
+    (new_snapshot / "model-Q4_K_M.gguf").write_bytes(b"new")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Repo",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 3)],
+        "http",
+    )
+
+    assert not inventory_scan.is_variant_partial(
+        "Org/Repo",
+        "Q4_K_M",
+        snapshot_dir = old_snapshot,
+        repo_cache_dir = repo_dir,
     )
 
 

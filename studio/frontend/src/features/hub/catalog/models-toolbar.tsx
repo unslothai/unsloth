@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -11,10 +12,11 @@ import {
 import { cn } from "@/lib/utils";
 import {
   AiChipIcon,
+  CancelCircleIcon,
   Database02Icon,
   FolderSearchIcon,
-  Refresh01Icon,
   Search01Icon,
+  SlidersHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
@@ -25,29 +27,33 @@ import type {
   ResourceTypeFilter,
 } from "../types";
 import {
-  CHANNEL_PRESETS,
-  type ChannelId,
-  findChannel,
-} from "../lib/channels";
-import {
   CAPABILITY_FILTER_OPTIONS,
   FORMAT_FILTER_OPTIONS,
 } from "../lib/view-models";
 import { HubOptionMenu, type HubOption } from "./hub-option-menu";
-import { memo, useMemo } from "react";
+import {
+  clearRecentSearches,
+  recordRecentSearch,
+  removeRecentSearch,
+  useRecentSearches,
+} from "../lib/recent-searches";
+import { RecentSearches } from "./recent-searches";
+import { memo, useMemo, useState } from "react";
+
+// Widened so the format dropdown can carry the "Fine-tune ready" pseudo-option,
+// which opens the curated channel instead of becoming the active format filter.
+type FormatMenuValue = ModelFormatFilter | "finetune";
 
 const SORT_OPTIONS: ReadonlyArray<{
   value: HfSortKey;
   label: string;
 }> = [
+  { value: "createdAt", label: "Newest" },
   { value: "trendingScore", label: "Trending" },
-  { value: "likes", label: "Most likes" },
   { value: "downloads", label: "Most downloads" },
   { value: "lastModified", label: "Recently updated" },
-  { value: "createdAt", label: "Newest" },
+  { value: "likes", label: "Most likes" },
 ];
-
-type ChannelOptionValue = "all" | ChannelId;
 
 export const ModelsToolbar = memo(function ModelsToolbar({
   tab,
@@ -63,17 +69,16 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFormatFilterChange,
   capabilityFilter,
   onCapabilityFilterChange,
-  activeChannelId,
-  onChannelSelect,
-  onRefresh,
+  fitOnDeviceOnly,
+  onFitOnDeviceOnlyChange,
   onManageLocalFolders,
+  onOpenFineTune,
 }: {
   tab: ModelsTab;
   onTabChange: (tab: ModelsTab) => void;
   query: string;
   onQueryChange: (value: string) => void;
   isLoading: boolean;
-  onRefresh: () => void;
   sortBy: HfSortKey;
   onSortChange: (value: HfSortKey) => void;
   resourceType: ResourceTypeFilter;
@@ -82,39 +87,70 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFormatFilterChange: (value: ModelFormatFilter) => void;
   capabilityFilter: CapabilityFilter;
   onCapabilityFilterChange: (value: CapabilityFilter) => void;
-  activeChannelId: ChannelId | null;
-  onChannelSelect: (id: ChannelId | null) => void;
+  /** Shared with the chat model selector: hide models over the device budget. */
+  fitOnDeviceOnly: boolean;
+  onFitOnDeviceOnlyChange: (value: boolean) => void;
   onManageLocalFolders: () => void;
+  /** Opens the curated "Fine-tune ready" channel (discover only). Exposed as a
+   *  format-dropdown option rather than a standalone feed section. */
+  onOpenFineTune: () => void;
 }) {
-  const activeChannel = findChannel(activeChannelId);
+  // Recent searches surface while the empty search field is focused, only on
+  // Discover (on-device search is a local filter and isn't recorded).
+  const recentSearches = useRecentSearches();
+  const [searchFocused, setSearchFocused] = useState(false);
+  const isDiscover = tab === "discover";
+  const showRecentSearches =
+    isDiscover &&
+    searchFocused &&
+    query.trim() === "" &&
+    recentSearches.length > 0;
+
   const isDataset = resourceType === "datasets";
-  const channelValue: ChannelOptionValue = activeChannelId ?? "all";
-  const formatOptions = useMemo<HubOption<ModelFormatFilter>[]>(
-    () =>
-      FORMAT_FILTER_OPTIONS.filter(
-        // Downloaded inventory rows are never tagged mlx, so only Discover can
-        // match the MLX filter; hide it elsewhere to avoid an empty list.
-        (option) => option.value !== "mlx" || tab === "discover",
-      ).map((option) => ({
-        value: option.value,
-        triggerLabel: option.label,
-        label: (
-          <>
+  const hasTrailing = Boolean(query) || (isDiscover && isLoading);
+  const formatOptions = useMemo<HubOption<FormatMenuValue>[]>(() => {
+    const options: HubOption<FormatMenuValue>[] = FORMAT_FILTER_OPTIONS.filter(
+      (option) => option.value !== "mlx" || tab === "discover",
+    ).map((option) => ({
+      value: option.value,
+      triggerLabel: option.label,
+      label: (
+        <>
+          <span className="flex size-3.5 shrink-0 items-center justify-center">
             {option.value === "gguf" && (
-              <span className="inline-block size-1.5 shrink-0 rounded-full bg-format-gguf" />
+              <span className="size-1.5 rounded-full bg-format-gguf" />
             )}
             {option.value === "checkpoint" && (
-              <span className="inline-block size-1.5 shrink-0 rounded-full bg-format-checkpoint" />
+              <span className="size-1.5 rounded-full bg-format-checkpoint" />
             )}
             {option.value === "mlx" && (
-              <span className="inline-block size-1.5 shrink-0 rounded-full bg-format-mlx" />
+              <span className="size-1.5 rounded-full bg-format-mlx" />
             )}
-            {option.label}
+          </span>
+          {option.label}
+        </>
+      ),
+    }));
+    // "Fine-tune ready" is a curated channel (bnb-4bit checkpoints), not a
+    // format: it opens the channel rather than setting the filter (onValueChange).
+    if (tab === "discover") {
+      options.push({
+        value: "finetune",
+        triggerLabel: "Fine-tune ready",
+        label: (
+          <>
+            <HugeiconsIcon
+              icon={SlidersHorizontalIcon}
+              strokeWidth={1.75}
+              className="size-3.5 shrink-0 text-muted-foreground"
+            />
+            Fine-tune ready
           </>
         ),
-      })),
-    [tab],
-  );
+      });
+    }
+    return options;
+  }, [tab]);
   const capabilityOptions = useMemo<HubOption<CapabilityFilter>[]>(
     () =>
       CAPABILITY_FILTER_OPTIONS.map((option) => ({
@@ -131,31 +167,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
       })),
     [],
   );
-  const channelOptions = useMemo<HubOption<ChannelOptionValue>[]>(
-    () => [
-      { value: "all", label: "All models" },
-      ...CHANNEL_PRESETS.map((preset) => ({
-        value: preset.id,
-        checkClassName: "text-primary",
-        label: (
-          <span className="flex w-full min-w-0 items-start gap-2">
-            <HugeiconsIcon
-              icon={preset.icon}
-              strokeWidth={1.75}
-              className="mt-0.5 size-4 shrink-0 text-muted-foreground"
-            />
-            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <span className="min-w-0 truncate">{preset.label}</span>
-              <span className="min-w-0 whitespace-normal break-words text-[11px] leading-snug text-muted-foreground">
-                {preset.hint}
-              </span>
-            </span>
-          </span>
-        ),
-      })),
-    ],
-    [],
-  );
   const triggerBase = cn(
     "field-trigger hub-menu-trigger field-soft transition-colors",
     "focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:border-border",
@@ -164,7 +175,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-nowrap lg:items-center">
       <div
         className={cn(
-          "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[220px]",
+          "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[240px]",
         )}
         role="radiogroup"
         aria-label="View"
@@ -207,97 +218,86 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         </button>
       </div>
 
-      <div className="flex min-w-0 items-center gap-2 lg:flex-[1_1_280px]">
-        <div
-          className="hub-menu-trigger hub-tab-toggle relative inline-flex h-9 shrink-0 items-center rounded-full"
-          role="radiogroup"
-          aria-label="Resource type"
-        >
-          <span
-            aria-hidden="true"
-            className={cn(
-              "hub-tab-toggle-pill",
-              "pointer-events-none absolute inset-y-0 left-0 w-1/2 rounded-full transition-transform duration-200 ease-out",
-              resourceType === "datasets" ? "translate-x-full" : "translate-x-0",
-            )}
-          />
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={resourceType === "models"}
-                aria-label="Models"
-                onClick={() => onResourceTypeChange("models")}
-                className={cn(
-                  "relative z-10 inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors",
-                  resourceType === "models"
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <HugeiconsIcon
-                  icon={AiChipIcon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              Models
-            </TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={resourceType === "datasets"}
-                aria-label="Datasets"
-                onClick={() => onResourceTypeChange("datasets")}
-                className={cn(
-                  "relative z-10 inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors",
-                  resourceType === "datasets"
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <HugeiconsIcon
-                  icon={Database02Icon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              Datasets
-            </TooltipContent>
-          </Tooltip>
-        </div>
-
-        <div className="relative min-w-0 flex-1">
+      <div className="relative min-w-0 flex-1 lg:flex-[1_1_360px]">
           <HugeiconsIcon
             icon={Search01Icon}
             strokeWidth={1.8}
-            className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+            className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
           />
           <Input
+            // `type="search"` plus these flags stop password managers and noisy
+            // text assistance from acting on this field.
+            type="search"
+            name="hub-search"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            enterKeyHint="search"
+            data-1p-ignore={true}
+            data-lpignore={true}
+            data-form-type="other"
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => {
+              setSearchFocused(false);
+              if (isDiscover) {
+                recordRecentSearch(query);
+              }
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && isDiscover) {
+                recordRecentSearch(query);
+              } else if (event.key === "Escape" && showRecentSearches) {
+                event.currentTarget.blur();
+              }
+            }}
             placeholder={
               tab === "downloaded"
                 ? `Search on-device ${isDataset ? "datasets" : "models"}`
-                : "Search Hugging Face"
+                : isDataset
+                  ? "Search datasets"
+                  : "Search all models"
             }
-            className="field-soft h-9 rounded-full pl-10 pr-10 text-[12.5px] placeholder:text-muted-foreground/80"
+            className={cn(
+              "field-soft h-9 rounded-full !border-0 pl-10 text-[13px] placeholder:text-muted-foreground/80 focus-visible:!ring-0",
+              hasTrailing ? "pr-10" : "pr-4",
+            )}
           />
-          {tab === "discover" && isLoading && (
-            <Spinner className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          {query ? (
+            <button
+              type="button"
+              aria-label="Clear search"
+              // Keep focus on the input so clearing reveals recent searches
+              // rather than dismissing the field.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => onQueryChange("")}
+              className="absolute right-2.5 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground"
+            >
+              <HugeiconsIcon
+                icon={CancelCircleIcon}
+                strokeWidth={1.75}
+                className="size-[18px]"
+              />
+            </button>
+          ) : isDiscover && isLoading ? (
+            <Spinner className="pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          ) : null}
+          {showRecentSearches && (
+            <RecentSearches
+              searches={recentSearches}
+              onSelect={(value) => {
+                recordRecentSearch(value);
+                onQueryChange(value);
+              }}
+              onRemove={removeRecentSearch}
+              onClear={clearRecentSearches}
+            />
           )}
         </div>
-      </div>
 
-      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-none lg:flex-nowrap lg:justify-end">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-[0_0_auto] lg:flex-nowrap lg:justify-end">
         {tab === "downloaded" && !isDataset && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -324,10 +324,16 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         )}
 
         {!isDataset && (
-          <HubOptionMenu
+          <HubOptionMenu<FormatMenuValue>
             value={formatFilter}
             options={formatOptions}
-            onValueChange={onFormatFilterChange}
+            onValueChange={(value) => {
+              if (value === "finetune") {
+                onOpenFineTune();
+              } else {
+                onFormatFilterChange(value);
+              }
+            }}
             ariaLabel="Format filter"
             className={cn(triggerBase, "w-[128px]")}
           />
@@ -350,62 +356,104 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             onValueChange={onSortChange}
             ariaLabel="Sort models"
             className={cn(triggerBase, "w-[128px]")}
+            footer={
+              isDataset ? undefined : (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      role="checkbox"
+                      aria-checked={fitOnDeviceOnly}
+                      onClick={() => onFitOnDeviceOnlyChange(!fitOnDeviceOnly)}
+                      className="flex w-full cursor-pointer select-none items-center gap-2 rounded-[10px] px-3 py-2 text-left text-[12.5px] text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      <Checkbox
+                        checked={fitOnDeviceOnly}
+                        tabIndex={-1}
+                        aria-hidden
+                        className="pointer-events-none size-3.5 rounded-full [&_svg]:!size-2.5"
+                      />
+                      Only show models that fit
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    Hides models larger than this device's memory budget.
+                    Downloaded models stay visible.
+                  </TooltipContent>
+                </Tooltip>
+              )
+            }
           />
         )}
 
-        {tab === "discover" && !isDataset && (
-          <HubOptionMenu
-            value={channelValue}
-            options={channelOptions}
-            onValueChange={(next) =>
-              onChannelSelect(next === "all" ? null : next)
-            }
-            ariaLabel="Curated channels"
-            title={activeChannel ? activeChannel.label : "Curated channels"}
-            align="end"
-            showChevron={false}
-            triggerContent={
-              <span
-                aria-hidden="true"
-                className={cn(
-                  "hub-verified-badge size-4",
-                  activeChannel ? "text-primary" : "text-muted-foreground",
-                )}
-              />
-            }
+        <div
+          className="hub-menu-trigger hub-tab-toggle relative inline-flex h-8 shrink-0 items-center rounded-full"
+          role="radiogroup"
+          aria-label="Resource type"
+        >
+          <span
+            aria-hidden="true"
             className={cn(
-              triggerBase,
-              "field-filter inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
+              "hub-tab-toggle-pill",
+              // Height-filling circle (matches the 3-view-tab toggle) that slides
+              // one button-width (w-8 = 32px) between the two options.
+              "pointer-events-none absolute inset-y-0 left-0 w-8 rounded-full transition-transform duration-200 ease-out",
+              resourceType === "datasets" ? "translate-x-8" : "translate-x-0",
             )}
-            contentClassName="w-[calc(100vw-1.5rem)] sm:w-[320px]"
           />
-        )}
-
-        {tab === "discover" && (
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 type="button"
-                aria-label="Refresh from Hugging Face"
-                onClick={onRefresh}
+                role="radio"
+                aria-checked={resourceType === "models"}
+                aria-label="Models"
+                onClick={() => onResourceTypeChange("models")}
                 className={cn(
-                  triggerBase,
-                  "field-filter inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
+                  "relative z-10 inline-flex size-8 items-center justify-center rounded-full transition-colors",
+                  resourceType === "models"
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 <HugeiconsIcon
-                  icon={Refresh01Icon}
+                  icon={AiChipIcon}
                   strokeWidth={1.75}
-                  className={cn("size-4", isLoading && "animate-spin")}
+                  className="size-4"
                 />
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
-              Refresh from Hugging Face
+              Models
             </TooltipContent>
           </Tooltip>
-        )}
-
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={resourceType === "datasets"}
+                aria-label="Datasets"
+                onClick={() => onResourceTypeChange("datasets")}
+                className={cn(
+                  "relative z-10 inline-flex size-8 items-center justify-center rounded-full transition-colors",
+                  resourceType === "datasets"
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={Database02Icon}
+                  strokeWidth={1.75}
+                  className="size-4"
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              Datasets
+            </TooltipContent>
+          </Tooltip>
+        </div>
       </div>
     </div>
   );

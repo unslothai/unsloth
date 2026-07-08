@@ -3,12 +3,14 @@
 
 "use client";
 
+import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import { cn } from "@/lib/utils";
 import { useAuiState } from "@assistant-ui/react";
 import { LayoutTwoColumnIcon as Layout2ColumnIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useLayoutEffect, useMemo } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import type { ArtifactViewMode } from "./html-frame";
 import {
   hasAutoOpenedArtifact,
   rememberAutoOpenedArtifact,
@@ -19,6 +21,9 @@ import {
   type ChatArtifactSource,
   createChatArtifact,
 } from "./types";
+
+const CARD_BASE =
+  "group/artifact-card relative flex min-h-[52px] cursor-pointer items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left transition-colors hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 dark:bg-muted/10 dark:hover:bg-muted/20";
 
 export function ArtifactCard({
   code,
@@ -40,6 +45,11 @@ export function ArtifactCard({
   isStreaming?: boolean;
 }) {
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  // Canvas mode collapses the raw code in place, so offer a Code button too.
+  // Diffusion keeps its code inline, so it needs no Code button.
+  const showCodeButton = useChatRuntimeStore(
+    (state) => state.artifactsEnabled && !state.loadedIsDiffusion,
+  );
   const messageIdFromContext = useAuiState(({ message }) => message.id);
   const threadIdFromContext = useAuiState(
     ({ threads }) => threads.mainThreadId,
@@ -87,7 +97,7 @@ export function ArtifactCard({
     }
 
     rememberAutoOpenedArtifact(artifact.id);
-    openArtifact(artifact, { surface });
+    openArtifact(artifact, { surface, view: "preview" });
   }, [
     artifact,
     autoOpen,
@@ -97,45 +107,63 @@ export function ArtifactCard({
     updateArtifact,
   ]);
 
-  return (
-    <button
-      type="button"
-      className={cn(
-        "group/artifact-card relative my-2 flex min-h-[52px] w-full max-w-md cursor-pointer items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left transition-colors hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-        "dark:bg-muted/10 dark:hover:bg-muted/20",
-        isStreaming &&
-          "border-border/80 bg-muted/20 dark:border-border/70 dark:bg-muted/15",
-        className,
-      )}
-      onClick={() => openArtifact(artifact, { surface })}
-      aria-label={`Open ${artifact.title}`}
-    >
-      {isStreaming ? (
-        <span
-          aria-hidden={true}
-          className="artifact-card-shimmer pointer-events-none absolute inset-0 z-0 motion-reduce:hidden"
-        />
-      ) : null}
-      <div className="relative z-10 flex min-w-0 flex-1 items-center gap-2.5">
-        <HugeiconsIcon
-          icon={Layout2ColumnIcon}
-          strokeWidth={1.75}
-          className="size-5 shrink-0 text-muted-foreground"
-        />
-        <span className="grid min-w-0 flex-1 gap-1">
-          <span className="truncate text-sm font-medium leading-tight text-foreground">
-            {artifact.title}
-          </span>
-          <span className="truncate text-[11px] leading-none text-muted-foreground">
-            HTML canvas
-          </span>
-        </span>
+  const renderButton = (view: ArtifactViewMode) => {
+    const isCode = view === "source";
+    return (
+      <button
+        key={view}
+        type="button"
+        className={cn(
+          CARD_BASE,
+          showCodeButton ? "min-w-0 flex-1" : "w-full max-w-md",
+          isStreaming &&
+            "border-border/80 bg-muted/20 dark:border-border/70 dark:bg-muted/15",
+        )}
+        onClick={() => openArtifact(artifact, { surface, view })}
+        aria-label={`Open ${artifact.title} ${isCode ? "code" : "preview"}`}
+      >
         {isStreaming ? (
-          <span className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary motion-reduce:animate-none">
-            Generating
-          </span>
+          <span
+            aria-hidden={true}
+            className="artifact-card-shimmer pointer-events-none absolute inset-0 z-0 motion-reduce:hidden"
+          />
         ) : null}
-      </div>
-    </button>
+        <div className="relative z-10 flex min-w-0 flex-1 items-center gap-2.5">
+          {isCode ? (
+            <CodeToggleIcon className="size-5 shrink-0 text-muted-foreground" />
+          ) : (
+            <HugeiconsIcon
+              icon={Layout2ColumnIcon}
+              strokeWidth={1.75}
+              className="size-5 shrink-0 text-muted-foreground"
+            />
+          )}
+          <span className="grid min-w-0 flex-1 gap-1">
+            <span className="truncate text-sm font-medium leading-tight text-foreground">
+              {isCode ? "HTML Code" : artifact.title}
+            </span>
+            <span className="truncate text-[11px] leading-none text-muted-foreground">
+              HTML canvas
+            </span>
+          </span>
+          {isStreaming && !isCode ? (
+            <span className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary motion-reduce:animate-none">
+              Generating
+            </span>
+          ) : null}
+        </div>
+      </button>
+    );
+  };
+
+  if (!showCodeButton) {
+    return <div className={cn("my-2", className)}>{renderButton("preview")}</div>;
+  }
+
+  return (
+    <div className={cn("my-2 flex w-full max-w-xl gap-2", className)}>
+      {renderButton("preview")}
+      {renderButton("source")}
+    </div>
   );
 }

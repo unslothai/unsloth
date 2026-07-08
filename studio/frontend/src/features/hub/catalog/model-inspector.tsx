@@ -12,13 +12,17 @@ import {
   classifyUnslothSupport,
 } from "@/features/hub/hooks/use-hub-model-search";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
-import { formatBytes, formatRelativeShort } from "@/features/hub/lib/format";
-import { Tick02Icon } from "@/lib/tick-icon";
+import {
+  formatBytes,
+  formatRelativeShort,
+  formatShortDate,
+} from "@/features/hub/lib/format";
 import { cn, formatCompact } from "@/lib/utils";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import {
   Calendar03Icon,
+  CalendarAdd01Icon,
   Copy01Icon,
   CpuIcon,
   CubeIcon,
@@ -27,40 +31,33 @@ import {
   FavouriteIcon,
   Globe02Icon,
   LayersLogoIcon,
+  LibraryIcon,
   LicenseIcon,
   PackageIcon,
   RamMemoryIcon,
   Share05Icon,
 } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  memo,
-  useDeferredValue,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { memo, useDeferredValue, useMemo } from "react";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
+  formatLibrary,
   formatLocalUpdated,
   formatPipelineTag,
   parseLanguageTags,
 } from "../lib/view-models";
 import type { SelectedModelView } from "../types";
-import {
-  selectActiveJob,
-  useDownloadManagerStore,
-} from "../download-manager";
+import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
 import { DatasetDownloadSection } from "./dataset-download-section";
 import { DownloadSection } from "./download-section";
 import { LocalDatasetCard } from "./local-dataset-card";
 import { LocalOnDeviceCard } from "./local-on-device-card";
 import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
-import { CapabilityPill } from "./shared";
+import { AccessChip, CapabilityPill } from "./shared";
 
 function ViewRepositoryButton({
   repoId,
@@ -72,9 +69,13 @@ function ViewRepositoryButton({
   const online = useOnlineStatus();
   const url = `https://huggingface.co/${isDataset ? "datasets/" : ""}${repoId}`;
   const baseClass =
-    "inline-flex size-7 shrink-0 items-center justify-center rounded-[8px] text-muted-foreground transition-colors";
+    "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
   const icon = (
-    <HugeiconsIcon icon={Share05Icon} strokeWidth={1.75} className="size-4" />
+    <HugeiconsIcon
+      icon={Share05Icon}
+      strokeWidth={1.75}
+      className="size-[13px]"
+    />
   );
   return (
     <Tooltip>
@@ -128,12 +129,12 @@ function CopyRepoButton({ repoId }: { repoId: string }) {
           type="button"
           aria-label="Copy repository ID"
           onClick={handleCopy}
-          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-[8px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <HugeiconsIcon
             icon={copied ? Tick02Icon : Copy01Icon}
             strokeWidth={1.75}
-            className="size-4"
+            className="size-[13px]"
           />
         </button>
       </TooltipTrigger>
@@ -148,10 +149,12 @@ function StatRow({
   label,
   value,
   icon,
+  tooltip,
 }: {
   label: string;
   value: string;
   icon: IconSvgElement;
+  tooltip?: React.ReactNode;
 }) {
   return (
     <Tooltip>
@@ -165,7 +168,9 @@ function StatRow({
           <span className="font-medium tabular-nums">{value}</span>
         </span>
       </TooltipTrigger>
-      <TooltipContent className="tooltip-compact">{label}</TooltipContent>
+      <TooltipContent className="tooltip-compact">
+        {tooltip ?? label}
+      </TooltipContent>
     </Tooltip>
   );
 }
@@ -175,11 +180,7 @@ function StatGrid({ children }: { children: React.ReactNode }) {
 }
 
 function InspectorDownloadSlot({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="shrink-0 pl-6 pr-10 pt-3 sm:pr-14 lg:pr-[4.5rem] xl:pr-[5.5rem]">
-      {children}
-    </div>
-  );
+  return <div className="max-w-[680px] pt-3">{children}</div>;
 }
 
 function StatusChip({
@@ -207,6 +208,53 @@ function StatusChip({
     >
       {label}
     </span>
+  );
+}
+
+function BaseModelSearchChip({
+  baseModel,
+  searchTerm,
+  onSearchHub,
+}: {
+  baseModel: string;
+  searchTerm: string;
+  onSearchHub?: (query: string) => void;
+}) {
+  const content = (
+    <>
+      <HugeiconsIcon
+        icon={LayersLogoIcon}
+        strokeWidth={1.75}
+        className="size-3.5 shrink-0 text-muted-foreground"
+      />
+      <span className="shrink-0 text-muted-foreground">Base</span>
+      <span className="min-w-0 truncate font-medium text-foreground">
+        {baseModel}
+      </span>
+    </>
+  );
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        {onSearchHub ? (
+          <button
+            type="button"
+            onClick={() => onSearchHub(searchTerm)}
+            className="inline-flex h-6 max-w-full cursor-pointer items-center gap-1.5 rounded-full bg-muted px-2.5 text-[11.5px] transition-colors hover:bg-muted/80 dark:bg-[rgba(255,255,255,0.04)]"
+          >
+            {content}
+          </button>
+        ) : (
+          <span className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-full bg-muted px-2.5 text-[11.5px] dark:bg-[rgba(255,255,255,0.04)]">
+            {content}
+          </span>
+        )}
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="tooltip-compact">
+        Search this base model in Hub
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -270,8 +318,7 @@ function ModelStatusChips({
               </span>
             )}
             <span className="mt-1 block text-[10.5px] font-normal text-white/75">
-              Still downloadable to your Hugging Face cache, shared with every
-              framework that reads it.
+              Still downloadable to your Hugging Face cache.
             </span>
           </TooltipContent>
         </Tooltip>
@@ -322,6 +369,7 @@ export type ModelInspectorActions = {
   onUseInChat: () => void;
   onTrain?: () => void;
   onInventoryChange?: () => void;
+  onSearchHub?: (query: string) => void;
 };
 
 export const ModelInspector = memo(function ModelInspector({
@@ -349,17 +397,23 @@ export const ModelInspector = memo(function ModelInspector({
     gpuGb,
     systemRamGb,
   } = runtime;
-  const { onLoad, onLoadLocal, onUseInChat, onTrain, onInventoryChange } =
-    actions;
+  const {
+    onLoad,
+    onLoadLocal,
+    onUseInChat,
+    onTrain,
+    onInventoryChange,
+    onSearchHub,
+  } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
   const hfToken = useHfTokenStore((s) => s.token);
   const datasetRepoId = isDataset && model?.hubRepoId ? model.hubRepoId : null;
   const datasetSize = useDatasetSize(datasetRepoId, {
     token: hfToken || undefined,
   });
-  // Inventory rows are snapshots; the download manager is the live source of truth.
-  // When a download is in flight, route through the download-aware section so
-  // progress/cancel stays visible across refreshes.
+  // Inventory rows are snapshots; the download manager is the live source of
+  // truth. When a download is in flight, route through the download-aware section
+  // so progress/cancel stays visible across refreshes.
   const activeDownloadRepoId = model?.hubRepoId ?? null;
   const hasActiveHubDownload = useDownloadManagerStore((state) =>
     activeDownloadRepoId
@@ -403,35 +457,12 @@ export const ModelInspector = memo(function ModelInspector({
     supportTagsKey,
   ]);
 
-  const descScrollRef = useRef<HTMLDivElement | null>(null);
-  const descScrollKey = `${model?.id ?? ""}\0${readmeRepoId ?? ""}`;
   const deferredReadmeRepoId = useDeferredValue(readmeRepoId);
   const readmeReady = deferredReadmeRepoId === readmeRepoId;
-  const [descScrollState, setDescScrollState] = useState({
-    key: descScrollKey,
-    scrolled: false,
-  });
-  const descScrolled =
-    descScrollState.key === descScrollKey && descScrollState.scrolled;
-  useEffect(() => {
-    const el = descScrollRef.current;
-    if (!el) return;
-    el.scrollTop = 0;
-    const onScroll = () => {
-      const scrolled = el.scrollTop > 0;
-      setDescScrollState((current) =>
-        current.key === descScrollKey && current.scrolled === scrolled
-          ? current
-          : { key: descScrollKey, scrolled },
-      );
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [descScrollKey]);
 
   if (!model) {
     return (
-      <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+      <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 py-16 text-center">
         <div className="inline-flex size-12 items-center justify-center rounded-[14px] bg-muted text-muted-foreground">
           <HugeiconsIcon icon={CubeIcon} strokeWidth={1.5} className="size-5" />
         </div>
@@ -453,8 +484,23 @@ export const ModelInspector = memo(function ModelInspector({
     ? formatRelativeShort(model.updatedAt)
     : formatLocalUpdated(model.localUpdatedAt);
   const updatedLabel = updatedRaw === "Unknown update" ? "N/A" : updatedRaw;
+  const createdLabel = model.createdAt ? formatShortDate(model.createdAt) : null;
+  const libraryLabel = isDataset ? null : formatLibrary(model.libraryName);
+  const gatedAccess = model.gated !== false && model.gated !== undefined;
+  const downloadsTooltip =
+    model.downloadsAllTime != null ? (
+      <>
+        Downloads (30 days)
+        <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+          {formatCompact(model.downloadsAllTime)} all time
+        </span>
+      </>
+    ) : (
+      "Downloads"
+    );
   const taskLabel = formatPipelineTag(model.pipelineTag) ?? "General";
   const licenseLabel = model.license ?? "N/A";
+  const baseModelSearchTerm = model.baseModelHubId ?? model.baseModel ?? null;
   const paramsLabel = model.totalParams
     ? formatCompact(model.totalParams)
     : "N/A";
@@ -473,17 +519,17 @@ export const ModelInspector = memo(function ModelInspector({
     datasetSize?.numBytesParquet ?? datasetSize?.numBytesOriginal ?? null;
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col">
-      <div className="shrink-0 px-6 pb-2 pt-0">
-        <div className="flex items-center gap-3.5">
+    <div className="flex flex-col">
+      <div className="pb-2 pt-1">
+        <div className="flex items-center gap-4">
           <OwnerAvatar
             owner={model.owner}
             repoName={model.title}
-            className="size-[52px] rounded-[14px] text-[16px]"
+            className="size-[60px] rounded-[18px] text-[19px]"
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <h2 className="truncate text-[22px] font-semibold leading-[28px] tracking-[-0.025em] text-foreground">
+              <h2 className="truncate text-[25px] font-semibold leading-[31px] tracking-normal text-foreground">
                 {model.title}
               </h2>
               {model.hubRepoId && (
@@ -496,12 +542,12 @@ export const ModelInspector = memo(function ModelInspector({
                 </div>
               )}
             </div>
-            <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[14px] leading-[22px] text-muted-foreground">
+            <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[15px] leading-[24px] text-muted-foreground">
               <span className="truncate">{model.owner}</span>
               {model.owner.toLowerCase() === "unsloth" && (
                 <span
                   aria-label="Verified Unsloth"
-                  className="hub-verified-badge size-4 shrink-0 text-primary"
+                  className="hub-verified-badge size-[18px] shrink-0 text-primary"
                 />
               )}
             </div>
@@ -524,9 +570,18 @@ export const ModelInspector = memo(function ModelInspector({
               {taskLabel}
             </span>
           )}
+          {model.private && <AccessChip label="Private" />}
+          {gatedAccess && <AccessChip label="Gated" />}
           {model.capabilities.map((capability) => (
             <CapabilityPill key={capability.key} capability={capability} />
           ))}
+          {!isDataset && model.baseModel && baseModelSearchTerm && (
+            <BaseModelSearchChip
+              baseModel={model.baseModel}
+              searchTerm={baseModelSearchTerm}
+              onSearchHub={onSearchHub}
+            />
+          )}
         </div>
       </div>
 
@@ -620,7 +675,7 @@ export const ModelInspector = memo(function ModelInspector({
         </InspectorDownloadSlot>
       )}
 
-      <div className="shrink-0 px-6 pb-5 pt-5">
+      <div className="pb-5 pt-5">
         {selectionHiddenByFilters && (
           <p className="mb-3 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] leading-snug text-muted-foreground">
             Current selection is hidden by the active filters or search.
@@ -634,8 +689,16 @@ export const ModelInspector = memo(function ModelInspector({
         )}
         <StatGrid>
           <StatRow label="Updated" value={updatedLabel} icon={Calendar03Icon} />
+          {createdLabel && (
+            <StatRow
+              label="Created"
+              value={createdLabel}
+              icon={CalendarAdd01Icon}
+            />
+          )}
           <StatRow
             label="Downloads"
+            tooltip={downloadsTooltip}
             value={
               model.downloads !== undefined
                 ? formatCompact(model.downloads)
@@ -652,6 +715,9 @@ export const ModelInspector = memo(function ModelInspector({
           />
           {!isDataset && (
             <StatRow label="Parameters" value={paramsLabel} icon={CpuIcon} />
+          )}
+          {libraryLabel && (
+            <StatRow label="Library" value={libraryLabel} icon={LibraryIcon} />
           )}
           {!isDataset && (
             <StatRow
@@ -683,7 +749,7 @@ export const ModelInspector = memo(function ModelInspector({
                 icon={LayersLogoIcon}
               />
             )}
-          {isDataset && languages.length > 0 && (
+          {languages.length > 0 && (
             <StatRow
               label="Languages"
               value={
@@ -704,19 +770,7 @@ export const ModelInspector = memo(function ModelInspector({
         />
       </div>
 
-      <div
-        aria-hidden="true"
-        className={cn(
-          "mx-6 shrink-0 border-t transition-colors",
-          descScrolled ? "border-border" : "border-transparent",
-        )}
-      />
-
-      <div
-        ref={descScrollRef}
-        data-hub-scroll="true"
-        className="min-h-0 flex-1 space-y-4 overflow-y-auto pl-6 pr-4 pt-5 pb-0 [scrollbar-gutter:stable] [scrollbar-width:thin]"
-      >
+      <div className="max-w-[860px] space-y-4 pt-4">
         {readmeReady && readmeRepoId && (
           <ModelReadme
             repoId={readmeRepoId}

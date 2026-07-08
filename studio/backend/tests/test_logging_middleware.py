@@ -123,6 +123,100 @@ def test_non_http_scope_passes_through(logs):
     assert logs.events == []
 
 
+def test_duplicate_get_within_window_deduped(logs, monkeypatch):
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 1000)
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def send(message):
+        pass
+
+    mw = LoggingMiddleware(app)
+    for _ in range(3):
+        _run(mw(_http_scope("/api/chat/projects"), _noop_receive, send))
+
+    # Only the first of the identical GET/200 burst is logged.
+    assert len(logs.events) == 1
+    assert logs.events[0][1] == "request_completed"
+
+
+def test_mutations_and_errors_are_never_deduped(logs, monkeypatch):
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 1000)
+
+    async def post_ok(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def get_404(scope, receive, send):
+        await send({"type": "http.response.start", "status": 404, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def send(message):
+        pass
+
+    mw = LoggingMiddleware(post_ok)
+    for _ in range(2):
+        _run(mw(_http_scope("/api/chat/threads", method = "POST"), _noop_receive, send))
+    mw_404 = LoggingMiddleware(get_404)
+    for _ in range(2):
+        _run(mw_404(_http_scope("/api/models"), _noop_receive, send))
+
+    # 2 mutations + 2 errors all logged (dedup only touches GET/2xx).
+    assert len(logs.events) == 4
+
+
+def test_quiet_poll_paths_use_longer_heartbeat_window(logs, monkeypatch):
+    # Burst dedup off, quiet-poll heartbeat on: only liveness paths collapse.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def send(message):
+        pass
+
+    mw = LoggingMiddleware(app)
+    for _ in range(3):
+        _run(mw(_http_scope("/api/inference/monitor"), _noop_receive, send))  # quiet
+    for _ in range(3):
+        _run(mw(_http_scope("/api/chat/projects"), _noop_receive, send))  # normal
+
+    paths = [e[2]["path"] for e in logs.events]
+    assert paths.count("/api/inference/monitor") == 1  # collapsed to one heartbeat
+    assert paths.count("/api/chat/projects") == 3  # base dedup off -> all logged
+
+
+def test_distinct_query_strings_are_not_deduped(logs, monkeypatch):
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 1000)
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def send(message):
+        pass
+
+    def scope(query):
+        return {
+            "type": "http",
+            "path": "/api/models/browse-folders",
+            "method": "GET",
+            "query_string": query,
+        }
+
+    mw = LoggingMiddleware(app)
+    _run(mw(scope(b"path=/tmp/a"), _noop_receive, send))
+    _run(mw(scope(b"path=/tmp/b"), _noop_receive, send))  # distinct query -> logs
+    _run(mw(scope(b"path=/tmp/a"), _noop_receive, send))  # repeat of first -> deduped
+
+    # Two distinct query strings log; the immediate repeat of the first does not.
+    assert len(logs.events) == 2
+
+
 def test_fastapi_static_asset_success_skips_log(tmp_path, logs):
     assets_dir = tmp_path / "assets"
     assets_dir.mkdir()

@@ -13,15 +13,16 @@ import type {
   ModelFormatFilter,
 } from "../types";
 import {
+  detectBaseModel,
   detectCapabilities,
   type CapabilityKey,
 } from "./model-capabilities";
 import { ownerOf, repoOf } from "@/features/hub/lib/format";
 import { estimateSizeFromDtypes, isGgufLike } from "./hf-model-meta";
 export {
-  matchesFormat,
   detectResultFormat,
   isUnslothFinetunable,
+  matchesFormat,
 } from "./format-filters";
 export {
   formatLocalUpdated,
@@ -35,12 +36,9 @@ export const CAPABILITY_FILTER_OPTIONS: ReadonlyArray<{
 }> = [
   { value: "all", label: "All capabilities" },
   { value: "reasoning", label: "Reasoning" },
-  { value: "code", label: "Code" },
   { value: "vision", label: "Vision" },
   { value: "audio", label: "Audio" },
-  { value: "tools", label: "Tools" },
   { value: "embedding", label: "Embeddings" },
-  { value: "multilingual", label: "Multilingual" },
 ];
 
 export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
@@ -49,9 +47,43 @@ export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
 }> = [
   { value: "all", label: "All formats" },
   { value: "gguf", label: "GGUF" },
-  { value: "checkpoint", label: "Checkpoints" },
+  { value: "checkpoint", label: "Safetensors" },
   { value: "mlx", label: "MLX" },
 ];
+
+const BILLION = 1_000_000_000;
+
+export function formatParamCount(totalParams: number | undefined): string {
+  if (!totalParams || totalParams <= 0) return "N/A";
+  const billions = totalParams / BILLION;
+  if (billions >= 1) {
+    return `${billions >= 100 ? Math.round(billions) : Number(billions.toFixed(billions >= 10 ? 0 : 1))}B`;
+  }
+  const millions = totalParams / 1_000_000;
+  return `${Math.round(millions)}M`;
+}
+
+const PARAM_IN_ID_RE = /(\d+(?:\.\d+)?)\s*[bB](?=$|[^a-z0-9])/gi;
+
+export function paramLabelFromId(repo: string): string | null {
+  let bestLabel: string | null = null;
+  let bestValue = Number.NEGATIVE_INFINITY;
+  for (const match of repo.matchAll(PARAM_IN_ID_RE)) {
+    const value = Number.parseFloat(match[1]);
+    if (Number.isFinite(value) && value > bestValue) {
+      bestValue = value;
+      bestLabel = match[1];
+    }
+  }
+  return bestLabel ? `${bestLabel}B` : null;
+}
+
+export function formatModelParamLabel(
+  repo: string,
+  totalParams: number | undefined,
+): string {
+  return paramLabelFromId(repo) ?? formatParamCount(totalParams);
+}
 
 export function formatPipelineTag(tag: string | undefined): string | null {
   if (!tag) return null;
@@ -71,7 +103,8 @@ export function buildSummary(result: HfModelResult): string {
   const parts: string[] = [];
   const pipeline = formatPipelineTag(result.pipelineTag);
   if (pipeline) parts.push(pipeline);
-  if (result.totalParams) parts.push(`${compactNumber(result.totalParams)} params`);
+  if (result.totalParams)
+    parts.push(`${compactNumber(result.totalParams)} params`);
   if (result.isGguf) {
     parts.push("GGUF");
   } else {
@@ -89,7 +122,9 @@ function compactNumber(value: number): string {
 }
 
 function finiteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 export function toHfModelResult(raw: unknown): HfModelResult | null {
@@ -101,10 +136,14 @@ export function toHfModelResult(raw: unknown): HfModelResult | null {
     name?: string;
     downloads?: number;
     likes?: number;
+    private?: boolean;
+    gated?: false | "auto" | "manual";
     task?: string;
     pipeline_tag?: string;
     library_name?: string;
     updatedAt?: Date | string;
+    createdAt?: Date | string;
+    downloadsAllTime?: number;
     safetensors?: { total?: number; parameters?: Record<string, number> };
     gguf?: { total?: number; architecture?: string };
     tags?: string[];
@@ -122,18 +161,29 @@ export function toHfModelResult(raw: unknown): HfModelResult | null {
       : typeof model.updatedAt === "string"
         ? model.updatedAt
         : undefined;
+  const createdAt =
+    model.createdAt instanceof Date
+      ? model.createdAt.toISOString()
+      : typeof model.createdAt === "string"
+        ? model.createdAt
+        : undefined;
 
   return {
     id: model.name,
     downloads: finiteNumber(model.downloads) ?? 0,
     likes: finiteNumber(model.likes) ?? 0,
+    private: model.private,
+    gated: model.gated,
     totalParams:
       finiteNumber(model.safetensors?.total) ?? finiteNumber(model.gguf?.total),
     estimatedSizeBytes: estimateSizeFromDtypes(model.safetensors?.parameters),
     isGguf,
+    baseModel: detectBaseModel(model.tags),
     tags: model.tags,
     pipelineTag: model.task ?? model.pipeline_tag,
     updatedAt,
+    createdAt,
+    downloadsAllTime: finiteNumber(model.downloadsAllTime),
     libraryName: model.library_name,
     quantMethod: model.config?.quantization_config?.quant_method,
   };

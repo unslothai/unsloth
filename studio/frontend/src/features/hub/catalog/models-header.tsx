@@ -9,13 +9,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
 import {
   ChipIcon,
   Database02Icon,
-  RemoveCircleIcon,
   PackageIcon,
   RamMemoryIcon,
+  RemoveCircleIcon,
+  CpuIcon
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -24,30 +24,17 @@ function StatPill({
   icon,
   label,
   value,
-  tone = "default",
 }: {
   icon: IconSvgElement;
   label: string;
   value: string;
-  tone?: "default" | "active";
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <div
-          className={cn(
-            "inline-flex cursor-default items-center gap-1.5 px-2.5 py-1 text-[11.5px] transition-colors duration-150",
-            tone === "active"
-              ? "rounded-full bg-emerald-500/10 text-emerald-700 ring-1 ring-inset ring-emerald-500/20 dark:text-emerald-300"
-              : "hub-tag-soft text-muted-foreground hover:text-foreground/80",
-          )}
-        >
-          <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-3.5" />
-          <span className="font-medium tabular-nums">{value}</span>
-        </div>
-      </TooltipTrigger>
-      <TooltipContent className="tooltip-compact">{label}</TooltipContent>
-    </Tooltip>
+    <span className="hub-stat-pill">
+      <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-3.5" />
+      <span className="hub-stat-pill-value">{value}</span>
+      <span>{label}</span>
+    </span>
   );
 }
 
@@ -57,8 +44,10 @@ export function ModelsHeader({
   isDataset,
   gpuLabel,
   ramLabel,
+  coreLabel,
   activeCheckpoint,
   activeGgufVariant,
+  onTitleClick,
   onEject,
 }: {
   cachedCount: number;
@@ -66,22 +55,25 @@ export function ModelsHeader({
   isDataset: boolean;
   gpuLabel: string;
   ramLabel: string;
+  coreLabel: string;
   activeCheckpoint: string | null;
   activeGgufVariant: string | null;
+  onTitleClick: () => void;
   onEject: () => void;
 }) {
   return (
     <header className="font-heading flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
       <PageHeading
         title="Hub"
+        onTitleClick={onTitleClick}
         subtitle={
           isDataset
             ? "Discover, download, and train on datasets locally."
-            : "Discover, download, and run models locally."
+            : "Discover, download, and run inference models locally."
         }
       />
 
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:flex-1">
         <HfTokenIndicator />
         <TransportToggle />
         <StatPill
@@ -95,7 +87,8 @@ export function ModelsHeader({
           value={String(localCount)}
         />
         <StatPill icon={ChipIcon} label="VRAM" value={gpuLabel} />
-        <StatPill icon={RamMemoryIcon} label="CPU RAM" value={ramLabel} />
+        <StatPill icon={RamMemoryIcon} label="RAM" value={ramLabel} />
+        <StatPill icon={CpuIcon} label="CPU" value={coreLabel} />
 
         {activeCheckpoint && (
           <div className="hub-tag-soft ml-1 inline-flex items-center gap-1.5 px-2 py-1 text-[11.5px]">

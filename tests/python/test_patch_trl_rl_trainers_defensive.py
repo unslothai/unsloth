@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Regression tests: _patch_trl_rl_trainers must never raise.
-
-The wrapper in unsloth/models/rl.py ring-fences the impl so direct
-callers (CI shims, downstream tools) don't have to. Lock that
-contract here.
-"""
+"""Regression: _patch_trl_rl_trainers (the ring-fencing wrapper in
+unsloth/models/rl.py) must never raise."""
 
 from __future__ import annotations
 
@@ -39,7 +35,7 @@ def test_patch_trl_rl_trainers_swallows_garbage_input():
 
 
 def test_impl_is_separately_exposed():
-    # Power users can still call the impl directly for the raising path.
+    # The impl stays directly callable for the raising path.
     _wrapper, impl = _import_helpers()
     assert callable(impl)
 

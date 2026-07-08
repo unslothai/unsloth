@@ -50,6 +50,12 @@ function subscribe(cb: () => void) {
     applyToDocument(resolveTheme(readStoredTheme()));
     cb();
   };
+  // Apply on mount so this store is the single source of truth for the DOM
+  // class. Without this, initial paint depends solely on next-themes, which on
+  // a fresh origin (e.g. a new Cloudflare --secure link with empty
+  // localStorage) falls back to its own default and shows light while the
+  // control still reads "system".
+  applyToDocument(resolveTheme(readStoredTheme()));
   const onStorage = (e: StorageEvent) => {
     if (e.key === STORAGE_KEY || e.key === null) syncTheme();
   };
@@ -77,8 +83,8 @@ function getServerSnapshot(): Theme {
  */
 export function setTheme(next: Theme): void {
   if (typeof window === "undefined") return;
-  // Persist "system" explicitly so next-themes (defaultTheme="light")
-  // doesn't clobber the choice on reload.
+  // Persist "system" explicitly so next-themes doesn't clobber the choice on
+  // reload.
   try {
     window.localStorage.setItem(STORAGE_KEY, next);
   } catch {

@@ -11,6 +11,8 @@ outputs/
 exports/
 /datasets/
 studio/backend/assets/datasets/
+# Generated async worker / reviewer transcripts (never part of the product).
+studio/backend/async_task_outputs/
 unsloth_training_checkpoints/
 *.gguf
 *.safetensors
@@ -235,3 +237,5 @@ package-lock.json
 !studio/backend/core/data_recipe/oxc-validator/package-lock.json
 !studio/package-lock.json
 llama.cpp/
+# Stray "~" dir some tools create from a literal ~ TMPDIR; never part of the repo.
+/~/

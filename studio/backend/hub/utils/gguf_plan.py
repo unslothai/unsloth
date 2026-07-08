@@ -9,6 +9,7 @@ from typing import Optional, Sequence
 from hub.utils.download_manifest import ExpectedFile
 from hub.utils.gguf import (
     extract_quant_label,
+    is_big_endian_gguf_path,
     is_gguf_filename,
     is_mmproj_filename,
     is_mtp_drafter_path,
@@ -35,7 +36,10 @@ def sibling_sha256(sibling) -> Optional[str]:
         value = lfs.get("sha256")
     else:
         value = getattr(lfs, "sha256", None)
-    return value if isinstance(value, str) and value else None
+    if isinstance(value, str) and value:
+        return value
+    blob_id = getattr(sibling, "blob_id", None)
+    return blob_id if isinstance(blob_id, str) and blob_id else None
 
 
 def sibling_size(sibling) -> int:
@@ -68,6 +72,7 @@ def is_main_gguf_variant_path(path: str, variant: str) -> bool:
         is_gguf_filename(path)
         and not is_mmproj_filename(path)
         and not is_mtp_drafter_path(path)
+        and not is_big_endian_gguf_path(path, variant)
         and extract_quant_label(path).lower() == variant.lower()
     )
 
@@ -140,6 +145,8 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         if is_mmproj_filename(name) or is_mtp_drafter_path(name):
             continue
         quant = extract_quant_label(name).lower()
+        if is_big_endian_gguf_path(name, quant):
+            continue
         main.setdefault(quant, []).append(sibling)
 
     plans: dict[str, GgufVariantPlan] = {}

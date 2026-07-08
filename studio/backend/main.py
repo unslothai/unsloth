@@ -12,8 +12,35 @@ from pathlib import Path as _Path
 import asyncio
 from dataclasses import asdict
 
+from typing import Any, Optional
+
 # Suppress C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
+
+# Pin GPU index ordering to PCI bus id before any torch import creates a CUDA
+# context. Without this, torch/CUDA default to FASTEST_FIRST while nvidia-smi
+# (and Studio's VRAM probes) use PCI-bus order, so a GPU index chosen from
+# nvidia-smi data can resolve to a different physical card via
+# CUDA_VISIBLE_DEVICES. setdefault so an explicit user override wins. See
+# utils/hardware/hardware.py for the full rationale; set here too so the entry
+# process is covered before its heavy ML imports.
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
+# Windows terminals default to the active system code page. Reconfigure
+# stdout/stderr before the startup banner so non-ASCII output cannot crash the
+# backend process.
+if sys.platform == "win32":
+    for _win_stream in (sys.stdout, sys.stderr):
+        if _win_stream is not None and hasattr(_win_stream, "reconfigure"):
+            try:
+                _win_stream.reconfigure(encoding = "utf-8", errors = "replace")
+            except Exception:
+                pass
+    del _win_stream
+
+_SYSTEM_GPU_CACHE_TTL_SECONDS = 10.0
+_system_gpu_cache_lock = threading.Lock()
+_system_gpu_cache: Optional[tuple[float, dict[str, Any]]] = None
 
 # ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
 # Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
@@ -205,7 +232,6 @@ import shutil
 import warnings
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as package_version
-from typing import Optional
 from urllib.parse import urlparse
 
 
@@ -273,6 +299,7 @@ from routes import (
     training_router,
 )
 from routes.llama import router as llama_router
+from routes.preview import router as preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
     datasets_router as hub_datasets_router,
@@ -296,6 +323,7 @@ from utils.hardware import (
 import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
+from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
 from utils.update_status import (
     get_studio_install_source_status,
@@ -369,24 +397,18 @@ def _start_helper_precache_if_enabled() -> None:
     threading.Thread(target = _precache, daemon = True, name = "helper-gguf-precache").start()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
-    clear_unsloth_compiled_cache()
+def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
+    """llama.cpp capability (MTP support) + freshness (release age) probes.
 
-    # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
-    overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
-    if overlay_dir.is_dir():
-        shutil.rmtree(overlay_dir, ignore_errors = True)
-
-    # Detect hardware first — sets the DEVICE global used everywhere.
-    detect_hardware()
-
-    # Reap download workers orphaned by a previous crash before new downloads start.
-    reap_hub_orphan_workers()
-
-    # llama.cpp probes: capability (MTP support) + freshness (release age).
-    # Both cached; freshness has a 24h disk TTL.
+    Runs OFF the startup critical path (see _start_llama_cpp_probes_if_enabled).
+    Both are cached and freshness has a 24h disk TTL, but on a cold/expired cache
+    the freshness check makes a blocking GitHub request, and on macOS the first
+    `llama-server --help` exec can stall on Gatekeeper verification -- neither must
+    ever gate `Application startup complete`. Writes app.state only; nothing reads
+    those values synchronously at startup (the status routes call
+    check_prebuilt_freshness directly at request time), so populating them late is
+    safe.
+    """
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         from utils.llama_cpp_freshness import (
@@ -419,35 +441,115 @@ async def lifespan(app: FastAPI):
         import structlog as _structlog
         _structlog.get_logger(__name__).debug("llama.cpp startup probes failed: %s", _probe_exc)
 
-    from storage.studio_db import cleanup_orphaned_runs
 
+def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
+    """Run the llama.cpp startup probes on a daemon thread, off the startup
+    critical path so they never delay `Application startup complete`. Skipped
+    entirely when update checks are disabled, so a fully offline boot makes no
+    background network calls."""
+    if os.environ.get("UNSLOTH_DISABLE_UPDATE_CHECK") == "1":
+        return
+
+    threading.Thread(
+        target = _run_llama_cpp_startup_probes,
+        args = (app,),
+        daemon = True,
+        name = "llama-cpp-startup-probe",
+    ).start()
+
+
+def _warm_rag_embedder() -> None:
+    """Warm RAG embeddings without blocking backend readiness."""
     try:
+        from storage import rag_db
+
+        if not rag_db.RAG_AVAILABLE:
+            return
+        from core.rag import embeddings
+
+        embeddings.warm()
+    except Exception:
+        pass
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
+
+    import time as _time
+
+    _lifespan_started = _time.perf_counter()
+    import structlog as _structlog
+
+    _lifespan_log = _structlog.get_logger(__name__)
+    clear_unsloth_compiled_cache()
+
+    # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
+    overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
+    if overlay_dir.is_dir():
+        shutil.rmtree(overlay_dir, ignore_errors = True)
+
+    # Detect hardware first — sets the DEVICE global used everywhere.
+    detect_hardware()
+
+    _lifespan_log.info(
+        "lifespan hardware detection completed in %.1fms",
+        (_time.perf_counter() - _lifespan_started) * 1000,
+    )
+
+    # Apple Silicon with MLX missing => Train/Export are greyed out (chat-only).
+    # Reinstall mlx by name on a background thread (off the critical path) and
+    # re-detect, so a reinstall/update that dropped mlx self-heals. No-op
+    # elsewhere; opt out with UNSLOTH_DISABLE_MLX_AUTOREPAIR=1.
+    try:
+        from utils.mlx_repair import start_mlx_autorepair_if_needed
+        start_mlx_autorepair_if_needed()
+    except Exception as _mlx_exc:
+        import structlog as _structlog
+        _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
+
+    # Reap workers/runs orphaned by a previous crash before new work starts.
+    try:
+        from storage.studio_db import cleanup_orphaned_runs
         cleanup_orphaned_runs()
     except Exception as exc:
-        import structlog
-        structlog.get_logger(__name__).warning("cleanup_orphaned_runs failed at startup: %s", exc)
+        _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
+
+    reap_hub_orphan_workers()
+
+    # llama.cpp probes: capability (MTP support) + freshness (release age).
+    # These used to run inline here and could block `Application startup complete`
+    # for tens of seconds on macOS (cold GitHub freshness cache / slow network, and
+    # Gatekeeper verifying the unsigned binary on first `--help` exec). They only
+    # write app.state and nothing reads it synchronously at startup, so run them on
+    # a daemon thread off the startup critical path (mirrors the helper-precache and
+    # RAG-warm threads). Default to None until the thread populates them.
+    app.state.llama_cpp_capabilities = None
+    app.state.llama_cpp_freshness = None
+    _start_llama_cpp_probes_if_enabled(app)
+
+    try:
+        from storage.rag_db import reconcile_orphaned_ingestion_jobs
+        reconcile_orphaned_ingestion_jobs()
+    except Exception as exc:
+        _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     _start_helper_precache_if_enabled()
+    threading.Thread(target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm").start()
 
-    # Warm the RAG embedder so the first upload skips the cold load. Non-fatal.
-    def _warm_rag_embedder():
-        try:
-            from storage import rag_db
+    # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
+    from core.inference.llama_keepwarm import idle_unload_loop
 
-            if not rag_db.RAG_AVAILABLE:
-                return
-            from core.rag import embeddings
+    app.state.idle_unload_task = asyncio.create_task(idle_unload_loop())
 
-            embeddings.warm()
-        except Exception:
-            pass
-
-    threading.Thread(target = _warm_rag_embedder, daemon = True).start()
-
-    # Initialize RSA key pair for API key encryption (external providers)
+    # Initialize RSA key pair for API key encryption (external providers).
     from core.inference.key_exchange import init_key_pair
 
     init_key_pair()
+    _lifespan_log.info(
+        "lifespan pre-auth setup completed in %.1fms",
+        (_time.perf_counter() - _lifespan_started) * 1000,
+    )
 
     if storage.ensure_default_admin():
         bootstrap_pw = storage.get_bootstrap_password()
@@ -462,10 +564,30 @@ async def lifespan(app: FastAPI):
         print("=" * 60 + "\n")
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
+
+    _lifespan_log.info(
+        "lifespan startup completed in %.1fms",
+        (_time.perf_counter() - _lifespan_started) * 1000,
+    )
     yield
-    await asyncio.to_thread(terminate_hub_downloads)
-    _hw_module.DEVICE = None
-    clear_unsloth_compiled_cache()
+
+    _idle_task = getattr(app.state, "idle_unload_task", None)
+    if _idle_task is not None:
+        _idle_task.cancel()
+        try:
+            await _idle_task
+        except asyncio.CancelledError:
+            pass
+
+    from core.inference.llama_http import aclose as _close_llama_http
+
+    await _close_llama_http()
+
+    await run_lifespan_shutdown(
+        terminate_hub_downloads,
+        clear_unsloth_compiled_cache,
+        _hw_module,
+    )
 
 
 app = FastAPI(
@@ -488,8 +610,7 @@ app.add_middleware(LoggingMiddleware)
 
 # img/media-src allow any https origin so HF model-card assets render (mirrors
 # tauri.conf.json); scripts/frames/connect-src stay same-origin + HF.
-from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
-from starlette.requests import Request as _StarletteRequest  # noqa: E402
+from starlette.datastructures import MutableHeaders  # noqa: E402
 
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
@@ -545,28 +666,51 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
     )
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Set baseline security headers; splice per-response inline-script nonces into CSP."""
+class SecurityHeadersMiddleware:
+    """Set baseline security headers; splice per-response inline-script nonces into CSP.
 
-    async def dispatch(self, request: _StarletteRequest, call_next):
-        response = await call_next(request)
-        # Strip the internal nonce hand-off header so it never reaches the client
-        nonce = response.headers.get(_CSP_SCRIPT_NONCE_HEADER)
-        if nonce is not None:
-            del response.headers[_CSP_SCRIPT_NONCE_HEADER]
-        response.headers.setdefault("Content-Security-Policy", _build_csp(nonce))
-        # Omit X-Frame-Options in Colab — CSP frame-ancestors handles it, and
-        # DENY would block serve_kernel_port_as_iframe regardless of CSP.
-        if not _IS_COLAB and request.url.path != _ARTIFACT_PREVIEW_FRAME_PATH:
-            response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("Referrer-Policy", "no-referrer")
-        response.headers.setdefault(
-            "Permissions-Policy",
-            "camera=(), microphone=(self), geolocation=()",
-        )
-        response.headers["server"] = "unsloth-studio"
-        return response
+    Pure ASGI (not BaseHTTPMiddleware) so streaming responses are not wrapped in
+    an anyio stream. Header logic mirrors the prior version exactly via
+    MutableHeaders on the response-start message.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                # ASGI headers are an iterable; coerce to a list so MutableHeaders
+                # can mutate in place even if a server sends a tuple or omits it.
+                raw = message.setdefault("headers", [])
+                if not isinstance(raw, list):
+                    raw = list(raw)
+                    message["headers"] = raw
+                headers = MutableHeaders(raw = raw)
+                # Strip the internal nonce hand-off header so it never reaches the client
+                nonce = headers.get(_CSP_SCRIPT_NONCE_HEADER)
+                if nonce is not None:
+                    del headers[_CSP_SCRIPT_NONCE_HEADER]
+                headers.setdefault("Content-Security-Policy", _build_csp(nonce))
+                # Omit X-Frame-Options in Colab: CSP frame-ancestors handles it, and
+                # DENY would block serve_kernel_port_as_iframe regardless of CSP.
+                if not _IS_COLAB and path != _ARTIFACT_PREVIEW_FRAME_PATH:
+                    headers.setdefault("X-Frame-Options", "DENY")
+                headers.setdefault("X-Content-Type-Options", "nosniff")
+                headers.setdefault("Referrer-Policy", "no-referrer")
+                headers.setdefault(
+                    "Permissions-Policy",
+                    "camera=(), microphone=(self), geolocation=()",
+                )
+                headers["server"] = "unsloth-studio"
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 app.add_middleware(SecurityHeadersMiddleware)
@@ -584,6 +728,7 @@ from utils.upload_limits import (  # noqa: E402
 _BODY_PROTECTED_PREFIXES = (
     "/v1/chat/completions",
     "/v1/completions",
+    "/p/",
     "/api/inference",
     "/api/data-recipe",
     "/api/datasets",
@@ -756,6 +901,11 @@ app.add_middleware(
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
 )
 
+# Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
+from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
+
+app.add_middleware(LlamaKeepWarmMiddleware)
+
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
 
@@ -767,24 +917,16 @@ async def _recipes_redirect(rest: str = ""):
     return _RedirectResponse(url = target, status_code = 308)
 
 
-_api_only = os.environ.get("UNSLOTH_API_ONLY") == "1"
-_cors_origins = ["*"]
-if _api_only:
-    _cors_origins = [
-        "tauri://localhost",  # Linux/macOS Tauri webview
-        "http://tauri.localhost",  # Windows Tauri webview
-        "http://localhost",  # dev fallback
-        "http://localhost:5173",  # Tauri dev/Vite
-        "http://127.0.0.1:5173",  # Tauri dev/Vite fallback
-    ]
-    _cors_origin_regex = None
-else:
-    _cors_origin_regex = None
+from utils.host_policy import cors_origins_for_mode  # noqa: E402
+
+_cors_origins = cors_origins_for_mode(
+    api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
+    secure = os.environ.get("UNSLOTH_SECURE") == "1",
+)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins = _cors_origins,
-    allow_origin_regex = _cors_origin_regex,
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
@@ -805,6 +947,7 @@ app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(preview_router, prefix = "/p", tags = ["preview"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
@@ -824,6 +967,21 @@ install_api_error_handlers(app)
 
 
 # ============ Health and System Endpoints ============
+
+
+@app.get("/api/liveness")
+async def liveness_check():
+    """Cheap process liveness for desktop port validation."""
+    return {
+        "status": "alive",
+        "service": "Unsloth UI Backend",
+        "desktop_protocol_version": 1,
+        "desktop_manageability_version": 1,
+        "supports_desktop_auth": True,
+        "supports_desktop_backend_ownership": True,
+        "studio_root_id": _studio_root_id(),
+        **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
+    }
 
 
 @app.get("/api/health")
@@ -870,6 +1028,8 @@ async def health_check(request: Request):
     device_type = platform_map.get(sys.platform, sys.platform)
     return {
         **base,
+        # Why chat_only is set. This fingerprints the host, so keep it authed.
+        "chat_only_reason": getattr(_hw_module, "CHAT_ONLY_REASON", None),
         "version": UNSLOTH_VERSION,
         "studio_version": STUDIO_VERSION,
         "device_type": device_type,
@@ -923,8 +1083,57 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
     return {"status": "shutting_down"}
 
 
+def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
+    """Return merged GPU visibility/utilization with bounded live-probe churn."""
+    import time
+    from utils.hardware import get_backend_visible_gpu_info, get_visible_gpu_utilization
+
+    global _system_gpu_cache
+    now = time.monotonic()
+    with _system_gpu_cache_lock:
+        if _system_gpu_cache is not None:
+            cached_at, cached_gpu_info = _system_gpu_cache
+            if now - cached_at < _SYSTEM_GPU_CACHE_TTL_SECONDS:
+                return cached_gpu_info
+
+        try:
+            visibility_info = get_backend_visible_gpu_info() or {"available": False, "devices": []}
+        except Exception as e:
+            logger.debug(f"Failed to get GPU visibility info: {e}")
+            visibility_info = {"available": False, "devices": []}
+
+        try:
+            utilization_info = get_visible_gpu_utilization() or {"devices": []}
+        except Exception as e:
+            logger.debug(f"Failed to get GPU utilization info: {e}")
+            utilization_info = {"devices": []}
+
+        util_devices = {d.get("index"): d for d in utilization_info.get("devices", [])}
+        enriched_devices = []
+
+        for dev in visibility_info.get("devices", []):
+            idx = dev.get("index")
+            util = util_devices.get(idx, {})
+
+            total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb") or 0
+            used_vram = util.get("vram_used_gb") or 0
+
+            enriched_dev = dict(dev)
+            enriched_dev["vram_used_gb"] = used_vram
+            enriched_dev["vram_free_gb"] = round(total_vram - used_vram, 2) if total_vram else 0
+            enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
+            enriched_devices.append(enriched_dev)
+
+        gpu_info = {
+            "available": visibility_info.get("available", False),
+            "devices": enriched_devices,
+        }
+        _system_gpu_cache = (time.monotonic(), gpu_info)
+        return gpu_info
+
+
 @app.get("/api/system")
-async def get_system_info(current_subject: str = Depends(get_current_subject)):
+def get_system_info(current_subject: str = Depends(get_current_subject)):
     """Get system information.
 
     Auth-gated: the response (platform, Python/GPU, memory, ML packages) can
@@ -933,31 +1142,84 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
     """
     import platform
     import psutil
-    from utils.hardware import get_device
+    import os
+    import time
+    import logging
+    from utils.hardware import get_device, export_capability
     from utils.hardware.hardware import _backend_label
 
-    visibility_info = get_backend_visible_gpu_info()
-    gpu_info = {
-        "available": visibility_info["available"],
-        "devices": visibility_info["devices"],
-    }
+    logger = logging.getLogger(__name__)
 
-    # CPU & Memory
+    gpu_info = _get_cached_system_gpu_info(logger)
+
     memory = psutil.virtual_memory()
+
+    try:
+        cpu_freq = psutil.cpu_freq()
+    except Exception as e:
+        logger.debug(f"Failed to get CPU frequency: {e}")
+        cpu_freq = None
+
+    try:
+        disk = psutil.disk_usage(os.path.abspath(os.sep))
+    except Exception as e:
+        logger.debug(f"Failed to get disk usage: {e}")
+        disk = None
+
+    try:
+        current_process = psutil.Process(os.getpid())
+        process_used_mb = round(current_process.memory_info().rss / 1024**2)
+    except Exception as e:
+        logger.debug(f"Failed to get current process memory: {e}")
+        process_used_mb = 0
+
+    try:
+        boot_time = psutil.boot_time()
+    except Exception as e:
+        logger.debug(f"Failed to get boot time: {e}")
+        boot_time = None
+
+    # Read versions from metadata so a 3s poll never imports heavy ML libs (or 500s on their import errors).
+    from importlib.metadata import PackageNotFoundError, version as pkg_version
+
+    ml_packages = {}
+    for pkg in ("torch", "transformers"):
+        try:
+            ml_packages[pkg] = pkg_version(pkg)
+        except PackageNotFoundError:
+            pass
+        except Exception as e:
+            logger.debug(f"Failed to read {pkg} version: {e}")
 
     return {
         "platform": platform.platform(),
         "python_version": platform.python_version(),
-        # _backend_label so /api/system reports "rocm" (not "cuda") on AMD,
-        # matching /api/hardware and /api/gpu-visibility.
         "device_backend": _backend_label(get_device()),
-        "cpu_count": psutil.cpu_count(),
+        "cpu_count": psutil.cpu_count(logical = True),
+        "uptime_seconds": max(0, round(time.time() - boot_time)) if boot_time else None,
+        "cpu": {
+            "logical_count": psutil.cpu_count(logical = True),
+            "physical_count": psutil.cpu_count(logical = False),
+            "usage_percent": psutil.cpu_percent(interval = None),
+            "frequency_mhz": round(cpu_freq.current, 2)
+            if cpu_freq and cpu_freq.current is not None
+            else None,
+        },
         "memory": {
-            "total_gb": round(memory.total / 1e9, 2),
-            "available_gb": round(memory.available / 1e9, 2),
+            "total_gb": round(memory.total / 1024**3, 2),
+            "available_gb": round(memory.available / 1024**3, 2),
             "percent_used": memory.percent,
+            "process_used_mb": process_used_mb,
+        },
+        "disk": {
+            "total_gb": round(disk.total / 1e9, 2) if disk else 0,
+            "free_gb": round(disk.free / 1e9, 2) if disk else 0,
+            "percent_used": disk.percent if disk else 0,
         },
         "gpu": gpu_info,
+        "ml_packages": ml_packages,
+        # Export capability + torch-aware reason. See /api/system/hardware.
+        **export_capability(),
     }
 
 
@@ -980,11 +1242,13 @@ def get_hardware_info(
     method auto-selection. Sync def (not async): hardware/detail probes can
     shell out, and FastAPI runs sync endpoints in a threadpool.
     """
-    from utils.hardware import get_gpu_summary, get_package_versions
+    from utils.hardware import get_gpu_summary, get_package_versions, export_capability
 
     body = {
         "gpu": get_gpu_summary(),
         "versions": get_package_versions(),
+        # Export capability + torch-aware reason; the Export UI grays out with the message.
+        **export_capability(),
     }
     if include_details:
         from utils.llama_cpp_update import get_installed_llama_version

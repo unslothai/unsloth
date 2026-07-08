@@ -1,40 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Comprehensive Studio chat UI test, run locally + in CI.
-
-Covers:
-  1. /change-password through the UI (no API pre-rotate).
-  2. Model loaded by the time chat opens (the chat page's runtime
-     adapter pings /api/models/list; we trigger /api/inference/load
-     via page.evaluate so we don't need the password out-of-band).
-  3. Five chat turns, each deterministic (temperature handled at the
-     server level via Studio's default; we only assert non-empty).
-  4. Regenerate the last turn from the assistant action bar.
-  5. Composer toggle buttons: Thinking / Web search / Code execution
-     -- assert aria-label flips state on click.
-  6. Configuration sheet: open, drive Temperature slider via keyboard,
-     close.
-  7. Theme toggle through the account menu, multiple cycles, with a
-     deterministic computed-background-color check on
-     `document.documentElement` and `document.body`.
-  8. Sidebar nav: New Chat, Compare, Search, Recipes (URL changes).
-  9. Recents (history) cards: click an existing chat thread.
-  10. API tab via account menu -> Developer / api-keys.
-  11. Image attachment UI (upload widget reachable; vision response
-      not asserted because gemma-3-270m is text-only).
-  12. Reload + verify session JWT survives.
-  13. /api/health remains healthy.
-  14. Negative-auth post-UI-rotation: old=401, new=200.
-  15. Terminal-driven password rotation via subprocess(curl) to
-      /api/auth/change-password (NEW -> NEW2). Confirms refresh
-      tokens get revoked and that an out-of-band password change
-      (i.e. another tab / CLI / curl) invalidates the old creds.
-  16. Shutdown via the account menu's Shutdown menuitem + the
-      AlertDialog's "Stop server" action; wait for /api/health to
-      become unreachable (server process exited).
-  17. No uncaught page errors.
-"""
+"""Comprehensive Studio chat UI test, run locally + in CI."""
 
 import json
 import os
@@ -48,9 +15,8 @@ import urllib.error
 from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
 
-# Shared robustness helpers live next to this script. Tests run as
-# plain `python tests/studio/playwright_chat_ui.py` (not via pytest /
-# import), so prepend the dir to sys.path before importing.
+# Tests run as plain `python tests/studio/playwright_chat_ui.py` (not
+# via pytest/import), so prepend this dir to sys.path before importing.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
@@ -61,6 +27,7 @@ from _playwright_robust import (  # noqa: E402
     is_benign_console_error,
     is_benign_page_error,
     recover_or_replace_page,
+    robust_evaluate,
     wait_for_health,
 )
 
@@ -74,27 +41,18 @@ ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright")
 ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)
 
-# Strict mode -- when on (default in CI), the test fails loudly if any
-# expected button / nav / dialog is missing instead of logging a WARN
-# and continuing. Locally we leave it off so the test still runs against
-# a partial Studio install.
+# When on (default in CI), fail loudly on any missing button/nav/dialog
+# instead of logging a WARN; off locally to run against a partial install.
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 
-# Per-turn assistant-bubble wait. The free macos-14 runner (3 vCPU /
-# 7 GB / no GPU) is ~3-5x slower at gemma-3-270m CPU inference than the
-# free ubuntu-latest runner; "Say the word 'tree'" has been observed to
-# hit the 180 s default exactly. STUDIO_UI_TURN_TIMEOUT_MS lets the Mac
-# CI bump this without hard-coding a Mac branch in the test.
+# Per-turn assistant-bubble wait. The free macos-14 runner is ~3-5x
+# slower at gemma-3-270m CPU inference; this lets it bump the timeout.
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 
-# Wall-clock cap for the entire script. A healthy comprehensive run is
-# 5-9 min; 12 min leaves headroom. Tunable via STUDIO_UI_WALL_TIMEOUT_S.
-# See _playwright_robust.install_wall_clock_watchdog for rationale.
+# Wall-clock cap for the whole script (healthy run is 5-9 min).
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 
-# Per-fetch budget for in-page fetches. The /api/inference/load call is
-# usually the slowest legitimate request: it pulls the model into the
-# llama.cpp worker. Give it ~3 min on a cold cache, less elsewhere.
+# Per-fetch budget; /api/inference/load is the slowest (cold-cache GGUF load).
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
 LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"))
 
@@ -119,10 +77,8 @@ def expected_default_model():
         return override
 
     # Parse DEFAULT_MODELS_GGUF as a literal out of defaults.py instead of
-    # importing it. The Playwright job installs Studio with --no-torch, so
-    # the studio.backend.core.inference package init (which eagerly imports
-    # the orchestrator -> structlog) and defaults.py's own
-    # `import utils.hardware.hardware as hw` are both unavailable.
+    # importing it: the --no-torch Playwright install can't import the
+    # inference package or defaults.py's hardware deps.
     import ast
 
     defaults_path = (
@@ -154,12 +110,7 @@ def expected_default_model():
 
 
 def soft_fail(m):
-    """Hard fail in STRICT mode, info-warn otherwise.
-
-    Use for "this button should exist but didn't" assertions where
-    a missing element is a regression in CI but acceptable when
-    running against a partial Studio locally.
-    """
+    """Hard fail in STRICT mode, info-warn otherwise."""
     if STRICT:
         fail(m)
     info(f"WARN (strict-off): {m}")
@@ -190,56 +141,32 @@ with sync_playwright() as p:
         label = "ui",
         info = info,
     )
-    # Pre-flight: bash-side wait_for already gated on /api/health
-    # before launching us, but the macos-14 free runner has been
-    # observed to surface a 200 /api/health while the auth DB is
-    # still finishing its migration. A second 30s probe inside the
-    # script catches that gap before we sink 60s into a change-
-    # password timeout. Diagnostic only -- the workflow's own wait
-    # is the authoritative gate, so we don't fail on miss.
+    # Pre-flight: macos-14 can surface a 200 /api/health while the auth
+    # DB is still migrating; this 30s probe catches that gap before we
+    # sink 60s into a change-password timeout. Diagnostic only.
     wait_for_health(BASE, timeout = 30.0, info = info)
     # Chromium launch args: see `tests/studio/_playwright_robust.py`.
-    # Bundles the macos-14 stability set (--single-process for the
-    # pipeTransport.js JSON-RPC crash) + new throttling kill set
-    # (--disable-background-timer-throttling and friends) that
-    # prevent Chromium from deprioritising the headless context's
-    # CPU/timers when it thinks the window is backgrounded -- which
-    # CI runners routinely flag.
     browser = p.chromium.launch(
         headless = True,
         args = chromium_launch_args(),
     )
     ctx = browser.new_context(
         viewport = {"width": 1280, "height": 900},
-        # Reduces motion so the theme toggle's view-transition
-        # animation doesn't briefly intercept pointer events
-        # (the running CSS view-transition leaves the html in a
-        # state where Playwright's actionability check fails).
+        # Reduce motion so view-transition animations don't intercept
+        # pointer events and break Playwright's actionability check.
         reduced_motion = "reduce",
     )
-    # Hard-disable CSS view-transitions: see _playwright_robust.py
-    # for the underlying init script. Necessary because Studio's theme
-    # toggle + sidebar collapse run their own startViewTransition()
-    # which can leave the <html> element intercepting pointer events
-    # for a beat after each route swap -- Playwright surfaces this as
-    # "<html> intercepts pointer events" on the next click.
+    # Hard-disable CSS view-transitions: Studio's theme toggle + sidebar
+    # collapse run startViewTransition() which can leave <html> intercepting
+    # pointer events for a beat after each route swap. See _playwright_robust.py.
     install_view_transition_killer(ctx)
     page = ctx.new_page()
-    # 60s default (was 30s) -- macos-14 free runner under
-    # --single-process Chromium is slow enough that page renders /
-    # webfonts / lazy-loaded routes routinely crowd 30s. Run
-    # 25494926834 hit Page.screenshot timeout AND
-    # locator.wait_for("#new-password") timeout under the old 30s
-    # default. 60s is conservative without bloating real-failure
-    # detection.
+    # 60s default (was 30s): macos-14 under --single-process Chromium is
+    # slow enough that renders/webfonts/lazy routes routinely crowd 30s.
     page.set_default_timeout(60_000)
     page_errors = []
     page.on("pageerror", lambda e: page_errors.append(str(e)))
     console_errors: list[str] = []
-    # Filtered console.error log -- excludes BENIGN_CONSOLE_ERROR_PATTERNS
-    # so the diagnostic dumps + final summary count only signals worth
-    # reading. Raw firehose is still surfaced via len(console_errors)
-    # vs len(filtered).
 
     def _on_console(m):
         if m.type != "error":
@@ -252,11 +179,8 @@ with sync_playwright() as p:
 
     page.on("console", _on_console)
 
-    # Per-turn HTTP-status capture: if a /v1/chat/completions request
-    # 4xx-rejects mid-test the symptom is a hung wait_for_function and
-    # a "FAIL: 1 non-benign pageerror events" line; this listener
-    # surfaces the underlying status codes so a flake is debuggable
-    # straight from the CI log without artifact spelunking.
+    # Capture /v1/chat/completions statuses so a mid-test 4xx (which
+    # surfaces only as a hung wait_for_function) is debuggable from the log.
     chat_completions_responses: list[tuple[int, str]] = []
     page.on(
         "response",
@@ -268,15 +192,9 @@ with sync_playwright() as p:
     )
 
     def shoot(name):
-        # Screenshots are diagnostic artifacts only -- never fail the
-        # test on a screenshot timeout. Page.screenshot waits for
-        # webfonts to fully load before snapshotting; on macos-14 free
-        # runners with --single-process Chromium, font loading on the
-        # Studio chat page (Inter / Geist Mono) regularly crowds the
-        # 30s default and crashes Page.screenshot. Bump the timeout
-        # AND wrap in try/except so the test progresses even if the
-        # screenshot can't be captured. animations='disabled' freezes
-        # any in-flight CSS transitions for a deterministic snap.
+        # Screenshots are diagnostic only -- never fail on a screenshot
+        # timeout. Page.screenshot waits for webfonts, which on macos-14
+        # can crowd the default; bump the timeout and swallow errors.
         _n[0] += 1
         try:
             page.screenshot(
@@ -290,31 +208,15 @@ with sync_playwright() as p:
 
     # ─────────────────────────────────────────────────────
     # 1. Change-password through the UI ("Setup your account").
-    # The bootstrap state injects window.__UNSLOTH_BOOTSTRAP__
-    # so the current-password is pre-seeded; we only enter the
-    # new password twice and submit. Match the workflow rename
-    # from "tool calling tests" pattern: this *is* the user's
-    # first-run experience.
+    # Bootstrap state pre-seeds the current password; we enter the
+    # new password twice and submit -- the user's first-run experience.
     # ─────────────────────────────────────────────────────
     step("change-password through UI (Setup your account)")
-    # Wait for the network to settle before touching the form. Without
-    # this, on macos-14 free runners under --single-process Chromium,
-    # the page sometimes redirects mid-test (the bootstrap state poll
-    # finishes after wait_for() returns, the React router decides
-    # we're "already authenticated" or "no longer must-change", and
-    # rerenders without #new-password). Letting the network idle first
-    # gives the bootstrap dispatch a chance to settle BEFORE we
-    # commit to the form path. Run 25497245250 / job 74820324136
-    # showed this exact sequence: wait_for() returned then
-    # page.fill('#new-password') timed out 60s later because the
-    # form had been replaced. Run 25578374480 / job 75091072289
-    # showed the same race a step deeper: pw_field.fill('#new-password')
-    # succeeded then page.fill('#confirm-password') hit a 60s timeout
-    # because a re-render between the two locators detached the
-    # second input. We wrap the whole goto/wait/fill/submit sequence
-    # in a 3-attempt retry, with a fresh page or hard reload between
-    # attempts so a re-render in the middle of one try doesn't poison
-    # the next.
+    # Settle the network before touching the form: a late bootstrap poll
+    # can rerender the page (dropping #new-password) mid-test. The whole
+    # goto/wait/fill/submit sequence is wrapped in a 3-attempt retry with
+    # a fresh page/reload between tries so a mid-try rerender doesn't
+    # poison the next.
     form_err: Exception | None = None
     for _form_attempt in range(3):
         try:
@@ -325,25 +227,14 @@ with sync_playwright() as p:
                 pass  # best-effort -- proceed even if network never idles
             pw_field = page.locator("#new-password")
             pw_field.wait_for(state = "visible", timeout = 60_000)
-            # NOTE: do NOT call shoot() between wait_for and fill -- the
-            # screenshot's font-load wait gives the React form a chance to
-            # detach if any background state-poll fires. Take screenshots
-            # AFTER the form is committed instead.
+            # Do NOT shoot() between wait_for and fill -- the screenshot's
+            # font-load wait can let a background poll detach the form.
             pw_field.fill(NEW, timeout = 60_000)
             page.fill("#confirm-password", NEW, timeout = 60_000)
             shoot("01-change-password-filled")
-            # Click submit AND wait for the POST /api/auth/change-password
-            # response in the same step. macos-14 free runners under
-            # --single-process Chromium occasionally hit
-            # net::ERR_NO_BUFFER_SPACE when the renderer requests a
-            # resource (run 25586583024 / job 75116256117 had the
-            # change-password POST silently buffer-fail and the page
-            # stayed on /change-password; even after my page.goto(BASE)
-            # recovery the auth state never persisted). Tying the
-            # click to the response wait surfaces the buffer-error
-            # IMMEDIATELY in this attempt rather than at the next
-            # composer.wait_for, so the next retry-iteration starts
-            # fresh with a known-bad starting state.
+            # Click submit AND wait for the POST response together so a
+            # macos-14 net::ERR_NO_BUFFER_SPACE buffer-fail surfaces now,
+            # not at the next composer.wait_for.
             status, _ = click_and_wait_for_response(
                 page,
                 url_substr = "/api/auth/change-password",
@@ -384,8 +275,7 @@ with sync_playwright() as p:
                 pass
             if _form_attempt < 2:
                 # ERR_NO_BUFFER_SPACE needs the OS to recover socket
-                # buffers; immediate retry just re-fails. Back off
-                # 5s then 15s before next attempt.
+                # buffers; back off 5s then 15s before retrying.
                 if "ERR_NO_BUFFER_SPACE" in str(e):
                     backoff_s = 5 if _form_attempt == 0 else 15
                     print(
@@ -394,8 +284,8 @@ with sync_playwright() as p:
                         flush = True,
                     )
                     time.sleep(backoff_s)
-                # Recovery: replace the page if it died, otherwise the
-                # next loop iteration's page.goto() handles the reload.
+                # Replace the page if it died; otherwise next iteration's
+                # page.goto() handles the reload.
                 page = recover_or_replace_page(
                     page,
                     ctx,
@@ -409,17 +299,9 @@ with sync_playwright() as p:
     # 2. Chat surface mounts, default model surface is visible.
     # ─────────────────────────────────────────────────────
     step("wait for composer to mount")
-    # The change-password POST resolves async and the React router
-    # rebuilds the tree (login form -> chat shell) on success. On
-    # macos-14 free runners under --single-process Chromium, the
-    # rebuild is heavy enough under software rendering that one of
-    # two things happens if we race straight into wait_for():
-    #   (a) the composer textarea is still suspending and we burn
-    #       the 60s ceiling waiting for it to mount, or
-    #   (b) the renderer crashes mid-mount, which under
-    #       --single-process takes the entire context down (next
-    #       Playwright call returns TargetClosedError).
-    # Defend against both: settle network first, then attempt
+    # After change-password the router rebuilds login -> chat shell; on
+    # macos-14 racing straight into wait_for() either burns the timeout
+    # or crashes the renderer mid-mount. Settle network first, then
     # wait_for with one recovery cycle on failure.
     try:
         page.wait_for_load_state("networkidle", timeout = 30_000)
@@ -457,11 +339,9 @@ with sync_playwright() as p:
             except Exception:
                 pass
             if _attempt == 0:
-                # Recovery: re-navigate. If the page died (renderer
-                # gone under --single-process) we open a fresh page in
-                # the same context so the auth state in localStorage
-                # survives; otherwise we re-goto the same URL to force
-                # a clean re-render.
+                # Re-navigate: open a fresh page in the same context if
+                # the renderer died (localStorage auth survives), else
+                # re-goto to force a clean re-render.
                 page = recover_or_replace_page(
                     page,
                     ctx,
@@ -475,15 +355,16 @@ with sync_playwright() as p:
         raise last_err
     shoot("03-chat-loaded")
 
-    # Pull the auth token now -- /api/models/list and
-    # /api/inference/load both require a bearer. The frontend
-    # stores it under "unsloth_auth_token" (auth/session.ts).
-    token = page.evaluate(
+    # /api/models/list and /api/inference/load need a bearer; the
+    # frontend stores it under "unsloth_auth_token" (auth/session.ts).
+    token = robust_evaluate(
+        page,
         "() => localStorage.getItem('unsloth_auth_token')",
     )
     if not token:
         # Fall back: exchange the refresh token via /api/auth/refresh.
-        refresh_token = page.evaluate(
+        refresh_token = robust_evaluate(
+            page,
             "() => localStorage.getItem('unsloth_auth_refresh_token')",
         )
         if refresh_token:
@@ -499,15 +380,23 @@ with sync_playwright() as p:
                 fail(f"/api/auth/refresh wedged: {refresh_resp['error']!r}")
             refresh = refresh_resp.get("body") or {}
             token = (refresh or {}).get("access_token")
+            next_refresh_token = (refresh or {}).get("refresh_token")
+            if token and next_refresh_token:
+                robust_evaluate(
+                    page,
+                    """([accessToken, refreshToken]) => {
+                        localStorage.setItem('unsloth_auth_token', accessToken);
+                        localStorage.setItem('unsloth_auth_refresh_token', refreshToken);
+                    }""",
+                    [token, next_refresh_token],
+                )
+            elif token:
+                fail("/api/auth/refresh returned access_token but no refresh_token")
     if not token:
         fail("could not obtain auth token after change-password")
 
-    # Verify the chat page's default model surface comes from
-    # backend/core/inference/defaults.py:DEFAULT_MODELS_GGUF[0],
-    # which is the canonical "what the user sees if nothing has
-    # been loaded yet" entry. A regression that reorders that
-    # list or hides the default would break the first-launch UX,
-    # which is what this assertion guards.
+    # Verify the chat page's default model matches DEFAULT_MODELS_GGUF[0]
+    # (defaults.py) -- guards the first-launch UX against list reorders.
     step("default_models[0] matches DEFAULT_MODELS_GGUF[0]")
     EXPECTED_DEFAULT = expected_default_model()
     defaults_resp = evaluate_fetch(
@@ -531,19 +420,16 @@ with sync_playwright() as p:
         )
     info(f"OK default_models[0] = {EXPECTED_DEFAULT}")
 
-    # The model selector button text on the chat page should say
-    # the default model's display name even before a model is
-    # loaded. The model-selector renders the current model name
-    # (or "Select model" if no current); for a fresh chat it
-    # should surface the default.
+    # The selector button should show the default model's name even
+    # before a model is loaded ("Select model" if none).
     selector_btn = page.locator(
         'button:has-text("Select model"), '
         'button:has-text("gemma"), '
         'button:has-text("Qwen"), '
         'button:has-text("Llama")'
     ).first
-    # Best-effort: the selector re-mounts as /api/models/list resolves,
-    # so use a short timeout and skip the snapshot on miss.
+    # Best-effort: selector re-mounts as /api/models/list resolves, so
+    # use a short timeout and skip the snapshot on miss.
     sel_text = ""
     try:
         sel_text = (selector_btn.text_content(timeout = 2_000) or "").strip()
@@ -554,17 +440,12 @@ with sync_playwright() as p:
         shoot("03b-default-model-button")
 
     # ─────────────────────────────────────────────────────
-    # 3. Trigger model load via the page's session cookies.
-    # Equivalent to the user clicking a model in the picker;
-    # we just call the same endpoint the picker would.
+    # 3. Trigger model load via the same endpoint the picker uses.
     # ─────────────────────────────────────────────────────
     step("load GGUF via /api/inference/load (uses session cookie)")
-    # Token already fetched above; reuse it for the load call.
-    # AbortSignal-bounded: the macos-14 --single-process Chromium had been
-    # observed wedging on this exact in-page fetch (run 25696797934 / job
-    # 75446949358) with zero further requests reaching the server. The
-    # 3-min budget is generous for a cold-cache GGUF load; on a wedge we
-    # surface a clean failure instead of a 30-min runner cancel.
+    # AbortSignal-bounded: macos-14 has been seen wedging on this fetch.
+    # The 3-min budget is generous for a cold-cache load; a wedge fails
+    # cleanly instead of forcing a 30-min runner cancel.
     load_resp = evaluate_fetch(
         page,
         f"{BASE}/api/inference/load",
@@ -584,28 +465,23 @@ with sync_playwright() as p:
     if load_resp.get("error"):
         fail(f"/api/inference/load wedged: {load_resp['error']!r}")
     if load_resp["status"] != 200:
-        fail(f"/api/inference/load returned {load_resp['status']}: " f"{load_resp.get('body')!r}")
+        fail(f"/api/inference/load returned {load_resp['status']}: {load_resp.get('body')!r}")
     info(f"loaded model: {(load_resp['body'] or {}).get('display_name')}")
 
-    # Studio caches the per-context model state in zustand; reload
-    # to make the chat composer pick up the loaded model.
+    # Studio caches model state in zustand; reload so the composer picks
+    # up the loaded model.
     page.reload()
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
 
     # ─────────────────────────────────────────────────────
-    # 3b. Model picker search bar -- click the model selector,
-    # type into the search box, verify filtering. We don't
-    # actually select a different model (that would trigger a
-    # multi-GB download); we just exercise the typeahead so a
-    # regression in the picker mount / debounced HF search would
-    # surface here.
+    # 3b. Model picker search bar -- exercise the typeahead filter.
+    # We don't actually select a different model (multi-GB download);
+    # this just catches picker-mount / debounced HF-search regressions.
     # ─────────────────────────────────────────────────────
     step("model picker: open + drive search bar")
-    # Stable selector first: [data-tour="chat-model-selector"] is the
-    # guided-tour anchor on the model picker button (app-sidebar.tsx).
-    # If the tour anchor moves the tour breaks, so this selector is at
-    # least as stable as anything else in the codebase.
+    # Prefer the guided-tour anchor [data-tour="chat-model-selector"]
+    # (app-sidebar.tsx) -- as stable as anything in the codebase.
     picker_btn = page.locator('[data-tour="chat-model-selector"]').first
     if picker_btn.count() == 0:
         # Fall back to text-based locators for older Studio builds.
@@ -626,18 +502,19 @@ with sync_playwright() as p:
         if search.count() == 0:
             soft_fail("model picker search input not found")
         else:
-            # Type "qwen" -> capture popover text. Type "llama" -> capture
-            # again. The two text snapshots must DIFFER, proving the
-            # typeahead actually filters the list (a regression that
-            # rendered the picker but ignored input would silently pass
-            # the old version of this test).
+            # "qwen" then "llama" popover text must DIFFER, proving the
+            # typeahead actually filters (else an ignored-input regression
+            # would silently pass).
             def picker_visible_text():
-                return page.evaluate("""() => {
+                return robust_evaluate(
+                    page,
+                    """() => {
                     const el = document.querySelector(
                         '[role="dialog"], [role="listbox"], [role="menu"]'
                     );
                     return el ? (el.innerText || '').trim() : '';
-                }""")
+                }""",
+                )
 
             search.fill("qwen")
             page.wait_for_timeout(800)
@@ -672,18 +549,18 @@ with sync_playwright() as p:
     ]
 
     def _bubble_count():
-        """Total number of [data-role='assistant'] elements (empty or not)."""
-        return page.evaluate("""() => {
+        """Total [data-role='assistant'] elements (empty or not)."""
+        return robust_evaluate(
+            page,
+            """() => {
             return document.querySelectorAll('[data-role="assistant"]').length;
-        }""")
+        }""",
+        )
 
     def send_and_wait(prompt, idx):
-        # 1. Wait until the previous turn has fully stopped: Send
-        #    button is attached AND Stop button is detached. The
-        #    assistant-ui composer hot-swaps these inside a single
-        #    DOM slot; relying on Stop's detached state alone is
-        #    racy (the slot can briefly show neither during
-        #    transition).
+        # 1. Wait until the previous turn fully stopped: Send attached
+        #    AND Stop detached. The composer hot-swaps both in one DOM
+        #    slot, so Stop's detached state alone is racy.
         page.wait_for_selector(
             'button[aria-label="Send message"]',
             state = "attached",
@@ -696,34 +573,41 @@ with sync_playwright() as p:
                 timeout = 5_000,
             )
         except Exception:
-            # Stop button still hanging on -- that's the prior turn
-            # mid-stream. Wait it out at the full per-turn budget.
+            # Stop still on -- prior turn mid-stream. Wait it out at the
+            # full per-turn budget.
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
                 state = "detached",
                 timeout = TURN_TIMEOUT_MS,
             )
 
-        # 2. Snapshot total bubble count BEFORE send. We then wait
-        #    for total count to grow by exactly 1 (proves the new
-        #    placeholder rendered) and for the Stop button to come
-        #    + go (proves the new turn ran end-to-end). We do NOT
-        #    require the new bubble's text to be non-empty: an
-        #    empty assistant response is a legitimate model output,
-        #    not a test failure. The earlier "non-empty count >=
-        #    baseline + 1" predicate broke when any prior turn
-        #    streamed empty (which gemma-3-270m DOES on simple
-        #    prompts at temperature 0), because that empty bubble
-        #    became permanently "stuck" below the moving threshold.
+        # 2. Snapshot total bubble count before send; we wait for it to
+        #    grow by exactly 1. We do NOT require non-empty text: an
+        #    empty assistant response is legitimate (gemma-3-270m does
+        #    this at temp 0), and the old non-empty predicate got stuck
+        #    on such bubbles.
         bubbles_before = _bubble_count()
+        # The llama.cpp and web update banners are fixed bottom-right toasts
+        # (z-9998 / z-9999) that can overlap the composer's Send button and
+        # intercept the click. Snooze whichever is showing before sending.
+        for prefix in ("llama", "web"):
+            snooze_btn = page.locator(f'[data-testid="{prefix}-update-snooze-button"]')
+            if snooze_btn.count():
+                try:
+                    snooze_btn.first.click(timeout = 2_000)
+                    page.wait_for_selector(
+                        f'[data-testid="{prefix}-update-banner"]',
+                        state = "detached",
+                        timeout = 5_000,
+                    )
+                except Exception:
+                    pass
         composer.click()
         composer.fill(prompt)
         page.locator('button[aria-label="Send message"]').click()
 
-        # 3. Wait for the new placeholder bubble to render. This
-        #    confirms the click was actionable AND the request
-        #    issued (assistant-ui only mounts the placeholder once
-        #    the runtime accepts the message).
+        # 3. Wait for the new placeholder bubble to render -- confirms
+        #    the click was actionable and the request issued.
         page.wait_for_function(
             """(want) => {
                 return document.querySelectorAll(
@@ -734,12 +618,9 @@ with sync_playwright() as p:
             timeout = TURN_TIMEOUT_MS,
         )
 
-        # 4. Wait for streaming to FINISH for this specific turn.
-        #    We wait for Stop button to APPEAR (proves streaming
-        #    started) with a short budget; if it never appears,
-        #    that's fine -- gemma-3-270m can finish before the
-        #    Stop button paints. Either way we then wait for it
-        #    to be detached at the full per-turn budget.
+        # 4. Wait for this turn's streaming to finish. Stop may never
+        #    appear (gemma-3-270m can finish before it paints), so its
+        #    appearance is best-effort; then wait for it to detach.
         try:
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
@@ -763,15 +644,16 @@ with sync_playwright() as p:
         send_and_wait(p_, i)
     shoot("04-after-five-turns")
 
-    texts = page.evaluate("""() => Array.from(document.querySelectorAll('[data-role="assistant"]'))
-        .map(e => (e.innerText || '').trim())""")
+    texts = robust_evaluate(
+        page,
+        """() => Array.from(document.querySelectorAll('[data-role="assistant"]'))
+        .map(e => (e.innerText || '').trim())""",
+    )
     if len(texts) < len(prompts):
         fail(f"expected >= {len(prompts)} assistant bubbles, got {len(texts)}")
     info(f"five turn lengths = {[len(t) for t in texts[:5]]}")
-    # Surface /v1/chat/completions HTTP status distribution so a flake
-    # is debuggable from the CI log directly. A 4xx during a chat
-    # turn is almost always the upstream cause of a hung
-    # wait_for_function on a downstream turn.
+    # Surface /v1/chat/completions status distribution: a 4xx here is
+    # usually the cause of a hung wait_for_function downstream.
     if chat_completions_responses:
         statuses = [code for code, _ in chat_completions_responses]
         bad = [code for code in statuses if code >= 400]
@@ -804,11 +686,9 @@ with sync_playwright() as p:
         shoot("05-after-regenerate")
         info("regenerate completed")
     else:
-        # Don't strict-fail on regenerate -- the assistant-ui
-        # ActionBarPrimitive.Reload doesn't expose a stable
-        # aria-label, so the test depends on tooltip text matching
-        # which is tied to the icon set. Soft-skip until we add a
-        # data-testid in the action bar (TODO).
+        # Don't strict-fail: ActionBarPrimitive.Reload has no stable
+        # aria-label so the locator relies on icon-tied tooltip text.
+        # Soft-skip until we add a data-testid (TODO).
         info("WARN regenerate button not visible (known-fragile locator, skipped)")
 
     # ─────────────────────────────────────────────────────
@@ -822,23 +702,20 @@ with sync_playwright() as p:
     shoot("06-after-extra-turns")
 
     # ─────────────────────────────────────────────────────
-    # 7. Composer toggle buttons. Each renders with an
-    # aria-label that flips between "Disable X" / "Enable X"
-    # depending on its current state (shared-composer.tsx).
+    # 7. Composer toggle buttons. Each aria-label flips between
+    # "Disable X" / "Enable X" with state (shared-composer.tsx).
     # ─────────────────────────────────────────────────────
     step("composer toggle buttons (Thinking / Web search / Code execution)")
     for feature in ("thinking", "web search", "code execution"):
-        # Look for either "Disable X" or "Enable X" -- whichever
-        # is currently rendered.
+        # Match whichever of "Disable X" / "Enable X" is rendered.
         toggle = page.locator(
-            f'button[aria-label="Disable {feature}"], ' f'button[aria-label="Enable {feature}"]'
+            f'button[aria-label="Disable {feature}"], button[aria-label="Enable {feature}"]'
         ).first
         if toggle.count() == 0:
             info(f"toggle '{feature}' not present on this layout")
             continue
-        # Skip if the model doesn't support this capability (the
-        # button is rendered disabled). gemma-3-270m, for instance,
-        # has no reasoning so "Disable thinking" is permanent-disabled.
+        # Skip if the button is disabled (model lacks the capability;
+        # e.g. gemma-3-270m has no reasoning, so thinking stays disabled).
         if toggle.is_disabled():
             info(f"toggle '{feature}' is disabled for this model -- skip")
             continue
@@ -847,7 +724,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(200)
         after = (
             page.locator(
-                f'button[aria-label="Disable {feature}"], ' f'button[aria-label="Enable {feature}"]'
+                f'button[aria-label="Disable {feature}"], button[aria-label="Enable {feature}"]'
             ).first.get_attribute("aria-label")
             or ""
         )
@@ -858,7 +735,7 @@ with sync_playwright() as p:
         # Flip back so test state is unchanged.
         try:
             page.locator(
-                f'button[aria-label="Disable {feature}"], ' f'button[aria-label="Enable {feature}"]'
+                f'button[aria-label="Disable {feature}"], button[aria-label="Enable {feature}"]'
             ).first.click()
         except Exception:
             pass
@@ -866,8 +743,7 @@ with sync_playwright() as p:
     shoot("07-toggles-cycled")
 
     # ─────────────────────────────────────────────────────
-    # 8. Configuration sheet: open, find Temperature slider,
-    # press Home (→ 0), close.
+    # 8. Configuration sheet: open, drive Temperature slider, close.
     # ─────────────────────────────────────────────────────
     cfg_open = page.locator('button[aria-label="Open configuration"]').first
     if cfg_open.count() > 0:
@@ -875,13 +751,9 @@ with sync_playwright() as p:
         cfg_open.click()
         page.wait_for_timeout(500)
         shoot("08-config-open")
-        # ParamSlider uses Radix UI Slider. Each slider gets a
-        # role="slider" attribute. Walk every slider in the sheet
-        # by index, focus it, send Home (-> min) so the test
-        # state is fully deterministic. Whatever the labels are
-        # ("Temperature", "Top P", "Min P", "Repetition penalty",
-        # max_tokens etc.), we drive them all to min so a
-        # regression that locks a slider returns errors here.
+        # Walk every Radix slider (role="slider") by index, focus it,
+        # press Home (-> min) for deterministic state; a locked slider
+        # surfaces an error here.
         sliders = page.locator('[role="slider"]')
         n_sliders = sliders.count()
         info(f"configuration sheet exposes {n_sliders} slider(s)")
@@ -895,10 +767,8 @@ with sync_playwright() as p:
             except Exception as exc:
                 info(f"  slider[{idx}] focus/Home failed: {exc!r}")
         shoot("09-config-all-min")
-        # Then drive Temperature specifically to 0.0 to make the
-        # downstream chat deterministic. Temperature is the *first*
-        # slider in the sheet (configuration-sheet.tsx renders it
-        # first); Home already pinned it to 0.
+        # Temperature is the first slider (configuration-sheet.tsx), so
+        # Home already pinned it to 0 for determinism.
         info("Temperature set to slider min (0.0) for determinism")
         # Close.
         close_btn = page.locator('button[aria-label="Close configuration"]').first
@@ -909,24 +779,17 @@ with sync_playwright() as p:
         page.wait_for_timeout(300)
 
     # ─────────────────────────────────────────────────────
-    # 9. Theme toggle -- multiple cycles + deterministic
-    # computed-background-color check. The light theme
-    # uses near-white (>240); dark uses near-black (<40).
+    # 9. Theme toggle -- multiple cycles + computed-bg-color check
+    # (light is near-white >240; dark is near-black <40).
     # ─────────────────────────────────────────────────────
     acct = page.locator('button[aria-label$=" account menu"]').first
     if acct.count() > 0:
         step("theme toggle x3 with computed-color assertion")
         observed = []
         for cycle in range(3):
-            # Wait for any prior dropdown to fully detach. The Radix
-            # Account-menu sets data-state="open" while the view-
-            # transition is mid-flight; clicking it again before that
-            # clears would no-op silently and the for-loop bailed
-            # after cycle 1 in earlier runs. The view transition triggered
-            # by the theme toggle can run >700ms on slow CI runners, so
-            # both the "menu detached" wait and the "menu appeared" wait
-            # need a comfortable budget; 3s was too tight and caused
-            # cycle-2 flake.
+            # Wait for any prior dropdown to fully detach: clicking while
+            # the view-transition is still open no-ops silently. The
+            # transition can run >700ms on slow CI, so use a roomy budget.
             try:
                 page.wait_for_function(
                     """() => {
@@ -941,18 +804,15 @@ with sync_playwright() as p:
             except Exception:
                 pass
             page.wait_for_timeout(250)
-            # Try the click + wait; if the first click silently no-oped
-            # (e.g. mid-view-transition swallowed the event), retry once
-            # after pressing Escape to force-close any stray popup.
+            # Retry once (after Escape to clear stray popups) if the first
+            # click is silently swallowed mid-view-transition.
             opened = False
             for attempt in range(2):
                 try:
                     acct.click(force = True)
                 except Exception as exc:
                     if attempt == 1:
-                        soft_fail(
-                            f"theme cycle {cycle + 1}: account-menu click failed " f"({exc!r})"
-                        )
+                        soft_fail(f"theme cycle {cycle + 1}: account-menu click failed ({exc!r})")
                     continue
                 try:
                     page.wait_for_selector(
@@ -975,15 +835,10 @@ with sync_playwright() as p:
                 page.keyboard.press("Escape")
                 soft_fail(f"theme cycle {cycle + 1}: theme menuitem missing")
                 break
-            # Click sequence with two fallbacks. On small CI viewports the
-            # Radix dropdown can render the theme item below the visible
-            # area; force=True still requires the element to be in the
-            # viewport, so the regular .click() fails with "Element is
-            # outside of the viewport". Fall back to scroll-into-view +
-            # click, then to a synthetic .click() via evaluate() that
-            # bypasses Playwright's viewport check entirely (Radix's
-            # menuitem handler only needs the click event, not a real
-            # pointer landing on a pixel).
+            # Click with fallbacks: a small CI viewport can push the item
+            # off-screen (force=True still needs it in viewport). Fall back
+            # to scroll-into-view, then a synthetic evaluate() .click() that
+            # skips Playwright's viewport check.
             click_err = None
             for click_attempt in range(3):
                 try:
@@ -1001,16 +856,14 @@ with sync_playwright() as p:
                     page.wait_for_timeout(200)
             if click_err is not None:
                 page.keyboard.press("Escape")
-                soft_fail(
-                    f"theme cycle {cycle + 1}: theme menuitem click failed " f"({click_err!r})"
-                )
+                soft_fail(f"theme cycle {cycle + 1}: theme menuitem click failed ({click_err!r})")
                 break
-            # Settle. The ".dark" class on <html> is the ground
-            # truth (theme-store toggles only that class); the
-            # ".light" sibling is steady-state from next-themes
-            # so don't gate on it.
+            # Settle. The ".dark" class on <html> is the ground truth
+            # (theme-store toggles only that); don't gate on ".light".
             page.wait_for_timeout(700)
-            bg = page.evaluate("""() => {
+            bg = robust_evaluate(
+                page,
+                """() => {
                 const root = document.documentElement;
                 return {
                     cls:    root.className,
@@ -1018,25 +871,22 @@ with sync_playwright() as p:
                     bg:     getComputedStyle(document.body).backgroundColor,
                     rbg:    getComputedStyle(root).backgroundColor,
                 };
-            }""")
+            }""",
+            )
             observed.append(bg)
             shoot(f"10-theme-cycle-{cycle + 1}")
             info(f"  cycle {cycle + 1}: dark={bg['isDark']} body bg={bg['bg']!r}")
-        # Sanity check: across cycles we should observe both a
-        # light state (body bg roughly near-white) and a dark state
-        # (body bg near-black). If we only saw one polarity the
-        # toggle didn't flip.
+        # Across cycles we should see both a near-white (light) and a
+        # near-black (dark) body bg; one polarity means the toggle stuck.
         rgbs = [parse_rgb(o["bg"]) for o in observed if parse_rgb(o["bg"])]
         light_seen = any(min(r) > 220 for r in rgbs)
         dark_seen = any(max(r) < 60 for r in rgbs)
         if len(observed) < 3:
             soft_fail(f"theme toggle ran only {len(observed)} cycle(s), expected 3")
-        # Don't strict-fail on "both polarities observed" -- the
-        # CI runner's prefers-color-scheme + Studio's "system" default
-        # can collapse to a single polarity even after a successful
-        # toggle (the .dark classlist toggles correctly, but the
-        # resolved theme can stay constant). Surface as info; the
-        # 3-cycle loop completion above is the real invariant.
+        # Don't strict-fail on both polarities: the runner's
+        # prefers-color-scheme + Studio's "system" default can collapse
+        # to one polarity even when .dark toggles correctly. The 3-cycle
+        # completion above is the real invariant.
         if light_seen and dark_seen:
             info("OK light + dark computed background colors observed")
         else:
@@ -1050,14 +900,10 @@ with sync_playwright() as p:
     # 10. Sidebar nav: New Chat, Compare, Search, Recipes.
     # ─────────────────────────────────────────────────────
     def click_nav(label, expected_url_pat = None):
-        # Resolve the sidebar nav button. The plain
-        # get_by_role("button", name=...) lookup works on Linux
-        # Chromium because the accessible-name algorithm there picks
-        # up `tooltip={label}` from SidebarMenuButton, but on macOS
-        # Chromium the tooltip-derived name is sometimes empty when
-        # the sidebar collapses to icon-only mode. Fall back through
-        # progressively more permissive locators so the test stays
-        # green on both platforms.
+        # Resolve the sidebar nav button. get_by_role(name=...) works on
+        # Linux but the tooltip-derived name can be empty on macOS when
+        # the sidebar collapses to icons, so fall back to more permissive
+        # locators.
         candidates = [
             page.get_by_role("button", name = re.compile(rf"^\s*{label}\s*$", re.I)).first,
             page.locator(f'button:has-text("{label}")').first,
@@ -1072,11 +918,10 @@ with sync_playwright() as p:
         if btn is None:
             soft_fail(f"nav '{label}' not found")
             return False
-        # force=True bypasses Playwright's actionability check. The
-        # button IS visible + enabled, but the post-theme-toggle view-
-        # transition can leave <html> reported as the topmost element
-        # for a beat (we already neutralise startViewTransition via
-        # add_init_script; this is belt-and-suspenders).
+        # force=True bypasses the actionability check: the post-toggle
+        # view-transition can briefly report <html> as topmost even
+        # though the button is visible + enabled (belt-and-suspenders
+        # atop the startViewTransition neutraliser).
         try:
             btn.click(force = True, timeout = 5_000)
         except Exception as exc:
@@ -1085,8 +930,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(800)
         if expected_url_pat and not re.search(expected_url_pat, page.url):
             soft_fail(
-                f"clicking '{label}' didn't change url to /{expected_url_pat}; "
-                f"current: {page.url}"
+                f"clicking '{label}' didn't change url to /{expected_url_pat}; current: {page.url}"
             )
             return False
         return True
@@ -1094,15 +938,15 @@ with sync_playwright() as p:
     step("sidebar nav: New Chat -> Compare -> Search -> Recipes")
     click_nav("New Chat", r"/chat")
     shoot("11-new-chat")
-    # Compare moved into the composer + menu (Tools and attachments).
+    # Compare moved into the composer "Tools and attachments" menu.
     plus_btn = page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I)).first
     if plus_btn.count() > 0:
         plus_btn.click(force = True)
         page.wait_for_timeout(400)
         compare_item = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)).first
         if compare_item.count() == 0:
-            # The plus menu was decluttered: Compare chat now lives in the
-            # "More" submenu; hover (then click as fallback) to open it.
+            # Compare chat moved into the "More" submenu; hover (then
+            # click as fallback) to open it.
             more_trigger = page.get_by_role("menuitem", name = re.compile(r"^More$", re.I)).first
             if more_trigger.count() > 0:
                 more_trigger.hover()
@@ -1141,10 +985,8 @@ with sync_playwright() as p:
     composer.wait_for(state = "visible", timeout = 60_000)
 
     # ─────────────────────────────────────────────────────
-    # 11. API / Developer tab via account menu -> opens the
-    # Settings dialog with the api-keys tab. Verify we can see
-    # the Create API Key form (or existing keys table); regressions
-    # that hide the api-keys management UI surface here.
+    # 11. API / Developer tab via account menu -> Settings dialog,
+    # api-keys tab. Guards against the management UI being hidden.
     # ─────────────────────────────────────────────────────
     if acct.count() > 0:
         step("Developer (API) tab via account menu")
@@ -1175,16 +1017,13 @@ with sync_playwright() as p:
             page.keyboard.press("Escape")
 
     # ─────────────────────────────────────────────────────
-    # 11b. Recipes tab: verify cards render + we can click one.
-    # The Recipes route renders a grid of preset cards; a
-    # regression that breaks the loader would render zero cards
-    # or crash the route.
+    # 11b. Recipes tab: cards render + we can click one. A broken
+    # loader would render zero cards or crash the route.
     # ─────────────────────────────────────────────────────
     step("Recipes tab: cards render + click first card")
     page.goto(f"{BASE}/data-recipes")
     page.wait_for_timeout(1500)
-    # Recipe cards are rendered as <a> or button elements; count
-    # all clickable headings under main + screenshot.
+    # Count clickable headings/cards under main, then screenshot.
     headings = page.locator("main h2, main h3, [data-recipe], a[href*='/data-recipes/']")
     n_cards = headings.count()
     info(f"Recipes route headings/cards: {n_cards}")
@@ -1205,30 +1044,17 @@ with sync_playwright() as p:
     composer.wait_for(state = "visible", timeout = 60_000)
 
     # ─────────────────────────────────────────────────────
-    # 11c. Recents: the chat sidebar lists previous threads. We
-    # already created several turns above (which gets persisted
-    # as a thread). Find the sidebar's recents region and click
-    # the most-recent entry. This catches regressions in the
-    # thread-history loader / route param plumbing.
+    # 11c. Recents: click the most-recent thread (we persisted one
+    # via the turns above). Guards the thread-history loader / route.
     # ─────────────────────────────────────────────────────
     step("Recents: click previous chat in sidebar")
-    # We sent the prompts ["Reply with exactly: hello", "What is 1+1?",
-    # "Reply with exactly: world", ...] above. The thread title that
-    # gets persisted is typically a snippet of the first user message
-    # (Studio summarises after a few turns). We accept either a literal
-    # word from one of our prompts OR a short Studio-summary heuristic.
+    # The persisted thread title is usually a snippet of the first user
+    # message, so accept any of our prompt keywords.
     PROMPT_KEYWORDS = ("hello", "world", "tree", "yes", "1+1", "2+2")
-    # Use the structural data-testid the frontend renders on each
-    # chat-history entry (studio/frontend/src/features/chat/thread-
-    # sidebar.tsx). The previous text-filtered selector
-    #   "aside a, aside button, [data-sidebar='sidebar'] a, ..."
-    # matched coalesced sidebar nav text like 'unslothBETA',
-    # 'UUnslothUnsloth' which the EXCLUDE regex didn't strip; the
-    # test then clicked nav links, lost its frame, hit per-locator
-    # timeouts and burned 13-23 minutes per platform on this single
-    # step (run 25537467494 macui = 23m9s, winui = 13m6s, linui = 13m5s).
-    # Belt-and-suspenders: bound the whole step at 30s so a misbehaving
-    # selector can never blow up wallclock the way the old loop did.
+    # Use the structural data-testid (thread-sidebar.tsx): the old
+    # text-filtered selector matched coalesced nav text and burned
+    # 13-23 min per platform. Also bound the whole step at 30s so a
+    # misbehaving selector can't blow up wallclock.
     threads = page.locator('[data-testid="recent-thread"]')
     deadline = time.monotonic() + 30
     clicked_recent = False
@@ -1247,10 +1073,9 @@ with sync_playwright() as p:
             page.wait_for_timeout(500)
             shoot("15d-recent-clicked")
             info(f"OK clicked recent entry: {t[:60]!r}")
-            # Strict check: after clicking the Recents entry, the
-            # thread we land on must include at least one of our
-            # prompts in its rendered messages.
-            turns_text = page.evaluate(
+            # The landed thread must include at least one of our prompts.
+            turns_text = robust_evaluate(
+                page,
                 """() => {
                 const els = document.querySelectorAll(
                     '[data-role="user"], [data-role="assistant"]'
@@ -1258,7 +1083,6 @@ with sync_playwright() as p:
                 return Array.from(els).map(e => (e.innerText || '')
                     .toLowerCase()).join(' ');
             }""",
-                None,
             )
             clicked_recent = True
             if any(k in turns_text for k in PROMPT_KEYWORDS):
@@ -1274,25 +1098,20 @@ with sync_playwright() as p:
             info(f"recent-thread click {i} failed: {_click_err!s}")
             continue
     if not clicked_recent:
-        soft_fail(f"no Recents entry was clickable within 30s deadline " f"(n_threads={n_threads})")
+        soft_fail(f"no Recents entry was clickable within 30s deadline (n_threads={n_threads})")
     # Back to chat.
     page.goto(f"{BASE}/chat")
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
 
     # ─────────────────────────────────────────────────────
-    # 12. Image attachment UI (upload widget reachable). The
-    # current model is text-only so we don't assert a vision
-    # response -- just that the attachment button is there
-    # and the file input accepts a PNG. CI's gemma-4-E2B
-    # job covers the actual vision path.
+    # 12. Image attachment UI reachable. The current model is text-only,
+    # so just check the button exists (CI's gemma-4-E2B covers vision).
     # ─────────────────────────────────────────────────────
     step("attachment widget reachable")
     attach = page.locator('button[aria-label="Add Attachment"]').first
     if attach.count() > 0:
-        # Just hover -- triggering the file picker mid-test
-        # would block on a native dialog. Verifying the
-        # button is reachable is enough.
+        # Only hover -- clicking would block on the native file dialog.
         attach.hover()
         page.wait_for_timeout(200)
         shoot("16-attachment-hover")
@@ -1331,19 +1150,13 @@ with sync_playwright() as p:
     info("OK old=401, new=200")
 
     # ─────────────────────────────────────────────────────
-    # 16. Out-of-band ("terminal") password rotation.
-    # POST /api/auth/change-password from a real subprocess(curl)
-    # invocation -- this is the same surface a sysadmin / another
-    # tab / a desktop helper would use, and the security promise
-    # is: rotating the password from "the terminal" must invalidate
-    # the previous credentials. The endpoint also revokes refresh
-    # tokens server-side (auth.py:152), so /api/auth/refresh from
-    # the still-open browser context must fail too.
+    # 16. Out-of-band ("terminal") password rotation via subprocess(curl).
+    # Rotating from a shell must invalidate the old creds and revoke
+    # refresh tokens server-side (auth.py:152), so the browser's
+    # /api/auth/refresh must fail too.
     # ─────────────────────────────────────────────────────
     step("rotate password via subprocess(curl) -- the 'terminal' path")
-    # Get a fresh access token by logging in via the API rather than
-    # reusing whatever's in localStorage; this matches what an admin
-    # would actually do from a shell.
+    # Log in via the API for a fresh token (what an admin does from a shell).
     login_proc = subprocess.run(
         [
             "curl",
@@ -1367,6 +1180,13 @@ with sync_playwright() as p:
     if not cli_token:
         fail(f"curl login returned no access_token: {login_body!r}")
     info("CLI obtained an access token")
+
+    browser_refresh_token = robust_evaluate(
+        page,
+        "() => localStorage.getItem('unsloth_auth_refresh_token')",
+    )
+    if not browser_refresh_token:
+        fail("browser refresh token missing before CLI rotation")
 
     change_proc = subprocess.run(
         [
@@ -1400,37 +1220,62 @@ with sync_playwright() as p:
         fail(f"after CLI rotation, NEW2 pw should be 200, got {s_new2}")
     info("OK after CLI rotation: NEW=401, NEW2=200 -- old studio creds dead")
 
-    # The browser still has the pre-rotation access token. Refresh
-    # tokens were revoked server-side by /change-password (auth.py),
-    # so /api/auth/refresh from the browser context must now fail.
-    refresh_after = evaluate_fetch(
-        page,
-        f"{BASE}/api/auth/refresh",
-        method = "POST",
-        timeout_ms = FETCH_TIMEOUT_MS,
+    # /change-password revoked refresh tokens server-side (auth.py), so
+    # the browser's /api/auth/refresh must now fail.
+    refresh_proc = subprocess.run(
+        [
+            "curl",
+            "-sS",
+            "-o",
+            os.devnull,
+            "-w",
+            "%{http_code}",
+            "-X",
+            "POST",
+            f"{BASE}/api/auth/refresh",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            json.dumps({"refresh_token": browser_refresh_token}),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 15,
     )
-    if refresh_after.get("error"):
-        fail(f"/api/auth/refresh wedged: {refresh_after['error']!r}")
-    if refresh_after["status"] == 200:
+    if refresh_proc.returncode != 0:
+        fail(
+            f"curl refresh-token check failed: rc={refresh_proc.returncode} "
+            f"stderr={refresh_proc.stderr!r} stdout={refresh_proc.stdout!r}"
+        )
+    try:
+        refresh_status = int(refresh_proc.stdout.strip())
+    except ValueError:
+        fail(f"curl refresh-token check returned invalid status: " f"{refresh_proc.stdout!r}")
+    if refresh_status == 200:
         fail(f"/api/auth/refresh should fail after CLI rotation; got 200")
     info(
-        f"OK browser /api/auth/refresh now {refresh_after['status']} "
+        f"OK browser /api/auth/refresh now {refresh_status} "
         "(refresh token revoked) -- old studio session can no longer renew"
     )
 
     # ─────────────────────────────────────────────────────
-    # 17. Shutdown button via the account menu.
-    # The Shutdown menuitem opens an AlertDialog ("Stop Unsloth
-    # Studio?") whose primary action is "Stop server"; clicking
-    # it POSTs /api/shutdown and then replaces document.body with
-    # the "Unsloth Studio has stopped" placeholder. /api/health
-    # should become unreachable shortly after.
+    # 17. Shutdown via the account menu. The "Stop server" action
+    # POSTs /api/shutdown, swaps in the "Unsloth Studio has stopped"
+    # placeholder, and /api/health goes unreachable shortly after.
     # ─────────────────────────────────────────────────────
     step("Shutdown via account menu")
-    # Re-login through the UI with NEW2 so the browser has a valid
-    # access token for the /api/shutdown call (the previous one
-    # was invalidated by the CLI rotation above).
-    page.goto(f"{BASE}/login")
+    # Re-login with NEW2 for a valid /api/shutdown token (CLI rotation
+    # invalidated the old one). The stale token can make the SPA auth guard
+    # abort this goto with ERR_ABORTED, or redirect to the same /login URL
+    # ("interrupted by another navigation"); resolve on domcontentloaded and
+    # tolerate either -- the pw-field wait below confirms we are on /login.
+    _tolerated_nav = ("ERR_ABORTED", "interrupted by another navigation")
+    try:
+        page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
+    except Exception as exc:
+        if not any(t in str(exc) for t in _tolerated_nav):
+            raise
+        info(f"goto /login interrupted ({exc!r}); password-field wait will confirm /login")
     pw_field = page.locator("#password")
     pw_field.wait_for(state = "visible", timeout = 60_000)
     pw_field.fill(NEW2)
@@ -1459,9 +1304,8 @@ with sync_playwright() as p:
     stop_btn.wait_for(state = "visible", timeout = 5_000)
     stop_btn.click()
 
-    # Wait for the post-shutdown placeholder body. The component
-    # replaces document.body.innerHTML with text containing
-    # "Unsloth Studio has stopped." once /api/shutdown returns ok.
+    # Wait for the post-shutdown placeholder body (the component swaps in
+    # "Unsloth Studio has stopped." once /api/shutdown returns ok).
     try:
         page.wait_for_function(
             """() => /Unsloth Studio has stopped/.test(document.body.innerText)""",
@@ -1472,8 +1316,7 @@ with sync_playwright() as p:
     except Exception as exc:
         info(f"WARN shutdown placeholder didn't render: {exc!r}")
 
-    # Now /api/health must become unreachable (process exited or is
-    # at least not listening). Poll for up to 15 s.
+    # /api/health must now be unreachable; poll for up to 15s.
     host = re.sub(r"^https?://", "", BASE).split(":")[0]
     port = int(re.search(r":(\d+)", BASE).group(1)) if ":" in BASE else 80
     deadline = time.time() + 15
@@ -1493,19 +1336,10 @@ with sync_playwright() as p:
         except urllib.error.URLError as exc:
             info(f"OK /api/health unreachable: {exc!r}")
 
-    # Some pageerrors are benign in this test:
-    #   - "Request failed (422)": the OpenAI-compatible chat-completions
-    #     endpoint rejects rapid-fire/malformed requests with 422. The
-    #     surfaced error is a network-layer bubble-up, NOT a JS bug,
-    #     and the per-turn flow already validates message-by-message
-    #     correctness. Filtering these here keeps the pageerror gate
-    #     focused on actual frontend regressions (TypeError, ReferenceError,
-    #     null deref, etc.).
-    #   - "Failed to fetch" / "NetworkError" after the Shutdown click:
-    #     the server is intentionally dead by then; any in-flight
-    #     fetch fails by design.
-    # The full list lives in `_playwright_robust.BENIGN_PAGE_ERROR_PATTERNS`
-    # so playwright_extra_ui.py shares the same gate.
+    # Some pageerrors are benign: chat-completions 422s (network-layer
+    # bubble-up, not a JS bug; per-turn flow already validates each turn)
+    # and fetch failures after Shutdown (server is dead by design). Full
+    # list in `_playwright_robust.BENIGN_PAGE_ERROR_PATTERNS`.
     real_errors = [e for e in page_errors if not is_benign_page_error(e)]
     real_console_errors = [e for e in console_errors if not is_benign_console_error(e)]
     if page_errors:
@@ -1516,8 +1350,7 @@ with sync_playwright() as p:
     if real_errors:
         fail(f"{len(real_errors)} non-benign pageerror events")
     info(
-        f"console.error events: {len(console_errors)} total "
-        f"({len(real_console_errors)} non-benign)"
+        f"console.error events: {len(console_errors)} total ({len(real_console_errors)} non-benign)"
     )
 
     info("PASS comprehensive UI flow")

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import type { ArtifactViewMode } from "./html-frame";
 import type { ChatArtifact, ChatArtifactSurface } from "./types";
 
 const autoOpenedArtifactIds = new Set<string>();
@@ -22,9 +23,11 @@ type ChatArtifactsState = {
   artifactsById: Record<string, ChatArtifact>;
   selectedArtifactId: string | null;
   surface: ChatArtifactSurface;
+  // View the surface should show on the next open (Preview vs Code button).
+  requestedView: ArtifactViewMode;
   openArtifact: (
     artifact: ChatArtifact,
-    options?: { surface?: ChatArtifactSurface },
+    options?: { surface?: ChatArtifactSurface; view?: ArtifactViewMode },
   ) => void;
   updateArtifact: (artifact: ChatArtifact) => void;
   closeArtifactSurface: () => void;
@@ -37,6 +40,7 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
   artifactsById: {},
   selectedArtifactId: null,
   surface: "panel",
+  requestedView: "preview",
   openArtifact: (artifact, options) =>
     set((state) => ({
       artifactsById: {
@@ -45,6 +49,7 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
       },
       selectedArtifactId: artifact.id,
       surface: options?.surface ?? state.surface,
+      requestedView: options?.view ?? "preview",
     })),
   updateArtifact: (artifact) =>
     set((state) =>

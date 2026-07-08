@@ -27,6 +27,9 @@ class GgufVariantDetail(BaseModel):
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
+    update_available: bool = Field(
+        False, description = "Whether a newer main GGUF blob is available on Hugging Face"
+    )
     partial: bool = Field(
         False,
         description = "Whether this variant has an in-progress (.incomplete) blob in cache",
@@ -283,4 +286,14 @@ class BrowseFoldersResponse(BaseModel):
             "model directories (which otherwise look `empty` because "
             "they contain only files, no subdirectories)."
         ),
+    )
+
+
+class ModelsFolderResponse(BaseModel):
+    """The directory where downloaded models are stored (the active HF hub
+    cache, honoring ``HF_HOME`` / ``HF_HUB_CACHE``)."""
+
+    path: str = Field(
+        ...,
+        description = "Path to the model download directory.",
     )

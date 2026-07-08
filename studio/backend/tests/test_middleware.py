@@ -293,6 +293,183 @@ class TestSecurityHeadersMiddleware:
             # not read directive-string `in` membership as URL sanitisation.
             assert any(src == "https:" for src in directives[name])
 
+    def test_headers_applied_to_streaming_response(self, main_module):
+        # The ASGI middleware must set headers on streaming responses too.
+        from fastapi.responses import StreamingResponse
+
+        app = FastAPI()
+        app.add_middleware(main_module.SecurityHeadersMiddleware)
+
+        @app.get("/stream")
+        async def stream():
+            async def gen():
+                yield b"a"
+                yield b"b"
+
+            return StreamingResponse(gen(), media_type = "text/plain")
+
+        r = TestClient(app).get("/stream")
+        assert r.status_code == 200
+        assert r.text == "ab"
+        assert r.headers["x-content-type-options"] == "nosniff"
+        assert r.headers["server"] == "unsloth-studio"
+        assert "content-security-policy" in r.headers
+
+    def test_artifact_preview_frame_omits_x_frame_options(self, main_module):
+        app = FastAPI()
+        app.add_middleware(main_module.SecurityHeadersMiddleware)
+
+        @app.get(main_module._ARTIFACT_PREVIEW_FRAME_PATH)
+        async def frame():
+            return Response(content = b"<html></html>", media_type = "text/html")
+
+        r = TestClient(app).get(main_module._ARTIFACT_PREVIEW_FRAME_PATH)
+        assert r.status_code == 200
+        assert "x-frame-options" not in {k.lower() for k in r.headers.keys()}
+        assert r.headers["referrer-policy"] == "no-referrer"
+
+    def test_response_start_with_tuple_headers_is_hardened(self, main_module):
+        # An ASGI server may emit tuple-valued raw headers; the middleware must
+        # coerce to a list and still inject security headers without crashing.
+        import asyncio
+
+        async def _inner_app(scope, receive, send):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": ((b"content-type", b"text/plain"),),  # tuple, not list
+                }
+            )
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        captured = {}
+
+        async def _send(message):
+            if message["type"] == "http.response.start":
+                captured["headers"] = dict(message["headers"])
+
+        async def _receive():
+            return {"type": "http.request"}
+
+        mw = main_module.SecurityHeadersMiddleware(_inner_app)
+        asyncio.run(mw({"type": "http", "path": "/plain"}, _receive, _send))
+
+        hdrs = captured["headers"]
+        assert hdrs[b"server"] == b"unsloth-studio"
+        assert b"content-security-policy" in hdrs
+        assert hdrs[b"x-frame-options"] == b"DENY"
+
+    def test_is_pure_asgi_not_basehttp_middleware(self, main_module):
+        # Regression: as a BaseHTTPMiddleware this wrapped the SSE stream in its
+        # own anyio task group, breaking disconnect detection (GPU stuck at 100%)
+        # and raising cancel scope errors. Must stay pure ASGI.
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        cls = main_module.SecurityHeadersMiddleware
+        assert not issubclass(cls, BaseHTTPMiddleware)
+        assert not hasattr(cls, "dispatch")
+
+    def test_forwards_receive_channel_unchanged(self, main_module):
+        # Must forward the ASGI receive channel untouched so client disconnects
+        # reach the streaming handler (BaseHTTPMiddleware swapped in its own).
+        seen = {}
+
+        async def inner_app(scope, receive, send):
+            seen["receive"] = receive
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+        mw = main_module.SecurityHeadersMiddleware(inner_app)
+        sentinel_receive = object()  # forwarded verbatim, never wrapped/awaited
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+
+        async def run():
+            await mw(
+                {"type": "http", "path": "/plain", "headers": []},
+                sentinel_receive,
+                send,
+            )
+
+        asyncio.run(run())
+        assert seen["receive"] is sentinel_receive
+        start = next(m for m in sent if m["type"] == "http.response.start")
+        names = {n.lower() for n, _ in start["headers"]}
+        assert b"content-security-policy" in names
+        assert b"server" in names
+
+    def test_streaming_response_survives_client_disconnect(self, main_module):
+        # A StreamingResponse that polls is_disconnected() (like gguf_tool_stream)
+        # must unwind cleanly on client disconnect: no cancel scope error, the
+        # generator's finally runs, and security headers are still applied.
+        from fastapi import FastAPI, Request
+        from fastapi.responses import StreamingResponse
+
+        state = {"cleaned_up": False}
+        app = FastAPI()
+        app.add_middleware(main_module.SecurityHeadersMiddleware)
+
+        @app.get("/v1/chat/completions")
+        async def stream(request: Request):
+            async def gen():
+                try:
+                    for i in range(1000):
+                        if await request.is_disconnected():
+                            break
+                        yield f"data: {i}\n\n".encode()
+                        await asyncio.sleep(0.01)
+                finally:
+                    state["cleaned_up"] = True
+
+            return StreamingResponse(gen(), media_type = "text/event-stream")
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": "GET",
+            "path": "/v1/chat/completions",
+            "raw_path": b"/v1/chat/completions",
+            "query_string": b"",
+            "root_path": "",
+            "scheme": "http",
+            "headers": [(b"host", b"testserver")],
+            "client": ("127.0.0.1", 50000),
+            "server": ("127.0.0.1", 80),
+        }
+
+        async def run():
+            body_started = asyncio.Event()
+            calls = {"n": 0}
+
+            async def receive():
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return {"type": "http.request", "body": b"", "more_body": False}
+                await body_started.wait()  # client clicks Stop after tokens stream
+                return {"type": "http.disconnect"}
+
+            sent = []
+
+            async def send(message):
+                sent.append(message)
+                if message["type"] == "http.response.body" and message.get("body"):
+                    body_started.set()
+
+            # Must return without raising the anyio cancel-scope RuntimeError.
+            await asyncio.wait_for(app(scope, receive, send), timeout = 5.0)
+            return sent
+
+        sent = asyncio.run(run())
+        assert state["cleaned_up"] is True
+        start = next(m for m in sent if m["type"] == "http.response.start")
+        names = {n.lower() for n, _ in start["headers"]}
+        assert b"content-security-policy" in names
+        assert b"server" in names
+
 
 # /api/health auth gate
 

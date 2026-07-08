@@ -44,6 +44,7 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
 
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
+from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
@@ -1049,7 +1050,7 @@ def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -
         _send_status(event_queue, "Continuing without flash-attn")
 
 
-def _activate_transformers_version(model_name: str) -> None:
+def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on path for utils imports
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
@@ -1058,7 +1059,28 @@ def _activate_transformers_version(model_name: str) -> None:
 
     from utils.transformers_version import activate_transformers_for_subprocess
 
-    activate_transformers_for_subprocess(model_name)
+    activate_transformers_for_subprocess(model_name, hf_token)
+
+
+def _activate_transformers_version_or_warn(model_name: str, hf_token: str | None = None) -> None:
+    """Activate the required transformers version for the MLX fast-path.
+
+    Unlike the non-MLX path (which treats activation failure as fatal and
+    reports it via the event queue), the MLX path is intentionally non-fatal:
+    it falls through with whatever transformers version is installed. The
+    failure used to be swallowed by a bare ``except: pass``, leaving no trace
+    and only a confusing downstream crash. Log a warning instead so the cause
+    is visible, while keeping the fall-through behaviour.
+    """
+    try:
+        _activate_transformers_version(model_name, hf_token)
+    except Exception as exc:
+        logger.warning(
+            "Failed to activate transformers version for '%s' (MLX); "
+            "training may fail if this model requires a specific version. Error: %s",
+            model_name,
+            exc,
+        )
 
 
 def _mlx_vlm_max_resized_size(width: int, height: int, target: int) -> tuple[int, int]:
@@ -1231,32 +1253,48 @@ def _adapt_for_mlx_vlm(
     return adapted
 
 
-_MLX_STUDIO_OPTIM_MAP = {
-    "adamw_8bit": "adamw",
-    "paged_adamw_8bit": "adamw",
-    "adamw_bnb_8bit": "adamw",
-    "paged_adamw_32bit": "adamw",
-    "adamw_torch": "adamw",
-    "adamw_torch_fused": "adamw",
-    "adamw": "adamw",
-    "adafactor": "adafactor",
-    "sgd": "sgd",
-    "adam": "adam",
-    "muon": "muon",
-    "lion": "lion",
-}
 _MLX_STUDIO_LR_SCHEDULERS = {"linear", "cosine", "constant"}
 
 
+# Fallback alias map mirroring unsloth_zoo._normalize_mlx_optimizer_name, used
+# only when mlx (Apple Silicon) is not importable so Studio config validation
+# still works on non-MLX hosts. The zoo function stays the source of truth.
+_MLX_STUDIO_ADAMW_ALIASES = frozenset(
+    (
+        "adamw_8bit",
+        "paged_adamw_8bit",
+        "adamw_bnb_8bit",
+        "paged_adamw_32bit",
+        "adamw_torch",
+        "adamw_torch_fused",
+        "paged_adamw",
+        "adamw_32bit",
+        "adamw_hf",
+        "adamw_anyprecision",
+        "adamw_apex_fused",
+    )
+)
+_MLX_STUDIO_NATIVE_OPTIMIZERS = ("adafactor", "adamw", "adam", "sgd", "muon", "lion")
+
+
 def _normalize_mlx_studio_optimizer(value):
-    raw = str(value or "adamw_8bit").strip().lower()
     try:
-        return _MLX_STUDIO_OPTIM_MAP[raw]
-    except KeyError:
-        supported = ", ".join(sorted(_MLX_STUDIO_OPTIM_MAP))
-        raise ValueError(
-            f"Unsupported optimizer for MLX training: {value!r}. " f"Supported values: {supported}."
-        )
+        from unsloth_zoo.mlx.trainer import _normalize_mlx_optimizer_name
+        return _normalize_mlx_optimizer_name(value or "adamw_8bit")
+    except (ImportError, ValueError):
+        # Missing mlx, or an older unsloth-zoo whose normalizer lacks CUDA/TRL
+        # aliases: map common adamw_* names locally so notebook defaults work.
+        opt = str(getattr(value, "value", value) or "adamw_8bit").strip().lower()
+        opt = opt.rsplit(".", 1)[-1].replace("-", "_")
+        if opt in _MLX_STUDIO_ADAMW_ALIASES:
+            opt = "adamw"
+        if opt not in _MLX_STUDIO_NATIVE_OPTIMIZERS:
+            supported = ", ".join(_MLX_STUDIO_NATIVE_OPTIMIZERS)
+            raise ValueError(
+                f"Unsupported optimizer for MLX training: {value!r}. "
+                f"Supported optimizers: {supported}."
+            )
+        return opt
 
 
 def _normalize_mlx_studio_scheduler(value):
@@ -1271,14 +1309,18 @@ def _normalize_mlx_studio_scheduler(value):
 
 
 def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
-    """Resolve Studio local dataset uploads without importing the GPU trainer."""
+    """Resolve CLI paths and Studio local dataset uploads without importing the GPU trainer."""
     from utils.paths import resolve_dataset_path
 
     all_files: list[str] = []
     for dataset_file in file_paths or []:
-        file_path = (
-            dataset_file if os.path.isabs(dataset_file) else str(resolve_dataset_path(dataset_file))
-        )
+        dataset_path = Path(os.path.expanduser(str(dataset_file)))
+        if dataset_path.is_absolute():
+            file_path = str(dataset_path)
+        elif dataset_path.exists():
+            file_path = str(dataset_path.resolve())
+        else:
+            file_path = str(resolve_dataset_path(str(dataset_file)))
         file_path_obj = Path(file_path)
 
         if file_path_obj.is_dir():
@@ -1317,6 +1359,58 @@ def _mlx_local_dataset_loader_for_files(files: list[str]) -> str:
     raise ValueError(f"Unsupported dataset format: {files[0]}")
 
 
+_MLX_WORKER_COMPLETE = "_mlx_worker_complete"
+
+
+def _start_mlx_stop_poller(stop_queue):
+    import queue as _queue
+    import threading
+
+    stop_save = [True]
+    stop_requested = [False]
+    trainer_ref = [None]
+
+    def is_stop_requested():
+        return stop_requested[0]
+
+    def poll_stop():
+        while True:
+            try:
+                msg = stop_queue.get(timeout = 0.25)
+                if msg and msg.get("type") == _MLX_WORKER_COMPLETE:
+                    return
+                if msg and msg.get("type") == "stop":
+                    stop_save[0] = msg.get("save", True)
+                    stop_requested[0] = True
+                    trainer = trainer_ref[0]
+                    if trainer is not None:
+                        trainer.stop_requested = True
+                    return
+            except _queue.Empty:
+                continue
+            except (EOFError, OSError):
+                return
+
+    stop_thread = threading.Thread(target = poll_stop, daemon = True)
+    stop_thread.start()
+    return stop_save, stop_requested, trainer_ref, is_stop_requested, stop_thread
+
+
+def _resolve_mlx_output_dir(config, model_name):
+    from utils.paths import resolve_output_dir, default_run_dir_name
+
+    output_dir = config.get("output_dir", "")
+    if not output_dir:
+        output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
+        return str(resolve_output_dir(output_dir))
+    if config.get("allow_external_output_dir"):
+        output_path = Path(output_dir).expanduser()
+        if not output_path.is_absolute():
+            output_path = Path.cwd() / output_path
+        return str(output_path.resolve())
+    return str(resolve_output_dir(output_dir))
+
+
 def _run_mlx_training(event_queue, stop_queue, config):
     """Self-contained MLX training path for Apple Silicon.
 
@@ -1325,8 +1419,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
     """
     import time
     import math
-    import threading
-    import queue as _queue
     from pathlib import Path
 
     def _send(event_type, **kwargs):
@@ -1336,31 +1428,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 kwargs["message"] = sm
         event_queue.put({"type": event_type, "ts": time.time(), **kwargs})
 
-    _stop_save = [True]
-    _stop_requested = [False]
-    _trainer_ref = [None]
-
-    def _is_stop_requested():
-        return _stop_requested[0]
-
-    def _poll_stop():
-        while True:
-            try:
-                msg = stop_queue.get(timeout = 1.0)
-                if msg and msg.get("type") == "stop":
-                    _stop_save[0] = msg.get("save", True)
-                    _stop_requested[0] = True
-                    trainer = _trainer_ref[0]
-                    if trainer is not None:
-                        trainer.stop_requested = True
-                    return
-            except _queue.Empty:
-                continue
-            except (EOFError, OSError):
-                return
-
-    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
-    stop_thread.start()
+    _stop_save, _stop_requested, _trainer_ref, _is_stop_requested, _stop_thread = (
+        _start_mlx_stop_poller(stop_queue)
+    )
 
     _send("status", status_message = "Loading MLX libraries...")
 
@@ -1432,6 +1502,76 @@ def _run_mlx_training(event_queue, stop_queue, config):
     model_random_state = random_seed if _model_seed is None else int(_model_seed)
     _lora_seed = config.get("lora_random_state")
     lora_random_state = random_seed if _lora_seed is None else int(_lora_seed)
+
+    # Malware gate (MLX): a poisoned pickle deserializes on load even with
+    # trust_remote_code False, so check HF's security scan (metadata-only) first.
+    # For a LoRA, gate the base whose weights deserialize.
+    from utils.security import evaluate_file_security
+
+    malware_targets = [model_name]
+    try:
+        from utils.models.model_config import get_base_model_from_lora_identifier
+
+        # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
+        _base = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
+        if _base:
+            malware_targets.append(_base)
+    except Exception as exc:
+        logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
+    from utils.security import security_load_subdirs
+
+    for target in dict.fromkeys(malware_targets):
+        _fs = evaluate_file_security(
+            target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
+        )
+        if _fs.blocked:
+            _send(
+                "error",
+                error = _fs.reason,
+                error_kind = "malware_blocked",
+                security = _fs.response_payload(),
+            )
+            return
+
+    # Consent gate (MLX): the CUDA path gates in run_training_process, but MLX returns
+    # before that, so scan auto_map code here before FastMLXModel runs it. Block
+    # CRITICAL/HIGH unless pinned-approved; for a LoRA, gate the base whose code runs.
+    if config.get("trust_remote_code", False):
+        from utils.security import evaluate_remote_code_consent_for_targets
+
+        consent_targets = [model_name]
+        try:
+            from utils.models.model_config import get_base_model_from_lora_identifier
+
+            # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
+            base_model = get_base_model_from_lora_identifier(
+                model_name, config.get("hf_token") or None
+            )
+            if base_model:
+                consent_targets.append(base_model)
+        except Exception as exc:
+            logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
+        # Scan adapter + base as one combined unit, pinned by a single fingerprint.
+        _rc = evaluate_remote_code_consent_for_targets(
+            consent_targets,
+            hf_token = hf_token,
+            trust_remote_code = True,
+            approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            subject = config.get("subject"),
+        )
+        if _rc.blocked:
+            _send(
+                "error",
+                error = (
+                    f"Model '{_rc.model_name}' ships custom code flagged as "
+                    f"{_rc.max_severity} by the security scan. Review it and "
+                    f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
+                ),
+                error_kind = "remote_code_blocked",
+                remote_code = _rc.response_payload(),
+            )
+            return
+
     model, tokenizer = FastMLXModel.from_pretrained(
         model_name,
         load_in_4bit = config.get("load_in_4bit", True),
@@ -1696,18 +1836,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # ── 5. Build output dir ──
     # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
-    from utils.paths import resolve_output_dir, ensure_dir, default_run_dir_name
+    from utils.paths import ensure_dir
 
-    output_dir = config.get("output_dir", "")
-    if not output_dir:
-        output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
-    output_dir = str(resolve_output_dir(output_dir))
+    output_dir = _resolve_mlx_output_dir(config, model_name)
     ensure_dir(Path(output_dir))
 
     # ── 6. Create trainer ──
     eval_steps_val = config.get("eval_steps", 0) or 0
     if isinstance(eval_steps_val, float) and 0 < eval_steps_val < 1:
-        # Studio sometimes sends fraction-of-total-steps
         eval_steps_val = max(1, int(eval_steps_val * max_steps))
     else:
         eval_steps_val = int(eval_steps_val)
@@ -1826,7 +1962,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
             wandb_token = config.get("wandb_token")
             if wandb_token:
                 os.environ["WANDB_API_KEY"] = wandb_token
-            _wandb_sensitive = {"hf_token", "wandb_token", "s3_config"}
+            # Keep the authenticated subject out of W&B run config (mirrors _sanitize_db_config).
+            _wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}
             wandb_run = _wandb.init(
                 project = config.get("wandb_project") or "unsloth-mlx",
                 config = {k: v for k, v in config.items() if k not in _wandb_sensitive},
@@ -1931,12 +2068,27 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # ── 11. Run training ──
     gc.collect()
     mx.synchronize()
-    trainer.train(resume_from_checkpoint = resume_from_checkpoint)
+    _save_model = trainer.save_model
+
+    def _skip_internal_final_save(*args, **kwargs):
+        raise ValueError("worker owns final save")
+
+    trainer.save_model = _skip_internal_final_save
+    try:
+        trainer.train(resume_from_checkpoint = resume_from_checkpoint)
+    finally:
+        trainer.save_model = _save_model
 
     # ── 12. Save and finalize ──
-    if trainer.stop_requested and not _stop_save[0]:
-        # User clicked "Cancel" (save=False) — skip saving
-        _send("complete", output_dir = None, status_message = "Training cancelled")
+    if trainer.stop_requested:
+        if not _stop_save[0]:
+            # Cancel (save=False): skip saving.
+            _send("complete", output_dir = None, status_message = "Training cancelled")
+        else:
+            _send("status", status_message = "Saving stopped model...")
+            mx.synchronize()
+            trainer.save_model(output_dir)
+            _send("complete", output_dir = output_dir, status_message = "Training stopped")
     else:
         _send("status", status_message = "Saving model...")
         mx.synchronize()
@@ -1955,6 +2107,79 @@ def _run_mlx_training(event_queue, stop_queue, config):
             pass
 
 
+def _is_current_process_apple_silicon() -> bool:
+    import platform
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def run_mlx_training_process(
+    *,
+    event_queue: Any,
+    stop_queue: Any,
+    config: dict,
+    transformers_activated: bool = False,
+) -> None:
+    """MLX worker entrypoint shared by Studio subprocesses and the CLI adapter."""
+    model_name = config["model_name"]
+
+    backend_path = str(Path(__file__).resolve().parent.parent.parent)
+    if backend_path not in sys.path:
+        sys.path.insert(0, backend_path)
+
+    from utils.hf_xet_fallback import child_should_disable_xet
+
+    if child_should_disable_xet(config):
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+
+    if not transformers_activated:
+        # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
+        _activate_transformers_version_or_warn(model_name, config.get("hf_token") or None)
+
+    from utils.hardware import hardware as _hw
+
+    _hw.detect_hardware()
+    if _hw.DEVICE != _hw.DeviceType.MLX:
+        event_queue.put(
+            {
+                "type": "error",
+                "error": "MLX training requires Apple Silicon with the MLX backend available.",
+                "stack": "",
+                "ts": time.time(),
+            }
+        )
+        return
+
+    if config.get("is_dataset_audio"):
+        event_queue.put(
+            {
+                "type": "error",
+                "error": "Audio dataset training is not yet supported on Apple Silicon.",
+                "stack": "",
+                "ts": time.time(),
+            }
+        )
+        return
+
+    try:
+        try:
+            _run_mlx_training(event_queue, stop_queue, config)
+        finally:
+            try:
+                stop_queue.put({"type": _MLX_WORKER_COMPLETE})
+            except (EOFError, OSError, ValueError):
+                pass
+    except Exception as exc:
+        event_queue.put(
+            {
+                "type": "error",
+                "error": str(exc),
+                "stack": traceback.format_exc(limit = 20),
+                "ts": time.time(),
+            }
+        )
+
+
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Subprocess entrypoint. Fresh Python — no stale module state.
 
@@ -1965,6 +2190,19 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
+
+    # HTTP-fallback respawn: disable Xet before any huggingface_hub import (the
+    # var is read at import time). Mirrors core/inference/worker.py.
+    from utils.hf_xet_fallback import child_should_disable_xet
+
+    if child_should_disable_xet(config):
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+        print(
+            "Xet transport disabled for this training worker (HF_HUB_DISABLE_XET=1).",
+            file = sys.stderr,
+            flush = True,
+        )
 
     # Offline auto-detect: skip ~25s of HF retries per call when DNS is dead.
     if "HF_HUB_OFFLINE" not in os.environ:
@@ -2016,42 +2254,31 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
+    from .training import is_apple_silicon_training_platform, should_use_mlx_training_backend
+
+    mlx_backend_requested = is_apple_silicon_training_platform()
+
+    mlx_transformers_activated = False
+    if mlx_backend_requested and _is_current_process_apple_silicon():
+        # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
+        _activate_transformers_version_or_warn(model_name, config.get("hf_token") or None)
+        mlx_transformers_activated = True
+
     from utils.hardware import hardware as _hw
 
     _hw.detect_hardware()
-    if _hw.DEVICE == _hw.DeviceType.MLX:
-        if config.get("is_dataset_audio"):
-            event_queue.put(
-                {
-                    "type": "error",
-                    "error": "Audio dataset training is not yet supported on Apple Silicon.",
-                    "stack": "",
-                    "ts": time.time(),
-                }
-            )
-            return
-        # Activate correct transformers version (Gemma-4 needs a 5.x sidecar, etc.)
-        # before any transformers/mlx-lm imports in _run_mlx_training.
-        try:
-            _activate_transformers_version(model_name)
-        except Exception:
-            pass  # Non-fatal: fall through with whatever version is installed
-        try:
-            _run_mlx_training(event_queue, stop_queue, config)
-        except Exception as exc:
-            event_queue.put(
-                {
-                    "type": "error",
-                    "error": str(exc),
-                    "stack": traceback.format_exc(limit = 20),
-                    "ts": time.time(),
-                }
-            )
+    if mlx_backend_requested or should_use_mlx_training_backend(device = _hw.DEVICE):
+        run_mlx_training_process(
+            event_queue = event_queue,
+            stop_queue = stop_queue,
+            config = config,
+            transformers_activated = mlx_transformers_activated,
+        )
         return
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     try:
-        _activate_transformers_version(model_name)
+        _activate_transformers_version(model_name, config.get("hf_token") or None)
     except Exception as exc:
         event_queue.put(
             {
@@ -2067,11 +2294,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # NemotronH needs trust_remote_code=True to work around config-parsing bugs.
     # Other 5.x models are native and don't need it (it bypasses the compiler,
     # disabling fused CE). Must NOT match Llama-Nemotron (standard Llama arch).
+    from utils.security.trusted_org import is_trusted_org_repo
+
     _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
     _lowered = model_name.lower()
     if (
         any(sub in _lowered for sub in _NEMOTRON_TRUST_SUBSTRINGS)
         and (_lowered.startswith("unsloth/") or _lowered.startswith("nvidia/"))
+        # Confirm a genuine first-party Hub repo (not a local/spoofed name starting
+        # with "unsloth/"); authenticated so private first-party repos resolve.
+        and is_trusted_org_repo(model_name, hf_token = config.get("hf_token") or None)
         and not config.get("trust_remote_code", False)
     ):
         config["trust_remote_code"] = True
@@ -2079,6 +2311,82 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             "Auto-enabled trust_remote_code for Nemotron model: %s",
             model_name,
         )
+
+    # 1a. Malware gate: a poisoned pickle deserializes on load even with
+    # trust_remote_code False, so check HF's security scan (metadata-only) first.
+    # For a LoRA, gate the base whose weights deserialize.
+    from utils.security import evaluate_file_security
+
+    malware_targets = [model_name]
+    try:
+        from utils.models.model_config import get_base_model_from_lora_identifier
+
+        # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
+        _base = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
+        if _base:
+            malware_targets.append(_base)
+    except Exception as exc:
+        logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
+    from utils.security import security_load_subdirs
+
+    _ls_hf = config.get("hf_token") or None
+    for target in dict.fromkeys(malware_targets):
+        _fs = evaluate_file_security(
+            target, hf_token = _ls_hf, load_subdirs = security_load_subdirs(target, _ls_hf)
+        )
+        if _fs.blocked:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": _fs.reason,
+                    "error_kind": "malware_blocked",
+                    "security": _fs.response_payload(),
+                    "ts": time.time(),
+                }
+            )
+            return
+
+    # 1a'. Consent gate: scan auto_map Python before it runs; refuse CRITICAL/HIGH
+    # unless pinned-approved.
+    if config.get("trust_remote_code", False):
+        from utils.security import evaluate_remote_code_consent_for_targets
+
+        # A LoRA adapter's base is where custom code runs, so gate it too.
+        consent_targets = [model_name]
+        try:
+            from utils.models.model_config import get_base_model_from_lora_identifier
+
+            # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
+            base_model = get_base_model_from_lora_identifier(
+                model_name, config.get("hf_token") or None
+            )
+            if base_model:
+                consent_targets.append(base_model)
+        except Exception as exc:
+            logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
+        # Scan adapter + base as one combined unit, pinned by a single fingerprint.
+        _rc = evaluate_remote_code_consent_for_targets(
+            consent_targets,
+            hf_token = config.get("hf_token") or None,
+            trust_remote_code = True,
+            approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            subject = config.get("subject"),
+        )
+        if _rc.blocked:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": (
+                        f"Model '{_rc.model_name}' ships custom code flagged as "
+                        f"{_rc.max_severity} by the security scan. Review it and "
+                        f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
+                    ),
+                    "error_kind": "remote_code_blocked",
+                    "remote_code": _rc.response_payload(),
+                    "ts": time.time(),
+                }
+            )
+            return
 
     # ── 1b. Install fast-path kernel libraries for the chosen model.
     # 1) causal-conv1d ALWAYS runs eagerly via the substring path: some SSM
@@ -2488,7 +2796,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         if backend_path not in sys.path:
             sys.path.insert(0, backend_path)
 
-        from core.training.trainer import UnslothTrainer, TrainingProgress
+        from core.training.training import TrainingProgress
+        from core.training.trainer import UnslothTrainer
         from utils.paths import (
             ensure_dir,
             resolve_output_dir,
@@ -2616,6 +2925,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             subset = config.get("subset"),
             train_split = config.get("train_split", "train"),
             eval_split = config.get("eval_split"),
+            dataset_streaming = config.get("dataset_streaming", False),
             eval_steps = config.get("eval_steps", 0.00),
             dataset_slice_start = config.get("dataset_slice_start"),
             dataset_slice_end = config.get("dataset_slice_end"),
@@ -2686,18 +2996,33 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         cpt_trains_embeddings = False
 
         # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
+        # Watchdog lets the parent recover a stalled Xet download via respawn.
         _send_status(event_queue, "Loading model...")
-        success = trainer.load_model(
-            model_name = model_name,
-            max_seq_length = config["max_seq_length"],
-            load_in_4bit = config["load_in_4bit"],
-            full_finetuning = not use_lora,
-            hf_token = hf_token,
-            is_dataset_image = config.get("is_dataset_image", False),
-            is_dataset_audio = config.get("is_dataset_audio", False),
-            trust_remote_code = config.get("trust_remote_code", False),
-            gpu_ids = config.get("resolved_gpu_ids"),
+        from utils.hf_xet_fallback import start_watchdog
+
+        event_queue.put({"type": "model_load_started", "ts": time.time()})
+        _load_watchdog_stop = start_watchdog(
+            repo_ids = [model_name],
+            on_stall = lambda msg: event_queue.put(
+                {"type": "stall", "message": msg, "ts": time.time()}
+            ),
+            xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
+        try:
+            success = trainer.load_model(
+                model_name = model_name,
+                max_seq_length = config["max_seq_length"],
+                load_in_4bit = config["load_in_4bit"],
+                full_finetuning = not use_lora,
+                hf_token = hf_token,
+                is_dataset_image = config.get("is_dataset_image", False),
+                is_dataset_audio = config.get("is_dataset_audio", False),
+                trust_remote_code = config.get("trust_remote_code", False),
+                gpu_ids = config.get("resolved_gpu_ids"),
+            )
+        finally:
+            _load_watchdog_stop.set()
+            event_queue.put({"type": "model_load_completed", "ts": time.time()})
         if not success or trainer.should_stop:
             if trainer.should_stop:
                 event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
@@ -2818,7 +3143,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             resume_from_checkpoint
         )
         if not output_dir:
-            output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
+            output_dir = build_default_output_dir_name(
+                model_name,
+                config.get("project_name"),
+            )
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
 
@@ -2959,6 +3287,10 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     # ── 1. Import embedding-specific libraries ──
     _send_status(event_queue, "Importing embedding libraries...")
     try:
+        # Recover from a namespace-package shadow (embedding imports unsloth directly).
+        from core.import_guards import ensure_real_packages
+
+        ensure_real_packages("unsloth_zoo", "unsloth")
         from unsloth import FastSentenceTransformer, is_bfloat16_supported
         from sentence_transformers import (
             SentenceTransformerTrainer,
@@ -3015,6 +3347,74 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         max_seq_length = config.get("max_seq_length", 512)
         training_type = config.get("training_type", "LoRA/QLoRA")
         use_lora = training_type == "LoRA/QLoRA"
+
+        # Malware gate (embedding): a poisoned pickle deserializes on load even with
+        # trust_remote_code False, so check HF's security scan (metadata-only) first.
+        # For a LoRA, gate the base whose weights deserialize.
+        from utils.security import evaluate_file_security
+
+        malware_targets = [model_name]
+        try:
+            from utils.models.model_config import get_base_model_from_lora_identifier
+            _base = get_base_model_from_lora_identifier(model_name, hf_token)
+            if _base:
+                malware_targets.append(_base)
+        except Exception as exc:
+            logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
+        from utils.security import security_load_subdirs
+
+        for target in dict.fromkeys(malware_targets):
+            _fs = evaluate_file_security(
+                target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
+            )
+            if _fs.blocked:
+                event_queue.put(
+                    {
+                        "type": "error",
+                        "error": _fs.reason,
+                        "error_kind": "malware_blocked",
+                        "security": _fs.response_payload(),
+                        "ts": time.time(),
+                    }
+                )
+                return
+
+        # Consent gate (embedding): scan any auto_map code before it runs; block
+        # CRITICAL/HIGH unless pinned-approved. A no-op without auto_map.
+        if config.get("trust_remote_code", False):
+            from utils.security import evaluate_remote_code_consent_for_targets
+
+            consent_targets = [model_name]
+            try:
+                from utils.models.model_config import get_base_model_from_lora_identifier
+                _cbase = get_base_model_from_lora_identifier(model_name, hf_token)
+                if _cbase:
+                    consent_targets.append(_cbase)
+            except Exception as exc:
+                logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
+            # Scan adapter + base as one combined unit, pinned by a single fingerprint.
+            _rc = evaluate_remote_code_consent_for_targets(
+                consent_targets,
+                hf_token = hf_token,
+                trust_remote_code = True,
+                approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+                subject = config.get("subject"),
+            )
+            if _rc.blocked:
+                event_queue.put(
+                    {
+                        "type": "error",
+                        "error": (
+                            f"Model '{_rc.model_name}' ships custom code flagged as "
+                            f"{_rc.max_severity} by the security scan. Review it and "
+                            f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
+                        ),
+                        "error_kind": "remote_code_blocked",
+                        "remote_code": _rc.response_payload(),
+                        "ts": time.time(),
+                    }
+                )
+                return
 
         model = FastSentenceTransformer.from_pretrained(
             model_name = model_name,
@@ -3227,7 +3627,10 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         resume_from_checkpoint
     )
     if not output_dir:
-        output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
+        output_dir = build_default_output_dir_name(
+            model_name,
+            config.get("project_name"),
+        )
     output_dir = str(resolve_output_dir(output_dir))
 
     num_epochs = config.get("num_epochs", 2)

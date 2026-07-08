@@ -209,7 +209,7 @@ jobs:
             'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
             ipython
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26'
           # transformers + trl from the matrix combo.
           pip install "$RESOLVED_TRANSFORMERS_SPEC"
@@ -268,6 +268,10 @@ jobs:
             tests/saving/test_save_shell_injection.py \
             tests/saving/test_patch_saving_none_tokenizer.py \
             tests/saving/test_fix_sentencepiece_gguf_robustness.py \
+            tests/saving/test_compressed_export_schemes.py \
+            tests/saving/test_export_api_surface.py \
+            tests/saving/test_export_dispatch.py \
+            tests/saving/test_imatrix_export.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py
@@ -353,9 +357,14 @@ jobs:
             tests/saving/test_save_shell_injection.py \
             tests/saving/test_patch_saving_none_tokenizer.py \
             tests/saving/test_fix_sentencepiece_gguf_robustness.py \
+            tests/saving/test_compressed_export_schemes.py \
+            tests/saving/test_export_api_surface.py \
+            tests/saving/test_export_dispatch.py \
+            tests/saving/test_imatrix_export.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py \
+            tests/test_prefetch_snapshot_scope.py \
             --deselect 'tests/utils/test_attention_masks.py::test_run_attention_flash_varlen_receives_window_and_softcap'
           # The deselected test monkeypatches flash_attn_varlen_func, which is
           # only bound on the module when `flash_attn` is importable. flash_attn
@@ -2166,7 +2175,7 @@ jobs:
           python -m pip install --upgrade pip
           # Match the matrix job's torch path so unsloth_zoo's
           # `import torch` resolves to the same CPU build.
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26'
           pip install \
             'numpy<3' protobuf sentencepiece \
@@ -2204,12 +2213,13 @@ jobs:
           pip install -e "$RUNNER_TEMP/unsloth-zoo" --no-deps
           pip show unsloth_zoo
 
-      - name: llama.cpp install via unsloth_zoo.llama_cpp + `llama-cli --help` smoke
+      - name: llama.cpp install via unsloth_zoo.llama_cpp + CLI `--help` smoke
         # Exercise the canonical `unsloth_zoo.llama_cpp.install_llama_cpp`
         # flow that GGUF export uses at runtime: clone ggml-org/llama.cpp
         # into ~/.unsloth/llama.cpp, build the LLAMA_CPP_TARGETS list
         # (llama-quantize, llama-cli, llama-mtmd-cli, llama-gguf-split,
-        # llama-server) via cmake, then run `llama-cli --help`.
+        # llama-server) via cmake, then run `--help` on whichever CLI
+        # inference binary the build actually produced.
         #
         # This replaces the previous "download upstream prebuilt zip"
         # approach, which silently exited 0 with the message
@@ -2217,6 +2227,18 @@ jobs:
         # naming drifted (the regex `bin-ubuntu-x64.*\.zip$` no longer
         # matched their current asset names). The build path is the same
         # one Unsloth users hit in production via `model.save_pretrained_gguf`.
+        #
+        # We do NOT hard-require `llama-cli` specifically: upstream
+        # ggml-org/llama.cpp moved the cli/server/ui targets behind the
+        # `LLAMA_BUILD_SERVER` cmake option (tools/CMakeLists.txt) and the
+        # set of binaries that survive a given checkout drifts over time
+        # (e.g. a recent build root shipped llama-server + llama-quantize
+        # + llama-diffusion-cli but no llama-cli). The durable contract is
+        # "install_llama_cpp produced a working CLI inference binary AND a
+        # working quantizer", so we --help-probe the first of
+        # llama-cli / llama-mtmd-cli / llama-server that exists. If a
+        # future llama.cpp restores llama-cli it is first in the list and
+        # is preferred, so this stays backwards compatible.
         #
         # Wall-time budget: ~3-5 min cold, dominated by cmake build of
         # 5 targets on the runner's 4 cores. Apt-package install is
@@ -2252,8 +2274,9 @@ jobs:
           print(f"Build targets: {LLAMA_CPP_TARGETS}")
           # install_llama_cpp returns (quantizer_path, converter_script_path).
           # The quantizer's directory is the `llama.cpp` install root, which
-          # also holds llama-cli after build/bin/llama-* gets copied up
-          # (llama_cpp.py:867-871).
+          # also holds the CLI inference binaries after build/bin/llama-* gets
+          # copied up (llama_cpp.py:1450-1454; on Windows they stay in
+          # build/bin/Release/).
           quantizer, converter = install_llama_cpp(print_output=True)
           assert quantizer and os.path.exists(quantizer), (
               f"install_llama_cpp returned quantizer={quantizer!r} but file missing"
@@ -2262,25 +2285,54 @@ jobs:
               f"install_llama_cpp returned converter={converter!r} but missing"
           )
           install_root = os.path.dirname(quantizer)
-          cli = os.path.join(install_root, "llama-cli")
-          assert os.path.exists(cli), (
-              f"llama-cli not found at {cli!r} after build. Build root contents: "
-              f"{sorted(p for p in os.listdir(install_root) if p.startswith('llama-'))[:20]}"
-          )
-          assert os.access(cli, os.X_OK), f"{cli!r} not executable"
-          # `llama-cli --help` exits non-zero on some builds; the contract
-          # is that recognizable help text appears on stdout/stderr.
+          is_windows = sys.platform == "win32"
+          exe = ".exe" if is_windows else ""
+          # Search both the copied-up root and the Windows build/bin/Release/
+          # location the quantizer might already live in.
+          search_dirs = [install_root]
+          win_release = os.path.join(install_root, "build", "bin", "Release")
+          if win_release not in search_dirs:
+              search_dirs.append(win_release)
+          # Any of these proves a working llama.cpp CLI inference binary was
+          # built. Order = preference: llama-cli is canonical (restored first
+          # if upstream brings it back), then the multimodal CLI, then the
+          # server (always built whenever cli would be, behind LLAMA_BUILD_SERVER).
+          cli_names = [f"llama-cli{exe}", f"llama-mtmd-cli{exe}", f"llama-server{exe}"]
+          cli = None
+          cli_name = None
+          for name in cli_names:
+              for d in search_dirs:
+                  candidate = os.path.join(d, name)
+                  if os.path.exists(candidate) and (is_windows or os.access(candidate, os.X_OK)):
+                      cli, cli_name = candidate, name
+                      break
+              if cli is not None:
+                  break
+          if cli is None:
+              found = []
+              for d in search_dirs:
+                  if os.path.isdir(d):
+                      found += [p for p in os.listdir(d) if p.startswith("llama-")]
+              raise AssertionError(
+                  f"No CLI inference binary ({', '.join(cli_names)}) found after "
+                  f"build in {search_dirs}. Build root contents: {sorted(set(found))[:20]}"
+              )
+          print(f"Using CLI inference binary: {cli_name} -> {cli}")
+          # `--help` exits non-zero on some builds; the contract is that
+          # recognizable help text appears on stdout/stderr. llama-server
+          # exposes a different flag set than llama-cli, so accept its
+          # tokens too (e.g. --host / --port / "server").
           proc = subprocess.run(
               [cli, "--help"], capture_output=True, text=True, timeout=30,
           )
           combined = (proc.stdout or "") + (proc.stderr or "")
-          print("--- llama-cli --help (first 30 lines) ---")
+          print(f"--- {cli_name} --help (first 30 lines) ---")
           print("\n".join(combined.splitlines()[:30]))
           assert any(
               tok in combined.lower()
-              for tok in ("usage", "--help", "--model", "-m,")
+              for tok in ("usage", "--help", "--model", "-m,", "--host", "--port", "server")
           ), (
-              f"llama-cli --help produced no recognizable help text. "
+              f"{cli_name} --help produced no recognizable help text. "
               f"exit={proc.returncode}\nstdout: {proc.stdout[:400]!r}\n"
               f"stderr: {proc.stderr[:400]!r}"
           )
@@ -2296,7 +2348,7 @@ jobs:
               f"stderr: {q.stderr[:400]!r}"
           )
           print(
-              f"\nOK: install_llama_cpp produced a working llama-cli at {cli} "
+              f"\nOK: install_llama_cpp produced a working {cli_name} at {cli} "
               f"and llama-quantize at {quantizer}."
           )
           PY

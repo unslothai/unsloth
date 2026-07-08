@@ -1,9 +1,6 @@
 # Unsloth - 2x faster, 70% less memory LLM finetuning
-# Tests for the `finetune_last_n_layers` parity knob (CUDA side).
-#
-# Mirrors unsloth-zoo's MLX path: fills PEFT's `layers_to_transform` so LoRA
-# applies to the last N transformer blocks, matching mlx-lm CLI's num_layers.
-# Exercises only the translation helper, no CUDA / real checkpoint.
+# Tests for the `finetune_last_n_layers` parity knob (translation helper only,
+# no CUDA / real checkpoint); mirrors unsloth-zoo's MLX layers_to_transform path.
 
 from __future__ import annotations
 
@@ -67,7 +64,7 @@ def test_get_total_transformer_layers_returns_none_for_missing_config():
 
 
 def test_finetune_last_n_layers_signature_present_on_llama_and_vision():
-    """Both entry points must expose the new parameter with default None."""
+    """Both entry points expose finetune_last_n_layers with default None."""
     import inspect
     from unsloth.models.llama import FastLlamaModel
     from unsloth.models.vision import FastBaseModel

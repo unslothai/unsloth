@@ -42,6 +42,10 @@ class LoadRequest(BaseModel):
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
+    approved_remote_code_fingerprint: Optional[str] = Field(
+        None,
+        description = "sha256 fingerprint from the remote-code scan, pinning user approval of this exact custom-code version.",
+    )
     chat_template_override: Optional[str] = Field(
         None,
         description = "Custom Jinja2 chat template to use instead of the model's default",
@@ -102,8 +106,7 @@ class LoadRequest(BaseModel):
             "Extra arguments forwarded verbatim to llama-server for GGUF models. "
             "One token per list entry, e.g. ['--top-k', '20', '--seed', '42']. "
             "Studio-managed flags (model identity, port, context length, GPU placement, "
-            "auth, --flash-attn, --no-context-shift, --jinja) are rejected. Ignored for "
-            "non-GGUF models."
+            "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
 
@@ -125,6 +128,16 @@ class ValidateModelRequest(BaseModel):
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
+    # Intended load settings so validate's coexistence check matches the follow-up
+    # /load; defaults preserve old behavior for callers that omit them.
+    max_seq_length: int = Field(0, ge = 0, le = 1048576)
+    load_in_4bit: bool = Field(True)
+    gpu_ids: Optional[List[int]] = Field(None)
+    include_context_length: bool = Field(
+        False,
+        description = "Also read the native context length from the local GGUF header. "
+        "Opt-in so the normal load preflight doesn't pay for a cache scan it doesn't need.",
+    )
 
 
 class ValidateModelResponse(BaseModel):
@@ -144,6 +157,16 @@ class ValidateModelResponse(BaseModel):
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
     )
+    requires_security_review: bool = Field(
+        False,
+        description = "Whether Hugging Face's security scan flagged unsafe files (e.g. a "
+        "malicious pickle), so the load is hard-blocked pending review.",
+    )
+    context_length: Optional[int] = Field(
+        None,
+        description = "Native training context length, read from the GGUF header when the file "
+        "is already downloaded locally; None for non-GGUF, gated, or not-yet-downloaded models.",
+    )
 
 
 class GenerateRequest(BaseModel):
@@ -154,6 +177,7 @@ class GenerateRequest(BaseModel):
     temperature: float = Field(0.6, ge = 0.0, le = 2.0, description = "Sampling temperature")
     top_p: float = Field(0.95, ge = 0.0, le = 1.0, description = "Top-p sampling")
     top_k: int = Field(20, ge = -1, le = 100, description = "Top-k sampling")
+    min_p: float = Field(0.0, ge = 0.0, le = 1.0, description = "Min-p sampling")
     max_new_tokens: int = Field(2048, ge = 1, le = 4096, description = "Maximum tokens to generate")
     repetition_penalty: float = Field(1.0, ge = 1.0, le = 2.0, description = "Repetition penalty")
     presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
@@ -196,9 +220,15 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
     )
-    reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
-        "enable_thinking",
-        description = "Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
+    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
+        Field(
+            "enable_thinking",
+            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+        )
+    )
+    reasoning_effort_levels: List[str] = Field(
+        default_factory = list,
+        description = "Discrete reasoning_effort levels the template offers when reasoning_style is 'enable_thinking_effort' (e.g. ['high', 'max']); empty otherwise",
     )
     reasoning_always_on: bool = Field(
         False,
@@ -308,9 +338,15 @@ class InferenceStatusResponse(BaseModel):
     supports_reasoning: bool = Field(
         False, description = "Whether the active model supports reasoning/thinking mode"
     )
-    reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
-        "enable_thinking",
-        description = "Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
+    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
+        Field(
+            "enable_thinking",
+            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+        )
+    )
+    reasoning_effort_levels: List[str] = Field(
+        default_factory = list,
+        description = "Discrete reasoning_effort levels the template offers when reasoning_style is 'enable_thinking_effort' (e.g. ['high', 'max']); empty otherwise",
     )
     reasoning_always_on: bool = Field(
         False, description = "Whether reasoning is always on (not toggleable)"
@@ -376,8 +412,13 @@ class InferenceStatusResponse(BaseModel):
             "(auto on an MTP model, or forced mtp / mtp+ngram). "
             "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
             "re-enable it (show the update affordance); 'runtime_error' -> the "
-            "current build could not run it. None when MTP engaged or was not "
-            "requested."
+            "current build could not run it; 'drafter_not_found' -> the model's "
+            "separate MTP drafter could not be resolved; 'mla_mtp_disabled' -> "
+            "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
+            "whose llama.cpp MTP path runs slower than no speculation, so Auto "
+            "used ngram-mod or spec-off instead -- updating won't help; choose "
+            "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
+            "None when MTP engaged or was not requested."
         ),
     )
     llama_cpp_prebuilt_stale: bool = Field(
@@ -740,6 +781,16 @@ class ChatCompletionRequest(BaseModel):
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
     )
+    nudge_tool_calls: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Opt-in, non-streaming client-tool passthrough only: when the "
+            "model emitted a tool signal that healing could not repair, retry ONCE with "
+            "a short nudge appended (the retry shares the full prompt prefix, so the "
+            "server's KV cache is reused). Default off; UNSLOTH_TOOL_CALL_NUDGE=1 flips "
+            "the process default."
+        ),
+    )
     context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
         None,
         description = (
@@ -1061,6 +1112,8 @@ class ChoiceDelta(BaseModel):
 
     role: Optional[str] = None
     content: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    tool_calls: Optional[list[dict]] = None
 
 
 OpenAIFinishReason = Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
@@ -1094,8 +1147,11 @@ class CompletionMessage(BaseModel):
     """The assistant's complete response message."""
 
     role: Literal["assistant"] = "assistant"
-    content: str
+    # ``None`` on a pure tool-call turn (OpenAI content=null); string otherwise.
+    content: Optional[str] = None
     refusal: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    tool_calls: Optional[list[dict]] = None
 
 
 class CompletionChoice(BaseModel):
@@ -1567,6 +1623,14 @@ class AnthropicMessagesRequest(BaseModel):
     bypass_permissions: Optional[bool] = Field(
         False,
         description = "[x-unsloth] Bypass Permissions: when true, disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits) for server-side tool calls. Secret env vars are still stripped. Declared explicitly (not relied on via extra='allow') so omitted requests default to False instead of raising AttributeError.",
+    )
+    auto_heal_tool_calls: Optional[bool] = Field(
+        True,
+        description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output (mirrors the Chat Completions field; applies to the client-tool passthrough).",
+    )
+    nudge_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Opt-in, non-streaming only: retry once with a nudge when the model emitted a tool signal healing could not repair (mirrors the Chat Completions field).",
     )
     model_config = {"extra": "allow"}
 

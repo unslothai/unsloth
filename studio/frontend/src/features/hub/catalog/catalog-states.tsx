@@ -5,7 +5,7 @@ import {
   CloudOffIcon,
   CubeIcon,
   FilterIcon,
-  RefreshIcon,
+  Refresh01Icon,
   WifiDisconnected02Icon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
@@ -50,7 +50,7 @@ export function NetworkErrorState({
           <button
             type="button"
             onClick={onSwitchDevice}
-            className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-foreground/[0.06] px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
           >
             On Device
           </button>
@@ -58,10 +58,10 @@ export function NetworkErrorState({
         <button
           type="button"
           onClick={onRetry}
-          className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.1]"
+          className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
         >
           <HugeiconsIcon
-            icon={RefreshIcon}
+            icon={Refresh01Icon}
             strokeWidth={1.75}
             className="size-3.5"
           />
@@ -104,7 +104,7 @@ export function DiscoverFetchMoreState({
           <button
             type="button"
             onClick={onClearFilters}
-            className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-foreground/[0.06] px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
           >
             Clear filters
           </button>
@@ -113,10 +113,10 @@ export function DiscoverFetchMoreState({
           type="button"
           onClick={onFetchMore}
           disabled={isLoadingMore}
-          className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/[0.1]"
+          className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/[0.05]"
         >
           <HugeiconsIcon
-            icon={RefreshIcon}
+            icon={Refresh01Icon}
             strokeWidth={1.75}
             className="size-3.5"
           />
@@ -128,35 +128,30 @@ export function DiscoverFetchMoreState({
 }
 
 export function DiscoverFetchMoreFooter({
-  scannedCount,
-  manualFetchAvailable,
   hasActiveFilters,
   isLoadingMore,
   onFetchMore,
 }: {
-  scannedCount: number;
-  manualFetchAvailable: boolean;
   hasActiveFilters: boolean;
   isLoadingMore: boolean;
   onFetchMore: () => void;
 }) {
   return (
-    <div className="relative z-10 flex flex-col items-center gap-2 bg-card px-4 py-4 text-center">
-      <p className="text-[11.5px] leading-4 text-muted-foreground">
-        {hasActiveFilters
-          ? "Some results may be hidden by your filters."
-          : manualFetchAvailable
-            ? `Scanned ${scannedCount.toLocaleString()} results. Load more to continue.`
-            : "More results are available."}
-      </p>
+    <div className="relative z-10 flex flex-col items-center gap-2 rounded-[16px] bg-card px-4 py-4 text-center">
+      {/* Only warn about hidden results when a filter is actually narrowing them. */}
+      {hasActiveFilters && (
+        <p className="text-[11.5px] leading-4 text-muted-foreground">
+          Some results may be hidden by your filters.
+        </p>
+      )}
       <button
         type="button"
         onClick={onFetchMore}
         disabled={isLoadingMore}
-        className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-foreground/[0.06] px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
       >
         <HugeiconsIcon
-          icon={RefreshIcon}
+          icon={Refresh01Icon}
           strokeWidth={1.75}
           className="size-3.5"
         />
@@ -191,9 +186,9 @@ export function InventoryErrorState({
       <button
         type="button"
         onClick={onRetry}
-        className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.1]"
+        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
       >
-        <HugeiconsIcon icon={RefreshIcon} strokeWidth={1.75} className="size-3.5" />
+        <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-3.5" />
         Try again
       </button>
     </div>

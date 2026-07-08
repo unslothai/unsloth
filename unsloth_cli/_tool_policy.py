@@ -1,6 +1,6 @@
 # Copyright 2025-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pure resolver for `unsloth run --enable-tools/--disable-tools`.
+"""Pure resolver for `unsloth studio [run] --enable-tools/--disable-tools`.
 
 Kept as a standalone module so the truth table can be unit-tested
 without spinning up Typer or the studio venv.
@@ -9,9 +9,6 @@ without spinning up Typer or the studio venv.
 from typing import Callable, Optional
 
 import typer
-
-# Orange so the security warning stands out in a crowded terminal.
-_PROMPT_FG = (217, 119, 87)
 
 # Loopback aliases; any other bind address is treated as network-reachable.
 # Mirrored in studio/backend/utils/host_policy.py (kept separate because the
@@ -24,19 +21,6 @@ def is_external_host(host: str) -> bool:
     return host.lower() not in _LOOPBACK_HOSTS
 
 
-def _build_prompt_text(host: str) -> str:
-    return typer.style(
-        (
-            f"Tools include arbitrary code execution (Python, terminal). "
-            f"You're binding to {host}, which is reachable from your network. "
-            f"If your API key leaks, anyone with it can run code on this machine. "
-            f"Do not share the API key. Continue?"
-        ),
-        fg = _PROMPT_FG,
-        bold = True,
-    )
-
-
 def resolve_tool_policy(
     host: str,
     flag: Optional[bool],
@@ -44,25 +28,8 @@ def resolve_tool_policy(
     silent: bool,
     prompt: Callable[[str], bool] = typer.confirm,
 ) -> bool:
-    """Return the resolved server-side tool policy.
-
-    Args:
-        host: The bind address.
-        flag: Tri-state from `--enable-tools/--disable-tools` (None if neither passed).
-        yes: True if `--yes/-y` was passed.
-        silent: True if `--silent/-q` was passed.
-        prompt: Confirmation callable (injected for testability).
-
-    Raises:
-        typer.Exit: when the operator declines the confirmation.
-    """
-    is_external = is_external_host(host)
-    default = not is_external  # loopback defaults on, network defaults off
-
-    resolved = default if flag is None else flag
-
-    if is_external and resolved is True and not yes and not silent:
-        if not prompt(_build_prompt_text(host)):
-            raise typer.Exit(1)
-
-    return resolved
+    """Resolve the server-side tool policy. Tools default on for every bind;
+    an explicit --enable-tools/--disable-tools (`flag`) forces on/off. `host`,
+    `yes`, `silent`, `prompt` are kept for signature compatibility and no longer
+    affect the result (network binds no longer prompt)."""
+    return True if flag is None else flag

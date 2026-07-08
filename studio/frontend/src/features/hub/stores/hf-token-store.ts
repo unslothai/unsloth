@@ -33,7 +33,7 @@ function loadInitial(): string {
       const fromTraining = parsed?.state?.hfToken;
       if (typeof fromTraining === "string" && fromTraining.length > 0) {
         const normalized = normalize(fromTraining);
-        // Copy only: training-config-store still reads its own hfToken, so deleting it would drop that token.
+        // Copy only: training-config-store reads its own hfToken; deleting the legacy field drops it.
         persist(normalized);
         return normalized;
       }
@@ -115,4 +115,12 @@ export const useHfTokenStore = create<HfTokenStore>((set) => {
 
 export function getHfToken(): string {
   return useHfTokenStore.getState().token;
+}
+
+// HF's JS client throws on a non-empty token that isn't `hf_...` instead of
+// browsing anonymously, so treat anything malformed as no token.
+export function hfApiToken(
+  token: string | undefined | null,
+): string | undefined {
+  return token && token.startsWith("hf_") ? token : undefined;
 }

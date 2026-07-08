@@ -1,29 +1,14 @@
 #!/usr/bin/env python3
-"""Smoke test: N parallel install.sh runs with distinct UNSLOTH_STUDIO_HOME
-values must produce N fully isolated installs whose backends run side by side.
+"""Smoke test (#5190 env-override path): N parallel install.sh runs with
+distinct UNSLOTH_STUDIO_HOME values must produce N isolated installs whose
+backends run side by side. Checks install-time layout/isolation + clean HOME,
+then runtime /api/health, distinct studio_root_id, and per-venv PIDs.
 
-Covers the env-override path from #5190:
-
-    install-time
-        * N concurrent ``install.sh --local --no-torch`` runs, each pinned to
-          its own UNSLOTH_STUDIO_HOME + redirected HOME, all exit 0.
-        * Each STUDIO_HOME has its own bin/share/llama.cpp/unsloth_studio venv,
-          a unique share/studio_install_id, and a studio.conf / launch-studio.sh
-          pointing only inside this install. bin/unsloth resolves into its venv.
-        * The redirected HOME is left clean (no rc append, .desktop, app stub).
-
-    runtime
-        * N ``bin/unsloth studio`` launches each bind a free port and report
-          /api/health 200, healthy, chat_only true under --no-torch.
-        * studio_root_id equals the install's studio_install_id and is pairwise
-          distinct; GET / and /api/chat are 200; each PID's python is its venv.
-
-Integration smoke runner (not pytest); ~1 minute on a warm uv cache. Invoke:
+Integration runner (not pytest), ~1 minute on a warm uv cache. Invoke:
 
     python tests/studio/install/smoke_test_parallel_studio_home.py [--n 6 --keep]
 
-Exits 0 PASS / 1 FAIL / 2 error. Artifacts removed on PASS unless --keep;
-kept on FAIL/ERROR for inspection.
+Exits 0 PASS / 1 FAIL / 2 error. Artifacts kept on FAIL/ERROR or with --keep.
 """
 
 from __future__ import annotations
@@ -94,15 +79,11 @@ def _launch_backend(
     log_path.parent.mkdir(parents = True, exist_ok = True)
     env = os.environ.copy()
     env["HOME"] = str(fake_home)
-    # Pin UNSLOTH_STUDIO_HOME (and clear the alias) so the child cannot
-    # inherit a Studio root from the caller's shell. Without this, a shell
-    # that already exports either var would override the per-label sys.prefix
-    # inference and every backend would resolve to the caller's install.
+    # Pin UNSLOTH_STUDIO_HOME and clear the alias so the child can't inherit a
+    # Studio root from the caller's shell and resolve to the wrong install.
     env["UNSLOTH_STUDIO_HOME"] = str(studio_home)
     env.pop("STUDIO_HOME", None)
-    # The child process inherits a dup of stdout via Popen, so closing the
-    # parent's handle when this function returns is safe and avoids relying
-    # on GC timing to release the fd.
+    # Popen dups stdout into the child, so closing the parent's handle here is safe.
     with log_path.open("w") as fh:
         return subprocess.Popen(
             [
@@ -208,11 +189,8 @@ def _check_fake_home_clean(fake_home: Path) -> None:
 
 
 def _backend_pid_python(pid: int) -> Path | None:
-    """Resolve the binary backing a running PID. Linux exposes this at
-    /proc/PID/exe; on platforms without /proc (macOS, BSD, Windows) we
-    skip this check and rely on the install-time symlink + studio.conf
-    invariants to catch cross-resolution. Returns None when /proc is
-    unavailable so the caller can skip cleanly."""
+    """Resolve the binary backing a running PID via /proc/PID/exe (Linux only);
+    returns None elsewhere so the caller skips this check cleanly."""
     if sys.platform != "linux":
         return None
     proc_exe = Path(f"/proc/{pid}/exe")

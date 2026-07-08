@@ -13,7 +13,8 @@ Ref: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
 
 from __future__ import annotations
 
-from typing import Iterable, Optional
+import os
+from typing import Iterable, Mapping, Optional
 
 # Each group = every alias (short + long) of one hard-denied flag.
 # Extend the matching group when llama.cpp adds a new alias.
@@ -24,6 +25,11 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # Model identity: Studio resolves it from LoadRequest; a second -m would
     # load a different model than Studio thinks it loaded.
     frozenset({"-m", "--model"}),
+    # Public model id: Studio sets a sanitized --alias so the OpenAI API never
+    # exposes the local .gguf path. A user-supplied alias is appended after
+    # Studio's and, with llama.cpp's last-wins parsing, would reintroduce the
+    # path leak this is meant to prevent.
+    frozenset({"-a", "--alias"}),
     frozenset({"-mu", "--model-url"}),
     frozenset({"-dr", "--docker-repo"}),
     frozenset({"-hf", "-hfr", "--hf-repo"}),
@@ -124,7 +130,9 @@ def is_managed_flag(flag: str) -> bool:
 # from inherited extras so they can't last-wins-override an Apply that
 # re-sets the same field.
 _CONTEXT_FLAGS: frozenset[str] = frozenset({"-c", "--ctx-size"})
-_CACHE_FLAGS: frozenset[str] = frozenset({"-ctk", "--cache-type-k", "-ctv", "--cache-type-v"})
+_CACHE_TYPE_K_FLAGS: frozenset[str] = frozenset({"-ctk", "--cache-type-k"})
+_CACHE_TYPE_V_FLAGS: frozenset[str] = frozenset({"-ctv", "--cache-type-v"})
+_CACHE_FLAGS: frozenset[str] = _CACHE_TYPE_K_FLAGS | _CACHE_TYPE_V_FLAGS
 _SPEC_FLAGS: frozenset[str] = frozenset(
     {
         "--spec-default",
@@ -133,13 +141,22 @@ _SPEC_FLAGS: frozenset[str] = frozenset(
         "--spec-ngram-size",
         "--draft-min",
         "--draft-max",
-        # MTP path (llama.cpp #22673). --model-draft and aliases are
-        # Studio-managed since the separate-drafter support (Gemma 4): an
-        # inherited copy must not last-wins-override the auto-detected
-        # drafter. Explicit extras for the current load are never stripped.
+        # MTP path (llama.cpp #22673). The drafter selectors (local --model-draft
+        # and HF --spec-draft-hf aliases) are Studio-managed since the separate-
+        # drafter support (Gemma 4): an inherited copy must not last-wins-override
+        # the auto-detected drafter. Explicit extras for the current load are never
+        # stripped. The per-drafter tuning knobs (--spec-draft-type-*, -ngld,
+        # --spec-draft-device) are deliberately NOT stripped: the VRAM budget reads
+        # them via the same parsers the child honors, so they stay consistent on
+        # inherit, and stripping them would silently move a CPU-offloaded drafter
+        # back onto the GPU.
         "--model-draft",
         "-md",
         "--spec-draft-model",
+        "--spec-draft-hf",
+        "-hfd",
+        "-hfrd",
+        "--hf-repo-draft",
         "--spec-draft-n-max",
         "--spec-draft-n-min",
         "--spec-draft-p-min",
@@ -274,6 +291,20 @@ def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     return _last_flag_value(args, _CACHE_FLAGS)
 
 
+def parse_cache_override_per_axis(
+    args: Optional[Iterable[str]],
+) -> tuple[Optional[str], Optional[str]]:
+    """Last-wins --cache-type-k / --cache-type-v values kept apart, as (k, v).
+
+    parse_cache_override collapses both axes to one last-wins value; this keeps
+    them separate so an asymmetric K/V can be budgeted by its heavier axis.
+    """
+    return (
+        _last_flag_value(args, _CACHE_TYPE_K_FLAGS),
+        _last_flag_value(args, _CACHE_TYPE_V_FLAGS),
+    )
+
+
 def resolve_cache_type_kv(
     args: Optional[Iterable[str]], fallback_cache_type_kv: Optional[str]
 ) -> Optional[str]:
@@ -307,6 +338,60 @@ def resolve_tensor_parallel(args: Optional[Iterable[str]], fallback_tensor_paral
     if override is None:
         return fallback_tensor_parallel
     return override.strip().lower() == "tensor"
+
+
+def _env_split_mode_is_tensor(env: Optional[Mapping[str, str]] = None) -> bool:
+    """True when the inherited LLAMA_ARG_SPLIT_MODE env selects tensor. Studio
+    emits --split-mode only on its tensor branch, so a tensor env on the layer
+    path would run the child tensor-parallel unbudgeted; this flips the budget
+    to tensor. Only tensor is heavier, so other modes are ignored."""
+    raw = (os.environ if env is None else env).get("LLAMA_ARG_SPLIT_MODE")
+    return bool(raw) and raw.strip().lower() == "tensor"
+
+
+def _effective_tensor_parallel(
+    extra_args: Optional[Iterable[str]],
+    tensor_parallel: bool,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Tensor-parallel decision including the inherited LLAMA_ARG_SPLIT_MODE env.
+
+    resolve_tensor_parallel (extras + toggle), flipped on when extras set no split
+    mode but the child inherits a tensor split env. Shared by load_model (which
+    budgets and launches it) and the tensor-fallback wrapper (so an env-only
+    tensor crash still retries layer split)."""
+    resolved = resolve_tensor_parallel(extra_args, tensor_parallel)
+    if (
+        not resolved
+        and parse_split_mode_override(extra_args) is None
+        and _env_split_mode_is_tensor(env)
+    ):
+        return True
+    return resolved
+
+
+def _tensor_parallel_matches_loaded(
+    extra_args: Optional[Iterable[str]],
+    requested_tensor_parallel: bool,
+    loaded_tensor_parallel: bool,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Whether a duplicate load request matches a loaded server's tensor state.
+
+    Env-only tensor mode is a launch hint load_model may downgrade to layer split
+    (capacity/buffer), scrubbing the child env. So only let an inherited tensor env
+    raise a match against a server that *actually* launched tensor; on a downgraded
+    (layer) server the env is ignored, and an identical request would downgrade the
+    same way -- avoiding an endless reload of a healthy server."""
+    requested = resolve_tensor_parallel(extra_args, requested_tensor_parallel)
+    if (
+        loaded_tensor_parallel
+        and not requested
+        and parse_split_mode_override(extra_args) is None
+        and _env_split_mode_is_tensor(env)
+    ):
+        requested = True
+    return requested == loaded_tensor_parallel
 
 
 _MMPROJ_DISABLE_FLAGS: frozenset[str] = frozenset({"--no-mmproj", "--no-mmproj-auto"})

@@ -14,19 +14,22 @@ import json as _json
 import math
 import multiprocessing as mp
 import os
+import platform
 import queue
 import re
 import shutil
 import threading
 import time
+import traceback
 import structlog
 from datetime import datetime, timezone
 from loggers import get_logger
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING
 
-import matplotlib.pyplot as plt
+if TYPE_CHECKING:
+    import matplotlib.pyplot as plt
 from utils.hardware import prepare_gpu_selection
 from utils.native_path_leases import (
     native_path_secret_removed_for_child_start,
@@ -35,6 +38,30 @@ from utils.native_path_leases import (
 from utils.paths import outputs_root
 
 logger = get_logger(__name__)
+
+_pyplot = None
+_pyplot_failed = False
+
+
+def _load_pyplot():
+    """Lazily import matplotlib.pyplot (headless Agg); return it, or None if
+    matplotlib is unavailable. Deferred so a blocked native wheel (e.g. Windows
+    Smart App Control) never breaks server startup, only loss plotting.
+    """
+    global _pyplot, _pyplot_failed
+    if _pyplot is not None or _pyplot_failed:
+        return _pyplot
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")  # headless backend
+        import matplotlib.pyplot as plt
+
+        _pyplot = plt
+    except Exception as e:
+        _pyplot_failed = True
+        logger.warning("matplotlib unavailable; loss plots disabled", error = str(e))
+    return _pyplot
 
 
 def _coerce_seed(value, default = 3407) -> int:
@@ -73,12 +100,117 @@ def _coerce_optional_nonneg_float(name: str, value):
     return coerced
 
 
+def is_apple_silicon_training_platform() -> bool:
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def is_mlx_training_device(device: Any) -> bool:
+    return (
+        str(device).lower() == "mlx"
+        or str(device).lower().endswith(".mlx")
+        or getattr(device, "name", "").lower() == "mlx"
+    )
+
+
+def should_use_mlx_training_backend(*, device: Optional[Any] = None) -> bool:
+    if device is not None:
+        return is_mlx_training_device(device)
+    return is_apple_silicon_training_platform()
+
+
+def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
+    """Build the normalized worker config shared by Studio and the CLI adapter."""
+    config = {
+        "model_name": values["model_name"],
+        "project_name": values.get("project_name"),
+        "training_type": values.get("training_type", "LoRA/QLoRA"),
+        "hf_token": values.get("hf_token", ""),
+        "load_in_4bit": values.get("load_in_4bit", True),
+        "max_seq_length": values.get("max_seq_length", 2048),
+        "vision_image_size": values.get("vision_image_size"),
+        "hf_dataset": values.get("hf_dataset", ""),
+        "local_datasets": values.get("local_datasets"),
+        "local_eval_datasets": values.get("local_eval_datasets"),
+        "format_type": values.get("format_type", ""),
+        "subset": values.get("subset"),
+        "train_split": values.get("train_split", "train"),
+        "eval_split": values.get("eval_split"),
+        "eval_steps": values.get("eval_steps", 0.00),
+        "dataset_streaming": values.get("dataset_streaming", False),
+        "dataset_slice_start": values.get("dataset_slice_start"),
+        "dataset_slice_end": values.get("dataset_slice_end"),
+        "custom_format_mapping": values.get("custom_format_mapping"),
+        "is_dataset_image": values.get("is_dataset_image", False),
+        "is_dataset_audio": values.get("is_dataset_audio", False),
+        "is_embedding": values.get("is_embedding", False),
+        "num_epochs": values.get("num_epochs", 3),
+        "learning_rate": values.get("learning_rate", "2e-4"),
+        "embedding_learning_rate": values.get("embedding_learning_rate"),
+        "batch_size": values.get("batch_size", 2),
+        "gradient_accumulation_steps": values.get("gradient_accumulation_steps", 4),
+        "warmup_steps": values.get("warmup_steps"),
+        "warmup_ratio": values.get("warmup_ratio"),
+        "max_steps": values.get("max_steps", 0),
+        "save_steps": values.get("save_steps", 0),
+        "weight_decay": values.get("weight_decay", 0.001),
+        "max_grad_norm": values.get("max_grad_norm", 0.0),
+        "max_grad_value": _coerce_optional_nonneg_float(
+            "max_grad_value", values.get("max_grad_value")
+        ),
+        "max_grad_leaf_norm": _coerce_optional_nonneg_float(
+            "max_grad_leaf_norm", values.get("max_grad_leaf_norm")
+        ),
+        "cast_norm_output_to_input_dtype": _coerce_optional_bool(
+            values.get("cast_norm_output_to_input_dtype"), True
+        ),
+        "random_seed": _coerce_seed(values.get("random_seed")),
+        "packing": values.get("packing", False),
+        "optim": values.get("optim", "adamw_8bit"),
+        "lr_scheduler_type": values.get("lr_scheduler_type", "linear"),
+        "use_lora": values.get("use_lora", True),
+        "lora_r": values.get("lora_r", 16),
+        "lora_alpha": values.get("lora_alpha", 16),
+        "lora_dropout": values.get("lora_dropout", 0.0),
+        "target_modules": values.get("target_modules"),
+        "gradient_checkpointing": values.get("gradient_checkpointing", "unsloth"),
+        "use_rslora": values.get("use_rslora", False),
+        "use_loftq": values.get("use_loftq", False),
+        "train_on_completions": values.get("train_on_completions", False),
+        "finetune_vision_layers": values.get("finetune_vision_layers", True),
+        "finetune_language_layers": values.get("finetune_language_layers", True),
+        "finetune_attention_modules": values.get("finetune_attention_modules", True),
+        "finetune_mlp_modules": values.get("finetune_mlp_modules", True),
+        "enable_wandb": values.get("enable_wandb", False),
+        "wandb_token": values.get("wandb_token"),
+        "wandb_project": values.get("wandb_project", "unsloth-training"),
+        "enable_tensorboard": values.get("enable_tensorboard", False),
+        "tensorboard_dir": values.get("tensorboard_dir", "runs"),
+        "resume_from_checkpoint": values.get("resume_from_checkpoint"),
+        "trust_remote_code": values.get("trust_remote_code", False),
+        "approved_remote_code_fingerprint": values.get("approved_remote_code_fingerprint"),
+        "subject": values.get("subject"),
+        "gpu_ids": values.get("gpu_ids"),
+        "s3_config": values.get("s3_config"),
+        "disable_xet": values.get("disable_xet", False),
+    }
+    for key in ("output_dir", "allow_external_output_dir"):
+        if key in values:
+            config[key] = values.get(key)
+    if config["training_type"] == "Full Finetuning":
+        config["load_in_4bit"] = False
+    return config
+
+
 _HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
 
 
 def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
+    # ``subject`` (the run owner's username / API-key id) is worker-only metadata; never
+    # persist it to config_json, which run-history GET returns to any authenticated user.
     db_config = {
-        k: v for k, v in config.items() if k not in {"hf_token", "wandb_token", "s3_config"}
+        k: v
+        for k, v in config.items()
+        if k not in {"hf_token", "wandb_token", "s3_config", "subject"}
     }
     s3_config = config.get("s3_config")
     if hasattr(s3_config, "model_dump"):
@@ -104,7 +236,7 @@ def _s3_dataset_name(s3_dataset: Any) -> Optional[str]:
     return f"s3://{bucket}/{prefix}" if prefix else f"s3://{bucket}"
 
 
-def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
+def _cleanup_cancelled_checkpoints(output_dir: Union[str, os.PathLike]) -> None:
     """Remove only HF Trainer ``tmp-checkpoint-<step>/`` partials after a cancel.
 
     Completed ``checkpoint-<int>/`` dirs survive. Symlinked output_dir / children
@@ -154,7 +286,7 @@ PLOT_HEIGHT = 3.5
 
 @dataclass
 class TrainingProgress:
-    """Mirror of trainer.TrainingProgress so the parent never imports heavy ML modules."""
+    """Shared training progress payload for Studio and backend-aware trainers."""
 
     epoch: float = 0
     step: int = 0
@@ -171,6 +303,423 @@ class TrainingProgress:
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
     peak_memory_gb: Optional[float] = None
+    output_dir: Optional[str] = None
+
+
+class _MLXTrainerAdapter:
+    """Adapts the legacy UnslothTrainer API to the shared Studio MLX worker path."""
+
+    def __init__(self):
+        self.model = None
+        self.tokenizer = None
+        self.trainer = None
+        self.training_thread = None
+        self.training_progress = TrainingProgress()
+        self.progress_callbacks: list[Callable[[TrainingProgress], None]] = []
+        self.is_training = False
+        self.should_stop = False
+        self.save_on_stop = True
+        self.load_in_4bit = True
+        self.output_dir = None
+
+        self.is_cpt = False
+        self.is_vlm = False
+        self.is_audio = False
+        self.is_audio_vlm = False
+        self.model_name = None
+        self.max_seq_length = None
+
+        self._model_config: dict[str, Any] = {}
+        self._peft_config: dict[str, Any] = {}
+        self._dataset_config: dict[str, Any] = {}
+        self._event_queue: Optional[queue.Queue] = None
+        self._stop_queue: Optional[queue.Queue] = None
+        self._pump_thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+
+    def _activate_transformers_for_model(self, model_name: str, hf_token: Optional[str]) -> None:
+        try:
+            from utils.transformers_version import activate_transformers_for_subprocess
+            activate_transformers_for_subprocess(model_name, hf_token)
+        except Exception as exc:
+            logger.warning("MLX trainer adapter Transformers activation failed", error = str(exc))
+
+    def add_progress_callback(self, callback: Callable[[TrainingProgress], None]):
+        self.progress_callbacks.append(callback)
+
+    def _update_progress(self, **kwargs):
+        with self._lock:
+            for key, value in kwargs.items():
+                if hasattr(self.training_progress, key):
+                    setattr(self.training_progress, key, value)
+            progress = self.training_progress
+        for callback in self.progress_callbacks:
+            try:
+                callback(progress)
+            except Exception:
+                pass
+
+    def load_model(
+        self,
+        model_name: str,
+        max_seq_length: int = 2048,
+        load_in_4bit: bool = True,
+        hf_token: Optional[str] = None,
+        is_dataset_image: bool = False,
+        is_dataset_audio: bool = False,
+        trust_remote_code: bool = False,
+        full_finetuning: bool = False,
+        gpu_ids: Optional[list[int]] = None,
+    ) -> bool:
+        self.model_name = model_name
+        self.max_seq_length = max_seq_length
+        self.load_in_4bit = load_in_4bit
+        self._audio_type = None
+        self._activate_transformers_for_model(model_name, hf_token)
+        try:
+            from utils.models import detect_audio_type, is_vision_model
+
+            self._audio_type = detect_audio_type(model_name, hf_token)
+            if self._audio_type == "audio_vlm":
+                self.is_audio = False
+                self.is_audio_vlm = bool(is_dataset_audio)
+                self._audio_type = None
+            else:
+                self.is_audio = self._audio_type is not None
+                self.is_audio_vlm = False
+            vision = is_vision_model(model_name, hf_token = hf_token) if not self.is_audio else False
+            self.is_vlm = not self.is_audio_vlm and vision and bool(is_dataset_image)
+        except Exception as exc:
+            logger.warning("MLX trainer adapter model type detection failed", error = str(exc))
+            self.is_vlm = False
+            self.is_audio = False
+            self.is_audio_vlm = False
+        self.model = object()
+        self.tokenizer = object()
+        self._model_config = {
+            "model_name": model_name,
+            "max_seq_length": max_seq_length,
+            "load_in_4bit": load_in_4bit,
+            "hf_token": hf_token or "",
+            "is_dataset_image": bool(is_dataset_image),
+            "is_dataset_audio": bool(is_dataset_audio),
+            "trust_remote_code": bool(trust_remote_code),
+            "gpu_ids": gpu_ids,
+        }
+        self._update_progress(
+            is_training = False,
+            is_completed = False,
+            error = None,
+            step = 0,
+            loss = 0.0,
+            epoch = 0,
+            status_message = f"Queued MLX model load: {model_name}",
+        )
+        return True
+
+    def prepare_model_for_training(
+        self,
+        use_lora: bool = True,
+        finetune_vision_layers: bool = True,
+        finetune_language_layers: bool = True,
+        finetune_attention_modules: bool = True,
+        finetune_mlp_modules: bool = True,
+        target_modules: Optional[Union[list, str]] = None,
+        lora_r: int = 16,
+        lora_alpha: int = 16,
+        lora_dropout: float = 0.0,
+        use_gradient_checkpointing: Union[str, bool] = "unsloth",
+        use_rslora: bool = False,
+        use_loftq: bool = False,
+    ) -> bool:
+        self._peft_config = {
+            "use_lora": bool(use_lora),
+            "lora_r": lora_r,
+            "lora_alpha": lora_alpha,
+            "lora_dropout": lora_dropout,
+            "target_modules": target_modules,
+            "gradient_checkpointing": use_gradient_checkpointing,
+            "use_rslora": bool(use_rslora),
+            "use_loftq": bool(use_loftq),
+            "finetune_vision_layers": bool(finetune_vision_layers),
+            "finetune_language_layers": bool(finetune_language_layers),
+            "finetune_attention_modules": bool(finetune_attention_modules),
+            "finetune_mlp_modules": bool(finetune_mlp_modules),
+        }
+        self._update_progress(status_message = "Queued MLX training setup")
+        return True
+
+    def load_and_format_dataset(
+        self,
+        dataset_source: Optional[str],
+        format_type: str = "auto",
+        local_datasets: Optional[list[str]] = None,
+        local_eval_datasets: Optional[list[str]] = None,
+        custom_format_mapping: Optional[dict[str, Any]] = None,
+        subset: Optional[str] = None,
+        train_split: str = "train",
+        eval_split: Optional[str] = None,
+        dataset_streaming: bool = False,
+        eval_steps: float = 0.00,
+        dataset_slice_start: Optional[int] = None,
+        dataset_slice_end: Optional[int] = None,
+        is_cpt: bool = False,
+        s3_config: dict = None,
+    ) -> Optional[tuple]:
+        self._dataset_config = {
+            "hf_dataset": dataset_source or "",
+            "local_datasets": local_datasets,
+            "local_eval_datasets": local_eval_datasets,
+            "format_type": format_type or "",
+            "custom_format_mapping": custom_format_mapping,
+            "subset": subset,
+            "train_split": train_split or "train",
+            "eval_split": eval_split,
+            "dataset_streaming": bool(dataset_streaming),
+            "eval_steps": eval_steps or 0.0,
+            "dataset_slice_start": dataset_slice_start,
+            "dataset_slice_end": dataset_slice_end,
+            "s3_config": s3_config,
+        }
+        self.is_cpt = bool(is_cpt)
+        self._update_progress(status_message = "Queued MLX dataset load")
+        return ({"dataset": [], "final_format": "deferred_mlx_cli", "success": True}, None)
+
+    def start_training(
+        self,
+        dataset = None,
+        eval_dataset = None,
+        **training_args,
+    ) -> bool:
+        if self.is_training and self.training_thread and self.training_thread.is_alive():
+            return False
+        if self._pump_thread and self._pump_thread.is_alive():
+            self._pump_thread.join(timeout = 2.0)
+            if self._pump_thread.is_alive():
+                self._update_progress(error = "Previous training event pump is still finalizing")
+                return False
+        if not self._model_config:
+            self._update_progress(error = "Model not loaded")
+            return False
+        if not self._dataset_config:
+            self._update_progress(error = "Dataset not loaded")
+            return False
+        if self.is_cpt:
+            self._update_progress(
+                error = "Continued Pretraining is not supported for MLX training yet.",
+                is_training = False,
+                is_completed = False,
+            )
+            return False
+
+        config = self._build_worker_config(training_args)
+        event_queue = queue.Queue()
+        stop_queue = queue.Queue()
+        self._event_queue = event_queue
+        self._stop_queue = stop_queue
+        self.should_stop = False
+        self.is_training = True
+        self.training_progress = TrainingProgress(
+            is_training = True,
+            status_message = "Initializing MLX training...",
+        )
+
+        self.training_thread = threading.Thread(
+            target = self._run_training_thread,
+            args = (config, event_queue, stop_queue),
+            daemon = True,
+        )
+        self._pump_thread = threading.Thread(
+            target = self._pump_events,
+            args = (event_queue, self.training_thread),
+            daemon = True,
+        )
+        self.training_thread.start()
+        self._pump_thread.start()
+        return True
+
+    def _build_worker_config(self, training_args: dict[str, Any]) -> dict[str, Any]:
+        peft = {
+            "use_lora": True,
+            "lora_r": 16,
+            "lora_alpha": 16,
+            "lora_dropout": 0.0,
+            "target_modules": None,
+            "gradient_checkpointing": "unsloth",
+            "use_rslora": False,
+            "use_loftq": False,
+            "finetune_vision_layers": True,
+            "finetune_language_layers": True,
+            "finetune_attention_modules": True,
+            "finetune_mlp_modules": True,
+            **self._peft_config,
+        }
+        output_dir = training_args.get("output_dir")
+        if output_dir:
+            output_dir = os.path.abspath(os.path.expanduser(str(output_dir)))
+        values = {
+            **self._model_config,
+            **self._dataset_config,
+            **training_args,
+            "training_type": (
+                "Continued Pretraining"
+                if self.is_cpt
+                else "LoRA/QLoRA"
+                if peft["use_lora"]
+                else "Full Finetuning"
+            ),
+            **peft,
+            "output_dir": output_dir,
+            "allow_external_output_dir": bool(output_dir),
+        }
+        config = _build_training_worker_config(values)
+        config["resolved_gpu_ids"] = None
+        config["gpu_selection"] = None
+        return config
+
+    def _run_training_thread(
+        self, config: dict[str, Any], event_queue: queue.Queue, stop_queue: queue.Queue
+    ):
+        try:
+            self._run_mlx_worker(config, event_queue, stop_queue)
+        except Exception as exc:
+            if event_queue is not None:
+                event_queue.put(
+                    {
+                        "type": "error",
+                        "error": str(exc),
+                        "stack": traceback.format_exc(limit = 20),
+                        "ts": time.time(),
+                    }
+                )
+
+    def _run_mlx_worker(
+        self, config: dict[str, Any], event_queue: queue.Queue, stop_queue: queue.Queue
+    ):
+        from .worker import run_mlx_training_process
+        run_mlx_training_process(
+            event_queue = event_queue,
+            stop_queue = stop_queue,
+            config = config,
+        )
+
+    def _pump_events(self, event_queue: queue.Queue, training_thread: threading.Thread):
+        while True:
+            event = None
+            try:
+                event = event_queue.get(timeout = 0.25)
+            except queue.Empty:
+                pass
+            if event is not None:
+                self._handle_event(event)
+                continue
+            if not training_thread.is_alive():
+                self._drain_events(event_queue)
+                with self._lock:
+                    if self.training_progress.is_training:
+                        self.training_progress.is_training = False
+                        if self.should_stop:
+                            self.training_progress.status_message = "Training stopped."
+                        elif (
+                            not self.training_progress.error
+                            and not self.training_progress.is_completed
+                        ):
+                            self.training_progress.error = "Training process exited unexpectedly"
+                    self.is_training = False
+                    self._event_queue = None
+                    self._stop_queue = None
+                return
+
+    def _drain_events(self, event_queue: Optional[queue.Queue] = None):
+        event_queue = event_queue or self._event_queue
+        if event_queue is None:
+            return
+        while True:
+            try:
+                self._handle_event(event_queue.get_nowait())
+            except queue.Empty:
+                return
+
+    def _handle_event(self, event: dict[str, Any]):
+        etype = event.get("type")
+        if etype == "status":
+            self._update_progress(
+                status_message = event.get("status_message") or event.get("message") or ""
+            )
+            return
+        if etype == "progress":
+            self._update_progress(
+                step = event.get("step", self.training_progress.step),
+                epoch = event.get("epoch", self.training_progress.epoch),
+                loss = event.get("loss", self.training_progress.loss),
+                learning_rate = event.get("learning_rate", self.training_progress.learning_rate),
+                total_steps = event.get("total_steps", self.training_progress.total_steps),
+                elapsed_seconds = event.get(
+                    "elapsed_seconds",
+                    self.training_progress.elapsed_seconds,
+                ),
+                eta_seconds = event.get("eta_seconds", self.training_progress.eta_seconds),
+                grad_norm = event.get("grad_norm", self.training_progress.grad_norm),
+                num_tokens = event.get("num_tokens", self.training_progress.num_tokens),
+                eval_loss = event.get("eval_loss", self.training_progress.eval_loss),
+                peak_memory_gb = event.get("peak_memory_gb", self.training_progress.peak_memory_gb),
+            )
+            return
+        if etype == "complete":
+            status_message = event.get("status_message") or "Training completed"
+            output_dir = event.get("output_dir")
+            was_cancelled = self.should_stop or status_message.strip().lower() in {
+                "training cancelled",
+                "training stopped",
+            }
+            self.output_dir = output_dir
+            self._update_progress(
+                is_training = False,
+                is_completed = not was_cancelled,
+                error = None,
+                status_message = status_message,
+                output_dir = output_dir,
+            )
+            self.is_training = False
+            return
+        if etype == "error":
+            self._update_progress(
+                is_training = False,
+                is_completed = False,
+                error = event.get("error") or event.get("message") or "Training failed",
+            )
+            self.is_training = False
+            return
+
+    def stop_training(self, save: bool = True):
+        self.should_stop = True
+        self.save_on_stop = bool(save)
+        if self._stop_queue is not None:
+            self._stop_queue.put({"type": "stop", "save": save})
+        status_message = (
+            "Stopping training and saving checkpoint..." if save else "Cancelling training..."
+        )
+        self._update_progress(status_message = status_message)
+        return True
+
+    def get_training_progress(self) -> TrainingProgress:
+        pump_thread = self._pump_thread
+        training_thread = self.training_thread
+        if (
+            pump_thread is not None
+            and pump_thread.is_alive()
+            and (training_thread is None or not training_thread.is_alive())
+            and threading.current_thread() is not pump_thread
+        ):
+            pump_thread.join(timeout = 5.0)
+        if pump_thread is None or not pump_thread.is_alive():
+            self._drain_events()
+        with self._lock:
+            return replace(self.training_progress)
+
+
+def create_mlx_trainer_adapter(*args, **kwargs):
+    return _MLXTrainerAdapter(*args, **kwargs)
 
 
 class TrainingBackend:
@@ -187,6 +736,9 @@ class TrainingBackend:
         self._event_queue: Any = None
         self._stop_queue: Any = None
         self._pump_thread: Optional[threading.Thread] = None
+        # True while a pump thread should be running; cleared on intended exits.
+        # Left True after an abnormal death so _ensure_pump_alive spots a crash.
+        self._pump_running: bool = False
         self._lock = threading.Lock()
 
         # Progress state (updated by pump thread from subprocess events)
@@ -217,17 +769,36 @@ class TrainingBackend:
         self._db_config: Optional[dict] = None
         self._db_started_at: Optional[str] = None
 
+        # Xet -> HTTP model-load fallback state (config kept for the respawn).
+        self._last_full_config: Optional[dict] = None
+        self._in_model_load: bool = False
+        self._xet_fallback_used: bool = False
+        self._needs_xet_respawn: bool = False
+
         logger.info("TrainingBackend initialized (subprocess mode)")
 
     # ------------------------------------------------------------------
     # Public API (called by routes/training.py)
     # ------------------------------------------------------------------
 
-    def start_training(self, job_id: str, **kwargs) -> bool:
+    def start_training(
+        self,
+        job_id: str,
+        *,
+        before_spawn = None,
+        **kwargs,
+    ) -> bool:
         """Spawn a subprocess to run the full training pipeline.
 
         All kwargs are serialized into a config dict and sent to the worker.
         Returns True if the subprocess started successfully.
+
+        ``before_spawn`` is an optional no-arg callable run after synchronous
+        validation (start guards, config build, explicit gpu_ids) passes but
+        before VRAM-dependent auto GPU-selection and the spawn -- used to free
+        VRAM (e.g. unload chat) without tearing it down on a refused start, while
+        still letting auto-selection place training against the freed memory.
+        Hook failures never block the start.
         """
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
@@ -241,102 +812,56 @@ class TrainingBackend:
                 logger.warning("Previous pump thread did not exit within 5s — refusing to start")
                 return False
         self._pump_thread = None
+        # Clear a stale crash flag from a prior died pump so the watchdog can't
+        # treat this fresh setup as a recoverable death.
+        self._pump_running = False
 
-        # Build config dict for the subprocess
-        config = {
-            "model_name": kwargs["model_name"],
-            "training_type": kwargs.get("training_type", "LoRA/QLoRA"),
-            "hf_token": kwargs.get("hf_token", ""),
-            "load_in_4bit": kwargs.get("load_in_4bit", True),
-            "max_seq_length": kwargs.get("max_seq_length", 2048),
-            "vision_image_size": kwargs.get("vision_image_size"),
-            "hf_dataset": kwargs.get("hf_dataset", ""),
-            "local_datasets": kwargs.get("local_datasets"),
-            "local_eval_datasets": kwargs.get("local_eval_datasets"),
-            "format_type": kwargs.get("format_type", ""),
-            "subset": kwargs.get("subset"),
-            "train_split": kwargs.get("train_split", "train"),
-            "eval_split": kwargs.get("eval_split"),
-            "eval_steps": kwargs.get("eval_steps", 0.00),
-            "dataset_slice_start": kwargs.get("dataset_slice_start"),
-            "dataset_slice_end": kwargs.get("dataset_slice_end"),
-            "custom_format_mapping": kwargs.get("custom_format_mapping"),
-            "is_dataset_image": kwargs.get("is_dataset_image", False),
-            "is_dataset_audio": kwargs.get("is_dataset_audio", False),
-            "is_embedding": kwargs.get("is_embedding", False),
-            "num_epochs": kwargs.get("num_epochs", 3),
-            "learning_rate": kwargs.get("learning_rate", "2e-4"),
-            "embedding_learning_rate": kwargs.get("embedding_learning_rate"),
-            "batch_size": kwargs.get("batch_size", 2),
-            "gradient_accumulation_steps": kwargs.get("gradient_accumulation_steps", 4),
-            "warmup_steps": kwargs.get("warmup_steps"),
-            "warmup_ratio": kwargs.get("warmup_ratio"),
-            "max_steps": kwargs.get("max_steps", 0),
-            "save_steps": kwargs.get("save_steps", 0),
-            "weight_decay": kwargs.get("weight_decay", 0.001),
-            "max_grad_norm": kwargs.get("max_grad_norm", 0.0),
-            "max_grad_value": _coerce_optional_nonneg_float(
-                "max_grad_value", kwargs.get("max_grad_value")
-            ),
-            "max_grad_leaf_norm": _coerce_optional_nonneg_float(
-                "max_grad_leaf_norm", kwargs.get("max_grad_leaf_norm")
-            ),
-            "cast_norm_output_to_input_dtype": _coerce_optional_bool(
-                kwargs.get("cast_norm_output_to_input_dtype"), True
-            ),
-            # MLX/CUDA/embedding workers need an int (transformers.set_seed(None) raises).
-            "random_seed": _coerce_seed(kwargs.get("random_seed")),
-            "packing": kwargs.get("packing", False),
-            "optim": kwargs.get("optim", "adamw_8bit"),
-            "lr_scheduler_type": kwargs.get("lr_scheduler_type", "linear"),
-            "use_lora": kwargs.get("use_lora", True),
-            "lora_r": kwargs.get("lora_r", 16),
-            "lora_alpha": kwargs.get("lora_alpha", 16),
-            "lora_dropout": kwargs.get("lora_dropout", 0.0),
-            "target_modules": kwargs.get("target_modules"),
-            "gradient_checkpointing": kwargs.get("gradient_checkpointing", "unsloth"),
-            "use_rslora": kwargs.get("use_rslora", False),
-            "use_loftq": kwargs.get("use_loftq", False),
-            "train_on_completions": kwargs.get("train_on_completions", False),
-            "finetune_vision_layers": kwargs.get("finetune_vision_layers", True),
-            "finetune_language_layers": kwargs.get("finetune_language_layers", True),
-            "finetune_attention_modules": kwargs.get("finetune_attention_modules", True),
-            "finetune_mlp_modules": kwargs.get("finetune_mlp_modules", True),
-            "enable_wandb": kwargs.get("enable_wandb", False),
-            "wandb_token": kwargs.get("wandb_token"),
-            "wandb_project": kwargs.get("wandb_project", "unsloth-training"),
-            "enable_tensorboard": kwargs.get("enable_tensorboard", False),
-            "tensorboard_dir": kwargs.get("tensorboard_dir", "runs"),
-            "resume_from_checkpoint": kwargs.get("resume_from_checkpoint"),
-            "trust_remote_code": kwargs.get("trust_remote_code", False),
-            "gpu_ids": kwargs.get("gpu_ids"),
-            "s3_config": kwargs.get("s3_config"),
-        }
+        config = _build_training_worker_config(kwargs)
 
-        # Full finetuning always runs in 16-bit; LoRA/QLoRA/CPT keep the request.
-        if config["training_type"] == "Full Finetuning":
-            config["load_in_4bit"] = False
-
-        # Spawn into locals so state is untouched on failure.
+        # Split GPU validation from placement around the VRAM hook:
+        #   * Explicit gpu_ids are validated here (raises -> the route returns 400
+        #     before any teardown) and their placement is VRAM-independent, so it
+        #     stays correct after the hook frees memory.
+        #   * Auto-selection ranks GPUs by *free* VRAM, so it is deferred until
+        #     after the hook frees export/chat -- otherwise it could pin training
+        #     onto a GPU the hook is about to clear (and onto a kept chat model).
         from utils.hardware import hardware as _hw
 
-        if _hw.DEVICE == _hw.DeviceType.MLX:
+        gpu_ids = kwargs.get("gpu_ids")
+        gpu_selection_kwargs = dict(
+            model_name = config["model_name"],
+            hf_token = config["hf_token"] or None,
+            training_type = config["training_type"],
+            load_in_4bit = config["load_in_4bit"],
+            batch_size = config.get("batch_size", 4),
+            max_seq_length = config.get("max_seq_length", 2048),
+            lora_rank = config.get("lora_r", 16),
+            target_modules = config.get("target_modules"),
+            gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+            optimizer = config.get("optim", "adamw_8bit"),
+        )
+
+        defer_auto_selection = False
+        if should_use_mlx_training_backend(device = _hw.DEVICE):
             config["resolved_gpu_ids"] = None
             config["gpu_selection"] = None
+        elif gpu_ids:
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(gpu_ids, **gpu_selection_kwargs)
+            config["resolved_gpu_ids"] = resolved_gpu_ids
+            config["gpu_selection"] = gpu_selection
         else:
-            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
-                kwargs.get("gpu_ids"),
-                model_name = config["model_name"],
-                hf_token = config["hf_token"] or None,
-                training_type = config["training_type"],
-                load_in_4bit = config["load_in_4bit"],
-                batch_size = config.get("batch_size", 4),
-                max_seq_length = config.get("max_seq_length", 2048),
-                lora_rank = config.get("lora_r", 16),
-                target_modules = config.get("target_modules"),
-                gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
-                optimizer = config.get("optim", "adamw_8bit"),
-            )
+            defer_auto_selection = True
+
+        # Synchronous validation passed -> free VRAM (export + chat) now, before
+        # auto-selection and the spawn, so placement sees the freed memory.
+        if before_spawn is not None:
+            try:
+                before_spawn()
+            except Exception:
+                logger.warning("before_spawn hook failed; continuing", exc_info = True)
+
+        if defer_auto_selection:
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(None, **gpu_selection_kwargs)
             config["resolved_gpu_ids"] = resolved_gpu_ids
             config["gpu_selection"] = gpu_selection
 
@@ -358,6 +883,9 @@ class TrainingBackend:
                     daemon = True,
                 )
                 proc.start()
+                from utils.process_lifetime import adopt_pid
+
+                adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
         except Exception:
             logger.error("Failed to start training subprocess", exc_info = True)
             return False
@@ -386,17 +914,27 @@ class TrainingBackend:
         self._db_total_steps_set = False
         self._db_config = _sanitize_db_config(config)
         self._db_started_at = datetime.now(timezone.utc).isoformat()
+        # Start each job Xet-first; keep config so a stall can respawn over HTTP.
+        self._last_full_config = config
+        self._in_model_load = False
+        self._xet_fallback_used = False
+        self._needs_xet_respawn = False
 
-        # Assign subprocess handles after state reset.
-        self._event_queue = event_queue
-        self._stop_queue = stop_queue
-        self._proc = proc
-
-        # Eagerly create DB run row so it appears in history during model loading.
+        # Create the DB run row before the pump can consume events, so it appears
+        # in history during model loading and a fast terminal worker can't race the
+        # pump into a duplicate create/finalize. From here the pump only finalizes.
         self._ensure_db_run_created()
 
-        self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
-        self._pump_thread.start()
+        # Assign handles and start the pump together under the lock so a concurrent
+        # poll can't see a live _proc with no pump and spawn a duplicate.
+        new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+        with self._lock:
+            self._pump_running = False
+            self._event_queue = event_queue
+            self._stop_queue = stop_queue
+            self._proc = proc
+            self._pump_thread = new_pump
+            new_pump.start()
 
         return True
 
@@ -446,8 +984,139 @@ class TrainingBackend:
                     output_dir,
                 )
 
+    def _handle_stall_event(self, event: dict) -> None:
+        """A worker reported a no-progress download stall.
+
+        On the first model-load, terminate the worker so the pump loop respawns it
+        over HTTP. A later stall (already on HTTP, or outside model-load) surfaces
+        as an error instead.
+        """
+        msg = event.get("message", "Download stalled")
+        with self._lock:
+            recover = self._in_model_load and not self._xet_fallback_used
+            proc = self._proc
+            if recover:
+                self._xet_fallback_used = True
+                self._needs_xet_respawn = True
+                self._progress.status_message = (
+                    "Model download stalled on Xet; retrying over HTTP..."
+                )
+            else:
+                self._progress.error = self._progress.error or (
+                    "Model download stalled even over HTTP -- check your network connection"
+                )
+        if recover:
+            logger.warning("Training model-load stalled on Xet; respawning over HTTP: %s", msg)
+        else:
+            logger.error("Training download stalled with no further fallback: %s", msg)
+        # Terminate either way so the pump loop proceeds (respawn or finalize).
+        if proc is not None and proc.is_alive():
+            proc.terminate()
+
+    def _respawn_worker_disable_xet(self) -> None:
+        """Respawn the worker once with HF_HUB_DISABLE_XET=1 after a model-load
+        stall. Runs on the exiting pump thread, reaps the terminated worker, and
+        starts a fresh worker + pump. DB/progress run-state is preserved so the
+        history row is not duplicated; the new worker re-formats and loads over HTTP.
+        """
+        config = self._last_full_config
+        if config is None:
+            logger.error("Cannot respawn training worker: no stored config")
+            return
+
+        with self._lock:
+            old_proc = self._proc
+        if old_proc is not None:
+            old_proc.join(timeout = 5.0)
+            if old_proc.is_alive():
+                old_proc.kill()
+                old_proc.join(timeout = 2.0)
+
+        config = {**config, "disable_xet": True}
+        self._last_full_config = config
+        logger.warning("Respawning training worker with HF_HUB_DISABLE_XET=1 after Xet stall")
+
+        from .worker import run_training_process
+
+        try:
+            with native_path_secret_removed_for_child_start():
+                event_queue = _CTX.Queue()
+                stop_queue = _CTX.Queue()
+                new_proc = _CTX.Process(
+                    target = run_without_native_path_secret,
+                    args = (run_training_process,),
+                    kwargs = {
+                        "event_queue": event_queue,
+                        "stop_queue": stop_queue,
+                        "config": config,
+                    },
+                    daemon = True,
+                )
+                new_proc.start()
+                from utils.process_lifetime import adopt_pid
+
+                adopt_pid(new_proc.pid)  # bind to parent lifetime (Windows job / sweep)
+        except Exception:
+            logger.error("Failed to respawn training subprocess", exc_info = True)
+            with self._lock:
+                # No replacement pump will run; clear the flag so a later run can't
+                # inherit a stale _pump_running=True and spawn a duplicate.
+                self._pump_running = False
+                self._progress.is_training = False
+                self._progress.error = "Failed to recover stalled model download"
+            self._ensure_db_run_created()
+            self._finalize_run_in_db(
+                status = "error",
+                error_message = "Failed to recover stalled model download",
+            )
+            return
+
+        logger.info("Training subprocess respawned with Xet disabled (pid=%s)", new_proc.pid)
+        new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+        with self._lock:
+            self._in_model_load = False
+            self._event_queue = event_queue
+            self._stop_queue = stop_queue
+            self._proc = new_proc
+            self._pump_thread = new_pump
+            # Start under the lock so _ensure_pump_alive can never observe the
+            # new pump as a not-yet-started (dead) thread and spawn a duplicate.
+            new_pump.start()
+
+    def _ensure_pump_alive(self) -> bool:
+        """Restart the event pump if it crashed, even after the worker exited.
+
+        Defence in depth behind _pump_loop's guards. _pump_running stays True only
+        after an abnormal exit (the loop clears it on intended exits), so a True
+        flag plus a dead thread is an unambiguous crash. Restarts even after worker
+        exit so a fresh pump can drain the terminal events and finalize; otherwise
+        the run looks stuck "running" forever. Returns True if restarted.
+        """
+        with self._lock:
+            if not self._pump_running:
+                return False
+            # A restarted pump needs the worker handle and queue to drain/finalize;
+            # their absence means nothing is left to recover.
+            if self._proc is None or self._event_queue is None:
+                return False
+            if self._pump_thread is not None and self._pump_thread.is_alive():
+                return False
+            logger.error(
+                "Training event pump thread died while the worker is still running; "
+                "restarting it so progress updates resume."
+            )
+            new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+            self._pump_thread = new_pump
+            # Start under the lock so a concurrent _ensure_pump_alive can't see
+            # this thread as not-yet-started and spawn yet another pump.
+            new_pump.start()
+        return True
+
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
+        # Self-heal a crashed pump first: a dead pump must never leave the worker
+        # training invisibly behind a frozen UI. Cheap enough for per-second polls.
+        self._ensure_pump_alive()
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
                 return True
@@ -501,7 +1170,7 @@ class TrainingBackend:
         plot = self._create_loss_plot(progress, theme)
         return (plot, progress)
 
-    def refresh_plot_for_theme(self, theme: str) -> Optional[plt.Figure]:
+    def refresh_plot_for_theme(self, theme: str) -> "Optional[plt.Figure]":
         """Refresh plot with new theme."""
         if theme and isinstance(theme, str) and theme in ["light", "dark"]:
             self.current_theme = theme
@@ -548,43 +1217,87 @@ class TrainingBackend:
     # Event pump (background thread)
     # ------------------------------------------------------------------
 
+    def _safe_handle_event(self, event: dict) -> None:
+        """Apply one event, swallowing any handler error.
+
+        The pump is the only writer of the progress state every status surface
+        reads, so a malformed event must never propagate and kill it.
+        """
+        try:
+            self._handle_event(event)
+        except Exception:
+            etype = event.get("type") if isinstance(event, dict) else type(event).__name__
+            logger.exception("Training event pump: failed to handle %s event; skipping", etype)
+
     def _pump_loop(self) -> None:
-        """Background thread: consume events from subprocess → update state."""
+        """Background thread: consume subprocess events and update state.
+
+        Sole writer of the in-memory progress state that /progress, /status,
+        /metrics and DB history read. If it exited while the worker still ran, the
+        run would burn GPU with events piling up while every surface froze. So no
+        single bad event or transient queue/DB error may end it; it returns only
+        through intended exits (worker gone, respawn handed off, finalized).
+        """
+        self._pump_running = True
         while True:
             if self._proc is None or self._event_queue is None:
+                self._pump_running = False
                 return
 
-            event = self._read_queue(self._event_queue, timeout_sec = 0.25)
+            try:
+                event = self._read_queue(self._event_queue, timeout_sec = 0.25)
+            except Exception:
+                # If a read keeps raising after the worker died, fall through to
+                # finalize instead of spinning; only retry while the worker lives.
+                logger.exception("Training event pump: queue read failed; continuing")
+                if self._proc is not None and self._proc.is_alive():
+                    time.sleep(0.1)
+                    continue
+                event = None
+
             if event is not None:
-                self._handle_event(event)
+                self._safe_handle_event(event)
                 continue
 
             if self._proc.is_alive():
                 continue
 
-            # Process exited — drain remaining events.
-            for e in self._drain_queue(self._event_queue):
-                self._handle_event(e)
+            # Worker exited. Drain the backlog and finalize, guarded so a slow or
+            # failing DB write can't strand the thread; we return either way.
+            try:
+                for e in self._drain_queue(self._event_queue):
+                    self._safe_handle_event(e)
 
-            # Mark done if no explicit complete/error was received.
-            with self._lock:
-                if self._progress.is_training:
-                    if self._should_stop:
-                        self._progress.is_training = False
-                        self._progress.status_message = "Training stopped."
-                    else:
-                        self._progress.is_training = False
-                        self._progress.error = (
-                            self._progress.error or "Training process exited unexpectedly"
-                        )
+                # Model-load stall: respawn over HTTP instead of finalizing as failure.
+                # Starts a fresh pump on this thread (no self-join); it takes over
+                # _pump_running, so this exit leaves the flag set.
+                if self._needs_xet_respawn:
+                    self._needs_xet_respawn = False
+                    self._respawn_worker_disable_xet()
+                    return
 
-            self._ensure_db_run_created()
-            self._finalize_run_in_db(
-                status = "stopped" if self._should_stop else "error",
-                error_message = None
-                if self._should_stop
-                else "Training process terminated unexpectedly",
-            )
+                # Mark done if no explicit complete/error was received.
+                with self._lock:
+                    if self._progress.is_training:
+                        if self._should_stop:
+                            self._progress.is_training = False
+                            self._progress.status_message = "Training stopped."
+                        else:
+                            self._progress.is_training = False
+                            self._progress.error = (
+                                self._progress.error or "Training process exited unexpectedly"
+                            )
+
+                self._ensure_db_run_created()
+                self._finalize_run_in_db(
+                    status = "stopped" if self._should_stop else "error",
+                    error_message = None
+                    if self._should_stop
+                    else "Training process terminated unexpectedly",
+                )
+            except Exception:
+                logger.exception("Training event pump: finalization after worker exit failed")
+            self._pump_running = False
             return
 
     def _handle_event(self, event: dict) -> None:
@@ -596,6 +1309,19 @@ class TrainingBackend:
         etype = event.get("type")
         db_action: Optional[str] = None
         db_action_kwargs: dict = {}
+
+        # Model-load lifecycle + stall recovery (no DB metrics); handled first.
+        if etype == "model_load_started":
+            with self._lock:
+                self._in_model_load = True
+            return
+        if etype == "model_load_completed":
+            with self._lock:
+                self._in_model_load = False
+            return
+        if etype == "stall":
+            self._handle_stall_event(event)
+            return
 
         with self._lock:
             if etype == "progress":
@@ -737,17 +1463,22 @@ class TrainingBackend:
                 self._progress.is_training = True
 
             elif etype == "complete":
-                self._progress.is_training = False
-                self._progress.is_completed = True
-                self._output_dir = event.get("output_dir")
                 msg = event.get("status_message", "Training completed")
+                stopped = self._should_stop or msg.strip().lower() in {
+                    "training cancelled",
+                    "training stopped",
+                }
+                self._progress.is_training = False
+                self._progress.is_completed = not stopped
+                self._output_dir = event.get("output_dir")
+                self._progress.output_dir = self._output_dir
                 self._progress.status_message = msg
                 if not self._db_run_created and self.current_job_id and self._db_config:
                     db_action = "create_and_finalize"
                 else:
                     db_action = "finalize"
                 db_action_kwargs = {
-                    "status": "stopped" if self._should_stop else "completed",
+                    "status": "stopped" if stopped else "completed",
                     "output_dir": self._output_dir,
                 }
 
@@ -894,6 +1625,8 @@ class TrainingBackend:
         except queue.Empty:
             return None
         except (EOFError, OSError, ValueError):
+            # A closed/broken queue reads as "no event"; any other error is left to
+            # _pump_loop's guarded block, which logs and backs off.
             return None
 
     @staticmethod
@@ -904,7 +1637,12 @@ class TrainingBackend:
                 events.append(q.get_nowait())
             except queue.Empty:
                 return events
-            except (EOFError, OSError, ValueError):
+            except Exception:
+                # A drain error must not abort finalization: return what we have so
+                # the run finalizes rather than wedging "active" behind a dead worker.
+                logger.exception(
+                    "Training event pump: queue drain failed; finalizing with drained events"
+                )
                 return events
 
     # ------------------------------------------------------------------
@@ -915,8 +1653,14 @@ class TrainingBackend:
         self,
         progress: TrainingProgress,
         theme: str = "light",
-    ) -> plt.Figure:
-        """Create training loss plot with theme-aware styling."""
+    ) -> "Optional[plt.Figure]":
+        """Create training loss plot with theme-aware styling.
+
+        matplotlib is loaded lazily; returns None if it is unavailable.
+        """
+        plt = _load_pyplot()
+        if plt is None:
+            return None
         plt.close("all")
 
         LIGHT_STYLE = {

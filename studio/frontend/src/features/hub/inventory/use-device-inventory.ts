@@ -215,8 +215,8 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
   }
 
   // Carry `ready` across refetches so a stale-but-known state doesn't flip to
-  // "loading" on a bump and flash a spinner in every consumer; show prior rows
-  // until the success path lands fresh data.
+  // "loading" on a bump and flash a spinner in every consumer; keep showing
+  // prior rows until the success path lands fresh data.
   updateSourceState(source, {
     loading: true,
     ready: current.ready,

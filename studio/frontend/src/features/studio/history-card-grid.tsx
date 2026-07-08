@@ -15,6 +15,8 @@ import { Button } from "@/components/ui/button";
 import type { TrainingRunSummary } from "@/features/training";
 import {
   deleteTrainingRun,
+  getTrainingRunDisplayTitle,
+  getTrainingRunModelSubtitle,
   emitTrainingRunDeleted,
   listTrainingRuns,
   onTrainingRunDeleted,
@@ -24,7 +26,10 @@ import {
   useTrainingRuntimeStore,
 } from "@/features/training";
 import { formatDuration } from "@/features/studio/sections/progress-section-lib";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { cn } from "@/lib/utils";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
@@ -194,6 +199,28 @@ export function HistoryCardGrid({
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
   const { resumeTrainingRunFromHistory } = useTrainingActions();
   const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
+  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The tunnel
+  // registers shortly after startup, so poll (bounded) until it shows.
+  const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
+  const serverUrl = usePlatformStore((s) => s.serverUrl);
+  useEffect(() => {
+    if (cloudflareUrl) return;
+    let cancelled = false;
+    void (async () => {
+      for (let attempt = 0; attempt < 12 && !cancelled; attempt++) {
+        try {
+          await fetchDeviceType({ force: true });
+        } catch {
+          // Ignore startup blips; copy-link falls back to serverUrl/origin.
+        }
+        if (cancelled || usePlatformStore.getState().cloudflareUrl) return;
+        await new Promise((r) => setTimeout(r, 2500));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cloudflareUrl]);
 
   const userControllerRef = useRef<AbortController | null>(null);
   const pollControllerRef = useRef<AbortController | null>(null);
@@ -362,6 +389,15 @@ export function HistoryCardGrid({
           const isRunning = run.status === "running";
           const canResume = run.can_resume && !wasContinued;
           const isResuming = resumeTarget === run.id;
+
+          const title = getTrainingRunDisplayTitle(run);
+          const modelSubtitle = getTrainingRunModelSubtitle(run);
+
+          const projectSubtitle =
+            run.project_name && title !== run.project_name ? run.project_name : null;
+          // Backend /p ref + its capability token. Both are required: the link
+          // is useless (404s) without the signature, so don't offer to copy it.
+          const canCopyPreview = !!run.preview_ref && !!run.preview_sig;
           return (
             <div
               role="button"
@@ -372,7 +408,7 @@ export function HistoryCardGrid({
                 isRunning
                   ? "border-blue-400/50 dark:border-blue-500/30"
                   : "border-border/60",
-                canResume && "gap-2",
+                (canResume || canCopyPreview) && "gap-2",
               )}
               onClick={() => onSelectRun(run.id)}
               onKeyDown={(e) => {
@@ -411,19 +447,53 @@ export function HistoryCardGrid({
                   {isResuming ? t("studio.history.resuming") : t("studio.history.resumeTraining")}
                 </Button>
               )}
+              {canCopyPreview && (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  className="absolute bottom-3 right-4 h-6 rounded-full px-2.5 text-[11px] leading-none shadow-sm"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    // Encode each segment but keep "/" so the /p route matches.
+                    const ref = (run.preview_ref ?? "")
+                      .split("/")
+                      .map(encodeURIComponent)
+                      .join("/");
+                    const base = (
+                      cloudflareUrl ??
+                      serverUrl ??
+                      window.location.origin
+                    ).replace(/\/+$/, "");
+                    // The signature is a bearer capability carried as ?k=; the
+                    // recipient's page forwards it on its chat requests.
+                    const url = `${base}/p/${ref}?k=${encodeURIComponent(run.preview_sig ?? "")}`;
+                    const ok = await copyToClipboard(url);
+                    toast[ok ? "success" : "error"](
+                      t(
+                        ok
+                          ? "studio.history.previewLinkCopied"
+                          : "studio.history.previewLinkCopyFailed",
+                      ),
+                    );
+                  }}
+                >
+                  {t("studio.history.copyPreviewLink")}
+                </Button>
+              )}
               <div className="min-w-0">
                 <p
                   className="truncate text-sm font-medium"
-                  title={run.display_name ?? run.model_name}
+                  title={title}
                 >
-                  {run.display_name ?? run.model_name}
+                  {title}
                 </p>
-                {run.display_name && (
+                {modelSubtitle && (
                   <p
                     className="truncate text-xs text-muted-foreground"
-                    title={run.model_name}
+                    title={modelSubtitle}
                   >
-                    {run.model_name}
+                    {modelSubtitle}
                   </p>
                 )}
                 <p
@@ -432,9 +502,17 @@ export function HistoryCardGrid({
                 >
                   {run.dataset_name}
                 </p>
+                {projectSubtitle && (
+                  <p
+                    className="truncate text-xs text-muted-foreground/80"
+                    title={projectSubtitle}
+                  >
+                    {projectSubtitle}
+                  </p>
+                )}
               </div>
               {run.loss_sparkline && run.loss_sparkline.length >= 2 && (
-                <div className={cn(canResume && "h-7 overflow-hidden")}>
+                <div className={cn((canResume || canCopyPreview) && "h-7 overflow-hidden")}>
                   <Sparkline
                     values={run.loss_sparkline}
                     id={run.id}

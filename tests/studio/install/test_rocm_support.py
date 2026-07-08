@@ -1,9 +1,4 @@
-"""Tests for AMD ROCm support across install pathways.
-
-Verifies that ROCm detection and installation logic works correctly
-WITHOUT breaking existing CUDA, CPU, macOS, and Windows pathways.
-All tests use mocks -- no AMD hardware required.
-"""
+"""AMD ROCm support tests across install pathways (all mocked, no AMD HW)."""
 
 import importlib.util
 import json
@@ -57,12 +52,7 @@ _install_bnb_windows_rocm = stack_mod._install_bnb_windows_rocm
 
 
 def _extract_sh_function_body(source: str, name: str) -> str:
-    """Return the body of a shell function from `source` by brace matching.
-
-    Used by structural tests that need to assert ordering of helper
-    calls inside a specific function rather than across the whole
-    install.sh file.
-    """
+    """Return a shell function body from `source` by brace matching."""
     needle = f"{name}() {{"
     start = source.find(needle)
     if start < 0:
@@ -292,14 +282,12 @@ class TestResolveUpstreamAssetChoice:
         """Host with both NVIDIA and ROCm should use NVIDIA (CPU path here, CUDA elsewhere)."""
         host = nvidia_host(has_rocm = True)
         choice = resolve_upstream_asset_choice(host, LLAMA_TAG)
-        # NVIDIA hosts go through the normal path (CUDA handled by resolve_linux_cuda_choice)
         assert choice.install_kind == "linux-cpu"
         assert "rocm" not in choice.name
 
     @patch.object(prebuilt_mod, "github_release_assets")
     def test_rocm_linux_no_prebuilt_falls_back(self, mock_assets):
         """AMD ROCm host should fall back to source build when no ROCm prebuilt exists."""
-        # Remove the ROCm asset from available assets
         assets_without_rocm = {k: v for k, v in UPSTREAM_ASSETS.items() if "rocm" not in k}
         mock_assets.return_value = assets_without_rocm
         host = rocm_host()
@@ -343,9 +331,8 @@ class TestRuntimePatterns:
         patterns = runtime_patterns_for_choice(choice)
         assert "llama-server" in patterns
         assert "llama-quantize" in patterns
-        # Broad lib*.so* covers libllama, libggml, libmtmd, libggml-cpu-*,
-        # plus the libllama-<binary>-impl.so split that ggml-org/llama.cpp
-        # #23462 introduced between b9279 and b9283.
+        # lib*.so* covers libllama/libggml/libmtmd plus the libllama-*-impl.so
+        # split from ggml-org/llama.cpp #23462 (between b9279 and b9283).
         assert "lib*.so*" in patterns
 
     def test_linux_cuda_patterns(self):
@@ -353,7 +340,6 @@ class TestRuntimePatterns:
             repo = "", tag = "", name = "", url = "", source_label = "", install_kind = "linux-cuda"
         )
         patterns = runtime_patterns_for_choice(choice)
-        # libggml-cuda.so is matched by lib*.so* now.
         assert "lib*.so*" in patterns
 
     def test_linux_rocm_patterns(self):
@@ -361,7 +347,6 @@ class TestRuntimePatterns:
             repo = "", tag = "", name = "", url = "", source_label = "", install_kind = "linux-rocm"
         )
         patterns = runtime_patterns_for_choice(choice)
-        # libggml-hip.so is matched by lib*.so* now.
         assert "lib*.so*" in patterns
         assert "llama-server" in patterns
 
@@ -375,8 +360,7 @@ class TestRuntimePatterns:
             install_kind = "windows-hip",
         )
         patterns = runtime_patterns_for_choice(choice)
-        # Narrowed from "*.exe" to the two binaries Studio actually
-        # invokes, mirroring the Linux/macOS pattern style.
+        # Narrowed from "*.exe" to the two binaries Studio actually invokes.
         assert "llama-server.exe" in patterns
         assert "llama-quantize.exe" in patterns
         assert "*.dll" in patterns
@@ -394,8 +378,8 @@ class TestRuntimePatterns:
         assert "lib*.dylib" in patterns
 
     def test_diffusion_visual_server_kept(self):
-        # The DiffusionGemma visual-server ships in the prebuilt bundle and must
-        # survive the prune so Studio can serve DiffusionGemma GGUFs natively.
+        # The DiffusionGemma visual-server must survive the prune so Studio can
+        # serve DiffusionGemma GGUFs natively.
         for kind, name in (
             ("linux-cuda", "llama-diffusion-gemma-visual-server"),
             ("macos-arm64", "llama-diffusion-gemma-visual-server"),
@@ -445,7 +429,7 @@ class TestHostInfoRocm:
         import inspect
 
         source = inspect.getsource(prebuilt_mod.detect_host)
-        # Must probe for actual GPU, not just tool presence
+        # Must probe for actual GPU, not just tool presence.
         assert "rocminfo" in source or "amd-smi" in source
 
     def test_detect_host_windows_rocm_detection(self):
@@ -527,7 +511,6 @@ class TestDetectRocmVersion:
         """Debian epoch prefix (2:6.2.0) -- version file has no epoch, so should parse."""
         info_dir = tmp_path / ".info"
         info_dir.mkdir()
-        # Version files don't typically have epoch prefix, but lib/rocm_version might
         (info_dir / "version").write_text("6.2.0\n")
         with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path)}):
             result = _detect_rocm_version()
@@ -578,9 +561,8 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     def test_no_rocm_skips(self, mock_nvidia, mock_pip):
         """No ROCm toolchain should skip entirely."""
-        # _detect_windows_gfx_arch pinned to None: on a real AMD test host its
-        # WMI name fallback would otherwise answer and defeat the "no ROCm
-        # anywhere" premise of this test.
+        # Pin _detect_windows_gfx_arch to None so a real AMD test host's WMI
+        # fallback can't defeat the "no ROCm anywhere" premise.
         with patch.object(stack_mod, "_detect_windows_gfx_arch", return_value = None):
             with patch("os.path.isdir", return_value = False):
                 with patch("shutil.which", return_value = None):
@@ -595,7 +577,7 @@ class TestEnsureRocmTorch:
         """If torch already has CUDA, should skip ROCm reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"12.6\n"  # CUDA version string
+        mock_probe.stdout = b"12.6\n"  # CUDA version
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -609,7 +591,7 @@ class TestEnsureRocmTorch:
         """If torch already has HIP, should skip ROCm reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"7.1.12345\n"  # HIP version string
+        mock_probe.stdout = b"7.1.12345\n"  # HIP version
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -631,7 +613,6 @@ class TestEnsureRocmTorch:
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
-        # Should install torch via pip_install and bitsandbytes via pip_install_try.
         assert mock_pip.call_count == 1
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
         assert mock_pip_try.call_count >= 1
@@ -712,8 +693,7 @@ class TestEnsureRocmTorch:
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", side_effect = subprocess.TimeoutExpired("python", 30)):
                 _ensure_rocm_torch()
-        # If probe times out, the function should treat torch as unusable and reinstall
-        # both torch (via pip_install) and bitsandbytes (via pip_install_try).
+        # Probe timeout: treat torch as unusable and reinstall torch + bitsandbytes.
         assert mock_pip.call_count == 1
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
         assert mock_pip_try.call_count >= 1
@@ -724,9 +704,8 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = False)
     def test_no_gpu_with_rocm_tools_skips(self, mock_gpu, mock_nvidia, mock_pip):
         """ROCm tools present but no actual AMD GPU should skip entirely."""
-        # Pin the Windows arch probe to None: on a real AMD test host the WMI
-        # name fallback would otherwise answer and defeat the "no actual GPU"
-        # premise (the Linux path under test uses _has_rocm_gpu, mocked False).
+        # Pin the Windows arch probe to None so a real AMD host's WMI fallback
+        # can't defeat the "no actual GPU" premise.
         with patch.object(stack_mod, "_detect_windows_gfx_arch", return_value = None):
             with patch("os.path.isdir", return_value = True):
                 _ensure_rocm_torch()
@@ -738,7 +717,6 @@ class TestEnsureRocmTorch:
     def test_torch_backend_cuda_env_skips_entirely(self, mock_nvidia, mock_gpu, mock_pip):
         """UNSLOTH_TORCH_BACKEND=cuda must short-circuit before any GPU probe."""
         with patch.dict(os.environ, {"UNSLOTH_TORCH_BACKEND": "cuda"}):
-            # Reload _TORCH_BACKEND from the patched environment.
             with patch.object(stack_mod, "_TORCH_BACKEND", "cuda"):
                 _ensure_rocm_torch()
         mock_pip.assert_not_called()
@@ -758,12 +736,7 @@ class TestEnsureRocmTorch:
 
 
 class TestHasRocmGpuKfdVendorGuard:
-    """Verify that the KFD sysfs fallback rejects non-AMD (NVIDIA) KFD nodes.
-
-    These tests are source-level: they verify the regex and logic present in
-    the _has_rocm_gpu implementation rather than running the sysfs traversal
-    (which requires Linux path conventions).
-    """
+    """KFD sysfs fallback rejects non-AMD (NVIDIA) KFD nodes (source-level checks)."""
 
     def _src(self) -> str:
         """Return the source of _has_rocm_gpu from install_python_stack.py."""
@@ -787,8 +760,7 @@ class TestHasRocmGpuKfdVendorGuard:
         import re as _re
 
         src = self._src()
-        # The pattern should have a word boundary before and after the number
-        # so "vendor_id 41098" doesn't match "vendor_id 4098".
+        # Word boundary so "vendor_id 41098" doesn't match "vendor_id 4098".
         assert (
             _re.search(r"\\b.*vendor_id.*\\b", src) or "\\bvendor_id" in src
         ), "_has_rocm_gpu vendor_id check should use word boundary anchors"
@@ -816,14 +788,10 @@ class TestHasRocmGpuKfdVendorGuard:
         assert "4098" in func_body, "_has_amd_rocm_gpu must require AMD vendor_id 4098 (0x1002)"
 
     def test_has_rocm_gpu_returns_false_when_nvidia_present(self):
-        """_has_rocm_gpu must return False immediately when _has_usable_nvidia_gpu is True.
-
-        This is the primary guard: even if rocminfo, amd-smi, or KFD sysfs
-        produce a false positive, an NVIDIA GPU always wins.
-        """
+        """_has_rocm_gpu returns False when _has_usable_nvidia_gpu is True (NVIDIA always wins)."""
         with patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True):
             with patch("shutil.which", return_value = "/usr/bin/rocminfo"):
-                # Simulate rocminfo claiming an AMD GPU is present
+                # rocminfo claims an AMD GPU is present.
                 mock_result = MagicMock()
                 mock_result.returncode = 0
                 mock_result.stdout = "Name: gfx1100\n"
@@ -949,7 +917,6 @@ class TestHardwareRocmFlag:
         """DeviceType should remain CUDA even on ROCm -- no DeviceType.ROCM."""
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
-        # Ensure ROCM is NOT a DeviceType member
         enum_section = source.split("class DeviceType")[1].split("\n\n")[0]
         assert "ROCM" not in enum_section
 
@@ -963,7 +930,6 @@ class TestHardwareRocmFlag:
         """All existing DeviceType.CUDA references should still be present."""
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
-        # Key functions that must still reference DeviceType.CUDA
         assert "DeviceType.CUDA" in source
         assert "DEVICE = DeviceType.CUDA" in source
 
@@ -977,26 +943,19 @@ class TestHardwareRocmFlag:
         """IS_ROCM should be in __all__ list in __init__.py."""
         init_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "__init__.py"
         source = init_path.read_text(encoding = "utf-8")
-        # Extract __all__ section
         assert '"IS_ROCM"' in source
 
     def test_get_package_versions_returns_rocm_key(self):
         """get_package_versions() source should return both 'cuda' and 'rocm' keys."""
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
-        # Find the get_package_versions function body
         func_start = source.find("def get_package_versions")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
         assert '"cuda"' in func_body
         assert '"rocm"' in func_body
 
     def test_distributed_stubs_cover_is_torchelastic_launched(self):
-        """_determine_attention_impl_for_gpu_estimate must stub is_torchelastic_launched.
-
-        resolve_attention_implementation calls is_torchelastic_launched() on
-        Windows ROCm where torch.distributed ships without that helper, causing
-        a warning: 'module torch.distributed has no attribute is_torchelastic_launched'.
-        """
+        """Must stub is_torchelastic_launched (Windows ROCm torch.distributed lacks it)."""
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
         assert "is_torchelastic_launched" in source
@@ -1035,23 +994,16 @@ class TestInstallShStructure:
     """Verify install.sh structural properties without running it."""
 
     def test_no_here_strings(self):
-        """install.sh must not use the bash-only `<<<` here-string operator.
-
-        `<<<` inside a quoted literal (e.g. a marker in a printf) is just data,
-        not a here-string, so strip quoted spans first: this still catches a
-        real `cmd <<< word` (outside quotes) without false-positiving on data.
-        """
+        """install.sh must not use the bash-only `<<<` here-string operator (breaks dash)."""
         import re
 
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        # <<< is bash-only; breaks dash
         for i, line in enumerate(source.splitlines(), 1):
             stripped = line.lstrip()
             if stripped.startswith("#"):
                 continue
-            # Remove quoted string literals so `<<<` inside them is ignored;
-            # a genuine here-string operator lives outside any quotes.
+            # Strip quoted literals so `<<<` inside them is ignored.
             unquoted = re.sub(r"'[^']*'", "", line)
             unquoted = re.sub(r'"[^"]*"', "", unquoted)
             assert "<<<" not in unquoted, f"install.sh:{i} uses non-POSIX <<< here-string"
@@ -1064,22 +1016,13 @@ class TestInstallShStructure:
         assert "rocm" in source.lower()
 
     def test_cuda_precedence(self):
-        """ROCm detection should only run when nvidia-smi is absent.
-
-        install.sh defines _has_amd_rocm_gpu and _has_usable_nvidia_gpu
-        helpers near each other (file-position order has no semantic
-        meaning), so check the runtime ordering inside
-        get_torch_index_url instead: NVIDIA branch runs first and the
-        AMD/ROCm branch only fires inside the `if [ -z "$_smi" ]`
-        block.
-        """
+        """ROCm detection runs only when NVIDIA is absent (check runtime ordering in get_torch_index_url)."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         body = _extract_sh_function_body(source, "get_torch_index_url")
         nvidia_call = body.find("_has_usable_nvidia_gpu")
-        # Gate changed from [ -z "$_smi" ] to [ "$_nvidia_detected" -eq 0 ] to
-        # handle proc-only NVIDIA hosts where nvidia-smi is absent but _has_usable_nvidia_gpu
-        # returns true via /proc/driver/nvidia/gpus.
+        # Gate uses _nvidia_detected (not -z "$_smi") to handle proc-only NVIDIA
+        # hosts where nvidia-smi is absent but the GPU is found via /proc.
         no_nvidia_branch = body.find('if [ "$_nvidia_detected" -eq 0 ]')
         if no_nvidia_branch < 0:
             no_nvidia_branch = body.find('if [ -z "$_smi" ]')
@@ -1111,7 +1054,6 @@ class TestInstallShStructure:
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         assert 'echo "$_base/rocm7.2"' in source  # fallback for unknown future versions
-        # Allowlisted versions should pass through directly
         assert "rocm6.*" in source
         assert "rocm7.0" in source
         assert "rocm7.1" in source
@@ -1131,8 +1073,7 @@ class TestInstallShStructure:
         assert "sed 's/^[0-9]*://' " in source or "sed 's/^[0-9]*://'" in source
 
     def test_no_double_bracket_in_rocm_block(self):
-        """ROCm detection block should not use [[ ]] (bash-only, not POSIX).
-        Note: [[:space:]], [[:digit:]] etc. are valid POSIX character classes, not bash [[ ]]."""
+        """ROCm block must not use bash-only [[ ]] (POSIX char classes [[:space:]] are fine)."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         func_start = source.find("get_torch_index_url()")
@@ -1144,7 +1085,7 @@ class TestInstallShStructure:
             stripped = line.lstrip()
             if stripped.startswith("#"):
                 continue
-            # Remove POSIX character classes [[:foo:]] before checking for [[ ]]
+            # Strip POSIX char classes [[:foo:]] before checking for [[ ]].
             cleaned = re.sub(r"\[\[:[a-z]+:\]\]", "", line)
             assert "[[" not in cleaned, f"get_torch_index_url line {i} uses non-POSIX [["
 
@@ -1174,11 +1115,7 @@ class TestInstallShStructure:
         assert darwin_pos < rocm_pos, "macOS check should come before ROCm detection"
 
     def test_unsloth_torch_backend_exported_after_get_torch_index_url(self):
-        """install.sh must export UNSLOTH_TORCH_BACKEND after TORCH_INDEX_URL is set.
-
-        This lets install_python_stack.py skip ROCm torch operations on CUDA
-        and CPU hosts without re-running GPU detection in a subprocess.
-        """
+        """install.sh exports UNSLOTH_TORCH_BACKEND after TORCH_INDEX_URL (lets the stack skip GPU re-detection)."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         torch_url_pos = source.find("TORCH_INDEX_URL=$(get_torch_index_url)")
@@ -1187,21 +1124,14 @@ class TestInstallShStructure:
         assert (
             backend_pos > torch_url_pos
         ), "UNSLOTH_TORCH_BACKEND must be set AFTER TORCH_INDEX_URL is resolved"
-        # Verify all three cases are covered
         assert '"cuda"' in source[backend_pos : backend_pos + 500]
         assert '"rocm"' in source[backend_pos : backend_pos + 500]
         assert '"cpu"' in source[backend_pos : backend_pos + 500]
-        # Must be exported so subprocesses (setup.sh, install_python_stack.py) see it
+        # Must be exported so subprocesses see it.
         assert "export UNSLOTH_TORCH_BACKEND" in source
 
     def test_kfd_sysfs_amd_vendor_check_in_has_amd_rocm_gpu(self):
-        """_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098.
-
-        NVIDIA open kernel module (560+) registers KFD nodes with vendor_id
-        4318 (0x10DE). Without the vendor check, _has_amd_rocm_gpu returns 0
-        (true) on NVIDIA-only hosts that have the nvidia-open driver, causing
-        get_torch_index_url to select a ROCm wheel index.
-        """
+        """_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098 (nvidia-open registers KFD nodes too)."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         func_start = source.find("_has_amd_rocm_gpu()")
@@ -1215,14 +1145,7 @@ class TestInstallShStructure:
         ), "_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098 (0x1002)"
 
     def test_kfd_awk_resets_state_per_file(self):
-        """KFD sysfs awk must reset gpu/amd state per file (FNR==1).
-
-        Without the reset, a Ryzen+NVIDIA host where node 0 is an AMD CPU
-        agent (vendor_id 4098, gpu_id 0) and node 1 is an NVIDIA GPU
-        (gpu_id > 0, vendor_id 4318) can produce a false positive: node 0
-        sets amd=1, node 1 sets gpu=1, and the combined state triggers found=1
-        before vendor_id 4318 is seen on node 1.
-        """
+        """KFD sysfs awk must reset gpu/amd state per file (FNR==1) to avoid Ryzen+NVIDIA false positives."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         func_start = source.find("_has_amd_rocm_gpu()")
@@ -1234,13 +1157,7 @@ class TestInstallShStructure:
         )
 
     def test_get_torch_index_url_uses_nvidia_detected_flag(self):
-        """get_torch_index_url must track NVIDIA detection independently of _smi.
-
-        When _has_usable_nvidia_gpu returns true via /proc/driver/nvidia fallback
-        but nvidia-smi is not on PATH, _smi stays empty. Without a separate
-        _nvidia_detected flag, the function falls into the AMD/CPU branch even
-        though NVIDIA was confirmed, silently installing CPU wheels instead of CUDA.
-        """
+        """get_torch_index_url must track NVIDIA via _nvidia_detected (proc-only NVIDIA still picks CUDA)."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         func_start = source.find("get_torch_index_url()")
@@ -1250,8 +1167,6 @@ class TestInstallShStructure:
             "get_torch_index_url must use a _nvidia_detected flag (separate from "
             "_smi) so that proc-only NVIDIA detection still selects CUDA wheels"
         )
-        # The AMD/ROCm branch must be gated on _nvidia_detected being 0, not on
-        # _smi being empty.
         assert (
             '_nvidia_detected" -eq 0' in func_body or "_nvidia_detected" in func_body
         ), "get_torch_index_url AMD branch must be skipped when _nvidia_detected=1"
@@ -1269,8 +1184,7 @@ class TestLiveRegression:
 
         if not shutil.which("nvidia-smi"):
             pytest.skip("No nvidia-smi available")
-        # Skip if nvidia-smi exists but does not actually list a GPU on this
-        # host (containers occasionally ship the binary without a driver).
+        # Skip if nvidia-smi exists but lists no GPU (binary without driver).
         check = subprocess.run(
             [
                 "bash",
@@ -1283,9 +1197,7 @@ class TestLiveRegression:
             pytest.skip("nvidia-smi is on PATH but no GPU is listed")
 
         sh_path = PACKAGE_ROOT / "install.sh"
-        # get_torch_index_url calls _has_usable_nvidia_gpu and
-        # _has_amd_rocm_gpu, so all three function definitions must be
-        # in scope when we eval the extract.
+        # All three helper definitions must be in scope when we eval the extract.
         extract_cmd = (
             f"sed -n '/^_has_amd_rocm_gpu()/,/^}}$/p; "
             f"/^_has_usable_nvidia_gpu()/,/^}}$/p; "
@@ -1305,14 +1217,13 @@ class TestLiveRegression:
 
 # TEST: worker.py -- ROCm Mamba/SSM source build path
 
-# Load worker.py module
 _WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "worker.py"
 _EXPORT_WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "export" / "worker.py"
-# The torchao Windows-ROCm stub was de-duplicated out of the export/training
-# workers into a shared module; both workers now call into it.
+# Shared torchao Windows-ROCm stub used by both workers.
 _TORCHAO_STUB_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "_torchao_stub.py"
-# The wheel-probe subprocess was hoisted out of worker.py into wheel_utils
-# during the wheel-resolver refactor; the probe script literal lives there.
+# RAG embedder -- runs in the main backend process and also needs the stub.
+_EMBEDDINGS_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "rag" / "embeddings.py"
+# Wheel-probe script literal lives in wheel_utils after the resolver refactor.
 _WHEEL_UTILS_PATH = PACKAGE_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py"
 
 
@@ -1320,8 +1231,7 @@ class TestWorkerRocmMambaSsm:
     """Verify worker.py Mamba/SSM install logic on ROCm."""
 
     def test_probe_returns_hip_version_field(self):
-        """The wheel probe should include hip_version, and worker.py should
-        consume it."""
+        """The wheel probe should include hip_version, and worker.py consumes it."""
         assert "hip_version" in _WHEEL_UTILS_PATH.read_text(encoding = "utf-8")
         assert "hip_version" in _WORKER_PATH.read_text(encoding = "utf-8")
 
@@ -1332,14 +1242,12 @@ class TestWorkerRocmMambaSsm:
 
     def test_direct_wheel_url_returns_none_without_cuda_major(self, monkeypatch):
         """_direct_wheel_url should return None when cuda_major is empty (ROCm)."""
-        # Load module for function access
         _worker_spec = importlib.util.spec_from_file_location("test_worker", _WORKER_PATH)
         assert _worker_spec is not None and _worker_spec.loader is not None
         worker_mod = importlib.util.module_from_spec(_worker_spec)
 
-        # Stub worker.py's imports via monkeypatch so the fakes (notably a
-        # non-package "utils") are undone and don't break later tests that
-        # import the real utils.* package.
+        # Stub worker.py imports via monkeypatch so the fake "utils" is undone
+        # and doesn't break later tests importing the real utils.* package.
         loggers_mock = MagicMock()
         loggers_mock.get_logger = MagicMock(return_value = MagicMock())
         monkeypatch.setitem(sys.modules, "structlog", MagicMock())
@@ -1425,7 +1333,6 @@ class TestAmdGpuMonitoring:
         except Exception:
             pytest.skip("Could not load amd module in test environment")
 
-        # Simulate amd-smi metric JSON output
         gpu_data = {
             "usage": {"gfx_activity": "85"},
             "temperature": {"edge": "72"},
@@ -1464,9 +1371,8 @@ class TestAmdGpuMonitoring:
         except Exception:
             pytest.skip("Could not load amd module")
 
-        # _first_visible_amd_gpu_id() short-circuits to None when any of
-        # HIP / ROCR / CUDA_VISIBLE_DEVICES is "" or "-1". CI often sets
-        # CUDA_VISIBLE_DEVICES="", so the test must not inherit that.
+        # _first_visible_amd_gpu_id() returns None if HIP/ROCR/CUDA_VISIBLE_DEVICES
+        # is "" or "-1"; CI often sets CUDA_VISIBLE_DEVICES="", so clear them.
         for var in (
             "HIP_VISIBLE_DEVICES",
             "ROCR_VISIBLE_DEVICES",
@@ -1474,8 +1380,8 @@ class TestAmdGpuMonitoring:
         ):
             monkeypatch.delenv(var, raising = False)
 
-        # amd-smi is gated off on Windows w/o a HIP SDK; this test mocks it as
-        # available, so opt in so the gate allows it on every platform.
+        # amd-smi is gated off on Windows w/o a HIP SDK; opt in so the mock is
+        # allowed on every platform.
         monkeypatch.setenv("UNSLOTH_ENABLE_AMD_SMI", "1")
 
         mock_json = json.dumps(
@@ -1492,9 +1398,8 @@ class TestAmdGpuMonitoring:
         mock_result.returncode = 0
         mock_result.stdout = mock_json
 
-        # The premise is "amd-smi exists and answers": the absence guard
-        # which()-checks before spawning, so hosts without a real amd-smi
-        # (Linux CI, driver-only Windows) need which mocked too.
+        # Premise is "amd-smi exists and answers": the guard which()-checks
+        # before spawning, so mock which too for hosts lacking a real amd-smi.
         with patch.object(amd_mod.shutil, "which", return_value = "/usr/bin/amd-smi"):
             with patch.object(subprocess, "run", return_value = mock_result):
                 result = amd_mod.get_primary_gpu_utilization()
@@ -1518,8 +1423,7 @@ class TestAmdGpuMonitoring:
         except Exception:
             pytest.skip("Could not load amd module")
 
-        # Opt in so the call reaches subprocess.run (gated off on Windows w/o a
-        # HIP SDK); testing the OSError handling here.
+        # Opt in so the call reaches subprocess.run (testing OSError handling).
         with (
             patch.dict(os.environ, {"UNSLOTH_ENABLE_AMD_SMI": "1"}),
             patch.object(subprocess, "run", side_effect = OSError("amd-smi not found")),
@@ -1543,8 +1447,7 @@ class TestAmdGpuMonitoring:
         except Exception:
             pytest.skip("Could not load amd module")
 
-        # Opt in so the call reaches subprocess.run (gated off on Windows w/o a
-        # HIP SDK); testing the timeout handling here.
+        # Opt in so the call reaches subprocess.run (testing timeout handling).
         with (
             patch.dict(os.environ, {"UNSLOTH_ENABLE_AMD_SMI": "1"}),
             patch.object(
@@ -1570,14 +1473,14 @@ class TestHardwareAmdBranching:
         assert "from . import amd" in source
 
     def test_hardware_branches_on_is_rocm_for_utilization(self):
-        """get_gpu_utilization should dispatch to amd.py via _smi_query
-        when IS_ROCM, and the dispatcher itself must check IS_ROCM and
-        import the amd backend."""
+        """get_gpu_utilization dispatches visible metrics through amd.py on ROCm."""
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
-        assert '_smi_query("get_primary_gpu_utilization"' in func_body
+        assert "_smi_query(" in func_body
+        assert '"get_visible_gpu_utilization"' in func_body
+        assert "_reconcile_rocm_unified_memory" in func_body
         smi = source[
             source.find("def _smi_query") : source.find("\ndef ", source.find("def _smi_query") + 1)
         ]
@@ -1585,14 +1488,12 @@ class TestHardwareAmdBranching:
         assert "from . import amd" in smi
 
     def test_hardware_branches_on_is_rocm_for_visible(self):
-        """get_visible_gpu_utilization should dispatch to amd.py via
-        _smi_query when IS_ROCM."""
+        """get_visible_gpu_utilization dispatches to amd.py via _smi_query when IS_ROCM."""
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_visible_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
-        # The dispatcher call may wrap onto multiple lines; allow whitespace
-        # between the open paren and the literal func name argument.
+        # The dispatcher call may wrap; allow whitespace before the func name arg.
         import re as _re
 
         assert _re.search(r'_smi_query\(\s*"get_visible_gpu_utilization"', func_body)
@@ -1616,11 +1517,10 @@ class TestHardwareAmdBranching:
 
 
 class TestApplyGpuIdsRocmFallback:
-    """Verify apply_gpu_ids sets HIP_VISIBLE_DEVICES on ROCm hosts even when
-    IS_ROCM is still False (worker subprocess before detect_hardware runs)."""
+    """apply_gpu_ids sets HIP_VISIBLE_DEVICES on ROCm hosts even when IS_ROCM is still False (issue #5180)."""
 
     def test_apply_gpu_ids_falls_back_to_torch_version_hip(self):
-        """apply_gpu_ids should probe torch.version.hip when IS_ROCM is False and no ROCm env vars are set."""
+        """apply_gpu_ids probes torch.version.hip when IS_ROCM is False and no ROCm env vars set."""
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def apply_gpu_ids")
@@ -1628,11 +1528,7 @@ class TestApplyGpuIdsRocmFallback:
         assert 'getattr(_torch.version, "hip", None)' in func_body
 
     def test_apply_gpu_ids_sets_hip_but_not_rocr_visible_devices(self):
-        """apply_gpu_ids should set HIP_VISIBLE_DEVICES but leave ROCR_VISIBLE_DEVICES inherited.
-
-        ROCR_VISIBLE_DEVICES uses HSA agent-level indexing, not physical GPU indices.
-        Overwriting it breaks multi-GPU ROCm systems (see issue #6118).
-        """
+        """apply_gpu_ids sets HIP_VISIBLE_DEVICES but leaves ROCR_VISIBLE_DEVICES inherited (HSA indexing; issue #6118)."""
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def apply_gpu_ids")
@@ -1802,9 +1698,8 @@ class TestDetectWindowsGfxArch:
     """Verify hipinfo parsing for GPU arch detection on Windows."""
 
     def test_returns_none_when_hipinfo_not_on_path(self):
-        # Also neutralise the venv-hipInfo and WMI-name fallbacks: this test
-        # pins "no probe source available -> None", and the suite may run on a
-        # real AMD host where WMI would legitimately answer.
+        # Neutralise the venv-hipInfo and WMI-name fallbacks too, since the
+        # suite may run on a real AMD host where WMI would answer.
         with patch("shutil.which", return_value = None):
             with patch("os.path.isfile", return_value = False):
                 with patch("subprocess.run", side_effect = FileNotFoundError):
@@ -1821,12 +1716,9 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1200"
 
     def test_returns_arch_on_crash_with_gcnarchname_in_output(self):
-        # Regression test for issue #6043: hipinfo may exit with a non-zero
-        # code (e.g. 0xC0000005 / STATUS_ACCESS_VIOLATION on RDNA 4 hosts)
-        # while still printing the gcnArchName line before crashing.  The
-        # previous guard `if result.returncode == 0` discarded this output,
-        # causing a CPU PyTorch fallback.  The fix: accept the arch whenever
-        # gcnArchName is present in stdout regardless of exit code.
+        # Regression #6043: hipinfo may crash (0xC0000005 on RDNA 4) after
+        # printing gcnArchName. Accept the arch whenever gcnArchName is in
+        # stdout, regardless of exit code (previously a CPU fallback).
         mock_result = MagicMock()
         mock_result.returncode = -1073741819  # 0xC0000005 STATUS_ACCESS_VIOLATION
         mock_result.stdout = b"gcnArchName : gfx1200\nsome other line\n"
@@ -1836,8 +1728,7 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1200"
 
     def test_returns_none_on_nonzero_returncode_without_gcnarchname(self):
-        # Non-zero exit without any gcnArchName output (e.g. no device detected)
-        # must still return None and fall through to amd-smi / WMI.
+        # Non-zero exit without gcnArchName must return None (fall through to amd-smi/WMI).
         mock_result = MagicMock()
         mock_result.returncode = 1
         mock_result.stdout = b"HIP runtime error: no device detected\n"
@@ -1847,10 +1738,8 @@ class TestDetectWindowsGfxArch:
         assert result is None
 
     def test_returns_none_when_no_gcnarchname_in_output(self):
-        # hipinfo answers but without a gcnArchName line. Route only the
-        # hipinfo/amd-smi probes to the mock; the WMI fallback must get
-        # nothing (FileNotFoundError) -- otherwise the mocked device name
-        # would legitimately resolve via the name table.
+        # hipinfo answers without a gcnArchName line. The WMI fallback must get
+        # nothing (FileNotFoundError) so the mocked name can't resolve via the table.
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = b"deviceName : SomeUnknownDevice\n"
@@ -1888,10 +1777,7 @@ class TestDetectWindowsGfxArch:
 
 
 class TestGfxArchNameFallback:
-    """amd-smi does not exist on Windows (neither Adrenalin consistently nor
-    the HIP SDK ship a CLI) and driver-only hosts lack hipinfo too. The
-    detection chain must still resolve the arch from the GPU marketing name
-    (WMI), mirroring setup.ps1's $nameArchTable."""
+    """With no amd-smi/hipinfo on Windows, arch must resolve from the GPU name via WMI (mirrors setup.ps1)."""
 
     @pytest.mark.parametrize(
         "name, expected",
@@ -1958,20 +1844,17 @@ class TestGfxArchNameFallback:
         assert result is None
 
     def test_stack_probes_venv_hipinfo(self):
-        """The venv Scripts dir hipInfo.exe (shipped by AMD torch wheels) must
-        be a probe candidate so `studio update` works on driver-only hosts."""
+        """venv Scripts hipInfo.exe (from AMD torch wheels) must be a probe candidate for driver-only hosts."""
         source = _STACK_PATH.read_text(encoding = "utf-8")
         assert 'os.path.join(os.path.dirname(sys.executable), "hipInfo.exe")' in source
 
     def test_prebuilt_resolve_exe_probes_venv_dir(self):
-        """install_llama_prebuilt's _resolve_exe must include the venv Scripts
-        candidate for the same driver-only standalone-rerun scenario."""
+        """_resolve_exe must include the venv Scripts candidate for driver-only standalone reruns."""
         source = _PREBUILT_PATH.read_text(encoding = "utf-8")
         assert "_venv_candidate" in source
 
     def test_runtime_monitor_guards_amd_smi_absence(self):
-        """amd.py must which()-check amd-smi before spawning so absence
-        disables the poller in one step (no FileNotFoundError strikes)."""
+        """amd.py must which()-check amd-smi before spawning (absence disables the poller)."""
         amd_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
         source = amd_path.read_text(encoding = "utf-8")
         assert 'shutil.which("amd-smi") is None' in source
@@ -2002,7 +1885,7 @@ class TestInstallBnbWindowsRocm:
         call_args = str(mock_pip.call_args_list[0])
         assert "bitsandbytes" in call_args
         assert "win_amd64" in call_args
-        # Must force plain pip (uv mangles the bitsandbytes wheel) -- see
+        # Force plain pip (uv mangles the bitsandbytes wheel) -- see
         # https://unsloth.ai/docs/get-started/install/amd/amd-hackathon
         assert mock_pip.call_args.kwargs.get("force_pip") is True
 
@@ -2333,11 +2216,7 @@ class TestDetectBnbRocmDllVer:
             assert stack_mod._detect_bnb_rocm_dll_ver() is None
 
     def test_picks_highest_suffix_when_multiple_dlls(self, tmp_path):
-        """Returns the highest numeric suffix when multiple ROCm DLL variants exist.
-
-        Filesystem glob order is not guaranteed, so the function must not stop
-        at the first match — it must always return the highest one.
-        """
+        """Returns the highest numeric suffix across ROCm DLL variants (glob order is not guaranteed)."""
         (tmp_path / "libbitsandbytes_rocm72.dll").write_text("")
         (tmp_path / "libbitsandbytes_rocm713.dll").write_text("")
         mock_spec = MagicMock()
@@ -2356,7 +2235,7 @@ class TestRocmTorchInstalledEnvVar:
 
     @staticmethod
     def _ok_torch_probe(*a, **kw):
-        # subprocess.run probe returns 0 when torch imports as ROCm
+        # Probe returns 0 when torch imports as ROCm.
         rv = MagicMock()
         rv.returncode = 0
         return rv
@@ -2413,8 +2292,72 @@ class TestRocmTorchInstalledEnvVar:
             patch.object(stack_mod, "IS_MACOS", True),
         ):
             stack_mod._ensure_rocm_torch()
-        # macOS branch is the next exit -- but the point is the early-return did NOT fire.
+        # macOS branch is the next exit; the point is the early-return did NOT fire.
         mock_bnb.assert_not_called()
+
+
+class TestWindowsRocmTorchaoGuard:
+    """Verify the torchao skip can detect an installed Windows ROCm torch build."""
+
+    def test_installed_torch_is_windows_rocm_accepts_rocm_probe(self):
+        rv = MagicMock()
+        rv.returncode = 0
+        rv.stdout = "yes"
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod.subprocess, "run", return_value = rv),
+        ):
+            assert stack_mod._installed_torch_is_windows_rocm() is True
+
+    def test_installed_torch_is_windows_rocm_rejects_non_rocm_probe(self):
+        rv = MagicMock()
+        rv.returncode = 0
+        rv.stdout = ""
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod.subprocess, "run", return_value = rv),
+        ):
+            assert stack_mod._installed_torch_is_windows_rocm() is False
+
+    def test_installed_torch_is_windows_rocm_is_non_windows_noop(self):
+        with patch.object(stack_mod, "IS_WINDOWS", False):
+            assert stack_mod._installed_torch_is_windows_rocm() is False
+
+    @patch.object(stack_mod, "_repair_bad_anyio")
+    @patch.object(stack_mod, "_ensure_rocm_torch")
+    @patch.object(stack_mod, "_ensure_cuda_torch")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True)
+    @patch.object(stack_mod, "run")
+    @patch.object(stack_mod, "pip_install")
+    def test_install_python_stack_skips_torchao_when_windows_rocm_torch_is_installed(
+        self, mock_pip, mock_run, mock_has_nvidia, mock_cuda, mock_rocm, mock_anyio, tmp_path
+    ):
+        unstructured_plugin = tmp_path / "unstructured"
+        github_plugin = tmp_path / "github"
+        unstructured_plugin.mkdir()
+        github_plugin.mkdir()
+
+        subprocess_result = MagicMock()
+        subprocess_result.returncode = 0
+        subprocess_result.stdout = ""
+
+        with (
+            patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}),
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod, "IS_MACOS", False),
+            patch.object(stack_mod, "IS_MAC_ARM", False),
+            patch.object(stack_mod, "NO_TORCH", False),
+            patch.object(stack_mod, "_rocm_windows_torch_installed", False),
+            patch.object(stack_mod, "_bootstrap_uv", return_value = False),
+            patch.object(stack_mod, "_installed_torch_is_windows_rocm", return_value = True),
+            patch.object(stack_mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin),
+            patch.object(stack_mod, "LOCAL_DD_GITHUB_PLUGIN", github_plugin),
+            patch.object(stack_mod.subprocess, "run", return_value = subprocess_result),
+        ):
+            assert stack_mod.install_python_stack() == 0
+
+        installed_specs = [str(arg) for call in mock_pip.call_args_list for arg in call.args]
+        assert not any("torchao" in arg for arg in installed_specs)
 
 
 # TEST: worker.py -- Windows ROCm patches (source-level checks)
@@ -2454,6 +2397,13 @@ class TestWorkerWindowsRocmPatches:
         source = _EXPORT_WORKER_PATH.read_text(encoding = "utf-8")
         assert "install_torchao_windows_rocm_stub()" in source
 
+    def test_embedder_calls_shared_torchao_stub(self):
+        """embeddings.py must install the stub before importing sentence-transformers:
+        it runs in the main process (not a stubbed worker), so otherwise transformers
+        -> torchao crashes on Windows ROCm and the embedder drops to llama-server."""
+        source = _EMBEDDINGS_PATH.read_text(encoding = "utf-8")
+        assert "install_torchao_windows_rocm_stub()" in source
+
     def test_torchao_stub_uses_stub_type_meta(self):
         """Torchao stub must use _StubTypeMeta so isinstance() returns False not TypeError."""
         source = _TORCHAO_STUB_PATH.read_text(encoding = "utf-8")
@@ -2481,27 +2431,18 @@ class TestWorkerWindowsRocmPatches:
         assert "TORCHDYNAMO_DISABLE" in source
 
     def test_bnb_rocm_version_set_on_windows_rocm(self):
-        """worker.py must set BNB_ROCM_VERSION in the Windows ROCm section.
-
-        BNB auto-detects HIP version from torch.version.hip, which can mismatch
-        the DLL suffix in the AMD prerelease wheel.  The worker must detect the
-        actual DLL suffix and override BNB's auto-detection before ML imports.
-        """
+        """worker.py must set BNB_ROCM_VERSION from the detected DLL suffix (BNB's auto-detect can mismatch)."""
         source = _WORKER_PATH.read_text(encoding = "utf-8")
-        # Env var must be set
         assert "BNB_ROCM_VERSION" in source
-        # Detection helper must be used
         assert "_detect_bnb_rocm_dll_ver" in source or "libbitsandbytes_rocm" in source
-        # Falls back to the seeded value, never a blind "72" (which would
-        # force a ROCm backend onto a non-ROCm bitsandbytes wheel)
+        # Falls back to the seeded value, never a blind "72".
         assert '_bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION")' in source
 
     def test_bnb_rocm_version_set_before_ml_imports(self):
         """BNB_ROCM_VERSION must appear in section 1f, before section 2 ML imports."""
         source = _WORKER_PATH.read_text(encoding = "utf-8")
         idx_bnb = source.find("BNB_ROCM_VERSION")
-        # Use the specific section-2 marker that appears in the worker process
-        # entry-point function (not the trainer helper which has its own "# ── 2.").
+        # Use the entry-point section-2 marker (not the trainer helper's own "# ── 2.").
         idx_sec2 = source.find("# ── 2. Now import ML libraries")
         assert idx_bnb != -1, "BNB_ROCM_VERSION not found in worker.py"
         assert idx_sec2 != -1, "'# ── 2. Now import ML libraries' marker not found in worker.py"
@@ -2513,9 +2454,8 @@ class TestWorkerWindowsRocmPatches:
     def test_grouped_mm_patch_guarded_by_windows_and_hip_check(self):
         """_grouped_mm patch must only apply on Windows + HIP torch."""
         source = _WORKER_PATH.read_text(encoding = "utf-8")
-        # Must check sys.platform == "win32"
         assert 'sys.platform == "win32"' in source
-        # Must gate on HIP version — code uses getattr chain: "version" and "hip"
+        # Gates on HIP version via a getattr chain ("version", "hip").
         assert '"version"' in source and '"hip"' in source
 
     def test_hip_ver_at_least_helper_defined(self):
@@ -2526,9 +2466,8 @@ class TestWorkerWindowsRocmPatches:
     def test_grouped_mm_patch_gated_on_hip_lt_713(self):
         """_grouped_mm patch must be skipped on HIP >= 7.13 (AMD fixed the bug in ROCm 7.13)."""
         source = _WORKER_PATH.read_text(encoding = "utf-8")
-        # The guard must call _hip_ver_at_least with exactly (7, 13)
         assert "_hip_ver_at_least(7, 13)" in source
-        # The patch must be inside the `if not` branch (negated guard)
+        # Patch must be inside the negated `if not` guard.
         assert "if not _hip_ver_at_least(7, 13):" in source
 
     def test_grouped_mm_hip_713_skip_message_present(self):
@@ -2540,17 +2479,14 @@ class TestWorkerWindowsRocmPatches:
     def test_grouped_mm_patch_else_branch_present(self):
         """An else branch must follow the _hip_ver_at_least gate (skip path for 7.13+)."""
         source = _WORKER_PATH.read_text(encoding = "utf-8")
-        # There must be an else: after the if not _hip_ver_at_least(7, 13): block
         gate_idx = source.find("if not _hip_ver_at_least(7, 13):")
         assert gate_idx != -1, "Version gate not found in worker.py"
-        # The else: branch must appear after the gate
         else_idx = source.find("else:", gate_idx)
         assert else_idx != -1, "else: branch after _hip_ver_at_least gate not found"
 
     def test_hip_ver_at_least_handles_amd_version_format(self):
         """_hip_ver_at_least must split on '.' and compare only major.minor (handles '7.13.99004')."""
         source = _WORKER_PATH.read_text(encoding = "utf-8")
-        # Must split the version string and take the first two parts
         assert 'split(".")[:2]' in source or ".split('.')[:2]" in source
 
 
@@ -2608,8 +2544,7 @@ _INSTALL_PS1_PATH = PACKAGE_ROOT / "install.ps1"
 
 
 class TestStrixHaloGfxArchDetection:
-    """Verify that setup.ps1 and install.ps1 have robust gfx arch detection
-    for Strix Halo / iGPU users who only have the HIP runtime (no hipinfo)."""
+    """setup.ps1 / install.ps1 gfx arch detection for Strix Halo / iGPU (HIP runtime only, no hipinfo)."""
 
     def test_amd_smi_static_asic_attempted_in_setup(self):
         """setup.ps1 must try 'amd-smi static --asic' when list output lacks gfx arch."""
@@ -2664,12 +2599,9 @@ class TestStrixHaloGfxArchDetection:
     def test_wmi_does_not_set_hasrocm_in_setup(self):
         """WMI block in setup.ps1 must NOT set $HasROCm = $true (no runtime confirmation)."""
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
-        # Find the WMI block and confirm HasROCm is not set inside it
         wmi_idx = source.find("Win32_VideoController")
         assert wmi_idx != -1, "WMI block not found in setup.ps1"
-        # The nearest HasROCm = $true must not appear between the WMI block
-        # and the closing brace of that if-block.  We check by confirming
-        # $HasROCm = $true does NOT appear within 300 chars of the WMI call.
+        # $HasROCm = $true must not appear within 300 chars of the WMI call.
         wmi_context = source[wmi_idx : wmi_idx + 300]
         assert "$HasROCm = $true" not in wmi_context
 
@@ -2677,7 +2609,6 @@ class TestStrixHaloGfxArchDetection:
         """Both files must use the gfx\\d+[a-z]? regex to parse arch from amd-smi output."""
         for path in (_SETUP_PS1_PATH, _INSTALL_PS1_PATH):
             source = path.read_text(encoding = "utf-8")
-            # The regex pattern used to match gfx arches
             assert (
                 "gfx\\d+" in source or r"gfx\d+" in source
             ), f"gfx arch regex not found in {path.name}"
@@ -2687,8 +2618,7 @@ class TestStrixHaloGfxArchDetection:
 
 
 class TestHipSdkEnvPathResolution:
-    """Verify that both install scripts resolve hipinfo/hipconfig via HIP_PATH
-    and ROCM_PATH when the tools are not on $PATH, and emit explicit warnings."""
+    """Both install scripts resolve hipinfo/hipconfig via HIP_PATH/ROCM_PATH off $PATH, and warn."""
 
     @staticmethod
     def _assert_accepts_partial_hipinfo_output(source: str):
@@ -2717,7 +2647,6 @@ class TestHipSdkEnvPathResolution:
         """setup.ps1 must also check ROCM_PATH as a secondary hipinfo fallback."""
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
         assert "ROCM_PATH" in source
-        # Confirm the fallback pattern: HIP_PATH ?? ROCM_PATH (or equivalent elseif)
         assert "ROCM_PATH" in source and "HIP_PATH" in source
 
     def test_install_checks_rocm_path_as_hipinfo_fallback(self):
@@ -2753,7 +2682,6 @@ class TestHipSdkEnvPathResolution:
     def test_setup_warns_when_hip_path_set_but_exe_missing(self):
         """setup.ps1 must warn when HIP_PATH is set but hipinfo.exe is not present."""
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
-        # The warning must mention that the SDK install may be incomplete
         assert "incomplete" in source or "not found at" in source
 
     def test_install_warns_when_hip_path_set_but_exe_missing(self):
@@ -2810,7 +2738,6 @@ class TestHipSdkEnvPathResolution:
     def test_setup_provides_path_fix_hint(self):
         """setup.ps1 must tell the user how to add the HIP bin dir to PATH."""
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
-        # Should mention adding to PATH or SetEnvironmentVariable
         assert "PATH" in source and ("SetEnvironmentVariable" in source or "Add" in source)
 
     def test_install_provides_path_fix_hint(self):
@@ -2823,8 +2750,7 @@ class TestHipSdkEnvPathResolution:
 
 
 class TestHipSdkDetectedSubstep:
-    """Verify that both scripts print HIP SDK path and full hipconfig version
-    as substeps under the gpu step when AMD ROCm is successfully detected."""
+    """Both scripts print HIP SDK path and full hipconfig version as substeps when ROCm is detected."""
 
     def test_setup_prints_hip_sdk_path_substep(self):
         """setup.ps1 must print an 'HIP SDK:' substep showing the resolved path."""
@@ -2879,9 +2805,7 @@ _SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
 
 
 class TestStrixRocm71Override:
-    """Verify install.sh skips Radeon repo and routes to AMD arch-specific index
-    for gfx1151/gfx1150 when ROCm 7.1 would otherwise be selected (known _grouped_mm segfault).
-    AMD's repo.amd.com/rocm/whl/gfx1151/ serves torch 2.11+rocm7.13 which has the real fix."""
+    """install.sh routes gfx1151/gfx1150 to AMD's arch index instead of ROCm 7.1 (_grouped_mm segfault)."""
 
     def test_strix_gfx_detection_in_install_sh(self):
         """install.sh must detect gfx1151 and gfx1150 for the override."""
@@ -2891,10 +2815,9 @@ class TestStrixRocm71Override:
     def test_rocm71_override_to_amd_arch_index_in_install_sh(self):
         """install.sh must override TORCH_INDEX_URL to AMD arch-specific index for Strix."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        # The override must route to AMD's arch-specific index (repo.amd.com/rocm/whl)
         assert "repo.amd.com/rocm/whl" in source
         assert "_strix_gfx" in source
-        # The URL must incorporate the detected gfx arch so gfx1151 → .../gfx1151/
+        # URL must incorporate the detected gfx arch (gfx1151 -> .../gfx1151/).
         strix_idx = source.find("_amd_strix_base")
         assert strix_idx != -1
         ctx = source[strix_idx : strix_idx + 500]
@@ -2915,7 +2838,6 @@ class TestStrixRocm71Override:
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         strix_idx = source.find("_strix_gfx")
         assert strix_idx != -1
-        # Look back for the rocm7.1 pattern within 600 chars before _strix_gfx
         context_before = source[max(0, strix_idx - 2400) : strix_idx]
         assert "rocm7.1" in context_before
 
@@ -2932,7 +2854,6 @@ class TestStrixRocm71Override:
     def test_tauri_family_recognises_amd_arch_url(self):
         """_tauri_torch_index_family must return a rocm* family for AMD arch-specific URLs."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        # The function must have a case branch for repo.amd.com/rocm/whl/gfx* URLs
         assert "rocm/whl/gfx" in source
 
 
@@ -2940,8 +2861,7 @@ class TestStrixRocm71Override:
 
 
 class TestSetupShGccInstallDir:
-    """Verify setup.sh applies the --gcc-install-dir flag when building llama.cpp
-    with HIP on Ubuntu 24.04+ to work around ROCm 7.x clang-20 header path bug."""
+    """setup.sh applies --gcc-install-dir for HIP builds on Ubuntu 24.04+ (ROCm 7.x clang-20 header bug)."""
 
     def test_gcc_install_dir_search_loop_present(self):
         """setup.sh must iterate gcc versions 14→11 to find one with C++ headers."""
@@ -2963,7 +2883,6 @@ class TestSetupShGccInstallDir:
     def test_gcc_install_dir_only_applied_in_hip_build_block(self):
         """The --gcc-install-dir fix must only apply in the HIP/ROCm build branch."""
         source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
-        # GGML_HIP=ON must appear before gcc-install-dir in the source
         hip_idx = source.find("GGML_HIP=ON")
         gcc_idx = source.find("gcc-install-dir")
         assert hip_idx != -1 and gcc_idx != -1
@@ -2982,8 +2901,7 @@ _HARDWARE_PY_PATH = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" /
 
 
 class TestServerStartupRocmFixes:
-    """Verify main.py sets BNB_ROCM_VERSION before any bitsandbytes import and
-    hardware.py injects torch._C._distributed_c10d stubs before torch.distributed."""
+    """main.py sets BNB_ROCM_VERSION pre-bnb-import; hardware.py stubs _distributed_c10d pre-torch.distributed."""
 
     # ── BNB_ROCM_VERSION in server process ────────────────────────────────────
 
@@ -3016,23 +2934,19 @@ class TestServerStartupRocmFixes:
         assert '"BNB_ROCM_VERSION" not in os.environ' in source
 
     # ── hipInfo.exe PATH prepend (bitsandbytes arch-probe fix) ────────────────
-    # bitsandbytes' get_rocm_gpu_arch() runs `hipinfo.exe` via subprocess PATH
-    # at import time. The AMD torch wheel ships hipInfo.exe in the venv
-    # Scripts dir, which is on PATH only for activated venvs -- Studio and the
-    # installer launch python directly, so without the prepend every bnb
-    # import logs "Could not detect ROCm GPU architecture: [WinError 2]".
+    # bnb's get_rocm_gpu_arch() runs hipinfo.exe via PATH at import; the AMD
+    # wheel ships it in venv Scripts (on PATH only for activated venvs), so
+    # without the prepend bnb logs "[WinError 2]" when launched directly.
 
     def test_main_py_prepends_hipinfo_dir_to_path(self):
         """main.py must make hipInfo.exe resolvable before bnb imports."""
         source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
         assert "hipInfo.exe" in source
-        # The prepend must come before the BNB_ROCM_VERSION block (both run
-        # pre-import; order documents that bnb sees the fixed PATH).
+        # Prepend must precede the BNB_ROCM_VERSION block so bnb sees the fixed PATH.
         assert source.find("hipInfo.exe") < source.find("BNB_ROCM_VERSION")
 
     def test_main_py_hipinfo_prepend_gated_on_file_presence(self):
-        """Only AMD ROCm wheels ship hipInfo.exe; NVIDIA/CPU hosts must be
-        untouched, so the prepend must check the file exists first."""
+        """Prepend must check hipInfo.exe exists first (only AMD wheels ship it; leave NVIDIA/CPU untouched)."""
         source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
         assert 'os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe"))' in source
 
@@ -3042,8 +2956,7 @@ class TestServerStartupRocmFixes:
         assert "hipInfo.exe" in source
 
     def test_install_stack_prepends_hipinfo_dir_to_path(self):
-        """install_python_stack.py must prepend so the installer's child
-        import checks inherit a PATH where bnb's probe succeeds."""
+        """install_python_stack.py must prepend so child import checks inherit a PATH where bnb's probe works."""
         source = _STACK_PATH.read_text(encoding = "utf-8")
         assert "hipInfo.exe" in source
 
@@ -3099,8 +3012,7 @@ class TestServerStartupRocmFixes:
 
 
 class TestHipSdkInstalledButDeviceInaccessible:
-    """Verify that when hipinfo is found but exits non-zero (device not ROCm-accessible),
-    both scripts distinguish this from 'HIP SDK not found' and emit the correct message."""
+    """When hipinfo is found but exits non-zero, both scripts distinguish device-inaccessible from SDK-not-found."""
 
     def test_install_ps1_has_hip_sdk_installed_flag(self):
         """install.ps1 must track HipSdkInstalled separately from HasROCm."""
@@ -3115,7 +3027,6 @@ class TestHipSdkInstalledButDeviceInaccessible:
     def test_install_ps1_sets_flag_when_hipinfo_binary_found(self):
         """install.ps1 must set HipSdkInstalled=true inside the 'if ($hipinfoExe)' block."""
         source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
-        # HipSdkInstalled must be assigned inside the hipinfoExe block
         hipinfo_block_idx = source.find("if ($hipinfoExe)")
         sdk_flag_idx = source.find("$HipSdkInstalled = $true", hipinfo_block_idx)
         assert hipinfo_block_idx != -1 and sdk_flag_idx != -1
@@ -3165,9 +3076,8 @@ class TestHipSdkInstalledButDeviceInaccessible:
         assert "GPU not ROCm-accessible" in source
 
 
-# TEST: --rocm-gfx forwarding -- setup.sh/setup.ps1 hand their resolved gfx arch
-# to install_llama_prebuilt.py so the per-gfx ROCm prebuilt is selected even when
-# the installer's own hipinfo/amd-smi probe cannot report it.
+# TEST: --rocm-gfx forwarding -- setup.sh/setup.ps1 forward their resolved gfx
+# arch to install_llama_prebuilt.py so the per-gfx prebuilt is picked.
 
 _SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
 
@@ -3196,7 +3106,7 @@ class TestApplyHostOverrides:
     """Forwarded ROCm detection is folded into the host profile correctly."""
 
     def test_forwarded_gfx_fills_empty_probe(self):
-        # amd-smi-only / name-inferred host: installer probe found no gfx.
+        # Installer probe found no gfx (amd-smi-only / name-inferred host).
         host = rocm_host(rocm_gfx_target = None)
         out = _apply_host_overrides(host, override_rocm_gfx = "gfx1151")
         assert out.has_rocm is True
@@ -3235,7 +3145,7 @@ class TestRocmGfxForwarding:
     def test_installer_exposes_rocm_gfx_arg(self):
         source = _PREBUILT_PATH.read_text(encoding = "utf-8")
         assert '"--rocm-gfx"' in source
-        # Defaults to the env override so a standalone run still works.
+        # Defaults to the env override for standalone runs.
         assert 'os.environ.get("UNSLOTH_ROCM_GFX_ARCH")' in source
 
     def test_setup_sh_forwards_rocm_gfx(self):
@@ -3244,8 +3154,7 @@ class TestRocmGfxForwarding:
         assert '"$_setup_gfx"' in source
 
     def test_setup_sh_forwards_has_rocm(self):
-        # When AMD is detected but gfx resolution fails, setup.sh must still
-        # forward --has-rocm so the installer knows ROCm is present.
+        # If AMD is detected but gfx resolution fails, --has-rocm is still forwarded.
         source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
         assert "--has-rocm" in source
         assert "_setup_amd_detected" in source
@@ -3255,25 +3164,25 @@ class TestRocmGfxForwarding:
         assert "--rocm-gfx" in source
         assert "$script:ROCmGfxArch" in source
 
-    def test_setup_sh_routes_inferred_gfx_to_fork(self):
-        # A forwarded/inferred gfx arch must route to the fork even without ROCm
-        # tooling on PATH, so the per-gfx prebuilt is picked over ggml-org. Pin
-        # the routing guard specifically -- a bare "${_setup_gfx:-}" check also
-        # appears in the unrelated --rocm-gfx forwarding block.
+    def test_setup_sh_routes_unconditionally_to_fork(self):
+        # CPU-only hosts no longer fall back to ggml-org -- the release-repo
+        # decision is an unconditional fork assignment now. Pin the line text.
         source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
-        assert '[ "$_LINUX_HAS_GPU" = false ] && [ -n "${_setup_gfx:-}" ]' in source
+        assert '_HELPER_RELEASE_REPO="unslothai/llama.cpp"' in source
+        assert '_HELPER_RELEASE_REPO="ggml-org/llama.cpp"' not in source
 
-    def test_setup_ps1_routes_inferred_gfx_to_fork(self):
-        # Same on Windows: a resolved $script:ROCmGfxArch counts as a fork/GPU
-        # install even when $HasROCm is false (Adrenalin-only, no HIP runtime).
+    def test_setup_ps1_routes_unconditionally_to_fork(self):
+        # Same on Windows: the fork now ships the windows-cpu / windows-arm64
+        # bundles, so $HelperReleaseRepo is an unconditional fork assignment.
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
-        assert "$HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch" in source
+        assert '$HelperReleaseRepo = "unslothai/llama.cpp"' in source
+        assert "$HelperReleaseRepo = if (" not in source
 
-    # The two assertions above pin the guard *text*. The tests below *execute*
-    # the real routing block from setup.sh / setup.ps1 and assert the resolved
-    # release repo, so a refactor that keeps the literal but breaks (or drops)
-    # the inferred-gfx -> fork decision is still caught. All inputs are faked --
-    # no GPU, no ROCm tooling on PATH, no network.
+    # The text pins above guard the literal. The tests below *execute* the real
+    # routing line from setup.sh / setup.ps1 and assert the resolved release repo,
+    # so a refactor that reintroduces a conditional (or a ggml-org branch) is still
+    # caught. Inputs are varied -- CPU-only, inferred/forwarded gfx, usable NVIDIA --
+    # to prove no host slips back onto ggml-org. No GPU, no tooling, no network.
 
     @staticmethod
     def _resolve_setup_sh_repo(
@@ -3283,22 +3192,21 @@ class TestRocmGfxForwarding:
         rocm_gfx_arch_env = "",
     ):
         """Run setup.sh's release-repo routing block under bash and return the
-        resolved _HELPER_RELEASE_REPO. PATH is emptied so the rocminfo/amd-smi/
-        hipconfig/hipinfo `command -v` probes all miss (no ROCm tooling).
-        rocm_gfx_arch_env populates UNSLOTH_ROCM_GFX_ARCH for the env-forwarded
-        path that fires when no probe set _setup_gfx."""
+        resolved _HELPER_RELEASE_REPO. PATH is emptied so any stray tooling probe
+        misses; routing is unconditional, so the GPU inputs only prove no branch
+        reroutes a host to ggml-org."""
         import shutil
 
         bash = shutil.which("bash")
         if bash is None:
             pytest.skip("bash not available")
         source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
-        start = source.index("\n_LINUX_HAS_GPU=false\n") + 1
-        end = source.index("\nunset _GPU_TOOL", start) + len("\nunset _GPU_TOOL")
+        start = source.index('\n_HELPER_RELEASE_REPO="unslothai/llama.cpp"\n') + 1
+        end = source.index("\n_LLAMA_PR=", start)
         block = source[start:end]
         assert "_HELPER_RELEASE_REPO" in block, "setup.sh routing anchors not found"
         env = {
-            "PATH": "",  # no rocminfo/amd-smi/hipconfig/hipinfo discoverable
+            "PATH": "",  # no ROCm tooling discoverable
             "ROUTING_BLOCK": block,
             "_HOST_SYSTEM": "Linux",
             "_HOST_MACHINE": host_machine,
@@ -3316,31 +3224,31 @@ class TestRocmGfxForwarding:
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
-    def test_setup_sh_inferred_gfx_resolves_to_fork(self):
-        # No usable NVIDIA, no ROCm tooling on PATH, only a name-inferred gfx
-        # arch -> the host must still be treated as a GPU host and routed to the
-        # fork's per-gfx prebuilt, not ggml-org / a source build. Linux x64 and
-        # arm64 both go through the same fork branch.
-        assert self._resolve_setup_sh_repo("x86_64", False, "gfx1100") == "unslothai/llama.cpp"
-        assert self._resolve_setup_sh_repo("aarch64", False, "gfx1100") == "unslothai/llama.cpp"
-
-    def test_setup_sh_env_forwarded_gfx_resolves_to_fork(self):
-        # UNSLOTH_ROCM_GFX_ARCH set on a host where no probe fired (_setup_gfx
-        # empty, no usable NVIDIA, no ROCm tooling): setup.sh adopts the env arch
-        # and routes to the fork, same as the name-inference path.
-        repo = self._resolve_setup_sh_repo("x86_64", False, "", rocm_gfx_arch_env = "gfx1100")
-        assert repo == "unslothai/llama.cpp"
-
-    def test_setup_sh_cpu_host_still_resolves_to_ggml(self):
-        # Guard against over-correcting the fix: a real CPU host (no usable GPU,
-        # no inferred gfx, no env override) must keep routing to ggml-org for the
-        # CPU prebuilt.
-        assert self._resolve_setup_sh_repo("x86_64", False, "") == "ggml-org/llama.cpp"
+    @pytest.mark.parametrize(
+        "machine, nvidia_usable, setup_gfx, env_gfx",
+        [
+            ("x86_64", False, "", ""),  # plain CPU host (used to take ggml-org)
+            ("aarch64", False, "", ""),  # plain CPU arm64 host (used to take ggml-org)
+            ("x86_64", False, "gfx1100", ""),  # name-inferred gfx
+            ("x86_64", False, "", "gfx1100"),  # env-forwarded gfx
+            ("x86_64", True, "", ""),  # usable NVIDIA
+        ],
+    )
+    def test_setup_sh_routing_block_always_resolves_to_fork(
+        self, machine, nvidia_usable, setup_gfx, env_gfx
+    ):
+        assert (
+            self._resolve_setup_sh_repo(
+                machine, nvidia_usable, setup_gfx, rocm_gfx_arch_env = env_gfx
+            )
+            == "unslothai/llama.cpp"
+        )
 
     @staticmethod
-    def _resolve_setup_ps1_repo(has_nvidia, has_rocm, gfx_arch):
-        """Run setup.ps1's $HelperReleaseRepo selection under pwsh and return the
-        resolved repo."""
+    def _resolve_setup_ps1_repo():
+        """Run setup.ps1's $HelperReleaseRepo assignment under pwsh and return the
+        resolved repo. The assignment is unconditional now, so there are no host
+        inputs to vary."""
         import shutil
 
         pwsh = shutil.which("pwsh")
@@ -3348,21 +3256,11 @@ class TestRocmGfxForwarding:
             pytest.skip("pwsh not available")
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
         line = next(
-            (
-                ln
-                for ln in source.splitlines()
-                if ln.strip().startswith("$HelperReleaseRepo = if (")
-            ),
+            (ln for ln in source.splitlines() if ln.strip().startswith("$HelperReleaseRepo =")),
             None,
         )
         assert line is not None, "$HelperReleaseRepo selection not found in setup.ps1"
-        harness = (
-            f"$HasNvidiaSmi = ${'true' if has_nvidia else 'false'}\n"
-            f"$HasROCm = ${'true' if has_rocm else 'false'}\n"
-            f"$script:ROCmGfxArch = '{gfx_arch}'\n"
-            f"{line}\n"
-            "Write-Output $HelperReleaseRepo"
-        )
+        harness = f"{line}\nWrite-Output $HelperReleaseRepo"
         result = subprocess.run(
             [pwsh, "-NoProfile", "-Command", harness],
             capture_output = True,
@@ -3372,27 +3270,22 @@ class TestRocmGfxForwarding:
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
-    def test_setup_ps1_inferred_gfx_resolves_to_fork(self):
-        # Adrenalin-only Windows host: $HasROCm is false (no HIP runtime) but a
-        # gfx arch was inferred -> route to the fork's windows-rocm bundle.
-        assert self._resolve_setup_ps1_repo(False, False, "gfx1100") == "unslothai/llama.cpp"
-
-    def test_setup_ps1_cpu_host_still_resolves_to_ggml(self):
-        # No NVIDIA, no ROCm, no inferred gfx -> CPU host stays on ggml-org.
-        assert self._resolve_setup_ps1_repo(False, False, "") == "ggml-org/llama.cpp"
+    def test_setup_ps1_routing_resolves_to_fork(self):
+        # Windows routing is unconditional now: CPU-only Windows (x64 and arm64)
+        # uses the fork's windows-cpu / windows-arm64 bundles, not ggml-org.
+        assert self._resolve_setup_ps1_repo() == "unslothai/llama.cpp"
 
 
 # TEST: _pick_rocm_gfx_target -- visible-device selection from rocminfo output.
-# Honours CUDA_VISIBLE_DEVICES/HIP_VISIBLE_DEVICES so a mixed-arch host installs
-# the prebuilt for the GPU actually selected, not GPU 0.
+# Honours CUDA/HIP_VISIBLE_DEVICES so a mixed-arch host installs the prebuilt
+# for the selected GPU, not GPU 0.
 
 _pick_rocm_gfx_target = prebuilt_mod._pick_rocm_gfx_target
 
 
 def test_pick_rocm_gfx_target_honors_cuda_visible_devices(monkeypatch):
-    """AMD HIP honours CUDA_VISIBLE_DEVICES identically to HIP_VISIBLE_DEVICES;
-    on a gfx1151 + gfx1100 mixed host, CUDA_VISIBLE_DEVICES=1 must select gfx1100."""
-    # Two GPUs; rocminfo reports each token twice (as in the real tool output).
+    """CUDA_VISIBLE_DEVICES=1 must select gfx1100 on a gfx1151 + gfx1100 host (HIP honours CUDA var)."""
+    # rocminfo reports each token twice (as in the real tool output).
     probe_out = "gfx1151\ngfx1151\ngfx1100\ngfx1100"
     monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
     monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
@@ -3410,11 +3303,8 @@ def test_pick_rocm_gfx_target_cuda_visible_devices_minus_one_returns_none(monkey
 
 
 def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
-    """Regression: [gfx1100, gfx1100, gfx1151] with HIP_VISIBLE_DEVICES=2 must
-    return gfx1151, not fall back to GPU 0 due to dict.fromkeys collapsing the
-    two gfx1100 entries into one and making index 2 out of range."""
-    # Simulate rocminfo output for 3 GPUs (2x gfx1100 dGPU + 1x gfx1151 APU).
-    # Each GPU gets its own Agent section with a few token mentions.
+    """Regression: [gfx1100, gfx1100, gfx1151] with HIP_VISIBLE_DEVICES=2 must return gfx1151 (no dict.fromkeys collapse)."""
+    # rocminfo output for 3 GPUs (2x gfx1100 + 1x gfx1151), one Agent section each.
     probe_out = (
         "***\nAgent 1\n***\n  gfx1100 some info\n  gfx1100\n"
         "***\nAgent 2\n***\n  gfx1100 some info\n  gfx1100\n"
@@ -3434,9 +3324,7 @@ _LLAMA_CPP_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "
 
 
 class TestWslSystemRocmLibDirs:
-    """install_llama_prebuilt._wsl_system_rocm_lib_dirs: a strict no-op off a
-    ROCDXG WSL host; returns the system ROCm lib dir there so binary_env can
-    load the WSL-capable HIP runtime before a prebuilt's bundled one."""
+    """_wsl_system_rocm_lib_dirs: no-op off a ROCDXG WSL host; else returns the system ROCm lib dir for binary_env."""
 
     def test_empty_without_dev_dxg(self):
         with patch("os.path.exists", return_value = False):
@@ -3452,8 +3340,7 @@ class TestWslSystemRocmLibDirs:
                 assert prebuilt_mod._wsl_system_rocm_lib_dirs() == []
 
     def test_returns_system_lib_on_wsl_with_librocdxg(self):
-        # Normalize separators: os.path.join uses "\" on the Windows test host
-        # though the target path is Linux.
+        # Normalize separators: os.path.join uses "\" on the Windows test host.
         def _exists(p):
             p = str(p).replace("\\", "/")
             return p in ("/dev/dxg", "/opt/rocm/lib/librocdxg.so")
@@ -3476,9 +3363,7 @@ class TestWslSystemRocmLibDirs:
 
 
 class TestBinaryEnvWslOrdering:
-    """binary_env must put the system ROCm lib dir AHEAD of the prebuilt's
-    bundle dir on a ROCDXG WSL host, and set HSA_ENABLE_DXG_DETECTION; no-op
-    on bare-metal Linux."""
+    """binary_env puts system ROCm lib ahead of the bundle dir + sets HSA_ENABLE_DXG_DETECTION on WSL; no-op bare-metal."""
 
     @staticmethod
     def _linux_host():
@@ -3503,8 +3388,7 @@ class TestBinaryEnvWslOrdering:
         binary = tmp_path / "bundle" / "llama-server"
         binary.parent.mkdir(parents = True)
         binary.write_text("")
-        # binary_env's dedupe_existing_dirs drops non-existent dirs, so use a
-        # real dir to stand in for the system ROCm lib path.
+        # dedupe_existing_dirs drops non-existent dirs, so use a real dir.
         sys_rocm = tmp_path / "sysrocm"
         sys_rocm.mkdir()
         with patch.object(prebuilt_mod, "_wsl_system_rocm_lib_dirs", return_value = [str(sys_rocm)]):
@@ -3533,21 +3417,18 @@ class TestBinaryEnvWslOrdering:
 
 
 class TestInstallShDropinPersistence:
-    """install.sh must persist the ROCm-on-WSL drop-in even when rocminfo
-    already enumerates the GPU (via the transient probe env), so a reinstall
-    over an existing /opt/rocm doesn't leave login shells without the env."""
+    """install.sh persists the ROCm-on-WSL drop-in even when rocminfo already enumerates the GPU (reinstall safety)."""
 
     def test_has_persist_helper(self):
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         assert "_persist_rocm_wsl_dropin()" in source
 
     def test_gate5_early_return_persists_dropin(self):
-        """The rocminfo-already-works early return must call the persist helper
-        BEFORE returning."""
+        """The rocminfo-already-works early return must call the persist helper before returning."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        # Find the rocminfo gfx1151 gate and assert the persist call precedes
-        # its `return 0`.
-        gate = source.find("Name:[[:space:]]*gfx1151")
+        # The persist call must precede `return 0` at the rocminfo GPU-agent gate
+        # (uniquely identified by the `!/generic/` clause the other probes lack).
+        gate = source.find("Name:[[:space:]]*gfx[1-9]/ && !/generic/")
         assert gate != -1
         window = source[gate : gate + 900]
         assert "_persist_rocm_wsl_dropin" in window
@@ -3561,9 +3442,51 @@ class TestInstallShDropinPersistence:
         assert "profile.d/unsloth-rocm-wsl.sh" in body
 
 
+_STRIXHALO_WSL_PATH = PACKAGE_ROOT / "scripts" / "install_rocm_wsl_strixhalo.sh"
+
+
+class TestWslRerouteNvidiaGuard:
+    """_maybe_reroute_strixhalo_to_2404 must skip the AMD reroute on hybrid AMD+NVIDIA hosts by
+    reusing _has_usable_nvidia_gpu (CUDA_VISIBLE_DEVICES-aware + /proc/driver/nvidia fallback),
+    which must be defined before the reroute's call site so it is actually available."""
+
+    def test_reroute_calls_nvidia_helper_before_amd_signal(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        start = source.find("_maybe_reroute_strixhalo_to_2404()")
+        assert start != -1
+        body = source[start : start + 1200]
+        nv = body.find("_has_usable_nvidia_gpu")
+        wmi = body.find("_wsl_amd_gpu_name")
+        assert nv != -1, "reroute must consult _has_usable_nvidia_gpu before deciding to reroute"
+        assert wmi != -1
+        # The NVIDIA guard must precede the AMD/WMI signal and return early.
+        assert nv < wmi
+        assert body.find("return 0", nv) < wmi
+
+    def test_nvidia_helper_and_deps_defined_before_reroute_callsite(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        call = source.find("\n_maybe_reroute_strixhalo_to_2404 || true")
+        assert call != -1
+        for fn in ("_run_bounded() {", "_cvd_hides_nvidia() {", "_has_usable_nvidia_gpu() {"):
+            idx = source.find(fn)
+            assert idx != -1 and idx < call, f"{fn} must be defined before the reroute call"
+
+
+class TestStrixhaloGfxOverridePipefail:
+    """The UNSLOTH_WSL_GFX override check must use a consuming grep, not grep -q: under
+    `set -o pipefail` an early -q exit SIGPIPEs printf and misreports the arch on large output."""
+
+    def test_gfx_override_uses_consuming_grep(self):
+        source = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
+        idx = source.find('grep -E "Name:[[:space:]]*${GFX}')
+        assert idx != -1, "GFX override must use a consuming grep -E (not grep -q)"
+        line = source[idx : source.find("\n", idx)]
+        assert ">/dev/null" in line
+        assert 'grep -qE "Name:[[:space:]]*${GFX}' not in source
+
+
 class TestLlamaCppRuntimeWslOrdering:
-    """The serve-time launcher must mirror binary_env: system HIP before the
-    bundle dir on WSL, so a prebuilt that passed install validation runs."""
+    """The serve-time launcher mirrors binary_env: system HIP before the bundle dir on WSL."""
 
     def test_has_wsl_helper(self):
         source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
@@ -3571,8 +3494,7 @@ class TestLlamaCppRuntimeWslOrdering:
 
     def test_prepends_before_binary_dir(self):
         source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
-        # The Linux lib_dirs build must add WSL rocm dirs before binary_dir.
-        idx_helper = source.find("for _wsl_rocm in _wsl_system_rocm_lib_dirs()")
+        idx_helper = source.find("lib_dirs.extend(_wsl_system_rocm_lib_dirs())")
         idx_binary = source.find("lib_dirs.append(binary_dir)")
         assert idx_helper != -1 and idx_binary != -1
         assert idx_helper < idx_binary

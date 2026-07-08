@@ -63,6 +63,19 @@ class ExportOrchestrator:
         self._run_start_seq: int = 0
         # True while an export op runs; SSE ends the stream 1s after this flips False.
         self._export_active: bool = False
+        # Set by cancel_export(); reset when a new load/export run starts. Lets the
+        # caller distinguish a user cancel from a genuine subprocess crash.
+        self._cancel_requested: bool = False
+
+        # Last finished operation, so a client whose blocking POST was cut off by a
+        # Cloudflare tunnel timeout (524 at ~100s, while the op runs for minutes) can
+        # poll /api/export/status and still learn the real outcome. Guarded by
+        # _op_lock. `_op_seq` is a monotonic counter the client uses as a baseline to
+        # tell "my op finished" (seq grew) from a stale previous result.
+        self._op_lock = threading.Lock()
+        self._op_seq: int = 0
+        self._active_op_kind: Optional[str] = None
+        self._last_op: Optional[Dict[str, Any]] = None
 
         atexit.register(self._cleanup)
         logger.info("ExportOrchestrator initialized (subprocess mode)")
@@ -119,6 +132,72 @@ class ExportOrchestrator:
         """True while an export / load / cleanup command is running."""
         return self._export_active
 
+    def was_cancelled(self) -> bool:
+        """True if the in-flight (or most recent) run was cancelled by the user."""
+        return self._cancel_requested
+
+    def _record_op_finished(self, success: bool, message: str, output_path: Optional[str]) -> None:
+        """Snapshot the just-finished op so status pollers can recover its outcome.
+
+        Called from each op's ``finally`` (with ``_active_op_kind`` still set) BEFORE
+        ``_export_active`` is cleared, so a status read that observes the op as
+        inactive is guaranteed to also see this matching result.
+        """
+        with self._op_lock:
+            self._op_seq += 1
+            status = "cancelled" if self._cancel_requested else ("success" if success else "error")
+            self._last_op = {
+                "seq": self._op_seq,
+                "kind": self._active_op_kind,
+                "status": status,
+                "output_path": output_path if success else None,
+                "error": None if success else (message or None),
+            }
+
+    def get_last_op(self) -> Optional[Dict[str, Any]]:
+        """Return the last finished op record (or None), for status recovery."""
+        with self._op_lock:
+            return dict(self._last_op) if self._last_op is not None else None
+
+    def get_active_op_kind(self) -> Optional[str]:
+        """Return the kind of the currently running op (or None when idle)."""
+        return self._active_op_kind
+
+    def cancel_export(self) -> bool:
+        """Terminate the in-flight export subprocess immediately.
+
+        An export op holds ``self._lock`` for its whole duration (blocked in
+        ``_wait_response``), so we deliberately do NOT take the lock here -- we
+        kill the worker process directly, which unblocks that wait and makes the
+        in-flight op return a failure the caller surfaces as "cancelled".
+
+        Only the export subprocess is touched; training and inference run in
+        their own subprocesses and are left untouched.
+
+        Returns True if a live subprocess was terminated, False if none ran.
+        """
+        self._cancel_requested = True
+        proc = self._proc
+        if proc is None or not proc.is_alive():
+            return False
+        logger.info(
+            "Export cancel requested: terminating export subprocess (pid=%s)",
+            proc.pid,
+        )
+        try:
+            proc.terminate()
+            proc.join(timeout = 5)
+        except Exception:
+            pass
+        if proc.is_alive():
+            logger.warning("Export subprocess survived terminate, killing")
+            try:
+                proc.kill()
+                proc.join(timeout = 3)
+            except Exception:
+                pass
+        return True
+
     # ------------------------------------------------------------------
     # Subprocess lifecycle
     # ------------------------------------------------------------------
@@ -147,6 +226,9 @@ class ExportOrchestrator:
                 daemon = True,
             )
             self._proc.start()
+        from utils.process_lifetime import adopt_pid
+
+        adopt_pid(self._proc.pid)  # bind to parent lifetime (Windows job / sweep)
         logger.info("Export subprocess started (pid=%s)", self._proc.pid)
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> None:
@@ -301,7 +383,9 @@ class ExportOrchestrator:
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
+        approved_remote_code_fingerprint: Optional[str] = None,
         hf_token: Optional[str] = None,
+        subject: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -312,13 +396,18 @@ class ExportOrchestrator:
             "max_seq_length": max_seq_length,
             "load_in_4bit": load_in_4bit,
             "trust_remote_code": trust_remote_code,
+            "approved_remote_code_fingerprint": approved_remote_code_fingerprint,
+            "subject": subject,
             "hf_token": hf_token,
         }
 
         with self._lock:
             # Fresh log buffer so the UI sees only this run's output.
             self.clear_logs()
+            self._cancel_requested = False
+            self._active_op_kind = "load_checkpoint"
             self._export_active = True
+            op_success, op_message = False, ""
             try:
                 # Always kill any existing subprocess and spawn fresh.
                 if self._ensure_subprocess_alive():
@@ -336,6 +425,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    op_success, op_message = False, str(exc)
                     return False, str(exc)
 
                 if resp.get("success"):
@@ -343,15 +433,19 @@ class ExportOrchestrator:
                     self.is_vision = resp.get("is_vision", False)
                     self.is_peft = resp.get("is_peft", False)
                     logger.info("Checkpoint '%s' loaded in subprocess", checkpoint_path)
-                    return True, resp.get("message", "Loaded successfully")
+                    op_success, op_message = True, resp.get("message", "Loaded successfully")
+                    return True, op_message
                 else:
                     error = resp.get("message", "Failed to load checkpoint")
                     logger.error("Failed to load checkpoint: %s", error)
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    op_success, op_message = False, error
                     return False, error
             finally:
+                self._record_op_finished(op_success, op_message, None)
+                self._active_op_kind = None
                 self._export_active = False
 
     def export_merged_model(
@@ -362,6 +456,7 @@ class ExportOrchestrator:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
+        compressed_method: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export merged PEFT model."""
         return self._run_export(
@@ -373,6 +468,7 @@ class ExportOrchestrator:
                 "repo_id": repo_id,
                 "hf_token": hf_token,
                 "private": private,
+                "compressed_method": compressed_method,
             },
         )
 
@@ -401,12 +497,13 @@ class ExportOrchestrator:
     def export_gguf(
         self,
         save_directory: str,
-        quantization_method: str = "Q4_K_M",
+        quantization_method = "Q4_K_M",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
+        imatrix_file = None,
     ) -> Tuple[bool, str, Optional[str]]:
-        """Export model in GGUF format."""
+        """Export model in GGUF format. `quantization_method` may be a single method or a list."""
         return self._run_export(
             "gguf",
             {
@@ -415,6 +512,7 @@ class ExportOrchestrator:
                 "push_to_hub": push_to_hub,
                 "repo_id": repo_id,
                 "hf_token": hf_token,
+                "imatrix_file": imatrix_file,
             },
         )
 
@@ -425,8 +523,10 @@ class ExportOrchestrator:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
+        gguf: bool = False,
+        gguf_outtype: str = "q8_0",
     ) -> Tuple[bool, str, Optional[str]]:
-        """Export LoRA adapter only."""
+        """Export LoRA adapter only (optionally also as a GGUF LoRA file)."""
         return self._run_export(
             "lora",
             {
@@ -435,6 +535,8 @@ class ExportOrchestrator:
                 "repo_id": repo_id,
                 "hf_token": hf_token,
                 "private": private,
+                "gguf": gguf,
+                "gguf_outtype": gguf_outtype,
             },
         )
 
@@ -453,23 +555,32 @@ class ExportOrchestrator:
                 )
 
             self.clear_logs()
+            self._cancel_requested = False
+            self._active_op_kind = f"export_{export_type}"
             self._export_active = True
+            op_success, op_message, op_output_path = False, "", None
             try:
                 cmd = {"type": "export", "export_type": export_type, **params}
                 try:
                     self._send_cmd(cmd)
+                    # GGUF for 30B+ models can take 30+ min per quant; a multi-quant list runs them
+                    # all in one op off a single merge, so scale the timeout by the quant count.
+                    _qm = params.get("quantization_method")
+                    _n = len(_qm) if isinstance(_qm, (list, tuple)) and _qm else 1
                     resp = self._wait_response(
                         f"export_{export_type}_done",
-                        timeout = 3600,  # GGUF for 30B+ models can take 30+ min
+                        timeout = 3600 * max(1, _n),
                     )
-                    return (
-                        resp.get("success", False),
-                        resp.get("message", ""),
-                        resp.get("output_path"),
-                    )
+                    op_success = resp.get("success", False)
+                    op_message = resp.get("message", "")
+                    op_output_path = resp.get("output_path")
+                    return op_success, op_message, op_output_path
                 except RuntimeError as exc:
+                    op_success, op_message = False, str(exc)
                     return False, str(exc), None
             finally:
+                self._record_op_finished(op_success, op_message, op_output_path)
+                self._active_op_kind = None
                 self._export_active = False
 
     def cleanup_memory(self) -> bool:
@@ -481,7 +592,9 @@ class ExportOrchestrator:
                 self.is_peft = False
                 return True
 
+            self._active_op_kind = "cleanup"
             self._export_active = True
+            success = False
             try:
                 try:
                     self._send_cmd({"type": "cleanup"})
@@ -498,6 +611,8 @@ class ExportOrchestrator:
                 self.is_peft = False
                 return success
             finally:
+                self._record_op_finished(success, "", None)
+                self._active_op_kind = None
                 self._export_active = False
 
     def scan_checkpoints(self, outputs_dir: str = str(outputs_root())) -> List[Tuple[str, list]]:

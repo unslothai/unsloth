@@ -8,6 +8,7 @@ type DotTagTone =
   | "warning"
   | "danger"
   | "gguf"
+  | "mlx"
   | "checkpoint"
   | "adapter";
 
@@ -16,6 +17,7 @@ const TONE_CLASS: Record<DotTagTone, string> = {
   warning: "bg-status-warning",
   danger: "bg-status-danger",
   gguf: "bg-format-gguf",
+  mlx: "bg-format-mlx",
   checkpoint: "bg-format-checkpoint",
   adapter: "bg-format-adapter",
 };
@@ -24,10 +26,12 @@ export function DotTag({
   tone,
   label,
   className,
+  dotClassName,
 }: {
   tone: DotTagTone;
   label: string;
   className?: string;
+  dotClassName?: string;
 }) {
   return (
     <span
@@ -38,7 +42,11 @@ export function DotTag({
     >
       <span
         aria-hidden="true"
-        className={cn("inline-block size-1.5 shrink-0 rounded-full", TONE_CLASS[tone])}
+        className={cn(
+          "inline-block size-1.5 shrink-0 rounded-full",
+          TONE_CLASS[tone],
+          dotClassName,
+        )}
       />
       {label}
     </span>

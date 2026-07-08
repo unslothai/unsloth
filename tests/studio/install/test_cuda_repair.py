@@ -1,10 +1,6 @@
-"""Tests for CUDA torch repair on poisoned NVIDIA venvs.
-
-Verifies _ensure_cuda_torch (studio/install_python_stack.py) reinstalls CUDA
-torch when a venv on an NVIDIA host carries a ROCm torch build (the pre-fix KFD
-gpu_id false positive), without touching healthy CUDA, deliberate CPU wheels,
-ROCm hosts, macOS, or Windows. All tests use mocks -- no GPU required.
-"""
+"""_ensure_cuda_torch reinstalls CUDA torch when an NVIDIA-host venv carries a ROCm
+build (the pre-fix KFD gpu_id false positive), but leaves healthy CUDA / CPU / ROCm /
+macOS / Windows untouched. Fully mocked -- no GPU required."""
 
 import importlib.util
 import sys
@@ -14,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-# ── Load module under test (mirrors test_rocm_support.py) ────────────────────
+# Load module under test (mirrors test_rocm_support.py).
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 
@@ -29,21 +25,14 @@ _ensure_cuda_torch = stack_mod._ensure_cuda_torch
 _detect_cuda_torch_index_url = stack_mod._detect_cuda_torch_index_url
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
-
 def _make_run(
     torch_state = "hip",
     cuda_version = "12.8",
     torch_rc = 0,
     smi_rc = 0,
 ):
-    """Build a subprocess.run side_effect.
-
-    The torch-classify probe runs sys.executable and reads bytes stdout; the
-    nvidia-smi version probe runs the smi path with text=True. Distinguish by
-    the executable.
-    """
+    """subprocess.run side_effect: torch-classify probe (sys.executable, bytes
+    stdout) vs nvidia-smi version probe (smi path, text=True), keyed on the executable."""
 
     def _run(cmd, *args, **kwargs):
         result = MagicMock()
@@ -78,9 +67,7 @@ def _run_cuda_repair(
 ):
     """Invoke _ensure_cuda_torch under a fully mocked host; return the pip mock.
 
-    cvd controls CUDA_VISIBLE_DEVICES: None removes it from the environment
-    (the host machine may export one), any string sets it explicitly.
-    """
+    cvd controls CUDA_VISIBLE_DEVICES: None removes it from the env, any string sets it."""
     env = {}
     if rocm_marker:
         env["UNSLOTH_ROCM_TORCH_INSTALLED"] = "1"
@@ -122,7 +109,7 @@ def _index_url(mock_pip) -> str:
     return args[args.index("--index-url") + 1]
 
 
-# ── Repair fires only on the poisoning signature ─────────────────────────────
+# Repair fires only on the poisoning signature.
 
 
 class TestCudaRepairFires:
@@ -136,13 +123,13 @@ class TestCudaRepairFires:
         assert mock_pip.call_args.kwargs["constrain"] is False
 
     def test_rocm_in_version_string_triggers_repair(self):
-        # AMD SDK / Radeon wheels may not set torch.version.hip but encode
-        # rocm in __version__; the probe prints "hip" for both.
+        # AMD SDK / Radeon wheels may encode rocm in __version__ without
+        # torch.version.hip; the probe prints "hip" for both.
         mock_pip = _run_cuda_repair(torch_state = "hip")
         assert mock_pip.call_count == 1
 
 
-# ── No-op cases ──────────────────────────────────────────────────────────────
+# No-op cases.
 
 
 class TestCudaRepairSkips:
@@ -192,8 +179,7 @@ class TestCudaRepairSkips:
         mock_pip.assert_not_called()
 
     def test_cvd_minus_one_skips(self):
-        # CUDA_VISIBLE_DEVICES=-1 deliberately hides the NVIDIA GPU (mixed
-        # AMD+NVIDIA host running ROCm torch on the AMD card).
+        # CUDA_VISIBLE_DEVICES=-1 hides the NVIDIA GPU (mixed AMD+NVIDIA host on the AMD card).
         mock_pip = _run_cuda_repair(cvd = "-1", torch_state = "hip")
         mock_pip.assert_not_called()
 
@@ -206,7 +192,7 @@ class TestCudaRepairSkips:
         assert mock_pip.call_count == 1
 
 
-# ── CUDA index ladder ────────────────────────────────────────────────────────
+# CUDA index ladder.
 
 
 class TestCudaIndexResolution:
@@ -231,7 +217,7 @@ class TestCudaIndexResolution:
         assert "cu126" in _index_url(mock_pip)
 
     def test_proc_fallback_no_smi_defaults_cu126(self):
-        # NVIDIA usable via /proc fallback, nvidia-smi absent entirely.
+        # NVIDIA usable via /proc fallback, nvidia-smi absent.
         mock_pip = _run_cuda_repair(smi_path = None)
         assert "cu126" in _index_url(mock_pip)
 

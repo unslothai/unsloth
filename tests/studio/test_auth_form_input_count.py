@@ -3,16 +3,10 @@
 
 """Pin the auth-form input-count contract on the change-password page.
 
-PR #5490 added a third "Current password" input for the admin-forced reset
-path; this regressed the first-boot UX (which reuses the injected
-window.__UNSLOTH_BOOTSTRAP__ password) to three visible inputs. PR #5545
-restores two inputs by rendering Current password only when BOOTSTRAP is
-absent.
-
-These tests inspect the auth-form source directly (no Studio, browser, or
-network), so they run deterministically on any CI runner. The runtime side
-is covered by tests/studio/playwright_chat_ui.py.
-"""
+PR #5490 added a third "Current password" input, regressing first-boot UX to
+three inputs; PR #5545 restores two by rendering it only when BOOTSTRAP is absent.
+These tests inspect the source directly (no Studio/browser/network); runtime is
+covered by tests/studio/playwright_chat_ui.py."""
 
 from __future__ import annotations
 
@@ -28,9 +22,7 @@ CONDITIONAL_OPENER = "{!hasBootstrapPassword && ("
 
 
 def _conditional_extent(src: str) -> tuple[int, int]:
-    """Return the (start, end) char offsets of the
-    `{!hasBootstrapPassword && (...)}` JSX block. ``start`` points
-    at the opening `{`; ``end`` points one past the matching `)}`."""
+    """(start, end) char offsets of the `{!hasBootstrapPassword && (...)}` JSX block."""
     start = src.find(CONDITIONAL_OPENER)
     assert start != -1, (
         "the {!hasBootstrapPassword && (...)} JSX block that hides the "
@@ -52,10 +44,8 @@ def _conditional_extent(src: str) -> tuple[int, int]:
 
 
 def test_hasbootstrappassword_constant_is_derived_from_bootstrap_window_value():
-    """The conditional guard must read from window.__UNSLOTH_BOOTSTRAP__.
-    A future refactor that swaps the source (e.g. a localStorage flag,
-    a prop) would silently drift from the backend's bootstrap-injection
-    contract in studio/backend/main.py::_inject_bootstrap."""
+    """The guard must read from window.__UNSLOTH_BOOTSTRAP__, matching the backend's
+    bootstrap-injection contract in studio/backend/main.py::_inject_bootstrap."""
     src = AUTH_FORM.read_text()
     assert "const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);" in src, (
         "hasBootstrapPassword constant missing or its derivation drifted; "
@@ -64,10 +54,8 @@ def test_hasbootstrappassword_constant_is_derived_from_bootstrap_window_value():
 
 
 def test_exactly_one_hasBootstrapPassword_conditional_exists():
-    """Only one `!hasBootstrapPassword` JSX check is allowed. A second
-    one would split the form rendering into branches that the rest of
-    these structural tests cannot reason about, and would almost
-    certainly hide or duplicate one of the New / Confirm inputs."""
+    """Only one `!hasBootstrapPassword` JSX check is allowed; a second would split
+    rendering into branches and likely hide or duplicate the New / Confirm inputs."""
     src = AUTH_FORM.read_text()
     count = src.count("!hasBootstrapPassword")
     assert count == 1, (
@@ -77,9 +65,8 @@ def test_exactly_one_hasBootstrapPassword_conditional_exists():
 
 
 def test_current_password_input_is_inside_the_hasBootstrapPassword_conditional():
-    """`id="current-password"` MUST sit inside `{!hasBootstrapPassword && (...)}`.
-    Otherwise the input renders on first boot too, regressing the
-    pre-#5490 two-input UX that PR #5545 restores."""
+    """`id="current-password"` must sit inside `{!hasBootstrapPassword && (...)}`,
+    else it renders on first boot too, regressing the pre-#5490 UX that PR #5545 restores."""
     src = AUTH_FORM.read_text()
     s, e = _conditional_extent(src)
     idx = src.find('id="current-password"')
@@ -92,8 +79,8 @@ def test_current_password_input_is_inside_the_hasBootstrapPassword_conditional()
 
 
 def test_new_password_input_is_outside_the_hasBootstrapPassword_conditional():
-    """`id="new-password"` MUST sit outside `{!hasBootstrapPassword && (...)}`.
-    Otherwise it disappears on admin-forced resets, regressing PR #5490."""
+    """`id="new-password"` must sit outside `{!hasBootstrapPassword && (...)}`,
+    else it disappears on admin-forced resets, regressing PR #5490."""
     src = AUTH_FORM.read_text()
     s, e = _conditional_extent(src)
     idx = src.find('id="new-password"')
@@ -119,11 +106,9 @@ def test_confirm_password_input_is_outside_the_hasBootstrapPassword_conditional(
 
 
 def test_change_password_jsx_declares_exactly_three_password_inputs():
-    """The change-password JSX block (`{!isLoginMode && (...)}`) must
-    declare exactly the three known password inputs -- current, new,
-    confirm. A fourth would almost certainly break the 2-input
-    first-boot contract because the conditional only hides the
-    Current input, not any new one a future PR might add."""
+    """The change-password JSX block (`{!isLoginMode && (...)}`) must declare exactly
+    current/new/confirm; a fourth would break the 2-input first-boot contract (the
+    conditional only hides Current)."""
     src = AUTH_FORM.read_text()
     start = src.find("{!isLoginMode && (")
     assert start != -1, (
@@ -155,10 +140,8 @@ def test_change_password_jsx_declares_exactly_three_password_inputs():
 
 
 def test_login_jsx_declares_exactly_one_password_input():
-    """The login JSX block (`isLoginMode && (...)`) must declare
-    exactly one password input -- the bootstrap password the user
-    pastes from the CLI. Adding a second here would break the
-    matrix that the per-mode tests assume."""
+    """The login JSX block (`isLoginMode && (...)`) must declare exactly one password
+    input (the bootstrap password pasted from the CLI); a second breaks the per-mode matrix."""
     src = AUTH_FORM.read_text()
     start = src.find("{isLoginMode && (")
     assert start != -1, "the login JSX subtree marker is missing"
@@ -173,8 +156,7 @@ def test_login_jsx_declares_exactly_one_password_input():
         i += 1
     subtree = src[start:i]
     ids = re.findall(r'id="([a-z-]+)"', subtree)
-    # The login subtree currently uses id="password". Lock the count
-    # rather than the spelling so a rename does not falsely fail.
+    # Lock the count, not the spelling, so a rename does not falsely fail.
     pw_ids = [x for x in ids if "password" in x]
     assert len(pw_ids) == 1, (
         f"login JSX must declare exactly one password-typed input; " f"found {pw_ids!r}"

@@ -1,17 +1,11 @@
 """End-to-end GPU guard for batched left-padded generation (issues #1066, #3699).
 
-For each prompt, greedy generation inside a left-padded batch must match
-generating that prompt alone at batch size 1 for the first PREFIX_TOKENS
-tokens, and the full output must not be gibberish. The bug class (#1066,
-#3699) makes padded rows diverge immediately into garbage; in contrast,
-benign batch-size-dependent kernel numerics can flip a greedy near-tie deep
-into the sequence, so an exact full-length match would be flaky. Uses a small
-instruct model (chat-templated prompts have high-margin argmaxes).
-
-Skipped automatically when CUDA is unavailable, so CPU CI is unaffected.
-Run manually on any GPU box:
-
-    python -m pytest tests/utils/test_batched_leftpad_generation_gpu.py -v
+Greedy generation in a left-padded batch must match solo batch-size-1
+generation for the first PREFIX_TOKENS tokens (the bug makes padded rows
+diverge into garbage immediately; a full-length match would be flaky due to
+benign batch-numerics tie-flips deep in the sequence) and must not be
+gibberish. Skipped without CUDA. Run: `python -m pytest
+tests/utils/test_batched_leftpad_generation_gpu.py -v`.
 """
 
 import pytest

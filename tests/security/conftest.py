@@ -1,9 +1,4 @@
-"""Shared fixtures for the security regression suite.
-
-The scanners under audit must be offline-safe. An autouse session-scoped network
-blocker refuses any non-loopback `socket.connect()` so a regression that reaches
-the internet fails loudly instead of leaking the request.
-"""
+"""Security suite fixtures: an autouse network blocker refuses non-loopback socket.connect() so a regression reaching the internet fails loudly."""
 
 from __future__ import annotations
 
@@ -14,7 +9,7 @@ from pathlib import Path
 import pytest
 
 
-# Make `scripts/` importable so tests can grab scanner constants directly
+# Make `scripts/` importable so tests can grab scanner constants directly.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -66,8 +61,7 @@ class _BlockedSocket(socket.socket):
 
 @pytest.fixture(scope = "session", autouse = True)
 def network_blocker():
-    """Session-scoped fixture; swaps `socket.socket` for a blocker, restored at
-    teardown so interleaved sessions see a clean module."""
+    """Swap socket.socket for the blocker, restored at teardown."""
     original = socket.socket
     socket.socket = _BlockedSocket  # type: ignore[assignment]
     try:

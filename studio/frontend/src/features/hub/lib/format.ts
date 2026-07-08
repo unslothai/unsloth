@@ -51,6 +51,16 @@ export function repoOf(id: string): string {
   return id.includes("/") ? id.split("/").slice(1).join("/") : id;
 }
 
+export function formatShortDate(iso?: string): string {
+  if (!iso) return "N/A";
+  const time = new Date(iso).getTime();
+  if (Number.isNaN(time)) return "N/A";
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    year: "numeric",
+  }).format(time);
+}
+
 export function formatRelativeShort(iso?: string): string {
   if (!iso) return "N/A";
   const then = new Date(iso).getTime();
@@ -69,4 +79,22 @@ export function formatRelativeShort(iso?: string): string {
   }
   const years = Math.floor(days / 365);
   return `${years}y ago`;
+}
+
+export function formatRelativeLong(iso?: string): string {
+  if (!iso) return "N/A";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "N/A";
+  const diffMs = Math.max(0, Date.now() - then);
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return "just now";
+  const unit = (value: number, name: string) =>
+    `${value} ${name}${value === 1 ? "" : "s"} ago`;
+  if (minutes < 60) return unit(minutes, "minute");
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return unit(hours, "hour");
+  const days = Math.floor(hours / 24);
+  if (days < 30) return unit(days, "day");
+  if (days < 365) return unit(Math.floor(days / 30), "month");
+  return unit(Math.floor(days / 365), "year");
 }

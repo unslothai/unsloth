@@ -1,8 +1,7 @@
-"""
-Tests for check_dataset_for_missing_videos (issue #5085).
+"""Tests for check_dataset_for_missing_videos (issue #5085).
 
-Fixtures extract the function from vision.py via AST so the pure-Python logic
-tests run without the full unsloth import chain (triton/CUDA kernels).
+Fixtures AST-extract the function from vision.py so logic tests run without
+the full unsloth import chain (triton/CUDA kernels).
 """
 
 import ast
@@ -22,8 +21,7 @@ def _extract_fns_via_ast(
     fn_names,
     extra_ns = None,
 ):
-    """Exec a set of top-level functions out of a .py file so intra-module
-    references between them resolve."""
+    """Exec the named top-level functions from a .py file so their mutual references resolve."""
     source = source_path.read_text(encoding = "utf-8")
     tree = ast.parse(source, filename = str(source_path))
     wanted = set(fn_names)

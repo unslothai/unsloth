@@ -258,7 +258,7 @@ fn prune_expired(inner: &mut NativeIntakeInner) {
         .retain(|intent| intent.path.expires_at_ms > now);
 }
 
-fn ensure_main_window(window: &WebviewWindow) -> Result<(), String> {
+pub(crate) fn ensure_main_window(window: &WebviewWindow) -> Result<(), String> {
     if window.label() == "main" {
         Ok(())
     } else {

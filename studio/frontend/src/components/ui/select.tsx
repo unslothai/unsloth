@@ -8,6 +8,7 @@ import type * as React from "react";
 import { createContext, useContext, useState } from "react";
 
 import { Tick02Icon } from "@/lib/tick-icon";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { useDialogPortalContainer } from "@/components/ui/dialog";
 import {
@@ -98,7 +99,7 @@ function SelectTrigger({
       {children}
       <SelectPrimitive.Icon asChild>
         <HugeiconsIcon
-          icon={icon ?? UnfoldMoreIcon}
+          icon={icon ?? ChevronDownStandardIcon}
           strokeWidth={2}
           className={cn(
             "text-muted-foreground size-4 pointer-events-none",

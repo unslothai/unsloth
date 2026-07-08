@@ -10,7 +10,8 @@ export type CapabilityKey =
   | "reasoning"
   | "code"
   | "embedding"
-  | "multilingual";
+  | "multilingual"
+  | "conversational";
 
 export interface Capability {
   key: CapabilityKey;
@@ -69,11 +70,63 @@ const CODE_TAGS = new Set([
   "programming",
 ]);
 
+const CONVERSATIONAL_TAGS = new Set([
+  "conversational",
+  "chat",
+  "chatbot",
+  "text-generation-inference",
+]);
+
+const CONVERSATIONAL_ID_RE = /(?:^|[-_/])conversational(?:[-_/]|$)/;
+
 const COMMON_LANGUAGE_TAGS = new Set([
-  "en", "fr", "de", "es", "it", "pt", "nl", "ru", "pl", "uk", "tr", "cs",
-  "sv", "no", "da", "fi", "el", "ro", "bg", "hu", "hr", "sr", "sl", "sk",
-  "zh", "ja", "ko", "ar", "he", "fa", "hi", "bn", "ta", "te", "th", "vi",
-  "id", "ms", "tl", "sw", "ur", "ca", "eu", "is", "lv", "lt", "et",
+  "en",
+  "fr",
+  "de",
+  "es",
+  "it",
+  "pt",
+  "nl",
+  "ru",
+  "pl",
+  "uk",
+  "tr",
+  "cs",
+  "sv",
+  "no",
+  "da",
+  "fi",
+  "el",
+  "ro",
+  "bg",
+  "hu",
+  "hr",
+  "sr",
+  "sl",
+  "sk",
+  "zh",
+  "ja",
+  "ko",
+  "ar",
+  "he",
+  "fa",
+  "hi",
+  "bn",
+  "ta",
+  "te",
+  "th",
+  "vi",
+  "id",
+  "ms",
+  "tl",
+  "sw",
+  "ur",
+  "ca",
+  "eu",
+  "is",
+  "lv",
+  "lt",
+  "et",
 ]);
 
 function lower(values: string[] | undefined): Set<string> {
@@ -134,6 +187,12 @@ export function detectCapabilities(
     out.push({ key: "code", label: "Code" });
   }
   if (
+    hasAny(CONVERSATIONAL_TAGS) ||
+    CONVERSATIONAL_ID_RE.test(lowerId)
+  ) {
+    out.push({ key: "conversational", label: "Conversational" });
+  }
+  if (
     hasAny(EMBEDDING_TAGS) ||
     /embed|embedding|retriever|reranker|bge[-_]|e5[-_]|gte[-_]|colbert|sentence[-_]?transformer|sentence[-_]?similarity|jina[-_]?embeddings?|nomic[-_]?embed|arctic[-_]?embed|qwen3[-_]?embedding|qwen3[-_]?reranker|text[-_]?embedding/.test(
       lowerId,
@@ -159,4 +218,28 @@ export function detectLicense(tags: string[] | undefined): string | null {
   if (!tags) return null;
   const license = tags.find((t) => t.startsWith("license:"));
   return license ? license.slice("license:".length) : null;
+}
+
+export function detectBaseModel(tags: string[] | undefined): string | null {
+  if (!tags) {
+    return null;
+  }
+  let quantizedBaseModel: string | null = null;
+
+  for (const tag of tags) {
+    if (!tag.startsWith("base_model:")) {
+      continue;
+    }
+    const value = tag.slice("base_model:".length).trim();
+    if (!value) {
+      continue;
+    }
+    if (value.startsWith("quantized:")) {
+      quantizedBaseModel ??= value.slice("quantized:".length).trim() || null;
+      continue;
+    }
+    return value;
+  }
+
+  return quantizedBaseModel;
 }

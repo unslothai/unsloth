@@ -1,11 +1,4 @@
-"""Tests for Hugging Face auth on the llama.cpp prebuilt installer's fetches.
-
-Anonymous huggingface.co downloads (tiny GGUF validation model) share a
-per-IP rate limit that CI fleets exhaust (HTTP 429), forcing the prebuilt
-path into a source build. auth_headers now sends HF_TOKEN to huggingface.co
-hosts, and a redirect handler strips Authorization when the download is
-redirected to a different host (CDN signed URLs). All tests are offline.
-"""
+"""HF auth on the llama.cpp prebuilt installer: auth_headers sends HF_TOKEN to huggingface.co only, and a redirect handler strips Authorization on cross-host redirects. Offline."""
 
 import importlib.util
 import sys
@@ -33,7 +26,7 @@ GH_URL = "https://api.github.com/repos/unslothai/llama.cpp/releases"
 
 
 def _headers(url, env):
-    """auth_headers under a fully controlled token environment."""
+    """Call auth_headers under a fully controlled token environment."""
     with patch.dict(mod.os.environ, env, clear = False):
         for var in _TOKEN_VARS:
             if var not in env:

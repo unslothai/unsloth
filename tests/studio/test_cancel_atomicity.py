@@ -1,12 +1,4 @@
-"""
-TOCTOU atomicity guards for the cancel path.
-
-Structural: cancel_inference, _cancel_by_cancel_id_or_stash, and
-_TrackedCancel.__enter__ must each use a single _CANCEL_LOCK critical
-section over lookup + stash / register + consume-pending.
-
-Behavioral: parallel cancel-POST vs __enter__ must never drop a cancel.
-"""
+"""TOCTOU atomicity guards for the cancel path: single _CANCEL_LOCK critical sections; parallel cancel-POST vs __enter__ never drops a cancel."""
 
 from __future__ import annotations
 

@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Pinned-symbol compat check across sentence-transformers PyPI minor
-versions. unsloth has a custom integration in
-unsloth/models/sentence_transformer.py that:
-
-  - Imports SentenceTransformer / SentenceTransformerTrainer at the
-    top of the public surface (lines 1467, 1798, 1947, 2154).
-  - Walks `sentence_transformers.models` for Transformer / Pooling /
-    Normalize (lines 1016, 1206, 1467).
-  - Calls `sentence_transformers.util.import_from_string` and
-    `load_dir_path` (lines 1177, 1205).
-  - Tolerates two alternate base-class paths
-    (sentence_transformers.base.modules.transformer.Transformer vs
-    sentence_transformers.models.transformer.Transformer; lines
-    1169-1171) — at least ONE must resolve.
-
-Strategy: GitHub raw fetch + symbol grep (no pip install, CPU-only).
-ST is unpinned in unsloth/pyproject.toml; cover recent 5.x minors plus
-`main`.
-"""
+"""Pinned-symbol compat check for the symbols unsloth's sentence_transformer
+integration relies on, across ST PyPI minors (GitHub raw fetch + symbol grep)."""
 
 from __future__ import annotations
 
@@ -29,8 +12,7 @@ import pytest
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 
-# Policy: unsloth/pyproject.toml does NOT pin sentence-transformers. We
-# track the last few minors plus main. Add a row when a new minor lands.
+# ST is unpinned in pyproject.toml; track the last few minors plus main.
 ST_TAGS = [
     "v5.0.0",
     "v5.1.2",
@@ -41,10 +23,7 @@ ST_TAGS = [
 ]
 
 
-# Top-level public surface: SentenceTransformer + SentenceTransformerTrainer
-# must be importable as `from sentence_transformers import X`.
-
-
+# Top-level: SentenceTransformer + SentenceTransformerTrainer must be importable.
 @pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_top_level_exports(tag: str):
     src = fetch_text("UKPLab/sentence-transformers", tag, "sentence_transformers/__init__.py")
@@ -57,20 +36,13 @@ def test_st_top_level_exports(tag: str):
     )
 
 
-# Sub-modules: Transformer / Pooling / Normalize. unsloth walks
-# `sentence_transformers.models` to introspect these (line 1016, 1206).
-
-
+# Sub-modules: unsloth walks `sentence_transformers.models` for these classes.
 @pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_models_re_exports(tag: str):
-    """Transformer / Pooling / Normalize must be reachable through
-    `sentence_transformers.models`. ST 5.4 reorganised the package, but
-    the top-level re-export must still surface these three so user code
-    (and unsloth/models/sentence_transformer.py:1016,1206,1467) can
-    `from sentence_transformers.models import Transformer`."""
-    # Layout 1 (legacy &lt; 5.4): sentence_transformers/models[.py|/__init__.py].
-    # Layout 2 (&gt;= 5.4): top-level __init__.py re-exports the symbols
-    # plus the modules live under base/modules and sentence_transformer/.
+    """Transformer / Pooling / Normalize must stay reachable via
+    `sentence_transformers.models` despite the ST 5.4 package reorg."""
+    # Layout 1 (legacy < 5.4): sentence_transformers/models[.py|/__init__.py].
+    # Layout 2 (>= 5.4): top-level re-exports; modules under base/modules + sentence_transformer/.
     legacy_candidates = [
         "sentence_transformers/models/__init__.py",
         "sentence_transformers/models.py",
@@ -88,9 +60,8 @@ def test_st_models_re_exports(tag: str):
         return
 
     # ST 5.4+ modular layout: classes moved under base/modules and
-    # sentence_transformer/modules. Backward compat for
-    # `from sentence_transformers.models import X` is wired at import via
-    # setup_deprecated_module_imports in sentence_transformers/__init__.py.
+    # sentence_transformer/modules; backward compat wired via
+    # setup_deprecated_module_imports in __init__.py.
     expected_paths = {
         "Transformer": [
             "sentence_transformers/base/modules/transformer.py",
@@ -114,8 +85,7 @@ def test_st_models_re_exports(tag: str):
         else:
             pytest.fail(f"{tag}: ST 5.4+ layout: class {cls} not found in any of {paths}")
 
-    # The backward-compat shim must be wired up so user code doing
-    # `from sentence_transformers.models import Pooling` keeps working.
+    # The backward-compat shim must be wired so `from ...models import Pooling` keeps working.
     top = fetch_text("UKPLab/sentence-transformers", tag, "sentence_transformers/__init__.py")
     assert top is not None, f"{tag}: sentence_transformers/__init__.py missing"
     has_shim = bool(
@@ -130,10 +100,7 @@ def test_st_models_re_exports(tag: str):
     )
 
 
-# Transformer base class: unsloth checks two alternate paths at
-# sentence_transformer.py:1169-1171. At least ONE must resolve.
-
-
+# Transformer base class: unsloth probes alternate paths; at least ONE must resolve.
 @pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_transformer_base_class_either_path(tag: str):
     candidates = [
@@ -153,16 +120,11 @@ def test_st_transformer_base_class_either_path(tag: str):
     )
 
 
-# sentence_transformers.util: import_from_string + load_dir_path are the
-# two helpers unsloth.models.sentence_transformer:1177,1205 calls.
-
-
+# sentence_transformers.util: import_from_string + load_dir_path helpers unsloth calls.
 @pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_util_helpers(tag: str):
-    """`sentence_transformers.util.{import_from_string, load_dir_path}` —
-    used by unsloth.models.sentence_transformer:1177,1205. ST 5.4+ moved
-    util into a package; accept either layout, or a re-export from any
-    util submodule."""
+    """util.{import_from_string, load_dir_path} must resolve; accept either the
+    flat or the ST 5.4+ package layout, or a re-export from a util submodule."""
     candidates = [
         "sentence_transformers/util.py",
         "sentence_transformers/util/__init__.py",
@@ -174,7 +136,7 @@ def test_st_util_helpers(tag: str):
         defined_here = has_def(src, fn, "func")
         reexported = bool(re.search(rf"\b{re.escape(fn)}\b", src))
         if not (defined_here or reexported):
-            # Try common subfiles for the modular layout.
+            # Modular-layout subfiles.
             subpaths = [
                 "sentence_transformers/util/import_utils.py",
                 "sentence_transformers/util/file_utils.py",

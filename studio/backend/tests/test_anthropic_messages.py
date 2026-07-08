@@ -33,6 +33,7 @@ from core.inference.anthropic_compat import (
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
+from core.inference.api_monitor import ApiMonitor
 from routes.inference import (
     _build_tool_action_nudge,
     _normalize_anthropic_openai_images,
@@ -40,6 +41,7 @@ from routes.inference import (
     _anthropic_requested_studio_tools,
     _anthropic_passthrough_stream,
     _anthropic_tool_non_streaming,
+    _monitor_anthropic_sse_line,
     anthropic_messages,
 )
 from state.tool_policy import reset_tool_policy, set_tool_policy
@@ -48,6 +50,89 @@ import asyncio
 import base64 as _b64
 from io import BytesIO as _BytesIO
 from types import SimpleNamespace
+
+
+def _emitter_client_text(events: list[str]) -> str:
+    """Concatenate the text_delta payloads an SSE event list carries."""
+    text = ""
+    for line in events:
+        for raw in line.split("\n"):
+            raw = raw.strip()
+            if not raw.startswith("data: "):
+                continue
+            data = json.loads(raw[len("data: ") :])
+            delta = data.get("delta", {})
+            if delta.get("type") == "text_delta":
+                text += delta.get("text", "")
+    return text
+
+
+def test_anthropic_emitter_closes_reasoning_only_think_block():
+    # A reasoning-only reply streams <think>X live then shrinks to bare X at EOF.
+    # This emitter diffs cumulative snapshots and drops the shrink, so without a
+    # closing pass the client text would end on an unclosed <think>. finish()
+    # must balance it.
+    emitter = AnthropicStreamEmitter()
+    events = emitter.start("msg_1", "m")
+    events += emitter.feed({"type": "content", "text": "<think>The capital"})
+    events += emitter.feed({"type": "content", "text": "<think>The capital of France is Paris."})
+    # The generator's final bare-text shrink (dropped by the cumulative diff).
+    events += emitter.feed({"type": "content", "text": "The capital of France is Paris."})
+    events += emitter.finish()
+
+    assert _emitter_client_text(events) == "<think>The capital of France is Paris.</think>"
+
+
+def test_anthropic_emitter_does_not_double_close_balanced_think():
+    # A reasoning-then-answer reply already closes its own </think>; the balancer
+    # must not append a second one.
+    emitter = AnthropicStreamEmitter()
+    events = emitter.start("msg_1", "m")
+    events += emitter.feed({"type": "content", "text": "<think>Thinking."})
+    events += emitter.feed({"type": "content", "text": "<think>Thinking.</think>Answer."})
+    events += emitter.finish()
+
+    assert _emitter_client_text(events) == "<think>Thinking.</think>Answer."
+
+
+def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch):
+    import routes.inference as inf_mod
+
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+    monitor_id = monitor.start(
+        endpoint = "/v1/messages",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+
+    for payload in (
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "lookup",
+                "input": {},
+            },
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": '{"query":"weather"}',
+            },
+        },
+        {"type": "content_block_stop", "index": 0},
+    ):
+        _monitor_anthropic_sse_line(monitor_id, f"data: {json.dumps(payload)}")
+
+    entry = monitor.get(monitor_id)
+    assert entry is not None
+    assert entry["reply"] == 'Tool call: lookup\nInput: {"query":"weather"}'
 
 
 # =====================================================================
@@ -86,13 +171,7 @@ class TestToolActionNudge:
         assert "call render_html once" in nudge
 
     def test_balanced_nudge_empty_without_known_tool_categories(self):
-        assert (
-            _build_tool_action_nudge(
-                tools = [],
-                model_name = "Llama-3.1-8B-Instruct",
-            )
-            == ""
-        )
+        assert _build_tool_action_nudge(tools = [], model_name = "Llama-3.1-8B-Instruct") == ""
 
 
 # =====================================================================
@@ -853,6 +932,24 @@ class TestAnthropicToolNonStreaming:
         assert tool_blocks[0]["name"] == "render_html"
         assert tool_blocks[0]["input"] == {"code": "<!doctype html><html></html>"}
 
+    def test_display_strip_gates_on_declared_tools(self):
+        # A final answer containing NAME[ARGS]{json} is gated on the declared tools: undeclared
+        # ``foo`` markup is prose and survives, the declared web_search rehearsal strips.
+        def _run_gen():
+            yield {
+                "type": "content",
+                "text": 'Try foo[ARGS]{"x": 1} but not web_search[ARGS]{"q": "hi"} here.',
+            }
+
+        tools = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_run_gen, "msg_1", "m", openai_tools = tools)
+        )
+        body = json.loads(response.body)
+        text = "".join(b["text"] for b in body["content"] if b["type"] == "text")
+        assert 'foo[ARGS]{"x": 1}' in text  # inactive name preserved as prose
+        assert "web_search[ARGS]" not in text  # active name stripped from display
+
 
 # =====================================================================
 # Pass-through emitter tests (client-side tool execution path)
@@ -1385,7 +1482,7 @@ def _mock_backend(monkeypatch, **overrides):
 
     def _gen_plain(**kwargs):
         calls.append(("plain", kwargs))
-        yield {"type": "content", "text": "ok"}
+        yield "ok"
 
     def _gen_tools(**kwargs):
         calls.append(("tools", kwargs))
@@ -1396,6 +1493,8 @@ def _mock_backend(monkeypatch, **overrides):
         is_vision = False,
         supports_tools = True,
         model_identifier = "test-model",
+        context_length = 4096,
+        count_chat_tokens = lambda *args, **kwargs: 2,
         generate_chat_completion = _gen_plain,
         generate_chat_completion_with_tools = _gen_tools,
         calls = calls,
@@ -1426,6 +1525,112 @@ def _reset_policy():
 
 
 class TestAnthropicMessagesToolRouting:
+    class _Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/messages")
+        method = "POST"
+
+        async def is_disconnected(self):
+            return False
+
+    @staticmethod
+    def _consume_response(response):
+        async def _consume():
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
+            return chunks
+
+        return _drive(_consume())
+
+    def test_plain_non_streaming_records_api_monitor_entry(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        _mock_backend(monkeypatch, context_length = 2048)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        payload = _basic_payload()
+
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert response.status_code == 200
+        [entry] = monitor.snapshot()
+        assert entry["endpoint"] == "/v1/messages"
+        assert entry["status"] == "completed"
+        assert entry["model"] == "test-model"
+        assert entry["prompt_preview"] == "user: hi"
+        assert entry["reply_preview"] == "ok"
+        assert entry["context_length"] == 2048
+        assert monitor.active_count() == 0
+
+    def test_tool_use_non_streaming_records_api_monitor_reply(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        def _gen_tools(**_kwargs):
+            yield {
+                "type": "tool_start",
+                "tool_call_id": "call_1",
+                "tool_name": "lookup",
+                "arguments": {"query": "weather"},
+            }
+
+        _mock_backend(
+            monkeypatch,
+            context_length = 2048,
+            generate_chat_completion_with_tools = _gen_tools,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        payload = _basic_payload(
+            enable_tools = True,
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert response.status_code == 200
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply_preview"] == 'Tool call: lookup({"query": "weather"})'
+
+    def test_plain_streaming_records_active_and_completed_monitor_entry(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        _mock_backend(monkeypatch, context_length = 2048)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        payload = _basic_payload(stream = True)
+
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert monitor.active_count() == 1
+        self._consume_response(response)
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply_preview"] == "ok"
+        assert entry["prompt_tokens"] == 2
+        assert entry["context_length"] == 2048
+        assert monitor.active_count() == 0
+
+    def test_plain_streaming_pre_response_cancel_finalizes_monitor(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def _cancelled_before_response(*_args, **_kwargs):
+            raise asyncio.CancelledError()
+
+        _mock_backend(monkeypatch, context_length = 2048)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "_anthropic_plain_stream", _cancelled_before_response)
+        payload = _basic_payload(stream = True)
+
+        with pytest.raises(asyncio.CancelledError):
+            _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
+
     def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch):
         _mock_backend(monkeypatch)
         payload = _basic_payload(

@@ -1,5 +1,5 @@
-"""Static + behavioral checks for the multi-image GRPO chunking and
-zoo compatibility guard in unsloth/models/rl_replacements.py."""
+"""Static + behavioral checks for multi-image GRPO chunking and the zoo
+compatibility guard in unsloth/models/rl_replacements.py."""
 
 from __future__ import annotations
 

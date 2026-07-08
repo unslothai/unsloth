@@ -6,10 +6,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 /**
  * IntersectionObserver sentinel for infinite scroll, plus a ResizeObserver
  * fallback that auto-fetches while the scroll container doesn't yet overflow.
- * `signal` (typically results.length) is a dep so the fit check re-runs after a
- * fetch even when the page filter rejected every new row and the DOM didn't change.
+ * Fallback firings are coalesced to one `scrollHeight` read (forced layout) per
+ * frame; concurrency is gated at the data-source layer.
+ *
+ * `signal` (typically `results.length`) is a dep so the fit check re-runs after
+ * a fetch even when the page filter rejected every new row and the DOM didn't
+ * change. `DEFAULT_MAX_AUTO_FILL_FETCHES` caps a runaway sweep of the full
+ * listing; callers with a manual continuation UI can lower it.
  */
-// Hard backstop on no-overflow auto-fetches, capping a runaway sweep of the full listing.
 const DEFAULT_MAX_AUTO_FILL_FETCHES = 40;
 
 export interface InfiniteScrollOptions {
@@ -190,7 +194,7 @@ export function useHubInfiniteScroll(
       const sentinel = sentinelRef.current;
       if (!sentinel?.isConnected) return;
       if (manualFetchAvailableRef.current) return;
-      // Once content overflows, the IntersectionObserver takes over — stop polling.
+      // Once content overflows, the IntersectionObserver takes over - stop polling.
       if (hasScrollableOverflow(root)) {
         setManualFetchAvailable(false);
         return;

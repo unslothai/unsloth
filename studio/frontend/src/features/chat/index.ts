@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export { ChatPage } from "./chat-page";
+export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
 export {
   getInferenceStatus,
   listGgufVariants,
@@ -26,7 +26,12 @@ export {
   type PlusMenuItemId,
 } from "./stores/plus-menu-prefs-store";
 export { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
-export { isExternalModelId } from "./external-providers";
+export {
+  customProviderDisplayName,
+  isExternalModelId,
+  parseExternalModelId,
+} from "./external-providers";
+export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";

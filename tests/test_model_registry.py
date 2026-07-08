@@ -1,8 +1,4 @@
-"""Test model registration methods.
-
-Registers each model set and checks the registered model ids exist on the
-Hugging Face Hub.
-"""
+"""Register each model set and check the registered ids exist on the HF Hub."""
 
 from dataclasses import dataclass
 
@@ -58,7 +54,6 @@ TestParams = [
 ]
 
 
-# Test that model registration methods register respective models
 @pytest.mark.parametrize("model_test_param", TestParams, ids = lambda param: param.name)
 def test_model_registration(model_test_param: ModelTestParam):
     MODEL_REGISTRY.clear()
@@ -77,8 +72,7 @@ def test_all_model_registration():
 
 
 def test_quant_type():
-    # Test that the quant_type is correctly set for model paths
-    # NOTE: for models registered under org="unsloth" with QuantType.NONE aliases QuantType.UNSLOTH
+    # NOTE: for org="unsloth" models, QuantType.NONE aliases QuantType.UNSLOTH
     dynamic_quant_models = search_models(quant_types = [QuantType.UNSLOTH])
     assert all(m.quant_type == QuantType.UNSLOTH for m in dynamic_quant_models)
     quant_tag = QUANT_TAG_MAP[QuantType.UNSLOTH]

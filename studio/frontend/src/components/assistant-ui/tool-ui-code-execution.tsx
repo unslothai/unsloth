@@ -8,12 +8,9 @@ import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import {
-  CheckIcon,
-  CopyIcon,
-  FileTextIcon,
-  TerminalIcon,
-} from "lucide-react";
+import { CopyIcon, FileTextIcon, TerminalIcon } from "lucide-react";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -93,7 +90,7 @@ function CopyBtn({ text }: { text: string }) {
       aria-label="Copy to clipboard"
     >
       {copied ? (
-        <CheckIcon className="size-3" />
+        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
         <CopyIcon className="size-3" />
       )}

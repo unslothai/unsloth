@@ -76,7 +76,7 @@ def load_and_compute_8bit_ppl(
 
     ppl_value = ppl_model(merged_model, merged_tokenizer, dataset_ppl)
 
-    # Coerce to a plain Python float for cross-process transfer
+    # Coerce to a plain Python float for cross-process transfer.
     if torch.is_tensor(ppl_value):
         ppl_value = ppl_value.cpu().item()
     elif hasattr(ppl_value, "item"):

@@ -59,6 +59,7 @@ function mapToViewData(
     currentEpoch: metrics.final_epoch,
     currentNumTokens: metrics.final_num_tokens ?? null,
     outputDir: run.output_dir ?? null,
+    resumedLater: run.resumed_later ?? false,
     progressPercent:
       run.total_steps && run.final_step
         ? (run.final_step / run.total_steps) * 100
@@ -77,6 +78,7 @@ function mapToViewData(
     error: run.status === "error" ? run.error_message : null,
     isTrainingRunning: false,
     modelName: run.display_name ?? run.model_name,
+    projectName: run.project_name,
     trainingMethod: parseBackendTrainingMethod(
       detail.config?.training_type,
       detail.config?.load_in_4bit,
