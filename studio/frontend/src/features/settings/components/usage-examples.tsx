@@ -16,6 +16,7 @@ import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { useChatRuntimeStore } from "@/features/chat";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -424,13 +425,10 @@ function useLoadedModelName(): string {
   }, [checkpoint, ggufVariant]);
 }
 
-// Best-effort loopback check on the base the panel is currently pointing at.
-// Detection (`/api/settings/coding-agents`) runs `shutil.which` on the Studio
-// backend, which only describes the browser's own machine when that base
-// resolves to loopback; for a LAN or tunnel/remote base it describes a
-// different machine entirely, so it must not drive what gets marked
-// "detected" or picked as the default agent.
-function resolveIsLoopbackBase(base: string): boolean {
+// Backend PATH detection is only safe in the desktop app, where the UI owns
+// the local backend. A browser loopback URL may be an SSH/local port forward.
+function canUseLocalAgentDetection(base: string): boolean {
+  if (!isTauri) return false;
   try {
     return isLoopbackHost(normalizeHost(new URL(base).hostname));
   } catch {
@@ -493,7 +491,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
     useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
-  const isLoopbackBase = resolveIsLoopbackBase(base);
+  const localAgentDetection = canUseLocalAgentDetection(base);
   // null while loading; the same setting the General tab exposes (shared cache).
   const [autoSwitch, setAutoSwitch] = useState<OpenAIAutoSwitchSettings | null>(
     null,
@@ -509,15 +507,9 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   // list is derived separately below, so it can react to the loaded model
   // changing too, not just a fresh fetch.
   useEffect(() => {
-    // shutil.which runs on the Studio backend, so "detected" only means
-    // something for the browser's own machine when the base this panel
-    // targets is loopback; for a LAN/tunnel/remote base the server's
-    // installed CLIs describe a different machine. Skip the request
-    // entirely and clear out any stale result from a previous loopback
-    // base (e.g. the Cloudflare URL arriving after mount, or the user
-    // flipping Secure HTTPS/tunnel) instead of leaving old agents marked
-    // "detected" for a command that now targets somewhere else.
-    if (!isLoopbackBase) {
+    // Browser loopback URLs can be SSH/local forwards, so only the desktop app
+    // may use backend PATH checks to mark or auto-pick local agents.
+    if (!localAgentDetection) {
       setDetectedAgents([]);
       // A previously auto-picked agent was only ever verified against the
       // Studio backend's PATH, which is meaningless now that this panel no
@@ -542,7 +534,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
     return () => {
       cancelled = true;
     };
-  }, [isLoopbackBase]);
+  }, [localAgentDetection]);
 
   // Single source of truth for the auto-picked agent, re-derived whenever
   // the detected list or the loaded model's GGUF-ness changes -- in either
