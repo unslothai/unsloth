@@ -255,6 +255,43 @@ def test_text_only_prefix_mapping():
     assert torch.equal(model.model.gate_proj.weight.data, expected)
 
 
+def test_skips_variant_load():
+    """A variant load (variant="fp8") is skipped to avoid applying default-checkpoint scales."""
+    if _FP8 is None:
+        return
+    raw = torch.randn(4, 4, dtype = torch.bfloat16)
+    scale = torch.rand(2, 2, dtype = torch.float32) + 0.1
+    model = nn.Module()
+    model.config = _fp8_config((2, 2))
+    model.anchor = _fp8_anchor()
+    model.layer = _bf16_linear(4, 4, raw)
+    with tempfile.TemporaryDirectory() as d:
+        _write_checkpoint(d, {"layer.weight_scale_inv": scale})
+        result = _restore_dropped_fp8_scales(model, d, local_files_only = True, variant = "fp8")
+    assert result == (0, 0)
+    assert torch.equal(model.layer.weight.data, raw)  # untouched
+
+
+def test_vlm_language_model_model_alias():
+    """A checkpoint key language_model.model.* matches a model.language_model.* module."""
+    if _FP8 is None:
+        return
+    raw = torch.randn(2, 2, dtype = torch.bfloat16)
+    scale = torch.rand(1, 1, dtype = torch.float32) + 0.1
+    model = nn.Module()
+    model.config = _fp8_config((2, 2))
+    model.anchor = _fp8_anchor()
+    model.model = nn.Module()
+    model.model.language_model = nn.Module()
+    model.model.language_model.gate_proj = _bf16_linear(2, 2, raw)  # -> model.language_model.gate_proj
+    with tempfile.TemporaryDirectory() as d:
+        _write_checkpoint(d, {"language_model.model.gate_proj.weight_scale_inv": scale})
+        restored, _ = _restore_dropped_fp8_scales(model, d, local_files_only = True)
+    assert restored == 1
+    expected = (raw.to(torch.float32) * _expand(scale, (2, 2), (2, 2))).to(torch.bfloat16)
+    assert torch.equal(model.model.language_model.gate_proj.weight.data, expected)
+
+
 def test_noop_without_scale_keys():
     if _FP8 is None:
         return

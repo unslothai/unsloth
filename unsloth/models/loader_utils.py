@@ -493,16 +493,23 @@ def _resolve_fp8_shard(
 
 
 def _match_fp8_module(module_by_name, base):
-    """Resolve a checkpoint module name to a live module, allowing for text-only key mappings.
+    """Resolve a checkpoint module name to a live module, allowing for VLM key remappings.
 
-    VLM `text_only=True` loads strip the `language_model.` wrapper from checkpoint keys before
-    building the text decoder, so an index key like `model.language_model.layers.0.mlp.gate_proj`
-    must also match the remapped `model.layers.0.mlp.gate_proj` module.
+    VLM loads can name the text tower differently from the checkpoint keys: `text_only=True`
+    strips the `language_model.` wrapper (so `model.language_model.layers.*` -> `model.layers.*`),
+    and full VLM loads may expose `model.language_model.*` while the checkpoint stores
+    `language_model.model.*`. Try the raw key first, then a few safe remappings.
     """
     if base in module_by_name:
         return module_by_name[base]
+    candidates = []
     if "language_model." in base:
-        candidate = base.replace("language_model.", "", 1)
+        candidates.append(base.replace("language_model.", "", 1))          # text-only: drop wrapper
+    if "language_model.model." in base:
+        candidates.append(base.replace("language_model.model.", "model.language_model.", 1))
+    if base.startswith("language_model."):
+        candidates.append("model." + base)                                 # add model. prefix
+    for candidate in candidates:
         if candidate in module_by_name:
             return module_by_name[candidate]
     return None
@@ -517,6 +524,7 @@ def _restore_dropped_fp8_scales(
     revision = None,
     subfolder = None,
     cache_dir = None,
+    variant = None,
 ):
     """Re-apply block-fp8 `weight_scale_inv` tensors that transformers dropped on load.
 
@@ -530,6 +538,10 @@ def _restore_dropped_fp8_scales(
     try:
         block = _fp8_block_size_from_config(model)
         if block is None or not _FP8_DTYPES:
+            return (0, 0)
+        # A variant load (variant="fp8") reads variant-named files; do not risk applying default
+        # checkpoint scales to variant weights. Skip rather than resolve the wrong files.
+        if variant:
             return (0, 0)
         # A genuine fp8 load leaves most weights fp8. If nothing is fp8 the checkpoint was
         # dequantized on purpose (e.g. load_in_16bit -> HF quantizer dequantize); re-applying
@@ -596,12 +608,23 @@ def _restore_dropped_fp8_scales(
                 else:
                     # Shape does not match the block grid: skip rather than apply a wrong scale.
                     continue
-                scale_expanded = scale.repeat_interleave(bs0, dim = 0).repeat_interleave(bs1, dim = 1)
-                scale_expanded = scale_expanded[:out_features, :in_features].to(weight.device)
+                scale = scale.to(weight.device)
                 with torch.no_grad():
-                    module.weight.data = (weight.to(torch.float32) * scale_expanded).to(
-                        weight.dtype
-                    )
+                    if out_features % bs0 == 0 and in_features % bs1 == 0:
+                        # Memory-frugal path: multiply block views in place with the small fp32
+                        # scale broadcast, avoiding a full expanded scale and full fp32 copy so a
+                        # near-VRAM-limit load is not pushed into OOM by the repair. The in-place
+                        # multiply promotes to fp32 for the compute, matching the fallback exactly.
+                        module.weight.data.view(out_blocks, bs0, in_blocks, bs1).mul_(
+                            scale[:, None, :, None]
+                        )
+                    else:
+                        scale_expanded = scale.repeat_interleave(bs0, dim = 0).repeat_interleave(
+                            bs1, dim = 1
+                        )[:out_features, :in_features]
+                        module.weight.data = (weight.to(torch.float32) * scale_expanded).to(
+                            weight.dtype
+                        )
                 restored += 1
             except Exception:
                 failed += 1
