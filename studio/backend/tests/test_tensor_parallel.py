@@ -282,8 +282,8 @@ def test_mtp_decode_probe_wired_under_tensor_parallel():
     # shared MTP-drop fallback fires.
     after = src[probe : probe + 900]
     assert "_with_flash_attn_off" in after and "healthy = False" in after
-    fallback = src.find("if not healthy and _spec_requested_mtp")
-    assert 0 <= probe < fallback, "the probe must precede the MTP-drop fallback"
+    fallback = src.find("_spec_requested_mtp or _spec_requested_dflash")
+    assert 0 <= probe < fallback, "the probe must precede the spec-drop fallback"
 
 
 def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
