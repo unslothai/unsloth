@@ -781,3 +781,46 @@ class TestHfUploadEnvAndSecretLeakBlock:
             ' operations=[], token="hf_xxx")',
             expect_phrase = "HF upload token= cannot be set",
         )
+
+
+class TestDynamicExecObfuscation:
+    """The python AST checker must flag runtime code-execution / obfuscation primitives that
+    defeat its name-based analysis, while ordinary dynamic-attribute code stays allowed."""
+
+    @pytest.mark.parametrize(
+        "code, phrase",
+        [
+            ("eval('1+1')", "dynamic code execution"),
+            ("exec('import os')", "dynamic code execution"),
+            ("compile('x', '<s>', 'exec')", "dynamic code execution"),
+            ("__import__('os').system('id')", "dynamic import"),
+            ("__import__('o'+'s')", "dynamic import"),
+            ("__import__(chr(111) + chr(115))", "dynamic import"),
+            ("import importlib; importlib.import_module('subprocess')", "dynamic import"),
+            ("from importlib import import_module; import_module(name)", "dynamic import"),
+            ("getattr(os, 'system')('id')", "attribute-name obfuscation"),
+            ("import os as o; getattr(o, 'sys' + 'tem')('id')", "attribute-name obfuscation"),
+            ("().__class__.__bases__[0].__subclasses__()", "introspection gadget"),
+            ("[].__class__.__mro__", "introspection gadget"),
+            ("f.__globals__['os']", "introspection gadget"),
+        ],
+    )
+    def test_dynamic_exec_blocked(self, code, phrase):
+        _blocked(code, expect_phrase = phrase)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import json; json.loads('{}')",
+            "d = {'k': 1}; getattr(d, 'get')('k')",
+            "getattr(obj, 'name', None)",
+            "setattr(config, 'debug', True)",
+            "class A: pass\nprint(A().__class__.__name__)",
+            "import math; print(math.sqrt(2))",
+            "hf = __import__('huggingface_hub'); hf.HfApi()",
+            "import importlib; importlib.import_module('numpy')",
+            "__import__('json')",
+        ],
+    )
+    def test_benign_dynamic_code_allowed(self, code):
+        _ok(code)

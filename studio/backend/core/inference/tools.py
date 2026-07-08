@@ -1608,6 +1608,7 @@ def _check_signal_escape_patterns(code: str):
     signal_tampering = []
     exception_catching = []
     shell_escapes = []
+    dynamic_exec = []
     warnings = []
 
     def _ast_name_matches(node, names):
@@ -1658,6 +1659,60 @@ def _check_signal_escape_patterns(code: str):
             "subprocess.Popen",
             "subprocess.getoutput",
             "subprocess.getstatusoutput",
+        }
+    )
+
+    # Dynamic-execution / obfuscation primitives that defeat the static (name-based) checks
+    # above: they build or reach a dangerous callable at runtime, so a bare name match cannot
+    # see the payload. eval/exec/compile are direct code-execution builtins; __import__ /
+    # importlib load a module by (possibly computed) name; getattr/setattr on a sensitive
+    # module implement `getattr(os, 'sys'+'tem')(...)`.
+    _DYNAMIC_EXEC_BUILTINS = frozenset({"eval", "exec", "compile"})
+    _DYNAMIC_IMPORT_FUNCS = frozenset(
+        {"importlib.import_module", "importlib.reload", "importlib.__import__"}
+    )
+    # Dynamic import is a real workflow (e.g. importing huggingface_hub), so it is flagged only
+    # when the target is computed (non-literal name = obfuscation) or names a module that can
+    # reach code execution / shell / builtins. A benign literal (json, numpy, huggingface_hub)
+    # passes; the HF upload gate below still validates its call args separately.
+    _DANGEROUS_IMPORT_NAMES = frozenset(
+        {
+            "os",
+            "subprocess",
+            "sys",
+            "builtins",
+            "importlib",
+            "ctypes",
+            "pty",
+            "socket",
+            "signal",
+            "resource",
+            "shutil",
+            "multiprocessing",
+            "runpy",
+            "code",
+            "codeop",
+            "pdb",
+            "mmap",
+            "fcntl",
+        }
+    )
+    # Attribute-name obfuscation via getattr/setattr is only flagged when aimed at a module
+    # that can execute code or reach builtins (keeps ordinary getattr(obj, "field") benign).
+    _DYNAMIC_ATTR_TARGETS = frozenset({"os", "subprocess", "sys", "builtins", "importlib"})
+    # Introspection "gadget" dunders used to walk from a harmless object to os/builtins
+    # (``().__class__.__bases__[0].__subclasses__()``). ``__class__`` / ``__dict__`` are
+    # intentionally excluded (too common); the chain still trips on the others.
+    _GADGET_DUNDERS = frozenset(
+        {
+            "__subclasses__",
+            "__bases__",
+            "__base__",
+            "__mro__",
+            "__globals__",
+            "__builtins__",
+            "__code__",
+            "__closure__",
         }
     )
 
@@ -1901,6 +1956,52 @@ def _check_signal_escape_patterns(code: str):
                                 }
                             )
 
+            # --- Dynamic execution / obfuscation primitives ---
+            dynamic_desc = None
+            is_dynamic_import = _ast_name_matches(func, _DYNAMIC_IMPORT_FUNCS) or (
+                isinstance(func, ast.Name) and func.id in ("__import__", "import_module")
+            )
+            if isinstance(func, ast.Name) and func.id in _DYNAMIC_EXEC_BUILTINS:
+                dynamic_desc = f"dynamic code execution via {func.id}()"
+            elif is_dynamic_import:
+                # Computed module name (obfuscation) or a dangerous target is unsafe; a benign
+                # literal import (huggingface_hub, json, ...) passes.
+                mod = _extract_string_from_node(node.args[0]) if node.args else None
+                if mod is None or mod.split(".")[0] in _DANGEROUS_IMPORT_NAMES:
+                    dynamic_desc = "dynamic import of a computed or sensitive module name"
+            elif (
+                isinstance(func, ast.Name)
+                and func.id in ("getattr", "setattr")
+                and node.args
+                and _ast_name_matches(
+                    node.args[0],
+                    _DYNAMIC_ATTR_TARGETS | self.os_aliases | self.subprocess_aliases,
+                )
+            ):
+                dynamic_desc = f"{func.id}() on a sensitive module (attribute-name obfuscation)"
+            if dynamic_desc:
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(node, "lineno", -1),
+                        "description": dynamic_desc,
+                    }
+                )
+
+            self.generic_visit(node)
+
+        def visit_Attribute(self, node):
+            # Introspection gadget dunders (``__subclasses__``, ``__globals__``, ...) are the
+            # standard way to walk from a benign object to os/builtins, bypassing the name-based
+            # checks. Flag the attribute access itself, then keep descending.
+            if node.attr in _GADGET_DUNDERS:
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(node, "lineno", -1),
+                        "description": f"introspection gadget attribute {node.attr}",
+                    }
+                )
             self.generic_visit(node)
 
         def visit_ExceptHandler(self, node):
@@ -2520,6 +2621,7 @@ def _check_signal_escape_patterns(code: str):
         len(signal_tampering) == 0
         and len(exception_catching) == 0
         and len(shell_escapes) == 0
+        and len(dynamic_exec) == 0
         and len(network_calls) == 0
         and len(sensitive_file_reads) == 0
     )
@@ -2527,6 +2629,7 @@ def _check_signal_escape_patterns(code: str):
         "signal_tampering": signal_tampering,
         "exception_catching": exception_catching,
         "shell_escapes": shell_escapes,
+        "dynamic_exec": dynamic_exec,
         "network_calls": network_calls,
         "sensitive_file_reads": sensitive_file_reads,
         "warnings": warnings,
@@ -2550,13 +2653,19 @@ def _check_code_safety(code: str) -> str | None:
         exception_reasons = [
             item.get("description", "") for item in info.get("exception_catching", [])
         ]
+        dynamic_reasons = [item.get("description", "") for item in info.get("dynamic_exec", [])]
         network_reasons = [item.get("description", "") for item in info.get("network_calls", [])]
         file_reasons = [
             item.get("description", "") for item in info.get("sensitive_file_reads", [])
         ]
         all_reasons = [
             r
-            for r in reasons + shell_reasons + exception_reasons + network_reasons + file_reasons
+            for r in reasons
+            + shell_reasons
+            + exception_reasons
+            + dynamic_reasons
+            + network_reasons
+            + file_reasons
             if r
         ]
         if all_reasons:
