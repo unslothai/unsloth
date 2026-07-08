@@ -6847,9 +6847,7 @@ def _route_to_vulkan_prebuilt(
     # grab the NVIDIA GPU the user reserved. An explicit UNSLOTH_FORCE_VULKAN
     # still overrides. (Detect_host only opens this gap via CUDA masking; a
     # genuinely unusable NVIDIA with the mask unset stays has_usable_nvidia.)
-    auto_intel = (
-        host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
-    )
+    auto_intel = host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
     if force_cpu or not (forced or auto_intel):
         return host, published_repo, published_release_tag
     if host.is_macos:
