@@ -136,6 +136,18 @@ class TestSetupPs1FastInstallIndex:
         assert 'Remove-Item "Env:$n"' in self._ps1
 
 
+class TestInstallShUvDefaultIndex:
+    """Linux/Mac installer torch indexes must override inherited uv defaults."""
+
+    _sh = _read(_INSTALL_SH)
+
+    def test_torch_installs_use_default_index(self):
+        assert '--default-index "$TORCH_INDEX_URL"' in self._sh
+
+    def test_torch_installs_do_not_use_deprecated_index_url(self):
+        assert '--index-url "$TORCH_INDEX_URL"' not in self._sh
+
+
 # Group 2 -- Shell snippet tests (bash subprocess, mocked python)
 class TestTorchConstraintShell:
     """Test the TORCH_CONSTRAINT block via bash with mocked python minor versions."""
