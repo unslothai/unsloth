@@ -78,6 +78,14 @@ const recheckStatus = () => fetchStatus(true);
 
 interface UseLlamaUpdateCheckOptions {
   enabled?: boolean;
+  /**
+   * Called when a completed update reports `reload_required` (i.e. it unloaded
+   * the active model server-side). Consumers use it to resync the chat runtime
+   * so the model selector drops to "select model" instead of pointing at a
+   * model that now 400s on send. Fires for both this tab's own apply() and a
+   * cross-tab update mirrored through the background poll.
+   */
+  onReloadRequired?: () => void;
 }
 
 export interface LlamaApplyResult {
@@ -90,12 +98,19 @@ export interface LlamaApplyResult {
 /** Tracks llama.cpp update visibility and apply progress. */
 export function useLlamaUpdateCheck({
   enabled = true,
+  onReloadRequired,
 }: UseLlamaUpdateCheckOptions = {}) {
   const [status, setStatus] = useState<LlamaUpdateStatus | null>(null);
   const [visible, setVisible] = useState(false);
   const [applying, setApplying] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const snoozeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Read through a ref so startJobPoll stays stable (apply/surfaceIfAvailable
+  // depend on it) while still calling the latest callback.
+  const onReloadRequiredRef = useRef(onReloadRequired);
+  useEffect(() => {
+    onReloadRequiredRef.current = onReloadRequired;
+  }, [onReloadRequired]);
 
   const clearPollTimer = useCallback(() => {
     if (pollTimer.current) {
@@ -118,6 +133,14 @@ export function useLlamaUpdateCheck({
         if (s.job.state === "success") {
           setVisible(false);
           void refreshHardwareInfo();
+          // The update unloads the running model server-side, so the chat
+          // runtime still points at a model that now 400s on send. Let the
+          // consumer drop the selector to "select model" instead of waiting for
+          // a page reload. Fires here (not just from apply's onDone) so a
+          // cross-tab update mirrored through this poll is covered too.
+          if (s.job.reload_required) {
+            onReloadRequiredRef.current?.();
+          }
           onDone?.({
             ok: true,
             tag: s.job.to_tag,

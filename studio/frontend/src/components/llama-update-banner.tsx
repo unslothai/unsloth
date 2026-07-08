@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { useShowLlamaUpdateBanner } from "@/hooks/use-llama-update-pref";
 import { toast } from "@/lib/toast";
@@ -84,6 +85,7 @@ export function LlamaUpdateBanner({
   const { status, visible, applying, apply, dismiss, snooze } =
     useLlamaUpdateCheck({
       enabled: enabled && showBannerPref,
+      onReloadRequired: resyncInferenceStatusAfterServerModelChange,
     });
 
   async function handleUpdate() {
