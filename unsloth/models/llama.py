@@ -28,7 +28,7 @@ from ._utils import (
     is_bfloat16_supported,
     get_quant_type,
 )
-from .loader_utils import _exclude_rope_inv_freq_from_ddp, _get_fp8_mode_and_check_settings
+from .loader_utils import _exclude_rope_inv_freq_from_ddp, _get_fp8_mode_and_check_settings, _restore_dropped_fp8_scales
 from ..utils.packing import (
     get_packed_info_from_kwargs,
     mask_packed_sequence_boundaries,
@@ -2696,6 +2696,14 @@ class FastLlamaModel:
                     load_in_8bit = kwargs.get("load_in_8bit", False),
                     offload_embedding = False,
                     fast_inference = False,
+                )
+                # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
+                _restore_dropped_fp8_scales(
+                    model, model_name,
+                    local_files_only = kwargs.get("local_files_only", False), token = token,
+                    revision = revision,
+                    subfolder = kwargs.get("subfolder"),
+                    cache_dir = kwargs.get("cache_dir"),
                 )
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = None
