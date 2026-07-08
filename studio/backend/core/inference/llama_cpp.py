@@ -1783,8 +1783,8 @@ class LlamaCppBackend:
     @property
     def supports_tool_passthrough(self) -> bool:
         # supports_tools is forced off for DiffusionGemma (its agentic loop drops the
-        # per-step canvas frames); client tool loops skip that loop, so the passthrough
-        # follows the real _supports_tools instead of the forced-off value.
+        # per-step canvas frames), but client passthrough skips that loop, so it uses
+        # the real _supports_tools.
         return self._supports_tools
 
     @property
