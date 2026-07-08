@@ -47,7 +47,6 @@ from routes.inference import (
     _merge_user_content,
     _monitor_openai_chunk,
     _monitor_openai_sse_event,
-    _cap_parallel_tool_calls_sse_line,
     _normalize_openai_passthrough_sse_line,
     _openai_compat_stream_preheader_fallback_timeout,
     _openai_compat_stream_stall_timeout,
@@ -1054,7 +1053,7 @@ class TestOpenAIPassthroughSSETerminalState:
             '{"index":1,"function":{"name":"b"}}]}}]}'
         )
 
-        capped = _cap_parallel_tool_calls_sse_line(line)
+        capped = _normalize_openai_passthrough_sse_line(line, cap_parallel_tool_calls = True)
 
         data = json.loads(capped[len("data:") :].lstrip())
         assert data["choices"][0]["delta"]["tool_calls"] == [

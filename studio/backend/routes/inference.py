@@ -277,17 +277,14 @@ _OPENAI_COMPAT_STREAM_PREHEADER_FALLBACK_TIMEOUT_ENV = (
 
 
 def _positive_int_env(env_name: str, default):
-    raw_value = os.environ.get(env_name)
-    if raw_value is None or not raw_value.strip():
-        return default
-    try:
-        value = int(raw_value.strip())
-    except ValueError:
-        return default
-    return value if value > 0 else default
+    value = _positive_int_or_none(os.environ.get(env_name))
+    return default if value is None else value
 
 
 def _positive_float_env(env_name: str, default):
+    """Unlike ``_positive_int_env``, a parseable non-positive value returns
+    ``None`` (0 disables the guarded feature); only unparseable or unset values
+    fall back to ``default``."""
     raw_value = os.environ.get(env_name)
     if raw_value is None or not raw_value.strip():
         return default
@@ -667,24 +664,6 @@ def _drop_parallel_tool_call_deltas(chunk) -> bool:
     return changed
 
 
-def _cap_parallel_tool_calls_sse_line(raw_line: str) -> str:
-    """Drop tool_call deltas whose index >= 1 from one streamed OpenAI SSE
-    ``data:`` line so only the first tool call survives (parallel_tool_calls=false,
-    best-effort). Non-tool / unparseable payloads are returned byte-for-byte."""
-    if not raw_line.startswith("data:"):
-        return raw_line
-    payload = raw_line[len("data:") :].lstrip()
-    if payload.strip() in ("", "[DONE]"):
-        return raw_line
-    try:
-        obj = json.loads(payload)
-    except Exception:
-        return raw_line
-    if not _drop_parallel_tool_call_deltas(obj):
-        return raw_line
-    return "data: " + json.dumps(obj, separators = (",", ":"))
-
-
 def _add_empty_content_to_reasoning_deltas(chunk: dict) -> bool:
     """Make reasoning-only deltas palatable to strict OpenAI adapters.
 
@@ -720,6 +699,12 @@ def _normalize_openai_passthrough_sse_line(
     """
     if not raw_line.startswith("data:"):
         return raw_line
+    # Both mutations key off JSON object keys, so a line without either quoted
+    # key can never change; skip the parse on the per-token common case.
+    if '"reasoning_content"' not in raw_line and not (
+        cap_parallel_tool_calls and '"tool_calls"' in raw_line
+    ):
+        return raw_line
     payload = raw_line[len("data:") :].lstrip()
     if payload.strip() in ("", "[DONE]"):
         return raw_line
@@ -752,6 +737,7 @@ def _wants_stream_usage(payload) -> bool:
 
 
 _OPENAI_PASSTHROUGH_TERMINAL_GRACE_S = 2.0
+_SSE_DONE_LINE = "data: [DONE]"
 
 
 def _openai_passthrough_sse_line_terminal_state(raw_line: str) -> Optional[str]:
@@ -771,6 +757,12 @@ def _openai_passthrough_sse_line_terminal_state(raw_line: str) -> Optional[str]:
         data = json.loads(data_str)
     except json.JSONDecodeError:
         return None
+    return _openai_passthrough_terminal_state_from_data(data)
+
+
+def _openai_passthrough_terminal_state_from_data(data) -> Optional[str]:
+    """Dict-level core of ``_openai_passthrough_sse_line_terminal_state`` for
+    callers that already parsed the chunk (avoids a re-parse per relayed line)."""
     if not isinstance(data, dict):
         return None
     if _monitor_openai_error_message(data):
@@ -910,7 +902,7 @@ def _openai_non_stream_chat_response_sse_lines(
             chunk["timings"] = timings
         lines.append("data: " + json.dumps(chunk, separators = (",", ":"), ensure_ascii = False))
 
-    lines.append("data: [DONE]")
+    lines.append(_SSE_DONE_LINE)
     return lines
 
 
@@ -2104,7 +2096,7 @@ async def _await_cancel_or_disconnect_then_close_client(
                 if cancel_event is not None:
                     cancel_event.set()
                 break
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.1)
         try:
             await client.aclose()
         except Exception:
@@ -6937,7 +6929,6 @@ async def openai_chat_completions(
                     api_monitor.finish(
                         monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                     )
-                    stream_completed = True
                     yield "data: [DONE]\n\n"
 
                 except asyncio.CancelledError:
@@ -7259,22 +7250,16 @@ async def openai_chat_completions(
                     finally:
                         _tracker.__exit__(None, None, None)
 
-            def _standard_stream_response():
-                async def _unstarted_cleanup() -> None:
-                    _tracker.__exit__(None, None, None)
-
-                return _SameTaskStreamingResponse(
-                    gguf_stream_chunks(),
-                    unstarted_cleanup = _unstarted_cleanup,
-                    media_type = "text/event-stream",
-                    headers = {
-                        "Cache-Control": "no-cache",
-                        "Connection": "close",
-                        "X-Accel-Buffering": "no",
-                    },
-                )
-
-            return _standard_stream_response()
+            return _SameTaskStreamingResponse(
+                gguf_stream_chunks(),
+                unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
+                media_type = "text/event-stream",
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "close",
+                    "X-Accel-Buffering": "no",
+                },
+            )
         else:
             try:
                 # ``n`` requests several independent completions; the single
@@ -12266,22 +12251,6 @@ async def _openai_passthrough_stream_upstream(
         timeout_s = _openai_compat_stream_preheader_fallback_timeout()
         return None if timeout_s is None else time.monotonic() + timeout_s
 
-    async def _aclose_stream_resources_for_cleanup(**kwargs) -> bool:
-        try:
-            await _aclose_stream_resources(**kwargs)
-            return False
-        except asyncio.CancelledError:
-            return True
-
-    async def _aclose_client_for_cleanup(close_client) -> bool:
-        try:
-            await close_client.aclose()
-            return False
-        except asyncio.CancelledError:
-            return True
-        except Exception:
-            return False
-
     # Keep tracker cleanup paired if pre-header dispatch is cancelled.
     try:
         body = _build_openai_passthrough_body(
@@ -12348,14 +12317,11 @@ async def _openai_passthrough_stream_upstream(
                 if cancel_event is not None:
                     cancel_event.set()
                 api_monitor.finish(monitor_id, "cancelled")
-                close_cancelled = False
                 try:
                     await _aclose_send_task(send_task)
-                    close_cancelled = await _aclose_client_for_cleanup(client)
+                    await _aclose_stream_resources(client = client)
                 finally:
                     _tracker.__exit__(None, None, None)
-                if close_cancelled:
-                    raise asyncio.CancelledError()
                 return _SameTaskStreamingResponse(
                     iter(()),
                     media_type = "text/event-stream",
@@ -12477,13 +12443,12 @@ async def _openai_passthrough_stream_upstream(
                     lines.append("data: " + json.dumps(chunk, ensure_ascii = False))
                 return lines
 
+            stall_timeout_s = _openai_compat_stream_stall_timeout()
+
             def _terminal_read_timeout_s() -> Optional[float]:
                 if terminal_seen:
                     return _OPENAI_PASSTHROUGH_TERMINAL_GRACE_S
-                return _openai_compat_stream_stall_timeout()
-
-            def _done_sse_line() -> str:
-                return "data: [DONE]"
+                return stall_timeout_s
 
             async def _non_streaming_fallback_lines() -> list[str]:
                 nonlocal resp, send_task, client
@@ -12597,7 +12562,6 @@ async def _openai_passthrough_stream_upstream(
                                     )
                                     for fallback_line in await _non_streaming_fallback_lines():
                                         yield fallback_line + "\n\n"
-                                    monitor_done = True
                                     return
                                 wait_timeout = min(wait_timeout, max(remaining_s, 0.001))
                             done, _ = await asyncio.wait(
@@ -12705,7 +12669,7 @@ async def _openai_passthrough_stream_upstream(
                     if not raw_line.startswith("data:"):
                         continue
                     saw_stream_item = True
-                    data_text = raw_line[5:].lstrip().strip()
+                    data_text = raw_line[5:].strip()
                     if data_text == "[DONE]":
                         saw_done = True
                         # Upstream ended without a finish chunk: heal the residue
@@ -12741,7 +12705,7 @@ async def _openai_passthrough_stream_upstream(
                         raw_line,
                         cap_parallel_tool_calls = payload.parallel_tool_calls is False,
                     )
-                    data_text = raw_line[5:].lstrip().strip()
+                    data_text = raw_line[5:].strip()
                     try:
                         chunk_data = json.loads(data_text)
                     except json.JSONDecodeError:
@@ -12820,11 +12784,15 @@ async def _openai_passthrough_stream_upstream(
                         if monitor_event == "done":
                             monitor_done = True
                             break
-                        terminal_state = _openai_passthrough_sse_line_terminal_state(out_line)
+                        terminal_state = (
+                            _openai_passthrough_terminal_state_from_data(chunk_data)
+                            if out_line is raw_line
+                            else _openai_passthrough_sse_line_terminal_state(out_line)
+                        )
                         if terminal_state == "usage" or (
                             terminal_state == "finish" and not _wants_stream_usage(payload)
                         ):
-                            done_line = _done_sse_line()
+                            done_line = _SSE_DONE_LINE
                             _monitor_openai_sse_line(
                                 monitor_id,
                                 done_line,
@@ -12857,7 +12825,7 @@ async def _openai_passthrough_stream_upstream(
                             llama_backend.context_length,
                         )
                         yield finish_line + "\n\n"
-                    done_line = "data: [DONE]"
+                    done_line = _SSE_DONE_LINE
                     _monitor_openai_sse_line(
                         monitor_id,
                         done_line,
@@ -12875,7 +12843,7 @@ async def _openai_passthrough_stream_upstream(
                 raise
             except httpx.ReadTimeout as e:
                 if terminal_seen and not saw_stream_error and not cancel_event.is_set():
-                    done_line = _done_sse_line()
+                    done_line = _SSE_DONE_LINE
                     _monitor_openai_sse_line(
                         monitor_id,
                         done_line,
@@ -12883,20 +12851,15 @@ async def _openai_passthrough_stream_upstream(
                     )
                     yield done_line + "\n\n"
                     api_monitor.finish(monitor_id)
-                    monitor_done = True
-                    return
-                if saw_stream_item and not saw_stream_error and not cancel_event.is_set():
-                    logger.error("openai passthrough stream stalled mid-response: %s", e)
-                    api_monitor.fail(monitor_id, _friendly_error(e))
-                    get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
-                    err = _openai_stream_error_chunk(e)
-                    yield _openai_stream_error_sse(err)
-                    monitor_done = True
                     return
                 if cancel_event.is_set():
                     api_monitor.finish(monitor_id, "cancelled")
                     return
-                logger.error("openai passthrough stream timeout: %s", e)
+                logger.error(
+                    "openai passthrough stream %s: %s",
+                    "stalled mid-response" if saw_stream_item else "timeout",
+                    e,
+                )
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 err = _openai_stream_error_chunk(e)
@@ -12930,10 +12893,11 @@ async def _openai_passthrough_stream_upstream(
                 err = _openai_stream_error_chunk(e)
                 yield _openai_stream_error_sse(err)
             finally:
-                close_cancelled = False
+                # _aclose_stream_resources re-raises a close-time CancelledError
+                # only after finishing teardown, and the tracker exits either way.
                 try:
                     await _aclose_send_task(send_task)
-                    close_cancelled = await _aclose_stream_resources_for_cleanup(
+                    await _aclose_stream_resources(
                         watchers = (cancel_watcher, disconnect_watcher),
                         iterator = lines_iter,
                         resp = resp,
@@ -12941,24 +12905,17 @@ async def _openai_passthrough_stream_upstream(
                     )
                 finally:
                     _tracker.__exit__(None, None, None)
-                if close_cancelled:
-                    raise asyncio.CancelledError()
 
         async def _unstarted_cleanup() -> None:
             # Client disconnected before the body stream started, so _stream()'s
             # finally never ran. Release the eagerly-opened upstream resp/client
             # and the cancel-registry entry here; the watchers and line iterator
             # are created inside _stream(), so there is nothing else to close.
-            close_cancelled = False
             try:
                 await _aclose_send_task(send_task)
-                close_cancelled = await _aclose_stream_resources_for_cleanup(
-                    resp = resp, client = client
-                )
+                await _aclose_stream_resources(resp = resp, client = client)
             finally:
                 _tracker.__exit__(None, None, None)
-            if close_cancelled:
-                raise asyncio.CancelledError()
 
         return _SameTaskStreamingResponse(
             _stream(),
@@ -12978,14 +12935,11 @@ async def _openai_passthrough_stream_upstream(
         else:
             detail = exc.detail if isinstance(exc, HTTPException) else _friendly_error(exc)
             api_monitor.fail(monitor_id, str(detail))
-        close_cancelled = False
         try:
             await _aclose_send_task(send_task)
-            close_cancelled = await _aclose_stream_resources_for_cleanup(resp = resp, client = client)
+            await _aclose_stream_resources(resp = resp, client = client)
         finally:
             _tracker.__exit__(None, None, None)
-        if close_cancelled:
-            raise asyncio.CancelledError()
         raise
 
 
