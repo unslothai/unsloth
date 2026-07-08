@@ -73,8 +73,15 @@ def test_probe_syncs_and_fails_on_deferred_async_error(monkeypatch):
     # reports a failure. The probe must synchronize so a deferred launch/runtime error
     # is caught and disables xformers here, instead of surfacing later on an unrelated
     # CUDA call (unslothai/unsloth#6828 review). No GPU needed: everything is stubbed.
-    _bias = type("B", (), {"BlockDiagonalCausalMask": type("M", (), {
-        "from_seqlens": staticmethod(lambda seqlens: None)})})
+    _bias = type(
+        "B",
+        (),
+        {
+            "BlockDiagonalCausalMask": type(
+                "M", (), {"from_seqlens": staticmethod(lambda seqlens: None)}
+            )
+        },
+    )
     monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
     monkeypatch.setattr(ad.torch, "zeros", lambda *a, **k: object())
     monkeypatch.setattr(ad, "xformers", type("X", (), {"attn_bias": _bias}))
