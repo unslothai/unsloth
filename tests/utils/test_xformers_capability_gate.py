@@ -66,3 +66,24 @@ def test_probe_dtype_follows_bf16_support(monkeypatch, supports_bf16, expected_d
     monkeypatch.setattr(ad.torch, "zeros", fake_zeros)
     ad._xformers_runs_on_device()  # RuntimeError is swallowed; only the dtype matters
     assert captured["dtype"] is expected_dtype
+
+
+def test_probe_syncs_and_fails_on_deferred_async_error(monkeypatch):
+    # A CUDA kernel launch is async: xformers_attention can return before the GPU
+    # reports a failure. The probe must synchronize so a deferred launch/runtime error
+    # is caught and disables xformers here, instead of surfacing later on an unrelated
+    # CUDA call (unslothai/unsloth#6828 review). No GPU needed: everything is stubbed.
+    _bias = type("B", (), {"BlockDiagonalCausalMask": type("M", (), {
+        "from_seqlens": staticmethod(lambda seqlens: None)})})
+    monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
+    monkeypatch.setattr(ad.torch, "zeros", lambda *a, **k: object())
+    monkeypatch.setattr(ad, "xformers", type("X", (), {"attn_bias": _bias}))
+    monkeypatch.setattr(ad, "xformers_attention", lambda *a, **k: None)  # "succeeds"
+
+    def deferred_cuda_error():
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    monkeypatch.setattr(ad.torch.cuda, "synchronize", deferred_cuda_error)
+    # Without the synchronize the stubbed op returns cleanly and the probe wrongly
+    # reports True; the sync surfaces the deferred error so the probe returns False.
+    assert ad._xformers_runs_on_device() is False

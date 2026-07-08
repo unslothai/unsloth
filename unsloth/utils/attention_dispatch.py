@@ -44,6 +44,10 @@ def _xformers_runs_on_device() -> bool:
         q = torch.zeros((1, 8, 1, 64), device = "cuda", dtype = dtype)
         attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
         xformers_attention(q, q, q, attn_bias = attn_bias)
+        # Kernel launches are async, so the call can return before the GPU reports a
+        # failure; synchronize so a deferred launch/runtime error is caught here
+        # instead of slipping through as a false success and crashing a later op.
+        torch.cuda.synchronize()
         return True
     except Exception:
         return False
