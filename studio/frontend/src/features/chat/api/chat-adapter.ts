@@ -1376,6 +1376,11 @@ async function autoLoadSmallestModel(): Promise<{
     gguf_variant?: string | null;
   }): Promise<boolean> {
     const rt = useChatRuntimeStore.getState();
+    // These GPU-memory fields are GGUF-only, and only the GGUF auto-load below
+    // sends them to /load. The safetensors fallback loads via HF auto-placement
+    // (no gpu_ids), so validating an explicit-GPU/manual placement it won't use
+    // could wrongly skip a model that would fit -- gate them on the GGUF path.
+    const isGgufAutoLoad = payload.gguf_variant != null;
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
@@ -1383,9 +1388,13 @@ async function autoLoadSmallestModel(): Promise<{
       trust_remote_code: trustRemoteCode,
       // Size the guard against the GPUs and manual offload the auto-load will use
       // (it sends the same gpuMemoryMode/gpuLayers below).
-      gpu_ids: rt.selectedGpuIds ?? undefined,
-      gpu_memory_mode: rt.gpuMemoryMode,
-      gpu_layers: rt.gpuLayers,
+      ...(isGgufAutoLoad
+        ? {
+            gpu_ids: rt.selectedGpuIds ?? undefined,
+            gpu_memory_mode: rt.gpuMemoryMode,
+            gpu_layers: rt.gpuLayers,
+          }
+        : {}),
     });
     // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe
     // files on its own; both are deferred to the explicit consent dialog instead.
