@@ -10,8 +10,9 @@ export const HUB_POST_DOWNLOAD_ACTIONS_VISIBLE = false;
 
 export const HUB_GGUF_RUN_ACTIONS_VISIBLE = true;
 
-// Post-download Run CTA for non-GGUF (safetensors / MLX) models. The Run action
-// has no dependency on the Hub-aware chat/train pickers (GGUF already ships it),
-// so it enables independently of HUB_POST_DOWNLOAD_ACTIONS_VISIBLE, which still
-// gates the New Chat / Train pickers.
+// Post-download Run CTA for non-GGUF models (safetensors, checkpoints, adapters;
+// MLX repos classify as safetensors). The Run action has no dependency on the
+// Hub-aware chat/train pickers (GGUF already ships it), so it enables
+// independently of HUB_POST_DOWNLOAD_ACTIONS_VISIBLE, which still gates the
+// New Chat / Train pickers.
 export const HUB_NON_GGUF_RUN_ACTIONS_VISIBLE = true;
