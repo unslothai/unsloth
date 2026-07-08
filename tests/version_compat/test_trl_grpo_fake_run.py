@@ -94,10 +94,10 @@ def generated_grpo_source():
         pytest.skip("unsloth not installed")
     if importlib.util.find_spec("trl") is None:
         pytest.skip("trl not installed")
-    try:
-        import unsloth  # noqa: F401  -- _gpu_init bootstrap under spoof
-    except Exception as e:  # pragma: no cover - env issue, not a regression
-        pytest.skip(f"`import unsloth` failed under spoof: {type(e).__name__}: {str(e)[:200]}")
+    # Do NOT swallow import errors: unsloth is installed here, so a failing
+    # `import unsloth` is exactly the import-time TRL/transformers drift this
+    # canary must surface as a failure, not a skip.
+    import unsloth  # noqa: F401  -- _gpu_init bootstrap under spoof
     return _patch_grpo_and_get_source()
 
 
@@ -171,11 +171,10 @@ def test_grpo_patch_neutralizes_ref_adapter_and_qlora_cast(generated_grpo_source
 def _patch_and_validate(trainer_file: str, trainer_cls: str) -> None:
     if importlib.util.find_spec("unsloth") is None or importlib.util.find_spec("trl") is None:
         pytest.skip("unsloth or trl not installed")
-    try:
-        import unsloth  # noqa: F401
-        import trl.trainer  # noqa: F401
-    except Exception as e:  # pragma: no cover
-        pytest.skip(f"import failed under spoof: {type(e).__name__}: {str(e)[:200]}")
+    # Let a real import failure fail the test (import-time drift is the target).
+    import unsloth  # noqa: F401
+    import trl.trainer  # noqa: F401
+
     from unsloth.models import rl as _rl
 
     _rl._patch_trl_rl_trainers_impl(trainer_file)
