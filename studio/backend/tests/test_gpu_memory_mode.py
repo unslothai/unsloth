@@ -230,16 +230,14 @@ def test_auto_layers_branch_empties_gpus_and_drops_tensor_parallel():
     assert 'cmd.extend(["--fit", "on"])' in src
     # TP drops for this path, but at a guard BEFORE the quantized-KV cache-drop, so
     # a requested quantized cache survives into the --fit load.
-    tp_drop = src.find(
-        'if tensor_parallel and gpu_memory_mode == "manual" and gpu_layers < 0:'
-    )
+    tp_drop = src.find('if tensor_parallel and gpu_memory_mode == "manual" and gpu_layers < 0:')
     assert tp_drop != -1, "manual + Auto layers must drop tensor_parallel"
     assert "tensor_parallel = False" in src[tp_drop : tp_drop + 400]
     cache_drop = src.find("Tensor parallelism requires a non-quantized KV cache")
     assert cache_drop != -1
-    assert tp_drop < cache_drop, (
-        "TP must drop before the cache-drop so a quantized KV survives --fit"
-    )
+    assert (
+        tp_drop < cache_drop
+    ), "TP must drop before the cache-drop so a quantized KV survives --fit"
 
 
 def test_auto_layers_never_sends_ctx_size_zero():
