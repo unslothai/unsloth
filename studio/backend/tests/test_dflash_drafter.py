@@ -525,6 +525,36 @@ def test_dflash_reload_dedup_finds_root_sibling(tmp_path):
     assert routes._request_matches_loaded_settings(req, backend) is True
 
 
+def test_dflash_failure_forces_reload_to_retry_replaced_drafter(tmp_path):
+    # After a DFlash drafter failed (incompatible fork build), a same-settings
+    # reload must retry so a replaced/converted file at the same path engages,
+    # instead of deduping to the fallback server.
+    routes = _load_inference_routes_module()
+    from models.inference import LoadRequest
+
+    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
+    weight.touch()
+    drafter = tmp_path / "dflash-Qwen3-4B.gguf"
+    drafter.touch()
+
+    backend = _route_dedup_backend(str(weight), hf_repo = None)
+    backend._dflash_draft_path = str(drafter.resolve())
+    backend._spec_fallback_reason = "dflash_drafter_incompatible"
+    req = LoadRequest(model_path = str(weight))
+    assert routes._request_matches_loaded_settings(req, backend) is False
+
+
+def test_extra_args_dflash_counts_as_separate_draft():
+    # A user-supplied --spec-type draft-dflash must be treated as a separate
+    # draft model so the VRAM budget reserves for it (like draft-simple/eagle3).
+    from core.inference.llama_cpp import _extra_args_requests_separate_draft
+
+    assert _extra_args_requests_separate_draft(["--spec-type", "draft-dflash"]) is True
+    assert _extra_args_requests_separate_draft(["--spec-type", "draft-simple"]) is True
+    assert _extra_args_requests_separate_draft(["--spec-type", "draft-mtp"]) is False
+    assert _extra_args_requests_separate_draft(None) is False
+
+
 def test_dflash_nmax_change_forces_reload(tmp_path):
     # DFlash engages only in Auto (backend_mode stays "auto"), so the route must
     # key the n-max compare off the resolved draft-dflash spec, else a changed

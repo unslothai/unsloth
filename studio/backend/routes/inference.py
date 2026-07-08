@@ -2541,6 +2541,17 @@ def _request_matches_loaded_settings(
         and not _extra_args_set_spec_type(effective_extra)
     ):
         return False
+    # A DFlash drafter that failed (incompatible fork build, or a runtime crash)
+    # left a fallback server. A same-settings reload must retry so a replaced or
+    # fixed drafter at the same path engages -- otherwise the path compare below
+    # dedupes on the unchanged name and the fallback sticks (the
+    # dflash_drafter_incompatible message tells the user to replace the drafter).
+    if (
+        llama_backend.spec_fallback_reason in ("dflash_drafter_incompatible", "dflash_runtime_error")
+        and req_mode == "auto"
+        and not _extra_args_set_spec_type(effective_extra)
+    ):
+        return False
     # spec_draft_n_max only matters with a model-draft variant; None means
     # "platform default" and matches whatever the backend chose. An Auto load
     # that resolved to a drafter (Gemma MTP or DFlash) stays backend_mode

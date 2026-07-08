@@ -1190,12 +1190,17 @@ def _extra_args_requests_separate_draft(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
     """True if the effective --spec-type selects a non-MTP model draft mode
-    (draft-simple/draft-eagle3), which loads a separate draft model the budget
-    must reserve (draft-mtp -> _extra_args_requests_mtp; ngram-* load no model)."""
+    (draft-simple/draft-eagle3/draft-dflash), which loads a separate draft model
+    the budget must reserve (draft-mtp -> _extra_args_requests_mtp; ngram-* load
+    no model). Covers a user-supplied DFlash drafter, whose reserve the auto path
+    would otherwise miss because the user owns --spec-type."""
     value = _effective_spec_type(extra_args, env)
     if not value:
         return False
-    return any(p.strip().lower() in ("draft-simple", "draft-eagle3") for p in value.split(","))
+    return any(
+        p.strip().lower() in ("draft-simple", "draft-eagle3", "draft-dflash")
+        for p in value.split(",")
+    )
 
 
 def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optional[int]:
