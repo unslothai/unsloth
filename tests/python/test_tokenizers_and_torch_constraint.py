@@ -109,6 +109,20 @@ class TestStructuralInstallPs1Unchanged:
         assert '"torch>=2.4,<2.11.0"' in self._ps1
 
 
+class TestInstallPs1UvDefaultIndex:
+    """Installer-managed torch indexes must override inherited uv defaults."""
+
+    _ps1 = _read(_INSTALL_PS1)
+
+    def test_torch_installs_use_default_index(self):
+        assert "--default-index $TorchIndexUrl" in self._ps1
+        assert "--default-index $ROCmIndexUrl" in self._ps1
+
+    def test_torch_installs_do_not_use_deprecated_index_url(self):
+        assert "--index-url $TorchIndexUrl" not in self._ps1
+        assert "--index-url $ROCmIndexUrl" not in self._ps1
+
+
 # Group 2 -- Shell snippet tests (bash subprocess, mocked python)
 class TestTorchConstraintShell:
     """Test the TORCH_CONSTRAINT block via bash with mocked python minor versions."""
