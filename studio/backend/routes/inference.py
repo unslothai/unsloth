@@ -40,6 +40,43 @@ def _positive_int_or_none(value: Any) -> Optional[int]:
     return value_int if value_int > 0 else None
 
 
+def _nonnegative_int_or_none(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value_int if value_int >= 0 else None
+
+
+_MLX_MPI_DISTRIBUTED_ENV_PAIRS = (
+    ("OMPI_COMM_WORLD_RANK", "OMPI_COMM_WORLD_SIZE"),
+    ("PMI_RANK", "PMI_SIZE"),
+    ("PMIX_RANK", "PMIX_SIZE"),
+    ("MPI_RANK", "MPI_WORLD_SIZE"),
+    ("MV2_COMM_WORLD_RANK", "MV2_COMM_WORLD_SIZE"),
+)
+
+
+def _mlx_distributed_launch_detected() -> bool:
+    if _nonnegative_int_or_none(os.environ.get("MLX_RANK")) is not None:
+        world_size = _positive_int_or_none(os.environ.get("MLX_WORLD_SIZE"))
+        if world_size is not None and world_size > 1:
+            return True
+        return bool(
+            os.environ.get("MLX_HOSTFILE")
+            or os.environ.get("MLX_IBV_DEVICES")
+            or os.environ.get("MLX_JACCL_COORDINATOR")
+            or (os.environ.get("NCCL_HOST_IP") and os.environ.get("NCCL_PORT"))
+        )
+    return any(
+        _nonnegative_int_or_none(os.environ.get(rank_env)) is not None
+        and (_positive_int_or_none(os.environ.get(size_env)) or 0) > 1
+        for rank_env, size_env in _MLX_MPI_DISTRIBUTED_ENV_PAIRS
+    )
+
+
 def _install_httpcore_asyncgen_silencer() -> None:
     """Silence benign httpx/httpcore asyncgen GC noise on Python 3.13.
 
@@ -3425,6 +3462,15 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             raise HTTPException(
                 status_code = 400,
                 detail = "gpu_ids is not supported for GGUF models yet.",
+            )
+        if not config.is_gguf and _mlx_distributed_launch_detected():
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "Studio does not support distributed MLX inference under "
+                    "mlx.launch. Use `mlx.launch ... unsloth chat` or run Studio "
+                    "without the distributed launcher."
+                ),
             )
 
         # Effective quantization (LoRA can flip 4-bit -> 16-bit); guard + load reuse it.
