@@ -576,7 +576,18 @@ export function loadedGpuMemoryFields(resp: {
           nCpuMoe: resp.n_cpu_moe ?? 0,
           splitRatio: resp.tensor_split ?? null,
         }
-      : { loadedGpuLayers: null, loadedNCpuMoe: null, loadedSplitRatio: null };
+      : {
+          loadedGpuLayers: null,
+          loadedNCpuMoe: null,
+          loadedSplitRatio: null,
+          // Auto ignores these, so reset the editable knobs too (not just the
+          // loaded baseline) -- else a later switch back to Manual would snapshot
+          // and send a previous model's stale gpuLayers/nCpuMoe/split that this
+          // load never applied. Mirrors the non-GGUF branch above.
+          gpuLayers: GPU_LAYERS_AUTO,
+          nCpuMoe: 0,
+          splitRatio: null,
+        };
   return {
     // A diffusion GGUF runs mode-agnostic (its runner pins all layers on one GPU
     // and always reports "auto"), so adopt everything a chat GGUF does EXCEPT the
