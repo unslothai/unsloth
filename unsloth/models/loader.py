@@ -504,8 +504,12 @@ class FastLanguageModel(FastLlamaModel):
                     load_in_16bit,
                 )
                 model_name = _offline_quantize_to_fp8(model_name, fp8_mode, text_only = text_only)
-                kwargs["use_safetensors"] = True
                 restore_fp8_scales = True
+                # The helper may fall back to a preserved bin-only cache when regeneration fails;
+                # only force safetensors when it actually produced one, else from_pretrained would
+                # look for absent safetensors in that bin cache. #6749
+                if any(name.endswith(".safetensors") for name in os.listdir(model_name)):
+                    kwargs["use_safetensors"] = True
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
@@ -1208,8 +1212,12 @@ class FastModel(FastBaseModel):
                     load_in_16bit,
                 )
                 model_name = _offline_quantize_to_fp8(model_name, fp8_mode, text_only = text_only)
-                kwargs["use_safetensors"] = True
                 restore_fp8_scales = True
+                # The helper may fall back to a preserved bin-only cache when regeneration fails;
+                # only force safetensors when it actually produced one, else from_pretrained would
+                # look for absent safetensors in that bin cache. #6749
+                if any(name.endswith(".safetensors") for name in os.listdir(model_name)):
+                    kwargs["use_safetensors"] = True
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
@@ -1594,6 +1602,9 @@ class FastModel(FastBaseModel):
                 )
                 if load_in_fp8 != False and model_name != base_before_remap:
                     load_in_fp8 = False
+                    # Pre-quantized FP8 base siblings are safetensors-only; force safetensors so a
+                    # caller-supplied use_safetensors=False does not fail on absent .bin weights. #6749
+                    kwargs["use_safetensors"] = True
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(

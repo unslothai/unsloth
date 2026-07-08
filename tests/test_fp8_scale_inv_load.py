@@ -1633,3 +1633,29 @@ def test_fp8_sibling_branch_forces_safetensors():
         r"\s+kwargs\[.use_safetensors.\] = True"
     )
     assert len(pattern.findall(src)) == 2
+
+
+def test_offline_fp8_bin_cache_fallback_not_forced_to_safetensors():
+    import re
+
+    src = LOADER.read_text()
+    # The offline quantize helper may fall back to a preserved bin-only cache; forcing safetensors
+    # afterwards must be guarded by a check that the returned dir actually has safetensors, else
+    # the bin fallback is unloadable. Both loader paths must do this. #6749
+    pattern = re.compile(
+        r"_offline_quantize_to_fp8\([^\n]*\)\s+restore_fp8_scales = True\s+#[^\n]*\n(?:\s+#[^\n]*\n)*"
+        r'\s+if any\(name\.endswith\("\.safetensors"\)[^\n]*\n\s+kwargs\[.use_safetensors.\] = True'
+    )
+    assert len(pattern.findall(src)) == 2
+
+
+def test_peft_fp8_base_remap_forces_safetensors():
+    import re
+
+    src = LOADER.read_text()
+    # The PEFT base remap to a pre-quantized FP8 sibling must also force safetensors. #6749
+    pattern = re.compile(
+        r"model_name != base_before_remap:\s+load_in_fp8 = False\s+#[^\n]*\n(?:\s+#[^\n]*\n)*"
+        r"\s+kwargs\[.use_safetensors.\] = True"
+    )
+    assert len(pattern.findall(src)) >= 1
