@@ -3037,3 +3037,62 @@ def test_acquire_swap_gate_is_cancellation_safe():
         inference_route._auto_switch_process_lock.release()
 
     asyncio.run(asyncio.wait_for(main(), timeout = 5))
+
+
+def test_no_model_loaded_detail_appends_hint_only_when_off(monkeypatch):
+    # The "no model loaded" errors point at the opt-in auto-switch toggle so a
+    # request naming a listed-but-unloaded model is self-explanatory -- but only
+    # when it's off. With it on the name simply didn't resolve, so no hint.
+    base = "No GGUF model loaded. Load a GGUF model first."
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
+    off = inference_route._no_model_loaded_detail(base)
+    assert off.startswith(base)
+    assert "Model auto-switch" in off and "Settings > API" in off
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    assert inference_route._no_model_loaded_detail(base) == base
+
+
+def _run_responses_stream_no_model(monkeypatch, *, enabled, active_model_name):
+    # Drive _responses_stream's GGUF-not-loaded guard: llama backend unloaded,
+    # inference backend maybe holding a non-GGUF model. Returns the 400 detail.
+    from fastapi import HTTPException
+    from models.inference import ResponsesRequest, ChatMessage
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(loaded_id = None)
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("_B", (), {"active_model_name": active_model_name})(),
+    )
+    payload = ResponsesRequest(model = "unsloth/Qwen3.5-4B-GGUF", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route._responses_stream(payload, messages, None))
+    assert exc.value.status_code == 400
+    return exc.value.detail
+
+
+def test_responses_stream_hint_only_when_nothing_loaded_and_off(monkeypatch):
+    # Streaming /v1/responses shares a GGUF-only 400 with the non-GGUF-loaded
+    # state, so the auto-switch hint attaches only when nothing is loaded at all
+    # (the reported bug class) and the toggle is off. A live non-GGUF model, or
+    # the toggle already on, must not draw the hint.
+    hinted = _run_responses_stream_no_model(
+        monkeypatch, enabled = False, active_model_name = None
+    )
+    assert "Model auto-switch" in hinted
+
+    on = _run_responses_stream_no_model(
+        monkeypatch, enabled = True, active_model_name = None
+    )
+    assert "Model auto-switch" not in on
+
+    non_gguf_loaded = _run_responses_stream_no_model(
+        monkeypatch, enabled = False, active_model_name = "unsloth/Llama-3.2-1B-Instruct"
+    )
+    assert "Model auto-switch" not in non_gguf_loaded
