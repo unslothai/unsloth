@@ -14,6 +14,7 @@ _TESTS_DIR = pathlib.Path(__file__).resolve().parent.parent  # tests/
 _REPO_ROOT = _TESTS_DIR.parent  # unsloth/
 _INSTALL_SH = _REPO_ROOT / "install.sh"
 _INSTALL_PS1 = _REPO_ROOT / "install.ps1"
+_SETUP_PS1 = _REPO_ROOT / "studio" / "setup.ps1"
 _NO_TORCH_RT = _REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
 
 
@@ -121,6 +122,17 @@ class TestInstallPs1UvDefaultIndex:
     def test_torch_installs_do_not_use_deprecated_index_url(self):
         assert "--index-url $TorchIndexUrl" not in self._ps1
         assert "--index-url $ROCmIndexUrl" not in self._ps1
+
+
+class TestSetupPs1FastInstallIndex:
+    """setup.ps1 Fast-Install must neutralize inherited uv indexes when pinning."""
+
+    _ps1 = _read(_SETUP_PS1)
+
+    def test_fast_install_clears_uv_default_index(self):
+        assert "UV_DEFAULT_INDEX" in self._ps1
+        assert "UV_INDEX_URL" in self._ps1
+        assert "SetEnvironmentVariable($n, $null)" in self._ps1
 
 
 # Group 2 -- Shell snippet tests (bash subprocess, mocked python)
