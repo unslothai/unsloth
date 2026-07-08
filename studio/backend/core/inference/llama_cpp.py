@@ -5690,8 +5690,13 @@ class LlamaCppBackend:
                     # model's own KV geometry. The separate-drafter spec modes
                     # (draft-simple/draft-eagle3, DFlash) load a small distinct
                     # drafter with its own KV and keep no such copy, so only charge
-                    # it when the engaged mode is truly MTP.
-                    _engaged_is_mtp = bool(_user_mtp_via_extras or _auto_studio_mtp)
+                    # it when the engaged mode is truly MTP. DFlash wins Auto over
+                    # MTP (its branch returns first in _build_speculative_flags),
+                    # so when both are eligible the launch runs DFlash -- don't
+                    # charge the MTP target-KV copy for a Qwen+DFlash Auto load.
+                    _engaged_is_mtp = (
+                        bool(_user_mtp_via_extras or _auto_studio_mtp) and not _auto_studio_dflash
+                    )
 
                     # Effective draft depth: extras win (last-wins at launch), else
                     # the field, else the platform default (DFlash 4; MTP 2 GPU / 3
