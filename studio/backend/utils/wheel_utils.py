@@ -21,6 +21,14 @@ _logger = logging.getLogger(__name__)
 FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/releases/download"
 
 
+def has_blackwell_gpu() -> bool:
+    # Stub returning False: Blackwell (sm_100+) now has prebuilt flash-attn wheels
+    # and url_exists() gates resolution, so nothing skips on it. Kept for possible
+    # future arch-based gating; restore the nvidia-smi compute_cap probe (in git
+    # history) if needed.
+    return False
+
+
 def linux_wheel_platform_tag() -> str | None:
     machine = platform.machine().lower()
     if sys.platform.startswith("linux"):
