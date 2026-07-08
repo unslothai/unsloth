@@ -1097,13 +1097,10 @@ function ProjectLanding({
                       ? pendingRename.title
                       : item.title;
                   if (renamingId === item.id) {
-                    const dirty =
-                      renameDraft.trim().length > 0 &&
-                      renameDraft.trim() !== item.title;
                     return (
                       <div
                         key={`${item.type}:${item.id}`}
-                        className="flex min-h-[58px] w-full items-center gap-4 rounded-full px-4 py-2"
+                        className="flex min-h-[58px] w-full items-center rounded-full px-4 py-2"
                       >
                         <div className="min-w-0 flex-1">
                           <input
@@ -1116,8 +1113,7 @@ function ProjectLanding({
                               if (event.key === "Enter") {
                                 event.preventDefault();
                                 skipRenameBlurRef.current = true;
-                                if (dirty) void commitRename(item);
-                                else setRenamingId(null);
+                                void commitRename(item);
                               } else if (event.key === "Escape") {
                                 event.preventDefault();
                                 skipRenameBlurRef.current = true;
@@ -1129,8 +1125,7 @@ function ProjectLanding({
                                 skipRenameBlurRef.current = false;
                                 return;
                               }
-                              if (dirty) void commitRename(item);
-                              else setRenamingId(null);
+                              void commitRename(item);
                             }}
                             onFocus={(event) => event.currentTarget.select()}
                             maxLength={120}
@@ -1185,7 +1180,7 @@ function ProjectLanding({
                             type="button"
                             onClick={(event) => event.stopPropagation()}
                             aria-label="Chat options"
-                            className="absolute right-3 top-1/2 inline-flex size-8 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-foreground/10 focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100"
+                            className="absolute right-3 top-1/2 inline-flex size-8 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 pointer-events-none outline-none transition-opacity hover:bg-foreground/10 focus-visible:opacity-100 focus-visible:pointer-events-auto group-hover:opacity-100 group-hover:pointer-events-auto data-[state=open]:opacity-100 data-[state=open]:pointer-events-auto"
                           >
                             <HugeiconsIcon
                               icon={MoreVerticalIcon}
