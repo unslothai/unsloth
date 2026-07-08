@@ -4575,8 +4575,7 @@ class LlamaCppBackend:
             dflash_files = [
                 f
                 for f in candidates
-                if f.lower().endswith(".gguf")
-                and _dflash_pairs_weight(Path(f).name, weight_name)
+                if f.lower().endswith(".gguf") and _dflash_pairs_weight(Path(f).name, weight_name)
             ]
             if not dflash_files:
                 return None
