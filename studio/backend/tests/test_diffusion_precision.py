@@ -404,7 +404,13 @@ def test_nvfp4_filter_keeps_vision_tower_dense(monkeypatch):
 # ── auto ladder (select_te_quant_scheme) ────────────────────────────────────────
 
 
-def _stub_tq_select(monkeypatch, *, cc, consumer = False, smoke = True):
+def _stub_tq_select(
+    monkeypatch,
+    *,
+    cc,
+    consumer = False,
+    smoke = True,
+):
     """Stub the transformer module's shared helpers that select_te_quant_scheme imports:
     capability, GPU class, and the kernel smoke probe (bool or a (tq, dev) predicate)."""
     dtq = types.ModuleType("core.inference.diffusion_transformer_quant")

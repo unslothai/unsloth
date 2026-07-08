@@ -1745,7 +1745,9 @@ class DiffusionLoadRequest(BaseModel):
         "default (also regional torch.compile where eligible), "
         "max (also TF32 + fused QKV).",
     )
-    text_encoder_quant: Optional[Literal["auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"]] = Field(
+    text_encoder_quant: Optional[
+        Literal["auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"]
+    ] = Field(
         None,
         description = "Quantise the companion text encoder(s). auto (the default when unset) picks "
         "the fastest accurate scheme for this GPU + model family (fp8_dynamic on fp8-GEMM silicon, "
@@ -2348,7 +2350,9 @@ class VideoLoadRequest(BaseModel):
             "backend's transformer_quant field.",
         )
     )
-    text_encoder_quant: Optional[Literal["auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"]] = Field(
+    text_encoder_quant: Optional[
+        Literal["auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"]
+    ] = Field(
         None,
         description = "Quantise the dense companion text encoder (Gemma3 / UMT5 / Qwen2.5-VL), "
         "which loads bf16 from the base repo regardless of how the DiT was sourced and is often "

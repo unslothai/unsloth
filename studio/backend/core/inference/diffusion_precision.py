@@ -118,7 +118,10 @@ def te_quant_supported(target: Any, mode: str) -> bool:
 # 4-bit is a steeper quality cost), never an auto pick, consistent with the DiT ladder.
 _TE_AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     ((8, 9), (TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8)),  # Ada sm_89 / Hopper / Blackwell
-    ((8, 0), (TE_QUANT_INT8, TE_QUANT_FP8)),  # Ampere sm_80/86: no fp8 GEMM -> int8 or layerwise fp8
+    (
+        (8, 0),
+        (TE_QUANT_INT8, TE_QUANT_FP8),
+    ),  # Ampere sm_80/86: no fp8 GEMM -> int8 or layerwise fp8
 )
 
 # Text encoders whose activation ranges break a scheme at the MODEL level (measured hidden-state
@@ -145,7 +148,6 @@ def _te_scheme_probe(scheme: str, device: str) -> bool:
         return True
     try:
         from .diffusion_transformer_quant import _smoke_probe
-
         return _smoke_probe(tq, device)
     except Exception:
         return False
@@ -179,7 +181,9 @@ def select_te_quant_scheme(
             # Consumer GDDR parts run int8 full-rate but halve fp8 FP32-accumulate: prefer int8.
             ordered = (
                 (TE_QUANT_INT8,) + tuple(s for s in schemes if s != TE_QUANT_INT8)
-                if TE_QUANT_INT8 in schemes and schemes[0] != TE_QUANT_INT8 and _is_consumer_gpu(device)
+                if TE_QUANT_INT8 in schemes
+                and schemes[0] != TE_QUANT_INT8
+                and _is_consumer_gpu(device)
                 else schemes
             )
             for scheme in ordered:
