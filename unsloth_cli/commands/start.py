@@ -574,17 +574,29 @@ def _loaded_models(base: str, key: str) -> list:
     return _http_json("GET", f"{base}/v1/models", key, error = "Couldn't list models").get("data", [])
 
 
+_HF_REPO_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
 def _is_hub_model_id(value: object) -> bool:
     if not isinstance(value, str):
         return False
     text = value.strip()
-    if "/" not in text:
-        return False
     if "\\" in text:
         return False
     if text.startswith(("/", "./", "../", "~")):
         return False
     if len(text) >= 2 and text[1] == ":" and text[0].isalpha():
+        return False
+    # A hub id is exactly "namespace/name" over a restricted charset. Anything with
+    # extra path segments (e.g. a server-side relative path such as
+    # models/Llama/Foo.gguf on a remote Studio) is not a hub id and must not be
+    # casefold-matched against a differently cased path on a case-sensitive
+    # filesystem. This is host independent, unlike the existence probe below which
+    # cannot see a path that only exists on the server.
+    parts = text.split("/")
+    if len(parts) != 2:
+        return False
+    if any(part in ("", ".", "..") or not _HF_REPO_ID_SEGMENT_RE.match(part) for part in parts):
         return False
     try:
         if Path(os.path.expanduser(text)).exists():

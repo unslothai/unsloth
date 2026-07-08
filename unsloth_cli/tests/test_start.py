@@ -492,6 +492,14 @@ def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
     assert not start._model_id_matches(str(existing_local), str(existing_local).lower())
     assert not start._model_id_matches("./Models/Foo", "./models/foo")
     assert not start._model_id_matches(r".\Models\Foo", r".\models\foo")
+    # A server-side relative path (extra path segments) is not a hub id even when it
+    # does not exist on the CLI host, so it must not casefold-match a differently
+    # cased path on a case-sensitive server filesystem.
+    assert not start._is_hub_model_id("models/Llama/Foo.gguf")
+    assert not start._model_id_matches("models/Llama/Foo.gguf", "models/llama/foo.gguf")
+    # A genuine two-segment hub id still matches case-insensitively.
+    assert start._is_hub_model_id("unsloth/Gemma-3-4b-it-GGUF")
+    assert start._model_id_matches("unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf")
 
 
 def test_connect_codex_launch_uses_ephemeral_home(fake_studio, monkeypatch):

@@ -378,6 +378,19 @@ def _probe_dns_dead(host: str = "huggingface.co", timeout: float = 2.0) -> bool:
     return True if result[0] is None else result[0]
 
 
+def _hf_env_offline() -> bool:
+    """True when an HF offline env var is set to any truthy value (1/true/yes/on).
+
+    Mirrors utils.models.model_config._env_offline so a user-set HF_HUB_OFFLINE=true
+    (not just "1") still routes through the local-cache reuse path below.
+    """
+    try:
+        from utils.models.model_config import _env_offline
+        return _env_offline()
+    except Exception:
+        return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 @contextlib.contextmanager
 def _hf_offline_if_dns_dead():
     """Set HF_HUB_OFFLINE for this block only when DNS to huggingface.co fails;
@@ -4136,7 +4149,7 @@ class LlamaCppBackend:
             # path below); online, hf_hub_download fetches the current revision and
             # resumes partials, so an old snapshot must not be counted as cached here or
             # the preflight would under-count the download and skip the disk fallback.
-            offline = os.environ.get("HF_HUB_OFFLINE") == "1"
+            offline = _hf_env_offline()
             # A split GGUF whose shards are not co-located in a single snapshot is
             # refetched as a whole set later, so it must not be counted as cached here.
             split_needs_refetch = False
@@ -4261,7 +4274,7 @@ class LlamaCppBackend:
             # offline. Online, fall through to hf_hub_download so its revision/etag check
             # fetches the current file (and resumes a partial) instead of serving a stale
             # same-name blob from an older revision.
-            if not force and os.environ.get("HF_HUB_OFFLINE") == "1":
+            if not force and _hf_env_offline():
                 if gguf_extra_shards:
                     # A split GGUF must load every shard from one snapshot; reuse only a
                     # snapshot that holds the whole set co-located, scanning past a newer
@@ -4371,6 +4384,17 @@ class LlamaCppBackend:
 
         if target is None or cancel_event.is_set():
             return None
+
+        # Offline, resolve the companion straight from the cache snapshot that
+        # holds it. resolve_cached_repo_id_case can return a partial lower-case
+        # spelling when any dir exists under the requested casing, so calling
+        # hf_hub_download with hf_repo would miss the canonical file and silently
+        # drop the companion. _cached_hf_snapshot_file scans every case variant.
+        if _hf_env_offline():
+            cached = _cached_hf_snapshot_file(hf_repo, target)
+            if cached:
+                logger.info("Resolved %s from local HF cache: %s", label, cached)
+                return cached
 
         try:
             logger.info(f"Downloading {label}: {hf_repo}/{target}")

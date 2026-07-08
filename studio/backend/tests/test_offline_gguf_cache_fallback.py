@@ -388,6 +388,67 @@ class TestGgufVariantFileResolution:
         assert downloaded == ["model-UD-Q4_K_XL.gguf"]
         assert out == "/fresh/model-UD-Q4_K_XL.gguf"
 
+    def test_download_reuses_older_snapshot_when_offline_env_is_true(self, monkeypatch, hf_cache):
+        # HF_HUB_OFFLINE accepts truthy spellings beyond "1" (true/yes/on); the offline
+        # cache reuse must trigger for those too, otherwise the earlier Hub calls run
+        # offline while this branch still attempts hf_hub_download and the cached GGUF
+        # cannot load.
+        monkeypatch.setenv("HF_HUB_OFFLINE", "true")
+        backend = LlamaCppBackend()
+        repo = "unsloth/vision-GGUF"
+        old = _build_cache(hf_cache, repo, {"model-UD-Q4_K_XL.gguf": 4}, snapshot_sha = "a" * 40)
+
+        def fake_get_paths_info(
+            _repo_id,
+            paths,
+            token = None,
+        ):
+            return [_types.SimpleNamespace(path = p, size = 4) for p in paths if p]
+
+        def fail_download(*_args, **_kwargs):
+            raise AssertionError("should reuse the cached GGUF instead of downloading")
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: ["model-UD-Q4_K_XL.gguf"]),
+            patch("huggingface_hub.get_paths_info", fake_get_paths_info),
+            patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fail_download),
+        ):
+            out = backend._download_gguf(hf_repo = repo, hf_variant = "UD-Q4_K_XL")
+
+        assert out == str(old / "model-UD-Q4_K_XL.gguf")
+
+    def test_download_companion_resolves_from_case_variant_snapshot_offline(
+        self, monkeypatch, hf_cache
+    ):
+        # Offline, resolve_cached_repo_id_case can keep a partial lower-case spelling,
+        # so the companion (mmproj) must resolve from whichever case-variant snapshot
+        # actually holds it rather than being dropped by an hf_hub_download on the
+        # wrong casing.
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        backend = LlamaCppBackend()
+        canonical_repo = "unsloth/gemma-4-E2B-it-GGUF"
+        requested_repo = "unsloth/gemma-4-e2b-it-gguf"
+        snap = _build_cache(hf_cache, canonical_repo, {"mmproj-F16.gguf": 4}, snapshot_sha = "a" * 40)
+        # A partial lower-case dir exists so casing resolution keeps the requested spelling.
+        _build_cache(hf_cache, requested_repo, {"config.json": 1}, snapshot_sha = "b" * 40)
+
+        _offline_exc = type("OfflineModeIsEnabled", (Exception,), {})
+
+        def fake_list_repo_files(repo_id, token = None):
+            raise _offline_exc("offline")
+
+        def fail_download(*_args, **_kwargs):
+            raise AssertionError("should resolve the companion from cache, not download")
+
+        with (
+            patch("huggingface_hub.list_repo_files", fake_list_repo_files),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fail_download),
+        ):
+            out = backend._download_mmproj(hf_repo = requested_repo)
+
+        assert out == str(snap / "mmproj-F16.gguf")
+
     def test_download_includes_uppercase_split_gguf_shards(self, monkeypatch, tmp_path):
         backend = LlamaCppBackend()
         downloaded: list[str] = []
