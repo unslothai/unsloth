@@ -102,7 +102,9 @@ def test_grpo_patch_generates_valid_source(generated_grpo_source):
 def test_grpo_patch_aux_fail_fast_injected(generated_grpo_source):
     """TRL >= 1.7.0: rl.py injects a fail-fast for the unsupported MoE router
     aux-loss opt-in right after `self.aux_loss_enabled = ...`."""
-    if _trl_version() < __import__("packaging.version", fromlist = ["Version"]).Version("1.7.0"):
+    from packaging.version import Version
+
+    if _trl_version() < Version("1.7.0"):
         pytest.skip("aux_loss_enabled / router_aux_loss_coef are TRL >= 1.7.0")
     assert "does not compute the MoE router auxiliary loss" in generated_grpo_source, (
         "aux fail-fast raise missing from generated trainer; rl.py's "
