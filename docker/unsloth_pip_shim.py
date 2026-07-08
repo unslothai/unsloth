@@ -93,6 +93,13 @@ _EDITABLE_FLAGS = {"-e", "--editable"}
 # refresh that package and clobber the pinned stack. Filter its value through
 # _KEEP too. Unlike -e it is not itself an install target (no has_target).
 _UPGRADE_PKG_FLAGS = {"-P", "--upgrade-package"}
+# Short value-flags pip/uv accept in the ATTACHED form, i.e. the 2-char flag
+# glued to its value in one token: `-rreqs.txt`, `-cconstraints.txt`, `-epath`,
+# `-Pname`. The scanner splits the flag from the value so the value is filtered
+# (requirement/constraint file) or classified (-e/-P) instead of falling through
+# as an opaque option -- otherwise an attached `-r`-only cell no-ops and an
+# attached `-c`/`-e`/`-P` value bypasses _KEEP.
+_ATTACHED_SHORT_FLAGS = {"-r", "-c", "-e", "-P"}
 
 
 def _canon(token):
@@ -183,6 +190,33 @@ def _parse_include(stripped):
     return None, None, None
 
 
+def _parse_editable(stripped):
+    """If `stripped` is an `-e`/`--editable` install line, return
+    (flag, target, inline_comment_or_None); else (None, None, None).
+
+    Handles the separated (`-e <t>` / `--editable <t>`), attached (`-e<t>`),
+    long inline (`--editable=<t>`) and short inline (`-e=<t>`) forms pip accepts
+    from a requirement file, so a protected editable there is dropped exactly
+    like the command-line -e case."""
+    body, sep, comment = stripped.partition(" #")
+    body = body.rstrip()
+    comment = ("#" + comment) if sep else None
+    for flag in ("-e", "--editable"):
+        target = None
+        if body == flag:
+            target = None
+        elif body.startswith(flag + " "):
+            target = body[len(flag) :].strip()
+        elif body.startswith(flag + "="):
+            target = body[len(flag) + 1 :].strip()
+        elif not flag.startswith("--") and body.startswith(flag) and len(body) > len(flag):
+            target = body[len(flag) :].strip()  # attached short form, e.g. `-egit+...`
+        else:
+            continue
+        return flag, (target or None), comment
+    return None, None, None
+
+
 def _rewrite_include(line, stripped, src_dir, depth):
     """Rewrite a nested `-r`/`-c` include so pip still resolves it and its
     protected specs are filtered too.
@@ -212,6 +246,12 @@ def _rewrite_include(line, stripped, src_dir, depth):
     # Recursively filter the included file. Guard against cyclic / deep includes.
     if depth < 8:
         f_path, f_rec, f_drp = _filter_requirements_file(abs_target, _depth = depth + 1)
+        # A nested -c include is a resolver CONSTRAINT, not an install request, so
+        # a transformers pin inside it must NOT be recorded as a request (mirrors
+        # the top-level -c path in main(), which ignores _c_rec). Only a nested -r
+        # requirement include carries real install requests, so keep its pin.
+        if flag in _CONSTRAINT_FILE_FLAGS:
+            f_rec = None
         if f_path != abs_target:
             # The include was rewritten (protected specs dropped and/or its own
             # nested includes absolutised); point at the filtered copy.
@@ -247,6 +287,23 @@ def _filter_requirements_file(path, _depth = 0):
             out.append(line)  # comment / blank -> keep
             continue
         if stripped.startswith("-"):
+            # An editable requirement (-e/--editable <target>) inside the file is
+            # a real install target, so a protected editable such as
+            # `-e git+https://.../unsloth.git#egg=unsloth` would reinstall the
+            # baked stack. Classify it through _KEEP exactly like the
+            # command-line -e case and drop the whole line (flag + target) when
+            # the target is protected; a transformers pin is still recorded.
+            e_flag, e_target, _e_comment = _parse_editable(stripped)
+            if e_target is not None:
+                _action, _ver = _classify_flag_target(e_target)
+                if _action == "drop":
+                    if _ver and not recorded:
+                        recorded = _ver
+                    dropped.append(e_flag + " " + e_target)
+                    changed = True
+                    continue
+                out.append(line)  # kept editable -> forward the line verbatim
+                continue
             # Option or nested include. Recursively filter a nested `-r`/`-c`
             # include (so protected specs deep in the include tree cannot slip
             # past _KEEP) and repoint it so it still resolves from /tmp.
@@ -394,6 +451,44 @@ def main():
                 else:
                     keep_args.append(tok)  # option with inline value, not a target
                 continue
+        # Attached short value-flag form: pip/uv accept `-rreqs.txt`,
+        # `-cconstraints.txt`, `-epath` and `-Pname` as ONE token. Without this
+        # the token starts with "-" and falls through as an opaque option, so an
+        # `-r`-only cell no-ops (has_target stays False) and an attached
+        # `-c`/`-e`/`-P` value bypasses _KEEP. Split the 2-char flag from its
+        # value and reuse the separated-form handling.
+        if (
+            len(tok) > 2
+            and tok[0] == "-"
+            and tok[1] != "-"
+            and tok[:2] in _ATTACHED_SHORT_FLAGS
+        ):
+            _sflag, _sval = tok[:2], tok[2:]
+            if _sflag in _REQ_FILE_FLAGS:
+                _req_path, _req_rec, _req_drp = _filter_requirements_file(_sval)
+                keep_args.append(_sflag)
+                keep_args.append(_req_path)
+                has_target = True
+                if _req_rec and not recorded:
+                    recorded = _req_rec
+                dropped.extend(_req_drp)
+            elif _sflag in _CONSTRAINT_FILE_FLAGS:
+                _c_path, _c_rec, _c_drp = _filter_requirements_file(_sval)
+                keep_args.append(_sflag)
+                keep_args.append(_c_path)
+                dropped.extend(_c_drp)
+            else:  # -e / -P: the attached value is an install target / selector
+                _action, _ver = _classify_flag_target(_sval)
+                if _action == "drop":
+                    if _ver and not recorded:
+                        recorded = _ver
+                    dropped.append(_sflag + " " + _sval)
+                else:
+                    keep_args.append(_sflag)
+                    keep_args.append(_sval)
+                    if _sflag in _EDITABLE_FLAGS:
+                        has_target = True
+            continue
         if tok in _VALUE_FLAGS:
             # -e/--editable and -P/--upgrade-package carry a value that is a
             # potential install target, so hold the flag back and let the

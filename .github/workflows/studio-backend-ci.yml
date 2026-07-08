@@ -233,6 +233,7 @@ jobs:
               tests/sh/test_system_node_readonly.sh \
               tests/sh/test_nvcc_meets_llama_minimum.sh \
               tests/sh/test_resolve_cuda_archs.sh \
+              tests/sh/test_select_cuda_jit_tools.sh \
               tests/sh/test_tauri_install_exit_order.sh \
               tests/sh/test_torch_constraint.sh \
               tests/sh/test_torch_flavor.sh \

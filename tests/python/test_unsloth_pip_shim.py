@@ -217,3 +217,118 @@ def test_bare_transformers_recorded_and_dropped(shim):
 def test_index_url_value_flag_kept_verbatim(shim):
     execd, _ = _run(shim, "pip", ["--extra-index-url", "https://example.com/simple", "snac"])
     assert execd == ["--extra-index-url", "https://example.com/simple", "snac"], execd
+
+
+# --------------------------------------------------------------------------
+# Item 3541404842 -- filter editable entries INSIDE a requirements file.
+# --------------------------------------------------------------------------
+def test_editable_protected_in_requirements_file_dropped(shim, tmp_path):
+    req = tmp_path / "reqs.txt"
+    req.write_text(
+        "-e git+https://github.com/unslothai/unsloth.git#egg=unsloth\n"
+        "snac==1.2.0\n",
+        encoding = "utf-8",
+    )
+    execd, _ = _run(shim, "pip", ["-r", str(req)])
+    assert execd is not None and execd[0] == "-r", execd
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    assert "snac==1.2.0" in filtered
+    assert "unsloth" not in filtered  # protected editable line stripped
+
+
+def test_editable_attached_protected_in_requirements_file_dropped(shim, tmp_path):
+    req = tmp_path / "reqs.txt"
+    req.write_text(
+        "-egit+https://github.com/unslothai/unsloth.git#egg=unsloth\n"
+        "snac==1.2.0\n",
+        encoding = "utf-8",
+    )
+    execd, _ = _run(shim, "pip", ["-r", str(req)])
+    assert execd is not None and execd[0] == "-r", execd
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    assert "snac==1.2.0" in filtered
+    assert "unsloth" not in filtered
+
+
+def test_editable_unprotected_in_requirements_file_kept(shim, tmp_path):
+    # An unprotected editable survives even when the file is otherwise rewritten
+    # (torch dropped); only protected editables are stripped.
+    req = tmp_path / "reqs.txt"
+    req.write_text(
+        "-e ./localpkg\n"
+        "torch==2.11.0\n"
+        "snac==1.2.0\n",
+        encoding = "utf-8",
+    )
+    execd, _ = _run(shim, "pip", ["-r", str(req)])
+    assert execd is not None and execd[0] == "-r", execd
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    assert "./localpkg" in filtered
+    assert "snac==1.2.0" in filtered
+    assert "torch" not in filtered
+
+
+# --------------------------------------------------------------------------
+# Item 3541404849 -- a nested -c constraint pin is not recorded as a request.
+# --------------------------------------------------------------------------
+def test_nested_constraint_transformers_pin_not_recorded(shim, tmp_path):
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("transformers==4.55.0\n", encoding = "utf-8")
+    req = tmp_path / "reqs.txt"
+    req.write_text("-c constraints.txt\nsnac==1.2.0\n", encoding = "utf-8")
+    execd, marker = _run(shim, "pip", ["-r", str(req)])
+    assert execd is not None and execd[0] == "-r", execd
+    # A constraint pin is not an install request -> no sidecar marker written.
+    assert marker is None, marker
+
+
+def test_nested_requirement_transformers_pin_recorded(shim, tmp_path):
+    # Contrast: a nested -r requirement DOES carry install requests, so its
+    # transformers pin is still recorded for the sidecar.
+    nested = tmp_path / "nested.txt"
+    nested.write_text("transformers==4.55.0\n", encoding = "utf-8")
+    req = tmp_path / "reqs.txt"
+    req.write_text("-r nested.txt\nsnac==1.2.0\n", encoding = "utf-8")
+    execd, marker = _run(shim, "pip", ["-r", str(req)])
+    assert execd is not None and execd[0] == "-r", execd
+    assert marker == "4.55.0", marker
+
+
+# --------------------------------------------------------------------------
+# Item 3541404845 -- handle pip's attached short options (-rfile / -cfile / etc).
+# --------------------------------------------------------------------------
+def test_attached_short_requirement_file_filtered(shim, tmp_path):
+    # `pip install -rreqs.txt` (attached) must filter the file AND count as a
+    # target -- before the fix it fell through as an opaque option and no-op'd.
+    req = tmp_path / "reqs.txt"
+    req.write_text("torch==2.11.0\nsnac==1.2.0\n", encoding = "utf-8")
+    execd, _ = _run(shim, "pip", ["-r" + str(req)])
+    assert execd is not None and execd[0] == "-r", execd
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    assert "snac==1.2.0" in filtered
+    assert "torch" not in filtered
+
+
+def test_attached_short_constraint_file_filtered(shim, tmp_path):
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("torch==2.11.0\n", encoding = "utf-8")
+    execd, _ = _run(shim, "pip", ["-c" + str(constraints), "peft"])
+    assert execd is not None and execd[0] == "-c", execd
+    assert "peft" in execd
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    assert "torch" not in filtered
+
+
+def test_attached_short_editable_protected_dropped(shim):
+    execd, _ = _run(
+        shim,
+        "pip",
+        ["-egit+https://github.com/unslothai/unsloth.git#egg=unsloth", "peft"],
+    )
+    assert execd == ["peft"], execd
+
+
+def test_attached_short_upgrade_package_protected_dropped(shim):
+    execd, _ = _run(shim, "uv", ["-Ptorch", "peft"])
+    assert execd == ["peft"], execd
+    assert "torch" not in execd and "-P" not in execd

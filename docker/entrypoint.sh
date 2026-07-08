@@ -17,13 +17,60 @@
 #   docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
 set -euo pipefail
 
-# DGX Spark fix, arm64 image only: prefer the cu13 ptxas we baked into the
-# image at /usr/local/cuda-13.0/bin/ptxas over Triton's bundled tools. The
-# file only exists on the arm64 variant; amd64 images skip this and use
-# Triton's own ptxas (cu13 in triton>=3.6.0).
-if [[ -x /usr/local/cuda-13.0/bin/ptxas ]] && [[ -z "${TRITON_PTXAS_PATH:-}" ]]; then
-    export TRITON_PTXAS_PATH=/usr/local/cuda-13.0/bin/ptxas
-fi
+# --- CUDA JIT toolchain selection (device-gated) ----------------------------
+# The image bakes CUDA 13 ptxas + NVRTC ONLY so the two Blackwell datacenter
+# arches the cu12.8 tools cannot target -- sm_103 (B300 / GB300) and sm_121
+# (GB10 / DGX Spark) -- can JIT Triton and torch/NVRTC kernels. Both launched
+# AFTER cu12.8, so any host carrying them runs a >= 580 driver, which is exactly
+# what a cu13-produced cubin needs to LOAD.
+#
+# Every OTHER supported arch (Turing..sm_120) works with the bundled cu12.8
+# tools and is allowed on a 570-579 driver (the documented floor). A cu13 cubin
+# CANNOT load on a 570-579 driver even when it targets an old arch like sm_80
+# (CUDA has forward, not backward, driver compatibility across major versions),
+# so routing those hosts' JIT through the cu13 tools would break ordinary
+# training. ptxas/NVRTC are host-side compilers (they never link libcuda), so
+# they RUN under any driver -- it is only their OUTPUT the older driver rejects.
+#
+# Pick per DEVICE at boot (the compute capability is unknown at build time):
+# activate cu13 only for sm_103 / sm_121, and otherwise keep Triton on its
+# bundled cu12.8 ptxas and restore the wheel-bundled cu12.8 NVRTC the build
+# swapped for cu13. Runs before every early-exit below so the selection always
+# applies. Best-effort: a read-only / --user-dropped rootfs that cannot
+# re-point the NVRTC symlink is left unchanged.
+select_cuda_jit_tools() {
+    local cc="" nvrtc_dir orig
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        cc="$( { nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true; } \
+               | head -n1 | tr -d '[:space:]' )"
+    fi
+    case "${cc}" in
+        10.3|12.1)
+            # Blackwell datacenter: the build already points each venv's
+            # libnvrtc.so.12 at cu13, so only Triton's ptxas needs redirecting.
+            # -z guard leaves an explicit `docker run -e TRITON_PTXAS_PATH` win.
+            if [[ -x /usr/local/cuda-13.0/bin/ptxas && -z "${TRITON_PTXAS_PATH:-}" ]]; then
+                export TRITON_PTXAS_PATH=/usr/local/cuda-13.0/bin/ptxas
+            fi
+            ;;
+        *)
+            # Every other arch (or an undetectable / CPU host): leave
+            # TRITON_PTXAS_PATH unset so Triton uses its bundled cu12.8 ptxas,
+            # and restore the cu12.8 NVRTC in each venv that saved the original,
+            # so a 570-579 driver never sees a cu13 cubin. Covers the base venv
+            # and, on the Studio image, the Studio venv.
+            for nvrtc_dir in \
+                /opt/unsloth-venv/lib/python*/site-packages/nvidia/cuda_nvrtc/lib \
+                "${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do
+                orig="${nvrtc_dir}/libnvrtc.so.12.cu128.orig"
+                [[ -e "${orig}" ]] || continue
+                ln -sf libnvrtc.so.12.cu128.orig "${nvrtc_dir}/libnvrtc.so.12" 2>/dev/null || true
+            done
+            ;;
+    esac
+}
+# Best-effort: never let JIT-tool selection block container startup.
+select_cuda_jit_tools || true
 
 # Make the unslothai/notebooks collection available under /workspace before the
 # user command runs (JupyterLab, unsloth-run, or a shell). Best-effort: it is
