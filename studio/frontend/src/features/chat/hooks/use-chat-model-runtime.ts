@@ -252,7 +252,7 @@ function getTrustRemoteCodeRequiredMessage(modelName: string): string {
  * is a thin wrapper over it. External selections are left untouched since they
  * have no backend mirror.
  */
-export async function syncInferenceStatusToStore(options?: {
+async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
 }): Promise<void> {
@@ -310,13 +310,20 @@ export async function syncInferenceStatusToStore(options?: {
 
 /**
  * Reconcile the UI after the SERVER unloaded the active model out from under it
- * (e.g. a llama.cpp update unloads the running model to swap the binary). Mirrors
- * ejectModel's clearCheckpoint()+refresh(): the model selector drops to
- * "select model" instead of pointing at a model that now 400s on send. Imperative
- * so the global llama-update banner (which has no chat-runtime handle) can call it.
+ * (e.g. a llama.cpp update unloads the running model to swap the binary): the
+ * model selector drops to "select model" instead of pointing at a model that now
+ * 400s on send. Imperative so the global llama-update banner (which has no
+ * chat-runtime handle) can call it.
+ *
+ * Only a LOCAL selection points at the unloaded model. An external-provider
+ * selection has no llama.cpp mirror and still works, so clearing it (which also
+ * wipes its persisted id) would drop a valid, unrelated model; skip the clear so
+ * the refresh below leaves it intact.
  */
 export async function resyncInferenceStatusAfterServerModelChange(): Promise<void> {
-  useChatRuntimeStore.getState().clearCheckpoint();
+  if (!isExternalModelId(useChatRuntimeStore.getState().params.checkpoint)) {
+    useChatRuntimeStore.getState().clearCheckpoint();
+  }
   await syncInferenceStatusToStore();
 }
 
