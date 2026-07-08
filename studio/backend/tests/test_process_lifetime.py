@@ -54,7 +54,7 @@ def _alive(pid: int) -> bool:
     except OSError:
         return False
     if IS_LINUX and _linux_proc_state(pid) == "Z":
-        return False  # Unreaped zombies are already dead for PDEATHSIG assertions.
+        return False  # unreaped zombies count as dead here
     return True
 
 
