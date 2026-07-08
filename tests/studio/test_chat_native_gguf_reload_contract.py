@@ -68,3 +68,12 @@ def test_native_token_expiry_flows_from_intent_through_staged_loads():
     assert "nativePathTokenExpiresAtMs: number;" in chip_src
     assert "nativePathTokenExpiresAtMs: intent.path.expiresAtMs" in chip_src
     assert "isNativePathTokenExpired(nativePathTokenExpiresAtMs)" in staged_src
+
+
+def test_native_display_basename_is_not_a_direct_gguf_path_on_reload():
+    page_src = _src(CHAT_PAGE)
+
+    assert "isLocalModelPath," in page_src
+    assert "const isDirectGguf =" in page_src
+    assert "isLocalModelPath(checkpoint)" in page_src
+    assert 'checkpoint.toLowerCase().endsWith(".gguf")' in page_src

@@ -120,6 +120,7 @@ import {
   hasLoadedGgufSource,
   hasUsableNativePathToken,
   isDownloadableHubRepo,
+  isLocalModelPath,
   isNativePathTokenExpired,
   loadOptionalBool,
   pendingSelectionMatches,
@@ -2701,7 +2702,9 @@ export function ChatPage({
           const checkpoint = state.params.checkpoint;
           if (checkpoint) {
             const isLoadedGguf = hasLoadedGgufSource(state);
-            const isDirectGguf = checkpoint.toLowerCase().endsWith(".gguf");
+            const isDirectGguf =
+              isLocalModelPath(checkpoint) &&
+              checkpoint.toLowerCase().endsWith(".gguf");
             const hasNativeToken = hasUsableNativePathToken({
               nativePathToken: state.activeNativePathToken,
               nativePathTokenExpiresAtMs: state.activeNativePathTokenExpiresAtMs,
