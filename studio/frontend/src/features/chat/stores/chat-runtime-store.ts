@@ -544,7 +544,22 @@ export function loadedGpuMemoryFields(resp: {
   // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
   // the authoritative is_gguf flag, not the field's presence -- otherwise loading
   // a transformers model would reset the standing manual preference.
-  if (!resp.is_gguf) return {};
+  if (!resp.is_gguf) {
+    // Clear the GPU pick / offload baseline a prior GGUF load may have left, so it
+    // reflects the non-GGUF model (no pin). Else a stale loadedGpuIds reads as
+    // dirty (gpuIdsDirty is ungated) and Reset restores it, both while the picker
+    // is hidden. gpuMemoryMode (the standing preference) is kept.
+    return {
+      selectedGpuIds: null,
+      loadedGpuIds: null,
+      gpuLayers: GPU_LAYERS_AUTO,
+      loadedGpuLayers: null,
+      nCpuMoe: 0,
+      loadedNCpuMoe: null,
+      splitRatio: null,
+      loadedSplitRatio: null,
+    };
+  }
   const mode = resp.gpu_memory_mode ?? "auto";
   const gpuIds = resp.gpu_ids ?? null;
   // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
