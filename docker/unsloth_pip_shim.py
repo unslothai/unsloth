@@ -70,6 +70,8 @@ _VALUE_FLAGS = {
     "--python-version",
     "--abi",
     "--implementation",
+    "-e",
+    "--editable",
 }
 # Of those value-flags, the ones whose VALUE is itself an install target: a
 # requirements file pulls real requirements. An index-url / find-links /
@@ -80,6 +82,17 @@ _REQ_FILE_FLAGS = {"-r", "--requirement"}
 # still downgrade or reinstall a baked package when another target pulls it in.
 # Filter protected packages out of them the same way as requirement files.
 _CONSTRAINT_FILE_FLAGS = {"-c", "--constraint"}
+# -e/--editable <path|url|vcs> takes the NEXT token as its target (pip:
+# `-e, --editable <path/url>`), and that target is a real install target. A
+# protected editable (e.g. `-e git+https://.../unsloth.git#egg=unsloth`) must
+# drop BOTH the flag and its value; dropping the value alone leaves pip a
+# dangling `-e` that swallows the next kept package and fails the whole cell.
+_EDITABLE_FLAGS = {"-e", "--editable"}
+# -P/--upgrade-package <name> is uv's selective-upgrade flag: naming a baked
+# package (e.g. `uv pip install -P torch peft`) lets an ordinary install target
+# refresh that package and clobber the pinned stack. Filter its value through
+# _KEEP too. Unlike -e it is not itself an install target (no has_target).
+_UPGRADE_PKG_FLAGS = {"-P", "--upgrade-package"}
 
 
 def _canon(token):
@@ -109,6 +122,19 @@ def _canon(token):
         _egg = re.search(r"[#&]egg=([A-Za-z0-9][A-Za-z0-9._-]*)", token)
         if _egg:
             return _egg.group(1).lower().replace("_", "-") or None
+        # A direct wheel URL or local wheel path still names its distribution in
+        # the PEP 427 filename ({distribution}-{version}-...-...-....whl), so a
+        # bare `pip install https://.../torch-2.11.0+cu128-...whl` would slip a
+        # protected package past _KEEP as an opaque positional and reinstall the
+        # baked torch. Dashes cannot appear inside the distribution component (a
+        # run of -_. normalises to a single -), so the leading dash-split of the
+        # basename is the distribution name; pull it so _KEEP can drop it. A
+        # non-protected wheel returns its name and the caller keeps the token.
+        _whl = re.search(r"([^/\\#?]+)\.whl(?:[#?]|$)", token)
+        if _whl:
+            dist = _whl.group(1).split("-", 1)[0].strip().lower().replace("_", "-")
+            if dist:
+                return dist
         return None  # vcs / url / local path -> let it pass through
     # strip extras and any version/marker tail
     name = re.split(r"[<>=!~\[\s;@]", token, 1)[0].strip()
@@ -119,6 +145,22 @@ def _version_pin(token):
     """Return the pinned version for a `pkg==X` token, else None."""
     m = re.search(r"==\s*([0-9][0-9A-Za-z.\-]*)", token)
     return m.group(1) if m else None
+
+
+def _classify_flag_target(spec):
+    """Classify the value that rides on -e/--editable or -P/--upgrade-package.
+
+    Returns ("drop", version_or_None) when the value names a protected package
+    (so the flag+value pair must be dropped, closing the same bypass the bare
+    positional spec closes) or ("keep", None) when it is safe to forward.
+    transformers is reported as "drop" with any pinned version so its sidecar
+    marker is still recorded, mirroring the bare-spec handling in main()."""
+    name = _canon(spec)
+    if name == "transformers":
+        return "drop", _version_pin(spec)
+    if name is not None and (name in _KEEP or name.startswith(_KEEP_PREFIX)):
+        return "drop", None
+    return "keep", None
 
 
 def _parse_include(stripped):
@@ -295,6 +337,23 @@ def main():
                 _c_path, _c_rec, _c_drp = _filter_requirements_file(tok)
                 keep_args.append(_c_path)
                 dropped.extend(_c_drp)
+            elif prev_flag in _EDITABLE_FLAGS or prev_flag in _UPGRADE_PKG_FLAGS:
+                # The flag was held back (not appended yet): its value is an
+                # install target (-e path/url/vcs) or an upgrade selector
+                # (-P name), both filtered through _KEEP. Dropping a protected
+                # value drops the flag with it, so pip/uv is never left a
+                # dangling `-e`/`-P` that fails the cell or refreshes a baked
+                # package. A kept editable target sets has_target; -P does not.
+                _action, _ver = _classify_flag_target(tok)
+                if _action == "drop":
+                    if _ver and not recorded:
+                        recorded = _ver
+                    dropped.append(prev_flag + " " + tok)
+                else:
+                    keep_args.append(prev_flag)
+                    keep_args.append(tok)
+                    if prev_flag in _EDITABLE_FLAGS:
+                        has_target = True
             else:
                 keep_args.append(tok)
             skip_next = False
@@ -319,11 +378,30 @@ def main():
                     _c_path, _c_rec, _c_drp = _filter_requirements_file(_val)
                     keep_args.append(_flag + "=" + _c_path)
                     dropped.extend(_c_drp)
+                elif _flag in _EDITABLE_FLAGS or _flag in _UPGRADE_PKG_FLAGS:
+                    # --editable=<target> / --upgrade-package=<name>: filter the
+                    # inline value through _KEEP just like the space-separated
+                    # form, dropping the whole token for a protected package.
+                    _action, _ver = _classify_flag_target(_val)
+                    if _action == "drop":
+                        if _ver and not recorded:
+                            recorded = _ver
+                        dropped.append(tok)
+                    else:
+                        keep_args.append(tok)
+                        if _flag in _EDITABLE_FLAGS:
+                            has_target = True
                 else:
                     keep_args.append(tok)  # option with inline value, not a target
                 continue
         if tok in _VALUE_FLAGS:
-            keep_args.append(tok)
+            # -e/--editable and -P/--upgrade-package carry a value that is a
+            # potential install target, so hold the flag back and let the
+            # skip_next handler emit or drop the flag+value pair together. Every
+            # other value-flag keeps its flag verbatim; only its value (an
+            # index-url / find-links / target dir / etc.) is an opaque option.
+            if tok not in _EDITABLE_FLAGS and tok not in _UPGRADE_PKG_FLAGS:
+                keep_args.append(tok)
             skip_next = True
             prev_flag = tok
             continue

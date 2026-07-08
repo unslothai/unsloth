@@ -104,10 +104,11 @@ RUN apt-get update \
 # probing would land on cpu or cu126 wheels depending on which host built
 # the image. cu128 on BOTH arches, mirroring the base venv: cu130 wheels
 # would silently lift the arm64 driver floor to 580+ while the base venv
-# keeps the documented 570+ floor. DGX Spark / GB10 (sm_121) support comes
-# from the same NVRTC cu13 swap the base image applies to its venv --
-# repeated below for the Studio venv's own bundled libnvrtc (the base's
-# arm64 layer already installed cuda-nvrtc-13-0, so the cu13 .so exists).
+# keeps the documented 570+ floor. Blackwell JIT (amd64 sm_103 B300/GB300 and
+# arm64 sm_121 DGX Spark / GB10) support comes from the same NVRTC cu13 swap
+# the base image applies to its venv -- repeated below for the Studio venv's
+# own bundled libnvrtc, on BOTH arches (the base cu13 layer installed
+# cuda-nvrtc-13-0 on both, so the cu13 .so exists here regardless of arch).
 #
 # UNSLOTH_PYTHON=3.12 pins the Studio venv to the SAME Python minor as the base
 # venv (install.sh defaults Linux to 3.13). Matching minors makes the two venvs'
@@ -157,14 +158,20 @@ RUN set -eux \
  && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" \
           "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/node_modules" \
           /root/.cache \
- && if [ "${TARGETARCH:-amd64}" = "arm64" ]; then \
-        for NVRTC_DIR in "${UNSLOTH_STUDIO_HOME}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do \
-            if [ -f "${NVRTC_DIR}/libnvrtc.so.12" ]; then \
-                mv "${NVRTC_DIR}/libnvrtc.so.12" "${NVRTC_DIR}/libnvrtc.so.12.cu128.orig"; \
-                ln -s /usr/local/cuda-13.0/lib64/libnvrtc.so.13 "${NVRTC_DIR}/libnvrtc.so.12"; \
-            fi; \
-        done; \
-    fi \
+    # Swap the Studio venv's OWN bundled cu12.8 libnvrtc for cu13, mirroring the
+    # base venv swap. Run on BOTH arches, not arm64 only: amd64 sm_103 (B300 /
+    # GB300) needs cu13 NVRTC exactly as arm64 sm_121 (DGX Spark / GB10) does,
+    # and the CUDA dedup below never touches cuda_nvrtc, so an amd64 Studio venv
+    # would otherwise keep cu12.8 NVRTC and its jiterator/NVRTC JIT paths fail on
+    # compute_103. The base cu13 layer installs cuda-nvrtc-13-0 on both arches,
+    # so /usr/local/cuda-13.0/lib64/libnvrtc.so.13 is present here regardless of
+    # TARGETARCH.
+ && for NVRTC_DIR in "${UNSLOTH_STUDIO_HOME}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do \
+        if [ -f "${NVRTC_DIR}/libnvrtc.so.12" ]; then \
+            mv "${NVRTC_DIR}/libnvrtc.so.12" "${NVRTC_DIR}/libnvrtc.so.12.cu128.orig"; \
+            ln -s /usr/local/cuda-13.0/lib64/libnvrtc.so.13 "${NVRTC_DIR}/libnvrtc.so.12"; \
+        fi; \
+    done \
  && BASE_NV=/opt/unsloth-venv/lib/python3.12/site-packages/nvidia \
  && STU_NV="${UNSLOTH_STUDIO_HOME}/unsloth_studio/lib/python3.12/site-packages/nvidia" \
  && if [ ! -d "${STU_NV}" ] || [ ! -d "${BASE_NV}" ]; then \
