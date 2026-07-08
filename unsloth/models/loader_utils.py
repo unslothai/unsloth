@@ -362,6 +362,121 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
         pass
 
 
+_FP8_DTYPES = tuple(
+    dtype for dtype in (getattr(torch, "float8_e4m3fn", None), getattr(torch, "float8_e5m2", None))
+    if dtype is not None
+)
+
+
+def _fp8_block_size_from_config(model):
+    """Return the [block_out, block_in] block size of an fp8 checkpoint, or None if not block-fp8."""
+    config = getattr(model, "config", None)
+    quant = getattr(config, "quantization_config", None)
+    if quant is None:
+        return None
+    if hasattr(quant, "to_dict"):
+        quant = quant.to_dict()
+    if not isinstance(quant, dict):
+        return None
+    if quant.get("quant_method") != "fp8":
+        return None
+    block = quant.get("weight_block_size")
+    if not block:
+        return None
+    if len(block) == 1:
+        block = [block[0], block[0]]
+    return [int(block[0]), int(block[1])]
+
+
+def _load_fp8_weight_map(model_name, local_files_only, token):
+    """Return the safetensors index weight_map for a checkpoint, or None if there is no index."""
+    index_file = "model.safetensors.index.json"
+    if os.path.isdir(model_name):
+        index_path = os.path.join(model_name, index_file)
+        if not os.path.exists(index_path):
+            return None
+    else:
+        from huggingface_hub import hf_hub_download
+        try:
+            index_path = hf_hub_download(
+                model_name, index_file,
+                local_files_only = local_files_only, token = token,
+            )
+        except Exception:
+            return None
+    import json
+    with open(index_path, "r") as f:
+        return json.load(f).get("weight_map", None)
+
+
+def _resolve_fp8_shard(model_name, shard, local_files_only, token):
+    """Resolve a checkpoint shard filename to a local path (repo id or local dir)."""
+    if os.path.isdir(model_name):
+        return os.path.join(model_name, shard)
+    from huggingface_hub import hf_hub_download
+    return hf_hub_download(model_name, shard, local_files_only = local_files_only, token = token)
+
+
+def _restore_dropped_fp8_scales(model, model_name, *, local_files_only = False, token = None):
+    """Re-apply block-fp8 `weight_scale_inv` tensors that transformers dropped on load.
+
+    On some block-scale fp8 checkpoints (e.g. Qwen3.6-27B-FP8, issue #6200) transformers fails to
+    convert a Linear (such as `mlp.gate_proj`) to an fp8 module, loading the raw quantized values
+    into a plain bf16 weight and discarding its `weight_scale_inv` as an unexpected key. The weight
+    is then used un-scaled, producing a garbage model. For every checkpoint scale whose live weight
+    is not fp8, dequantize the orphaned weight in place. Modules that were converted correctly keep
+    an fp8 weight and are skipped, so a healthy checkpoint is a no-op. Returns (restored, skipped).
+    """
+    try:
+        block = _fp8_block_size_from_config(model)
+        if block is None or not _FP8_DTYPES:
+            return (0, 0)
+        weight_map = _load_fp8_weight_map(model_name, local_files_only, token)
+        if not weight_map:
+            return (0, 0)
+
+        scale_keys = {k: v for k, v in weight_map.items() if k.endswith(".weight_scale_inv")}
+        if not scale_keys:
+            return (0, 0)
+
+        bs0, bs1 = block
+        restored = 0
+        skipped = 0
+        shard_cache = {}
+        for scale_key, shard in scale_keys.items():
+            module_name = scale_key[: -len(".weight_scale_inv")]
+            try:
+                module = model.get_submodule(module_name)
+            except AttributeError:
+                continue
+            weight = getattr(module, "weight", None)
+            if not isinstance(weight, torch.Tensor) or weight.device.type == "meta":
+                continue
+            if weight.dtype in _FP8_DTYPES:
+                # Correctly converted fp8 module: the scale is handled by the fp8 path already.
+                skipped += 1
+                continue
+
+            if shard not in shard_cache:
+                from safetensors import safe_open
+                shard_path = _resolve_fp8_shard(model_name, shard, local_files_only, token)
+                shard_cache[shard] = safe_open(shard_path, framework = "pt")
+            scale = shard_cache[shard].get_tensor(scale_key).to(torch.float32)
+
+            out_features, in_features = weight.shape
+            scale_expanded = scale.repeat_interleave(bs0, dim = 0).repeat_interleave(bs1, dim = 1)
+            scale_expanded = scale_expanded[:out_features, :in_features].to(weight.device)
+            with torch.no_grad():
+                module.weight.data = (weight.to(torch.float32) * scale_expanded).to(weight.dtype)
+            restored += 1
+
+        if restored > 0:
+            print(f"Unsloth: Restored {restored} dropped FP8 weight_scale_inv tensor(s) on load")
+        return (restored, skipped)
+    except Exception:
+        return (0, 0)
+
+
 def check_and_disable_bitsandbytes_loading(
     model_config,
     load_in_4bit = True,
