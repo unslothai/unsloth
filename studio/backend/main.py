@@ -618,7 +618,8 @@ _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
 
 
 # /content is Colab's working directory — more reliable than env vars, which
-# aren't always set depending on Colab runtime version.
+# aren't always set depending on Colab runtime version. Kaggle-backed Colab
+# sessions use /kaggle/working and KAGGLE_* env vars instead.
 import importlib.util as _importlib_util
 
 _IS_COLAB = os.path.isdir("/content") and (
@@ -626,16 +627,24 @@ _IS_COLAB = os.path.isdir("/content") and (
     or bool(os.environ.get("COLAB_JUPYTER_IP"))
     or _importlib_util.find_spec("google.colab") is not None
 )
+_IS_KAGGLE = os.path.isdir("/kaggle/working") or any(
+    key.startswith("KAGGLE_") for key in os.environ
+)
+_IS_HOSTED_NOTEBOOK = (
+    _IS_COLAB
+    or _IS_KAGGLE
+    or os.environ.get("UNSLOTH_STUDIO_HOSTED_NOTEBOOK") == "1"
+)
 
 
 def _build_csp(script_nonce: "str | None" = None) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
-    # Colab parent frames span multi-level *.prod.colab.dev subdomains (CSP
-    # wildcards match one level only) and null-origin iframes; use '*' since
-    # Colab is already a sandboxed single-user environment.
-    frame_ancestors = "*" if _IS_COLAB else "'none'"
+    # Hosted notebook parent frames span Colab/Kaggle hosts, multi-level proxy
+    # or tunnel subdomains, and null-origin iframes; use '*' since these are
+    # already single-user notebook environments.
+    frame_ancestors = "*" if _IS_HOSTED_NOTEBOOK else "'none'"
 
     # In Colab, the kernel/output scaffolding injects scripts and fetch/WS from
     # *.prod.colab.dev and *.googleusercontent.com, so widen script-src and
@@ -697,9 +706,10 @@ class SecurityHeadersMiddleware:
                 if nonce is not None:
                     del headers[_CSP_SCRIPT_NONCE_HEADER]
                 headers.setdefault("Content-Security-Policy", _build_csp(nonce))
-                # Omit X-Frame-Options in Colab: CSP frame-ancestors handles it, and
-                # DENY would block serve_kernel_port_as_iframe regardless of CSP.
-                if not _IS_COLAB and path != _ARTIFACT_PREVIEW_FRAME_PATH:
+                # Omit X-Frame-Options in hosted notebooks: CSP frame-ancestors
+                # handles it, and DENY would block inline Colab/Kaggle/tunnel
+                # iframes regardless of CSP.
+                if not _IS_HOSTED_NOTEBOOK and path != _ARTIFACT_PREVIEW_FRAME_PATH:
                     headers.setdefault("X-Frame-Options", "DENY")
                 headers.setdefault("X-Content-Type-Options", "nosniff")
                 headers.setdefault("Referrer-Policy", "no-referrer")

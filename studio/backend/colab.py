@@ -2,10 +2,15 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Colab helpers for Unsloth Studio. Uses Colab's built-in proxy.
+Notebook helpers for Unsloth Studio.
+
+Colab uses its built-in proxy when available. Kaggle-backed Colab sessions do
+not expose that proxy to the browser, so they need a tunnel URL for the inline
+Studio frame.
 """
 
 from pathlib import Path
+import os
 import sys
 
 # Seed platform._sys_version_cache before attrs->rich->structlog->platform crash on conda Python.
@@ -19,6 +24,49 @@ import _platform_compat  # noqa: F401
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+
+def _is_kaggle_environment() -> bool:
+    return Path("/kaggle/working").exists() or any(
+        key.startswith("KAGGLE_") for key in os.environ
+    )
+
+
+def _wait_for_public_url(url: str, timeout: float = 45.0) -> bool:
+    """Wait for a public tunnel URL before embedding it.
+
+    cloudflared can print the trycloudflare URL a few seconds before DNS and
+    edge routing are ready. If an iframe navigates during that window, the
+    browser can keep showing the initial DNS error even though opening the URL
+    later works.
+    """
+    if not url.startswith("https://"):
+        return True
+
+    import time
+    import urllib.request
+
+    health_url = url.rstrip("/") + "/api/health"
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(
+                health_url,
+                headers = {"User-Agent": "unsloth-studio-notebook/1"},
+            )
+            with urllib.request.urlopen(req, timeout = 5) as resp:
+                if 200 <= getattr(resp, "status", 200) < 500:
+                    return True
+        except Exception as exc:
+            last_error = exc
+        time.sleep(1)
+
+    logger.warning(
+        f"Notebook tunnel URL did not become reachable before embedding; "
+        f"rendering iframe anyway. Last error: {last_error}"
+    )
+    return False
 
 
 def get_colab_url(port: int = 8888) -> str:
@@ -118,14 +166,19 @@ def _bootstrap_password_pending() -> bool:
         return True
 
 
-def start_cloudflare_tunnel(port: int) -> "str | None":
+def start_cloudflare_tunnel(
+    port: int,
+    *,
+    allow_bootstrap_password: bool = False,
+) -> "str | None":
     """Open a shareable Cloudflare quick tunnel to localhost:*port*, or None.
 
     run_server suppresses the tunnel on Colab by design, so we start it directly.
     Refused while the bootstrap password is pending; any failure collapses to None
     and the Colab proxy still works.
     """
-    if _bootstrap_password_pending():
+    bootstrap_pending = _bootstrap_password_pending()
+    if bootstrap_pending and not allow_bootstrap_password:
         logger.warning(
             "Cloudflare link not started: the admin account still has its temporary "
             "bootstrap password, which is exposed to anyone who can load the page. "
@@ -133,6 +186,12 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
             "start(cloudflare=True) to get the shareable link."
         )
         return None
+    if bootstrap_pending:
+        logger.warning(
+            "Starting the tunnel before the admin password is changed because this "
+            "Kaggle-backed notebook has no usable Colab proxy. Keep the generated "
+            "trycloudflare.com URL private and change the admin password after login."
+        )
     try:
         from cloudflare_tunnel import start_studio_tunnel
     except Exception as e:
@@ -213,7 +272,7 @@ def _shareable_link_html(cloudflare_url: str) -> str:
             Open Unsloth Studio
         </a>
         <p style="color: #333333; margin: 12px 0 0 0; font-size: 14px; font-weight: bold;">
-            This Cloudflare HTTPS link works from any device — share it with anyone. The Colab view below only works in this tab.
+            This Cloudflare HTTPS link works from any device. Keep it private until the admin password is changed. The notebook view below only works in this tab.
         </p>
         <p style="color: #333333; margin: 16px 0 0 0; font-size: 13px; font-family: monospace; font-weight: bold;">
             🔗 {cloudflare_url}
@@ -225,7 +284,11 @@ def _shareable_link_html(cloudflare_url: str) -> str:
 def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
     """Render the Studio header + iframe for *port*, with a shareable-link card above
     when *cloudflare_url* is set. Falls back to serve_kernel_port_as_iframe."""
+    if cloudflare_url:
+        _wait_for_public_url(cloudflare_url)
     url = get_colab_url(port)
+    if cloudflare_url and (_is_kaggle_environment() or url.startswith("http://localhost:")):
+        url = cloudflare_url
     logger.info(f"🌐 Unsloth Studio URL: {url}")
     if cloudflare_url:
         logger.info(f"🔗 Shareable Cloudflare link: {cloudflare_url}")
@@ -282,7 +345,8 @@ def start(port: int = 8888, *, cloudflare: bool = False):
         port: Port to bind/serve on.
         cloudflare: Opt in to a shareable Cloudflare HTTPS link reachable from any
             device (default OFF). It exposes Studio's login page beyond Colab, so it
-            stays an explicit opt-in; the default shows only the in-tab proxy iframe.
+            stays an explicit opt-in on Colab. Kaggle-backed Colab sessions enable it
+            automatically because the Colab proxy URL is not reachable there.
 
     Usage:
         start()                    # Colab-proxy iframe only (default)
@@ -291,6 +355,10 @@ def start(port: int = 8888, *, cloudflare: bool = False):
     import time
 
     logger.info("🦥 Starting Unsloth Studio...")
+    is_kaggle = _is_kaggle_environment()
+    effective_cloudflare = cloudflare or is_kaggle
+    if is_kaggle:
+        os.environ.setdefault("UNSLOTH_STUDIO_HOSTED_NOTEBOOK", "1")
 
     # Fast path: Studio already running (cell re-run). Re-launching would collide on
     # the port, so just re-show the link and iframe.
@@ -298,7 +366,14 @@ def start(port: int = 8888, *, cloudflare: bool = False):
         logger.info(f"   Studio is already running on port {port} — reusing existing server.")
         # try/finally: tear the tunnel down even if interrupted mid-start/render.
         try:
-            cf_url = start_cloudflare_tunnel(port) if cloudflare else None
+            cf_url = (
+                start_cloudflare_tunnel(
+                    port,
+                    allow_bootstrap_password = is_kaggle,
+                )
+                if effective_cloudflare
+                else None
+            )
             _publish_cloudflare_url(cf_url)
             _show_and_embed(port, cloudflare_url = cf_url)
             for _ in range(10000):
@@ -368,7 +443,14 @@ def start(port: int = 8888, *, cloudflare: bool = False):
     # Open the tunnel now the server is healthy, publish its URL for /api/health, and
     # tear it down on interrupt (try/finally) rather than orphan the process.
     try:
-        cf_url = start_cloudflare_tunnel(actual_port) if cloudflare else None
+        cf_url = (
+            start_cloudflare_tunnel(
+                actual_port,
+                allow_bootstrap_password = is_kaggle,
+            )
+            if effective_cloudflare
+            else None
+        )
         _publish_cloudflare_url(cf_url)
         _show_and_embed(actual_port, cloudflare_url = cf_url)
 

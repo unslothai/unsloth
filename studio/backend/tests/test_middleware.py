@@ -259,6 +259,13 @@ class TestSecurityHeadersMiddleware:
         assert "geolocation=()" in permissions_policy
         assert r.headers["server"] == "unsloth-studio"
 
+    def test_hosted_notebook_omits_x_frame_options(self, main_module, monkeypatch):
+        monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
+        app = _make_csp_app(main_module)
+        c = TestClient(app)
+        r = c.get("/plain")
+        assert "x-frame-options" not in {key.lower() for key in r.headers.keys()}
+
     def test_internal_nonce_header_is_spliced_into_csp_and_stripped(self, main_module):
         nonce = "test-nonce-abc"
         app = _make_csp_app(main_module, attach_nonce = nonce)
@@ -275,6 +282,11 @@ class TestSecurityHeadersMiddleware:
         assert "'unsafe-inline'" not in plain.split("script-src", 1)[1].split(";", 1)[0]
         nonced = main_module._build_csp("XYZ")
         assert "script-src 'self' 'nonce-XYZ';" in nonced
+
+    def test_hosted_notebook_csp_allows_frame_ancestors(self, main_module, monkeypatch):
+        monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
+        csp = main_module._build_csp()
+        assert "frame-ancestors *" in csp
 
     def test_img_and_media_allow_https_sources(self, main_module):
         # Model-card READMEs and citation favicons pull images/media from many

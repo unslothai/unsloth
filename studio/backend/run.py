@@ -1158,7 +1158,7 @@ def run_server(
 
     import_started = time.perf_counter()
 
-    from main import app, setup_frontend, _IS_COLAB
+    from main import app, setup_frontend, _IS_COLAB, _IS_HOSTED_NOTEBOOK
 
     logger.info(
         "Imported FastAPI app in %.1fms",
@@ -1271,11 +1271,11 @@ def run_server(
         access_log = False,
         server_header = False,
     )
-    # Colab only: trust X-Forwarded-* from Colab's reverse proxy so the app sees
-    # the real https origin. forwarded_allow_ips="*" is safe in Colab's
-    # single-user sandbox but too lax for local/standalone, so leave uvicorn's
-    # loopback-only default elsewhere.
-    if _IS_COLAB:
+    # Hosted notebooks only: trust X-Forwarded-* from the notebook proxy or
+    # tunnel so the app sees the real https origin. forwarded_allow_ips="*" is
+    # safe in single-user notebook sandboxes but too lax for local/standalone,
+    # so leave uvicorn's loopback-only default elsewhere.
+    if _IS_HOSTED_NOTEBOOK:
         config_kwargs["proxy_headers"] = True
         config_kwargs["forwarded_allow_ips"] = "*"
     config = uvicorn.Config(app, **config_kwargs)
