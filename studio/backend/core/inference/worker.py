@@ -1003,6 +1003,13 @@ def run_inference_process(
 
         ensure_real_packages("unsloth_zoo", "unsloth")
 
+        # Stub torchao on Windows ROCm before importing transformers / unsloth
+        # (RCCL absent). No-op off Windows ROCm. Must run before the import below,
+        # which pulls in transformers transitively via InferenceBackend.
+        from core._torchao_stub import install_torchao_windows_rocm_stub
+
+        install_torchao_windows_rocm_stub()
+
         from core.inference.inference import InferenceBackend
 
         import transformers
