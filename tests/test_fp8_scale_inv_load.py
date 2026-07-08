@@ -1430,9 +1430,7 @@ def test_restores_scale_when_placeholder_is_meta_but_weight_is_live():
     assert restored == 1
     assert skipped == 0
     assert model.fp8.weight_scale_inv.device.type == "cpu"
-    assert torch.equal(
-        model.fp8.weight_scale_inv, torch.tensor([1.5], dtype = torch.float16)
-    )
+    assert torch.equal(model.fp8.weight_scale_inv, torch.tensor([1.5], dtype = torch.float16))
 
 
 def test_restores_static_activation_scale():
@@ -1454,6 +1452,4 @@ def test_restores_static_activation_scale():
     assert restored == 1
     assert skipped == 0
     assert hasattr(model.fp8, "activation_scale")
-    assert torch.equal(
-        model.fp8.activation_scale, torch.tensor([0.25], dtype = torch.float16)
-    )
+    assert torch.equal(model.fp8.activation_scale, torch.tensor([0.25], dtype = torch.float16))
