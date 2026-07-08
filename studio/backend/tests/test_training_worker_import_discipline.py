@@ -45,6 +45,18 @@ try:
 except Exception:
     pass  # torch may be absent in a no-torch shard; the invariant below still applies
 
+# worker.py: from .training import is_apple_silicon_training_platform, should_use_mlx_training_backend
+# (the MLX-dispatch preflight; must also stay clear of transformers). Guarded because it may pull
+# unsloth/trl, absent in a minimal shard -- but a partial import that leaked transformers would still
+# be caught by the assertion below.
+try:
+    from core.training.training import (  # noqa: F401
+        is_apple_silicon_training_platform as _is_apple,
+        should_use_mlx_training_backend as _use_mlx,
+    )
+except Exception:
+    pass
+
 leaked_tf = sorted(m for m in sys.modules if m == "transformers" or m.startswith("transformers."))
 leaked_zoo = sorted(m for m in sys.modules if m == "unsloth_zoo" or m.startswith("unsloth_zoo."))
 assert not leaked_tf, f"transformers imported during worker preflight (before sidecar activation): {leaked_tf}"
