@@ -324,13 +324,14 @@ def torchao_block_matmul(
     block_size: tuple[int, int],
     output_dtype: torch.dtype = torch.bfloat16,
 ):
-    out = torchao_blockwise_gemm(
-        act_q.contiguous(),
-        act_scale.contiguous(),
-        weight_q.contiguous(),
-        weight_scale.contiguous(),
-        block_size = block_size[1],
-    )
+    with _fp8_triton_device_context(act_q):
+        out = torchao_blockwise_gemm(
+            act_q.contiguous(),
+            act_scale.contiguous(),
+            weight_q.contiguous(),
+            weight_scale.contiguous(),
+            block_size = block_size[1],
+        )
     return out.to(output_dtype)
 
 
