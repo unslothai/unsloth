@@ -240,6 +240,37 @@ def test_dflash_does_not_engage_in_forced_mtp_mode(monkeypatch):
     assert "draft-dflash" not in flags
 
 
+def test_dflash_binary_missing_falls_through_to_mtp(monkeypatch):
+    # A model with an embedded MTP head AND a dflash sibling, on a binary that
+    # lacks draft-dflash, must fall back to its MTP head instead of regressing
+    # to no speculative decoding just because the dflash file is present.
+    caps = {
+        "mtp_token": "mtp",
+        "supports_mtp": True,
+        "dflash_token": None,
+        "supports_dflash": False,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    backend = LlamaCppBackend()
+    backend._nextn_predict_layers = 1  # embedded MTP head (Qwen-style)
+    monkeypatch.setattr(
+        LlamaCppBackend, "probe_server_capabilities", lambda self, binary = None: caps
+    )
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/Qwen3-4B-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dflash_draft_path = "/d/dflash.gguf",
+    )
+    assert "draft-dflash" not in flags
+    assert backend._speculative_type != "default"
+    assert backend._spec_fallback_reason != "binary_no_dflash"
+
+
 def test_dflash_does_not_engage_for_vision_loads(monkeypatch):
     # DFlash multimodal drafting is unsupported upstream: a dflash sibling beside
     # a VLM must not emit --model-draft (it would abort alongside --mmproj).

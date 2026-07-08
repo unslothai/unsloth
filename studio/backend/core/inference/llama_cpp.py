@@ -7339,14 +7339,14 @@ class LlamaCppBackend:
             caps = self.probe_server_capabilities(binary)
             dflash_token = caps.get("dflash_token") if caps else None
             if not dflash_token:
+                # Binary predates draft-dflash. Return False without touching
+                # flags/state so the caller can fall through to the MTP/ngram
+                # resolver (an MTP-capable model must not regress to no
+                # speculation just because a dflash sibling is present).
                 logger.warning(
                     "Requested DFlash speculative decoding but llama-server "
-                    "lacks --spec-type draft-dflash; run `unsloth studio "
-                    "update`. Loading without speculative decoding."
+                    "lacks --spec-type draft-dflash; run `unsloth studio update`."
                 )
-                flags.append("--spec-default")
-                self._speculative_type = "default"
-                self._spec_fallback_reason = "binary_no_dflash"
                 return False
             if spec_draft_n_max is not None:
                 draft_n_max = int(spec_draft_n_max)
@@ -7397,8 +7397,17 @@ class LlamaCppBackend:
         # whenever a drafter resolved; there is no forced "dflash" UI mode, so a
         # drafter sibling is the only trigger (like Gemma's separate MTP drafter).
         if is_dflash_model and effective_mode == "auto":
-            _emit_dflash()
-            return flags
+            if _emit_dflash():
+                return flags
+            # DFlash requested but this binary can't run it. Only default off when
+            # there's no MTP fallback; otherwise fall through to the Auto resolver
+            # below so an MTP-capable model (embedded head, Gemma drafter) still
+            # gets speculation instead of regressing to none.
+            if not is_mtp_model:
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                self._spec_fallback_reason = "binary_no_dflash"
+                return flags
         if effective_mode == "ngram-simple":
             flags.extend(["--spec-type", "ngram-simple"])
             self._speculative_type = "ngram-simple"
