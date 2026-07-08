@@ -77,6 +77,19 @@ def probe_torch_wheel_env(*, timeout: int | None = None) -> dict[str, str] | Non
     return env
 
 
+# torch 2.11 has no native prebuilt wheels for flash-attn / causal-conv1d / mamba
+# yet, but their torch 2.10 CUDA wheels load and pass the projects' own test suites
+# on torch 2.11 (verified on B200: FA2 fwd/bwd, causal-conv1d, and mamba selective
+# scan all match reference). Reuse the torch 2.10 wheels on torch 2.11 so a 2.11
+# install still gets these prebuilt accelerators instead of building from source.
+_PREBUILT_WHEEL_TORCH_MM = {"2.11": "2.10"}
+
+
+def prebuilt_wheel_torch_mm(torch_mm: str) -> str:
+    """Map a torch major.minor to the one whose prebuilt accelerator wheels to use."""
+    return _PREBUILT_WHEEL_TORCH_MM.get(torch_mm, torch_mm)
+
+
 def direct_wheel_url(
     *,
     filename_prefix: str,
@@ -90,7 +103,7 @@ def direct_wheel_url(
 
     filename = (
         f"{filename_prefix}-{package_version}"
-        f"+cu{env['cuda_major']}torch{env['torch_mm']}"
+        f"+cu{env['cuda_major']}torch{prebuilt_wheel_torch_mm(env['torch_mm'])}"
         f"cxx11abi{env['cxx11abi']}-{env['python_tag']}-{env['python_tag']}"
         f"-{env['platform_tag']}.whl"
     )
@@ -112,7 +125,7 @@ def flash_attn_package_version(torch_mm: str) -> str | None:
 def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     if env is None:
         return None
-    package_version = flash_attn_package_version(env["torch_mm"])
+    package_version = flash_attn_package_version(prebuilt_wheel_torch_mm(env["torch_mm"]))
     if package_version is None:
         return None
     return direct_wheel_url(

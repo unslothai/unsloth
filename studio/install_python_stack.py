@@ -102,16 +102,17 @@ _PYTORCH_WHL_BASE = (
     os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
 ).rstrip("/")
 
-# CUDA torch repair specs (see _ensure_cuda_torch). torchvision/torchaudio are
-# pinned to the torch<2.11 family rather than left bare: the install uses an
-# exclusive --index-url (no PyPI fallback), so a bare name could resolve a
-# torchvision built against a different torch major (e.g. 0.27 for torch 2.12)
-# and fail at runtime with an ABI mismatch. Same bounds as the _default ROCm
-# spec above, which targets the same torch family.
+# CUDA torch repair specs (see _ensure_cuda_torch). torch 2.11 is allowed: its
+# torchao 0.17 cpp kernels load cleanly (0.16 crashes on cu130), and the flash-attn
+# / causal-conv1d / mamba torch2.10 wheels load and pass their upstream suites on
+# 2.11 (see wheel_utils._PREBUILT_WHEEL_TORCH_MM). torchvision/torchaudio are pinned
+# (not bare) because the install uses an exclusive --index-url (no PyPI fallback), so
+# a bare name could resolve one built against a different torch major (e.g. 0.27 for
+# torch 2.12) and fail at runtime with an ABI mismatch.
 _CUDA_TORCH_PKG_SPEC: tuple[str, str, str] = (
-    "torch>=2.4,<2.11.0",
-    "torchvision>=0.19,<0.26.0",
-    "torchaudio>=2.4,<2.11.0",
+    "torch>=2.4,<2.12.0",
+    "torchvision>=0.19,<0.27.0",
+    "torchaudio>=2.4,<2.12.0",
 )
 
 # torchao's cpp extensions are pinned to ONE torch release AND CUDA major. A torch
@@ -122,7 +123,7 @@ _CUDA_TORCH_PKG_SPEC: tuple[str, str, str] = (
 #   2.10.x, CUDA<=12 -> 0.16.0 (cpp built for 2.10, loads via the CUDA-12 wheel)
 #   2.10.x, CUDA>=13 -> 0.17.0 (cu130: 0.16.0's CUDA-12 cpp crashes on load; 0.17.0
 #                       targets torch 2.11 so its cpp is cleanly skipped, not crashed)
-#   2.11.x           -> 0.17.0 (reachable via ROCm rocm7.2)
+#   2.11.x           -> 0.17.0 (reachable via CUDA or ROCm rocm7.2)
 # Unknown/older torch keeps the conservative default.
 _TORCHAO_DEFAULT_SPEC = "torchao==0.14.0"
 _TORCHAO_TORCH_210_SPEC = "torchao==0.16.0"

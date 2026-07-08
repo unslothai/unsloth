@@ -13,6 +13,35 @@ sys.path.insert(0, str(STUDIO_DIR))
 sys.path.insert(0, str(STUDIO_DIR / "backend"))
 
 import install_python_stack as ips
+from utils import wheel_utils
+
+
+class TestPrebuiltWheelTorchMapping:
+    def test_torch_211_maps_to_torch210(self):
+        assert wheel_utils.prebuilt_wheel_torch_mm("2.11") == "2.10"
+
+    def test_other_versions_pass_through(self):
+        for torch_mm in ("2.9", "2.10", "2.12"):
+            assert wheel_utils.prebuilt_wheel_torch_mm(torch_mm) == torch_mm
+
+    def test_direct_wheel_url_reuses_torch210_on_211(self):
+        # causal-conv1d / mamba go through direct_wheel_url; torch 2.11 reuses the
+        # torch2.10 wheel filename just like flash-attn does.
+        url = wheel_utils.direct_wheel_url(
+            filename_prefix = "causal_conv1d",
+            package_version = "1.6.1",
+            release_tag = "v1.6.1.post4",
+            release_base_url = "https://example.test/download",
+            env = {
+                "python_tag": "cp313",
+                "torch_mm": "2.11",
+                "cuda_major": "13",
+                "cxx11abi": "TRUE",
+                "platform_tag": "linux_x86_64",
+            },
+        )
+        assert url is not None
+        assert "causal_conv1d-1.6.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" in url
 
 
 class TestFlashAttnWheelSelection:
@@ -22,8 +51,23 @@ class TestFlashAttnWheelSelection:
     def test_torch_29_maps_to_v283(self):
         assert ips._select_flash_attn_version("2.9") == "2.8.3"
 
-    def test_unsupported_torch_has_no_wheel_mapping(self):
+    def test_torch_211_has_no_native_version_entry(self):
+        # The raw version table has no torch2.11-tagged wheel; the URL builder
+        # reuses the torch2.10 wheel instead (see test_torch_211_reuses_torch210_wheel).
         assert ips._select_flash_attn_version("2.11") is None
+
+    def test_torch_211_reuses_torch210_wheel(self):
+        url = ips._build_flash_attn_wheel_url(
+            {
+                "python_tag": "cp313",
+                "torch_mm": "2.11",
+                "cuda_major": "13",
+                "cxx11abi": "TRUE",
+                "platform_tag": "linux_x86_64",
+            }
+        )
+        assert url is not None
+        assert "flash_attn-2.8.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" in url
 
     def test_exact_wheel_url_uses_full_env_tuple(self):
         url = ips._build_flash_attn_wheel_url(
