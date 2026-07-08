@@ -22,12 +22,14 @@ backends:
                 Blackwell's (sm_100+) FP4 tensor cores. ~4x smaller and the lowest-VRAM
                 option, but a steeper quality cost than fp8.
 
-All keep normalisations / embeddings full precision and are a memory-vs-quality tradeoff,
-not free, so all are off by default. They pair especially well with streamed (group)
-offload, where the text encoder stays resident -- this is where the companion footprint
-dominates. Quantify the quality cost per model with the quality harness
-(scripts/diffusion_quality.py). torch / diffusers / torchao are imported lazily so the
-module stays importable in a no-torch runtime.
+All keep normalisations / embeddings full precision and are a memory-vs-quality tradeoff.
+``auto`` (the loader default) walks ``select_te_quant_scheme``'s per-GPU ladder and picks the
+best accurate scheme (fp8_dynamic / int8 / layerwise fp8), falling back to dense when nothing
+qualifies; ``none``/``off`` keeps the encoder dense, and an explicit scheme forces it. They pair
+especially well with streamed (group) offload, where the text encoder stays resident -- this is
+where the companion footprint dominates. Quantify the quality cost per model with the quality
+harness (scripts/diffusion_quality.py) and the hidden-state gate (scripts/diffusion_quant_builder.py).
+torch / diffusers / torchao are imported lazily so the module stays importable in a no-torch runtime.
 """
 
 from __future__ import annotations
@@ -38,6 +40,9 @@ TE_QUANT_FP8 = "fp8"
 TE_QUANT_NVFP4 = "nvfp4"
 TE_QUANT_INT8 = "int8"
 TE_QUANT_FP8_DYNAMIC = "fp8_dynamic"
+TE_QUANT_AUTO = "auto"
+# Concrete schemes (excludes "auto"): "auto" resolves to one of these via select_te_quant_scheme,
+# and these are the values the casters dispatch on.
 TE_QUANT_MODES = (TE_QUANT_FP8, TE_QUANT_NVFP4, TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC)
 
 # Pipeline attributes that hold a text encoder, in order.
@@ -59,17 +64,21 @@ _TE_INT8_SKIP: dict[str, tuple[int, int]] = {
 
 
 def normalize_te_quant(value: Optional[str]) -> Optional[str]:
-    """Lower/strip a requested text-encoder quant; None / "" / "none" -> None.
+    """Lower/strip a requested text-encoder quant; None / "" / "none" / "off" -> None,
+    "auto" -> "auto" (resolved later by select_te_quant_scheme).
 
     Raises ValueError for an unsupported value so a bad request is rejected cheaply."""
     if value is None:
         return None
     normalized = str(value).strip().lower().replace("-", "_")
-    if not normalized or normalized == "none":
+    if not normalized or normalized in ("none", "off"):
         return None
+    if normalized == TE_QUANT_AUTO:
+        return TE_QUANT_AUTO
     if normalized not in TE_QUANT_MODES:
         raise ValueError(
-            f"Unsupported text_encoder_quant '{value}'. Use one of: {', '.join(TE_QUANT_MODES)}."
+            f"Unsupported text_encoder_quant '{value}'. Use one of: "
+            f"{', '.join((TE_QUANT_AUTO,) + TE_QUANT_MODES)}, none/off."
         )
     return normalized
 
@@ -101,6 +110,101 @@ def te_quant_supported(target: Any, mode: str) -> bool:
     return False
 
 
+# Per-arch preference order for text-encoder ``auto`` (best-first), mirroring the transformer's
+# ``_AUTO_LADDER``. fp8_dynamic (compute fp8 on the tensor cores) leads on fp8-GEMM silicon; int8
+# (torch._int_mm) sits second but only engages for a family with a measured keep-bf16 schedule;
+# layerwise ``fp8`` (storage cast, no torchao) is the universal fallback -- it needs only the fp8
+# dtype and is the sole scheme that survives group offload. nvfp4 stays explicit-only (weight-only
+# 4-bit is a steeper quality cost), never an auto pick, consistent with the DiT ladder.
+_TE_AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
+    ((8, 9), (TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8)),  # Ada sm_89 / Hopper / Blackwell
+    ((8, 0), (TE_QUANT_INT8, TE_QUANT_FP8)),  # Ampere sm_80/86: no fp8 GEMM -> int8 or layerwise fp8
+)
+
+# Text encoders whose activation ranges break a scheme at the MODEL level (measured hidden-state
+# cosine vs bf16, via scripts/diffusion_quant_builder.py). Populated from the accuracy sweep; a
+# denied scheme is skipped by ``auto`` and refused when requested explicitly. Empty by default:
+# int8 already gates on a per-family keep-bf16 schedule (``_TE_INT8_SKIP``), so this is for the
+# rarer case where even keep-bf16 int8 (or fp8) misses the bar for a specific encoder.
+_TE_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {}
+
+# Map a TE torchao scheme to the transformer smoke-probe scheme (same torchao GEMM), so ``auto``
+# degrades gracefully when a build lacks a kernel. Layerwise fp8 has no torchao GEMM to probe.
+_TE_SMOKE_SCHEME = {TE_QUANT_FP8_DYNAMIC: "fp8", TE_QUANT_INT8: "int8", TE_QUANT_NVFP4: "nvfp4"}
+
+
+def _te_family_denied(family: Optional[str], scheme: str) -> bool:
+    return scheme in _TE_FAMILY_SCHEME_DENY.get((family or "").strip().lower(), frozenset())
+
+
+def _te_scheme_probe(scheme: str, device: str) -> bool:
+    """True iff ``scheme`` actually runs on this build. Layerwise fp8 (no torchao GEMM) always
+    passes; the torchao TE modes reuse the transformer module's cached quantise+matmul smoke test."""
+    tq = _TE_SMOKE_SCHEME.get(scheme)
+    if tq is None:
+        return True
+    try:
+        from .diffusion_transformer_quant import _smoke_probe
+
+        return _smoke_probe(tq, device)
+    except Exception:
+        return False
+
+
+def select_te_quant_scheme(
+    target: Any,
+    requested: Optional[str],
+    *,
+    family: Optional[str] = None,
+    offload_active: bool = False,
+) -> Optional[str]:
+    """Resolve the concrete text-encoder scheme to apply, or None to stay dense bf16.
+
+    An explicit scheme is returned as-is (``quantize_text_encoders`` re-gates it). ``auto`` walks
+    ``_TE_AUTO_LADDER`` for this GPU's capability and returns the first scheme that: survives the
+    active offload policy (torchao modes need pinned residency -> only layerwise fp8 under offload),
+    has a keep-bf16 schedule if int8, is not family-denied, is hardware-supported, and passes a
+    real kernel smoke test. Returns None when nothing qualifies (e.g. no CUDA / pre-Ampere)."""
+    requested = normalize_te_quant(requested)
+    if requested is None or requested != TE_QUANT_AUTO:
+        return requested
+    from .diffusion_transformer_quant import _capability, _is_consumer_gpu
+
+    cap = _capability()
+    if cap is None:
+        return None
+    device = str(getattr(target, "device", "cuda"))
+    for floor, schemes in _TE_AUTO_LADDER:
+        if cap >= floor:
+            # Consumer GDDR parts run int8 full-rate but halve fp8 FP32-accumulate: prefer int8.
+            ordered = (
+                (TE_QUANT_INT8,) + tuple(s for s in schemes if s != TE_QUANT_INT8)
+                if TE_QUANT_INT8 in schemes and schemes[0] != TE_QUANT_INT8 and _is_consumer_gpu(device)
+                else schemes
+            )
+            for scheme in ordered:
+                # torchao tensor subclasses reject the Module.to() an offload hook uses; only the
+                # layerwise fp8 cast streams, so under offload skip the torchao modes.
+                if offload_active and scheme in (
+                    TE_QUANT_INT8,
+                    TE_QUANT_FP8_DYNAMIC,
+                    TE_QUANT_NVFP4,
+                ):
+                    continue
+                # int8 only clears the bar on a family with a measured keep-bf16 schedule.
+                if scheme == TE_QUANT_INT8 and (family or "").lower() not in _TE_INT8_SKIP:
+                    continue
+                if _te_family_denied(family, scheme):
+                    continue
+                if not te_quant_supported(target, scheme):
+                    continue
+                if not _te_scheme_probe(scheme, device):
+                    continue
+                return scheme
+            return None
+    return None
+
+
 def quantize_text_encoders(
     pipe: Any,
     target: Any,
@@ -110,8 +214,9 @@ def quantize_text_encoders(
     offload_active: bool = False,
     logger: Any = None,
 ) -> Optional[str]:
-    """Quantise each present text encoder in place with ``mode`` (fp8 / fp8_dynamic / int8 / nvfp4).
-    Returns the mode actually applied, or None when disabled, unsupported, or no encoder was cast.
+    """Quantise each present text encoder in place with ``mode`` (auto / fp8 / fp8_dynamic / int8 /
+    nvfp4). Returns the mode actually applied, or None when disabled, unsupported, or no encoder was
+    cast. ``auto`` resolves to the best scheme for the GPU + family via ``select_te_quant_scheme``.
     ``int8`` needs a per-family keep-bf16 schedule (``_TE_INT8_SKIP``); a family without one falls
     back to ``fp8``. When ``offload_active`` the torchao modes are skipped (their tensor subclasses
     reject the ``Module.to()`` an offload hook uses); layerwise ``fp8`` still engages. Best-effort:
@@ -119,6 +224,12 @@ def quantize_text_encoders(
     mode = normalize_te_quant(mode)
     if mode is None:
         return None
+    if mode == TE_QUANT_AUTO:
+        mode = select_te_quant_scheme(
+            target, TE_QUANT_AUTO, family = family, offload_active = offload_active
+        )
+        if mode is None:
+            return None
     skip: Optional[tuple[int, int]] = None
     if mode == TE_QUANT_INT8:
         skip = _TE_INT8_SKIP.get((family or "").lower())

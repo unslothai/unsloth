@@ -78,7 +78,7 @@ from .diffusion_transformer_quant import (
     quantize_transformer,
     select_transformer_quant_scheme,
 )
-from .diffusion_precision import normalize_te_quant, quantize_text_encoders
+from .diffusion_precision import TE_QUANT_AUTO, normalize_te_quant, quantize_text_encoders
 from .video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_NOT_LOADED_MSG,
@@ -903,6 +903,11 @@ class VideoBackend:
             text_encoder_quant = text_encoder_quant,
         )
         kind = resolve_video_model_kind(gguf_filename, model_kind)
+        # text_encoder_quant tri-state (mirrors the image backend + transformer_quant): UNSET
+        # (None / "") -> auto (pick the best accurate TE scheme for this GPU + family); an explicit
+        # "none"/"off" pins the encoder dense; a scheme forces it. So the shipped default is auto.
+        if text_encoder_quant is None or str(text_encoder_quant).strip() == "":
+            text_encoder_quant = TE_QUANT_AUTO
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
 
         with self._lock:

@@ -16,6 +16,7 @@ import pytest
 
 import core.inference.diffusion_precision as dp
 from core.inference.diffusion_precision import (
+    TE_QUANT_AUTO,
     TE_QUANT_FP8,
     TE_QUANT_FP8_DYNAMIC,
     TE_QUANT_INT8,
@@ -25,6 +26,7 @@ from core.inference.diffusion_precision import (
     _keep_bf16_block_fqns,
     normalize_te_quant,
     quantize_text_encoders,
+    select_te_quant_scheme,
     te_quant_supported,
 )
 
@@ -92,6 +94,10 @@ def test_normalize_te_quant():
     assert normalize_te_quant(None) is None
     assert normalize_te_quant("") is None
     assert normalize_te_quant("none") is None
+    # "off" disables (like the transformer's normalize) -> dense.
+    assert normalize_te_quant("off") is None
+    # "auto" passes through for select_te_quant_scheme to resolve.
+    assert normalize_te_quant("AUTO") == TE_QUANT_AUTO
     assert normalize_te_quant("FP8") == TE_QUANT_FP8
     assert normalize_te_quant("NVFP4") == TE_QUANT_NVFP4
     assert normalize_te_quant("int8") == TE_QUANT_INT8
@@ -393,3 +399,109 @@ def test_nvfp4_filter_keeps_vision_tower_dense(monkeypatch):
     assert ff(object(), "lm_head") is False
     assert ff(object(), "model.decoder.wo") is False
     assert ff(object(), "model.layers.5.self_attn.q_proj") is True
+
+
+# ── auto ladder (select_te_quant_scheme) ────────────────────────────────────────
+
+
+def _stub_tq_select(monkeypatch, *, cc, consumer = False, smoke = True):
+    """Stub the transformer module's shared helpers that select_te_quant_scheme imports:
+    capability, GPU class, and the kernel smoke probe (bool or a (tq, dev) predicate)."""
+    dtq = types.ModuleType("core.inference.diffusion_transformer_quant")
+    dtq._capability = lambda: cc
+    dtq._is_consumer_gpu = lambda device = None: consumer
+    dtq._smoke_probe = smoke if callable(smoke) else (lambda tq, dev: smoke)
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", dtq)
+    return dtq
+
+
+def _allow_te(monkeypatch, allowed):
+    """Force te_quant_supported to accept only ``allowed`` (simulates the hardware gate)."""
+    monkeypatch.setattr(dp, "te_quant_supported", lambda target, mode: mode in allowed)
+
+
+def test_select_te_auto_datacenter_prefers_fp8_dynamic(monkeypatch):
+    # Data-center fp8-GEMM silicon: fp8_dynamic (compute fp8) leads the ladder.
+    _stub_tq_select(monkeypatch, cc = (10, 0), consumer = False)
+    _allow_te(monkeypatch, {TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8})
+    assert select_te_quant_scheme(_target(), "auto", family = "qwen-image") == TE_QUANT_FP8_DYNAMIC
+
+
+def test_select_te_auto_falls_through_to_int8_then_fp8(monkeypatch):
+    _stub_tq_select(monkeypatch, cc = (10, 0))
+    # fp8_dynamic unavailable -> int8 (family has a keep-bf16 schedule).
+    _allow_te(monkeypatch, {TE_QUANT_INT8, TE_QUANT_FP8})
+    assert select_te_quant_scheme(_target(), "auto", family = "qwen-image") == TE_QUANT_INT8
+    # A family with NO int8 schedule skips int8 -> layerwise fp8.
+    assert select_te_quant_scheme(_target(), "auto", family = "z-image") == TE_QUANT_FP8
+
+
+def test_select_te_auto_consumer_prefers_int8(monkeypatch):
+    # Consumer GDDR halves fp8 FP32-accumulate but runs int8 full-rate -> int8 first.
+    _stub_tq_select(monkeypatch, cc = (10, 0), consumer = True)
+    _allow_te(monkeypatch, {TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8})
+    assert select_te_quant_scheme(_target(), "auto", family = "qwen-image") == TE_QUANT_INT8
+
+
+def test_select_te_auto_offload_uses_layerwise_fp8(monkeypatch):
+    # Under offload the torchao modes (reject Module.to()) are skipped -> layerwise fp8.
+    _stub_tq_select(monkeypatch, cc = (10, 0))
+    _allow_te(monkeypatch, {TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8})
+    assert (
+        select_te_quant_scheme(_target(), "auto", family = "qwen-image", offload_active = True)
+        == TE_QUANT_FP8
+    )
+
+
+def test_select_te_auto_ampere_uses_int8(monkeypatch):
+    # Ampere sm_80 has no fp8 GEMM; the tier is (int8, fp8).
+    _stub_tq_select(monkeypatch, cc = (8, 0))
+    _allow_te(monkeypatch, {TE_QUANT_INT8, TE_QUANT_FP8})
+    assert select_te_quant_scheme(_target(), "auto", family = "qwen-image") == TE_QUANT_INT8
+
+
+def test_select_te_auto_family_deny_skips_scheme(monkeypatch):
+    _stub_tq_select(monkeypatch, cc = (10, 0))
+    _allow_te(monkeypatch, {TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8})
+    monkeypatch.setattr(
+        dp, "_TE_FAMILY_SCHEME_DENY", {"qwen-image": frozenset({TE_QUANT_FP8_DYNAMIC})}
+    )
+    # fp8_dynamic denied for this family -> falls to int8.
+    assert select_te_quant_scheme(_target(), "auto", family = "qwen-image") == TE_QUANT_INT8
+
+
+def test_select_te_auto_smoke_failure_skips_scheme(monkeypatch):
+    # fp8_dynamic is hardware-supported but its kernel smoke-probe fails -> skip to int8.
+    _stub_tq_select(monkeypatch, cc = (10, 0), smoke = lambda tq, dev: tq != "fp8")
+    _allow_te(monkeypatch, {TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8})
+    assert select_te_quant_scheme(_target(), "auto", family = "qwen-image") == TE_QUANT_INT8
+
+
+def test_select_te_auto_pre_ampere_and_no_cuda_are_none(monkeypatch):
+    _stub_tq_select(monkeypatch, cc = (7, 5))
+    _allow_te(monkeypatch, {TE_QUANT_FP8})
+    assert select_te_quant_scheme(_target(), "auto", family = "qwen-image") is None
+    _stub_tq_select(monkeypatch, cc = None)
+    assert select_te_quant_scheme(_target(), "auto", family = "qwen-image") is None
+
+
+def test_select_te_explicit_scheme_passes_through(monkeypatch):
+    # An explicit request is returned as-is (quantize_text_encoders re-gates it); no ladder walk,
+    # so no transformer-module stub is needed.
+    assert select_te_quant_scheme(_target(), "fp8") == TE_QUANT_FP8
+    assert select_te_quant_scheme(_target(), "int8") == TE_QUANT_INT8
+    assert select_te_quant_scheme(_target(), None) is None
+    assert select_te_quant_scheme(_target(), "none") is None
+
+
+def test_quantize_text_encoders_auto_resolves_and_applies(monkeypatch):
+    # End-to-end: mode="auto" resolves via the ladder then applies the resolved caster.
+    _stub_tq_select(monkeypatch, cc = (10, 0))
+    _allow_te(monkeypatch, {TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8})
+    calls: list = []
+    monkeypatch.setattr(dp, "_cast_fp8_dynamic", lambda enc, tgt: calls.append(enc))
+    te = object()
+    pipe = types.SimpleNamespace(text_encoder = te)
+    mode = quantize_text_encoders(pipe, _target(), mode = "auto", family = "qwen-image")
+    assert mode == TE_QUANT_FP8_DYNAMIC
+    assert calls == [te]

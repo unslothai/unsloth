@@ -90,7 +90,7 @@ from .diffusion_cache import (
     maybe_toggle_step_cache,
     normalize_transformer_cache,
 )
-from .diffusion_precision import normalize_te_quant, quantize_text_encoders
+from .diffusion_precision import TE_QUANT_AUTO, normalize_te_quant, quantize_text_encoders
 from .diffusion_prequant import (
     load_prequantized_transformer,
     resolve_prequant_source,
@@ -1208,6 +1208,12 @@ class DiffusionBackend:
         normalize_attention_backend(attention_backend)
         normalize_transformer_cache(transformer_cache)
         normalize_te_quant(text_encoder_quant)
+        # text_encoder_quant tri-state, mirroring transformer_quant: UNSET (None / "") -> auto,
+        # which picks the best accurate TE scheme for this GPU + family (fp8_dynamic / int8 /
+        # layerwise fp8) or stays dense when none qualifies. An explicit "none"/"off" pins the
+        # encoder dense; an explicit scheme forces it. So the shipped default is auto.
+        if text_encoder_quant is None or str(text_encoder_quant).strip() == "":
+            text_encoder_quant = TE_QUANT_AUTO
         # For a full pipeline the repo itself supplies every component, so it is its
         # own base; the single-file kinds resolve the companion base diffusers repo.
         base = (
@@ -1762,6 +1768,15 @@ class DiffusionBackend:
                                 else "re-planned resident for the quantised artifact"
                                 if quant_plan is not None
                                 else "engaged on the dense fast path",
+                            ),
+                            "text_encoder_quant": (
+                                text_encoder_quant,
+                                te_quant or "off",
+                                "dense (no accurate scheme for this GPU / disabled)"
+                                if te_quant is None
+                                else "auto-selected for this GPU + family"
+                                if text_encoder_quant == TE_QUANT_AUTO
+                                else "requested",
                             ),
                             "attention_backend": (
                                 attention_backend,
