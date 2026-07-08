@@ -136,12 +136,18 @@ RUN set -eux \
     UNSLOTH_ZOO_REF="${UNSLOTH_STUDIO_ZOO_REF}" \
     UNSLOTH_PYTHON=3.12 \
     bash install.sh --local \
-    # Fail loud if the Studio venv torch missed the pinned CUDA family (an
-    # install.sh that ignores UNSLOTH_TORCH_INDEX_FAMILY falls back to
-    # nvidia-smi probing, which cannot work at build time and lands on cu126
-    # wheels with no sm_100/sm_120 kernels). metadata check only: importing
-    # torch needs native libs, which QEMU arm64 builds cannot load.
- && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import sys; from importlib.metadata import version; assert sys.version_info[:2] == (3, 12), 'Studio venv python %d.%d is not 3.12 (UNSLOTH_PYTHON pin ignored) -- CUDA dedup below depends on it' % sys.version_info[:2]; v = version('torch'); assert v.endswith('+${TORCH_FAMILY}'), 'Studio venv torch ' + v + ' does not match ${TORCH_FAMILY}'; print('Studio venv python %d.%d' % sys.version_info[:2], 'torch', v)" \
+    # Fail loud unless the Studio venv torch EXACTLY matches the base venv
+    # torch (version AND CUDA family) before the dedup below symlinks the two
+    # venvs' CUDA libs together. A family-only check is not enough: a studio
+    # install that ignored UNSLOTH_TORCH_INDEX_FAMILY (falling back to
+    # build-time nvidia-smi probing -> cu126, no sm_100/sm_120 kernels) OR that
+    # capped torch below the base's version (e.g. 2.10.0+cu128 vs the base's
+    # 2.11.0+cu128) would slip a mismatched torch past `endswith('+cu128')` and
+    # make the dedup link incompatible CUDA libs. Comparing to the base venv's
+    # own torch also avoids hardcoding the version here. metadata check only:
+    # importing torch needs native libs, which QEMU arm64 builds cannot load.
+ && BASE_TORCH="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('torch'))")" \
+ && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import sys; from importlib.metadata import version; assert sys.version_info[:2] == (3, 12), 'Studio venv python %d.%d is not 3.12 (UNSLOTH_PYTHON pin ignored) -- CUDA dedup below depends on it' % sys.version_info[:2]; v = version('torch'); assert v == '${BASE_TORCH}', 'Studio venv torch ' + v + ' does not match base venv torch ${BASE_TORCH} (CUDA dedup would link mismatched libs)'; print('Studio venv python %d.%d torch' % sys.version_info[:2], v, '== base', '${BASE_TORCH}')" \
     # setup.sh may relink the root llama-quantize into build/bin; prove the
     # relinked quantizer still resolves its libraries, or GGUF export breaks
     # at runtime with "No working quantizer found". Content check, not rc:
