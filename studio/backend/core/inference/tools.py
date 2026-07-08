@@ -984,7 +984,7 @@ def execute_tool(
     safety checks, blocklist, or resource caps (secrets still stripped). Only
     affects local code tools; web_search / MCP are unchanged.
     """
-    logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
+    logger.debug(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
         return _search_knowledge_base(arguments, rag_scope)

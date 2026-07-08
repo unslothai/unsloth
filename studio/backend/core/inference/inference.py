@@ -1865,15 +1865,15 @@ class InferenceBackend:
             logger.debug("Removing final assistant message to ensure proper alternation")
             chat_messages.pop()
 
-        logger.info(f"Sending {len(chat_messages)} messages to tokenizer:")
+        logger.debug(f"Sending {len(chat_messages)} messages to tokenizer:")
         for i, msg in enumerate(chat_messages):
-            logger.info(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
+            logger.debug(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
 
         try:
             formatted_prompt = tokenizer.apply_chat_template(
                 chat_messages, tokenize = False, add_generation_prompt = True
             )
-            logger.info(f"Successfully applied tokenizer's native chat template")
+            logger.debug(f"Successfully applied tokenizer's native chat template")
             return formatted_prompt
         except Exception as e:
             error_msg = str(e).lower()

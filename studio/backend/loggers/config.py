@@ -16,6 +16,36 @@ import structlog
 
 from loggers.handlers import filter_sensitive_data
 
+_TRUTHY = {"1", "true", "yes", "on"}
+
+# Libraries whose INFO/DEBUG chatter carries no operational signal for Studio
+# (per-request "HTTP Request: ... 200 OK", HF/transformers banners, multipart
+# part dumps). Raised to WARNING unless verbose, so their errors still surface.
+_NOISY_LIBS = (
+    "httpx",
+    "httpcore",
+    "huggingface_hub",
+    "transformers",
+    "datasets",
+    "multipart",
+    "watchfiles",
+    "urllib3",
+    "filelock",
+    "fsspec",
+    "asyncio",
+    "PIL",
+)
+
+
+def logs_verbose() -> bool:
+    """True when the user asked to keep everything (`--verbose` / LOG_LEVEL=DEBUG).
+
+    The single switch every log-noise suppression checks, so verbose restores the
+    full firehose and nothing is permanently hidden."""
+    if (os.getenv("UNSLOTH_STUDIO_VERBOSE", "") or "").strip().lower() in _TRUTHY:
+        return True
+    return os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG"
+
 
 class LogConfig:
     """Structured logging configuration for the application."""
@@ -71,5 +101,10 @@ class LogConfig:
             logger_factory = structlog.PrintLoggerFactory(file = sys.stdout),
             cache_logger_on_first_use = True,
         )
+
+        if not logs_verbose():
+            for name in _NOISY_LIBS:
+                logging.getLogger(name).setLevel(logging.WARNING)
+            logging.captureWarnings(True)
 
         return structlog.get_logger(service_name)

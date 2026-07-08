@@ -2457,7 +2457,7 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
         if default_config_path.exists():
             with open(default_config_path, "r", encoding = "utf-8") as f:
                 config = yaml.safe_load(f) or {}
-                logger.info(f"Loaded default model defaults from {default_config_path}")
+                logger.debug(f"Loaded default model defaults from {default_config_path}")
                 return config
 
         logger.warning(f"No default config found for model {model_name}")
