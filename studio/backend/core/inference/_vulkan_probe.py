@@ -68,10 +68,16 @@ def main() -> int:
         return 0
     bindir = sys.argv[1]
 
+    # Hold add_dll_directory's handle in a frame local for the rest of main()
+    # (through the CDLL loads below). CPython's os._AddedDllDirectory has no
+    # __del__, so this isn't strictly required, but keeping the reference is the
+    # documented idiom and removes any doubt that bindir stays on the search path
+    # while the sibling ggml DLLs resolve.
+    _dll_dir = None
     if sys.platform == "win32":
         base_name, vk_name = "ggml-base.dll", "ggml-vulkan.dll"
         try:
-            os.add_dll_directory(bindir)
+            _dll_dir = os.add_dll_directory(bindir)
         except Exception:
             pass
     else:
