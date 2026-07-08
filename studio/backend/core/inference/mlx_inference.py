@@ -41,6 +41,50 @@ def _build_generation_stats(prompt_n, prompt_tps, gen_n, gen_tps):
     }
 
 
+def _make_mlx_presence_penalty_processor(penalty: float):
+    """Presence penalty as an mlx_lm/mlx_vlm logits processor, matching the safetensors path.
+
+    generate_step calls processors as ``fn(tokens, logits)`` with ``tokens`` the
+    full running sequence; the first call is prompt-only, so latch that length
+    and penalize only after it.
+    """
+    state = {"prompt_len": None}
+
+    def _processor(tokens, logits):
+        if state["prompt_len"] is None:
+            # First call = prompt only; latch its length.
+            state["prompt_len"] = int(tokens.shape[0])
+            return logits
+        generated = tokens[state["prompt_len"] :]
+        if generated.size == 0:
+            return logits
+        import mlx.core as mx
+
+        vocab = logits.shape[-1]
+        # Bound generated ids to the valid range [0, vocab) before they index
+        # logits. MLX does no bounds checking and out-of-bounds indexing is
+        # documented undefined behavior (crash / memory corruption), unlike the
+        # torch path's harmless negative wrap -- so this bound is load-bearing
+        # here and matches the torch filter seen[(seen >= 0) & (seen < vocab)].
+        # MLX has no boolean-mask filtering (data-dependent output shape is
+        # unsupported), so instead of compacting the id list we route every
+        # out-of-range or negative id to a scratch slot at index ``vocab`` that
+        # is dropped before the subtract. That scratch slot can never collide
+        # with a real token, so real ids (including id 0) are penalized exactly
+        # once and stray ids are ignored.
+        valid = (generated >= 0) & (generated < vocab)
+        safe = mx.where(valid, generated, vocab).astype(mx.int32)
+        # Scatter-assign a scalar penalty into a (vocab + 1)-wide mask: duplicate
+        # ids are idempotent, so presence applies once per distinct token; the
+        # scratch column is discarded and the full-width subtract stays on-device.
+        mask = mx.zeros((vocab + 1,), dtype = logits.dtype)
+        mask[safe] = penalty
+        logits = logits - mask[:vocab]
+        return logits
+
+    return _processor
+
+
 class MLXInferenceBackend:
     def __init__(self):
         self.models = {}
@@ -104,6 +148,9 @@ class MLXInferenceBackend:
     ) -> bool:
         import mlx.core as mx
 
+        # Keep the token so the native-template fallback can fetch a
+        # gated model's repo template later during generation.
+        self._hf_token = hf_token
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
 
@@ -168,11 +215,20 @@ class MLXInferenceBackend:
 
         self.active_model_name = model_name
         self.models[model_name] = {
+            # Per-model token for the native-template fallback (matches transformers).
+            "hf_token": hf_token,
+            # Per-model consent for the native-template reload: re-use the exact
+            # trust_remote_code this model was loaded with (matches transformers).
+            "trust_remote_code": trust_remote_code,
             "model": self._model,
             "tokenizer": self._tokenizer,
             "processor": self._processor,
             "is_vision": is_vision,
             "is_lora": getattr(config, "is_lora", False),
+            # For a LoRA adapter the native chat template lives on the base model.
+            "base_model": getattr(config, "base_model", None)
+            if getattr(config, "is_lora", False)
+            else None,
             "is_audio": False,
             "audio_type": None,
             "has_audio_input": False,
@@ -270,6 +326,7 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        presence_penalty = 0.0,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
@@ -317,6 +374,7 @@ class MLXInferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                presence_penalty = presence_penalty,
             )
         else:
             yield from self._generate_text(
@@ -332,6 +390,7 @@ class MLXInferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                presence_penalty = presence_penalty,
             )
 
     def _generate_text(
@@ -349,12 +408,15 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        presence_penalty = 0.0,
     ):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler, make_logits_processors
 
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
+            detect_think_prefill,
+            render_with_native_template_fallback,
         )
 
         prompt = apply_chat_template_for_generation(
@@ -368,7 +430,24 @@ class MLXInferenceBackend:
         if prompt is None:
             raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
 
-        from core.inference.chat_template_helpers import detect_think_prefill
+        # Same parity fix as the transformers backend: if the template dropped the
+        # requested tools, fall back to the native template so MLX text models keep
+        # advertising them. ``self._tokenizer`` is this entry's model_info tokenizer,
+        # so probe and native render share a renderer. (The VLM path renders via the
+        # processor for image tokens and is intentionally not wired here.)
+        model_info = self.models.get(self.active_model_name, {})
+        prompt = render_with_native_template_fallback(
+            formatted_prompt = prompt,
+            tokenizer = self._tokenizer,
+            model_info = model_info,
+            active_model_name = self.active_model_name,
+            messages = messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+            hf_token = model_info.get("hf_token"),
+        )
 
         # An open <think> prefilled by the template lives in the prompt, not
         # the generated tokens; re-emit it so the frontend renders the block.
@@ -386,15 +465,21 @@ class MLXInferenceBackend:
             min_p = float(min_p or 0.0),
             min_tokens_to_keep = 1,
         )
-        # Only build a logits processor for a non-trivial repetition penalty.
-        logits_processors = None
+        # Repetition and/or presence penalty processors (parity with the GGUF/safetensors paths).
+        logits_processors = []
         if repetition_penalty is not None and float(repetition_penalty) not in (
             0.0,
             1.0,
         ):
-            logits_processors = make_logits_processors(
-                repetition_penalty = float(repetition_penalty),
+            logits_processors.extend(
+                make_logits_processors(
+                    repetition_penalty = float(repetition_penalty),
+                )
             )
+        if presence_penalty:
+            logits_processors.append(_make_mlx_presence_penalty_processor(float(presence_penalty)))
+        if not logits_processors:
+            logits_processors = None
 
         token_ids = []
         logger.info(
@@ -460,6 +545,7 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        presence_penalty = 0.0,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
@@ -513,10 +599,23 @@ class MLXInferenceBackend:
             top_k = int(top_k or 0),
             min_p = float(min_p or 0.0),
         )
-        if repetition_penalty is not None and float(repetition_penalty) not in (
+        _rep_active = repetition_penalty is not None and float(repetition_penalty) not in (
             0.0,
             1.0,
-        ):
+        )
+        if presence_penalty:
+            # Presence needs a custom processor: pass the full list (repetition +
+            # presence) instead of the repetition_penalty shortcut so both apply once.
+            from mlx_lm.sample_utils import make_logits_processors
+
+            _vlm_processors = []
+            if _rep_active:
+                _vlm_processors.extend(
+                    make_logits_processors(repetition_penalty = float(repetition_penalty))
+                )
+            _vlm_processors.append(_make_mlx_presence_penalty_processor(float(presence_penalty)))
+            vlm_kwargs["logits_processors"] = _vlm_processors
+        elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
         with self._generation_lock:

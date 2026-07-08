@@ -42,6 +42,7 @@ import {
   updatePreviewSharing,
 } from "../api/preview-sharing";
 import {
+  EmbeddingModelBlockedError,
   type EmbeddingModelSettings,
   EmbeddingModelVerificationError,
   loadEmbeddingModelSettings,
@@ -78,6 +79,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_auto_title",
   "unsloth_hf_token",
   "unsloth_auto_heal_tool_calls",
+  "unsloth_nudge_tool_calls",
   "unsloth_max_tool_calls_per_message",
   "unsloth_tool_call_timeout",
   "unsloth_chat_inference_params",
@@ -104,6 +106,7 @@ const PREFS_KEYS: string[] = [
   "tour:studio:v1",
   // Update notifications
   "unsloth_show_llama_update_banner",
+  "unsloth_monitor_overlay",
 ];
 
 // Set by resetAllPrefs so the unmount-commit effect skips writing back the
@@ -408,7 +411,10 @@ export function GeneralTab() {
         description: t("settings.general.rag.reindexWarning"),
       });
     } catch (error) {
-      if (error instanceof EmbeddingModelVerificationError) {
+      // A hard security block cannot be forced; keep the "save anyway" action hidden.
+      if (error instanceof EmbeddingModelBlockedError) {
+        setEmbeddingModelNeedsForce(false);
+      } else if (error instanceof EmbeddingModelVerificationError) {
         setEmbeddingModelNeedsForce(true);
       }
       setEmbeddingModelError(

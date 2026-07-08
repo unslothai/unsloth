@@ -177,6 +177,7 @@ class GenerateRequest(BaseModel):
     temperature: float = Field(0.6, ge = 0.0, le = 2.0, description = "Sampling temperature")
     top_p: float = Field(0.95, ge = 0.0, le = 1.0, description = "Top-p sampling")
     top_k: int = Field(20, ge = -1, le = 100, description = "Top-k sampling")
+    min_p: float = Field(0.0, ge = 0.0, le = 1.0, description = "Min-p sampling")
     max_new_tokens: int = Field(2048, ge = 1, le = 4096, description = "Maximum tokens to generate")
     repetition_penalty: float = Field(1.0, ge = 1.0, le = 2.0, description = "Repetition penalty")
     presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
@@ -780,6 +781,16 @@ class ChatCompletionRequest(BaseModel):
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
     )
+    nudge_tool_calls: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Opt-in, non-streaming client-tool passthrough only: when the "
+            "model emitted a tool signal that healing could not repair, retry ONCE with "
+            "a short nudge appended (the retry shares the full prompt prefix, so the "
+            "server's KV cache is reused). Default off; UNSLOTH_TOOL_CALL_NUDGE=1 flips "
+            "the process default."
+        ),
+    )
     context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
         None,
         description = (
@@ -1136,7 +1147,8 @@ class CompletionMessage(BaseModel):
     """The assistant's complete response message."""
 
     role: Literal["assistant"] = "assistant"
-    content: str
+    # ``None`` on a pure tool-call turn (OpenAI content=null); string otherwise.
+    content: Optional[str] = None
     refusal: Optional[str] = None
     reasoning_content: Optional[str] = None
     tool_calls: Optional[list[dict]] = None
@@ -1611,6 +1623,14 @@ class AnthropicMessagesRequest(BaseModel):
     bypass_permissions: Optional[bool] = Field(
         False,
         description = "[x-unsloth] Bypass Permissions: when true, disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits) for server-side tool calls. Secret env vars are still stripped. Declared explicitly (not relied on via extra='allow') so omitted requests default to False instead of raising AttributeError.",
+    )
+    auto_heal_tool_calls: Optional[bool] = Field(
+        True,
+        description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output (mirrors the Chat Completions field; applies to the client-tool passthrough).",
+    )
+    nudge_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Opt-in, non-streaming only: retry once with a nudge when the model emitted a tool signal healing could not repair (mirrors the Chat Completions field).",
     )
     model_config = {"extra": "allow"}
 
