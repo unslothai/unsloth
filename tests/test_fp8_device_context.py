@@ -196,6 +196,8 @@ def test_act_quant_runs_on_tensor_device_when_current_device_differs() -> None:
     torch = _require_two_cuda_devices()
     if not hasattr(torch, "float8_e4m3fn"):
         pytest.skip("requires torch.float8_e4m3fn")
+    if torch.cuda.get_device_capability(1)[0] < 9:
+        pytest.skip("requires FP8-capable CUDA hardware")
 
     from unsloth.kernels.fp8 import act_quant
 
