@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import inspect
 import sys
 import threading
 import types
@@ -39,6 +40,7 @@ def _load_route():
         auth_pkg.__path__ = []
         auth_mod = types.ModuleType("auth.authentication")
         auth_mod.get_current_subject = lambda: "test"
+        auth_mod.is_host_session = lambda request = None: True
         for name, stub in (("auth", auth_pkg), ("auth.authentication", auth_mod)):
             if name not in sys.modules:
                 sys.modules[name] = stub
@@ -163,3 +165,21 @@ def test_update_handler_rejects_remote_client(monkeypatch):
     with pytest.raises(rl.HTTPException) as exc_info:
         asyncio.run(rl.llama_update(current_subject = "t", host_session = False))
     assert exc_info.value.status_code == 403
+
+
+def _depends_on_host_session(handler) -> bool:
+    from fastapi import params
+
+    for param in inspect.signature(handler).parameters.values():
+        default = param.default
+        if isinstance(default, params.Depends) and default.dependency is rl.is_host_session:
+            return True
+    return False
+
+
+def test_update_routes_are_wired_to_host_session_gate():
+    # The handler-branch tests pass host_session as a kwarg, bypassing DI; this
+    # guards the wiring itself, so silently dropping the Depends can't reopen the
+    # gate while the branch tests still pass.
+    assert _depends_on_host_session(rl.llama_update_status)
+    assert _depends_on_host_session(rl.llama_update)

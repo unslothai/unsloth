@@ -82,6 +82,13 @@ def test_loopback_behind_reverse_proxy_is_not_host():
     assert auth.is_host_session(req) is False
 
 
+def test_loopback_with_empty_forwarding_header_is_not_host():
+    # A present-but-empty forwarding header still means the request was proxied
+    # (e.g. uvicorn with forwarded_allow_ips="*"); presence, not value, disqualifies.
+    req = _Request(client_host = "127.0.0.1", headers = {"X-Forwarded-For": ""})
+    assert auth.is_host_session(req) is False
+
+
 def test_desktop_claim_beats_remote_peer(monkeypatch):
     # The desktop JWT claim identifies the host session even from a non-loopback
     # peer (e.g. the desktop app reaching its backend on a LAN interface).

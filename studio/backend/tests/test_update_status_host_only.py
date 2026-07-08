@@ -30,13 +30,17 @@ def test_host_only_status_is_not_actionable():
     assert out["latest_version"] is None
 
 
-def test_host_only_status_skips_pypi(monkeypatch):
+def test_host_only_status_skips_probes(monkeypatch):
+    # Neither the network probe (PyPI) nor the local filesystem probe
+    # (detect_install_source) should run for a remote caller.
     def fail_fetch():
         raise AssertionError("host-only status must not check PyPI")
 
+    def fail_detect():
+        raise AssertionError("host-only status must not probe the install source")
+
     monkeypatch.setattr(us, "get_latest_pypi_version", fail_fetch)
-    # detect_install_source touches the local filesystem only; the network path
-    # is get_latest_pypi_version, which must not run for a remote caller.
+    monkeypatch.setattr(us, "detect_install_source", fail_detect)
     out = us.get_host_only_update_status("1.2.3")
     assert out["host_only"] is True
 

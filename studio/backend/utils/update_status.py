@@ -112,7 +112,8 @@ def get_host_only_update_status(current_version: str) -> dict[str, Any]:
 
     Updating Studio is a host-machine action, so a remote client must not be
     prompted. Skip the PyPI/source probes and report a host-only status with
-    the notification suppressed.
+    the notification suppressed. ``install_source`` is a not-probed placeholder
+    here (``host_only`` is the discriminator), not a detection result.
     """
     return _status_response(
         current_version = current_version,

@@ -132,7 +132,12 @@ def is_host_session(request: Request) -> bool:
     client = request.client
     if not client or not _is_loopback_host(client.host):
         return False
-    if request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for"):
+    # Presence, not truthiness: an empty forwarding header still means the
+    # request was proxied, so it must not let a loopback peer pass as host.
+    if (
+        request.headers.get("cf-connecting-ip") is not None
+        or request.headers.get("x-forwarded-for") is not None
+    ):
         return False
     return True
 
