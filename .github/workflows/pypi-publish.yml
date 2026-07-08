@@ -42,6 +42,16 @@ on:
       - install.sh
       - install.ps1
       - unsloth/models/_utils.py
+  # Manual retry path. Once the pins already match __version__, a build that
+  # failed for a reason unrelated to the gate files can't be retriggered by a
+  # gate-file push, and rerunning the old run reuses the broken commit. The
+  # decide gate still runs on dispatch, so this can't publish off a non-release.
+  workflow_dispatch:
+    inputs:
+      studio_version:
+        description: Studio tag to stamp (e.g. v0.1.2-beta); blank -> git describe
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -56,6 +66,14 @@ concurrency:
 jobs:
   decide:
     name: Decide whether to publish
+    # Only ever run against main. The push trigger is already main-only, but
+    # workflow_dispatch lets any write-access user pick an arbitrary ref; without
+    # this a crafted branch (gate files + a poisoned build.sh) could drive an
+    # OIDC publish, resting entirely on the pypi environment's branch policy.
+    # Pinning main here (and gating build -> publish on decide) keeps that
+    # guarantee in the workflow, not only in repo settings. A dispatch from a
+    # tag or branch simply no-ops.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -125,6 +143,22 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Upgrade npm to 11.10+ (min-release-age enforcement)
+        # setup-node@22 bundles npm 10.9.x, which SILENTLY IGNORES the
+        # min-release-age=7 cooldown in studio/frontend/.npmrc (that config
+        # landed in npm 11.10). Without this, bash build.sh's `npm install`
+        # would install brand-new tarballs on a fresh runner with the 7-day
+        # supply-chain cooldown disabled. Same shape as studio-frontend-ci.yml's
+        # npm upgrade; its floor is 11.16 (allowScripts), this job only needs
+        # min-release-age.
+        run: |
+          npm install -g npm@^11 --no-fund --no-audit
+          V=$(npm -v)
+          case "$V" in
+            11.1[0-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V honors min-release-age" ;;
+            *) echo "::error::npm $V predates min-release-age (need >=11.10)"; exit 1 ;;
+          esac
+
       - name: Lockfile supply-chain audit (pre-install scan)
         # build.sh runs `npm install`, which executes lifecycle scripts. This
         # structural lockfile scan -- the same one wheel-smoke runs -- is the
@@ -134,9 +168,24 @@ jobs:
 
       - name: Resolve Studio release version
         id: studio
+        # On the push trigger this takes the newest reachable v* tag, so push
+        # the Studio release tag before/with the pin bump (the immutable wheel
+        # is stamped once). A manual dispatch can pin the exact tag via the
+        # studio_version input, which also lets a stale-tag build be corrected.
+        env:
+          OVERRIDE: ${{ github.event.inputs.studio_version }}
         run: |
-          studio=$(git describe --tags --abbrev=0 --match 'v[0-9]*' || true)
+          studio="${OVERRIDE:-}"
+          [ -n "$studio" ] || studio=$(git describe --tags --abbrev=0 --match 'v[0-9]*' || true)
           [ -n "$studio" ] || { echo "::error::no v* Studio tag found to stamp"; exit 1; }
+          # A manual override feeds an immutable wheel stamp, so reject a
+          # date-style backend version (e.g. v2026.6.9) mistyped for a Studio
+          # tag; stamp_studio_release.py enforces the rest of the v-SemVer shape.
+          # git describe only ever yields real v* Studio tags, so this is a
+          # no-op on the push path.
+          if printf '%s' "$studio" | grep -Eq '^v?20[0-9][0-9]\.[0-9]+\.[0-9]+'; then
+            echo "::error::studio_version is a date-style backend version, not a Studio v* tag: $studio"; exit 1
+          fi
           echo "Studio release version: $studio"
           echo "studio=$studio" >> "$GITHUB_OUTPUT"
 
@@ -191,6 +240,19 @@ jobs:
               sys.exit(0 if all(checks.values()) else 1)
           PY
 
+      - name: Upload dist artifact
+        # Upload the verified dist/ BEFORE the import smoke below. That smoke
+        # installs third-party deps from PyPI, whose install/import hooks run
+        # arbitrary code and could mutate dist/ before the OIDC-scoped publish
+        # job uploads it. Uploading the already-verified bytes (stamp + wheel
+        # content) closes that window; a smoke failure still fails the job, so
+        # publish (needs: build) never runs.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pypi-dist
+          path: dist/
+          if-no-files-found: error
+
       - name: Studio backend import smoke
         # Import the app from the freshly-built wheel in a clean venv -- catches
         # the 2026.5.1 class (missing frontend dist / lockfile, broken source).
@@ -206,13 +268,6 @@ jobs:
           # Run from /tmp so Python imports the installed package, not the source tree.
           cd /tmp
           /tmp/v/bin/python -c "from studio.backend.main import app; print('Studio backend OK:', app.title)"
-
-      - name: Upload dist artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: pypi-dist
-          path: dist/
-          if-no-files-found: error
 
   publish:
     name: Publish to PyPI
