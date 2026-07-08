@@ -598,6 +598,7 @@ def _loaded_models(base: str, key: str) -> list:
 
 
 _HF_REPO_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_MODEL_FILE_SUFFIXES = (".gguf", ".ggml", ".safetensors", ".bin", ".pt", ".pth", ".onnx")
 
 
 def _is_hub_model_id(value: object) -> bool:
@@ -612,19 +613,17 @@ def _is_hub_model_id(value: object) -> bool:
         return False
     # A hub id is exactly "namespace/name" over a restricted charset. Anything with
     # extra path segments (e.g. a server-side relative path such as
-    # models/Llama/Foo.gguf on a remote Studio) is not a hub id and must not be
-    # casefold-matched against a differently cased path on a case-sensitive
-    # filesystem. This is host independent, unlike the existence probe below which
-    # cannot see a path that only exists on the server.
+    # models/Llama/Foo.gguf) is not a hub id and must not be casefold-matched against
+    # a differently cased path on a case-sensitive filesystem.
     parts = text.split("/")
     if len(parts) != 2:
         return False
     if any(part in ("", ".", "..") or not _HF_REPO_ID_SEGMENT_RE.match(part) for part in parts):
         return False
-    try:
-        if Path(os.path.expanduser(text)).exists():
-            return False
-    except OSError:
+    # A two-segment weight-file path (Models/Foo.gguf) is also not a repo id; keep
+    # this syntactic instead of probing Path.exists(), because the CLI cwd may differ
+    # from the Studio server cwd even on loopback.
+    if text.lower().endswith(_MODEL_FILE_SUFFIXES):
         return False
     return True
 
@@ -637,12 +636,10 @@ def _model_id_matches(
 ) -> bool:
     if actual == requested:
         return True
-    # Case-insensitive matching is only safe when the local existence probe in
-    # _is_hub_model_id is authoritative, i.e. against a loopback Studio on this host.
-    # Against a remote Studio a two-segment string is indistinguishable from a
-    # server-side relative path (e.g. Models/Foo vs models/foo), so casefolding it
-    # could attach to the wrong model on a case-sensitive server; defer to an exact
-    # match there and let the load endpoint resolve the requested path.
+    # Case-insensitive matching is only safe for values that are syntactically HF
+    # repo ids. Local/server paths are case-sensitive on some hosts, and the CLI
+    # cannot reliably probe the Studio server cwd, so path-like strings must defer
+    # to exact matching and let the load endpoint resolve them.
     if not allow_casefold:
         return False
     if not (_is_hub_model_id(actual) and _is_hub_model_id(requested)):
@@ -657,8 +654,9 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
 ) -> dict:
     models = _loaded_models(base, key)
-    # Only casefold-match ids against a loopback Studio, where _is_hub_model_id's
-    # local existence probe can actually reject a server-side path; see the note there.
+    # Only casefold-match ids against a loopback Studio after _is_hub_model_id rejects
+    # syntactic paths. Remote Studios still use exact matching because even a
+    # two-segment string could be a server-relative path there.
     allow_casefold = is_loopback_url(base)
     # /v1/models reports the model id but not the active GGUF variant or runtime load
     # settings, so an id match alone can hide the wrong quant (Q8_0 serving while the

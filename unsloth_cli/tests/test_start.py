@@ -581,9 +581,9 @@ def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch
 
 
 def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
-    # Against a remote Studio the local existence probe cannot see server-side paths,
-    # so a case-variant loaded id must NOT attach without a load: it could be a distinct
-    # server-side path on a case-sensitive host. The load endpoint resolves the request.
+    # Against a remote Studio a case-variant loaded id must NOT attach without a load:
+    # it could be a distinct server-side path on a case-sensitive host. The load
+    # endpoint resolves the request.
     calls = []
     state = {"loaded": False}
 
@@ -615,6 +615,37 @@ def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
     assert any(u.endswith("/api/inference/load") for _, u in calls)
 
 
+def test_resolve_model_loopback_does_not_casefold_weight_file_paths(monkeypatch):
+    # Even on loopback, the CLI cwd may differ from the Studio server cwd. A
+    # two-segment server-relative weight file path is not a hub id, so differently
+    # cased paths must not attach without asking the server to load the request.
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url, payload))
+        if url.endswith("/v1/models"):
+            model_id = "models/foo.gguf" if state["loaded"] else "Models/Foo.gguf"
+            return {"data": [{"id": model_id, "loaded": True, "context_length": 131072}]}
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "models/foo.gguf"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "models/foo.gguf")
+
+    assert entry["id"] == "models/foo.gguf"
+    assert any(u.endswith("/api/inference/load") for _, u, _ in calls)
+
 def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
     existing_local = tmp_path / "Org" / "Foo"
     existing_local.mkdir(parents = True)
@@ -623,6 +654,12 @@ def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
     assert not start._model_id_matches(str(existing_local), str(existing_local).lower())
     assert not start._model_id_matches("./Models/Foo", "./models/foo")
     assert not start._model_id_matches(r".\Models\Foo", r".\models\foo")
+
+    # Two-segment server-relative weight files are not hub ids either; classifying by
+    # syntax avoids probing the CLI cwd, which can differ from the Studio server cwd.
+    assert not start._is_hub_model_id("Models/Foo.gguf")
+    assert not start._is_hub_model_id("Models/Foo.safetensors")
+    assert not start._model_id_matches("Models/Foo.gguf", "models/foo.gguf")
     # A server-side relative path (extra path segments) is not a hub id even when it
     # does not exist on the CLI host, so it must not casefold-match a differently
     # cased path on a case-sensitive server filesystem.
