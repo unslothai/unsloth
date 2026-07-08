@@ -599,8 +599,16 @@ export function useChatModelRuntime() {
             // clears the per-model Auto-layers context pin + GPU pick, and
             // Manual+Auto sizes context through resolveFitMaxSeqLength.
             // gpuMemoryMode is a standing preference, kept across the switch.
+            // A same-repo quant switch (same checkpoint, different gguf_variant)
+            // is a different model for per-model knobs: the pinned context,
+            // gpuLayers, GPU pick, and MoE offload are scoped per variant
+            // (rememberedLoadSettingsKey and stageModel both key on variant), so
+            // treat a variant change like a model switch and re-baseline them.
+            const switchingModelOrVariant =
+              currentCheckpoint !== modelId ||
+              (loadActiveGgufVariant ?? null) !== (ggufVariant ?? null);
             const resetsPerModelSettings = Boolean(
-              currentCheckpoint && currentCheckpoint !== modelId && !keepSpeculative,
+              currentCheckpoint && switchingModelOrVariant && !keepSpeculative,
             );
             const validateCustomContextLength = resetsPerModelSettings
               ? null
