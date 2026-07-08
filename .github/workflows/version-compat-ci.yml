@@ -202,6 +202,30 @@ jobs:
             tests/version_compat/test_transformers_pinned_symbols.py \
             -v --tb=short
 
+  torch-211-readiness:
+    name: torch 2.11 prebuilt-wheel readiness canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install pytest only
+        run: |
+          python -m pip install --upgrade pip
+          pip install 'pytest>=8'
+      - name: Run torch 2.11 readiness canary
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PYTHONPATH=. python -m pytest \
+            tests/version_compat/test_torch_211_prebuilt_readiness.py \
+            -v --tb=short
+
   # Optional second layer: actually `pip install` ONE representative
   # version of each package and verify unsloth + unsloth-zoo modules
   # import on it under the existing CUDA spoof. CPU-only, runs on

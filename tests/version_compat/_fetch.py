@@ -4,12 +4,30 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import urllib.error
 import urllib.request
 
 import pytest
+
+
+def fetch_json(url: str):
+    """GET a GitHub API URL and parse JSON. None on 404; skips on transient network errors."""
+    req = urllib.request.Request(url, headers = {"Accept": "application/vnd.github+json"})
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout = 15) as r:
+            return json.loads(r.read().decode("utf-8", errors = "replace"))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        pytest.skip(f"GitHub API failed ({e.code}) for {url}")
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+        pytest.skip(f"GitHub API failed ({e}) for {url}")
 
 
 def fetch_text(repo: str, ref: str, path: str) -> str | None:
