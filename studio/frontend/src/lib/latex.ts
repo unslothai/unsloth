@@ -98,9 +98,17 @@ function findLinkDestinationRegions(content: string): Array<[number, number]> {
       if (span) regions.push(span);
     }
   }
-  // Inline and ref-def spans can interleave (never overlap), so sort.
+  // Sort, then merge overlaps: a reference-def token can nest inline-link spans
+  // (`[1]: http://h/[a](b)/foo\(x\)`), and isInRegion's binary search needs
+  // disjoint spans.
   regions.sort((a, b) => a[0] - b[0]);
-  return regions;
+  const merged: Array<[number, number]> = [];
+  for (const span of regions) {
+    const last = merged[merged.length - 1];
+    if (last && span[0] <= last[1]) last[1] = Math.max(last[1], span[1]);
+    else merged.push(span);
+  }
+  return merged;
 }
 
 /**
