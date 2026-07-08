@@ -85,9 +85,9 @@ def inference(
             )
         raise typer.Exit(code = 1)
 
-    # A running Studio server keeps the model warm between runs, which is
-    # exactly what a one-shot command wants. Under mlx.launch, every rank must
-    # enter the local MLX path instead of rank 0 alone talking to a server.
+    # A running Studio server keeps the model warm between runs. Under
+    # mlx.launch, every rank must enter the local MLX path instead of rank 0
+    # alone talking to a server.
     load_opts = dict(
         hf_token = hf_token,
         max_seq_length = max_seq_length,

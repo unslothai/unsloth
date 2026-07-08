@@ -95,7 +95,7 @@ def _make_mlx_presence_penalty_processor(penalty: float):
 
     def _processor(tokens, logits):
         if state["prompt_len"] is None:
-            # First call = prompt only; latch its length.
+            # First call is prompt-only; latch its length.
             state["prompt_len"] = int(tokens.shape[0])
             return logits
         generated = tokens[state["prompt_len"] :]
@@ -104,22 +104,17 @@ def _make_mlx_presence_penalty_processor(penalty: float):
         import mlx.core as mx
 
         vocab = logits.shape[-1]
-        # Bound generated ids to the valid range [0, vocab) before they index
-        # logits. MLX does no bounds checking and out-of-bounds indexing is
-        # documented undefined behavior (crash / memory corruption), unlike the
-        # torch path's harmless negative wrap -- so this bound is load-bearing
-        # here and matches the torch filter seen[(seen >= 0) & (seen < vocab)].
-        # MLX has no boolean-mask filtering (data-dependent output shape is
-        # unsupported), so instead of compacting the id list we route every
-        # out-of-range or negative id to a scratch slot at index ``vocab`` that
-        # is dropped before the subtract. That scratch slot can never collide
-        # with a real token, so real ids (including id 0) are penalized exactly
-        # once and stray ids are ignored.
+        # Bound ids to [0, vocab) before indexing logits: MLX does no bounds
+        # checking and out-of-bounds indexing is undefined behavior (crash /
+        # corruption), unlike torch's harmless negative wrap. MLX also lacks
+        # boolean-mask filtering, so out-of-range/negative ids route to a
+        # scratch slot at index vocab (dropped before the subtract) that never
+        # collides with a real token: real ids (including 0) are penalized
+        # once, strays ignored.
         valid = (generated >= 0) & (generated < vocab)
         safe = mx.where(valid, generated, vocab).astype(mx.int32)
-        # Scatter-assign a scalar penalty into a (vocab + 1)-wide mask: duplicate
-        # ids are idempotent, so presence applies once per distinct token; the
-        # scratch column is discarded and the full-width subtract stays on-device.
+        # Scatter penalty into a (vocab + 1)-wide mask: duplicate ids are
+        # idempotent (presence applies once per token); scratch column dropped.
         mask = mx.zeros((vocab + 1,), dtype = logits.dtype)
         mask[safe] = penalty
         logits = logits - mask[:vocab]
@@ -136,7 +131,7 @@ class MLXInferenceBackend:
         self.loaded_local_models = []
         self.device = "mlx"
         self._generation_lock = threading.Lock()
-        # usage/timings of the latest generation; shipped on gen_done.
+        # usage/timings of the latest generation, shipped on gen_done.
         self.last_generation_stats = None
 
         self._model = None
@@ -196,8 +191,8 @@ class MLXInferenceBackend:
     ) -> bool:
         import mlx.core as mx
 
-        # Keep the token so the native-template fallback can fetch a
-        # gated model's repo template later during generation.
+        # Keep the token so the native-template fallback can fetch a gated
+        # model's repo template during generation.
         self._hf_token = hf_token
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
@@ -207,10 +202,10 @@ class MLXInferenceBackend:
         self._distributed_rank = distributed_rank
         self._distributed_world_size = distributed_size
 
-        # GGUF guard. GGUF models are served by llama-server in the parent
-        # process, not mlx-lm here. Reaching this with is_gguf=True means the
-        # route's first detection flaked (transient HF Hub) but the subprocess
-        # re-detected GGUF; raise loudly instead of a cryptic mlx_lm error.
+        # GGUF guard: GGUF is served by llama-server in the parent process,
+        # not mlx-lm. Reaching here with is_gguf=True means the route's
+        # detection flaked but the subprocess re-detected GGUF; raise loudly
+        # instead of a cryptic mlx_lm error.
         if getattr(config, "is_gguf", False):
             raise RuntimeError(
                 f"MLXInferenceBackend cannot load GGUF model '{model_name}': "
@@ -294,8 +289,7 @@ class MLXInferenceBackend:
         self.models[model_name] = {
             # Per-model token for the native-template fallback (matches transformers).
             "hf_token": hf_token,
-            # Per-model consent for the native-template reload: re-use the exact
-            # trust_remote_code this model was loaded with (matches transformers).
+            # Per-model trust_remote_code reused by the native-template reload (matches transformers).
             "trust_remote_code": trust_remote_code,
             "model": self._model,
             "tokenizer": self._tokenizer,
@@ -311,8 +305,7 @@ class MLXInferenceBackend:
             "has_audio_input": False,
             "context_length": runtime_context_length(self._model, max_seq_length),
         }
-        # Capture chat_template_info so the worker IPC reply ships it back and
-        # the route layer classifies capabilities like the other paths.
+        # Capture chat_template_info for the worker IPC reply and route capability classification.
         self._populate_chat_template_info(model_name)
 
         logger.info("Model %s loaded successfully", model_name)
@@ -400,8 +393,7 @@ class MLXInferenceBackend:
         max_new_tokens = 256,
         repetition_penalty = 1.0,
         cancel_event = None,
-        # Reasoning / tool kwargs forwarded by the route + worker; rendered via
-        # apply_chat_template_for_generation like the transformers path.
+        # Reasoning / tool kwargs, rendered via apply_chat_template_for_generation (transformers parity).
         tools = None,
         enable_thinking = None,
         reasoning_effort = None,
@@ -414,7 +406,6 @@ class MLXInferenceBackend:
         # Reset so a failed run cannot surface stale stats.
         self.last_generation_stats = None
 
-        # Build messages with system prompt
         full_messages = []
         if system_prompt:
             full_messages.append({"role": "system", "content": system_prompt})
@@ -431,7 +422,6 @@ class MLXInferenceBackend:
                             {"type": "text", "text": content},
                         ]
                     elif isinstance(content, list):
-                        # Prepend image if not already present
                         has_image = any(
                             p.get("type") == "image" for p in content if isinstance(p, dict)
                         )
@@ -509,11 +499,11 @@ class MLXInferenceBackend:
         if prompt is None:
             raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
 
-        # Same parity fix as the transformers backend: if the template dropped the
-        # requested tools, fall back to the native template so MLX text models keep
-        # advertising them. ``self._tokenizer`` is this entry's model_info tokenizer,
-        # so probe and native render share a renderer. (The VLM path renders via the
-        # processor for image tokens and is intentionally not wired here.)
+        # Parity with the transformers backend: if the template dropped the
+        # requested tools, fall back to the native template so MLX text models
+        # keep advertising them. self._tokenizer is this entry's tokenizer, so
+        # probe and native render share a renderer. (VLM renders via the
+        # processor for image tokens and is not wired here.)
         model_info = self.models.get(self.active_model_name, {})
         prompt = render_with_native_template_fallback(
             formatted_prompt = prompt,
@@ -535,7 +525,7 @@ class MLXInferenceBackend:
             min_p = float(min_p or 0.0),
             min_tokens_to_keep = 1,
         )
-        # Repetition and/or presence penalty processors (parity with the GGUF/safetensors paths).
+        # Repetition and/or presence penalty processors (GGUF/safetensors parity).
         logits_processors = []
         if repetition_penalty is not None and float(repetition_penalty) not in (
             0.0,
@@ -576,7 +566,6 @@ class MLXInferenceBackend:
                 ):
                     final_response = response
                     token_ids.append(response.token)
-                    # Decode full sequence with skip_special_tokens
                     cumulative = self._tokenizer.decode(
                         token_ids,
                         skip_special_tokens = True,
@@ -624,8 +613,7 @@ class MLXInferenceBackend:
         )
 
         # Pick the chat-template-aware caller: processors with their own
-        # apply_chat_template + chat_template (e.g. Qwen2.5-VL) use it
-        # directly; else fall back to the nested tokenizer.
+        # apply_chat_template + chat_template (e.g. Qwen2.5-VL), else the nested tokenizer.
         chat_target = self._processor
         if (
             getattr(self._processor, "apply_chat_template", None) is None
@@ -652,10 +640,9 @@ class MLXInferenceBackend:
             len(prompt),
             image is not None,
         )
-        # mlx_vlm.stream_generate forwards **kwargs into generate_step, which
-        # builds the sampler + logits_processors internally.
-        # GOTCHA: generate_step expects ``temperature=`` (long form); ``temp=``
-        # silently falls into **kwargs and is ignored, stuck at greedy 0.0.
+        # stream_generate forwards **kwargs into generate_step (builds the
+        # sampler + logits_processors internally). GOTCHA: generate_step expects
+        # temperature= (long form); temp= is silently ignored, stuck at greedy 0.0.
         vlm_kwargs = dict(
             max_tokens = max_new_tokens,
             temperature = temperature,
@@ -669,7 +656,7 @@ class MLXInferenceBackend:
         )
         if presence_penalty:
             # Presence needs a custom processor: pass the full list (repetition +
-            # presence) instead of the repetition_penalty shortcut so both apply once.
+            # presence) instead of the repetition_penalty shortcut so both apply.
             from mlx_lm.sample_utils import make_logits_processors
 
             _vlm_processors = []
@@ -714,7 +701,7 @@ class MLXInferenceBackend:
         cancel_event = None,
         **gen_kwargs,
     ) -> Generator[str, None, None]:
-        # MLX LoRA adapter toggling not yet supported — generate normally
+        # MLX LoRA adapter toggling not yet supported; generate normally
         yield from self.generate_chat_response(cancel_event = cancel_event, **gen_kwargs)
 
     def reset_generation_state(self):
