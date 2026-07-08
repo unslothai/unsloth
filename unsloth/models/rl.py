@@ -1370,6 +1370,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # [TODO] See https://fengyao.notion.site/off-policy-rl
             # https://github.com/huggingface/trl/pull/3867 (August 7th)
             "vllm_importance_sampling_correction": False,
+            # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001); the optimized
+            # GRPO forward does not compute it, so default off. Opt in via router_aux_loss_coef > 0.
+            "router_aux_loss_coef": 0.0,
         }
         for k, v in replacements.items():
             x = f"{k}( = [^,\n]{{1,}})?,\n"
@@ -1648,7 +1651,36 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
         RLTrainer_source = re.sub(pattern, new_options, RLTrainer_source, flags = re.DOTALL)
 
-        if trl_version >= Version("0.27.0"):
+        if trl_version >= Version("1.4.0"):
+            # The `elif is_peft_model(model) and args.beta != 0.0:` ref-adapter block
+            # was introduced in TRL 1.4.0 and is used through 1.7.x. Remove only that
+            # block, anchored on the final ref_param copy so we do NOT also swallow the
+            # following gradient-checkpointing enable_input_require_grads() block.
+            peft_pattern = (
+                r"\s*elif is_peft_model\(model\) and args\.beta != 0\.0:"
+                r".*?"
+                r"ref_param\.data\.copy_\(param\.data\)"
+            )
+
+            replacement_comment = (
+                "\n        # PEFT initialization logic removed via script for trl >= 1.4.0\n"
+            )
+
+            RLTrainer_source = re.sub(
+                peft_pattern, replacement_comment, RLTrainer_source, flags = re.DOTALL
+            )
+
+            if trl_version >= Version("1.7.0"):
+                # router_aux_loss_coef / aux_loss_enabled were added in TRL 1.7.0. Unsloth's
+                # optimized GRPO forward cannot compute the MoE router aux loss, so reject
+                # explicit opt-in (router_aux_loss_coef > 0) at init rather than silently ignoring it.
+                RLTrainer_source = RLTrainer_source.replace(
+                    "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0",
+                    "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0\n"
+                    '        if self.aux_loss_enabled: raise NotImplementedError("Unsloth GRPO does not compute the MoE router auxiliary loss; set router_aux_loss_coef = 0 (the Unsloth default).")',
+                )
+
+        elif trl_version >= Version("0.27.0"):
             peft_pattern = (
                 r"\s*if is_peft_available\(\) and is_peft_model\(model\) and args\.beta != 0\.0:"
                 r".*?"
@@ -1684,6 +1716,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     # no-op for GRPO, whose peft init block is removed above).
     RLTrainer_source = RLTrainer_source.replace(
         'if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):',
+        "if False:",
+    )
+    # TRL >= 1.7.0 spells the same QLoRA bf16 cast as `if _is_quantized_model:`.
+    RLTrainer_source = RLTrainer_source.replace(
+        "if _is_quantized_model:",
         "if False:",
     )
 

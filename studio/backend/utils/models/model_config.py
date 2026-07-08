@@ -1638,36 +1638,60 @@ def _iter_hf_cache_snapshots(repo_id: str):
 
     cache_dir = Path(hf_constants.HF_HUB_CACHE)
     target = f"models--{repo_id.replace('/', '--')}".lower()
-    repo_dir: Optional[Path] = None
+    repo_dirs: list[Path] = []
     try:
         if not cache_dir.is_dir():
             return
         for entry in cache_dir.iterdir():
             if entry.is_dir() and entry.name.lower() == target:
-                repo_dir = entry
-                break
+                repo_dirs.append(entry)
     except OSError:
         return
-    if repo_dir is None:
+    if not repo_dirs:
         return
 
-    snapshots = repo_dir / "snapshots"
-    try:
-        if not snapshots.is_dir():
-            return
-        snap_dirs = [s for s in snapshots.iterdir() if s.is_dir()]
-    except OSError:
+    snap_dirs: list[Path] = []
+    for repo_dir in repo_dirs:
+        snapshots = repo_dir / "snapshots"
+        try:
+            if snapshots.is_dir():
+                for snap_dir in snapshots.iterdir():
+                    try:
+                        if snap_dir.is_dir():
+                            snap_dirs.append(snap_dir)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    if not snap_dirs:
         return
-    snap_dirs.sort(key = lambda s: s.stat().st_mtime, reverse = True)
-    yield from snap_dirs
+    snap_dirs_with_mtime = []
+    for snap_dir in snap_dirs:
+        try:
+            snap_dirs_with_mtime.append((snap_dir.stat().st_mtime, snap_dir))
+        except OSError:
+            continue
+    snap_dirs_with_mtime.sort(key = lambda item: item[0], reverse = True)
+    yield from (snap_dir for _, snap_dir in snap_dirs_with_mtime)
 
 
 def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
-    """Variants from the local HF cache snapshot, or None if not cached."""
+    """Variants from the local HF cache snapshot, or None if not cached.
+
+    A newer snapshot can hold only a companion file (for example a vision
+    projector fetched on demand) while the quant files live in an older
+    snapshot. Returning the first snapshot that merely reports a vision flag
+    would shadow those real variants, so keep scanning older snapshots for
+    actual variants and carry the vision flag across snapshots.
+    """
+    any_vision = False
     for snap in _iter_hf_cache_snapshots(repo_id):
         variants, has_vision = list_local_gguf_variants(str(snap))
-        if variants or has_vision:
-            return variants, has_vision
+        any_vision = any_vision or has_vision
+        if variants:
+            return variants, any_vision
+    if any_vision:
+        return [], True
     return None
 
 

@@ -391,7 +391,7 @@ class SyntheticDataKit:
         assert os.path.exists(filename)
         assert hasattr(self, "tokenizer")
         if not hasattr(self, "max_seq_length"):
-            raise RuntimeError("Please use SynthetidDataKit.from_pretrained(...) first!")
+            raise RuntimeError("Please use SyntheticDataKit.from_pretrained(...) first!")
         if not hasattr(self, "overlap") or not hasattr(self, "max_generation_tokens"):
             raise RuntimeError("Please use prepare_qa_generation first!")
 

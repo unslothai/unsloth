@@ -165,9 +165,9 @@ def env_int(
 # errors. Only use "master" temporarily when the latest release is missing
 # support for a new model architecture.
 DEFAULT_LLAMA_TAG = os.environ.get("UNSLOTH_LLAMA_TAG", "latest")
-# Default published repo for prebuilt release resolution. Linux uses
-# Unsloth prebuilts; setup.sh/setup.ps1 pass --published-repo explicitly
-# for macOS/Windows to override with ggml-org/llama.cpp when needed.
+# Default published repo for prebuilt release resolution. Every host plans
+# its prebuilt against the Unsloth fork; setup.sh/setup.ps1 pass it via
+# --published-repo. ggml-org is reachable only via an explicit override.
 DEFAULT_PUBLISHED_REPO = "unslothai/llama.cpp"
 DEFAULT_PUBLISHED_TAG = os.environ.get("UNSLOTH_LLAMA_RELEASE_TAG")
 DEFAULT_PUBLISHED_MANIFEST_ASSET = os.environ.get(
@@ -3135,21 +3135,6 @@ def _apply_host_overrides(
     return host
 
 
-def published_repo_for_host(host: HostInfo, *, linux_amd_tooling_present: bool = False) -> str:
-    """The release repo setup.sh / setup.ps1 pick for this host: macOS always the
-    fork (ggml-org macOS bundles need too-new macOS); else CPU-only Linux/Windows
-    -> ggml-org upstream (the fork ships no CPU bundle) and any usable GPU (NVIDIA
-    or ROCm) -> the fork. linux_amd_tooling_present mirrors setup.sh routing Linux
-    hosts that expose AMD tooling (rocminfo/amd-smi/hipconfig/hipinfo) to the fork
-    even when the probe cannot confirm an active GPU. Mirrors the shell routing."""
-    if host.is_macos:
-        return DEFAULT_PUBLISHED_REPO
-    has_gpu = (
-        host.has_usable_nvidia or host.has_rocm or (host.is_linux and linux_amd_tooling_present)
-    )
-    return DEFAULT_PUBLISHED_REPO if has_gpu else UPSTREAM_REPO
-
-
 def pick_windows_cuda_runtime(host: HostInfo) -> str | None:
     if not host.driver_cuda_version:
         return None
@@ -4015,6 +4000,9 @@ def resolve_release_asset_choice(
             published_choice = published_rocm_choice_for_host(release, host, "windows-rocm")
         else:
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
+    elif host.is_windows and host.is_arm64:
+        # Windows arm64 has no GPU prebuilt, so it always takes the CPU bundle.
+        published_choice = published_asset_choice_for_kind(release, "windows-arm64")
     elif host.is_macos and host.is_arm64:
         published_choice = published_asset_choice_for_kind(release, "macos-arm64")
     elif host.is_macos and host.is_x86_64:
@@ -6127,8 +6115,13 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         # CPU-only host. A usable-NVIDIA host never reaches here -- if its CUDA
         # selection produced nothing we want an empty attempt list so the caller
         # source-builds with CUDA, not a CPU-only binary silently installed on a
-        # GPU host (mirrors the ROCm branch, and Windows NVIDIA).
-        cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
+        # GPU host (mirrors the ROCm branch, and Windows NVIDIA). Only x86_64 and
+        # arm64 have a CPU bundle; any other Linux arch (ppc64le, riscv64, s390x)
+        # has none, so leave attempts empty and source-build rather than hand it
+        # the x86_64 linux-cpu binary (the Linux preflight checks libraries, not
+        # ELF arch, so a wrong-arch binary would not be caught).
+        kind = "linux-cpu" if host.is_x86_64 else "linux-arm64" if host.is_arm64 else None
+        cpu_choice = published_asset_choice_for_kind(bundle, kind) if kind else None
         if cpu_choice is not None:
             attempts.append(cpu_choice)
     return attempts
@@ -6143,9 +6136,9 @@ def _fork_manifest_release_plans(
     max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
 ) -> tuple[str, list[InstallReleasePlan]]:
     """Manifest-reading branch of resolve_simple_install_release_plans, used for
-    the fork's bundles whose GPU/arch coverage lives in
-    llama-prebuilt-manifest.json rather than in the filename: arm64 CUDA, Windows
-    CUDA, per-gfx ROCm, and macOS. Linux x64 takes the faster filename path."""
+    every fork host: all of the fork's bundles describe their GPU/arch coverage
+    in llama-prebuilt-manifest.json rather than in the asset filename (CPU,
+    x64/arm64 CUDA, Windows CUDA, per-gfx ROCm, and macOS)."""
     requested_tag = normalized_requested_llama_tag(llama_tag)
     allow_older_release_fallback = requested_tag == "latest" and not published_release_tag
     release_limit = max(1, max_release_fallbacks)
@@ -6714,8 +6707,8 @@ def install_prebuilt(
                 log(
                     f"no existing llama.cpp install detected at {install_dir}; performing fresh prebuilt install"
                 )
-            # Single resolver: linux-x64 takes the fast filename path internally,
-            # every other fork host reads the manifest.
+            # Single resolver: every fork host selects from the release manifest;
+            # an explicit ggml-org override selects by asset filename instead.
             requested_tag, release_plans = resolve_simple_install_release_plans(
                 llama_tag,
                 host,
@@ -6903,8 +6896,8 @@ def parse_args() -> argparse.Namespace:
         const = "latest",
         help = (
             "Report whether an official prebuilt exists for this host without "
-            "downloading. Picks the host's published repo when --published-repo "
-            "is left at the default. Use --output-format json."
+            "downloading. Plans against --published-repo (defaults to the "
+            "fork). Use --output-format json."
         ),
     )
     parser.add_argument(
@@ -6992,24 +6985,16 @@ def main() -> int:
         return EXIT_SUCCESS
 
     if args.resolve_prebuilt is not None:
-        # Host-aware "is a prebuilt available" probe, no download. A default repo
-        # means "pick the repo for this host"; PrebuiltFallback == source build.
+        # Host-aware "is a prebuilt available" probe, no download. Every host now
+        # plans against the fork (args.published_repo defaults to it); an explicit
+        # --published-repo overrides. PrebuiltFallback == source build.
         host = _apply_host_overrides(
             detect_host(),
             override_has_rocm = args.has_rocm,
             override_rocm_gfx = args.rocm_gfx,
             force_cpu = args.cpu_fallback,
         )
-        # setup.sh routes Linux hosts with AMD tooling to the fork even when no GPU
-        # is probed; mirror that so a HIP source build is not offered a CPU prebuilt.
-        amd_tooling = host.is_linux and any(
-            shutil.which(t) for t in ("rocminfo", "amd-smi", "hipconfig", "hipinfo")
-        )
-        repo = (
-            published_repo_for_host(host, linux_amd_tooling_present = amd_tooling)
-            if args.published_repo == DEFAULT_PUBLISHED_REPO
-            else args.published_repo
-        )
+        repo = args.published_repo
         try:
             _requested, plans = resolve_simple_install_release_plans(
                 args.resolve_prebuilt, host, repo, args.published_release_tag or ""
