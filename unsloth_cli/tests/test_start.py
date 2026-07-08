@@ -92,6 +92,7 @@ def test_claude_flags_detected_when_version_not_first_token(monkeypatch):
 
 def test_install_agent_prompts_then_installs(monkeypatch):
     # TTY + yes: run the documented install command, then re-resolve the now-present binary.
+    monkeypatch.setattr(start.os, "name", "posix")
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
     monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
     ran = []
@@ -106,6 +107,101 @@ def test_install_agent_prompts_then_installs(monkeypatch):
     executable = start._install_agent("codex", "npm install -g @openai/codex")
     assert executable == "/usr/local/bin/codex"
     assert ran == [["/bin/sh", "-c", "npm install -g @openai/codex"]]
+
+
+def test_install_agent_uses_powershell_on_windows(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
+    ran = []
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, *a, **k: ran.append(command) or SimpleNamespace(returncode = 0),
+    )
+    monkeypatch.setattr(start.shutil, "which", lambda _: r"C:\Users\samle\bin\hermes.exe")
+
+    install_hint = "& ([scriptblock]::Create((irm https://x/install.ps1))) -SkipSetup"
+    executable = start._install_agent("hermes", install_hint)
+
+    assert executable == r"C:\Users\samle\bin\hermes.exe"
+    assert ran == [["powershell", "-NoProfile", "-Command", install_hint]]
+
+
+def test_hermes_install_hint_is_windows_native_on_windows(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "nt")
+
+    # Scriptblock form so `-SkipSetup` reaches the installer and the interactive
+    # setup wizard is skipped during the unattended `unsloth start hermes` run.
+    assert start._hermes_install_hint() == (
+        "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1)))"
+        " -SkipSetup"
+    )
+
+
+def test_hermes_install_hint_is_bash_on_posix(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "posix")
+
+    # `bash -s -- --skip-setup` forwards the skip flag to the piped installer.
+    assert start._hermes_install_hint() == (
+        "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
+        "/main/scripts/install.sh | bash -s -- --skip-setup"
+    )
+
+
+def test_refresh_windows_path_noop_off_windows(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "posix")
+    before = os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", before)
+    start._refresh_windows_path()
+    assert os.environ.get("PATH", "") == before
+
+
+def test_refresh_windows_path_merges_registry_hives(monkeypatch):
+    # Fake Windows registry PATH values written after this process started.
+    hkcu, hklm = object(), object()
+    reg = {
+        (hkcu, "Environment"): r"C:\existing;C:\Users\me\hermes\bin",
+        (
+            hklm,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ): r"C:\Windows\System32",
+    }
+
+    class _Key:
+        def __init__(self, value):
+            self._value = value
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def open_key(root, sub):
+        if (root, sub) in reg:
+            return _Key(reg[(root, sub)])
+        raise OSError("missing hive")
+
+    fake_winreg = SimpleNamespace(
+        HKEY_CURRENT_USER = hkcu,
+        HKEY_LOCAL_MACHINE = hklm,
+        OpenKey = open_key,
+        QueryValueEx = lambda key, name: (key._value, 1),
+    )
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.os, "pathsep", ";")
+    monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
+    monkeypatch.setenv("PATH", r"C:\custom;C:\existing")
+
+    start._refresh_windows_path()
+
+    assert os.environ["PATH"].split(";") == [
+        r"C:\custom",
+        r"C:\existing",
+        r"C:\Users\me\hermes\bin",
+        r"C:\Windows\System32",
+    ]
 
 
 def test_install_agent_declined_returns_none(monkeypatch):
@@ -361,6 +457,189 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     assert (home / "unsloth_api.config.toml").exists()
 
 
+def test_connect_codex_matches_requested_model_case_insensitively(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "codex",
+            "--no-launch",
+            "--model",
+            "unsloth/gemma-4-26b-a4b-it-gguf",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    home = tmp_path / "agents" / "codex"
+    profile = _parse_toml((home / "unsloth_api.config.toml").read_text())
+    assert profile["model"] == MODEL["id"]
+
+
+def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch):
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url, payload))
+        if url.endswith("/v1/models"):
+            return {
+                "data": [
+                    {
+                        "id": "unsloth/gemma-4-E2B-it-GGUF" if state["loaded"] else "other/model",
+                        "context_length": 131072,
+                    }
+                ]
+            }
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "unsloth/gemma-4-E2B-it-GGUF"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(
+        BASE,
+        "sk-test",
+        "unsloth/gemma-4-e2b-it-gguf",
+        start.LoadOptions(gguf_variant = "UD-Q4_K_XL"),
+    )
+
+    assert entry["id"] == "unsloth/gemma-4-E2B-it-GGUF"
+    assert any(c[1].endswith("/api/inference/load") for c in calls)
+
+
+def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
+    # A cached-but-unloaded catalog entry (loaded == False) that only case-differs must
+    # not be treated as ready; the load endpoint must still be called so the requested
+    # model becomes resident instead of the agent preflighting a different backend.
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url))
+        if url.endswith("/v1/models"):
+            return {
+                "data": [
+                    {
+                        "id": "unsloth/Gemma-4-GGUF",
+                        "loaded": state["loaded"],
+                        "context_length": 131072,
+                    }
+                ]
+            }
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "unsloth/Gemma-4-GGUF"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "unsloth/gemma-4-gguf")
+
+    assert entry["id"] == "unsloth/Gemma-4-GGUF"
+    assert any(u.endswith("/api/inference/load") for _, u in calls)
+
+
+def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch):
+    # The mirror case: a loaded entry (loaded == True) that case-matches attaches with
+    # no /api/inference/load call.
+    calls = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url))
+        if url.endswith("/v1/models"):
+            return {
+                "data": [{"id": "unsloth/Gemma-4-GGUF", "loaded": True, "context_length": 131072}]
+            }
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "unsloth/gemma-4-gguf")
+
+    assert entry["id"] == "unsloth/Gemma-4-GGUF"
+    assert not any(u.endswith("/api/inference/load") for _, u in calls)
+
+
+def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
+    # Against a remote Studio the local existence probe cannot see server-side paths,
+    # so a case-variant loaded id must NOT attach without a load: it could be a distinct
+    # server-side path on a case-sensitive host. The load endpoint resolves the request.
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url))
+        if url.endswith("/v1/models"):
+            return {
+                "data": [{"id": "unsloth/Gemma-4-GGUF", "loaded": True, "context_length": 131072}]
+            }
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "unsloth/Gemma-4-GGUF"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model("http://10.0.0.5:8888", "sk-test", "unsloth/gemma-4-gguf")
+
+    # The load endpoint was consulted (no casefold shortcut), and we still attach to the
+    # server's canonical id it reports back.
+    assert entry["id"] == "unsloth/Gemma-4-GGUF"
+    assert any(u.endswith("/api/inference/load") for _, u in calls)
+
+
+def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
+    existing_local = tmp_path / "Org" / "Foo"
+    existing_local.mkdir(parents = True)
+
+    assert start._model_id_matches("Org/Foo", "org/foo")
+    assert not start._model_id_matches(str(existing_local), str(existing_local).lower())
+    assert not start._model_id_matches("./Models/Foo", "./models/foo")
+    assert not start._model_id_matches(r".\Models\Foo", r".\models\foo")
+    # A server-side relative path (extra path segments) is not a hub id even when it
+    # does not exist on the CLI host, so it must not casefold-match a differently
+    # cased path on a case-sensitive server filesystem.
+    assert not start._is_hub_model_id("models/Llama/Foo.gguf")
+    assert not start._model_id_matches("models/Llama/Foo.gguf", "models/llama/foo.gguf")
+    # A genuine two-segment hub id still matches case-insensitively.
+    assert start._is_hub_model_id("unsloth/Gemma-3-4b-it-GGUF")
+    assert start._model_id_matches("unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf")
+    # Casefolding is gated to loopback studios (allow_casefold). With it disabled (a
+    # remote studio, where a two-segment string could be a server-side path), even a
+    # genuine hub-id case variant must not match, so the load endpoint resolves it.
+    assert not start._model_id_matches(
+        "unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf", allow_casefold = False
+    )
+    assert start._model_id_matches("unsloth/Foo", "unsloth/Foo", allow_casefold = False)
+
+
 def test_connect_codex_launch_uses_ephemeral_home(fake_studio, monkeypatch):
     # Launch mode writes config to a throwaway temp CODEX_HOME and removes it after
     # the agent exits; the user's real ~/.codex is never the target.
@@ -435,15 +714,10 @@ def test_opencode_inline_config_beats_project_config(fake_studio):
     # permissions) ride in OPENCODE_CONFIG_CONTENT, which outranks project config.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "--yolo"])
     assert result.exit_code == 0, result.output
-    content_line = next(
-        ln for ln in result.output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
-    )
-    inline = json.loads(
-        shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0]
-    )
-    assert inline["model"] == f"unsloth/{MODEL['id']}"
+    inline = _opencode_inline_config(result.output)
+    assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
     assert inline["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
-    assert "sk-unsloth" not in content_line  # key stays in the private file
+    assert "sk-unsloth" not in result.output  # key stays in the private file, not the env
 
 
 def test_opencode_inline_config_omits_permission_without_yolo(fake_studio):
@@ -452,13 +726,8 @@ def test_opencode_inline_config_omits_permission_without_yolo(fake_studio):
     # user's project rules; clearing our own config is the fix, and the inline pins the model.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
-    content_line = next(
-        ln for ln in result.output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
-    )
-    inline = json.loads(
-        shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0]
-    )
-    assert inline["model"] == f"unsloth/{MODEL['id']}"
+    inline = _opencode_inline_config(result.output)
+    assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
     assert "permission" not in inline
 
 
@@ -1400,14 +1669,17 @@ def test_write_opencode_config_fresh(tmp_path):
     path = tmp_path / "opencode.json"
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
-    provider = config["provider"]["unsloth"]
+    provider = config["provider"][start._OPENCODE_PROVIDER]
     assert provider["npm"] == "@ai-sdk/openai-compatible"
     assert provider["options"] == {"baseURL": f"{BASE}/v1", "apiKey": "sk-unsloth-abc"}
     # Context limit must be declared, or OpenCode treats it as 0 and disables compaction.
     assert provider["models"] == {
         MODEL["id"]: {"name": MODEL["id"], "limit": {"context": 131072, "output": 8192}}
     }
-    assert config["model"] == f"unsloth/{MODEL['id']}"
+    assert config["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+    # The overlay never writes disabled_providers; the dedicated provider id is one a
+    # user's disable list would not target, so nothing needs re-enabling.
+    assert "disabled_providers" not in config
     # Compaction buffer scaled to ~10% of the window (compact near 90%).
     assert config["compaction"] == {"auto": True, "reserved": 131072 // 10}
 
@@ -1415,16 +1687,96 @@ def test_write_opencode_config_fresh(tmp_path):
 def test_write_opencode_config_preserves_and_idempotent(tmp_path):
     path = tmp_path / "opencode.json"
     path.write_text(
-        json.dumps({"theme": "tokyonight", "provider": {"anthropic": {"name": "Anthropic"}}})
+        json.dumps(
+            {
+                "theme": "tokyonight",
+                "disabled_providers": ["ollama", "unsloth"],
+                "provider": {"anthropic": {"name": "Anthropic"}},
+            }
+        )
     )
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
     assert config["theme"] == "tokyonight"
+    # The overlay no longer edits disabled_providers; re-enabling unsloth is done in
+    # the inline layer, so an existing list here is preserved untouched.
+    assert config["disabled_providers"] == ["ollama", "unsloth"]
     assert config["provider"]["anthropic"]["name"] == "Anthropic"
-    assert config["provider"]["unsloth"]["options"]["baseURL"] == f"{BASE}/v1"
+    assert config["provider"][start._OPENCODE_PROVIDER]["options"]["baseURL"] == f"{BASE}/v1"
     before = path.read_text()
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
     assert path.read_text() == before
+
+
+def test_write_opencode_config_keeps_foreign_disabled_providers(tmp_path):
+    # A user who disabled other providers (but not unsloth) must keep them disabled:
+    # the overlay must not rewrite disabled_providers, or those providers get silently
+    # re-enabled for the session.
+    path = tmp_path / "opencode.json"
+    path.write_text(json.dumps({"disabled_providers": ["openai", "gemini"]}))
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
+    config = json.loads(path.read_text())
+    assert config["disabled_providers"] == ["openai", "gemini"]
+
+
+def _opencode_inline_config(output: str) -> dict:
+    # --no-launch prints OPENCODE_CONFIG_CONTENT as a POSIX `export NAME=<shell-quoted>`
+    # line on Unix/WSL and a PowerShell `$env:NAME = "<escaped>"` line on native Windows;
+    # parse whichever the host emitted so the opencode tests are shell-agnostic.
+    name = "OPENCODE_CONFIG_CONTENT"
+    for raw in output.splitlines():
+        line = raw.strip()
+        if line.startswith(f"export {name}="):
+            return json.loads(shlex.split(line.removeprefix(f"export {name}="))[0])
+        prefix = f'$env:{name} = "'
+        if line.startswith(prefix) and line.endswith('"'):
+            escaped = line[len(prefix) : -1]
+            # Reverse _print_env's PowerShell escaping (backtick is the escape char).
+            value = escaped.replace("`$", "$").replace('`"', '"').replace("``", "`")
+            return json.loads(value)
+    raise AssertionError(f"{name} not found in:\n{output}")
+
+
+def test_opencode_inline_scopes_session_to_studio_provider(fake_studio):
+    # opencode filters even config-defined providers through enabled/disabled_providers,
+    # and a model pin does not bypass that gate. The inline overlay (session-only, highest
+    # layer, arrays replace) allowlists our provider and clears the denylist so the Studio
+    # model always loads regardless of the user's config, without reading or editing it.
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    inline = _opencode_inline_config(result.output)
+    assert inline["enabled_providers"] == [start._OPENCODE_PROVIDER]
+    assert inline["disabled_providers"] == []
+    assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+    # small_model stays on the enabled provider too, so lightweight tasks do not resolve a
+    # filtered provider mid-session.
+    assert inline["small_model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+
+
+def test_opencode_passthrough_flags_omit_model_flag(fake_studio):
+    # Any passthrough (top-level flags that may precede a subcommand, or a subcommand)
+    # is left untouched; --model is not injected. The model is pinned by the inline
+    # OPENCODE_CONFIG_CONTENT (highest layer) instead, so it is still forced.
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "--dir", "repo"])
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command == ["opencode", "--dir", "repo"]
+    assert "--model" not in command
+    assert (
+        _opencode_inline_config(result.output)["model"]
+        == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+    )
+
+
+def test_opencode_passthrough_subcommand_omits_model_flag(fake_studio):
+    # A passthrough subcommand (e.g. `serve`) takes the model from the pinned config;
+    # inserting --model before it would break opencode's arg parsing.
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "serve"])
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command[0] == "opencode"
+    assert command[1] == "serve"
+    assert "--model" not in command
 
 
 def test_connect_opencode_no_launch(fake_studio, tmp_path):
@@ -1434,9 +1786,24 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
     config_path = tmp_path / "agents" / "opencode" / "opencode.json"
     # OPENCODE_CONFIG overlay points at the session file, not the user's global config.
     _assert_env_set(result.output, "OPENCODE_CONFIG", str(config_path))
+    inline_config = _opencode_inline_config(result.output)
     config = json.loads(config_path.read_text())
-    assert config["provider"]["unsloth"]["options"]["apiKey"] == "sk-unsloth-feedfacefeedface"
-    assert config["model"] == f"unsloth/{MODEL['id']}"
+    provider = config["provider"][start._OPENCODE_PROVIDER]
+    assert provider["options"]["apiKey"] == "sk-unsloth-feedfacefeedface"
+    assert config["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+    # The session config file (a throwaway overlay, not the user's real config) does not
+    # carry provider filters; the session scoping rides in the inline env layer only.
+    assert "disabled_providers" not in config
+    assert "enabled_providers" not in config
+    assert inline_config == {
+        "model": f"{start._OPENCODE_PROVIDER}/{MODEL['id']}",
+        "small_model": f"{start._OPENCODE_PROVIDER}/{MODEL['id']}",
+        "enabled_providers": [start._OPENCODE_PROVIDER],
+        "disabled_providers": [],
+    }
+    # --no-launch prints an append-safe base command (no --model before a subcommand a
+    # driver may append); the model is forced by the inline pin above.
+    assert _launch_command(result.output) == ["opencode"]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
 
@@ -1789,7 +2156,7 @@ def test_no_launch_rerun_clears_stale_opencode_yolo_permissions(fake_studio, tmp
     # revert to OpenCode's permissive "allow" default).
     assert config["permission"] == {"edit": "ask", "bash": "ask", "webfetch": "ask"}
     # The session provider survives the cleanup.
-    assert "unsloth" in config["provider"]
+    assert start._OPENCODE_PROVIDER in config["provider"]
 
 
 def test_no_launch_rerun_clears_stale_openclaw_yolo_state(fake_studio, tmp_path):
