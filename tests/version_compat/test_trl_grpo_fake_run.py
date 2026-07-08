@@ -98,6 +98,7 @@ def generated_grpo_source():
     # `import unsloth` is exactly the import-time TRL/transformers drift this
     # canary must surface as a failure, not a skip.
     import unsloth  # noqa: F401  -- _gpu_init bootstrap under spoof
+
     return _patch_grpo_and_get_source()
 
 
