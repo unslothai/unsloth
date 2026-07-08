@@ -195,7 +195,6 @@ def _patch_and_get_source(trainer_file: str, trainer_cls: str) -> str:
 
 def _assert_quantized_cast_neutralized(src: str, trainer_cls: str) -> None:
     from packaging.version import Version
-
     if _trl_version() < Version("1.7.0"):
         pytest.skip("pre-1.7.0 spells the QLoRA cast differently (is_loaded_in_4bit)")
     assert "if _is_quantized_model:" not in src, (
