@@ -799,25 +799,25 @@ def test_chained_bare_json_owns_kimi_marker_in_later_call():
 def test_nested_gemma_values_keep_commas_and_parens():
     # Nested wrapper-less Gemma mappings/arrays use the top-level delimiter rules, so nested arguments are not split.
     calls = parse_tool_calls_from_text(
-        "call:python{opts:{code:print(1,2),lang:py}}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{code:print(1,2),lang:py}}", enabled_tool_names = {"web_search"}
     )
-    assert [c["function"]["name"] for c in calls] == ["python"], calls
+    assert [c["function"]["name"] for c in calls] == ["web_search"], calls
     assert json.loads(calls[0]["function"]["arguments"]) == {
         "opts": {"code": "print(1,2)", "lang": "py"}
     }
 
     arr = parse_tool_calls_from_text(
-        "call:python{opts:[1,2,{a:f(1,2)}]}", enabled_tool_names = {"python"}
+        "call:web_search{opts:[1,2,{a:f(1,2)}]}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(arr[0]["function"]["arguments"]) == {"opts": [1, 2, {"a": "f(1,2)"}]}
 
     prose_comma = parse_tool_calls_from_text(
-        "call:python{opts:{note:hello, world}}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{note:hello, world}}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(prose_comma[0]["function"]["arguments"]) == {"opts": {"note": "hello, world"}}
 
     quoted = parse_tool_calls_from_text(
-        'call:python{opts:{q:say "a, b" now,n:3}}', enabled_tool_names = {"python"}
+        'call:web_search{opts:{q:say "a, b" now,n:3}}', enabled_tool_names = {"web_search"}
     )
     assert json.loads(quoted[0]["function"]["arguments"]) == {
         "opts": {"q": 'say "a, b" now', "n": 3}
@@ -826,15 +826,15 @@ def test_nested_gemma_values_keep_commas_and_parens():
     # Controls: nested quoted values and multi-key mappings are unchanged, and
     # a truncated nested value still falls back to the raw string.
     nested_q = parse_tool_calls_from_text(
-        'call:python{loc:{city:"New York"}}', enabled_tool_names = {"python"}
+        'call:web_search{loc:{city:"New York"}}', enabled_tool_names = {"web_search"}
     )
     assert json.loads(nested_q[0]["function"]["arguments"]) == {"loc": {"city": "New York"}}
     multi = parse_tool_calls_from_text(
-        "call:python{opts:{a:1,b:2},n:3}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{a:1,b:2},n:3}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(multi[0]["function"]["arguments"]) == {"opts": {"a": 1, "b": 2}, "n": 3}
     trunc = parse_tool_calls_from_text(
-        "call:python{opts:{code:print(1,2}}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{code:print(1,2}}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(trunc[0]["function"]["arguments"]) == {"opts": "{code:print(1,2}"}
 
