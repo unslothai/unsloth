@@ -4164,9 +4164,11 @@ class LlamaCppBackend:
         self._gpu_layers = -1
         self._n_cpu_moe = 0
         self._tensor_split = None
-        # Record the picked device so the load response echoes it and a re-Apply
-        # with the same pick dedups instead of forcing a needless reload.
-        self._gpu_ids = sorted(gpu_ids) if gpu_ids else None
+        # Record only the single device the runner actually uses (the lowest
+        # selected GPU, chosen above) -- not the whole pick. The diffusion runner
+        # is single-device, so echoing a multi-GPU list would misreport placement
+        # in /status and let a re-Apply dedup against GPUs the runner never used.
+        self._gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None
         if hf_variant:
             self._hf_variant = hf_variant
         elif gguf_path:
