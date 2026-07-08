@@ -81,6 +81,23 @@ def test_union_control_mode_rejects_unknown_type():
     assert dc.union_control_mode("some/bare-repo", "detph") is None
 
 
+def test_union_control_mode_matches_curated_repo_id():
+    # resolve_controlnet() accepts a curated union model by its bare HF repo id (owner/name),
+    # loading the same union repo the short catalog id points at. union_control_mode() must then
+    # recognise that repo id as union too -- otherwise control_mode is dropped and the union
+    # pipeline runs the wrong/default head (or diffusers raises on the missing mode).
+    assert dc.union_control_mode("Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", "depth") == 2
+    assert dc.union_control_mode("Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", "pose") == 4
+    assert dc.union_control_mode("Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", "passthrough") == 0
+    assert dc.union_control_mode("InstantX/Qwen-Image-ControlNet-Union", "canny") == 0
+    # A bare repo id that is NOT a curated union model still returns None (caller omits the kwarg).
+    assert dc.union_control_mode("some/other-controlnet", "canny") is None
+    # A typo'd type against a repo-id-matched union still raises (route -> 400), same as the
+    # short-id path, rather than silently defaulting to the canny head.
+    with pytest.raises(ValueError, match = "Unknown control type"):
+        dc.union_control_mode("Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", "detph")
+
+
 def test_resolve_controlnet_local(tmp_path, monkeypatch):
     d = tmp_path / "controlnets"
     d.mkdir()

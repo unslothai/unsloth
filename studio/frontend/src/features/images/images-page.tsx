@@ -1495,11 +1495,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setSteps(d.steps);
     setGuidance(d.guidance);
     // Wire "Reapply" to the resident model too, so an advanced-option reload works
-    // without re-picking it from the dropdown. A resident GGUF carries no filename in
-    // status, so leave lastLoad null for it (Reapply stays a no-op) rather than
-    // reload it without the filename it needs.
+    // without re-picking it from the dropdown. Only a full pipeline load needs no
+    // checkpoint filename; a resident GGUF *and* single_file carry no filename in status,
+    // and the backend rejects a gguf/single_file load without one (400 before it evicts),
+    // so leave lastLoad null for those (Reapply stays a no-op) rather than wire a reload
+    // that can never complete.
     const kind = status?.model_kind;
-    if (kind === "single_file" || kind === "pipeline") {
+    if (kind === "pipeline") {
       lastLoad.current = { repoId, kind };
     }
   }, [status?.loaded, status?.repo_id, status?.model_kind]);

@@ -227,6 +227,13 @@ def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
     which would produce wrong conditioning. A non-union entry returns None so the caller omits the
     kwarg."""
     entry = _catalog_by_id().get(spec_id)
+    if entry is None:
+        # A client may name a curated union model by its bare HF repo id (owner/name) rather than
+        # its short catalog id -- resolve_controlnet() accepts that form and loads the SAME union
+        # repo, so it must be recognised as union here too. The catalog is keyed only by short id,
+        # so match on repo_id as a fallback; otherwise the mode is dropped and the union pipeline
+        # runs the wrong/default head (or diffusers raises on the missing control_mode).
+        entry = next((e for e in _CURATED if e.repo_id and e.repo_id == spec_id), None)
     if entry is None or not entry.is_union:
         return None
     ct = (control_type or "").strip().lower()
