@@ -5341,9 +5341,12 @@ class LlamaCppBackend:
                     # fetch its sibling for -hf loads the same way as MTP so a
                     # Hub GGUF repo shipping a dflash drafter engages it. A repo
                     # has at most one of the two, so the other download no-ops.
+                    # Skip vision models: DFlash is suppressed for them (unsupported
+                    # multimodal drafting), so the fetch would be wasted.
                     if (
                         not dflash_draft_path
                         and _spec_canon == "auto"
+                        and not is_vision
                         and not _extra_args_set_spec_type(extra_args)
                     ):
                         dflash_draft_path = self._download_dflash(

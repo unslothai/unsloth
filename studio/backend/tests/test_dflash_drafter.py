@@ -468,6 +468,26 @@ def test_local_load_still_reloads_when_dflash_sibling_appears(tmp_path):
     assert routes._request_matches_loaded_settings(req, backend) is False
 
 
+def test_remote_companion_bytes_counts_preferred_dflash(monkeypatch):
+    # The training VRAM guard must count the DFlash drafter the -hf load will
+    # fetch (the quantized one), not the oversized bf16 and not every build.
+    from types import SimpleNamespace
+
+    import huggingface_hub
+
+    routes = _load_inference_routes_module()
+    siblings = [
+        SimpleNamespace(rfilename = "Qwen3-4B-Q4_K_M.gguf", size = 4_000),
+        SimpleNamespace(rfilename = "Qwen3-4B-DFlash-bf16.gguf", size = 1_200),
+        SimpleNamespace(rfilename = "Qwen3-4B-DFlash-q8_0.gguf", size = 575),
+    ]
+    monkeypatch.setattr(
+        huggingface_hub, "model_info", lambda *a, **k: SimpleNamespace(siblings = siblings)
+    )
+    total = routes._remote_gguf_companion_bytes("org/repo", hf_token = None, include_mmproj = True)
+    assert total == 575
+
+
 def test_dflash_reload_dedup_finds_root_sibling(tmp_path):
     # Weight in a quant subdir, drafter at the snapshot root: the reload dedup
     # scans the companion root (like initial detection), so a duplicate /load

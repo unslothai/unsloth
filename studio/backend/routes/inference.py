@@ -3119,19 +3119,27 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
 def _remote_gguf_companion_bytes(
     repo: str, *, hf_token: Optional[str], include_mmproj: bool
 ) -> int:
-    """Bytes of MTP/mmproj companion GGUFs llama-server auto-downloads. 0 on error,
-    so it can only add headroom, never refuse a load by itself."""
+    """Bytes of MTP/DFlash/mmproj companion GGUFs Studio auto-downloads. 0 on
+    error, so it can only add headroom, never refuse a load by itself."""
     try:
         from huggingface_hub import model_info
 
+        from hub.utils.gguf_plan import preferred_dflash_sibling
+
         info = model_info(repo, token = hf_token, files_metadata = True)
+        siblings = info.siblings or []
         total = 0
-        for sibling in info.siblings or []:
+        for sibling in siblings:
             base = Path(sibling.rfilename or "").name.lower()
             if not base.endswith(".gguf"):
                 continue
             if base.startswith("mtp-") or (include_mmproj and "mmproj" in base):
                 total += getattr(sibling, "size", 0) or 0
+        # DFlash: only the preferred (quantized) drafter is fetched, so count that
+        # one, not every -DFlash- build a repo may ship alongside it.
+        dflash = preferred_dflash_sibling(siblings)
+        if dflash is not None:
+            total += getattr(dflash, "size", 0) or 0
         return total
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
