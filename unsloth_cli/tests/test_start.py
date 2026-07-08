@@ -646,6 +646,7 @@ def test_resolve_model_loopback_does_not_casefold_weight_file_paths(monkeypatch)
     assert entry["id"] == "models/foo.gguf"
     assert any(u.endswith("/api/inference/load") for _, u, _ in calls)
 
+
 def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
     existing_local = tmp_path / "Org" / "Foo"
     existing_local.mkdir(parents = True)
