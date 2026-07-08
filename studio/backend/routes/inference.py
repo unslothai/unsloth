@@ -2540,12 +2540,14 @@ def _request_matches_loaded_settings(
     ):
         return False
     # spec_draft_n_max only matters with a model-draft variant; None means
-    # "platform default" and matches whatever the backend chose. DFlash has no
-    # forced UI mode, so an Auto load stays backend_mode "auto"; key off the
-    # resolved spec instead, else this route dedup short-circuits before the
-    # backend's own draft-dflash n-max check and the new value is dropped.
+    # "platform default" and matches whatever the backend chose. An Auto load
+    # that resolved to a drafter (Gemma MTP or DFlash) stays backend_mode
+    # "auto", so key off the resolved spec too -- mirroring the backend's own
+    # guard (_already_in_target_state, which compares n_max for draft-mtp /
+    # draft-dflash). Otherwise this route dedup short-circuits before that guard
+    # and the new value is silently dropped.
     _draft_n_max_engaged = backend_mode in ("mtp", "mtp+ngram") or (
-        llama_backend.speculative_type == "draft-dflash"
+        llama_backend.speculative_type in ("draft-mtp", "draft-dflash")
     )
     if _draft_n_max_engaged and request.spec_draft_n_max is not None:
         if int(request.spec_draft_n_max) != (llama_backend.spec_draft_n_max or 0):

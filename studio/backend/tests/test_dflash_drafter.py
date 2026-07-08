@@ -416,3 +416,20 @@ def test_dflash_nmax_change_forces_reload(tmp_path):
     assert routes._request_matches_loaded_settings(changed, backend) is False
     same = LoadRequest(model_path = str(weight), spec_draft_n_max = 4)
     assert routes._request_matches_loaded_settings(same, backend) is True
+
+
+def test_auto_mtp_nmax_change_also_reloads(tmp_path):
+    # Parity: the route n-max compare mirrors the backend guard, which covers
+    # draft-mtp too. An Auto MTP load stays backend_mode "auto", so a changed
+    # n-max must not dedup just because it isn't a forced mtp / mtp+ngram mode.
+    routes = _load_inference_routes_module()
+    from models.inference import LoadRequest
+
+    weight = tmp_path / "gemma-4-12b-it-Q4_K_M.gguf"
+    weight.touch()
+    backend = _route_dedup_backend(str(weight), hf_repo = None)
+    backend._speculative_type = "draft-mtp"
+    backend._spec_draft_n_max = 2
+
+    changed = LoadRequest(model_path = str(weight), spec_draft_n_max = 6)
+    assert routes._request_matches_loaded_settings(changed, backend) is False
