@@ -281,6 +281,19 @@ class TestSecurityHeadersMiddleware:
         assert r.headers["x-frame-options"] == "DENY"
         assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
 
+    def test_kaggle_backed_colab_requires_frame_token(self, main_module, monkeypatch):
+        monkeypatch.setattr(main_module, "_IS_COLAB", True)
+        monkeypatch.setattr(main_module, "_IS_KAGGLE", True)
+        monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
+        monkeypatch.setenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", "frame-token")
+        app = _make_csp_app(main_module)
+        c = TestClient(app)
+
+        r = c.get("/plain")
+
+        assert r.headers["x-frame-options"] == "DENY"
+        assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
+
     def test_hosted_notebook_valid_frame_token_omits_x_frame_options(
         self, main_module, monkeypatch
     ):
@@ -291,6 +304,24 @@ class TestSecurityHeadersMiddleware:
         c = TestClient(app)
 
         r = c.get("/plain?__unsloth_frame=frame-token")
+
+        assert "x-frame-options" not in {key.lower() for key in r.headers.keys()}
+        assert "https://www.kaggle.com" in r.headers["content-security-policy"]
+        assert "__unsloth_frame=frame-token" in r.headers["set-cookie"]
+        assert "SameSite=None" in r.headers["set-cookie"]
+        assert "Secure" in r.headers["set-cookie"]
+        assert "Partitioned" in r.headers["set-cookie"]
+
+    def test_hosted_notebook_frame_cookie_survives_route_navigation(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module, "_IS_COLAB", False)
+        monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
+        monkeypatch.setenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", "frame-token")
+        app = _make_csp_app(main_module)
+        c = TestClient(app)
+
+        r = c.get("/plain", headers = {"cookie": "__unsloth_frame=frame-token"})
 
         assert "x-frame-options" not in {key.lower() for key in r.headers.keys()}
         assert "https://www.kaggle.com" in r.headers["content-security-policy"]
@@ -314,6 +345,7 @@ class TestSecurityHeadersMiddleware:
 
     def test_colab_csp_keeps_broad_frame_ancestors(self, main_module, monkeypatch):
         monkeypatch.setattr(main_module, "_IS_COLAB", True)
+        monkeypatch.setattr(main_module, "_IS_KAGGLE", False)
         monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
         csp = main_module._build_csp()
         assert "frame-ancestors *" in csp

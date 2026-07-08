@@ -9,11 +9,11 @@ Trust model, in order:
      one the trusted proxy appended. The leftmost entry is client-controlled and
      spoofable, so this assumes a proxy that appends (or overwrites) the header;
      only enable the env var behind such a proxy.
-  2. If the socket peer is loopback, honor ``CF-Connecting-IP``. Studio's managed
-     Cloudflare tunnel terminates at 127.0.0.1, so every tunneled visitor would
-     otherwise collapse onto the same socket peer (the local cloudflared process)
-     and share one rate-limit bucket. ``CF-Connecting-IP`` is set by Cloudflare's
-     edge and can't be forged by a tunneled client.
+  2. If an operator explicitly opts in, or Studio's managed Cloudflare tunnel is
+     active and the request carries the notebook iframe token cookie, honor
+     ``CF-Connecting-IP``. The cookie condition stops raw localhost callers from
+     forging fresh buckets while preserving per-client buckets for notebook
+     iframe traffic that arrived through the public tunnel.
   3. Otherwise the socket peer, so a direct LAN caller can't spoof a header to
      dodge a per-IP limit.
 """
@@ -23,11 +23,27 @@ from __future__ import annotations
 import ipaddress
 import os
 
+from utils.notebook_frame_auth import notebook_frame_cookie_matches
+
 _TRUST_FORWARDED_ENV = "UNSLOTH_STUDIO_TRUST_FORWARDED"
+_TRUST_CF_CONNECTING_IP_ENV = "UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP"
 
 
 def _trust_forwarded_for() -> bool:
     return os.environ.get(_TRUST_FORWARDED_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _trust_cf_connecting_ip(request) -> bool:
+    if os.environ.get(_TRUST_CF_CONNECTING_IP_ENV, "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    try:
+        if not bool(
+            getattr(getattr(getattr(request, "app", None), "state", None), "trust_cloudflare_client_ip", False)
+        ):
+            return False
+        return notebook_frame_cookie_matches(request.headers)
+    except Exception:
+        return False
 
 
 def _is_loopback(host: str | None) -> bool:
@@ -64,7 +80,7 @@ def client_ip(request) -> str:
             normalized = _normalize_addr(xff.rsplit(",", 1)[-1])
             if normalized:
                 return normalized
-    if _is_loopback(peer):
+    if _is_loopback(peer) and _trust_cf_connecting_ip(request):
         cf = _normalize_addr(request.headers.get("cf-connecting-ip"))
         if cf:
             return cf

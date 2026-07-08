@@ -24,11 +24,13 @@ import _platform_compat  # noqa: F401
 
 from loggers import get_logger
 from utils.notebook_env import is_kaggle_environment
+from utils.notebook_frame_auth import (
+    NOTEBOOK_FRAME_TOKEN_ENV as _NOTEBOOK_FRAME_TOKEN_ENV,
+    NOTEBOOK_FRAME_TOKEN_PARAM as _NOTEBOOK_FRAME_TOKEN_PARAM,
+)
 
 logger = get_logger(__name__)
 
-_NOTEBOOK_FRAME_TOKEN_ENV = "UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN"
-_NOTEBOOK_FRAME_TOKEN_PARAM = "__unsloth_frame"
 _PUBLIC_URL_WAIT_TIMEOUT_ENV = "UNSLOTH_STUDIO_PUBLIC_URL_WAIT_SECONDS"
 _PUBLIC_URL_WAIT_TIMEOUT_SECONDS = 8.0
 _OWNED_SERVER_APP = None

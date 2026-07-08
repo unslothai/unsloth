@@ -44,6 +44,7 @@ def _reset_buckets():
 def env_no_proxy(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", raising = False)
 
 
 @pytest.fixture
@@ -163,11 +164,28 @@ class TestClientIp:
         req = _FakeRequest("127.0.0.1", {"cf-connecting-ip": "198.51.100.7"})
         assert _client_ip(req) == "127.0.0.1"
 
-    def test_cf_connecting_ip_used_from_managed_tunnel_loopback_peer(self, env_no_proxy):
+    def test_cf_connecting_ip_ignored_from_managed_tunnel_without_frame_cookie(
+        self, env_no_proxy
+    ):
         from routes.auth import _client_ip
         req = _FakeRequest(
             "127.0.0.1",
             {"cf-connecting-ip": "198.51.100.7"},
+            trust_cloudflare_client_ip = True,
+        )
+        assert _client_ip(req) == "127.0.0.1"
+
+    def test_cf_connecting_ip_used_from_managed_tunnel_frame_cookie(
+        self, env_no_proxy, monkeypatch
+    ):
+        from routes.auth import _client_ip
+        monkeypatch.setenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", "frame-token")
+        req = _FakeRequest(
+            "127.0.0.1",
+            {
+                "cf-connecting-ip": "198.51.100.7",
+                "cookie": "__unsloth_frame=frame-token",
+            },
             trust_cloudflare_client_ip = True,
         )
         assert _client_ip(req) == "198.51.100.7"
@@ -201,6 +219,20 @@ class TestClientIp:
         from routes import auth as auth_routes
         for idx in range(5):
             req = _FakeRequest("127.0.0.1", {"cf-connecting-ip": f"198.51.100.{idx}"})
+            auth_routes._record_login_failure(auth_routes._bucket_key(req, "admin"))
+
+        assert sorted(auth_routes._LOGIN_IP_BUCKETS) == ["127.0.0.1"]
+
+    def test_rotating_cf_connecting_ip_with_tunnel_but_no_frame_cookie_stays_one_bucket(
+        self, env_no_proxy
+    ):
+        from routes import auth as auth_routes
+        for idx in range(5):
+            req = _FakeRequest(
+                "127.0.0.1",
+                {"cf-connecting-ip": f"198.51.100.{idx}"},
+                trust_cloudflare_client_ip = True,
+            )
             auth_routes._record_login_failure(auth_routes._bucket_key(req, "admin"))
 
         assert sorted(auth_routes._LOGIN_IP_BUCKETS) == ["127.0.0.1"]

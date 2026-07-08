@@ -35,6 +35,7 @@ from auth.authentication import (
     get_current_subject_allow_password_change,
     refresh_access_token,
 )
+from utils.notebook_frame_auth import notebook_frame_cookie_matches
 
 router = APIRouter()
 _TRUST_CF_CONNECTING_IP_ENV = "UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP"
@@ -171,13 +172,14 @@ def _trust_cf_connecting_ip(request: Request | None) -> bool:
     if os.environ.get(_TRUST_CF_CONNECTING_IP_ENV, "").lower() in ("1", "true", "yes"):
         return True
     try:
-        return bool(
-            getattr(
-                getattr(getattr(request, "app", None), "state", None),
-                "trust_cloudflare_client_ip",
-                False,
-            )
+        tunnel_trust = getattr(
+            getattr(getattr(request, "app", None), "state", None),
+            "trust_cloudflare_client_ip",
+            False,
         )
+        if not bool(tunnel_trust):
+            return False
+        return notebook_frame_cookie_matches(request.headers)
     except Exception:
         return False
 
