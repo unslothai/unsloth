@@ -315,6 +315,19 @@ export function useRecipePersistence({
     return () => window.clearTimeout(timeoutId);
   }, [isDirty, persistRecipe, saveLoading]);
 
+  // Drain queued cleanups even when autosave is skipped: a net-zero edit (add
+  // then remove an unstructured seed before the 800ms debounce) keeps isDirty
+  // false, so the autosave effect never drains and the queued uid leaks its
+  // upload dir. Not-dirty means currentPayload equals the saved recipe, and
+  // drain skips the uid it still references, so only dirs no saved recipe
+  // points at are deleted (keeps the save-first invariant).
+  useEffect(() => {
+    if (!initialRecipeReady || isDirty || saveLoading) {
+      return;
+    }
+    drainQueuedUploadCleanups(currentPayload);
+  }, [currentPayload, initialRecipeReady, isDirty, saveLoading]);
+
   const copyRecipe = useCallback(async (): Promise<void> => {
     setCopied(false);
     try {
