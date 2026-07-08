@@ -1952,11 +1952,21 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
     if trl_version < Version("1.7.0"):
         # TRL < 1.7.0 unpacks (logps, entropies) at every call site; TRL >= 1.7.0
         # always unpacks (logps, entropies, aux_loss). Drop the aux_loss element so
-        # the return arity matches the installed TRL.
-        function = function.replace(
-            "return logprobs.detach(), entropies, aux_loss  # logps, entropies, aux_loss",
-            "return logprobs.detach(), entropies  # logps, entropies",
+        # the return arity matches the installed TRL. Regex tolerates comment /
+        # whitespace drift on the return line; fail loud if the anchor ever stops
+        # matching rather than silently shipping a 3-tuple to older TRL.
+        new_function, n = re.subn(
+            r"return (logprobs\.detach\(\), entropies), aux_loss[^\n]*",
+            r"return \1  # logps, entropies",
+            function,
         )
+        if n != 1:
+            raise RuntimeError(
+                "Unsloth GRPO: could not downgrade the per-token-logps return to a "
+                f"2-tuple for TRL {trl_version} (matched {n} times, expected 1). The "
+                "return line changed; update the arity gate in rl_replacements.py."
+            )
+        function = new_function
     return function
 
 

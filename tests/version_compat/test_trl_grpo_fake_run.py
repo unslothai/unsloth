@@ -195,3 +195,36 @@ def test_sft_patch_generates_valid_source():
 
 def test_dpo_patch_generates_valid_source():
     _patch_and_validate("dpo_trainer", "DPOTrainer")
+
+
+# The installed TRL in CI is always >= 1.7.0, so the < 1.7.0 return-arity
+# downgrade is never exercised by the fake-run above. Lock both arities by
+# monkeypatching rl_replacements.trl_version and re-generating the injected
+# _get_per_token_logps_and_entropies source directly (no TRL install needed).
+def test_per_token_logps_arity_gate_both_directions(monkeypatch):
+    if importlib.util.find_spec("unsloth") is None:
+        pytest.skip("unsloth not installed")
+    import unsloth  # noqa: F401
+    from packaging.version import Version
+
+    from unsloth.models import rl_replacements as _rlr
+
+    gate = _rlr.grpo_trainer__get_per_token_logps_and_entropies
+
+    # >= 1.7.0: 3-tuple return kept.
+    monkeypatch.setattr(_rlr, "trl_version", Version("1.7.0"), raising = False)
+    src_new = gate("_get_per_token_logps_and_entropies", None)
+    assert "return logprobs.detach(), entropies, aux_loss" in src_new, (
+        "3-tuple return missing for TRL >= 1.7.0"
+    )
+
+    # < 1.7.0: aux_loss element dropped -> 2-tuple. A no-op downgrade must raise
+    # (fail loud), never silently ship a 3-tuple to older TRL.
+    monkeypatch.setattr(_rlr, "trl_version", Version("1.6.0"), raising = False)
+    src_old = gate("_get_per_token_logps_and_entropies", None)
+    assert "return logprobs.detach(), entropies  # logps, entropies" in src_old, (
+        "2-tuple return missing for TRL < 1.7.0"
+    )
+    assert "entropies, aux_loss" not in src_old, (
+        "aux_loss element still present in the TRL < 1.7.0 downgrade"
+    )
