@@ -790,9 +790,7 @@ def _restore_missing_fp8_weight_scale_inv(
         ):
             skipped += 1
             continue
-        # The scale must sit on the weight/projection compute device, so prefer that live device
-        # over a reference placeholder device_map may have left elsewhere (plain-tensor scale
-        # attributes are not moved). Fall back to the reference, then meta placeholders. #6749
+        # Prefer the live weight/projection compute device over a reference placeholder; fall back to reference, then meta. #6749
         projection_device = _fp8_projection_device(module, attr_name)
         if isinstance(weight, torch.Tensor) and weight.device.type != "meta":
             target_device = weight.device
@@ -849,10 +847,7 @@ def _restore_missing_fp8_weight_scale_inv(
                 restored_scale = restored_scale.to(dtype = weight.dtype)
             except Exception:
                 pass
-        # Blockwise FP8 kernels read block geometry off the scale (getattr(weight_scale,
-        # "block_size", ...)); carry the module's block_size onto a restored scale whose
-        # placeholder was dropped, else the forward defaults to [128, 128] and mis-dequantizes
-        # non-default-block checkpoints. The _parameters branch below keeps the old attrs. #6749
+        # Carry the module's block_size onto a dropped-placeholder scale, else the blockwise forward defaults to [128, 128] and mis-dequantizes non-default-block checkpoints. #6749
         if not hasattr(restored_scale, "block_size"):
             module_block_size = getattr(module, "block_size", None)
             if module_block_size is None and isinstance(weight, torch.Tensor):

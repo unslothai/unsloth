@@ -1641,8 +1641,7 @@ def test_peft_fp8_base_remap_forces_safetensors():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs cuda for cross-device test")
 def test_prefers_weight_device_over_cpu_scale_placeholder():
-    # A plain-tensor CPU scale placeholder alongside a CUDA weight (device_map does not move
-    # plain attributes) must restore onto the weight device, not the placeholder's CPU. #6749
+    # A plain-tensor CPU scale placeholder alongside a CUDA weight must restore onto the weight device, not CPU. #6749
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16, device = "cuda"))
@@ -1665,8 +1664,7 @@ def test_prefers_weight_device_over_cpu_scale_placeholder():
 
 
 def test_restored_scale_inherits_module_block_size_when_placeholder_dropped():
-    # A dropped-placeholder scale registered as a bare buffer must carry the module's block_size,
-    # else the FP8 forward defaults to [128, 128] and mis-dequantizes non-default-block ckpts. #6749
+    # A dropped-placeholder scale must carry the module's block_size, else the FP8 forward defaults to [128, 128] and mis-dequantizes non-default-block ckpts. #6749
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.fp8 = _Fp8Owner(weight = torch.randn(256, 256, dtype = torch.float16))
