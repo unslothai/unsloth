@@ -31,6 +31,7 @@ from core.inference.chat_eos import (
     chat_eos_repair,
     resolve_chat_turn_end_eos_ids_using,
 )
+from core.inference.presence_penalty import _make_presence_penalty_processor
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -828,9 +829,11 @@ class InferenceBackend:
         preserve_thinking: Optional[bool] = None,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
+        nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
+        presence_penalty: float = 0.0,
     ):
         """Run an agentic tool loop on top of ``generate_chat_response``.
 
@@ -864,6 +867,7 @@ class InferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                presence_penalty = presence_penalty,
             )
 
         initial = list(messages)
@@ -877,6 +881,7 @@ class InferenceBackend:
             execute_tool = execute_tool,
             cancel_event = cancel_event,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            nudge_tool_calls = nudge_tool_calls,
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,
             session_id = session_id,
@@ -899,12 +904,14 @@ class InferenceBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Generate response for text or vision models (lock held by background thread).
 
         ``tools`` / ``enable_thinking`` / ``reasoning_effort`` / ``preserve_thinking``
         are forwarded into ``apply_chat_template`` so templates that understand them
         (Qwen3, Llama 3.1+, gpt-oss harmony) advertise tool schemas / reasoning controls.
+        ``presence_penalty`` matches the GGUF sampling path (0 disables it).
         """
         yield from self._generate_chat_response_inner(
             messages = messages,
@@ -921,6 +928,7 @@ class InferenceBackend:
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            presence_penalty = presence_penalty,
         )
 
     def _generate_chat_response_inner(
@@ -940,6 +948,7 @@ class InferenceBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Inner generation logic, called by generate_chat_response and
         generate_with_adapter_control.
@@ -979,6 +988,7 @@ class InferenceBackend:
                     max_new_tokens,
                     repetition_penalty,
                     cancel_event = cancel_event,
+                    presence_penalty = presence_penalty,
                 )
                 return
             else:
@@ -1091,6 +1101,7 @@ class InferenceBackend:
             repetition_penalty,
             cancel_event = cancel_event,
             _adapter_state = _adapter_state,
+            presence_penalty = presence_penalty,
         )
 
     def _generate_vision_response(
@@ -1105,6 +1116,7 @@ class InferenceBackend:
         max_new_tokens,
         repetition_penalty,
         cancel_event = None,
+        presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         model_info = self.models[self.active_model_name]
@@ -1194,6 +1206,14 @@ class InferenceBackend:
                 top_k = top_k,
                 min_p = min_p,
             )
+            # Presence penalty (GGUF parity) for VLM chat.
+            _vision_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
+            if _vision_input_ids is not None:
+                _pp = _make_presence_penalty_processor(
+                    presence_penalty, int(_vision_input_ids.shape[1])
+                )
+                if _pp is not None:
+                    generation_kwargs["logits_processor"] = _pp
 
             err: dict[str, str] = {}
 
@@ -1422,11 +1442,13 @@ class InferenceBackend:
         repetition_penalty: float = 1.0,
         cancel_event = None,
         _adapter_state = None,
+        presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
 
         _adapter_state: if not None, the background thread toggles adapters
         before model.generate(), under _generation_lock.
+        ``presence_penalty`` matches the GGUF sampling path via a logits processor (0 disables it).
         """
         if not self.active_model_name:
             yield "Error: No active model"
@@ -1487,6 +1509,12 @@ class InferenceBackend:
                 if tokenizer.pad_token_id is None
                 else tokenizer.pad_token_id,
             )
+            # Presence penalty (GGUF parity); prompt_len excludes prompt tokens.
+            _pp = _make_presence_penalty_processor(
+                presence_penalty, int(inputs["input_ids"].shape[1])
+            )
+            if _pp is not None:
+                generation_kwargs["logits_processor"] = _pp
             if cancel_event is not None:
                 from transformers.generation.stopping_criteria import (
                     StoppingCriteria,

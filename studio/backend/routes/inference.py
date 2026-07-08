@@ -625,6 +625,66 @@ def _chat_final_chunk(completion_id, created, model_name, finish_reason) -> str:
     )
 
 
+def _chat_tool_calls_chunk(completion_id, created, model_name, tool_calls) -> str:
+    """Delta chunk carrying OpenAI tool-call deltas (sibling of ``_chat_content_chunk``)."""
+    return _chat_chunk_sse(
+        completion_id,
+        created,
+        model_name,
+        delta = ChoiceDelta(tool_calls = tool_calls),
+        finish_reason = None,
+    )
+
+
+def _sf_heal_events_to_sse(
+    events,
+    completion_id,
+    created,
+    model_name,
+    state,
+    parallel_tool_calls,
+    monitor_id = None,
+):
+    """Serialize ``StreamToolCallHealer`` events into chat SSE lines.
+
+    ``state["idx"]`` tracks the call index across ``feed``/``finalize``;
+    ``parallel_tool_calls is False`` caps promotion to one call (GGUF parity).
+    The monitor is fed from the same events the client receives, never the
+    healed-away markup."""
+    lines = []
+    for kind, value in events:
+        if kind == "text":
+            if value:
+                lines.append(_chat_content_chunk(completion_id, created, model_name, value))
+                api_monitor.append_reply(monitor_id, value)
+            continue
+        if parallel_tool_calls is False and state["idx"] >= 1:
+            continue
+        lines.append(
+            _chat_tool_calls_chunk(
+                completion_id,
+                created,
+                model_name,
+                [
+                    {
+                        "index": state["idx"],
+                        "id": value["id"],
+                        "type": "function",
+                        "function": value["function"],
+                    }
+                ],
+            )
+        )
+        _fn = value.get("function") or {}
+        api_monitor.append_reply(
+            monitor_id,
+            ("[tool_calls] " if state["idx"] == 0 else "; ")
+            + f"{_fn.get('name', '')}({_fn.get('arguments', '')})",
+        )
+        state["idx"] += 1
+    return lines
+
+
 def _rewrite_cmpl_id(raw: bytes) -> bytes:
     """Rewrite llama-server's chat-style ``chatcmpl-`` ids to the ``cmpl-``
     prefix OpenAI's legacy /v1/completions use. Anchored on the ``"id":`` key
@@ -1366,17 +1426,60 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     return flags
 
 
+def _generation_prompt_opens_think(template: Optional[str]) -> bool:
+    """True when rendering the template's generation prompt ends INSIDE an unclosed ``<think>``.
+
+    Distinguishes templates that PREFILL an open ``<think>`` in the assistant generation
+    prompt (DeepSeek-R1, QwQ, Qwen3-Thinking) -- where the model emits only the closing
+    ``</think>`` and the extractor must start in reasoning mode -- from templates that merely
+    render PAST assistant ``<think>...</think>`` history while leaving the generation prompt
+    open with no ``<think>`` (e.g. Kimi-K2-Thinking), where the model self-emits its own block
+    and the extractor must start in normal mode. Renders a single-user-message probe with the
+    same sandbox transformers uses; on any failure returns True, preserving the historical
+    always-on prefill for templates that cannot be rendered here.
+    """
+    if not template:
+        return False
+    try:
+        from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+        def _raise_exception(message: str):
+            raise RuntimeError(message)
+
+        env = ImmutableSandboxedEnvironment(
+            trim_blocks = True,
+            lstrip_blocks = True,
+            extensions = ["jinja2.ext.loopcontrols"],
+        )
+        env.filters["tojson"] = lambda value, **kwargs: json.dumps(value, ensure_ascii = False)
+        env.globals["raise_exception"] = _raise_exception
+        rendered = env.from_string(template).render(
+            messages = [{"role": "user", "content": "hi"}],
+            add_generation_prompt = True,
+            bos_token = "",
+            eos_token = "",
+        )
+    except Exception:
+        return True
+    # ``<think>`` is not a substring of ``</think>`` (the ``/`` breaks it), so the last open
+    # tag sitting after the last close tag means the prompt ends inside an open block.
+    return rendered.rfind("<think>") > rendered.rfind("</think>")
+
+
 def _sf_reasoning_prefill_mode(
     features: dict,
     enable_thinking: Optional[bool],
     template: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
 ) -> bool:
-    """Whether this request begins INSIDE an unclosed ``<think>`` (Qwen3/Qwen3.5/GLM prefill it).
+    """Whether a safetensors/MLX generation begins INSIDE an unclosed ``<think>``.
 
-    Gated on the STANDARD ``<think>``/``</think>`` markers: a bespoke reasoning channel (e.g. gemma)
-    never emits ``</think>``, so prefilled mode would swallow the whole answer -- excluded, as are
-    gpt-oss and thinking-disabled requests. ``enable_thinking=None`` defaults ON, so plain requests prefill.
+    ``enable_thinking`` templates (Qwen3/GLM) prefill an open ``<think>`` so the model
+    emits only the closing ``</think>``, and the extractor must start in reasoning mode.
+    Gated on the STANDARD ``<think>``/``</think>`` markers: bespoke channels (gemma's
+    ``<|think|>``) never emit ``</think>`` and would swallow the answer, so they and
+    gpt-oss and thinking-disabled requests return False. ``enable_thinking`` None
+    defaults thinking ON, so a plain request still prefills.
     """
     if features.get("reasoning_style") not in ("enable_thinking", "enable_thinking_effort"):
         return False
@@ -1384,16 +1487,21 @@ def _sf_reasoning_prefill_mode(
     if "</think>" not in tpl and "<think>" not in tpl:
         return False
     if features.get("reasoning_always_on"):
-        return True
+        # enable_thinking_effort + always-on: the effort mechanism (not the prompt shape) keeps
+        # thinking on, so always-on wins over reasoning_effort and we prefill.
+        if features.get("reasoning_style") == "enable_thinking_effort":
+            return True
+        # ``reasoning_always_on`` fires on paired ``<think>...</think>`` anywhere in the
+        # template, including markup that only renders PAST assistant history (Kimi-K2-Thinking)
+        # while the generation prompt opens none. Prefill only when the generation prompt opens
+        # one, else the extractor captures a normal answer as reasoning_content and returns blank.
+        return _generation_prompt_opens_think(tpl)
     if not features.get("supports_reasoning"):
         return False
     if enable_thinking is False:
         return False
-    # A reasoning_effort="none" request disables thinking for enable_thinking_effort
-    # (GLM-5.2) models the same way enable_thinking=False does (see
-    # ``_request_reasoning_kwargs``). Without this, the model emits no ``</think>`` and
-    # a plain answer is swallowed whole into reasoning_content, leaving the visible
-    # response empty.
+    # Thinking-off arrives as reasoning_effort "none" on enable_thinking_effort models; honor it
+    # so we don't prefill and capture the answer. Plain enable_thinking models ignore effort.
     if features.get("reasoning_style") == "enable_thinking_effort" and reasoning_effort == "none":
         return False
     return True
@@ -1669,11 +1777,17 @@ def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     return nudge + " " + _RAG_GROUNDING_NUDGE
 
 
-# Strip leaked tool-call markup: every shared-parser format plus the four leak
-# shapes llama_cpp.py's speculative buffer splits across the visible/DRAIN
-# boundary. Mistral [TOOL_CALLS] uses the parser's balanced-brace helper (a
-# non-greedy regex would truncate nested JSON); the DeepSeek opener alternation
-# is the parser's own, so a signal we parse is never left un-stripped.
+# Strip leaked tool-call markup: every shared-parser format plus the leak shapes
+# llama_cpp.py's speculative buffer splits across the visible/DRAIN boundary:
+#   1. well-formed `<tool_call>...</tool_call>` / `<function=...>...</function>`
+#   2. orphan opening to EOF (close was DRAINED)
+#   3. bare orphan close (open was DRAINED)
+#   4. tail-only `</parameter>` (outer close truncated by EOS); anchored to
+#      `\Z` so mid-text `<parameter>` in user code samples survives.
+#   5. Mistral `[TOOL_CALLS]name{json}` / rehearsal `name[ARGS]{json}`: the balanced
+#      scan removes the whole call (a non-greedy regex would truncate nested JSON).
+# DeepSeek/GLM/Kimi envelopes are covered by the parser's own arms/scans, so a signal
+# we parse is never left un-stripped; the DeepSeek opener alternation is the parser's own.
 from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
 
 _TOOL_XML_RE = _re.compile(
@@ -1694,6 +1808,17 @@ _TOOL_XML_RE = _re.compile(
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"
     r"|<\|python_tag\|>(?:[^<]|<(?!\|(?:eot_id|eom_id|python_tag|start_header_id|end_header_id|begin_of_text|finetune_right_pad_id)\|))*"
+    r"|\[/TOOL_CALLS\]"
+    # Truncated canonical array (closing ``]`` lost to EOS): the balanced scan cannot remove
+    # it, so strip its tail here.
+    r"|\[TOOL_CALLS\]\s*\[.*\Z"
+    # Named / v11 forms and bare rehearsal; arms aligned with the parser regexes.
+    r"|\[TOOL_CALLS\]\s*[\w-]+(?:\[CALL_ID\][\w-]+)?(?:\[ARGS\])?\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|.*?\Z)"
+    # Rehearsal: balanced/truncated body or bare marker at EOS only (prose ``foo[ARGS]``
+    # survives); NAME captured as ``reh`` for the inactive-name display gate.
+    r"|(?<!\[CALL_ID\])\b(?P<reh>[\w-]+)\[ARGS\]\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\{.*\Z|\Z)"
+    # DeepSeek envelopes (all opener variants), Kimi section blocks, and bare Kimi calls;
+    # each arm carries a call-shaped lookahead so prose merely mentioning a marker survives.
     r"|"
     + _DS_OPEN_SRC
     + r"(?=\s*(?:<｜tool▁call▁begin｜>|function)|\s*$).*?(?:<｜tool▁calls▁end｜>|\Z)"
@@ -1702,6 +1827,17 @@ _TOOL_XML_RE = _re.compile(
     # ``</param>`` is the attribute-form alias of ``</parameter>`` (the parser accepts
     # both); strip a tail-only orphan close of either spelling.
     r"|</(?:parameter|param)>\s*\Z",
+    _re.DOTALL,
+)
+
+# Closed-only variant for segments before the last think block: the ``\Z``-anchored arms
+# would treat a segment boundary as EOS and strip prose ``foo[ARGS]``.
+_TOOL_XML_CLOSED_RE = _re.compile(
+    r"<(?:tool_call|function=[\w-]+)>.*?</(?:tool_call|function)>"
+    r"|<\|tool_call>.*?<tool_call\|>"
+    r"|</(?:tool_call|function)>"
+    r"|<tool_call\|>"
+    r"|\[/TOOL_CALLS\]",
     _re.DOTALL,
 )
 
@@ -1720,18 +1856,18 @@ def _gemma_strip_gate(tools) -> set:
     return names
 
 
-def _strip_tool_xml(text: str, enabled_tool_names: Optional[set] = None) -> str:
-    """Combine the parser's scan-based strips (Mistral balanced-brace, gated
-    Gemma wrapper-less, GLM real-close, guarded function-XML) with
-    ``_TOOL_XML_RE`` -- the scan strips close at each call's REAL terminator so
-    literal markup inside argument values is data, not a leaked tail.
-    ``enabled_tool_names`` gates the Gemma strip; ``None`` strips every closed call."""
-    cleaned = _strip_glm_calls(
-        _strip_gemma_wrapperless_calls(_strip_mistral_closed_calls(text), enabled_tool_names),
-        final = True,
-    )
-    cleaned = _strip_function_xml_calls(cleaned, final = True)
-    return _TOOL_XML_RE.sub("", cleaned)
+def _display_tool_name_gate(active_tools):
+    """Active tool NAMES for gating the rehearsal display strip, or None when no tools
+    are enabled. ``None`` keeps the legacy strip-all behavior, mirroring the loop gate:
+    a bare ``NAME[ARGS]`` is a call only when NAME is active; without a tool list every
+    identifier stays ambiguous, so strip."""
+    names = {
+        (t.get("function") or {}).get("name")
+        for t in (active_tools or [])
+        if isinstance(t, dict) and isinstance(t.get("function"), dict)
+    }
+    names.discard(None)
+    return names or None
 
 
 def _strip_tool_xml_for_display(
@@ -1740,12 +1876,56 @@ def _strip_tool_xml_for_display(
     auto_heal_tool_calls: bool,
     enabled_tool_names: Optional[set] = None,
 ) -> str:
-    """Route-level leak cleanup (Auto-Heal only). Delegates to ``_strip_tool_xml``
-    so the Mistral balanced-brace pass runs too (``_TOOL_XML_RE`` alone has no
-    ``[TOOL_CALLS]`` arm). ``enabled_tool_names`` gates the Gemma strip."""
+    """Apply route-level XML leak cleanup only when Auto-Heal is enabled.
+
+    Mirrors the parser-side segment scan: balanced strips first (Mistral, gated Gemma
+    wrapper-less, GLM real-close, guarded function-XML close at each call's REAL terminator
+    so literal markup inside a value is data), then the ``_TOOL_XML_RE`` arms cover the
+    DeepSeek / Kimi / orphan forms. ``<think>`` blocks are preserved verbatim and the
+    ``\\Z``-anchored tail arms run only on the last segment (prose ``foo[ARGS]`` before a
+    block survives). ``enabled_tool_names`` (when not None) gates the ambiguous bare-rehearsal
+    ``NAME[ARGS]{...}`` and wrapper-less Gemma ``call:NAME{...}`` strips on the active tool
+    list; an inactive NAME is prose and is kept. The ``[TOOL_CALLS]`` control-token arms strip
+    unconditionally regardless of NAME."""
     if not auto_heal_tool_calls:
         return text
-    return _strip_tool_xml(text, enabled_tool_names)
+    from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
+
+    def _keep_inactive_rehearsal(m) -> str:
+        # Only the bare-rehearsal arm captures ``reh``; with a tool list an inactive
+        # NAME[ARGS]{...} is prose -- keep it.
+        if enabled_tool_names is not None:
+            name = m.groupdict().get("reh")
+            if name is not None and name not in enabled_tool_names:
+                return m.group(0)
+        return ""
+
+    def _strip_segment(seg: str, is_last: bool) -> str:
+        # Scan strips close at each call's REAL terminator (a literal ``</function>`` or a
+        # nested marker quoted inside a value cannot truncate the strip); the regex arms below
+        # cover the attribute form and the DeepSeek / Kimi / orphan families.
+        seg = _strip_mistral_closed_calls(seg)
+        seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
+        if is_last:
+            seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
+        seg = _strip_glm_calls(seg, final = is_last)
+        seg = _strip_function_xml_calls(seg, final = is_last)
+        if is_last:
+            return _TOOL_XML_RE.sub(_keep_inactive_rehearsal, seg)
+        return _TOOL_XML_CLOSED_RE.sub("", seg)
+
+    return strip_outside_think(text, _strip_segment)
+
+
+def _strip_tool_xml(text: str, enabled_tool_names: Optional[set] = None) -> str:
+    # Mistral balanced-brace pre-strip (kept explicit so the regression guards see it), then
+    # the shared think-aware display strip -- the one raw _TOOL_XML_RE.sub lives inside
+    # _strip_tool_xml_for_display, so every route cleanup site shares it. ``enabled_tool_names``
+    # gates the Gemma wrapper-less strip; ``None`` strips every closed call.
+    text = _strip_mistral_closed_calls(text)
+    return _strip_tool_xml_for_display(
+        text, auto_heal_tool_calls = True, enabled_tool_names = enabled_tool_names
+    )
 
 
 logger = get_logger(__name__)
@@ -3274,12 +3454,15 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
-            # Unload any active Unsloth model to free VRAM
+            # Unload any active Unsloth model to free VRAM (off the event loop:
+            # unload takes _gen_lock and can wait on an in-flight stream).
             if unsloth_backend.active_model_name:
                 logger.info(
                     f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
                 )
-                unsloth_backend.unload_model(unsloth_backend.active_model_name)
+                await asyncio.to_thread(
+                    unsloth_backend.unload_model, unsloth_backend.active_model_name
+                )
 
             # Inherit llama_extra_args from the previous load when the request
             # omits the field (the chat-settings Apply path doesn't round-trip
@@ -3943,28 +4126,76 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     # A deliberate unload means "stay unloaded": drop any idle reload stash so the
     # next /v1 request can't resurrect this model. The idle loop unloads via the
     # backend directly (not this route), so clearing here never fights keep-warm.
-    from core.inference.llama_keepwarm import note_model_unloaded
+    from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
     try:
-        # Check if the GGUF backend has this model loaded or is loading it.
-        llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_active and (
-            llama_backend.model_identifier == request.model_path
-            or is_registered_native_path_label(llama_backend.model_identifier, request.model_path)
-            or not llama_backend.is_loaded
+        # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
+        # model promptly. /load holds the lifecycle gate for the whole (multi-minute) load,
+        # so gating first would make the cancel wait it out. cancel_load only tears the
+        # loading subprocess down (no unload command), so it is safe off-gate.
+        backend = get_inference_backend()
+        loading = getattr(backend, "get_loading_model", lambda: None)()
+        if (
+            loading is not None
+            and hasattr(backend, "cancel_load")
+            and (request.model_path == loading or request.model_path.lower() == loading.lower())
         ):
-            # A manual unload is a deliberate user action: tear down now even if a
-            # request is mid-stream (only the automatic idle loop defers to it).
-            llama_backend.unload_model()
+            if await asyncio.to_thread(backend.cancel_load, request.model_path):
+                note_model_unloaded()
+                logger.info(f"Cancelled in-flight load: {request.model_path}")
+                return UnloadResponse(status = "unloaded", model = request.model_path)
+
+        # Same "stop loading" fast path for a still-loading GGUF (llama-server spawned,
+        # health check not yet passed). A gated unload would wait out the multi-minute
+        # load; unload_model() sets the cancel_event load_model polls off its own lock and
+        # kills the child, sending no worker command, so it is safe off-gate like
+        # cancel_load. The gated GGUF branch below handles the already-loaded case. Gate on
+        # the loading model (identifier or native label): the single llama-server loads one
+        # GGUF at a time, so an unload for a different model must not cancel this load.
+        llama_backend = get_llama_cpp_backend()
+        if (
+            llama_backend.is_active
+            and not llama_backend.is_loaded
+            and (
+                llama_backend.model_identifier == request.model_path
+                or is_registered_native_path_label(
+                    llama_backend.model_identifier, request.model_path
+                )
+            )
+        ):
+            await asyncio.to_thread(llama_backend.unload_model)
             note_model_unloaded()
-            logger.info(f"Unloaded GGUF model: {request.model_path}")
+            logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
-        # Otherwise, unload from Unsloth backend
-        backend = get_inference_backend()
-        backend.unload_model(request.model_path)
-        note_model_unloaded()
-        logger.info(f"Unloaded model: {request.model_path}")
-        return UnloadResponse(status = "unloaded", model = request.model_path)
+        # Serialize with /load under the same lifecycle gate: the Unsloth unload now runs
+        # off the event loop (asyncio.to_thread), so without this a concurrent /load could
+        # swap in a fresh subprocess mid-unload and the unload command would land on the
+        # new worker. The gate makes load and unload exclusive.
+        async with inference_lifecycle_gate():
+            # Check if the GGUF backend has this model loaded or is loading it.
+            llama_backend = get_llama_cpp_backend()
+            if llama_backend.is_active and (
+                llama_backend.model_identifier == request.model_path
+                or is_registered_native_path_label(
+                    llama_backend.model_identifier, request.model_path
+                )
+                or not llama_backend.is_loaded
+            ):
+                # A manual unload is a deliberate user action: tear down now even if a
+                # request is mid-stream (only the automatic idle loop defers to it).
+                llama_backend.unload_model()
+                note_model_unloaded()
+                logger.info(f"Unloaded GGUF model: {request.model_path}")
+                return UnloadResponse(status = "unloaded", model = request.model_path)
+
+            # Unload from Unsloth backend off the event loop: unload takes _gen_lock, which
+            # a slow SSE stream paused between tokens still holds, so a sync call would block
+            # the loop that drives the stream's next token and the lock release.
+            backend = get_inference_backend()
+            await asyncio.to_thread(backend.unload_model, request.model_path)
+            note_model_unloaded()
+            logger.info(f"Unloaded model: {request.model_path}")
+            return UnloadResponse(status = "unloaded", model = request.model_path)
 
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info = True)
@@ -4122,8 +4353,10 @@ async def generate_stream(
                 temperature = request.temperature,
                 top_p = request.top_p,
                 top_k = request.top_k,
+                min_p = request.min_p,
                 max_new_tokens = request.max_new_tokens,
                 repetition_penalty = request.repetition_penalty,
+                presence_penalty = request.presence_penalty,
                 cancel_event = cancel_event,
             )
             _DONE = object()
@@ -6010,14 +6243,18 @@ async def openai_chat_completions(
             _gguf_auto_heal_tool_calls = (
                 payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
+            # Active tool names gating the bare-rehearsal strip, matching the loop gate.
+            _gguf_display_tool_names = _display_tool_name_gate(tools_to_use)
 
             # ── Strip stale tool-call XML from conversation history ─
             for _msg in gguf_messages:
                 if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
+                    # Gate on enabled tool names, like the live strip, so a documented inactive
+                    # ``foo[ARGS]{...}`` survives in the replayed prompt context.
                     _msg["content"] = _strip_tool_xml_for_display(
                         _msg["content"],
                         auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
-                        enabled_tool_names = _gemma_strip_gate(tools_to_use),
+                        enabled_tool_names = _gguf_display_tool_names,
                     ).strip()
 
             def gguf_generate_with_tools():
@@ -6038,6 +6275,7 @@ async def openai_chat_completions(
                     reasoning_effort = payload.reasoning_effort,
                     preserve_thinking = payload.preserve_thinking,
                     auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                    nudge_tool_calls = payload.nudge_tool_calls,
                     max_tool_iterations = payload.max_tool_calls_per_message
                     if payload.max_tool_calls_per_message is not None
                     else 25,
@@ -6151,7 +6389,7 @@ async def openai_chat_completions(
                         clean_cumulative = _strip_tool_xml_for_display(
                             raw_cumulative,
                             auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
-                            enabled_tool_names = _gemma_strip_gate(tools_to_use),
+                            enabled_tool_names = _gguf_display_tool_names,
                         )
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
@@ -6258,7 +6496,7 @@ async def openai_chat_completions(
                             full_text = _strip_tool_xml_for_display(
                                 event.get("text", ""),
                                 auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
-                                enabled_tool_names = _gemma_strip_gate(tools_to_use),
+                                enabled_tool_names = _gguf_display_tool_names,
                             )
                     return full_text, usage, finish
                 finally:
@@ -6631,14 +6869,17 @@ async def openai_chat_completions(
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
     _sf_features = _detect_safetensors_features(backend, _sf_tpl)
 
-    # Split prefilled-``<think>`` output into reasoning_content deltas (GGUF parity) so the UI
-    # renders the thinking block for safetensors AND MLX.
+    # GGUF parity: enable_thinking templates prefill an unclosed <think>; split into
+    # reasoning_content deltas so the UI renders the block for safetensors and MLX.
     _sf_parse_think = bool(
         _sf_features.get("supports_reasoning") or _sf_features.get("reasoning_always_on")
     )
-    # Prefilled-open only for prefill styles with thinking on this request; gpt-oss excluded.
+    # Prefilled-open only for prefill styles with thinking on; gpt-oss uses the normal mode.
     _sf_reasoning_prefilled = _sf_reasoning_prefill_mode(
-        _sf_features, payload.enable_thinking, _sf_tpl, payload.reasoning_effort
+        _sf_features,
+        payload.enable_thinking,
+        _sf_tpl,
+        reasoning_effort = payload.reasoning_effort,
     )
 
     def _new_sf_reasoning_extractor():
@@ -6722,6 +6963,8 @@ async def openai_chat_completions(
         _sf_auto_heal_tool_calls = (
             payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
         )
+        # Active tool names gating the bare-rehearsal strip, matching the loop gate.
+        _sf_display_tool_names = _display_tool_name_gate(_sf_tools_to_use)
 
         # Strip stale tool-call XML from prior assistant turns.
         _sf_chat_messages = []
@@ -6733,7 +6976,7 @@ async def openai_chat_completions(
                         "content": _strip_tool_xml_for_display(
                             _msg["content"],
                             auto_heal_tool_calls = _sf_auto_heal_tool_calls,
-                            enabled_tool_names = _gemma_strip_gate(_sf_tools_to_use),
+                            enabled_tool_names = _sf_display_tool_names,
                         ).strip(),
                     }
                 )
@@ -6754,11 +6997,13 @@ async def openai_chat_completions(
                 min_p = payload.min_p,
                 max_tokens = effective_max_tokens,
                 repetition_penalty = payload.repetition_penalty,
+                presence_penalty = payload.presence_penalty,
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
                 preserve_thinking = payload.preserve_thinking,
                 auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                nudge_tool_calls = payload.nudge_tool_calls,
                 max_tool_iterations = _sf_tool_budget,
                 tool_call_timeout = payload.tool_call_timeout
                 if payload.tool_call_timeout is not None
@@ -6792,7 +7037,7 @@ async def openai_chat_completions(
                 reasoning_extractor = _new_sf_reasoning_extractor()
 
                 def _sf_flush_reasoning():
-                    # Drain the extractor at a turn boundary / stream end (GGUF parity); only visible text reaches the monitor.
+                    # Drain the extractor at turn/stream end (mirrors GGUF); only visible text hits the monitor.
                     fr, fv = reasoning_extractor.finish()
                     out = []
                     if fr:
@@ -6818,7 +7063,7 @@ async def openai_chat_completions(
 
                     if event["type"] == "status":
                         if not event["text"]:
-                            # Iteration boundary: flush reasoning, then start a fresh extractor for the next turn.
+                            # Iteration boundary: flush reasoning, then a fresh prefilled extractor for the next turn.
                             for _c in _sf_flush_reasoning():
                                 yield _c
                             prev_text = ""
@@ -6834,7 +7079,7 @@ async def openai_chat_completions(
 
                     if event["type"] in ("tool_start", "tool_end"):
                         if event["type"] == "tool_start":
-                            # Flush reasoning before the tool_start line so the thinking block closes ahead of the tool card.
+                            # Flush reasoning before tool_start so the thinking block closes ahead of the card.
                             for _c in _sf_flush_reasoning():
                                 yield _c
                             prev_text = ""
@@ -6847,7 +7092,7 @@ async def openai_chat_completions(
                     clean_cumulative = _strip_tool_xml_for_display(
                         raw_cumulative,
                         auto_heal_tool_calls = _sf_auto_heal_tool_calls,
-                        enabled_tool_names = _gemma_strip_gate(_sf_tools_to_use),
+                        enabled_tool_names = _sf_display_tool_names,
                     )
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
@@ -6939,12 +7184,12 @@ async def openai_chat_completions(
                         full_text = _strip_tool_xml_for_display(
                             event.get("text", ""),
                             auto_heal_tool_calls = _sf_auto_heal_tool_calls,
-                            enabled_tool_names = _gemma_strip_gate(_sf_tools_to_use),
+                            enabled_tool_names = _sf_display_tool_names,
                         )
                 return full_text
 
             content_text = await asyncio.to_thread(_drain_to_text)
-            # Split prefilled <think> reasoning out of the visible answer (GGUF parity); monitor gets visible text only.
+            # Split prefilled <think> out of the visible answer (GGUF parity); the monitor gets visible text only.
             _reasoning_text, _visible_text = _extract_responses_reasoning(
                 content_text,
                 parse_think_markers = _sf_parse_think,
@@ -6998,6 +7243,7 @@ async def openai_chat_completions(
         min_p = payload.min_p,
         max_new_tokens = effective_max_tokens or 2048,
         repetition_penalty = payload.repetition_penalty,
+        presence_penalty = payload.presence_penalty,
     )
     # Forward reasoning kwargs; the worker/template wrapper peels off any the
     # template doesn't accept.
@@ -7008,25 +7254,87 @@ async def openai_chat_completions(
     if payload.preserve_thinking is not None:
         gen_kwargs["preserve_thinking"] = payload.preserve_thinking
 
+    # ── Client-tool passthrough (safetensors + MLX) ──────────────
+    # Client tools (or tool-result history) without server-side tools: render
+    # tools into the template, generate one turn, heal text-form calls (#6801).
+    # supports_tools=False falls through to plain relay (GGUF gate parity).
+    _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
+    # Gate on _sf_use_tools (did the server-side path claim the request?), not
+    # raw mcp_enabled: an empty MCP registry must not silently drop client tools.
+    _sf_client_tools = (
+        not _effective_enable_tools(payload)
+        and not _sf_use_tools
+        and image is None
+        and not _sf_is_gptoss
+        and _sf_features.get("supports_tools", False)
+        and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
+    )
+    _sf_heal = (
+        heal_gate(payload.auto_heal_tool_calls, payload.tools, payload.tool_choice)
+        if _sf_client_tools
+        else None
+    )
+    if _sf_client_tools:
+        # Re-derive from payload.messages so tool_calls / role="tool" history
+        # survives templating; fold system/developer into one leading system
+        # message (templates reject "developer") and clear prompt to avoid a dup.
+        gen_kwargs["messages"] = _set_or_prepend_system_message(
+            _structured_tool_history_for_local_template(
+                _flatten_content_parts_for_local_template(_openai_messages_for_passthrough(payload))
+            ),
+            system_prompt,
+        )
+        gen_kwargs["system_prompt"] = ""
+        # tool_choice="none": keep history templating but advertise no tools
+        # (heal_gate is off, markup would relay as prose). A forced function
+        # narrows templating to that one schema. Both mirror the GGUF path,
+        # where llama-server honors tool_choice itself.
+        _sf_tc = payload.tool_choice
+        _sf_forced = None
+        if isinstance(_sf_tc, dict) and isinstance(_sf_tc.get("function"), dict):
+            _sf_forced = _sf_tc["function"].get("name")
+        if _sf_tc == "none":
+            gen_kwargs["tools"] = None
+        elif isinstance(_sf_forced, str):
+            gen_kwargs["tools"] = [
+                t
+                for t in payload.tools or []
+                if isinstance(t, dict)
+                and isinstance(t.get("function"), dict)
+                and t["function"].get("name") == _sf_forced
+            ] or None
+        else:
+            gen_kwargs["tools"] = payload.tools
+
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
 
     if payload.use_adapter is not None:
 
-        def generate():
+        def generate(messages_override = None):
+            kw = (
+                gen_kwargs
+                if messages_override is None
+                else {**gen_kwargs, "messages": messages_override}
+            )
             return backend.generate_with_adapter_control(
                 use_adapter = payload.use_adapter,
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
-                **gen_kwargs,
+                **kw,
             )
     else:
 
-        def generate():
+        def generate(messages_override = None):
+            kw = (
+                gen_kwargs
+                if messages_override is None
+                else {**gen_kwargs, "messages": messages_override}
+            )
             return backend.generate_chat_response(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
-                **gen_kwargs,
+                **kw,
             )
 
     # ── Streaming response ────────────────────────────────────────
@@ -7042,8 +7350,13 @@ async def openai_chat_completions(
             try:
                 yield _chat_role_chunk(completion_id, created, model_name)
 
+                # Client-tool passthrough: heal text-form calls on the fly
+                # (None => relay verbatim).
+                healer = StreamToolCallHealer(_sf_heal, payload.tools) if _sf_heal else None
+                heal_state = {"idx": 0}
+
                 prev_text = ""
-                # Split prefilled <think> into reasoning_content deltas (GGUF parity). Single turn (no per-turn reset); also serves MLX.
+                # Split prefilled <think> into reasoning_content deltas (GGUF parity); single turn, serves MLX.
                 reasoning_extractor = _new_sf_reasoning_extractor()
                 # Run the sync generator in a thread pool to avoid blocking the
                 # event loop. Critical for compare mode: two SSE requests arrive
@@ -7073,22 +7386,76 @@ async def openai_chat_completions(
                     prev_text = cumulative
                     if not new_text:
                         continue
+                    # Split prefilled <think> reasoning first (GGUF/MLX parity),
+                    # then route only the visible text through the client-tool
+                    # healer so tool markup inside a reasoning block is not promoted.
                     reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                     if reasoning_delta:
                         yield _chat_reasoning_chunk(
                             completion_id, created, model_name, reasoning_delta
                         )
                     if visible_delta:
-                        api_monitor.append_reply(monitor_id, visible_delta)
-                        yield _chat_content_chunk(completion_id, created, model_name, visible_delta)
+                        if healer is None:
+                            # Monitor mirrors the verbatim relay; with healing on,
+                            # _sf_heal_events_to_sse records the healed events instead.
+                            api_monitor.append_reply(monitor_id, visible_delta)
+                            yield _chat_content_chunk(
+                                completion_id, created, model_name, visible_delta
+                            )
+                        else:
+                            for line in _sf_heal_events_to_sse(
+                                healer.feed(visible_delta),
+                                completion_id,
+                                created,
+                                model_name,
+                                heal_state,
+                                payload.parallel_tool_calls,
+                                monitor_id,
+                            ):
+                                yield line
 
                 final_reasoning, final_visible = reasoning_extractor.finish()
                 if final_reasoning:
                     yield _chat_reasoning_chunk(completion_id, created, model_name, final_reasoning)
                 if final_visible:
-                    api_monitor.append_reply(monitor_id, final_visible)
-                    yield _chat_content_chunk(completion_id, created, model_name, final_visible)
-                yield _chat_final_chunk(completion_id, created, model_name, "stop")
+                    if healer is None:
+                        api_monitor.append_reply(monitor_id, final_visible)
+                        yield _chat_content_chunk(completion_id, created, model_name, final_visible)
+                    else:
+                        for line in _sf_heal_events_to_sse(
+                            healer.feed(final_visible),
+                            completion_id,
+                            created,
+                            model_name,
+                            heal_state,
+                            payload.parallel_tool_calls,
+                            monitor_id,
+                        ):
+                            yield line
+
+                # A cancelled stream must not promote buffered-but-incomplete
+                # markup: finalize()'s allow_incomplete heal would execute a tool
+                # the user just cancelled. Disconnect returns earlier; "Stop" only
+                # sets cancel_event, so guard on it here too.
+                _cancelled = cancel_event.is_set()
+                if healer is not None and not _cancelled:
+                    for line in _sf_heal_events_to_sse(
+                        healer.finalize(),
+                        completion_id,
+                        created,
+                        model_name,
+                        heal_state,
+                        payload.parallel_tool_calls,
+                        monitor_id,
+                    ):
+                        yield line
+
+                _finish = (
+                    "tool_calls"
+                    if (healer is not None and not _cancelled and healer.healed)
+                    else "stop"
+                )
+                yield _chat_final_chunk(completion_id, created, model_name, _finish)
                 # Usage chunk (choices=[], usage set), same shape as the
                 # GGUF path so the speed popover works for MLX too.
                 # Request-scoped holder, so concurrent streams cannot
@@ -7150,27 +7517,96 @@ async def openai_chat_completions(
             for token in generate():
                 full_text = token
 
-            # Split prefilled <think> reasoning from the visible answer (GGUF parity); also covers MLX.
+            # Split prefilled <think> reasoning (GGUF parity); also covers MLX via
+            # the shared generate(). Client-tool healing then runs on the visible
+            # text so tool markup inside a reasoning block is never promoted.
             _reasoning_text, _visible_text = _extract_responses_reasoning(
                 full_text,
                 parse_think_markers = _sf_parse_think,
                 reasoning_prefilled = _sf_reasoning_prefilled,
             )
-            _plain_msg_kwargs = {"content": _visible_text}
+            # Client-tool passthrough: promote text-form calls; opt-in single
+            # nudge retry on unparseable tool markup.
+            _msg = {"role": "assistant", "content": _visible_text}
             if _reasoning_text:
-                _plain_msg_kwargs["reasoning_content"] = _reasoning_text
+                _msg["reasoning_content"] = _reasoning_text
+            _finish = "stop"
+            if _sf_heal:
+                if heal_openai_message(_msg, _sf_heal, payload.tools):
+                    _finish = "tool_calls"
+                elif nudge_enabled(payload.nudge_tool_calls):
+                    _data = {
+                        "choices": [{"message": {"role": "assistant", "content": _visible_text}}]
+                    }
+                    if nudge_should_retry(_data, _sf_heal, payload.tools):
+                        # A failed retry must not 500 the request; keep the first
+                        # response (GGUF nudge parity). The retry's generate()
+                        # overwrites stats_holder, so save the first attempt's stats
+                        # and restore them if the retry is discarded.
+                        _first_stats = stats_holder.get("stats")
+                        try:
+                            retry_text = ""
+                            for token in generate(
+                                [*gen_kwargs["messages"], *nudge_messages(_data, _sf_heal)]
+                            ):
+                                retry_text = token
+                            # Re-split reasoning on the retry so its visible text is
+                            # what heals into a call (and reaches the monitor).
+                            _retry_reasoning, _retry_visible = _extract_responses_reasoning(
+                                retry_text,
+                                parse_think_markers = _sf_parse_think,
+                                reasoning_prefilled = _sf_reasoning_prefilled,
+                            )
+                            retry_msg = {"role": "assistant", "content": _retry_visible}
+                            if _retry_reasoning:
+                                retry_msg["reasoning_content"] = _retry_reasoning
+                            if heal_openai_message(retry_msg, _sf_heal, payload.tools):
+                                _visible_text, _msg, _finish = (
+                                    _retry_visible,
+                                    retry_msg,
+                                    "tool_calls",
+                                )
+                            else:
+                                # Retry produced no healable call -> first response wins.
+                                stats_holder["stats"] = _first_stats
+                        except Exception as retry_exc:
+                            logger.debug(
+                                "Nudge retry failed; keeping first response: %s", retry_exc
+                            )
+                            stats_holder["stats"] = _first_stats
+                # parallel_tool_calls=false: cap to one call (GGUF parity).
+                if payload.parallel_tool_calls is False:
+                    _tcs = _msg.get("tool_calls")
+                    if isinstance(_tcs, list) and len(_tcs) > 1:
+                        _msg["tool_calls"] = _tcs[:1]
+
             response = ChatCompletion(
                 id = completion_id,
                 created = created,
                 model = model_name,
                 choices = [
                     CompletionChoice(
-                        message = CompletionMessage(**_plain_msg_kwargs),
-                        finish_reason = "stop",
+                        message = CompletionMessage(
+                            content = _msg["content"],
+                            reasoning_content = _msg.get("reasoning_content"),
+                            tool_calls = _msg.get("tool_calls"),
+                        ),
+                        finish_reason = _finish,
                     )
                 ],
             )
-            api_monitor.set_reply(monitor_id, _visible_text)
+            _monitor_reply = _msg.get("content") or ""
+            if _finish == "tool_calls":
+                _tcs = _msg.get("tool_calls") or []
+                _calls_text = "; ".join(
+                    f"{(tc.get('function') or {}).get('name', '')}"
+                    f"({(tc.get('function') or {}).get('arguments', '')})"
+                    for tc in _tcs
+                )
+                _monitor_reply = (_msg.get("content") or "") + (
+                    f"[tool_calls] {_calls_text}" if _calls_text else ""
+                )
+            api_monitor.set_reply(monitor_id, _monitor_reply)
             _stats = stats_holder.get("stats")
             if _stats:
                 _monitor_usage(monitor_id, _stats.get("usage"))
@@ -8000,8 +8436,8 @@ class _ResponsesReasoningExtractor:
         reasoning_prefilled: bool = False,
     ) -> None:
         self._buffer = ""
-        # ``reasoning_prefilled``: output begins INSIDE an unclosed ``<think>`` (Qwen3/GLM prefill),
-        # so start in reasoning to capture leading text until the first ``</think>``. Callers default False.
+        # reasoning_prefilled: the template inserts an unclosed <think>, so output begins inside
+        # the block; start in reasoning until the first close tag. Existing callers pass False.
         self._in_reasoning = reasoning_prefilled
         # Splitting requires marker parsing; a prefilled open implies it.
         self._parse_think_markers = parse_think_markers or reasoning_prefilled
@@ -8033,8 +8469,8 @@ class _ResponsesReasoningExtractor:
                     self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
                     self._in_reasoning = False
                     continue
-                # Hold back a trailing partial of EITHER marker: the close (clean chunk-boundary split)
-                # and a stray open (so a re-emitted ``<think>`` isn't leaked into the reasoning drawer).
+                # Hold back a trailing partial of either marker: the close (clean split across chunks)
+                # and a stray open (a re-emitted <think> is suppressed, not leaked).
                 keep = _responses_marker_holdback(
                     self._buffer, (_RESPONSES_THINK_CLOSE, _RESPONSES_THINK_OPEN)
                 )
@@ -9919,11 +10355,15 @@ async def anthropic_messages(
             else:
                 openai_messages.insert(0, {"role": "system", "content": _nudge})
 
-        # Strip stale tool-call XML from conversation
+        # Strip stale tool-call XML via the protected display helper (think rehearsal and [TOOL_CALLS]
+        # prose survive), gated on enabled tool names so documented inactive examples are kept.
+        _anthropic_history_gate = _display_tool_name_gate(openai_tools)
         for _msg in openai_messages:
             if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
-                _msg["content"] = _strip_tool_xml(
-                    _msg["content"], _gemma_strip_gate(openai_tools)
+                _msg["content"] = _strip_tool_xml_for_display(
+                    _msg["content"],
+                    auto_heal_tool_calls = True,
+                    enabled_tool_names = _anthropic_history_gate,
                 ).strip()
 
         def _run_tool_gen():
@@ -9941,6 +10381,7 @@ async def anthropic_messages(
                 cancel_event = cancel_event,
                 max_tool_iterations = 25,
                 auto_heal_tool_calls = True,
+                nudge_tool_calls = payload.nudge_tool_calls,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
                 # Anthropic passthrough has no rag_scope field (RAG is local-only).
@@ -10023,6 +10464,10 @@ async def _anthropic_tool_stream(
     """Streaming response for the tool-calling path."""
     _sentinel = object()
 
+    # Gate the display strip on the declared tools: an inactive NAME[ARGS]{...} in a final
+    # answer is prose and must survive in the delivered text.
+    _display_names = _display_tool_name_gate(openai_tools)
+
     # Prompt-token count for message_start.usage.input_tokens. count_chat_tokens
     # makes blocking HTTP calls to llama-server, so run it off the event loop.
     # Pass the tools so tool-schema tokens are counted (the generator renders
@@ -10074,9 +10519,15 @@ async def _anthropic_tool_stream(
                         captured_finish_reason = _fr
                 # Strip leaked tool-call XML from content events first, so a
                 # content event that was purely tool XML doesn't count as text.
+                # Protected helper preserves <think> rehearsal and balanced
+                # [TOOL_CALLS] trailing prose (raw _TOOL_XML_RE.sub corrupts both).
                 if etype == "content":
                     event = dict(event)
-                    event["text"] = _strip_tool_xml(event["text"], _gemma_strip_gate(openai_tools))
+                    event["text"] = _strip_tool_xml_for_display(
+                        event["text"],
+                        auto_heal_tool_calls = True,
+                        enabled_tool_names = _display_names,
+                    )
                 # disable_parallel_tool_use: keep only the first tool_use block,
                 # dropping every later tool_start and its paired tool_end (robust
                 # to empty tool-call ids — tracked by state, not id matching).
@@ -10250,6 +10701,9 @@ async def _anthropic_tool_non_streaming(
     usage = {}
     prev_text = ""
     captured_finish_reason = None
+    # Gate the display strip on the declared tools: an inactive NAME[ARGS]{...} in a final
+    # answer is prose and must survive in the delivered text.
+    _display_names = _display_tool_name_gate(openai_tools)
     # Pending client tool_use; cleared by tool_end (server execution) or
     # trailing text. See the stop_reason mapping below.
     ends_on_tool_use = False
@@ -10259,8 +10713,10 @@ async def _anthropic_tool_non_streaming(
     for event in events:
         etype = event.get("type", "")
         if etype == "content":
-            # Strip leaked tool-call XML
-            clean = _strip_tool_xml(event["text"], _gemma_strip_gate(openai_tools))
+            # Strip leaked tool XML (protected helper keeps think rehearsal and trailing prose).
+            clean = _strip_tool_xml_for_display(
+                event["text"], auto_heal_tool_calls = True, enabled_tool_names = _display_names
+            )
             new = clean[len(prev_text) :]
             prev_text = clean
             if new:
@@ -10730,13 +11186,16 @@ async def _anthropic_passthrough_non_streaming(
         text = message.get("content") or ""
         if text:
             # Keep unpromoted bytes when healing is active; legacy stripping is
-            # only for opted-out or no-client-tool requests. Use the full
-            # _strip_tool_xml pass so Mistral [TOOL_CALLS] and guarded
-            # function-XML leaks are cleaned too, not just _TOOL_XML_RE forms,
-            # with the Gemma display gate so a disabled/example call:NAME{...}
-            # in prose survives.
+            # only for opted-out or no-client-tool requests. Protected helper (not
+            # raw _TOOL_XML_RE.sub): preserves <think> rehearsal and balanced
+            # [TOOL_CALLS] trailing prose, gated on the declared tools so an
+            # inactive NAME[ARGS]{...} example in the final text is kept.
             if not healing_active:
-                text = _strip_tool_xml(text, _gemma_strip_gate(openai_tools))
+                text = _strip_tool_xml_for_display(
+                    text,
+                    auto_heal_tool_calls = True,
+                    enabled_tool_names = _display_tool_name_gate(openai_tools),
+                )
             text = text.strip()
             if text:
                 content_blocks.append(AnthropicResponseTextBlock(text = text))
@@ -10982,6 +11441,55 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     _splice_image_into_last_user(messages, image_part)
 
     return messages
+
+
+def _flatten_content_parts_for_local_template(messages: list[dict]) -> list[dict]:
+    """Flatten OpenAI content-part lists to plain strings.
+
+    Local text templates take string content and raise on part lists (e.g. a
+    remote ``image_url`` that leaves ``image is None``): keep the text parts,
+    drop the rest, like the plain non-GGUF path. GGUF keeps the parts."""
+    out = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            text_parts = [
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ]
+            msg = {**msg, "content": "\n".join(text_parts) if text_parts else ""}
+        out.append(msg)
+    return out
+
+
+def _structured_tool_history_for_local_template(messages: list[dict]) -> list[dict]:
+    """Deserialize assistant ``tool_calls[].function.arguments`` JSON strings to
+    mappings for local templating.
+
+    Clients send prior-turn arguments as JSON strings, but local templates take
+    mappings (some raise on strings). Only the internal messages copy is
+    rewritten; the HTTP response stays OpenAI-shaped and unparseable strings
+    are left untouched."""
+    out = []
+    for msg in messages:
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            new_calls = []
+            for tc in tool_calls:
+                fn = tc.get("function") if isinstance(tc, dict) else None
+                args = fn.get("arguments") if isinstance(fn, dict) else None
+                if isinstance(args, str):
+                    try:
+                        parsed = json.loads(args)
+                    except ValueError:
+                        parsed = None
+                    if isinstance(parsed, dict):
+                        tc = {**tc, "function": {**fn, "arguments": parsed}}
+                new_calls.append(tc)
+            msg = {**msg, "tool_calls": new_calls}
+        out.append(msg)
+    return out
 
 
 def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict], bool]:

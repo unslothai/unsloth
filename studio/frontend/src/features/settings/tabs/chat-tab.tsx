@@ -213,6 +213,12 @@ export function ChatTab() {
   const setShowModelDisclaimer = useChatPreferencesStore(
     (state) => state.setShowModelDisclaimer,
   );
+  const showResponseModel = useChatPreferencesStore(
+    (state) => state.showResponseModel,
+  );
+  const setShowResponseModel = useChatPreferencesStore(
+    (state) => state.setShowResponseModel,
+  );
 
   useEffect(() => {
     void countAllChats().then(setCount);
@@ -410,6 +416,15 @@ export function ChatTab() {
           <Switch
             checked={showModelDisclaimer}
             onCheckedChange={setShowModelDisclaimer}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Show response model"
+          description="Show model metadata in assistant responses."
+        >
+          <Switch
+            checked={showResponseModel}
+            onCheckedChange={setShowResponseModel}
           />
         </SettingsRow>
       </SettingsSection>
