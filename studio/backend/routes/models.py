@@ -3599,6 +3599,17 @@ async def delete_cached_model(
                     status_code = 400,
                     detail = "Unload the model before deleting",
                 )
+        # The native sd.cpp one-shot engine re-reads its companion VAE / text-encoder files
+        # from the HF cache on every generation, so deleting a companion repo (e.g.
+        # comfyanonymous/flux_text_encoders) while a native GGUF is loaded would brick the
+        # next generation. status().repo_id only covers the main GGUF, so also refuse the
+        # committed companion repos the loaded engine reads from disk.
+        for lid in getattr(engine, "loaded_repo_ids", tuple)():
+            if _loaded_id_matches_repo(str(lid).lower(), repo_id):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
         # Also refuse while a background image load is DOWNLOADING this repo (or its
         # companion base): status().loaded is still False in that window, but deleting
         # would remove blobs from under the in-flight download/assembly.

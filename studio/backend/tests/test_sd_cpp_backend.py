@@ -82,6 +82,23 @@ def _loaded_backend(fam_name = "z-image", engine = None):
     return b
 
 
+def test_loaded_repo_ids_includes_native_companions():
+    # The one-shot native engine re-reads its companion VAE / text-encoder files from the HF
+    # cache on every generation, so the delete-cached guard queries loaded_repo_ids() to refuse
+    # deleting an in-use companion repo. It must surface the committed family's VAE + text-encoder
+    # repos (plus the main + base repos), not just the loaded GGUF, and be empty once unloaded.
+    b = _loaded_backend("flux.1")
+    ids = set(b.loaded_repo_ids())
+    fam = detect_family("flux.1")
+    assert "unsloth/Z-Image-Turbo-GGUF" in ids  # the main GGUF repo
+    assert fam.base_repo in ids
+    assert fam.sd_cpp_vae[0] in ids  # black-forest-labs/FLUX.1-schnell (VAE)
+    for terepo, _f, _k in fam.sd_cpp_text_encoders:
+        assert terepo in ids  # comfyanonymous/flux_text_encoders
+    b._state = None
+    assert b.loaded_repo_ids() == ()
+
+
 class _FakeServer:
     """Stands in for SdCppServer: records the spawn + one img_gen per whole batch."""
 

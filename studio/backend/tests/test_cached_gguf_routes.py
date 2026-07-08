@@ -919,6 +919,62 @@ def test_delete_cached_refuses_video_loaded_repo(monkeypatch):
         assert "Unload the model before deleting" in e.detail
 
 
+def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
+    # The native sd.cpp one-shot engine re-reads its companion VAE / text-encoder files from the
+    # HF cache on every generation, so deleting a companion repo (comfyanonymous/flux_text_encoders)
+    # while a FLUX GGUF is loaded must be refused. The loaded main repo_id does not match the
+    # companion, so the guard relies on loaded_repo_ids() to cover the committed companions.
+    from fastapi import HTTPException
+    import core.inference.diffusion_engine_router as der
+    import core.inference.video as video_mod
+    import routes.inference as routes_inference
+
+    monkeypatch.setattr(
+        routes_inference,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = False, model_identifier = None),
+    )
+    monkeypatch.setattr(
+        models_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = None),
+    )
+    monkeypatch.setattr(
+        der,
+        "get_active_diffusion_engine",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": True, "repo_id": "unsloth/FLUX.1-dev-GGUF"},
+            loaded_repo_ids = lambda: (
+                "unsloth/FLUX.1-dev-GGUF",
+                "black-forest-labs/FLUX.1-dev",
+                "comfyanonymous/flux_text_encoders",
+            ),
+            loading_repo_ids = lambda: (),
+        ),
+    )
+    monkeypatch.setattr(
+        video_mod,
+        "get_video_backend",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None},
+            loading_repo_ids = lambda: (),
+        ),
+    )
+
+    try:
+        asyncio.run(
+            models_route.delete_cached_model(
+                repo_id = "comfyanonymous/flux_text_encoders",
+                variant = None,
+                current_subject = "u",
+            )
+        )
+        assert False, "expected HTTPException refusing the in-use companion delete"
+    except HTTPException as e:
+        assert e.status_code == 400
+        assert "Unload the model before deleting" in e.detail
+
+
 def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
     # A loaded Images repo must not block deleting a DIFFERENT cached repo that merely shares a
     # name prefix. Qwen/Qwen-Image and Qwen/Qwen-Image-2512 are both real catalog artifacts, so

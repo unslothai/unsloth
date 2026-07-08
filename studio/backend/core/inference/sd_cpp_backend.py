@@ -716,6 +716,25 @@ class SdCppDiffusionBackend:
                 return ()
             return tuple(r for r in (loading.repo_id, loading.base_repo, *loading.asset_repos) if r)
 
+    def loaded_repo_ids(self) -> tuple[str, ...]:
+        """Repo ids the COMMITTED native model reads from disk (empty when unloaded).
+
+        The one-shot sd-cli re-reads the companion VAE / text-encoder files from the HF
+        cache on every generation (server mode keeps them in the resident process, but the
+        extra ids are harmless there), so the delete-cached guard must refuse those
+        companion repos while the model is loaded -- status().repo_id covers only the main
+        GGUF. Reconstructed from the committed family, mirroring loading_repo_ids()."""
+        with self._lock:
+            state = self._state
+            if state is None:
+                return ()
+            fam = state.family
+            repos = [state.repo_id, state.base_repo]
+            if fam.sd_cpp_vae:
+                repos.append(fam.sd_cpp_vae[0])
+            repos.extend(terepo for terepo, _f, _k in fam.sd_cpp_text_encoders)
+            return tuple(dict.fromkeys(r for r in repos if r))
+
     # ── Generate ───────────────────────────────────────────────────────────
 
     def generate(
