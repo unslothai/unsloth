@@ -54,7 +54,11 @@ def test_probe_dtype_follows_bf16_support(monkeypatch, supports_bf16, expected_d
     # The probe must pick its dtype from SUPPORTS_BFLOAT16 (no Turing GPU needed here).
     captured = {}
 
-    def fake_zeros(*args, dtype = None, **kwargs):
+    def fake_zeros(
+        *args,
+        dtype = None,
+        **kwargs,
+    ):
         captured["dtype"] = dtype
         raise RuntimeError("stop after capturing the probe dtype")
 
