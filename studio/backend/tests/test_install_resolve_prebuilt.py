@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""install_llama_prebuilt.py: host->repo mapping and the --resolve-prebuilt mode.
+"""install_llama_prebuilt.py: the --resolve-prebuilt probe (plans against the fork
+by default; --published-repo overrides).
 
 These back the in-app update for source-build (markerless) installs: the backend
 asks the installer whether an official prebuilt exists for this host without
@@ -24,9 +25,7 @@ if str(_studio) not in sys.path:
 
 ilp = importlib.import_module("install_llama_prebuilt")
 
-if not hasattr(ilp, "published_repo_for_host") or not hasattr(
-    ilp, "resolve_simple_install_release_plans"
-):
+if not hasattr(ilp, "resolve_simple_install_release_plans"):
     pytest.skip("PR symbols not present - check branch", allow_module_level = True)
 
 FORK = ilp.DEFAULT_PUBLISHED_REPO  # unslothai/llama.cpp
@@ -56,55 +55,6 @@ def _host(**kw):
     return ilp.HostInfo(**base)
 
 
-def test_published_repo_for_host():
-    # CPU-only Linux (x64 and arm64) -> ggml-org upstream.
-    assert ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True)) == UPSTREAM
-    assert (
-        ilp.published_repo_for_host(_host(is_linux = True, is_arm64 = True, machine = "aarch64"))
-        == UPSTREAM
-    )
-    # GPU Linux -> fork.
-    assert (
-        ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True, has_usable_nvidia = True))
-        == FORK
-    )
-    assert ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True, has_rocm = True)) == FORK
-    # CPU-only Windows -> ggml-org (setup.ps1: the fork ships no win-cpu bundle).
-    assert (
-        ilp.published_repo_for_host(_host(system = "Windows", is_windows = True, is_x86_64 = True))
-        == UPSTREAM
-    )
-    # GPU Windows -> fork.
-    assert (
-        ilp.published_repo_for_host(
-            _host(system = "Windows", is_windows = True, is_x86_64 = True, has_usable_nvidia = True)
-        )
-        == FORK
-    )
-    # macOS -> fork regardless of GPU (ggml-org macOS bundles need too-new macOS).
-    assert (
-        ilp.published_repo_for_host(
-            _host(system = "Darwin", is_macos = True, is_arm64 = True, machine = "arm64")
-        )
-        == FORK
-    )
-    # Linux with AMD tooling but no probed GPU -> fork (setup.sh routes on tooling).
-    assert (
-        ilp.published_repo_for_host(
-            _host(is_linux = True, is_x86_64 = True), linux_amd_tooling_present = True
-        )
-        == FORK
-    )
-    # The tooling hint is Linux-only: Windows CPU stays on ggml-org.
-    assert (
-        ilp.published_repo_for_host(
-            _host(system = "Windows", is_windows = True, is_x86_64 = True),
-            linux_amd_tooling_present = True,
-        )
-        == UPSTREAM
-    )
-
-
 def test_force_cpu_clears_all_gpu_attributes_including_intel():
     # --cpu-fallback is the "select the CPU prebuilt even when a GPU is present"
     # escape hatch. It must drop EVERY GPU attribute, including has_intel_gpu, or
@@ -124,24 +74,6 @@ def test_force_cpu_clears_all_gpu_attributes_including_intel():
     assert forced.has_rocm is False
     assert forced.rocm_gfx_target is None
     assert forced.has_intel_gpu is False
-
-
-def test_macos_intel_and_arm_both_route_to_fork():
-    # macOS uses the unslothai fork's own Mac prebuilts for BOTH arm64 and Intel;
-    # there is no longer any upstream-on-macOS default path, so the obsolete
-    # pre-macOS-26 pin (b9415) is gone.
-    assert (
-        ilp.published_repo_for_host(
-            _host(system = "Darwin", is_macos = True, is_arm64 = True, machine = "arm64")
-        )
-        == FORK
-    )
-    assert (
-        ilp.published_repo_for_host(
-            _host(system = "Darwin", is_macos = True, is_x86_64 = True, machine = "x86_64")
-        )
-        == FORK
-    )
 
 
 def test_macos_upstream_pin_only_for_explicit_pre26_upstream():
@@ -209,15 +141,13 @@ def test_resolve_prebuilt_unavailable(monkeypatch, capsys):
     assert out["repo"] == FORK
 
 
-def test_resolve_prebuilt_linux_amd_tooling_routes_to_fork(monkeypatch, capsys):
-    # CPU-probed Linux host but rocminfo on PATH: the dispatch must route to the
-    # fork so a HIP source build is not offered an upstream CPU prebuilt.
-    monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
-    monkeypatch.setattr(ilp.shutil, "which", lambda tool: tool == "rocminfo")
+def _run_resolve_capture_host(monkeypatch, capsys):
+    """Drive --resolve-prebuilt and return the host the resolver was handed."""
     seen = {}
 
     def _resolver(tag, host, repo, published_release_tag):
         seen["repo"] = repo
+        seen["host"] = host
         raise ilp.PrebuiltFallback("no asset")
 
     monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _resolver)
@@ -228,8 +158,31 @@ def test_resolve_prebuilt_linux_amd_tooling_routes_to_fork(monkeypatch, capsys):
     )
     assert ilp.main() == ilp.EXIT_SUCCESS
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    return seen, out
+
+
+def test_resolve_prebuilt_cpu_linux_routes_to_fork(monkeypatch, capsys):
+    # CPU-only Linux host (no GPU): the dispatch routes to the fork, which now
+    # ships the CPU prebuilt -- it no longer falls back to ggml-org upstream.
+    monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
+    seen, out = _run_resolve_capture_host(monkeypatch, capsys)
     assert seen["repo"] == FORK
     assert out["repo"] == FORK
+
+
+def test_resolve_prebuilt_rocm_sdk_only_host_still_offered_cpu(monkeypatch, capsys):
+    # A CPU-only host that merely has ROCm/HIP SDK tools on PATH (no AMD GPU, so
+    # detect_host leaves has_rocm False) is a valid CPU-prebuilt target. The probe
+    # must NOT reclassify it as ROCm from tool presence alone and suppress the CPU
+    # bundle -- that would deny the fork CPU prebuilt to a legitimate CPU source
+    # build. The host is left CPU-only and resolves against the fork.
+    monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
+    monkeypatch.setattr(
+        ilp.shutil, "which", lambda tool: "/opt/rocm/bin/hipconfig" if tool == "hipconfig" else None
+    )
+    seen, out = _run_resolve_capture_host(monkeypatch, capsys)
+    assert seen["repo"] == FORK
+    assert seen["host"].has_rocm is False
 
 
 # Blackwell floor is sm_100 (data-center B100/B200, B300/GB300), below consumer

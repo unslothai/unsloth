@@ -594,9 +594,10 @@ def test_install_cmd_fork_rocm_marker_forwards_has_rocm(monkeypatch, tmp_path):
 
 
 def test_install_cmd_ggml_cpu_marker_has_no_cpu_fallback(monkeypatch, tmp_path):
-    # CPU installs come from ggml-org. Re-running into the same install-dir/repo
-    # reproduces the same CPU bundle; --cpu-fallback (which force-drops GPU
-    # detection) is reserved for setup.sh's arm64 rescue and must not appear here.
+    # Legacy CPU installs recorded a ggml-org marker (new installs use the fork).
+    # Re-running into the same install-dir/repo reproduces the same CPU bundle;
+    # --cpu-fallback (which force-drops GPU detection) is reserved for setup.sh's
+    # arm64 rescue and must not appear here.
     cmd = _capture_install_cmd(
         monkeypatch,
         tmp_path,
