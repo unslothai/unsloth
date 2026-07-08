@@ -1086,6 +1086,10 @@ class FastSentenceTransformer(FastModel):
                 elif "tokenizer_args" in transformer_init_params:
                     transformer_kwargs["tokenizer_args"] = trust_remote_code_kwargs.copy()
 
+                # Saved ST models: load via Transformer.load to keep the saved module
+                # config. Plain Transformer(...) lets ST 5.x add a "message" modality for
+                # chat-template models (e.g. Qwen3-Embedding), wrapping inputs in the chat
+                # template and silently degrading embeddings (#6881).
                 transformer_load_params = inspect.signature(Transformer.load).parameters
                 can_load_from_hub = all(
                     key in transformer_load_params
