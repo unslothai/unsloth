@@ -3991,6 +3991,12 @@ class LlamaCppBackend:
         # refuses to load unless UNSLOTH_IS_PRESENT is set (normally by `import
         # unsloth`). The shim never imports unsloth, so set it here as unsloth does.
         env["UNSLOTH_IS_PRESENT"] = "1"
+        # On a GPU-less host the shim's `import unsloth_zoo` aborts in
+        # get_device_type() ("needs a GPU"), even though the shim only drives the
+        # CPU visual-server binary and does no torch GPU work. Allow the CPU device
+        # so the runner starts; the visual server still runs on the CPU llama.cpp build.
+        if self._effective_gpu_count() == 0:
+            env.setdefault("UNSLOTH_ALLOW_CPU", "1")
         env["DG_VISUAL_BIN"] = visual_bin
         env["DG_GPU"] = gpu
         # The file-override shim imports its sibling visual_engine; put its dir on PYTHONPATH.
