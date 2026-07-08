@@ -164,12 +164,14 @@ def test_grpo_patch_neutralizes_ref_adapter_and_qlora_cast(generated_grpo_source
     ), "TRL's hardcoded QLoRA bf16 cast survived; rl.py neutralization no-oped"
 
 
-# SFT / DPO: no #6904-specific contract, but the same source-transform patcher
-# runs on them, so a structural TRL change can still break generation. Assert the
-# patch produces a valid, importable Unsloth trainer (catches "and or others").
+# SFT / DPO: the same source-transform patcher runs on them (a fake patch run,
+# no training), so a structural TRL change can break generation. Assert the patch
+# produces a valid, importable Unsloth trainer AND that the shared QLoRA
+# `_is_quantized_model` bf16 cast is neutralized (TRL 1.7's spelling), which the
+# patcher applies to every trainer. Catches "and or others" beyond GRPO.
 
 
-def _patch_and_validate(trainer_file: str, trainer_cls: str) -> None:
+def _patch_and_get_source(trainer_file: str, trainer_cls: str) -> str:
     if importlib.util.find_spec("unsloth") is None or importlib.util.find_spec("trl") is None:
         pytest.skip("unsloth or trl not installed")
     # Let a real import failure fail the test (import-time drift is the target).
@@ -186,15 +188,30 @@ def _patch_and_validate(trainer_file: str, trainer_cls: str) -> None:
         f"(got {patched.__name__!r}); source-transform dispatch drifted"
     )
     gen = inspect.getmodule(patched)
-    ast.parse(inspect.getsource(gen) if gen is not None else inspect.getsource(patched))
+    src = inspect.getsource(gen) if gen is not None else inspect.getsource(patched)
+    ast.parse(src)
+    return src
+
+
+def _assert_quantized_cast_neutralized(src: str, trainer_cls: str) -> None:
+    from packaging.version import Version
+
+    if _trl_version() < Version("1.7.0"):
+        pytest.skip("pre-1.7.0 spells the QLoRA cast differently (is_loaded_in_4bit)")
+    assert "if _is_quantized_model:" not in src, (
+        f"{trainer_cls}: TRL's hardcoded QLoRA bf16 cast survived; the shared "
+        f"rl.py `if _is_quantized_model:` -> `if False:` neutralization no-oped"
+    )
 
 
 def test_sft_patch_generates_valid_source():
-    _patch_and_validate("sft_trainer", "SFTTrainer")
+    src = _patch_and_get_source("sft_trainer", "SFTTrainer")
+    _assert_quantized_cast_neutralized(src, "SFTTrainer")
 
 
 def test_dpo_patch_generates_valid_source():
-    _patch_and_validate("dpo_trainer", "DPOTrainer")
+    src = _patch_and_get_source("dpo_trainer", "DPOTrainer")
+    _assert_quantized_cast_neutralized(src, "DPOTrainer")
 
 
 # The installed TRL in CI is always >= 1.7.0, so the < 1.7.0 return-arity
