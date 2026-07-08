@@ -363,7 +363,8 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
 
 
 _FP8_DTYPES = tuple(
-    dtype for dtype in (getattr(torch, "float8_e4m3fn", None), getattr(torch, "float8_e5m2", None))
+    dtype
+    for dtype in (getattr(torch, "float8_e4m3fn", None), getattr(torch, "float8_e5m2", None))
     if dtype is not None
 )
 
@@ -399,12 +400,15 @@ def _load_fp8_weight_map(model_name, local_files_only, token):
         from huggingface_hub import hf_hub_download
         try:
             index_path = hf_hub_download(
-                model_name, index_file,
-                local_files_only = local_files_only, token = token,
+                model_name,
+                index_file,
+                local_files_only = local_files_only,
+                token = token,
             )
         except Exception:
             return None
     import json
+
     with open(index_path, "r") as f:
         return json.load(f).get("weight_map", None)
 
@@ -414,10 +418,17 @@ def _resolve_fp8_shard(model_name, shard, local_files_only, token):
     if os.path.isdir(model_name):
         return os.path.join(model_name, shard)
     from huggingface_hub import hf_hub_download
+
     return hf_hub_download(model_name, shard, local_files_only = local_files_only, token = token)
 
 
-def _restore_dropped_fp8_scales(model, model_name, *, local_files_only = False, token = None):
+def _restore_dropped_fp8_scales(
+    model,
+    model_name,
+    *,
+    local_files_only = False,
+    token = None,
+):
     """Re-apply block-fp8 `weight_scale_inv` tensors that transformers dropped on load.
 
     On some block-scale fp8 checkpoints (e.g. Qwen3.6-27B-FP8, issue #6200) transformers fails to

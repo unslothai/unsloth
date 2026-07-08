@@ -41,7 +41,11 @@ from ._utils import (
     set_task_config_attr,
 )
 from ._utils import *
-from .loader_utils import _exclude_rope_inv_freq_from_ddp, _get_fp8_mode_and_check_settings, _restore_dropped_fp8_scales
+from .loader_utils import (
+    _exclude_rope_inv_freq_from_ddp,
+    _get_fp8_mode_and_check_settings,
+    _restore_dropped_fp8_scales,
+)
 from ..save import patch_saving_functions
 from ..models.loader_utils import is_distributed
 from unsloth_zoo.gradient_checkpointing import (
@@ -1194,8 +1198,10 @@ class FastBaseModel:
                 )
                 # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
                 _restore_dropped_fp8_scales(
-                    model, model_name,
-                    local_files_only = local_files_only, token = token,
+                    model,
+                    model_name,
+                    local_files_only = local_files_only,
+                    token = token,
                 )
                 if hasattr(model, "generate"):
                     model.fast_generate = make_fast_generate_wrapper(model.generate)
