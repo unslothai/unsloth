@@ -49,8 +49,10 @@ _KEEP_PREFIX = ("nvidia-", "nvidia_")
 _VALUE_FLAGS = {
     "-r",
     "--requirement",
+    "--requirements",
     "-c",
     "--constraint",
+    "--constraints",
     "-i",
     "--index-url",
     "--extra-index-url",
@@ -62,6 +64,7 @@ _VALUE_FLAGS = {
     "-p",
     "--prefix",
     "--index-strategy",
+    "--upgrade-strategy",
     "--upgrade-package",
     "-P",
     "--reinstall-package",
@@ -77,12 +80,15 @@ _VALUE_FLAGS = {
 # Of those value-flags, the ones whose VALUE is itself an install target: a
 # requirements file pulls real requirements. An index-url / find-links /
 # constraint / target value is an option, not something to install.
-_REQ_FILE_FLAGS = {"-r", "--requirement"}
+# uv spells the long forms in the PLURAL (`--requirements`, `--constraints`);
+# include both so a `uv pip install --requirements reqs.txt` is filtered too.
+_REQ_FILE_FLAGS = {"-r", "--requirement", "--requirements"}
 # Constraint files are not install targets, but pip applies their pins during
 # resolution, so a `-c constraints.txt` that pins torch/transformers/etc. can
 # still downgrade or reinstall a baked package when another target pulls it in.
 # Filter protected packages out of them the same way as requirement files.
-_CONSTRAINT_FILE_FLAGS = {"-c", "--constraint"}
+# (uv's long form is the plural `--constraints`.)
+_CONSTRAINT_FILE_FLAGS = {"-c", "--constraint", "--constraints"}
 # -e/--editable <path|url|vcs> takes the NEXT token as its target (pip:
 # `-e, --editable <path/url>`), and that target is a real install target. A
 # protected editable (e.g. `-e git+https://.../unsloth.git#egg=unsloth`) must
@@ -114,6 +120,36 @@ _ATTACHED_SHORT_FLAGS = {"-r", "-c", "-e", "-P"}
 # already-satisfied protected deps are left untouched. Per-package selectors
 # (--reinstall-package / -P) are handled through _UPGRADE_PKG_FLAGS instead.
 _REINSTALL_FLAGS = {"--force-reinstall", "--ignore-installed", "-I", "--reinstall"}
+# Value-flags whose flag+value pair is dropped outright in shim mode.
+# `--upgrade-strategy eager` makes pip upgrade EVERY dependency of a kept target
+# regardless of whether the installed version already satisfies it, which would
+# refresh the baked torch/transformers under the pinned CUDA stack. Dropping the
+# flag falls back to pip's default `only-if-needed`, so a kept target still
+# installs but already-satisfied protected deps stay put. (`only-if-needed` is
+# the default, so dropping a `--upgrade-strategy only-if-needed` is a no-op.)
+_DROP_VALUE_FLAGS = {"--upgrade-strategy"}
+
+
+# Source-distribution / archive suffixes pip accepts as an install target.
+_ARCHIVE_EXTS = (".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar", ".zip")
+
+
+def _sdist_name(basename):
+    """Distribution name from a source-archive basename ({name}-{version}.ext),
+    or None if it is not a recognised archive. Splits at the first hyphen that
+    precedes a digit so legacy hyphenated names (flashinfer-python-1.0,
+    pytorch-triton-2.0) resolve correctly, not just PEP 625-normalised ones."""
+    low = basename.lower()
+    stem = None
+    for ext in _ARCHIVE_EXTS:
+        if low.endswith(ext):
+            stem = basename[: -len(ext)]
+            break
+    if stem is None:
+        return None
+    m = re.match(r"^(.+?)-\d", stem)
+    name = (m.group(1) if m else stem).strip().lower().replace("_", "-")
+    return name or None
 
 
 def _canon(token):
@@ -156,6 +192,14 @@ def _canon(token):
             dist = _whl.group(1).split("-", 1)[0].strip().lower().replace("_", "-")
             if dist:
                 return dist
+        # A source archive (sdist / zip) URL or path names its distribution the
+        # same way ({name}-{version}.tar.gz etc.), so `pip install
+        # https://files.pythonhosted.org/.../unsloth-2026.7.1.tar.gz` or
+        # `./torch-2.11.0.tar.gz` must be matched against _KEEP too, not passed
+        # through as an opaque positional that reinstalls the baked package.
+        _arch = _sdist_name(token.split("#", 1)[0].split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1])
+        if _arch:
+            return _arch
         # A VCS URL without an #egg= fragment still installs a named project:
         # pip/uv derive the distribution from the repo, and for the packages we
         # protect the repo basename equals the distribution
@@ -185,6 +229,11 @@ def _canon(token):
         dist = token.rsplit("/", 1)[-1][:-4].split("-", 1)[0].strip().lower().replace("_", "-")
         if dist:
             return dist
+    # A bare source-archive filename from the CWD (`pip install torch-2.11.0.tar.gz`)
+    # is a valid pip target too; parse its distribution the same way.
+    _barch = _sdist_name(token.rsplit("/", 1)[-1])
+    if _barch:
+        return _barch
     # strip extras and any version/marker tail
     name = re.split(r"[<>=!~\[\s;@]", token, 1)[0].strip()
     return name.lower().replace("_", "-") or None
@@ -451,6 +500,13 @@ def main():
                     _c_path, _c_rec, _c_drp = _filter_requirements_file(tok)
                     keep_args.append(_c_path)
                     dropped.extend(_c_drp)
+            elif prev_flag in _DROP_VALUE_FLAGS:
+                # --upgrade-strategy (eager): the flag was appended when we saw
+                # it; pop it and drop the flag+value pair so pip falls back to
+                # its safe only-if-needed default.
+                if keep_args and keep_args[-1] == prev_flag:
+                    keep_args.pop()
+                dropped.append(prev_flag + " " + tok)
             elif prev_flag in _EDITABLE_FLAGS or prev_flag in _UPGRADE_PKG_FLAGS:
                 # The flag was held back (not appended yet): its value is an
                 # install target (-e path/url/vcs) or an upgrade selector
@@ -493,6 +549,8 @@ def main():
                     if _req_rec and not recorded:
                         recorded = _req_rec
                     dropped.extend(_req_drp)
+                elif _flag in _DROP_VALUE_FLAGS:
+                    dropped.append(tok)  # --upgrade-strategy=eager -> drop the pair
                 elif _flag in _CONSTRAINT_FILE_FLAGS:
                     _c_path, _c_rec, _c_drp = _filter_requirements_file(_val)
                     keep_args.append(_flag + "=" + _c_path)

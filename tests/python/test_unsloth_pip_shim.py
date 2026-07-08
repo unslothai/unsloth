@@ -455,3 +455,78 @@ def test_reinstall_package_transformers_pin_recorded(shim):
     execd, marker = _run(shim, "uv", ["--reinstall-package", "transformers==4.55.0", "peft"])
     assert execd == ["peft"], execd
     assert marker == "4.55.0", marker
+
+
+# --------------------------------------------------------------------------
+# Item 3542096750 -- parse protected source archives (sdist / zip) too.
+# --------------------------------------------------------------------------
+def test_sdist_url_protected_dropped(shim):
+    url = "https://files.pythonhosted.org/packages/aa/unsloth-2026.7.1.tar.gz"
+    execd, _ = _run(shim, "pip", [url, "peft"])
+    assert execd == ["peft"], execd
+
+
+def test_sdist_bare_protected_dropped(shim):
+    execd, _ = _run(shim, "pip", ["torch-2.11.0.tar.gz"])
+    assert execd is None, execd
+
+
+def test_sdist_zip_protected_dropped(shim):
+    execd, _ = _run(shim, "pip", ["./transformers-4.55.0.zip", "peft"])
+    assert execd == ["peft"], execd
+
+
+def test_sdist_hyphenated_name_protected_dropped(shim):
+    # flashinfer-python is protected; the name must survive the hyphen split.
+    execd, _ = _run(shim, "pip", ["flashinfer-python-0.5.0.tar.gz"])
+    assert execd is None, execd
+
+
+def test_sdist_unprotected_kept(shim):
+    execd, _ = _run(shim, "pip", ["numpy-2.1.0.tar.gz"])
+    assert execd == ["numpy-2.1.0.tar.gz"], execd
+
+
+# --------------------------------------------------------------------------
+# Item 3542096760 -- uv's PLURAL --requirements / --constraints go through the
+# same filter as the pip-style singular names.
+# --------------------------------------------------------------------------
+def test_uv_plural_requirements_filtered(shim, tmp_path):
+    req = tmp_path / "reqs.txt"
+    req.write_text("torch==2.11.0\nsnac==1.2.0\n", encoding = "utf-8")
+    execd, _ = _run(shim, "uv", ["--requirements", str(req)])
+    assert execd is not None and execd[0] == "--requirements", execd
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    assert "snac==1.2.0" in filtered
+    assert "torch" not in filtered
+
+
+def test_uv_plural_constraints_filtered(shim, tmp_path):
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("torch==2.11.0\n", encoding = "utf-8")
+    execd, _ = _run(shim, "uv", ["--constraints", str(constraints), "peft"])
+    assert execd is not None and execd[0] == "--constraints", execd
+    assert "peft" in execd
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    assert "torch" not in filtered
+
+
+# --------------------------------------------------------------------------
+# Item 3542096764 -- neutralise --upgrade-strategy eager so a kept target cannot
+# eagerly rebuild already-satisfied baked deps.
+# --------------------------------------------------------------------------
+def test_upgrade_strategy_eager_dropped(shim):
+    execd, _ = _run(shim, "pip", ["-U", "--upgrade-strategy", "eager", "peft"])
+    assert execd == ["-U", "peft"], execd
+
+
+def test_upgrade_strategy_eager_inline_dropped(shim):
+    execd, _ = _run(shim, "pip", ["--upgrade-strategy=eager", "peft"])
+    assert execd == ["peft"], execd
+
+
+def test_upgrade_strategy_only_if_needed_also_dropped(shim):
+    # only-if-needed is pip's default, so dropping it is a harmless no-op that
+    # keeps the kept target installing normally.
+    execd, _ = _run(shim, "pip", ["--upgrade-strategy", "only-if-needed", "peft"])
+    assert execd == ["peft"], execd

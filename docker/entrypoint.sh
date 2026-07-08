@@ -33,49 +33,50 @@ set -euo pipefail
 # they RUN under any driver -- it is only their OUTPUT the older driver rejects.
 #
 # Pick per DEVICE at boot (the compute capability is unknown at build time):
-# activate cu13 only for sm_103 / sm_121, and otherwise keep Triton on its
-# bundled cu12.8 ptxas and restore the wheel-bundled cu12.8 NVRTC the build
-# swapped for cu13. Runs before every early-exit below so the selection always
-# applies. Best-effort: a read-only / --user-dropped rootfs that cannot
-# re-point the NVRTC symlink is left unchanged.
+# cu12.8 is the immutable baked default (loadable on every supported 570+
+# driver), and only sm_103 / sm_121 -- which ship on >= 580 drivers -- switch
+# Triton to cu13 ptxas and retarget the venv NVRTC symlink to the staged cu13
+# alias. Runs before every early-exit below so the selection always applies.
+# Best-effort: because the safe default needs no write, a non-root / read-only
+# rootfs is always fine; only the rare non-root datacenter host cannot switch.
 select_cuda_jit_tools() {
-    local caps="" cc nvrtc_dir orig need_cu13=0
+    local caps="" cc nvrtc_dir need_cu13=0
     if command -v nvidia-smi >/dev/null 2>&1; then
         caps="$( { nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true; } )"
     fi
     # Scan EVERY visible GPU, not just the first: a Blackwell datacenter part
     # (sm_103 B300/GB300 or sm_121 GB10/DGX Spark) can sit behind an H100/B200 in
-    # the nvidia-smi ordering, so keying off only the first compute_cap would
-    # restore cu12.8 and leave that later device unable to JIT. If ANY visible
-    # GPU needs cu13, enable it for the whole process -- those parts only ship on
-    # >= 580 drivers, so the host tolerates cu13 cubins for every arch present.
+    # the nvidia-smi ordering, so keying off only the first compute_cap would miss
+    # it. If ANY visible GPU needs cu13, switch to it for the whole process --
+    # those parts only ship on >= 580 drivers, so the host tolerates cu13 cubins
+    # for every arch present.
     while IFS= read -r cc || [[ -n "${cc}" ]]; do
         cc="$(printf '%s' "${cc}" | tr -d '[:space:]')"
         case "${cc}" in
             10.3|12.1) need_cu13=1 ;;
         esac
     done <<< "${caps}"
-    if [[ "${need_cu13}" -eq 1 ]]; then
-        # Blackwell datacenter present: the build already points each venv's
-        # libnvrtc.so.12 at cu13, so only Triton's ptxas needs redirecting.
-        # -z guard leaves an explicit `docker run -e TRITON_PTXAS_PATH` win.
-        if [[ -x /usr/local/cuda-13.0/bin/ptxas && -z "${TRITON_PTXAS_PATH:-}" ]]; then
-            export TRITON_PTXAS_PATH=/usr/local/cuda-13.0/bin/ptxas
-        fi
-    else
-        # No datacenter Blackwell present (or an undetectable / CPU host): leave
-        # TRITON_PTXAS_PATH unset so Triton uses its bundled cu12.8 ptxas, and
-        # restore the cu12.8 NVRTC in each venv that saved the original, so a
-        # 570-579 driver never sees a cu13 cubin. Covers the base venv and, on
-        # the Studio image, the Studio venv.
-        for nvrtc_dir in \
-            /opt/unsloth-venv/lib/python*/site-packages/nvidia/cuda_nvrtc/lib \
-            "${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do
-            orig="${nvrtc_dir}/libnvrtc.so.12.cu128.orig"
-            [[ -e "${orig}" ]] || continue
-            ln -sf libnvrtc.so.12.cu128.orig "${nvrtc_dir}/libnvrtc.so.12" 2>/dev/null || true
-        done
+    # Non-datacenter / undetectable / CPU host: nothing to do. cu12.8 is the
+    # immutable baked default (libnvrtc.so.12 -> .cu128.orig, Triton on its
+    # bundled cu12.8 ptxas), loadable on every supported 570+ driver, and needs
+    # NO write -- so a non-root `docker run --user` container is never left on a
+    # cu13 NVRTC a 570-579 driver cannot load.
+    [[ "${need_cu13}" -eq 1 ]] || return 0
+    # Blackwell datacenter present: cu12.8 cannot emit compute_103/121, so point
+    # Triton at cu13 ptxas and retarget each venv's libnvrtc.so.12 -> the staged
+    # cu13 alias. -z guard leaves an explicit `docker run -e TRITON_PTXAS_PATH`
+    # win. Best-effort: a read-only / --user rootfs that cannot rewrite the
+    # symlink simply keeps cu12.8 (a rare non-root datacenter case). Covers the
+    # base venv and, on the Studio image, the Studio venv.
+    if [[ -x /usr/local/cuda-13.0/bin/ptxas && -z "${TRITON_PTXAS_PATH:-}" ]]; then
+        export TRITON_PTXAS_PATH=/usr/local/cuda-13.0/bin/ptxas
     fi
+    for nvrtc_dir in \
+        /opt/unsloth-venv/lib/python*/site-packages/nvidia/cuda_nvrtc/lib \
+        "${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do
+        [[ -e "${nvrtc_dir}/libnvrtc.so.12.cu13" ]] || continue
+        ln -sf libnvrtc.so.12.cu13 "${nvrtc_dir}/libnvrtc.so.12" 2>/dev/null || true
+    done
 }
 # Best-effort: never let JIT-tool selection block container startup.
 select_cuda_jit_tools || true

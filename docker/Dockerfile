@@ -575,9 +575,10 @@ COPY --from=builder /opt/unsloth-venv /opt/unsloth-venv
 #   (1) torch's bundled libnvrtc.so.12 is CUDA 12.8. The jiterator C++ side
 #       queries the device cap directly, so any NVRTC JIT path (e.g.
 #       torch.fft.rfft(complex).abs(), used inside mel-spectrogram code)
-#       errors out on sm_103/sm_121. Fix: symlink cu13 libnvrtc.so.13 over the
-#       bundled .so.12 (the .so.12 original is saved as .cu128.orig so the
-#       runtime can restore it -- see below).
+#       errors out on sm_103/sm_121. Fix: keep cu12.8 as the immutable default
+#       (real lib saved as .cu128.orig, libnvrtc.so.12 -> it) and stage a cu13
+#       alias (.cu13); the runtime retargets libnvrtc.so.12 -> .cu13 for those
+#       two arches only -- see below.
 #
 #   (2) Triton's nvidia backend invokes its OWN bundled ptxas, which in the
 #       triton 3.6.0 we pin is still CUDA 12.8 (V12.8.93): it tops out at
@@ -615,11 +616,21 @@ RUN set -eux; \
             cuda-nvrtc-13-0 \
             cuda-nvcc-13-0; \
         rm -rf /var/lib/apt/lists/*; \
-        # (1) NVRTC swap. torch's wheel-bundled cu128 NVRTC -> cu13 NVRTC.
+        # (1) NVRTC staging. cu12.8 stays the IMMUTABLE default; a cu13 alias is
+        #     staged beside it for the runtime switch. Keep the wheel's real
+        #     cu12.8 lib as .cu128.orig, point libnvrtc.so.12 at it (relative
+        #     symlink), and add .cu13 -> the cu13 lib. select_cuda_jit_tools in
+        #     entrypoint.sh retargets libnvrtc.so.12 -> .cu13 ONLY for sm_103/
+        #     sm_121 hosts. Because the default needs no runtime write, a non-root
+        #     `docker run --user` container -- which cannot rewrite the symlink --
+        #     keeps cu12.8, which every supported 570+ driver can load; a baked
+        #     cu13 default would instead leave those hosts on a cubin a 570-579
+        #     driver cannot load.
         NVRTC_DIR=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages/nvidia/cuda_nvrtc/lib; \
-        if [ -f "${NVRTC_DIR}/libnvrtc.so.12" ]; then \
+        if [ -f "${NVRTC_DIR}/libnvrtc.so.12" ] && [ ! -L "${NVRTC_DIR}/libnvrtc.so.12" ]; then \
             mv "${NVRTC_DIR}/libnvrtc.so.12" "${NVRTC_DIR}/libnvrtc.so.12.cu128.orig"; \
-            ln -s /usr/local/cuda-13.0/lib64/libnvrtc.so.13 "${NVRTC_DIR}/libnvrtc.so.12"; \
+            ln -s libnvrtc.so.12.cu128.orig "${NVRTC_DIR}/libnvrtc.so.12"; \
+            ln -s /usr/local/cuda-13.0/lib64/libnvrtc.so.13 "${NVRTC_DIR}/libnvrtc.so.12.cu13"; \
         fi
 # (2) ptxas override. triton 3.6.0's own ptxas is cu12.8 (no sm_103/sm_121), so
 # those two arches need the cu13 ptxas installed above. It is NOT baked as a
