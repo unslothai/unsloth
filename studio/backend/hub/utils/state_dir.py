@@ -96,10 +96,7 @@ def _filename_bytes(name: str) -> int:
 
 def _state_filename_fits(entry_key: str) -> bool:
     filename = f"{entry_key}{_STATE_EXTENSION}"
-    return (
-        _filename_bytes(filename) + _ATOMIC_WRITE_TMP_OVERHEAD
-        <= _MAX_STATE_BASENAME_BYTES
-    )
+    return _filename_bytes(filename) + _ATOMIC_WRITE_TMP_OVERHEAD <= _MAX_STATE_BASENAME_BYTES
 
 
 def _state_repo_key(repo_type: RepoType, repo_id: str) -> str:

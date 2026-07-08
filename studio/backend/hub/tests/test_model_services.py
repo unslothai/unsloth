@@ -113,11 +113,7 @@ def test_download_state_preserves_readable_keys_when_safe(monkeypatch, tmp_path)
 
 
 @pytest.mark.parametrize("variant", ["bad variant with spaces", "q" * 64])
-def test_download_state_bounds_long_repo_variant_filenames(
-    monkeypatch,
-    tmp_path,
-    variant,
-):
+def test_download_state_bounds_long_repo_variant_filenames(monkeypatch, tmp_path, variant):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
     repo_id = f"{'a' * 96}/{'b' * 96}"
 
