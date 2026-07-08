@@ -29,8 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SHIM_PATH = REPO_ROOT / "docker" / "unsloth_pip_shim.py"
 
 TORCH_WHEEL_URL = (
-    "https://download.pytorch.org/whl/cu128/"
-    "torch-2.11.0%2Bcu128-cp312-cp312-linux_x86_64.whl"
+    "https://download.pytorch.org/whl/cu128/torch-2.11.0%2Bcu128-cp312-cp312-linux_x86_64.whl"
 )
 
 
@@ -105,9 +104,7 @@ def test_editable_protected_target_drops_flag_and_value(shim):
 
 
 def test_editable_only_protected_target_noops(shim):
-    execd, _ = _run(
-        shim, "pip", ["-e", "git+https://github.com/unslothai/unsloth.git#egg=unsloth"]
-    )
+    execd, _ = _run(shim, "pip", ["-e", "git+https://github.com/unslothai/unsloth.git#egg=unsloth"])
     assert execd is None  # nothing left to install -> no-op, no dangling -e
 
 
@@ -172,9 +169,7 @@ def test_direct_torch_wheel_url_dropped(shim):
 
 
 def test_local_torch_wheel_path_dropped(shim):
-    execd, _ = _run(
-        shim, "pip", ["/tmp/wheels/torch-2.11.0+cu128-cp312-cp312-linux_x86_64.whl"]
-    )
+    execd, _ = _run(shim, "pip", ["/tmp/wheels/torch-2.11.0+cu128-cp312-cp312-linux_x86_64.whl"])
     assert execd is None
 
 
