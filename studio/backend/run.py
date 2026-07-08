@@ -1273,7 +1273,8 @@ def run_server(
     )
     # Hosted notebooks keep app-level client-IP trust authoritative. Uvicorn's
     # proxy middleware rewrites scope["client"] before routes.auth can apply
-    # UNSLOTH_STUDIO_TRUST_FORWARDED, so disable it on notebook/tunnel paths.
+    # UNSLOTH_STUDIO_TRUST_FORWARDED and loopback-only CF-Connecting-IP handling,
+    # so disable it on notebook/tunnel paths.
     if _IS_HOSTED_NOTEBOOK:
         config_kwargs["proxy_headers"] = False
     config = uvicorn.Config(app, **config_kwargs)
