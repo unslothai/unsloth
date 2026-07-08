@@ -361,9 +361,7 @@ def test_vcs_url_without_egg_protected_dropped(shim):
 
 
 def test_vcs_url_without_egg_with_ref_dropped(shim):
-    execd, _ = _run(
-        shim, "pip", ["git+https://github.com/unslothai/unsloth-zoo.git@main", "peft"]
-    )
+    execd, _ = _run(shim, "pip", ["git+https://github.com/unslothai/unsloth-zoo.git@main", "peft"])
     assert execd == ["peft"], execd
 
 
