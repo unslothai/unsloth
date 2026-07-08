@@ -11,9 +11,9 @@ Covers the post-probe handling in
     over-commit shared RAM, and report total 0 (shared RAM is not a budget),
   * discrete GPUs (is_igpu=0) keep their free untouched and pass their real
     total through so the fit can reserve absolute headroom,
-  * an inherited ``GGML_VK_VISIBLE_DEVICES`` is stripped before probing so
-    enumeration stays in ggml's canonical full-device space, then honored by
-    filtering out the hidden devices from the result.
+  * an inherited ``GGML_VK_VISIBLE_DEVICES`` is passed through to ggml unchanged
+    (ggml applies it), not stripped or filtered in Python -- the probe reports
+    ggml's compact ordinal, which load_model pins with ``--device Vulkan<i>``.
 
 The ggml Vulkan library is never loaded: subprocess.run is mocked to emit
 the tab-separated lines the real ``_vulkan_probe.py`` would print.
@@ -128,39 +128,28 @@ def test_large_discrete_gpu_is_untouched(tmp_path):
     assert gpus == [(0, 47 * 1024, 48 * 1024)], gpus
 
 
-def test_inherited_visible_devices_mask_is_stripped_from_probe_env(tmp_path, monkeypatch):
+def test_inherited_visible_devices_mask_is_passed_through_to_probe(tmp_path, monkeypatch):
+    # The mask is NOT stripped or filtered in Python: ggml parses it in raw
+    # physical-device space while this probe reports the compact post-filter
+    # ordinal, so mixing spaces would be wrong. It is passed through unchanged
+    # so ggml applies it to the same device list the launch will enumerate.
     binary = _make_vulkan_install(tmp_path)
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
     captured: dict = {}
     rows = [_row(0, 23 * GIB, is_igpu = 0, total_bytes = 24 * GIB)]
     with _mock_probe(rows, captured_env = captured):
         LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
-    assert "GGML_VK_VISIBLE_DEVICES" not in captured, captured
+    assert captured.get("GGML_VK_VISIBLE_DEVICES") == "1", captured
 
 
-def test_inherited_visible_devices_mask_filters_hidden_device(tmp_path, monkeypatch):
-    binary = _make_vulkan_install(tmp_path)
-    # The user hid device 0 (GGML_VK_VISIBLE_DEVICES=1). The probe still
-    # enumerates the full unmasked list, but the reader must drop device 0 so
-    # the fit and pin can't select a GPU the user reserved (CUDA parity).
-    monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
-    rows = [
-        _row(0, 8 * GIB, is_igpu = 0, total_bytes = 24 * GIB),
-        _row(1, 6 * GIB, is_igpu = 0, total_bytes = 24 * GIB),
-    ]
-    with _mock_probe(rows):
-        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
-    assert gpus == [(1, 6 * 1024, 24 * 1024)], gpus
-
-
-def test_empty_visible_devices_mask_hides_all(tmp_path, monkeypatch):
-    binary = _make_vulkan_install(tmp_path)
-    # An empty mask hides every device, matching the CUDA_VISIBLE_DEVICES="" convention.
-    monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "")
-    rows = [_row(0, 8 * GIB, is_igpu = 0, total_bytes = 24 * GIB)]
-    with _mock_probe(rows):
-        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
-    assert gpus == [], gpus
+def test_vulkan_pin_args_uses_device_names_not_env_mask():
+    # Pin by compact device name via --device (the space the probe reports and
+    # the registry names), never by writing a compact ordinal into the raw
+    # GGML_VK_VISIBLE_DEVICES index space.
+    assert LlamaCppBackend._vulkan_pin_args([0]) == ["--device", "Vulkan0"]
+    assert LlamaCppBackend._vulkan_pin_args([1, 2]) == ["--device", "Vulkan1,Vulkan2"]
+    assert LlamaCppBackend._vulkan_pin_args(None) == []
+    assert LlamaCppBackend._vulkan_pin_args([]) == []
 
 
 if __name__ == "__main__":

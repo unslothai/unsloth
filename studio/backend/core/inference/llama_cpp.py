@@ -2495,8 +2495,7 @@ class LlamaCppBackend:
 
         ``if x.strip()`` filters trailing-comma masks ("0,1,"); an empty mask
         ("") yields an empty set -> all devices hidden, distinct from an unset
-        var (None -> no mask). Shared by the nvidia-smi (CUDA_VISIBLE_DEVICES)
-        and Vulkan (GGML_VK_VISIBLE_DEVICES) probes so the convention lives once.
+        var (None -> no mask). Used by the nvidia-smi (CUDA_VISIBLE_DEVICES) probe.
         """
         raw = os.environ.get(env_name)
         if raw is None:
@@ -2505,6 +2504,22 @@ class LlamaCppBackend:
             return set(int(x.strip()) for x in raw.split(",") if x.strip())
         except ValueError:
             return None
+
+    @staticmethod
+    def _vulkan_pin_args(gpu_indices: Optional[Iterable[int]]) -> list[str]:
+        """``--device Vulkan<i>,...`` to pin a Vulkan launch to selected GPUs.
+
+        The indices are ggml's compact Vulkan ordinals (as _get_gpu_free_memory
+        reports and the backend registry names ``Vulkan<i>``). We pin by that
+        name, NOT via GGML_VK_VISIBLE_DEVICES: ggml parses that env var in the
+        raw vkEnumeratePhysicalDevices index space (before dropping CPU/llvmpipe
+        devices and deduplicating ICDs), so writing a compact ordinal there can
+        select a different physical device -- or the CPU rasterizer. Empty when
+        no pin is requested.
+        """
+        if not gpu_indices:
+            return []
+        return ["--device", ",".join(f"Vulkan{i}" for i in gpu_indices)]
 
     @staticmethod
     def _get_gpu_free_memory(binary: Optional[str] = None) -> list[tuple[int, int]]:
@@ -2555,11 +2570,11 @@ class LlamaCppBackend:
              ``nvidia-smi`` from PATH.
 
         On a Vulkan build, the ggml Vulkan probe is authoritative so the
-        returned indices are Vulkan ordinals (the space the GPU pin writes to
-        ``GGML_VK_VISIBLE_DEVICES``). It reports ``total`` for discrete cards so
-        the fit reserves absolute headroom like CUDA/ROCm, and leaves ``total``
-        0 for an iGPU (shared system RAM) so the fit falls back to free*frac.
-        Otherwise nvidia-smi / torch cover NVIDIA + AMD ROCm.
+        returned indices are ggml's compact Vulkan ordinals (the space the GPU
+        pin selects via ``--device Vulkan<i>``). It reports ``total`` for discrete
+        cards so the fit reserves absolute headroom like CUDA/ROCm, and leaves
+        ``total`` 0 for an iGPU (shared system RAM) so the fit falls back to
+        free*frac. Otherwise nvidia-smi / torch cover NVIDIA + AMD ROCm.
 
         Returns (gpu_index, free_mib, total_mib) sorted by index; empty if no
         supported GPU is reachable.
@@ -2655,13 +2670,15 @@ class LlamaCppBackend:
         ``ggml_backend_vk_get_device_memory`` for each device, so no Vulkan
         instance is created in this process. Returns list of
         (device_index, free_mib, total_mib) sorted by index, where the index is
-        ggml's own Vulkan device ordinal (the space ``GGML_VK_VISIBLE_DEVICES``
-        expects). Integrated GPUs leave a per-device host-RAM margin (see
-        ``_apply_igpu_host_reserve_mib``) and report total 0 (shared RAM is not
-        a VRAM budget); discrete cards pass their real total through. A user-set
-        ``GGML_VK_VISIBLE_DEVICES`` filters the enumerated devices, mirroring the
-        nvidia-smi path's ``CUDA_VISIBLE_DEVICES`` handling. Returns [] when no
-        Vulkan build is installed or no device is reachable.
+        ggml's compact Vulkan device ordinal -- the one the backend registry
+        names ``Vulkan<index>`` and that load_model pins with ``--device``, NOT
+        the raw ``GGML_VK_VISIBLE_DEVICES`` index space. A user-set
+        ``GGML_VK_VISIBLE_DEVICES`` is honored by ggml itself (passed through to
+        this probe), so the enumerated list already reflects it. Integrated GPUs
+        leave a per-device host-RAM margin (see ``_apply_igpu_host_reserve_mib``)
+        and report total 0 (shared RAM is not a VRAM budget); discrete cards pass
+        their real total through. Returns [] when no Vulkan build is installed or
+        no device is reachable.
         """
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
@@ -2671,12 +2688,14 @@ class LlamaCppBackend:
             return []
 
         env = child_env_without_native_path_secret()
-        # Enumerate ggml's canonical, full device list. An inherited
-        # GGML_VK_VISIBLE_DEVICES would renumber/restrict the ordinals, but
-        # load_model writes its own pin in that same full space, so letting
-        # the probe see a pre-existing mask would make the pin double-apply
-        # and target the wrong device.
-        env.pop("GGML_VK_VISIBLE_DEVICES", None)
+        # Pass any inherited GGML_VK_VISIBLE_DEVICES through to ggml unchanged so
+        # the probe enumerates exactly the same device list the launch will (the
+        # launch inherits the same env). ggml then names those devices Vulkan0..N
+        # in the compact order this probe reports, and load_model pins by that
+        # name via --device -- so probe, mask, and pin stay in one index space.
+        # (We must NOT filter the mask here in Python: ggml parses the env var in
+        # raw vkEnumeratePhysicalDevices space, but this probe reports the compact
+        # post-filter ordinal, so a Python filter would compare mismatched spaces.)
         if sys.platform != "win32":
             # Let the loader resolve sibling ggml libs next to the binary.
             existing_ld = env.get("LD_LIBRARY_PATH", "")
@@ -2702,13 +2721,6 @@ class LlamaCppBackend:
             logger.debug(f"vulkan GPU probe failed: {e}")
             return []
 
-        # Honor a user-set GGML_VK_VISIBLE_DEVICES like the nvidia-smi path
-        # honors CUDA_VISIBLE_DEVICES: the probe enumerates ggml's full, unmasked
-        # device list (its ordinals are the mask's own space), so a device the
-        # user hid must be dropped here, else the fit could rank and the launch
-        # could pin a GPU the user reserved.
-        allowed = LlamaCppBackend._visible_devices_mask("GGML_VK_VISIBLE_DEVICES")
-
         gpus: list[tuple[int, int, int]] = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
@@ -2723,8 +2735,6 @@ class LlamaCppBackend:
                 # its headroom); a discrete card passes its real total through.
                 total_mib = 0 if is_igpu else int(parts[3]) // (1024 * 1024)
             except ValueError:
-                continue
-            if allowed is not None and idx not in allowed:
                 continue
             capped = _apply_igpu_host_reserve_mib(free_mib, is_igpu)
             if capped < free_mib:
@@ -6719,13 +6729,15 @@ class LlamaCppBackend:
                 # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full
                 # set, so set HIP_VISIBLE_DEVICES too.
                 if gpu_indices is not None:
-                    pinned = ",".join(str(i) for i in gpu_indices)
                     if is_vulkan_backend:
-                        # gpu_indices are ggml Vulkan ordinals (see
-                        # _get_gpu_free_memory); the Vulkan backend ignores
-                        # CUDA_VISIBLE_DEVICES, so pin via its own mask.
-                        env["GGML_VK_VISIBLE_DEVICES"] = pinned
+                        # gpu_indices are ggml's compact Vulkan ordinals; pin by
+                        # device name via --device (see _vulkan_pin_args), never
+                        # GGML_VK_VISIBLE_DEVICES (raw pre-filter index space).
+                        # Leave any user-set GGML_VK_VISIBLE_DEVICES in env so
+                        # ggml applies it to the same list the probe enumerated.
+                        cmd += LlamaCppBackend._vulkan_pin_args(gpu_indices)
                     else:
+                        pinned = ",".join(str(i) for i in gpu_indices)
                         env["CUDA_VISIBLE_DEVICES"] = pinned
                         try:
                             import torch as _torch
