@@ -9,21 +9,29 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { CpuIcon, GripVerticalIcon, XIcon } from "lucide-react";
 import { AnimatePresence, motion, useDragControls } from "motion/react";
-import { useMemo, useState, type PointerEvent } from "react";
+import { type PointerEvent, useMemo, useState } from "react";
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
 function usageIndicatorClass(percent: number): string {
-  if (percent >= 90) return "bg-destructive";
-  if (percent >= 70) return "bg-amber-500";
+  if (percent >= 90) {
+    return "bg-destructive";
+  }
+  if (percent >= 70) {
+    return "bg-amber-500";
+  }
   return "bg-primary";
 }
 
 function usageTextClass(percent: number): string {
-  if (percent >= 90) return "text-destructive";
-  if (percent >= 70) return "text-amber-600 dark:text-amber-400";
+  if (percent >= 90) {
+    return "text-destructive";
+  }
+  if (percent >= 70) {
+    return "text-amber-600 dark:text-amber-400";
+  }
   return "text-primary";
 }
 
@@ -128,7 +136,9 @@ export function FloatingMonitor() {
               <div className="space-y-1">
                 <div className="flex justify-between text-[11px] font-medium font-mono">
                   <span>{t("settings.resources.liveMonitor.ram")}</span>
-                  <span className={cn("tabular-nums", usageTextClass(ramPercent))}>
+                  <span
+                    className={cn("tabular-nums", usageTextClass(ramPercent))}
+                  >
                     {Math.round(ramPercent)}%
                   </span>
                 </div>
