@@ -92,6 +92,7 @@ def test_claude_flags_detected_when_version_not_first_token(monkeypatch):
 
 def test_install_agent_prompts_then_installs(monkeypatch):
     # TTY + yes: run the documented install command, then re-resolve the now-present binary.
+    monkeypatch.setattr(start.os, "name", "posix")
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
     monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
     ran = []
@@ -106,6 +107,101 @@ def test_install_agent_prompts_then_installs(monkeypatch):
     executable = start._install_agent("codex", "npm install -g @openai/codex")
     assert executable == "/usr/local/bin/codex"
     assert ran == [["/bin/sh", "-c", "npm install -g @openai/codex"]]
+
+
+def test_install_agent_uses_powershell_on_windows(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
+    ran = []
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, *a, **k: ran.append(command) or SimpleNamespace(returncode = 0),
+    )
+    monkeypatch.setattr(start.shutil, "which", lambda _: r"C:\Users\samle\bin\hermes.exe")
+
+    install_hint = "& ([scriptblock]::Create((irm https://x/install.ps1))) -SkipSetup"
+    executable = start._install_agent("hermes", install_hint)
+
+    assert executable == r"C:\Users\samle\bin\hermes.exe"
+    assert ran == [["powershell", "-NoProfile", "-Command", install_hint]]
+
+
+def test_hermes_install_hint_is_windows_native_on_windows(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "nt")
+
+    # Scriptblock form so `-SkipSetup` reaches the installer and the interactive
+    # setup wizard is skipped during the unattended `unsloth start hermes` run.
+    assert start._hermes_install_hint() == (
+        "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1)))"
+        " -SkipSetup"
+    )
+
+
+def test_hermes_install_hint_is_bash_on_posix(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "posix")
+
+    # `bash -s -- --skip-setup` forwards the skip flag to the piped installer.
+    assert start._hermes_install_hint() == (
+        "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
+        "/main/scripts/install.sh | bash -s -- --skip-setup"
+    )
+
+
+def test_refresh_windows_path_noop_off_windows(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "posix")
+    before = os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", before)
+    start._refresh_windows_path()
+    assert os.environ.get("PATH", "") == before
+
+
+def test_refresh_windows_path_merges_registry_hives(monkeypatch):
+    # Fake Windows registry PATH values written after this process started.
+    hkcu, hklm = object(), object()
+    reg = {
+        (hkcu, "Environment"): r"C:\existing;C:\Users\me\hermes\bin",
+        (
+            hklm,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ): r"C:\Windows\System32",
+    }
+
+    class _Key:
+        def __init__(self, value):
+            self._value = value
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def open_key(root, sub):
+        if (root, sub) in reg:
+            return _Key(reg[(root, sub)])
+        raise OSError("missing hive")
+
+    fake_winreg = SimpleNamespace(
+        HKEY_CURRENT_USER = hkcu,
+        HKEY_LOCAL_MACHINE = hklm,
+        OpenKey = open_key,
+        QueryValueEx = lambda key, name: (key._value, 1),
+    )
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.os, "pathsep", ";")
+    monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
+    monkeypatch.setenv("PATH", r"C:\custom;C:\existing")
+
+    start._refresh_windows_path()
+
+    assert os.environ["PATH"].split(";") == [
+        r"C:\custom",
+        r"C:\existing",
+        r"C:\Users\me\hermes\bin",
+        r"C:\Windows\System32",
+    ]
 
 
 def test_install_agent_declined_returns_none(monkeypatch):

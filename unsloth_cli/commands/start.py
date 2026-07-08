@@ -44,6 +44,19 @@ _CODEX_PROFILE = "unsloth_api"
 _CODEX_ENV_KEY = "UNSLOTH_STUDIO_AUTH_TOKEN"
 _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
 _HERMES_PROVIDER = "unsloth"
+# Skip the installer's interactive setup wizard: `unsloth start hermes` runs
+# this hint unattended and then writes its own session-scoped Hermes config, so
+# the wizard's global API-key/model prompts would block the launch and point the
+# user at a different (global) provider than the one Unsloth just configured.
+# Both installers expose a skip flag: `-SkipSetup` (PowerShell) and
+# `--skip-setup` (POSIX; passed to the piped script via `bash -s --`).
+_HERMES_WINDOWS_INSTALL_HINT = (
+    "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -SkipSetup"
+)
+_HERMES_POSIX_INSTALL_HINT = (
+    "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
+    "/main/scripts/install.sh | bash -s -- --skip-setup"
+)
 # Hermes refuses to initialize when the model window is under 64,000 tokens; its
 # error message points at the model.context_length / auxiliary.compression
 # overrides in config.yaml. write_hermes_config claims this value for smaller
@@ -136,6 +149,10 @@ _YOLO_COMMAND_FLAGS = {
 def _yolo_command_flags(agent: str, yolo: bool) -> list:
     # .get so a config-based agent (or a typo) yields no flag instead of a KeyError.
     return _YOLO_COMMAND_FLAGS.get(agent, []) if yolo else []
+
+
+def _hermes_install_hint() -> str:
+    return _HERMES_WINDOWS_INSTALL_HINT if os.name == "nt" else _HERMES_POSIX_INSTALL_HINT
 
 
 class LoadOptions(NamedTuple):
@@ -848,6 +865,54 @@ def _print_env(
     typer.echo(" ".join((*inline, shlex.join(command))))
 
 
+def _refresh_windows_path() -> None:
+    # Merge Windows registry PATH hives after the current process PATH so a
+    # freshly installed agent is visible without changing existing precedence.
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+    except Exception:
+        return
+
+    entries = []
+    seen = set()
+
+    def add_path(value: str) -> bool:
+        added = False
+        for entry in str(value).split(os.pathsep):
+            entry = entry.strip()
+            if not entry:
+                continue
+            key = os.path.normcase(entry).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(entry)
+            added = True
+        return added
+
+    add_path(os.environ.get("PATH", ""))
+    added_registry = False
+    hives = (
+        (winreg.HKEY_CURRENT_USER, "Environment"),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+    )
+    for root, sub in hives:
+        try:
+            with winreg.OpenKey(root, sub) as key:
+                value, _ = winreg.QueryValueEx(key, "Path")
+        except OSError:
+            continue
+        if value:
+            added_registry = add_path(os.path.expandvars(str(value))) or added_registry
+    if added_registry:
+        os.environ["PATH"] = os.pathsep.join(entries)
+
+
 def _install_agent(name: str, install_hint: str) -> Optional[str]:
     # Missing agent under --launch: offer to run its documented install command, then
     # re-resolve it on PATH. Consent-based (we never auto-run a remote install script
@@ -866,6 +931,9 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
         install_command = ["/bin/sh", "-c", install_hint]
     if subprocess.run(install_command).returncode != 0:
         _fail(f"Install command failed. Run it yourself, then re-run: {install_hint}")
+    # The installer just wrote PATH to the registry (Windows); pull it into this
+    # process so the freshly installed agent resolves without a shell restart.
+    _refresh_windows_path()
     executable = shutil.which(name)
     if executable is None:
         _fail(
@@ -1536,10 +1604,7 @@ def hermes(
         launch = launch,
     )
     command = ["hermes", *_yolo_command_flags("hermes", yolo), *ctx.args]
-    install_hint = (
-        "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
-        "/main/scripts/install.sh | bash"
-    )
+    install_hint = _hermes_install_hint()
     with _session_config("hermes", launch) as home:
         # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state)
         # like CODEX_HOME, so the user's ~/.hermes is left untouched for the session.
