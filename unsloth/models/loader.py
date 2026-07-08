@@ -505,9 +505,7 @@ class FastLanguageModel(FastLlamaModel):
                 )
                 model_name = _offline_quantize_to_fp8(model_name, fp8_mode, text_only = text_only)
                 restore_fp8_scales = True
-                # The helper may fall back to a preserved bin-only cache when regeneration fails;
-                # only force safetensors when it actually produced one, else from_pretrained would
-                # look for absent safetensors in that bin cache. #6749
+                # Force safetensors only if the helper produced one, not a bin-only fallback cache. #6749
                 if any(name.endswith(".safetensors") for name in os.listdir(model_name)):
                     kwargs["use_safetensors"] = True
             else:
@@ -518,9 +516,7 @@ class FastLanguageModel(FastLlamaModel):
                 if load_in_fp8 != False and new_model_name != old_model_name:
                     restore_fp8_scales = True
                     load_in_fp8 = False
-                    # Pre-quantized FP8 siblings are safetensors-only, so force safetensors like
-                    # the offline path above; otherwise a caller-supplied use_safetensors=False
-                    # makes from_pretrained look for absent .bin weights and fail. #6749
+                    # Pre-quantized FP8 siblings are safetensors-only; force it so use_safetensors=False cannot fail on absent .bin. #6749
                     kwargs["use_safetensors"] = True
 
         # Check if pre-quantized models are allowed
@@ -1213,9 +1209,7 @@ class FastModel(FastBaseModel):
                 )
                 model_name = _offline_quantize_to_fp8(model_name, fp8_mode, text_only = text_only)
                 restore_fp8_scales = True
-                # The helper may fall back to a preserved bin-only cache when regeneration fails;
-                # only force safetensors when it actually produced one, else from_pretrained would
-                # look for absent safetensors in that bin cache. #6749
+                # Force safetensors only if the helper produced one, not a bin-only fallback cache. #6749
                 if any(name.endswith(".safetensors") for name in os.listdir(model_name)):
                     kwargs["use_safetensors"] = True
             else:
@@ -1226,9 +1220,7 @@ class FastModel(FastBaseModel):
                 if load_in_fp8 != False and new_model_name != old_model_name:
                     restore_fp8_scales = True
                     load_in_fp8 = False
-                    # Pre-quantized FP8 siblings are safetensors-only, so force safetensors like
-                    # the offline path above; otherwise a caller-supplied use_safetensors=False
-                    # makes from_pretrained look for absent .bin weights and fail. #6749
+                    # Pre-quantized FP8 siblings are safetensors-only; force it so use_safetensors=False cannot fail on absent .bin. #6749
                     kwargs["use_safetensors"] = True
 
         # Check if pre-quantized models are allowed
@@ -1592,8 +1584,7 @@ class FastModel(FastBaseModel):
             # Check base model again for PEFT
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
-                # Use a separate local, not old_model_name, which still holds the adapter repo
-                # PeftModel.from_pretrained loads below; reusing it would attach the base. #6749
+                # Separate local, not old_model_name (still the adapter repo), so the base is not reattached. #6749
                 base_before_remap = model_name
                 model_name = get_model_name(
                     model_name,
@@ -1602,8 +1593,7 @@ class FastModel(FastBaseModel):
                 )
                 if load_in_fp8 != False and model_name != base_before_remap:
                     load_in_fp8 = False
-                    # Pre-quantized FP8 base siblings are safetensors-only; force safetensors so a
-                    # caller-supplied use_safetensors=False does not fail on absent .bin weights. #6749
+                    # Pre-quantized FP8 base siblings are safetensors-only; force it so use_safetensors=False cannot fail on absent .bin. #6749
                     kwargs["use_safetensors"] = True
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)

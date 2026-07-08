@@ -345,9 +345,8 @@ def _offline_quantize_to_fp8(
             config = text_config
         auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
-        # Regenerate into a staging dir and only replace an existing (bin-only) cache once the
-        # safetensors save has succeeded, so a failed re-quantization (offline / gated / removed
-        # source model) leaves the previous loadable cache intact rather than deleting it. #6749
+        # Stage the regen and swap in only after safetensors save succeeds, so a failed
+        # re-quantization leaves the previous loadable cache intact. #6749
         staging_dir = new_model_name + ".fp8tmp"
         if os.path.isdir(staging_dir):
             shutil.rmtree(staging_dir)
@@ -365,9 +364,8 @@ def _offline_quantize_to_fp8(
                 gc.collect()
             tokenizer.save_pretrained(staging_dir)
         except Exception:
-            # Regeneration failed (offline / gated / removed source). If a previous bin-only
-            # cache is still on disk, fall back to it so an already-usable cache keeps loading
-            # after an upgrade instead of hard-failing. #6749
+            # Regeneration failed: fall back to a previous bin-only cache if still on disk
+            # rather than hard-failing. #6749
             if os.path.isdir(staging_dir):
                 shutil.rmtree(staging_dir, ignore_errors = True)
             if needs_refresh and os.path.isdir(new_model_name):
@@ -461,8 +459,7 @@ _FP8_SCALE_SUFFIXES = (
     ("gate_up_proj_scale_inv", ".gate_up_proj_scale_inv"),
     ("down_proj_scale", ".down_proj_scale"),
     ("down_proj_scale_inv", ".down_proj_scale_inv"),
-    # Static-activation FP8 checkpoints carry activation scales the expert forward reads when
-    # activation_scheme == "static"; restore them too so a dropped placeholder is repaired. #6749
+    # Static-activation FP8 scales (activation_scheme == "static") the expert forward reads; restore too. #6749
     ("activation_scale", ".activation_scale"),
     ("gate_proj_activation_scale", ".gate_proj_activation_scale"),
     ("up_proj_activation_scale", ".up_proj_activation_scale"),
@@ -652,8 +649,7 @@ def _find_fp8_scale_inv_tensors(
         except Exception:
             return []
 
-        # Fetch any scale shards the index maps to names outside the default globs; the first
-        # pass covers standard names, so standard repos add nothing here.
+        # Fetch scale shards the index maps outside the default globs; standard repos add nothing here.
         extra_patterns = _fp8_scale_index_extra_patterns(model_dir, subfolder, variant)
         missing = [
             pattern
@@ -794,10 +790,8 @@ def _restore_missing_fp8_weight_scale_inv(
         ):
             skipped += 1
             continue
-        # Prefer a materialized device: a meta scale placeholder can sit next to an already
-        # loaded weight/projection (device-map/low-memory), so a live device is tried before any
-        # meta placeholder. A projection-only expert has no weight, so its live projection device
-        # is preferred over a meta reference too, else its scale would be skipped. #6749
+        # Prefer a live (non-meta) reference/weight/projection device over a meta placeholder,
+        # else a projection-only expert's scale would be skipped. #6749
         projection_device = _fp8_projection_device(module, attr_name)
         if isinstance(reference, torch.Tensor) and reference.device.type != "meta":
             target_device = reference.device
@@ -832,8 +826,7 @@ def _restore_missing_fp8_weight_scale_inv(
             and scale_tensor.ndim > 0
             and weight.ndim > 0
             and scale_tensor.shape[0] > weight.shape[0]
-            # Keep transposed/column-wise scales (shape[0] == weight.shape[1]) the FP8 kernel
-            # handles; reject only scales matching neither weight rows nor columns. #6749
+            # Keep transposed/column-wise scales (shape[0] == weight cols); reject only those matching neither rows nor cols. #6749
             and (weight.ndim < 2 or scale_tensor.shape[0] != weight.shape[1])
         ):
             skipped += 1
@@ -850,8 +843,7 @@ def _restore_missing_fp8_weight_scale_inv(
             and weight.is_floating_point()
             and not _has_float8_dtype(weight.dtype)
         ):
-            # Floating (fp16/bf16) FP8 owner with no reference scale: mirror the weight dtype
-            # instead of the checkpoint fp32. Packed/int8 and real float8 keep checkpoint dtype. #6749
+            # Floating (fp16/bf16) FP8 owner, no reference scale: mirror weight dtype, not checkpoint fp32. #6749
             try:
                 restored_scale = restored_scale.to(dtype = weight.dtype)
             except Exception:
@@ -859,19 +851,15 @@ def _restore_missing_fp8_weight_scale_inv(
         if attr_name in module._buffers:
             module._buffers[attr_name] = restored_scale
         elif attr_name in module._parameters:
-            # HF FP8 scales live in _parameters; keep them Parameters rather than demoting to a
-            # buffer, which would break tensor-parallel/optimizer/PEFT parameter inspection. #6749
+            # HF FP8 scales live in _parameters; keep them Parameters (demoting to a buffer breaks TP/optimizer/PEFT). #6749
             existing = module._parameters[attr_name]
             if isinstance(existing, torch.nn.Parameter) and existing.device.type != "meta":
-                # Update in place so runtime metadata (e.g. `block_size` fp8 dequant reads via
-                # getattr) survives; a fresh Parameter would drop it and force default geometry. #6749
+                # Update in place so runtime metadata (e.g. `block_size`) survives; a fresh Parameter would drop it. #6749
                 with torch.no_grad():
                     existing.data = restored_scale
             else:
-                # A meta placeholder Parameter cannot take `.data = <materialized>` (torch rejects
-                # meta -> concrete set_data), so replace it to materialize the scale, copying the
-                # existing parameter's custom attributes (e.g. `block_size` the fp8 kernels read)
-                # so non-default block geometry is not lost. #6749
+                # A meta placeholder Parameter rejects `.data = <materialized>`, so replace it,
+                # copying custom attributes (e.g. `block_size`) so block geometry is not lost. #6749
                 new_param = torch.nn.Parameter(
                     restored_scale,
                     requires_grad = bool(getattr(existing, "requires_grad", False)),

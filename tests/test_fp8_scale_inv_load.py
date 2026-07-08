@@ -371,8 +371,7 @@ def test_safetensors_index_opens_only_scale_shards(monkeypatch):
 
 
 def test_remote_scale_restore_constrains_snapshot_download_patterns(monkeypatch):
-    # A remote scale restore must constrain snapshot_download to the index + selected
-    # safetensors, not re-pull the whole repo. #6749
+    # A remote scale restore must limit snapshot_download to the index + selected safetensors, not the whole repo. #6749
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.fp8 = _PackedFp8Owner()
@@ -406,9 +405,7 @@ def test_remote_scale_restore_constrains_snapshot_download_patterns(monkeypatch)
 
 
 def test_no_variant_snapshot_patterns_are_index_and_single_file_only():
-    # First-pass patterns cover only the default single-file names and index; shards are pulled
-    # by exact name in the index-extra pass, so shard globs and alternate variants are excluded
-    # and a large sharded checkpoint is not fully re-downloaded. #6749
+    # First pass covers only default single-file names and index; shards come by exact name later, so a large checkpoint is not fully re-downloaded. #6749
     import fnmatch
 
     loader_utils = _load_loader_utils()
@@ -465,15 +462,13 @@ def test_remote_scale_restore_snapshot_patterns_respect_variant(monkeypatch):
     assert skipped == 0
     allow_patterns = recorded["allow_patterns"]
     assert allow_patterns is not None
-    # Every pattern must be variant-scoped, none the bare non-variant globs, so the
-    # snapshot stays limited to the selected variant.
+    # Every pattern must be variant-scoped (no bare globs) so the snapshot stays limited to the selected variant.
     assert all("fp8" in p for p in allow_patterns)
     assert not any(p in ("*.safetensors", "*.safetensors.index.json") for p in allow_patterns)
 
 
 def test_remote_scale_restore_snapshot_patterns_cover_sharded_variant_shards(monkeypatch):
-    # allow_patterns must cover the sharded variant form
-    # `model.<variant>-00001-of-00002.safetensors`, else the index downloads but no shards. #6749
+    # allow_patterns must cover the sharded variant form, else the index downloads but no shards. #6749
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.fp8 = _PackedFp8Owner()
@@ -518,8 +513,7 @@ def test_remote_scale_restore_snapshot_patterns_cover_sharded_variant_shards(mon
 
 
 def test_restored_floating_owner_scale_matches_weight_dtype():
-    # A floating (fp16/bf16) FP8 owner with no scale placeholder must get a buffer mirroring
-    # the weight dtype, not the checkpoint fp32 that would mismatch at matmul. #6749
+    # A floating (fp16/bf16) FP8 owner with no scale placeholder must get a buffer mirroring the weight dtype, not checkpoint fp32. #6749
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.bfloat16))
@@ -863,8 +857,7 @@ def test_restores_projection_expert_scale_on_projection_device():
 
     assert restored == 1
     assert skipped == 0
-    # Scanner opens on CPU; the restored buffer must follow the CUDA projection, not the
-    # checkpoint tensor, or the expert forward hits a device mismatch. #6749
+    # Scanner opens on CPU; the restored buffer must follow the CUDA projection, not the checkpoint tensor. #6749
     assert model.expert.gate_up_proj_scale_inv.device.type == "cuda"
 
 
@@ -1077,8 +1070,7 @@ def test_fastmodel_peft_base_mapping_clears_fp8_after_remap():
 
 
 def test_fastmodel_peft_preserves_adapter_name_for_peft_load():
-    # The FP8 base remap must compare against a pre-remap base name without reusing
-    # old_model_name, which still points at the adapter repo PeftModel loads. #6749
+    # The FP8 base remap must compare against a pre-remap base name, not old_model_name (still the adapter repo). #6749
     tree = ast.parse(LOADER.read_text())
     offending = []
 
@@ -1200,8 +1192,7 @@ def test_offline_fp8_cache_forces_safetensors_loads():
                 ):
                     hit_lines.add(child.lineno)
 
-    # Two loader paths, each forcing safetensors in both the offline-quantize branch and the
-    # mapped pre-quantized FP8 sibling branch: 4 assignments total. #6749
+    # Two loader paths, each forcing safetensors in both the offline-quantize and mapped FP8 sibling branches: 4 total. #6749
     assert len(hit_lines) == 4
 
 
@@ -1249,8 +1240,7 @@ def test_restored_scale_stays_a_parameter_when_placeholder_is_a_parameter():
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
-    # HF FP8 scales are Parameters; the restore must keep them Parameters, not demote them
-    # to buffers hidden from parameter inspection.
+    # HF FP8 scales are Parameters; the restore must keep them Parameters, not demote to buffers.
     model.fp8.weight_scale_inv = torch.nn.Parameter(
         torch.tensor([9.0], dtype = torch.float16), requires_grad = False
     )
@@ -1295,11 +1285,9 @@ def test_index_extra_patterns_cover_nonstandard_scale_shards():
             json.dump(index, fh)
         extras = loader_utils._fp8_scale_index_extra_patterns(model_dir)
 
-    # Only the shard that actually holds a scale tensor is fetched; weight-only and non-scale
-    # shards are left out.
+    # Only the shard that actually holds a scale tensor is fetched; other shards are left out.
     assert extras == ["custom-shard-00001.safetensors"]
-    # The default snapshot globs do not match this non-standard shard name, so without the
-    # index-driven extra pass the scale shard would be under-fetched.
+    # The default globs miss this non-standard shard name, so without the index-driven pass the scale shard is under-fetched.
     default_patterns = loader_utils._fp8_scale_snapshot_allow_patterns()
     assert not any(
         fnmatch.fnmatch("custom-shard-00001.safetensors", pattern) for pattern in default_patterns
@@ -1326,8 +1314,7 @@ def test_index_extra_patterns_prefix_subfolder():
 def test_restores_transposed_column_wise_scale():
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
-    # weight is [out=2, in=4]; a transposed/column-wise scale has shape[0] == in == 4, which
-    # exceeds out but is a layout the FP8 kernel supports and must not be skipped.
+    # weight is [out=2, in=4]; a transposed scale has shape[0] == in == 4, a layout the FP8 kernel supports and must not skip.
     model.fp8 = _Fp8Owner(weight = torch.randn(2, 4, dtype = torch.float16))
 
     with tempfile.TemporaryDirectory() as checkpoint_dir:
@@ -1406,8 +1393,7 @@ def test_variant_snapshot_patterns_are_index_and_single_file_only():
     # First pass covers the single-file variant name and the variant index only.
     assert any(fnmatch.fnmatch("model.fp8.safetensors", p) for p in patterns)
     assert any(fnmatch.fnmatch("model.safetensors.index.fp8.json", p) for p in patterns)
-    # Shards come from the index-extra pass, so the shard glob is not in the first pass, and a
-    # stray alternate-component variant safetensors is never pulled.
+    # Shards come from the index-extra pass, so the shard glob is absent from the first pass and stray variant safetensors are never pulled.
     assert not any(fnmatch.fnmatch("model.fp8-00001-of-00002.safetensors", p) for p in patterns)
     assert not any(fnmatch.fnmatch("adapter.fp8.safetensors", p) for p in patterns)
     assert not any(fnmatch.fnmatch("vision_tower.fp8.safetensors", p) for p in patterns)
@@ -1462,8 +1448,7 @@ def test_restores_static_activation_scale():
 
 
 def test_restores_scale_when_placeholder_is_meta_parameter():
-    # A meta Parameter placeholder cannot take `.data = <materialized>` (torch rejects
-    # meta -> concrete set_data); the restore must replace it instead of crashing. #6749
+    # A meta Parameter placeholder rejects `.data = <materialized>`; the restore must replace it instead of crashing. #6749
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
@@ -1492,8 +1477,7 @@ def test_restores_scale_when_placeholder_is_meta_parameter():
 
 
 def test_offline_quantize_preserves_bin_cache_on_failed_regeneration(monkeypatch, tmp_path):
-    # A failed re-quantization (offline / gated / removed source) must not delete a usable
-    # bin-only cache before the safetensors save has succeeded. #6749
+    # A failed re-quantization must not delete a usable bin-only cache before the safetensors save succeeds. #6749
     loader_utils = _load_loader_utils()
     import transformers
 
@@ -1566,8 +1550,7 @@ class _ProjFp8Owner(torch.nn.Module):
 
 
 def test_restores_projection_scale_when_placeholder_is_meta():
-    # A projection-only FP8 expert (materialized gate_up_proj, no weight) whose scale placeholder
-    # is still meta must restore onto the live projection device, not skip on the meta ref. #6749
+    # A projection-only FP8 expert (no weight) with a meta scale placeholder must restore onto the live projection device, not skip. #6749
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.expert = _ProjFp8Owner(torch.randn(4, 4, dtype = torch.float16))
@@ -1592,8 +1575,7 @@ def test_restores_projection_scale_when_placeholder_is_meta():
 
 
 def test_meta_parameter_replacement_preserves_metadata():
-    # Replacing a meta Parameter placeholder must carry over custom attributes (e.g. block_size
-    # the fp8 kernels read) rather than dropping them. #6749
+    # Replacing a meta Parameter placeholder must carry over custom attributes (e.g. block_size), not drop them. #6749
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
@@ -1625,9 +1607,7 @@ def test_fp8_sibling_branch_forces_safetensors():
     import re
 
     src = LOADER.read_text()
-    # Both pre-quantized FP8 sibling branches must force safetensors right after clearing
-    # load_in_fp8, so a caller-supplied use_safetensors=False cannot make from_pretrained look
-    # for absent .bin weights in a safetensors-only FP8 repo. #6749
+    # Both pre-quantized FP8 sibling branches must force safetensors after clearing load_in_fp8, so use_safetensors=False cannot look for absent .bin. #6749
     pattern = re.compile(
         r"restore_fp8_scales = True\s+load_in_fp8 = False\s+#[^\n]*\n(?:\s+#[^\n]*\n)*"
         r"\s+kwargs\[.use_safetensors.\] = True"
@@ -1639,9 +1619,7 @@ def test_offline_fp8_bin_cache_fallback_not_forced_to_safetensors():
     import re
 
     src = LOADER.read_text()
-    # The offline quantize helper may fall back to a preserved bin-only cache; forcing safetensors
-    # afterwards must be guarded by a check that the returned dir actually has safetensors, else
-    # the bin fallback is unloadable. Both loader paths must do this. #6749
+    # Forcing safetensors after the offline quantize helper must be guarded by a real-safetensors check, else the bin fallback is unloadable. Both paths do this. #6749
     pattern = re.compile(
         r"_offline_quantize_to_fp8\([^\n]*\)\s+restore_fp8_scales = True\s+#[^\n]*\n(?:\s+#[^\n]*\n)*"
         r'\s+if any\(name\.endswith\("\.safetensors"\)[^\n]*\n\s+kwargs\[.use_safetensors.\] = True'
