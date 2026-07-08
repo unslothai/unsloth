@@ -597,6 +597,59 @@ def _loaded_models(base: str, key: str) -> list:
     return _http_json("GET", f"{base}/v1/models", key, error = "Couldn't list models").get("data", [])
 
 
+_HF_REPO_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _is_hub_model_id(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if "\\" in text:
+        return False
+    if text.startswith(("/", "./", "../", "~")):
+        return False
+    if len(text) >= 2 and text[1] == ":" and text[0].isalpha():
+        return False
+    # A hub id is exactly "namespace/name" over a restricted charset. Anything with
+    # extra path segments (e.g. a server-side relative path such as
+    # models/Llama/Foo.gguf on a remote Studio) is not a hub id and must not be
+    # casefold-matched against a differently cased path on a case-sensitive
+    # filesystem. This is host independent, unlike the existence probe below which
+    # cannot see a path that only exists on the server.
+    parts = text.split("/")
+    if len(parts) != 2:
+        return False
+    if any(part in ("", ".", "..") or not _HF_REPO_ID_SEGMENT_RE.match(part) for part in parts):
+        return False
+    try:
+        if Path(os.path.expanduser(text)).exists():
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def _model_id_matches(
+    actual: object,
+    requested: object,
+    *,
+    allow_casefold: bool = True,
+) -> bool:
+    if actual == requested:
+        return True
+    # Case-insensitive matching is only safe when the local existence probe in
+    # _is_hub_model_id is authoritative, i.e. against a loopback Studio on this host.
+    # Against a remote Studio a two-segment string is indistinguishable from a
+    # server-side relative path (e.g. Models/Foo vs models/foo), so casefolding it
+    # could attach to the wrong model on a case-sensitive server; defer to an exact
+    # match there and let the load endpoint resolve the requested path.
+    if not allow_casefold:
+        return False
+    if not (_is_hub_model_id(actual) and _is_hub_model_id(requested)):
+        return False
+    return str(actual).casefold() == str(requested).casefold()
+
+
 def _resolve_model(
     base: str,
     key: str,
@@ -604,6 +657,9 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
 ) -> dict:
     models = _loaded_models(base, key)
+    # Only casefold-match ids against a loopback Studio, where _is_hub_model_id's
+    # local existence probe can actually reject a server-side path; see the note there.
+    allow_casefold = is_loopback_url(base)
     # /v1/models reports the model id but not the active GGUF variant or runtime load
     # settings, so an id match alone can hide the wrong quant (Q8_0 serving while the
     # user asked for UD-Q4_K_XL). When the user passed any explicit load knob, defer to
@@ -613,10 +669,21 @@ def _resolve_model(
     load_has_overrides = bool(
         load.gguf_variant or load.max_seq_length or not load.load_in_4bit or load.tensor_parallel
     )
+    # /v1/models also lists cached-but-unloaded catalog entries (loaded == False);
+    # matching one would skip /api/inference/load and leave the agent pointed at a
+    # model that is not resident, so only attach to an entry that is actually loaded.
     match = (
         None
         if requested and load_has_overrides
-        else next((m for m in models if m["id"] == requested), None)
+        else next(
+            (
+                m
+                for m in models
+                if _model_id_matches(m.get("id"), requested, allow_casefold = allow_casefold)
+                and m.get("loaded") is not False
+            ),
+            None,
+        )
     )
     if requested and match is None:
         typer.echo(
@@ -651,7 +718,16 @@ def _resolve_model(
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
         models = _loaded_models(base, key)
-        match = next((m for m in models if m["id"] in wanted), None)
+        match = next(
+            (
+                m
+                for m in models
+                if any(
+                    _model_id_matches(m.get("id"), w, allow_casefold = allow_casefold) for w in wanted
+                )
+            ),
+            None,
+        )
     if match is not None:
         return match
     if requested:
