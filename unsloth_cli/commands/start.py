@@ -606,9 +606,22 @@ def _is_hub_model_id(value: object) -> bool:
     return True
 
 
-def _model_id_matches(actual: object, requested: object) -> bool:
+def _model_id_matches(
+    actual: object,
+    requested: object,
+    *,
+    allow_casefold: bool = True,
+) -> bool:
     if actual == requested:
         return True
+    # Case-insensitive matching is only safe when the local existence probe in
+    # _is_hub_model_id is authoritative, i.e. against a loopback Studio on this host.
+    # Against a remote Studio a two-segment string is indistinguishable from a
+    # server-side relative path (e.g. Models/Foo vs models/foo), so casefolding it
+    # could attach to the wrong model on a case-sensitive server; defer to an exact
+    # match there and let the load endpoint resolve the requested path.
+    if not allow_casefold:
+        return False
     if not (_is_hub_model_id(actual) and _is_hub_model_id(requested)):
         return False
     return str(actual).casefold() == str(requested).casefold()
@@ -621,6 +634,9 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
 ) -> dict:
     models = _loaded_models(base, key)
+    # Only casefold-match ids against a loopback Studio, where _is_hub_model_id's
+    # local existence probe can actually reject a server-side path; see the note there.
+    allow_casefold = is_loopback_url(base)
     # /v1/models reports the model id but not the active GGUF variant or runtime load
     # settings, so an id match alone can hide the wrong quant (Q8_0 serving while the
     # user asked for UD-Q4_K_XL). When the user passed any explicit load knob, defer to
@@ -640,7 +656,8 @@ def _resolve_model(
             (
                 m
                 for m in models
-                if _model_id_matches(m.get("id"), requested) and m.get("loaded") is not False
+                if _model_id_matches(m.get("id"), requested, allow_casefold = allow_casefold)
+                and m.get("loaded") is not False
             ),
             None,
         )
@@ -679,7 +696,13 @@ def _resolve_model(
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
         models = _loaded_models(base, key)
         match = next(
-            (m for m in models if any(_model_id_matches(m.get("id"), w) for w in wanted)),
+            (
+                m
+                for m in models
+                if any(
+                    _model_id_matches(m.get("id"), w, allow_casefold = allow_casefold) for w in wanted
+                )
+            ),
             None,
         )
     if match is not None:

@@ -484,6 +484,41 @@ def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch
     assert not any(u.endswith("/api/inference/load") for _, u in calls)
 
 
+def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
+    # Against a remote Studio the local existence probe cannot see server-side paths,
+    # so a case-variant loaded id must NOT attach without a load: it could be a distinct
+    # server-side path on a case-sensitive host. The load endpoint resolves the request.
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url))
+        if url.endswith("/v1/models"):
+            return {
+                "data": [{"id": "unsloth/Gemma-4-GGUF", "loaded": True, "context_length": 131072}]
+            }
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "unsloth/Gemma-4-GGUF"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model("http://10.0.0.5:8888", "sk-test", "unsloth/gemma-4-gguf")
+
+    # The load endpoint was consulted (no casefold shortcut), and we still attach to the
+    # server's canonical id it reports back.
+    assert entry["id"] == "unsloth/Gemma-4-GGUF"
+    assert any(u.endswith("/api/inference/load") for _, u in calls)
+
+
 def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
     existing_local = tmp_path / "Org" / "Foo"
     existing_local.mkdir(parents = True)
@@ -500,6 +535,13 @@ def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
     # A genuine two-segment hub id still matches case-insensitively.
     assert start._is_hub_model_id("unsloth/Gemma-3-4b-it-GGUF")
     assert start._model_id_matches("unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf")
+    # Casefolding is gated to loopback studios (allow_casefold). With it disabled (a
+    # remote studio, where a two-segment string could be a server-side path), even a
+    # genuine hub-id case variant must not match, so the load endpoint resolves it.
+    assert not start._model_id_matches(
+        "unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf", allow_casefold = False
+    )
+    assert start._model_id_matches("unsloth/Foo", "unsloth/Foo", allow_casefold = False)
 
 
 def test_connect_codex_launch_uses_ephemeral_home(fake_studio, monkeypatch):
