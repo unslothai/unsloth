@@ -423,8 +423,14 @@ def prepare_for_training_mode(f):
                 pass
         # Enable training mode
         _was_training = None
-        # Get gradient checkpointing setting from training arguments
-        use_gc = getattr(self.args, 'gradient_checkpointing', True)
+        # Restore the GC mode the model was configured with at setup; fall back to
+        # the training args only when it wasn't recorded (issue #4735). Use hasattr,
+        # not a None sentinel, so a deliberately-recorded None is restored verbatim.
+        _model = getattr(self, 'model', None)
+        if hasattr(_model, '_unsloth_gradient_checkpointing'):
+            use_gc = _model._unsloth_gradient_checkpointing
+        else:
+            use_gc = getattr(self.args, 'gradient_checkpointing', True)
         if hasattr(self, 'model') and hasattr(self.model, "training"):
             _was_training = self.model.training
         if hasattr(self, 'model') and hasattr(self.model, "for_training"):
@@ -532,7 +538,8 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
             if getattr(args, "_n_gpu", 1) != 1:
                 args._n_gpu = 1
         if "model" in locals() and hasattr(model, "for_training"):
-            model.for_training(use_gradient_checkpointing=getattr(args, 'gradient_checkpointing', True))
+            _use_gc = model._unsloth_gradient_checkpointing if hasattr(model, '_unsloth_gradient_checkpointing') else getattr(args, 'gradient_checkpointing', True)
+            model.for_training(use_gradient_checkpointing=_use_gc)
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
         if "model" in locals() and hasattr(model, "for_inference"):
             model.for_inference()
@@ -1015,6 +1022,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "dtype = _get_dtype(dtype)\n"
             "float16 = dtype == torch.float16\n"
             "bfloat16 = dtype == torch.bfloat16\n"
+            "if full_finetuning:\n"
+            "    if bfloat16 and use_fp16: use_fp16 = False\n"
+            "    if float16 and use_bf16: use_bf16 = False\n"
             "if not force_float32 and (float16 and use_bf16): raise TypeError('Unsloth: Model is in float16 precision but you want to use bfloat16 precision. Set fp16 to `True` and bf16 to `False`')\n"
             "if not force_float32 and (bfloat16 and use_fp16): raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"
             "if force_float32:\n"
@@ -1162,7 +1172,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if "model" in call_args:
         training_check = (
             "if model is not None and hasattr(model, 'for_training'):\n"
-            "    model.for_training(use_gradient_checkpointing=getattr(args, 'gradient_checkpointing', True))\n"
+            "    _use_gc = model._unsloth_gradient_checkpointing if hasattr(model, '_unsloth_gradient_checkpointing') else getattr(args, 'gradient_checkpointing', True)\n"
+            "    model.for_training(use_gradient_checkpointing=_use_gc)\n"
             "if 'tokenizer' in locals() and hasattr(tokenizer, 'padding_side'): tokenizer.padding_side = 'right'\n"
             "if 'processing_class' in locals():\n"
             "    if hasattr(processing_class, 'padding_side'): processing_class.padding_side = 'right'\n"
@@ -1359,6 +1370,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # [TODO] See https://fengyao.notion.site/off-policy-rl
             # https://github.com/huggingface/trl/pull/3867 (August 7th)
             "vllm_importance_sampling_correction": False,
+            # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001); the optimized
+            # GRPO forward does not compute it, so default off. Opt in via router_aux_loss_coef > 0.
+            "router_aux_loss_coef": 0.0,
         }
         for k, v in replacements.items():
             x = f"{k}( = [^,\n]{{1,}})?,\n"

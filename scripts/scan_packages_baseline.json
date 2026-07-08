@@ -1489,6 +1489,78 @@
       "severity": "HIGH",
       "evidence": "sha256: 53c38430766be25dc672a30846ac3b9eba86aee35eb0746785ec012647c7d9a2",
       "evidence_hash": "2c6384e8115a6d5dacf1f84d8f724832d8dc59feb442bb98ffae0857c0ccb381"
+    },
+    {
+      "package": "fastapi",
+      "file": "fastapi/routing.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L586:                                 while True: sha256:251135b5ebfdd1248916449f32262575e003ef64382501c65b7e4061d67bda45",
+      "evidence_hash": "365aef4449c8089753d9398417cd76ab762cef547d75db70d87bca9c0b550ab5"
+    },
+    {
+      "package": "fastmcp-slim",
+      "file": "fastmcp/cli/apps_dev.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L637:     history.replaceState(null, \"\", url); sha256:17068ba5bfed62c3a3007ec8bf3e0ea41ef6529b9e6112064d9afb3be9231436\nNetwork: L1304:     with httpx.Client(timeout=30.0) as client: | L1318:     with httpx.Client(timeout=30.0) as client: | L1348:     with httpx.Client(timeout=30.0) as client: | L1549:         client = httpx.AsyncClient(\nL1550:             timeout=httpx.Timeout(60.0, read=None), trust_env=False\nL1551:         ) | L1713:     async with httpx.AsyncClient(trust_env=False) as client: | L1781:                     with socket.socket(family, socket.SOCK_STREAM) as s:",
+      "evidence_hash": "e5325edfada6499540e6f0c24a0868979d275522e2b6a180aa9b5dd3280681b4"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/_sandbox.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L1179:             while True: sha256:33ceddf9e42aae207e891e97808c518e92a0b27ab60e4326256717bfb25a3a38",
+      "evidence_hash": "802fd41d8bb17bf425e99d128c0351c820103a5efb74690a4086e542a71437b8"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/_sandbox.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L83: d=/tmp/.sbx-server\nL84: if command -v wget >/dev/null 2>&1; then wget -q --header \"Authorization: Bearer $SBX_DL_TOKEN\" -O \"$d\" \"$SBX_SERVER_URL\"\nL85: elif command -v curl >/dev/null 2>&1; then curl -fsSL -H \"Authorization: Bearer $SBX_DL_TOKEN\" -o \"$d\" \"$SBX_SERVER_URL\"\nL86: else cp \"$SBX_SERVER_MOUNT/sbx-server\" \"$d\"; fi\nL87: chmod +x \"$d\"",
+      "evidence_hash": "6908a3fe328fa94ee22a119998d6ad07cfa1ba4efa2628acf240f4204fd76e22"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/hf_api.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L4613:         while True: sha256:f764b6ca3118b23c7c0e670e77178c022a6905f825d7df6e528545fa10aae8f6",
+      "evidence_hash": "9c85d50c227285fa8dc69512999cbb082258cda4b299c7d0e0f69f5aff7accd4"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/utils/_http.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L462:     while True: sha256:c75d1ee228cf7703a8c28551d649395a1f89f69a3aba69413f5bbcbd10c31958",
+      "evidence_hash": "d4d5f83fed39b87898cf776d5dad0bf1a6388a932f5fb7997d1070b50e46213e"
+    },
+    {
+      "package": "cffi",
+      "file": "cffi/_cffi_gen_src.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L52:     compiled = compile(source=pysrc, filename=filename, mode='exec')\nExec: L53:     exec(compiled, globs, globs)",
+      "evidence_hash": "c429e4c977a61db6b7c717b5a552fce74eda622213e49eb5467a3782fd746fb9"
+    },
+    {
+      "package": "multiprocess",
+      "file": "multiprocess/forkserver.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L6: import socket sha256:6c707119169286c9a798e2c8d13a48614e481d8a503950916fd4ffb4c94d3182",
+      "evidence_hash": "50fec0f0522a8e4e636bf348b752002d7935d8455af31fb78c6f11e2eba19f6d"
+    },
+    {
+      "package": "multiprocess",
+      "file": "multiprocess/tests/__init__.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L3569:                     os.dup2(conn.fileno(), i) | L3601:                          \"test needs os.dup2()\") | L3619:             os.dup2(fd, newfd) | L20: import socket sha256:c824dc0f409f242420c3fbb324790c53cb3078d2c8b07ee8f2a05694b01c2946",
+      "evidence_hash": "3878a2b430c175dbc5877a95195bfe52f9588ff73fb74e2261ed5e33087915ad"
     }
   ]
 }
