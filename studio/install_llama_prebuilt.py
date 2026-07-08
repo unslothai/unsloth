@@ -1597,6 +1597,22 @@ def direct_upstream_release_plan(
         # selector returned 0 attempts and the installer fell back to a
         # source build on every Linux ARM64 host (DGX Spark, Ampere
         # Altra, GitHub-hosted ubuntu-24.04-arm runners, etc.).
+        # Intel (or other non-NVIDIA/non-AMD) GPU: prefer the Vulkan prebuilt,
+        # mirroring the x86_64 branch. Upstream ships bin-ubuntu-vulkan-arm64.
+        if host.has_intel_gpu and not host.has_rocm:
+            vulkan_asset = f"llama-{release_tag}-bin-ubuntu-vulkan-arm64.tar.gz"
+            vulkan_url = assets.get(vulkan_asset)
+            if vulkan_url:
+                attempts.append(
+                    AssetChoice(
+                        repo = repo,
+                        tag = release_tag,
+                        name = vulkan_asset,
+                        url = vulkan_url,
+                        source_label = "upstream",
+                        install_kind = "linux-vulkan",
+                    )
+                )
         asset_name = f"llama-{release_tag}-bin-ubuntu-arm64.tar.gz"
         asset_url = assets.get(asset_name)
         if asset_url:
@@ -6466,7 +6482,11 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libllama.so*"],
             ["libggml.so*"],
             ["libggml-base.so*"],
-            ["libggml-cpu-*.so*"],
+            # Match the sibling globs (linux-cuda/-rocm): x64 bundles ship
+            # arch-suffixed libggml-cpu-<variant>.so, arm64 may ship a bare
+            # libggml-cpu.so; the '-' form missed the latter and re-flagged
+            # the install unhealthy on every check.
+            ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
             ["libggml-vulkan.so*"],
         ]
@@ -6803,6 +6823,44 @@ def _vulkan_only_host(host: HostInfo) -> HostInfo:
     )
 
 
+def _route_to_vulkan_prebuilt(
+    host: HostInfo, published_repo: str, *, force_cpu: bool
+) -> tuple[HostInfo, str]:
+    """Point a Vulkan-capable host at the upstream ggml-org Vulkan prebuilt.
+
+    The unsloth published repo ships only CUDA/ROCm/CPU assets, so Vulkan comes
+    from UPSTREAM_REPO. Two triggers route here, both suppressed under
+    --cpu-fallback (the explicit "give me CPU" last resort wins):
+      * UNSLOTH_FORCE_VULKAN forces Vulkan over the detected CUDA/ROCm backend;
+      * an auto-detected Intel GPU (no usable NVIDIA/ROCm) -- the purpose of the
+        has_intel_gpu probe, since the fork manifest ships no Vulkan asset.
+    Applied by BOTH the install path and the --resolve-prebuilt probe so the
+    "is a prebuilt available" answer matches what actually gets installed.
+    """
+    forced = force_vulkan_requested()
+    auto_intel = host.has_intel_gpu and not host.has_usable_nvidia and not host.has_rocm
+    if force_cpu or not (forced or auto_intel):
+        return host, published_repo
+    if host.is_macos:
+        if forced:
+            log(
+                "UNSLOTH_FORCE_VULKAN is set but ignored on macOS "
+                "(Metal is used; there is no Vulkan prebuilt)"
+            )
+        return host, published_repo
+    if forced:
+        log(
+            "UNSLOTH_FORCE_VULKAN is set; installing the upstream Vulkan "
+            "llama.cpp prebuilt instead of the detected GPU backend"
+        )
+        # Forcing may override a detected NVIDIA/ROCm host, so normalize it to
+        # Vulkan-only; an auto-detected Intel host already is.
+        host = _vulkan_only_host(host)
+    else:
+        log("Intel GPU detected; installing the upstream Vulkan llama.cpp prebuilt")
+    return host, UPSTREAM_REPO
+
+
 def diffusion_visual_server_backfill_needed(
     install_dir: Path, host: HostInfo, choice: AssetChoice
 ) -> bool:
@@ -6845,22 +6903,7 @@ def install_prebuilt(
         override_rocm_gfx = override_rocm_gfx,
         force_cpu = force_cpu,
     )
-    # UNSLOTH_FORCE_VULKAN installs the upstream ggml-org Vulkan prebuilt
-    # instead of the detected CUDA/ROCm backend. The unsloth published repo
-    # ships only CUDA/ROCm assets, hence UPSTREAM_REPO.
-    if force_vulkan_requested():
-        if host.is_macos:
-            log(
-                "UNSLOTH_FORCE_VULKAN is set but ignored on macOS "
-                "(Metal is used; there is no Vulkan prebuilt)"
-            )
-        else:
-            log(
-                "UNSLOTH_FORCE_VULKAN is set; installing the upstream Vulkan "
-                "llama.cpp prebuilt instead of the detected GPU backend"
-            )
-            host = _vulkan_only_host(host)
-            published_repo = UPSTREAM_REPO
+    host, published_repo = _route_to_vulkan_prebuilt(host, published_repo, force_cpu = force_cpu)
     choice: AssetChoice | None = None
     try:
         with install_lock(install_lock_path(install_dir)):
@@ -7161,7 +7204,11 @@ def main() -> int:
             override_rocm_gfx = args.rocm_gfx,
             force_cpu = args.cpu_fallback,
         )
-        repo = args.published_repo
+        # Same Vulkan routing the install path applies, so the probe's answer
+        # matches what would install (an Intel/forced-Vulkan host -> upstream).
+        host, repo = _route_to_vulkan_prebuilt(
+            host, args.published_repo, force_cpu = args.cpu_fallback
+        )
         try:
             _requested, plans = resolve_simple_install_release_plans(
                 args.resolve_prebuilt, host, repo, args.published_release_tag or ""

@@ -278,9 +278,13 @@ def _resolve_auto() -> str:
     -- or ST if its binary is missing. GPU check is torch-free (nvidia-smi)."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    if LlamaCppBackend._get_gpu_free_memory():
+    binary = LlamaCppBackend._find_llama_server_binary()
+    # A Vulkan build's GPU is not torch-usable (torch has no Vulkan backend), so
+    # its free-memory report must not steer auto to sentence-transformers, which
+    # would then run on CPU/XPU; the llama-server Vulkan build is the fast path.
+    if not LlamaCppBackend._is_vulkan_backend(binary) and LlamaCppBackend._get_gpu_free_memory(binary):
         return "sentence-transformers"
-    if LlamaCppBackend._find_llama_server_binary():
+    if binary:
         return "llama-server"
     return "sentence-transformers"
 
