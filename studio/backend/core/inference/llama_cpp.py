@@ -2333,7 +2333,9 @@ class LlamaCppBackend:
         if not (lib_dir / _vulkan_lib_filename()).is_file():
             return False
         for _backend in ("cuda", "hip"):
-            sibling = f"ggml-{_backend}.dll" if sys.platform == "win32" else f"libggml-{_backend}.so"
+            sibling = (
+                f"ggml-{_backend}.dll" if sys.platform == "win32" else f"libggml-{_backend}.so"
+            )
             if (lib_dir / sibling).is_file():
                 return False
         return True
