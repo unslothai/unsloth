@@ -615,6 +615,8 @@ from starlette.datastructures import MutableHeaders  # noqa: E402
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
+_NOTEBOOK_FRAME_TOKEN_ENV = "UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN"
+_NOTEBOOK_FRAME_TOKEN_PARAM = "__unsloth_frame"
 
 
 from utils.notebook_env import (  # noqa: E402
@@ -636,13 +638,40 @@ _HOSTED_FRAME_ANCESTORS = (
 )
 
 
-def _build_csp(script_nonce: "str | None" = None) -> str:
+def _notebook_frame_request_allowed(scope) -> bool:
+    if _IS_COLAB:
+        return True
+    if not _IS_HOSTED_NOTEBOOK:
+        return False
+    expected = os.environ.get(_NOTEBOOK_FRAME_TOKEN_ENV, "").strip()
+    if not expected:
+        return True
+    try:
+        from urllib.parse import parse_qs
+
+        raw_query = scope.get("query_string", b"")
+        if isinstance(raw_query, bytes):
+            raw_query = raw_query.decode("latin-1")
+        values = parse_qs(raw_query, keep_blank_values = True).get(
+            _NOTEBOOK_FRAME_TOKEN_PARAM,
+            [],
+        )
+    except Exception:
+        return False
+    return expected in values
+
+
+def _build_csp(
+    script_nonce: "str | None" = None,
+    *,
+    allow_hosted_frame: bool = True,
+) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
     if _IS_COLAB:
         frame_ancestors = "*"
-    elif _IS_HOSTED_NOTEBOOK:
+    elif _IS_HOSTED_NOTEBOOK and allow_hosted_frame:
         frame_ancestors = _HOSTED_FRAME_ANCESTORS
     else:
         frame_ancestors = "'none'"
@@ -692,6 +721,7 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
+        allow_hosted_frame = _notebook_frame_request_allowed(scope)
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
@@ -706,11 +736,14 @@ class SecurityHeadersMiddleware:
                 nonce = headers.get(_CSP_SCRIPT_NONCE_HEADER)
                 if nonce is not None:
                     del headers[_CSP_SCRIPT_NONCE_HEADER]
-                headers.setdefault("Content-Security-Policy", _build_csp(nonce))
+                headers.setdefault(
+                    "Content-Security-Policy",
+                    _build_csp(nonce, allow_hosted_frame = allow_hosted_frame),
+                )
                 # Omit X-Frame-Options in hosted notebooks: CSP frame-ancestors
                 # handles it, and DENY would block inline Colab/Kaggle/tunnel
                 # iframes regardless of CSP.
-                if not _IS_HOSTED_NOTEBOOK and path != _ARTIFACT_PREVIEW_FRAME_PATH:
+                if path != _ARTIFACT_PREVIEW_FRAME_PATH and not allow_hosted_frame:
                     headers.setdefault("X-Frame-Options", "DENY")
                 headers.setdefault("X-Content-Type-Options", "nosniff")
                 headers.setdefault("Referrer-Policy", "no-referrer")

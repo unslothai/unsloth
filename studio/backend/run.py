@@ -1057,6 +1057,23 @@ def _cloudflare_tunnel_should_start(
     return host in ("0.0.0.0", "::") and not api_only
 
 
+def _server_config_kwargs(host: str, port: int, *, is_hosted_notebook: bool) -> dict:
+    # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
+    config_kwargs = dict(
+        host = host,
+        port = port,
+        log_level = "info",
+        access_log = False,
+        server_header = False,
+    )
+    # Hosted notebooks keep app-level client-IP trust authoritative. Uvicorn's
+    # proxy middleware rewrites scope["client"] before routes.auth can apply
+    # UNSLOTH_STUDIO_TRUST_FORWARDED and managed CF-Connecting-IP handling.
+    if is_hosted_notebook:
+        config_kwargs["proxy_headers"] = False
+    return config_kwargs
+
+
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
     """Honor an explicit --enable-tools/--disable-tools; None leaves the policy
     unset (tools default on, per-request enable_tools honored). Host is never
@@ -1263,20 +1280,11 @@ def run_server(
                 )
                 ready_event.set()
 
-    # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
-    config_kwargs = dict(
-        host = host,
-        port = port,
-        log_level = "info",
-        access_log = False,
-        server_header = False,
+    config_kwargs = _server_config_kwargs(
+        host,
+        port,
+        is_hosted_notebook = _IS_HOSTED_NOTEBOOK,
     )
-    # Hosted notebooks keep app-level client-IP trust authoritative. Uvicorn's
-    # proxy middleware rewrites scope["client"] before routes.auth can apply
-    # UNSLOTH_STUDIO_TRUST_FORWARDED and loopback-only CF-Connecting-IP handling,
-    # so disable it on notebook/tunnel paths.
-    if _IS_HOSTED_NOTEBOOK:
-        config_kwargs["proxy_headers"] = False
     config = uvicorn.Config(app, **config_kwargs)
     _server = _ReadyServer(config)
     _shutdown_event = Event()
@@ -1372,12 +1380,14 @@ def run_server(
         is_colab = _IS_COLAB,
     )
     _cloudflare_requested = _cloudflare_enabled
+    app.state.trust_cloudflare_client_ip = False
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
             from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
 
             _cloudflare_url = start_studio_tunnel(port)
             app.state.cloudflare_url = _cloudflare_url
+            app.state.trust_cloudflare_client_ip = bool(_cloudflare_url)
             # Backstop: tear the tunnel down even on an abnormal exit that bypasses
             # _graceful_shutdown (e.g. an exception after startup -> sys.exit). Idempotent.
             atexit.register(stop_studio_tunnel)

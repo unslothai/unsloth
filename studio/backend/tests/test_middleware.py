@@ -4,7 +4,6 @@
 """Tests for MaxBodyMiddleware, SecurityHeadersMiddleware, and the /api/health auth gate."""
 
 import asyncio
-import ast
 import importlib.util
 import json
 import os
@@ -262,10 +261,39 @@ class TestSecurityHeadersMiddleware:
 
     def test_hosted_notebook_omits_x_frame_options(self, main_module, monkeypatch):
         monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
+        monkeypatch.delenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", raising = False)
         app = _make_csp_app(main_module)
         c = TestClient(app)
         r = c.get("/plain")
         assert "x-frame-options" not in {key.lower() for key in r.headers.keys()}
+
+    def test_hosted_notebook_public_root_keeps_frame_deny_when_token_configured(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module, "_IS_COLAB", False)
+        monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
+        monkeypatch.setenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", "frame-token")
+        app = _make_csp_app(main_module)
+        c = TestClient(app)
+
+        r = c.get("/plain")
+
+        assert r.headers["x-frame-options"] == "DENY"
+        assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
+
+    def test_hosted_notebook_valid_frame_token_omits_x_frame_options(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module, "_IS_COLAB", False)
+        monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
+        monkeypatch.setenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", "frame-token")
+        app = _make_csp_app(main_module)
+        c = TestClient(app)
+
+        r = c.get("/plain?__unsloth_frame=frame-token")
+
+        assert "x-frame-options" not in {key.lower() for key in r.headers.keys()}
+        assert "https://www.kaggle.com" in r.headers["content-security-policy"]
 
     def test_internal_nonce_header_is_spliced_into_csp_and_stripped(self, main_module):
         nonce = "test-nonce-abc"
@@ -298,23 +326,16 @@ class TestSecurityHeadersMiddleware:
         assert "https://colab.research.google.com" in csp
         assert "https://www.kaggle.com" in csp
 
-    def test_hosted_notebook_run_server_disables_uvicorn_proxy_headers(self):
-        run_path = _BACKEND_ROOT / "run.py"
-        tree = ast.parse(run_path.read_text(encoding = "utf-8"))
-        run_server = next(
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and node.name == "run_server"
+    def test_hosted_notebook_run_server_config_disables_uvicorn_proxy_headers(self):
+        import run
+
+        kwargs = run._server_config_kwargs(
+            "0.0.0.0",
+            8888,
+            is_hosted_notebook = True,
         )
-        branch = next(
-            node
-            for node in ast.walk(run_server)
-            if isinstance(node, ast.If) and ast.unparse(node.test) == "_IS_HOSTED_NOTEBOOK"
-        )
-        body = "\n".join(ast.unparse(stmt) for stmt in branch.body)
-        assert "proxy_headers" in body
-        assert "False" in body
-        assert "forwarded_allow_ips" not in body
+        assert kwargs["proxy_headers"] is False
+        assert "forwarded_allow_ips" not in kwargs
 
     def test_img_and_media_allow_https_sources(self, main_module):
         # Model-card READMEs and citation favicons pull images/media from many

@@ -14,6 +14,7 @@ from pathlib import Path
 _KAGGLE_RUNTIME_ENV_VARS = (
     "KAGGLE_KERNEL_RUN_TYPE",
     "KAGGLE_URL_BASE",
+    "KAGGLE_CONTAINER_NAME",
 )
 
 
@@ -30,9 +31,12 @@ def is_colab_environment(env: Mapping[str, str] | None = None) -> bool:
 def is_kaggle_environment(env: Mapping[str, str] | None = None) -> bool:
     """True for Kaggle notebook runtimes, but not for local Kaggle credentials."""
     env = os.environ if env is None else env
-    if Path("/kaggle/working").is_dir():
-        return True
-    return any(bool(env.get(key)) for key in _KAGGLE_RUNTIME_ENV_VARS)
+    has_runtime_env = any(bool(env.get(key)) for key in _KAGGLE_RUNTIME_ENV_VARS)
+    if not has_runtime_env:
+        return False
+    return Path("/kaggle/working").is_dir() or bool(
+        env.get("KAGGLE_KERNEL_RUN_TYPE") or env.get("KAGGLE_URL_BASE")
+    )
 
 
 def is_hosted_notebook_environment(env: Mapping[str, str] | None = None) -> bool:

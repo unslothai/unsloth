@@ -43,6 +43,7 @@ def _reset_buckets():
 @pytest.fixture
 def env_no_proxy(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP", raising = False)
 
 
 @pytest.fixture
@@ -55,10 +56,23 @@ class _FakeRequest:
         self,
         client_host = "127.0.0.1",
         headers = None,
+        *,
+        trust_cloudflare_client_ip = False,
     ):
         from starlette.datastructures import Headers
         self.client = type("Client", (), {"host": client_host})()
         self.headers = Headers(headers or {})
+        self.app = type(
+            "App",
+            (),
+            {
+                "state": type(
+                    "State",
+                    (),
+                    {"trust_cloudflare_client_ip": trust_cloudflare_client_ip},
+                )()
+            },
+        )()
 
 
 # ---------- _client_ip ----------
@@ -143,20 +157,52 @@ class TestClientIp:
         req = _FakeRequest("127.0.0.1", {"x-forwarded-for": "not-an-ip"})
         assert _client_ip(req) == "127.0.0.1"
 
-    def test_cf_connecting_ip_used_from_loopback_peer(self, env_no_proxy):
+    def test_cf_connecting_ip_ignored_from_loopback_without_managed_tunnel(self, env_no_proxy):
         from routes.auth import _client_ip
+        req = _FakeRequest("127.0.0.1", {"cf-connecting-ip": "198.51.100.7"})
+        assert _client_ip(req) == "127.0.0.1"
+
+    def test_cf_connecting_ip_used_from_managed_tunnel_loopback_peer(self, env_no_proxy):
+        from routes.auth import _client_ip
+        req = _FakeRequest(
+            "127.0.0.1",
+            {"cf-connecting-ip": "198.51.100.7"},
+            trust_cloudflare_client_ip = True,
+        )
+        assert _client_ip(req) == "198.51.100.7"
+
+    def test_cf_connecting_ip_used_when_explicitly_trusted(self, env_no_proxy, monkeypatch):
+        from routes.auth import _client_ip
+        monkeypatch.setenv("UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP", "1")
         req = _FakeRequest("127.0.0.1", {"cf-connecting-ip": "198.51.100.7"})
         assert _client_ip(req) == "198.51.100.7"
 
     def test_cf_connecting_ip_ignored_from_non_loopback_peer(self, env_no_proxy):
         from routes.auth import _client_ip
-        req = _FakeRequest("203.0.113.9", {"cf-connecting-ip": "198.51.100.7"})
+        req = _FakeRequest(
+            "203.0.113.9",
+            {"cf-connecting-ip": "198.51.100.7"},
+            trust_cloudflare_client_ip = True,
+        )
         assert _client_ip(req) == "203.0.113.9"
 
     def test_invalid_cf_connecting_ip_falls_back_to_client_host(self, env_no_proxy):
         from routes.auth import _client_ip
-        req = _FakeRequest("127.0.0.1", {"cf-connecting-ip": "not-an-ip"})
+        req = _FakeRequest(
+            "127.0.0.1",
+            {"cf-connecting-ip": "not-an-ip"},
+            trust_cloudflare_client_ip = True,
+        )
         assert _client_ip(req) == "127.0.0.1"
+
+    def test_rotating_cf_connecting_ip_without_tunnel_stays_one_bucket(self, env_no_proxy):
+        from routes import auth as auth_routes
+
+        for idx in range(5):
+            req = _FakeRequest("127.0.0.1", {"cf-connecting-ip": f"198.51.100.{idx}"})
+            auth_routes._record_login_failure(auth_routes._bucket_key(req, "admin"))
+
+        assert sorted(auth_routes._LOGIN_IP_BUCKETS) == ["127.0.0.1"]
 
 
 # ---------- bucket compose / blocking ----------

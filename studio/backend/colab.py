@@ -11,6 +11,7 @@ Studio frame.
 
 from pathlib import Path
 import os
+import secrets
 import sys
 
 # Seed platform._sys_version_cache before attrs->rich->structlog->platform crash on conda Python.
@@ -26,9 +27,60 @@ from utils.notebook_env import is_kaggle_environment
 
 logger = get_logger(__name__)
 
+_NOTEBOOK_FRAME_TOKEN_ENV = "UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN"
+_NOTEBOOK_FRAME_TOKEN_PARAM = "__unsloth_frame"
+_PUBLIC_URL_WAIT_TIMEOUT_ENV = "UNSLOTH_STUDIO_PUBLIC_URL_WAIT_SECONDS"
+_PUBLIC_URL_WAIT_TIMEOUT_SECONDS = 8.0
+_OWNED_SERVER_APP = None
+_OWNED_SERVER_PORT: int | None = None
+
 
 def _is_kaggle_environment() -> bool:
     return is_kaggle_environment()
+
+
+def _ensure_notebook_frame_token() -> str:
+    token = os.environ.get(_NOTEBOOK_FRAME_TOKEN_ENV, "").strip()
+    if not token:
+        token = secrets.token_urlsafe(32)
+        os.environ[_NOTEBOOK_FRAME_TOKEN_ENV] = token
+    return token
+
+
+def _with_notebook_frame_token(url: str) -> str:
+    token = os.environ.get(_NOTEBOOK_FRAME_TOKEN_ENV, "").strip()
+    if not token:
+        return url
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values = True)
+        if key != _NOTEBOOK_FRAME_TOKEN_PARAM
+    ]
+    query.append((_NOTEBOOK_FRAME_TOKEN_PARAM, token))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def _public_url_wait_timeout() -> float:
+    raw = os.environ.get(_PUBLIC_URL_WAIT_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return _PUBLIC_URL_WAIT_TIMEOUT_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return _PUBLIC_URL_WAIT_TIMEOUT_SECONDS
+
+
+def _remember_owned_server(app, port: int) -> None:
+    global _OWNED_SERVER_APP, _OWNED_SERVER_PORT
+    _OWNED_SERVER_APP = app
+    _OWNED_SERVER_PORT = port
+
+
+def _can_suppress_reused_server_bootstrap(port: int) -> bool:
+    return _OWNED_SERVER_APP is not None and _OWNED_SERVER_PORT == port
 
 
 def _wait_for_public_url(url: str, timeout: float = 45.0) -> bool:
@@ -211,23 +263,72 @@ def start_cloudflare_tunnel(port: int, *, allow_bootstrap_pending: bool = False)
     return url
 
 
-def _publish_cloudflare_url(cloudflare_url: "str | None") -> None:
+def _set_public_tunnel_bootstrap_suppression(enabled: bool) -> bool:
+    try:
+        from main import app as _studio_app
+        _studio_app.state.suppress_bootstrap_injection_for_public_tunnel = bool(enabled)
+        return True
+    except Exception as e:
+        logger.info(f"Could not set public tunnel bootstrap suppression ({e}).")
+        return False
+
+
+def _publish_cloudflare_url(
+    cloudflare_url: "str | None",
+    *,
+    suppress_bootstrap: "bool | None" = None,
+) -> bool:
     """Publish a directly-started tunnel URL onto app.state so /api/health advertises it.
 
     run_server only sets this when it opens the tunnel itself, which it skips on Colab,
     so we set it here. Otherwise the frontend's API examples fall back to an
-    unreachable server_url. Best-effort.
+    unreachable server_url. Returns False when state could not be updated.
     """
     if not cloudflare_url:
-        return
+        return True
     try:
         from main import app as _studio_app
         _studio_app.state.cloudflare_url = cloudflare_url
         _studio_app.state.suppress_bootstrap_injection_for_public_tunnel = bool(
-            cloudflare_url and _bootstrap_password_pending()
+            _bootstrap_password_pending() if suppress_bootstrap is None else suppress_bootstrap
         )
+        _studio_app.state.trust_cloudflare_client_ip = True
+        return True
     except Exception as e:
         logger.info(f"Could not publish Cloudflare URL to /api/health ({e}).")
+        return False
+
+
+def _start_and_publish_cloudflare_tunnel(
+    port: int,
+    *,
+    allow_bootstrap_pending: bool = False,
+) -> "str | None":
+    bootstrap_pending = _bootstrap_password_pending()
+    if bootstrap_pending and allow_bootstrap_pending:
+        if not _set_public_tunnel_bootstrap_suppression(True):
+            logger.warning(
+                "Cloudflare link not started: public bootstrap credential suppression "
+                "could not be confirmed."
+            )
+            return None
+
+    cf_url = start_cloudflare_tunnel(
+        port,
+        allow_bootstrap_pending = allow_bootstrap_pending,
+    )
+    if not cf_url:
+        if bootstrap_pending and allow_bootstrap_pending:
+            _set_public_tunnel_bootstrap_suppression(False)
+        return None
+
+    if not _publish_cloudflare_url(
+        cf_url,
+        suppress_bootstrap = bootstrap_pending and allow_bootstrap_pending,
+    ):
+        _stop_cloudflare_tunnel()
+        return None
+    return cf_url
 
 
 def _stop_cloudflare_tunnel() -> None:
@@ -242,6 +343,7 @@ def _stop_cloudflare_tunnel() -> None:
         from main import app as _studio_app
         _studio_app.state.cloudflare_url = None
         _studio_app.state.suppress_bootstrap_injection_for_public_tunnel = False
+        _studio_app.state.trust_cloudflare_client_ip = False
     except Exception:
         pass
 
@@ -315,13 +417,16 @@ def _bootstrap_login_notice_html() -> "str | None":
 def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
     """Render the Studio header + iframe for *port*, with a shareable-link card above
     when *cloudflare_url* is set. Falls back to serve_kernel_port_as_iframe."""
-    url = get_colab_url(port)
-    use_cloudflare_iframe = bool(
-        cloudflare_url and (_is_kaggle_environment() or url.startswith("http://localhost:"))
-    )
-    if use_cloudflare_iframe:
-        _wait_for_public_url(cloudflare_url)
+    is_kaggle = _is_kaggle_environment()
+    if cloudflare_url and is_kaggle:
         url = cloudflare_url
+        use_cloudflare_iframe = True
+    else:
+        url = get_colab_url(port)
+        use_cloudflare_iframe = bool(cloudflare_url and url.startswith("http://localhost:"))
+        if use_cloudflare_iframe:
+            url = cloudflare_url
+    iframe_url = _with_notebook_frame_token(url) if use_cloudflare_iframe else url
     logger.info(f"🌐 Unsloth Studio URL: {url}")
     if cloudflare_url:
         logger.info(f"🔗 Shareable Cloudflare link: {cloudflare_url}")
@@ -346,6 +451,9 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
                 display(HTML(bootstrap_notice))
             display(HTML(_shareable_link_html(cloudflare_url)))
 
+        if use_cloudflare_iframe:
+            _wait_for_public_url(cloudflare_url, timeout = _public_url_wait_timeout())
+
         display(
             HTML(f"""
 <div style="font-family:system-ui,-apple-system,sans-serif;margin:8px 0;
@@ -358,7 +466,7 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
   </div>
   <iframe
     id="{iframe_id}"
-    src="{url}"
+    src="{iframe_url}"
     style="width:100%;height:82vh;min-height:600px;max-height:1100px;border:none;display:block;box-sizing:border-box;"
     allow="clipboard-read; clipboard-write"
   ></iframe>
@@ -396,6 +504,13 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     effective_cloudflare = is_kaggle if cloudflare is None else bool(cloudflare)
     if is_kaggle:
         os.environ.setdefault("UNSLOTH_STUDIO_HOSTED_NOTEBOOK", "1")
+        _ensure_notebook_frame_token()
+        if cloudflare is None:
+            logger.warning(
+                "Kaggle notebooks do not expose Colab's proxy URL to the browser; "
+                "opening a Cloudflare quick tunnel by default. Keep the generated "
+                "URL private, or pass cloudflare=False to opt out."
+            )
 
     # Fast path: Studio already running (cell re-run). Re-launching would collide on
     # the port, so just re-show the link and iframe.
@@ -403,8 +518,16 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
         logger.info(f"   Studio is already running on port {port} — reusing existing server.")
         # try/finally: tear the tunnel down even if interrupted mid-start/render.
         try:
-            cf_url = start_cloudflare_tunnel(port) if effective_cloudflare else None
-            _publish_cloudflare_url(cf_url)
+            cf_url = (
+                _start_and_publish_cloudflare_tunnel(
+                    port,
+                    allow_bootstrap_pending = (
+                        is_kaggle and _can_suppress_reused_server_bootstrap(port)
+                    ),
+                )
+                if effective_cloudflare
+                else None
+            )
             _show_and_embed(port, cloudflare_url = cf_url)
             for _ in range(10000):
                 time.sleep(300)
@@ -447,6 +570,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     # run_server auto-increments the port if in use; read back the bound port so the
     # proxy URL and iframe point at the right place.
     actual_port: int = getattr(getattr(app, "state", None), "server_port", None) or port
+    _remember_owned_server(app, actual_port)
 
     logger.info(f"   Server started on port {actual_port}!")
 
@@ -474,14 +598,13 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     # tear it down on interrupt (try/finally) rather than orphan the process.
     try:
         cf_url = (
-            start_cloudflare_tunnel(
+            _start_and_publish_cloudflare_tunnel(
                 actual_port,
                 allow_bootstrap_pending = is_kaggle,
             )
             if effective_cloudflare
             else None
         )
-        _publish_cloudflare_url(cf_url)
         _show_and_embed(actual_port, cloudflare_url = cf_url)
 
         # Keep kernel alive so the daemon server thread runs.
