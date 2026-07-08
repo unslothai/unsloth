@@ -106,10 +106,10 @@ import {
   useChatSidebarItems,
   usePinnedChatsStore,
   useChatPreferencesStore,
+  usePromptQueueUI,
   type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
-import { usePromptQueueUI } from "@/features/chat/stores/prompt-queue-ui-store";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
