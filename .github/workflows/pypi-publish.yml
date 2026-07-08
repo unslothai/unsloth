@@ -100,8 +100,13 @@ jobs:
           # would abort the step. We want a missing/odd pin to skip, not fail.
           # Require BOTH installers to be on the new floor, so we never publish
           # while install.ps1 (Windows) still pins the previous version.
-          pin_sh=$(grep -oP 'unsloth>=\K[0-9]+\.[0-9]+\.[0-9]+' install.sh  | sort -u || true)
-          pin_ps=$(grep -oP 'unsloth>=\K[0-9]+\.[0-9]+\.[0-9]+' install.ps1 | sort -u || true)
+          # Capture the whole PEP 440 version after `unsloth>=` (digits, dots and
+          # any a/b/rc/.post/.dev/+local suffix), not just x.y.z, so a suffixed
+          # release (e.g. 2026.5.3.post1) compares equal to __version__ instead
+          # of truncating to 2026.5.3 and silently skipping the publish. The
+          # `unsloth>=` anchor still excludes the `unsloth-zoo>=` pin.
+          pin_sh=$(grep -oP 'unsloth>=\K[0-9][0-9A-Za-z.+!-]*' install.sh  | sort -u || true)
+          pin_ps=$(grep -oP 'unsloth>=\K[0-9][0-9A-Za-z.+!-]*' install.ps1 | sort -u || true)
           ver=$(grep -m1 -oP '__version__ = "\K[^"]+' unsloth/models/_utils.py || true)
           echo "install.sh: ${pin_sh:-<none>} / install.ps1: ${pin_ps:-<none>} / __version__: $ver"
           one() { [ "$(printf '%s\n' "$1" | grep -c .)" = "1" ]; }
@@ -154,20 +159,18 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Upgrade npm to 11.10+ (min-release-age enforcement)
-        # setup-node@22 bundles npm 10.9.x, which SILENTLY IGNORES the
-        # min-release-age=7 cooldown in studio/frontend/.npmrc (that config
-        # landed in npm 11.10). Without this, bash build.sh's `npm install`
-        # would install brand-new tarballs on a fresh runner with the 7-day
-        # supply-chain cooldown disabled. Same shape as studio-frontend-ci.yml's
-        # npm upgrade; its floor is 11.16 (allowScripts), this job only needs
-        # min-release-age.
+      - name: Upgrade npm to 11.16+ (min-release-age + allowScripts)
+        # setup-node@22 bundles npm 10.9.x, which silently ignores both the
+        # min-release-age=7 cooldown in studio/frontend/.npmrc (landed in npm
+        # 11.10) and the allowScripts allowlist enforced by --strict-allow-scripts
+        # (landed in npm 11.16). Upgrade to the 11.16+ floor so the frozen
+        # install below gets both gates, matching studio-frontend-ci.yml.
         run: |
           npm install -g npm@^11 --no-fund --no-audit
           V=$(npm -v)
           case "$V" in
-            11.1[0-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V honors min-release-age" ;;
-            *) echo "::error::npm $V predates min-release-age (need >=11.10)"; exit 1 ;;
+            11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V has min-release-age + allowScripts" ;;
+            *) echo "::error::npm $V predates allowScripts (need >=11.16)"; exit 1 ;;
           esac
 
       - name: Lockfile supply-chain audit (pre-install scan)
@@ -183,11 +186,14 @@ jobs:
         # when package.json has drifted from it -- after the audit above already
         # scanned the committed lock. Run `npm ci` first: it exits on any
         # package.json/lock mismatch and never writes the lockfile, so the
-        # release can't publish unaudited resolutions. This is the enforcement
-        # .npmrc mandates for CI and wheel-smoke.yml already uses; it also
-        # applies the .npmrc min-release-age cooldown to the frozen install.
+        # release can't publish unaudited resolutions. --strict-allow-scripts
+        # hard-fails any install script not in package.json's allowScripts
+        # allowlist (advisory by default in npm 11), and .npmrc's min-release-age
+        # cooldown applies here too. This mirrors studio-frontend-ci.yml's gate,
+        # which the pin bump already passed at PR time, so a clean release lock
+        # installs without prompting; build.sh stays the maintainer publish path.
         working-directory: studio/frontend
-        run: npm ci --no-fund --no-audit
+        run: npm ci --strict-allow-scripts --no-fund --no-audit
 
       - name: Resolve Studio release version
         id: studio
