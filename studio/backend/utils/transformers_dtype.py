@@ -9,10 +9,12 @@ passed. But our floor (``transformers>=4.51.3``) predates ``dtype`` and only
 accepts ``torch_dtype``, so a bare rename would ``TypeError`` on the floor. Pick
 the name the installed version accepts instead.
 
-Mirrors ``unsloth_zoo.hf_utils.HAS_TORCH_DTYPE`` rather than importing it: this
-runs in the main backend process (the RAG embedder warms here at startup), which
-does not import unsloth, and ``unsloth_zoo`` refuses to import until ``unsloth``
-has run first.
+Mirrors ``unsloth_zoo.hf_utils.HAS_TORCH_DTYPE`` rather than importing it: the RAG
+embedder warms here at startup in the lean main process, and importing that
+constant would run ``unsloth_zoo``'s package ``__init__`` (torch import, GPU/Pytorch
+checks, the patching banner) as a side effect. The embedder is deliberately
+torch-optional (it degrades to the ``llama-server`` GGUF backend), so it must not
+drag in that heavyweight import just to read one bool.
 """
 
 from functools import lru_cache
