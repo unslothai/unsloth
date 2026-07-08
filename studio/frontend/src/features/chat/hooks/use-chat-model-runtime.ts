@@ -819,15 +819,15 @@ export function useChatModelRuntime() {
               !isLocalModelPath(modelId) &&
               !isExternalModelId(modelId)
             ) {
-              const kind =
-                loadResponse.is_gguf || isGguf || ggufVariant
-                  ? "gguf"
-                  : "model";
-              recordLastLocalModelLoad({
-                id: modelId,
-                kind,
-                ggufVariant: kind === "gguf" ? ggufVariant ?? null : null,
-              });
+              if (loadResponse.is_gguf || isGguf || ggufVariant) {
+                recordLastLocalModelLoad({
+                  id: modelId,
+                  kind: "gguf",
+                  ggufVariant: ggufVariant ?? null,
+                });
+              } else {
+                recordLastLocalModelLoad({ id: modelId, kind: "model" });
+              }
             }
             // A successful load owns the shared (pick-unscoped) settings fields,
             // so any surviving stage is stale: the just-loaded pick itself, or a

@@ -39,6 +39,12 @@ export function readLastLocalModelLoad(): LastLocalModelLoad | null {
     ) {
       return null;
     }
+    if (
+      parsed.kind === "gguf" &&
+      (typeof parsed.ggufVariant !== "string" || !parsed.ggufVariant.trim())
+    ) {
+      return null;
+    }
     return {
       id: parsed.id,
       kind: parsed.kind,
@@ -60,13 +66,17 @@ export function recordLastLocalModelLoad(input: {
   if (!id) {
     return;
   }
+  const ggufVariant = input.ggufVariant?.trim() || null;
+  if (input.kind === "gguf" && !ggufVariant) {
+    return;
+  }
   try {
     storage()?.setItem(
       STORAGE_KEY,
       JSON.stringify({
         id,
         kind: input.kind,
-        ggufVariant: input.kind === "gguf" ? (input.ggufVariant ?? null) : null,
+        ggufVariant: input.kind === "gguf" ? ggufVariant : null,
         loadedAt: Date.now(),
       } satisfies LastLocalModelLoad),
     );

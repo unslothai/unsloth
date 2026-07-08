@@ -1386,8 +1386,11 @@ async function autoLoadSmallestModel(): Promise<{
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const specSettings = resolveSpeculativeSettingsForLoad();
+  const lastLoaded = readLastLocalModelLoad();
   const toastId = toast("Loading a model…", {
-    description: "Auto-selecting the smallest downloaded model.",
+    description: lastLoaded
+      ? "Loading last used model."
+      : "Auto-selecting the smallest downloaded model.",
     duration: 5000,
     closeButton: true,
   });
@@ -1531,7 +1534,6 @@ async function autoLoadSmallestModel(): Promise<{
       listCachedModels().catch(() => []),
     ]);
 
-    const lastLoaded = readLastLocalModelLoad();
     if (lastLoaded) {
       if (lastLoaded.kind === "gguf") {
         const repo = findCachedRepo(ggufRepos, lastLoaded.id);
@@ -1625,87 +1627,16 @@ async function autoLoadSmallestModel(): Promise<{
               continue;
             }
             if (
-              !(await canAutoLoad({
-                model_path: repo.repo_id,
-                max_seq_length: 0,
-                is_lora: false,
-                gguf_variant: variant.quant,
-              }))
+              await loadAutoLoadCandidate({
+                id: repo.repo_id,
+                kind: "gguf",
+                ggufVariant: variant.quant,
+                maxSeqLength: 0,
+                successLabel: `Loaded ${repo.repo_id} (${variant.quant})`,
+              })
             ) {
-              continue;
+              return { loaded: true, blockedByTrustRemoteCode: false };
             }
-            loadAttempts += 1;
-            const loadResp = await loadModel({
-              model_path: repo.repo_id,
-              hf_token: hfToken,
-              max_seq_length: 0,
-              load_in_4bit: true,
-              is_lora: false,
-              gguf_variant: variant.quant,
-              trust_remote_code: trustRemoteCode,
-              speculative_type: specSettings.speculativeType,
-              spec_draft_n_max: specSettings.specDraftNMax,
-            });
-            saveSpeculativeType(specSettings.speculativeType);
-            useChatRuntimeStore
-              .getState()
-              .setCheckpoint(repo.repo_id, variant.quant);
-            const store = useChatRuntimeStore.getState();
-            store.setModelRequiresTrustRemoteCode(
-              loadResp.requires_trust_remote_code ?? false,
-            );
-            store.setParams({
-              ...store.params,
-              maxTokens: loadResp.context_length ?? 131072,
-            });
-            // Add to store so the selector shows the name.
-            const autoModel: ChatModelSummary = {
-              id: repo.repo_id,
-              name: loadResp.display_name ?? repo.repo_id,
-              isVision: loadResp.is_vision ?? false,
-              isLora: loadResp.is_lora ?? false,
-              isGguf: loadResp.is_gguf ?? false,
-              isAudio: loadResp.is_audio ?? false,
-              audioType: loadResp.audio_type ?? null,
-              hasAudioInput: loadResp.has_audio_input ?? false,
-            };
-            const existingModels = store.models;
-            if (!existingModels.some((m) => m.id === repo.repo_id)) {
-              store.setModels([...existingModels, autoModel]);
-            }
-            useChatRuntimeStore.setState({
-              ggufContextLength: loadResp.context_length ?? 131072,
-              ggufMaxContextLength:
-                loadResp.max_context_length ??
-                loadResp.context_length ??
-                131072,
-              supportsReasoning: loadResp.supports_reasoning ?? false,
-              reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
-              reasoningEnabled: loadResp.supports_reasoning ?? false,
-              ...reasoningCapsFromLoad(loadResp),
-              supportsPreserveThinking:
-                loadResp.supports_preserve_thinking ?? false,
-              supportsTools: loadResp.supports_tools ?? false,
-              ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-              kvCacheDtype: loadResp.cache_type_kv ?? null,
-              loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-              tensorParallel: loadResp.tensor_parallel ?? false,
-              loadedTensorParallel: loadResp.tensor_parallel ?? false,
-              defaultChatTemplate: loadResp.chat_template ?? null,
-              chatTemplateOverride: null,
-              loadedChatTemplateOverride: null,
-              loadedIsMultimodal: isMultimodalResponse(loadResp),
-              ...resolveLoadedSpeculativeSettings(loadResp),
-            });
-            recordLastLocalModelLoad({
-              id: repo.repo_id,
-              kind: "gguf",
-              ggufVariant: variant.quant,
-            });
-            toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, {
-              id: toastId,
-            });
-            return { loaded: true, blockedByTrustRemoteCode: false };
           }
         } catch {
           hadNonTrustFailure = true;
@@ -1730,68 +1661,16 @@ async function autoLoadSmallestModel(): Promise<{
             continue;
           }
           if (
-            !(await canAutoLoad({
-              model_path: repo.repo_id,
-              max_seq_length: 4096,
-              is_lora: false,
-              gguf_variant: null,
-            }))
+            await loadAutoLoadCandidate({
+              id: repo.repo_id,
+              kind: "model",
+              ggufVariant: null,
+              maxSeqLength: 4096,
+              successLabel: `Loaded ${repo.repo_id}`,
+            })
           ) {
-            continue;
+            return { loaded: true, blockedByTrustRemoteCode: false };
           }
-          loadAttempts += 1;
-          const sfLoadResp = await loadModel({
-            model_path: repo.repo_id,
-            hf_token: hfToken,
-            max_seq_length: 4096,
-            load_in_4bit: true,
-            is_lora: false,
-            gguf_variant: null,
-            trust_remote_code: trustRemoteCode,
-            speculative_type: specSettings.speculativeType,
-            spec_draft_n_max: specSettings.specDraftNMax,
-          });
-          saveSpeculativeType(specSettings.speculativeType);
-          useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
-          const store = useChatRuntimeStore.getState();
-          store.setModelRequiresTrustRemoteCode(
-            sfLoadResp.requires_trust_remote_code ?? false,
-          );
-          store.setParams({ ...store.params, maxTokens: 4096 });
-          useChatRuntimeStore.setState({
-            supportsReasoning: sfLoadResp.supports_reasoning ?? false,
-            reasoningAlwaysOn: sfLoadResp.reasoning_always_on ?? false,
-            reasoningEnabled: sfLoadResp.supports_reasoning ?? false,
-            ...reasoningCapsFromLoad(sfLoadResp),
-            supportsPreserveThinking:
-              sfLoadResp.supports_preserve_thinking ?? false,
-            supportsTools: sfLoadResp.supports_tools ?? false,
-            // Parity with the GGUF branch above.
-            ...resolveToolsEnabledOnLoad(sfLoadResp.supports_tools ?? false),
-            defaultChatTemplate: sfLoadResp.chat_template ?? null,
-            chatTemplateOverride: null,
-            loadedChatTemplateOverride: null,
-            ...resolveLoadedSpeculativeSettings(sfLoadResp),
-          });
-          const sfModel: ChatModelSummary = {
-            id: repo.repo_id,
-            name: sfLoadResp.display_name ?? repo.repo_id,
-            isVision: sfLoadResp.is_vision ?? false,
-            isLora: sfLoadResp.is_lora ?? false,
-            isGguf: sfLoadResp.is_gguf ?? false,
-          };
-          if (!store.models.some((m) => m.id === repo.repo_id)) {
-            store.setModels([...store.models, sfModel]);
-          }
-          useChatRuntimeStore.setState({
-            loadedIsMultimodal: isMultimodalResponse(sfLoadResp),
-          });
-          recordLastLocalModelLoad({
-            id: repo.repo_id,
-            kind: "model",
-          });
-          toast.success(`Loaded ${repo.repo_id}`, { id: toastId });
-          return { loaded: true, blockedByTrustRemoteCode: false };
         } catch {
           hadNonTrustFailure = true;
           continue;
