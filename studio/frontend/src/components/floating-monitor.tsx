@@ -3,13 +3,13 @@
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { useMonitorOverlayStore } from "@/features/settings/stores/monitor-overlay-store";
+import { useMonitorOverlayStore } from "@/features/settings";
 import { useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { CpuIcon, GripVerticalIcon, XIcon } from "lucide-react";
-import { motion } from "motion/react";
-import { useRef } from "react";
+import { motion, useDragControls } from "motion/react";
+import { useRef, type PointerEvent } from "react";
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
@@ -40,6 +40,12 @@ export function FloatingMonitor() {
   const systemInfo = useSystemInfo({ enabled: isOpen, pollMs: 5000 });
 
   const constraintsRef = useRef<HTMLDivElement>(null);
+  const dragControls = useDragControls();
+
+  function startDrag(event: PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    dragControls.start(event);
+  }
 
   if (!isOpen) return null;
 
@@ -69,10 +75,11 @@ export function FloatingMonitor() {
       className="fixed inset-0 z-50 pointer-events-none"
     >
       <motion.div
-        layout={true}
         drag={true}
+        dragControls={dragControls}
+        dragListener={false}
         dragConstraints={constraintsRef}
-        dragElastic={0.1}
+        dragElastic={0}
         dragMomentum={false}
         initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
@@ -87,7 +94,10 @@ export function FloatingMonitor() {
             </span>
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            <div className="cursor-grab rounded-md px-1 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-muted-foreground active:cursor-grabbing">
+            <div
+              onPointerDown={startDrag}
+              className="touch-none cursor-grab rounded-md px-1 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-muted-foreground active:cursor-grabbing"
+            >
               <GripVerticalIcon className="size-3.5" />
             </div>
 
