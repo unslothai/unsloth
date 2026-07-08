@@ -75,11 +75,11 @@ class TestStructuralTorchConstraint:
         Without this a fresh cu128/cu130 install resolves torch 2.10.x."""
         assert 'TORCH_CONSTRAINT="torch>=2.4,<2.12.0"' in self._sh
 
-    def test_cuda_case_widens_via_index_url(self):
-        """The cu* branch of the TORCH_INDEX_URL case must set the widened
-        constraint (parallel to the rocm7.2 branch)."""
+    def test_cuda_case_widens_via_index_leaf(self):
+        """The cu* branch of the _torch_index_leaf case must set the widened
+        constraint (parallel to the rocm7.2 branch), anchored on the leaf."""
         m = re.search(
-            r'\*/cu\[0-9\]\*\)\s*TORCH_CONSTRAINT="torch>=2\.4,<2\.12\.0"',
+            r'cu\[0-9\]\*\)\s*TORCH_CONSTRAINT="torch>=2\.4,<2\.12\.0"',
             self._sh,
         )
         assert m is not None, "CUDA (cu*) TORCH_CONSTRAINT widening case not found"
@@ -349,25 +349,29 @@ class TestTorchConstraintShell:
         logged = log_file.read_text()
         assert "torch>=2.4,<2.11.0" in logged, f"uv log: {logged}"
 
-    # -- Backend/index constraint selection (the `case $TORCH_INDEX_URL` block) --
+    # -- Backend/index constraint selection (the _torch_index_leaf case block) --
     # Mirrors the real block in install.sh: rocm7.2 -> 2.11.x floor, any CUDA
     # index -> widened <2.12.0 ceiling, everything else (CPU / older ROCm) ->
-    # unchanged default. Guards the glob so /cpu does not match the cu* branch.
+    # unchanged default. Matches on the final path segment (_torch_index_leaf)
+    # so a mirror whose base path contains cu*/rocm7.2 but ends in a cpu /
+    # older-rocm leaf keeps the default.
     _INDEX_SNIPPET = textwrap.dedent(r"""
         #!/bin/bash
         set -e
         TORCH_INDEX_URL="{index_url}"
         TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
-        case "$TORCH_INDEX_URL" in
-            */rocm7.2)  TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
-            */cu[0-9]*) TORCH_CONSTRAINT="torch>=2.4,<2.12.0" ;;
+        _torch_index_leaf="${TORCH_INDEX_URL%/}"
+        _torch_index_leaf="${_torch_index_leaf##*/}"
+        case "$_torch_index_leaf" in
+            rocm7.2)  TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+            cu[0-9]*) TORCH_CONSTRAINT="torch>=2.4,<2.12.0" ;;
         esac
         echo "$TORCH_CONSTRAINT"
     """).strip()
 
     def _resolve_index(self, tmp_path: pathlib.Path, index_url: str) -> str:
         script_file = tmp_path / "index_snippet.sh"
-        script_file.write_text(self._INDEX_SNIPPET.format(index_url = index_url))
+        script_file.write_text(self._INDEX_SNIPPET.replace("{index_url}", index_url))
         script_file.chmod(0o755)
         result = subprocess.run(
             ["bash", str(script_file)],
@@ -399,6 +403,19 @@ class TestTorchConstraintShell:
     def test_cuda_index_custom_mirror_widens(self, tmp_path):
         url = "https://internal.example.com/pytorch/cu128"
         assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.12.0"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://internal.example.com/pytorch/cu128/cpu",
+            "https://internal.example.com/cu128/whl/rocm7.1",
+        ],
+    )
+    def test_cuda_in_mirror_path_but_noncuda_leaf_keeps_default(self, tmp_path, url):
+        # A UNSLOTH_PYTORCH_MIRROR base path may contain cu128, but if the final
+        # index leaf is cpu / an older ROCm tag the constraint must NOT widen:
+        # the case anchors on _torch_index_leaf, not anywhere in the URL.
+        assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.11.0"
 
 
 # Group 3 -- E2E tokenizers fix (requires network, ~2-5 min)

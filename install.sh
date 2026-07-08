@@ -2473,10 +2473,13 @@ esac
 # ceiling to <2.12.0 to match the torch 2.11.0 base image and the
 # _CUDA_TORCH_PKG_SPEC repair spec in studio/install_python_stack.py. The
 # >=2.4 floor is kept so an older CUDA index (e.g. cu118) that tops out below
-# 2.11 still resolves. All other ROCm tags and the CPU wheel stay within <2.11.0.
-case "$TORCH_INDEX_URL" in
-    */rocm7.2)  TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
-    */cu[0-9]*) TORCH_CONSTRAINT="torch>=2.4,<2.12.0" ;;
+# 2.11 still resolves. Match on _torch_index_leaf (the final path segment
+# classified just above), not the full URL, so a custom UNSLOTH_PYTORCH_MIRROR
+# whose base path contains cu*/rocm7.2 but resolves to a cpu / older-rocm leaf
+# keeps the default <2.11.0.
+case "$_torch_index_leaf" in
+    rocm7.2)  TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+    cu[0-9]*) TORCH_CONSTRAINT="torch>=2.4,<2.12.0" ;;
 esac
 
 # Auto-detect GPU for AMD ROCm based
