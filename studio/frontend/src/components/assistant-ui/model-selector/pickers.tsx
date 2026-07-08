@@ -566,7 +566,10 @@ function ModelRow({
       {hubUrlLine}
     </>
   ) : tooltipText ? (
-    tooltipText
+    <>
+      {tooltipText}
+      {hubUrlLine}
+    </>
   ) : hubUrl ? (
     <>
       <span className="block break-words">{label}</span>
@@ -2482,7 +2485,7 @@ export function HubModelPicker({
           <div className="min-w-0 flex-1">
             <ModelRow
               label={c.repo_id}
-              hubUrl={hubRepoUrl(c.repo_id)}
+              tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
               meta="GGUF"
               showVision={c.has_vision ?? visionByRepo[c.repo_id]}
               selected={isSelected}
