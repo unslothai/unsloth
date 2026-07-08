@@ -416,9 +416,10 @@ def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
 
 
 def test_exclude_tokens_for_scheme_shared_by_runtime_and_builder():
-    # The runtime quantiser and the offline prequant builder must apply the SAME int8
-    # exclusion, or an int8 prequant artifact quantises the M=1 modulation/embedder linears
-    # and reintroduces the torch._int_mm crash. int8 gets the exclusion; others get none.
+    # The runtime quantiser and the offline prequant builder must apply the SAME exclusion, or a
+    # prequant artifact quantises a layer the runtime path skips (int8's M=1 modulation/embedder
+    # linears -> torch._int_mm crash; fp8's zero-padded-conditioning embedder -> black frames). int8
+    # gets the family-independent exclusion; the scaled_mm schemes exclude nothing WITHOUT a family.
     from core.inference.diffusion_transformer_quant import (
         _INT8_EXCLUDE_NAME_TOKENS,
         exclude_tokens_for_scheme,
@@ -430,9 +431,9 @@ def test_exclude_tokens_for_scheme_shared_by_runtime_and_builder():
 
 def test_exclude_tokens_for_scheme():
     # The shared scheme->exclusion decision used by BOTH the runtime quantise path and the offline
-    # prequant-checkpoint builder, so an int8 checkpoint built ahead of time skips exactly the
-    # layers the runtime path skips (offline == runtime). int8 excludes the M=1 modulation /
-    # embedder tokens; every scaled_mm scheme excludes nothing.
+    # prequant-checkpoint builder, so a checkpoint built ahead of time skips exactly the layers the
+    # runtime path skips (offline == runtime). int8 excludes the M=1 modulation / embedder tokens on
+    # every family; the scaled_mm schemes exclude nothing by default.
     from core.inference.diffusion_transformer_quant import (
         _INT8_EXCLUDE_NAME_TOKENS,
         exclude_tokens_for_scheme,
@@ -442,6 +443,26 @@ def test_exclude_tokens_for_scheme():
     assert exclude_tokens_for_scheme(TQ_FP8) == ()
     assert exclude_tokens_for_scheme(TQ_NVFP4) == ()
     assert exclude_tokens_for_scheme(TQ_MXFP8) == ()
+
+
+def test_exclude_tokens_for_scheme_family():
+    # Per-family fp8 exclusion: on Wan the per-row fp8 activation scale divides by a zero
+    # padding-token row in condition_embedder.text_embedder (-> inf -> black frames), so fp8 keeps
+    # condition_embedder bf16 while the 30-block stack stays fp8. int8 is unaffected by family (it
+    # tolerates zero rows), and an unknown / Hunyuan family gets no fp8 exclusion.
+    from core.inference.diffusion_transformer_quant import (
+        _INT8_EXCLUDE_NAME_TOKENS,
+        exclude_tokens_for_scheme,
+    )
+
+    assert exclude_tokens_for_scheme(TQ_FP8, "wan2.2-ti2v-5b") == ("condition_embedder",)
+    assert exclude_tokens_for_scheme(TQ_FP8, "wan2.2-t2v-a14b") == ("condition_embedder",)
+    assert exclude_tokens_for_scheme(TQ_MXFP8, "wan2.2-ti2v-5b") == ("condition_embedder",)
+    # Hunyuan is not localisable (fp8 stays denied), and an unknown family gets nothing.
+    assert exclude_tokens_for_scheme(TQ_FP8, "hunyuanvideo-1.5") == ()
+    assert exclude_tokens_for_scheme(TQ_FP8, "z-image") == ()
+    # int8 is family-independent (its zero-row handling needs no per-family skip).
+    assert exclude_tokens_for_scheme(TQ_INT8, "wan2.2-ti2v-5b") == _INT8_EXCLUDE_NAME_TOKENS
 
 
 # ── apply ───────────────────────────────────────────────────────────────────────
@@ -554,25 +575,30 @@ def test_family_deny_refuses_explicit_fp8_for_qwen(monkeypatch):
     assert select_transformer_quant_scheme(_target(), "fp8", family = "z-image") == TQ_FP8
 
 
-def test_family_deny_auto_skips_fp8_for_wan(monkeypatch):
-    # B200 with every scheme available: auto must NOT pick fp8 / nvfp4 / mxfp8 for the Wan
-    # video DiT (per-row fp8 renders black frames on it, measured; see _FAMILY_SCHEME_DENY)
-    # and falls through the ladder to int8, which is clean on Wan. Both the 5B TI2V and the
-    # A14B MoE share the WanTransformer3DModel activation profile, so both deny to int8.
+def test_family_allows_fp8_for_wan(monkeypatch):
+    # B200 with every scheme available: the Wan fp8 black frame was root-caused to a single input
+    # embedder dividing by a zero padding-token row (fixed by the condition_embedder exclude, not a
+    # deny), so auto now picks fp8 -- the ladder head -- for both the 5B TI2V and the A14B MoE.
+    # mxfp8 / nvfp4 stay denied (same per-row scaled_mm family, not separately validated), so with
+    # only those + int8 available auto still lands on int8.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "auto", family = "wan2.2-ti2v-5b") == TQ_FP8
+    assert select_transformer_quant_scheme(_target(), "auto", family = "wan2.2-t2v-a14b") == TQ_FP8
+    _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_INT8})  # fp8 unavailable -> denied mx/nvfp4 skipped
     assert select_transformer_quant_scheme(_target(), "auto", family = "wan2.2-ti2v-5b") == TQ_INT8
-    assert select_transformer_quant_scheme(_target(), "auto", family = "wan2.2-t2v-a14b") == TQ_INT8
 
 
-def test_family_deny_refuses_explicit_fp8_for_wan(monkeypatch):
-    # An explicit fp8 request on a Wan family returns None (same GGUF-fallback contract as
-    # qwen); int8 stays honored on Wan, and fp8 stays honored on video families outside the
-    # deny table (e.g. an untested family keeps the default ladder until validated).
+def test_family_deny_wan_fp8_allowed_mxfp8_nvfp4_refused(monkeypatch):
+    # An explicit fp8 request on a Wan family is now honored (made safe by the condition_embedder
+    # exclude); int8 stays honored; mxfp8 / nvfp4 stay refused (return None -> GGUF fallback) until
+    # separately validated on the Wan activation profile.
     _stub_torch(monkeypatch, cc = (10, 0))
-    _allow(monkeypatch, {TQ_FP8, TQ_INT8})
-    assert select_transformer_quant_scheme(_target(), "fp8", family = "wan2.2-ti2v-5b") is None
+    _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_NVFP4, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "fp8", family = "wan2.2-ti2v-5b") == TQ_FP8
     assert select_transformer_quant_scheme(_target(), "int8", family = "wan2.2-ti2v-5b") == TQ_INT8
+    assert select_transformer_quant_scheme(_target(), "mxfp8", family = "wan2.2-ti2v-5b") is None
+    assert select_transformer_quant_scheme(_target(), "nvfp4", family = "wan2.2-ti2v-5b") is None
 
 
 def test_family_deny_auto_skips_fp8_for_hunyuan(monkeypatch):
@@ -618,3 +644,42 @@ def test_quantize_transformer_threads_family(monkeypatch):
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
     assert quantize_transformer(pipe, _target(), mode = "fp8", family = "qwen-image") is None
     assert called == {}
+
+
+def test_quantize_transformer_fp8_wan_excludes_condition_embedder(monkeypatch):
+    # The Wan fp8 fix is a FILTER exclusion, not a deny: quantize_transformer must thread the family
+    # into the filter so condition_embedder (the embedder that reads the zero-padded text and would
+    # divide by a zero row scale) stays bf16 while the 30-block stack is quantised on fp8. Capture
+    # the filter that reaches torchao and check it on representative fully-qualified names.
+    monkeypatch.setattr(
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_FP8
+    )
+    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
+
+    # torch stub with a real nn.Linear class so the captured filter's isinstance + bf16 gate runs.
+    torch = types.ModuleType("torch")
+    torch.bfloat16 = "bfloat16"
+
+    class _Linear:
+        def __init__(self, inf, outf, dtype = "bfloat16"):
+            self.in_features, self.out_features = inf, outf
+            self.weight = types.SimpleNamespace(dtype = dtype)
+
+    torch.nn = types.SimpleNamespace(Linear = _Linear)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    captured: dict = {}
+    tqz = types.ModuleType("torchao.quantization")
+    tqz.quantize_ = lambda module, config, filter_fn = None: captured.update(fn = filter_fn)
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    assert quantize_transformer(pipe, _target(), mode = "fp8", family = "wan2.2-ti2v-5b") == TQ_FP8
+    filt = captured["fn"]
+    big = _Linear(4096, 5120)  # a FLOP-heavy bf16 linear (passes min_features + bf16 gate)
+    # condition_embedder.* is kept bf16 (the divide-by-zero origin); the block stack is fp8.
+    assert filt(big, "condition_embedder.text_embedder.linear_1") is False
+    assert filt(big, "condition_embedder.time_embedder.linear_1") is False
+    assert filt(big, "blocks.0.attn1.to_q") is True
+    assert filt(big, "blocks.0.ffn.net.0.proj") is True
+    assert filt(big, "blocks.0.attn2.to_k") is True  # cross-attn K/V stay fp8 (embedder bias rescues rows)

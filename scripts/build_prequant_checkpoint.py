@@ -86,8 +86,10 @@ def main(argv = None) -> int:
     # Mirror the runtime path EXACTLY (the offline == runtime, LPIPS-0 invariant): for int8 also
     # skip the M=1 AdaLN-modulation / conditioning-embedder projections, else the saved checkpoint
     # bakes them as int8 and crashes (torch._int_mm needs M>16) at the first denoise step on
-    # Flux / Qwen. fp8 / fp4 / mx use scaled_mm (no M limit) -> exclude_tokens_for_scheme returns ().
-    exclude_name_tokens = exclude_tokens_for_scheme(scheme)
+    # Flux / Qwen. fp8 / fp4 / mx use scaled_mm (no M limit) and exclude nothing EXCEPT on families
+    # whose padded conditioning would divide by a zero row scale (e.g. Wan's condition_embedder);
+    # pass the family so the offline set matches the runtime one exactly.
+    exclude_name_tokens = exclude_tokens_for_scheme(scheme, fam.name)
     # fp8 and mxfp8 assert a bf16 weight, so their filter must skip any non-bf16 Linear the
     # transformer keeps: a mixed-precision DiT (Wan / Hunyuan) retains its _keep_in_fp32_modules in
     # fp32 even under torch_dtype=bf16, so quantising one would raise inside quantize_ and abort the

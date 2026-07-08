@@ -83,14 +83,45 @@ _INT8_EXCLUDE_NAME_TOKENS = (
 )
 
 
-def exclude_tokens_for_scheme(scheme: str) -> tuple[str, ...]:
-    """Name tokens to exclude from quantisation for ``scheme``. int8 (torch._int_mm, M>16)
-    skips the M=1 modulation / conditioning-embedder projections (see _INT8_EXCLUDE_NAME_TOKENS);
-    every other scheme uses scaled_mm (no M limit) and excludes nothing. Shared by the runtime
-    quantise path and the offline prequant-checkpoint builder so the two never drift -- an int8
-    checkpoint built offline must skip exactly the layers the runtime path skips, or it bakes the
-    M=1 projections as int8 and crashes at the first denoise step on Flux / Qwen."""
-    return _INT8_EXCLUDE_NAME_TOKENS if scheme == TQ_INT8 else ()
+# fp8 (and the other per-row scaled_mm schemes) PER-FAMILY name exclusions. Per-row fp8 scales
+# each activation ROW by row_amax / 448; a row whose amax is 0 -- a PADDING token in a
+# zero-padded conditioning sequence -- yields scale 0 and x / 0 = inf, collapsing the DiT to
+# black frames (measured on B200 with the production torch._scaled_mm path via
+# scripts/fp8_layer_ablation.py). The fix is to keep the specific Linear that first consumes the
+# raw zero-padded sequence in bf16; its bias makes every downstream row non-zero, so the rest of
+# the DiT is fp8-clean. This is family-specific because the offending layer's name is:
+#   wan2.2 (WanTransformer3DModel): condition_embedder.text_embedder reads the raw 512-token text
+#     (~all padding for a short prompt). Excluding the whole condition_embedder (a handful of
+#     one-off M=1/M=seq embedders, negligible FLOPs + memory) leaves the entire 30-block
+#     attn1/attn2/ffn stack on fp8 -- measured fp8-except-condition_embedder cosine 0.99975 vs bf16,
+#     0 non-finite, vs fp8-everywhere = 100% non-finite. int8 (per-token; a zero row rounds to 0,
+#     no divide) needs no exclusion, which is why it was always clean and is the fallback.
+# HunyuanVideo-1.5 is deliberately absent: its MMDiT masks the padding text tokens to zero INSIDE
+# every block, so the per-block context stream (add_*_proj / to_add_out / ff_context) regenerates
+# zero rows in every layer -- no small exclude set exists, so it stays fp8-denied -> int8 (see
+# _FAMILY_SCHEME_DENY). Applies to every per-row scaled_mm scheme (fp8 today; mxfp8 / nvfp4 inherit
+# it if ever un-denied for these families), never to int8.
+_FP8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
+    "wan2.2-ti2v-5b": ("condition_embedder",),
+    "wan2.2-t2v-a14b": ("condition_embedder",),  # same DiT class + padded-text conditioning
+}
+
+
+def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
+    """Name tokens to exclude from quantisation for ``scheme`` (optionally family-specific).
+
+    int8 (torch._int_mm, M>16) skips the M=1 modulation / conditioning-embedder projections (see
+    _INT8_EXCLUDE_NAME_TOKENS) on every family. The per-row scaled_mm schemes (fp8 / mxfp8 / nvfp4)
+    exclude nothing by default, but on families whose zero-padded conditioning sequence would divide
+    by a zero row scale they skip the offending input embedder (see _FP8_FAMILY_EXCLUDE_NAME_TOKENS).
+    ``family=None`` preserves the historical behaviour (int8 tokens, or () otherwise). Shared by the
+    runtime quantise path and the offline prequant-checkpoint builder so the two never drift -- a
+    checkpoint built offline must skip exactly the layers the runtime path skips, or it bakes a layer
+    that then crashes (int8 M=1 -> _int_mm) or infs (fp8 padding row -> scaled_mm) at the first
+    denoise step."""
+    if scheme == TQ_INT8:
+        return _INT8_EXCLUDE_NAME_TOKENS
+    return _FP8_FAMILY_EXCLUDE_NAME_TOKENS.get(str(family or "").strip().lower(), ())
 
 
 # Per-architecture preference order for ``auto`` -- best (fastest, in-bar) first, with
@@ -153,13 +184,21 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
 _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
     "qwen-image-edit": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),  # same DiT + activations
-    # Wan2.2 video DiTs (WanTransformer3DModel): fp8 renders black frames (measured); both the
-    # 5B TI2V and the A14B MoE share the DiT class + activation profile, so both deny -> int8.
-    "wan2.2-ti2v-5b": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
-    "wan2.2-t2v-a14b": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
+    # Wan2.2 video DiTs (WanTransformer3DModel): plain fp8 rendered black frames, but the failure
+    # is a SINGLE input embedder (condition_embedder) dividing by a zero padding-token row -- the
+    # 30-block compute stack is fp8-clean. fp8 is therefore allowed here and made safe by the
+    # per-family exclude (_FP8_FAMILY_EXCLUDE_NAME_TOKENS keeps condition_embedder bf16). mxfp8 /
+    # nvfp4 remain denied (same per-row scaled_mm family, not separately validated) so auto still
+    # skips them; both the 5B TI2V and the A14B MoE share the DiT class + activation profile.
+    "wan2.2-ti2v-5b": frozenset({TQ_MXFP8, TQ_NVFP4}),
+    "wan2.2-t2v-a14b": frozenset({TQ_MXFP8, TQ_NVFP4}),
     # HunyuanVideo-1.5 DiT (HunyuanVideo15Transformer3DModel): fp8 renders black frames (measured,
-    # LPIPS 0.82); int8 is clean. The 480p and 720p repacks share the DiT + activations, so both
-    # deny -> int8. (ltx-2 fp8 measures clean on the same stack, so it is intentionally absent.)
+    # LPIPS 0.82) and -- unlike Wan -- the failure is NOT confinable to an input embedder: its MMDiT
+    # masks padding text tokens to zero inside every block, so the per-block context stream
+    # (add_*_proj / to_add_out / ff_context) regenerates zero rows layer after layer (measured: fp8
+    # on only the main blocks is still 100% non-finite). No small exclude set exists, so fp8 stays
+    # denied and auto lands on int8 (clean, per-token). The 480p and 720p repacks share the DiT +
+    # activations, so both deny. (ltx-2 fp8 measures clean on the same stack, so it is absent.)
     "hunyuanvideo-1.5": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
     "hunyuanvideo-1.5-720p": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
 }
@@ -502,12 +541,14 @@ def quantize_transformer(
     try:
         from torchao.quantization import quantize_
 
-        # int8 (torch._int_mm, M>16) additionally skips the M=1 modulation / conditioning-embedder
-        # projections; fp8 / fp4 / mx (scaled_mm) have no such limit and quantise everything -- but
-        # fp8 and mxfp8 assert a bf16 weight, so on a mixed-precision DiT (Wan / Hunyuan keep some
-        # fp32 linears) they must skip the non-bf16 ones or the whole pass raises and no-ops. nvfp4
-        # quantises fp32 weights fine, so it is not gated (see _REQUIRE_BF16_SCHEMES).
-        exclude = exclude_tokens_for_scheme(scheme)
+        # int8 (torch._int_mm, M>16) skips the M=1 modulation / conditioning-embedder projections;
+        # fp8 / fp4 / mx (scaled_mm) have no M limit but, on a family whose zero-padded conditioning
+        # sequence would divide a per-row activation scale by a zero row, skip that one input
+        # embedder (Wan's condition_embedder -> _FP8_FAMILY_EXCLUDE_NAME_TOKENS). fp8 and mxfp8 also
+        # assert a bf16 weight, so on a mixed-precision DiT (Wan / Hunyuan keep some fp32 linears)
+        # they must skip the non-bf16 ones or the whole pass raises and no-ops. nvfp4 quantises fp32
+        # weights fine, so it is not gated (see _REQUIRE_BF16_SCHEMES).
+        exclude = exclude_tokens_for_scheme(scheme, family)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),

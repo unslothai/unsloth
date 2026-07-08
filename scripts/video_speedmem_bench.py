@@ -154,6 +154,23 @@ def _frames_to_arrays(output) -> list:
     return arrs
 
 
+def _mean_luma(arrs: list) -> Optional[float]:
+    """Mean Rec.601 luma over all frames (0-255). ~0 == black frames (the fp8 failure signal)."""
+    import numpy as np
+
+    if not arrs:
+        return None
+    vals = []
+    for a in arrs:
+        a = np.asarray(a).astype(np.float32)
+        if a.ndim == 3 and a.shape[-1] >= 3:
+            luma = 0.299 * a[..., 0] + 0.587 * a[..., 1] + 0.114 * a[..., 2]
+        else:
+            luma = a
+        vals.append(float(luma.mean()))
+    return round(sum(vals) / len(vals), 3) if vals else None
+
+
 def _mean_lpips(ref_arrs: list, arrs: list) -> Optional[float]:
     """Mean per-frame LPIPS over the min common frame count."""
     if not ref_arrs or not arrs:
@@ -217,6 +234,12 @@ _CONFIGS: dict[str, dict[str, Any]] = {
     "te_fbcache": dict(te="auto", vae="none", dit="none", speed="default", attn="auto", cache="auto"),
     "ditfp8_fbcache": dict(te="none", vae="none", dit="auto", speed="default", attn="auto", cache="auto"),
     "ditint8_fbcache_prod": dict(te="none", vae="none", dit="int8", speed="default", attn="auto", cache="auto"),
+    # mixed-fp8 vs int8 head-to-head (Phase 3): the DiT-quant accuracy comparison on Wan/Hunyuan.
+    # fp8 here goes through the production quantize_transformer family exclude (input embedders
+    # kept bf16), so it is only non-black if the mixed-fp8 wiring is live. cache on AND off.
+    "ditfp8mixed_nocache": dict(te="none", vae="none", dit="fp8", speed="default", attn="native", cache="off"),
+    "ditfp8mixed_fbcache": dict(te="none", vae="none", dit="fp8", speed="default", attn="auto", cache="auto"),
+    "ditint8_nocache": dict(te="none", vae="none", dit="int8", speed="default", attn="native", cache="off"),
 }
 
 
@@ -441,6 +464,7 @@ def _run_config(name: str, cfg: dict, *, family: str, steps: int, width: int, he
         "gen_latency_s": round(_median(dts), 3),
         "per_step_ms": round(_median(steps_ms), 1),
         "n_frames": len(arrs),
+        "mean_luma": _mean_luma(arrs),
     }
     del pipe
     _empty()
