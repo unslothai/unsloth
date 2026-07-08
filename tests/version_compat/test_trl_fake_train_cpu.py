@@ -202,7 +202,7 @@ def _require_stack():
         pass
 
 
-def test_sft_trains_on_cpu():
+def test_sft_trains_on_cpu(tmp_path):
     from datasets import Dataset
     from trl import SFTConfig, SFTTrainer
 
@@ -210,7 +210,7 @@ def test_sft_trains_on_cpu():
     model, tok = _load_plain()
     ds = Dataset.from_list([{"text": "The quick brown fox jumps over the lazy dog."}] * 8)
     cfg = SFTConfig(
-        output_dir = "temp/ci_sft",
+        output_dir = str(tmp_path / "ci_sft"),
         per_device_train_batch_size = 2,
         max_steps = 2,
         logging_steps = 1,
@@ -227,7 +227,7 @@ def test_sft_trains_on_cpu():
     SFTTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
 
 
-def test_grpo_trains_on_cpu():
+def test_grpo_trains_on_cpu(tmp_path):
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
 
@@ -235,7 +235,7 @@ def test_grpo_trains_on_cpu():
     model, tok = _load_plain()
     ds = Dataset.from_list([{"prompt": "hi there"}] * 4)
     cfg = GRPOConfig(
-        output_dir = "temp/ci_grpo",
+        output_dir = str(tmp_path / "ci_grpo"),
         per_device_train_batch_size = 2,
         num_generations = 2,
         max_steps = 2,
@@ -260,7 +260,7 @@ def test_grpo_trains_on_cpu():
     ).train()
 
 
-def test_dpo_trains_on_cpu():
+def test_dpo_trains_on_cpu(tmp_path):
     from datasets import Dataset
     from trl import DPOConfig, DPOTrainer
 
@@ -270,7 +270,7 @@ def test_dpo_trains_on_cpu():
         [{"prompt": "Hi", "chosen": " hello friend", "rejected": " go away"}] * 8
     )
     cfg = DPOConfig(
-        output_dir = "temp/ci_dpo",
+        output_dir = str(tmp_path / "ci_dpo"),
         per_device_train_batch_size = 2,
         max_steps = 2,
         logging_steps = 1,
