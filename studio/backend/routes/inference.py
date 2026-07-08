@@ -823,6 +823,7 @@ try:
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import (
+        _local_gguf_companion_search_root,
         detect_dflash_file,
         detect_mtp_file,
         load_model_defaults,
@@ -861,6 +862,7 @@ except ImportError:
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import (
+        _local_gguf_companion_search_root,
         detect_dflash_file,
         detect_mtp_file,
         load_model_defaults,
@@ -2597,7 +2599,12 @@ def _request_matches_loaded_settings(
             else llama_backend.extra_args
         )
         if not _extra_args_set_spec_type(effective_extras):
-            detected = detect_mtp_file(llama_backend.gguf_path)
+            # Scan the companion root too (weight in a quant subdir, drafter at
+            # the snapshot root), matching the initial ModelConfig detection.
+            _mtp_root = _local_gguf_companion_search_root(
+                llama_backend.gguf_path, llama_backend.gguf_path
+            )
+            detected = detect_mtp_file(llama_backend.gguf_path, search_root = _mtp_root)
             stored = llama_backend.mtp_draft_path
             try:
                 detected_resolved = Path(detected).resolve() if detected else None
@@ -2629,7 +2636,10 @@ def _request_matches_loaded_settings(
             else llama_backend.extra_args
         )
         if not _extra_args_set_spec_type(effective_extras):
-            detected = detect_dflash_file(llama_backend.gguf_path)
+            _dflash_root = _local_gguf_companion_search_root(
+                llama_backend.gguf_path, llama_backend.gguf_path
+            )
+            detected = detect_dflash_file(llama_backend.gguf_path, search_root = _dflash_root)
             stored = llama_backend.dflash_draft_path
             try:
                 detected_resolved = Path(detected).resolve() if detected else None

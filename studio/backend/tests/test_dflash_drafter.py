@@ -437,6 +437,26 @@ def test_local_load_still_reloads_when_dflash_sibling_appears(tmp_path):
     assert routes._request_matches_loaded_settings(req, backend) is False
 
 
+def test_dflash_reload_dedup_finds_root_sibling(tmp_path):
+    # Weight in a quant subdir, drafter at the snapshot root: the reload dedup
+    # scans the companion root (like initial detection), so a duplicate /load
+    # dedups instead of reloading every time.
+    routes = _load_inference_routes_module()
+    from models.inference import LoadRequest
+
+    sub = tmp_path / "Q4_K_M"
+    sub.mkdir()
+    weight = sub / "Qwen3-4B-Q4_K_M.gguf"
+    weight.touch()
+    drafter = tmp_path / "dflash-Qwen3-4B.gguf"
+    drafter.touch()
+
+    backend = _route_dedup_backend(str(weight), hf_repo = None)
+    backend._dflash_draft_path = str(drafter.resolve())
+    req = LoadRequest(model_path = str(weight))
+    assert routes._request_matches_loaded_settings(req, backend) is True
+
+
 def test_dflash_nmax_change_forces_reload(tmp_path):
     # DFlash engages only in Auto (backend_mode stays "auto"), so the route must
     # key the n-max compare off the resolved draft-dflash spec, else a changed
