@@ -1495,8 +1495,13 @@ def opencode(
         # or denylist for the launch. It is session-only: it lives in OPENCODE_CONFIG_CONTENT
         # for this invocation and never touches the user's config files, so their normal
         # `opencode` is unchanged; only this session is limited to the Studio provider.
+        # small_model is opencode's separate model for lightweight tasks; pin it to the
+        # session model too, or a user/project small_model on another (now filtered)
+        # provider would resolve a not-found error mid-session. The session serves one
+        # model, so the session model is the only valid target here anyway.
         inline_config: dict = {
             "model": opencode_model,
+            "small_model": opencode_model,
             "enabled_providers": [_OPENCODE_PROVIDER],
             "disabled_providers": [],
         }

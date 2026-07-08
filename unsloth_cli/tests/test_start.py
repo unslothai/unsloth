@@ -1445,6 +1445,9 @@ def test_opencode_inline_scopes_session_to_studio_provider(fake_studio):
     assert inline["enabled_providers"] == [start._OPENCODE_PROVIDER]
     assert inline["disabled_providers"] == []
     assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+    # small_model stays on the enabled provider too, so lightweight tasks do not resolve a
+    # filtered provider mid-session.
+    assert inline["small_model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
 
 
 def test_opencode_passthrough_flags_omit_model_flag(fake_studio):
@@ -1491,6 +1494,7 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
     assert "enabled_providers" not in config
     assert inline_config == {
         "model": f"{start._OPENCODE_PROVIDER}/{MODEL['id']}",
+        "small_model": f"{start._OPENCODE_PROVIDER}/{MODEL['id']}",
         "enabled_providers": [start._OPENCODE_PROVIDER],
         "disabled_providers": [],
     }
