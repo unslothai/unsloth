@@ -2126,12 +2126,12 @@ export function HubModelPicker({
     }
 
     // Fine-tuned models sit below downloaded, above custom folders.
-    if (section === "downloaded" && !fineTunedCollapsed) {
+    if (section === "downloaded" && cachedReady && !fineTunedCollapsed) {
       keys.push(...fineTunedRows.map((m) => makeModelOptionKey("lora", m.id)));
     }
 
     // Custom folders sit right below the downloaded models on On Device.
-    if (section === "downloaded" && !customFoldersCollapsed) {
+    if (section === "downloaded" && cachedReady && !customFoldersCollapsed) {
       keys.push(
         ...sortedCustomFolderModels.map((model) =>
           makeModelOptionKey("custom-folder", model.id),
@@ -2139,7 +2139,7 @@ export function HubModelPicker({
       );
     }
 
-    if (section === "downloaded" && !lmStudioCollapsed) {
+    if (section === "downloaded" && cachedReady && !lmStudioCollapsed) {
       keys.push(
         ...sortedLmStudio.map((model) =>
           makeModelOptionKey("lm-studio", model.id),
@@ -2147,7 +2147,7 @@ export function HubModelPicker({
       );
     }
 
-    if (section === "downloaded" && !localDirCollapsed) {
+    if (section === "downloaded" && cachedReady && !localDirCollapsed) {
       keys.push(
         ...sortedLocalDir.map((model) =>
           makeModelOptionKey("local-dir", model.id),
@@ -2337,6 +2337,7 @@ export function HubModelPicker({
   const showDownloaded = section === "downloaded";
   const showCustom = section === "downloaded";
   const showRecommendedSection = !showHfSection && section === "recommended";
+  const onDeviceCacheLoading = showDownloaded && !cachedReady && !showHfSection;
   const downloadedEmpty =
     visibleCachedGguf.length === 0 &&
     visibleCachedModelRows.length === 0 &&
@@ -2721,11 +2722,8 @@ export function HubModelPicker({
             )
           ) : (
             <>
-              {/* First-load spinner only when nothing cached is shown yet. */}
-              {showDownloaded &&
-              !cachedReady &&
-              !showHfSection &&
-              downloadedEmpty ? (
+              {/* First-load spinner while downloaded/local scans are resolving. */}
+              {onDeviceCacheLoading ? (
                 <div className="flex items-center gap-2 px-5 py-3">
                   <Spinner className="size-3 text-muted-foreground" />
                   <span className="text-xs text-muted-foreground">
@@ -2859,10 +2857,9 @@ export function HubModelPicker({
                 </div>
               ) : null}
 
-              {/* Fine-tuned models: a section above Custom Folders. Always shown on
-              On Device so the train shortcut always has a target, with an empty
-              state when none exist. */}
-              {section === "downloaded" ? (
+              {/* Fine-tuned models: shown after the On Device scans resolve so
+              downloaded sections do not reorder during startup. */}
+              {section === "downloaded" && cachedReady ? (
                 <>
                   <div
                     ref={fineTunedSectionRef}
@@ -2908,7 +2905,7 @@ export function HubModelPicker({
                 </>
               ) : null}
 
-              {showCustom ? (
+              {showCustom && cachedReady ? (
                 <>
                   <div
                     ref={customFolderSectionRef}
@@ -3214,7 +3211,9 @@ export function HubModelPicker({
                 </>
               ) : null}
 
-              {section === "downloaded" && sortedLmStudio.length > 0 ? (
+              {section === "downloaded" &&
+              cachedReady &&
+              sortedLmStudio.length > 0 ? (
                 <>
                   <ListLabel
                     divider={true}
@@ -3298,7 +3297,9 @@ export function HubModelPicker({
                 </>
               ) : null}
 
-              {section === "downloaded" && sortedLocalDir.length > 0 ? (
+              {section === "downloaded" &&
+              cachedReady &&
+              sortedLocalDir.length > 0 ? (
                 <>
                   <ListLabel
                     divider={true}
