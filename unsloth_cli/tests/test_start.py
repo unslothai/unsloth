@@ -1383,7 +1383,9 @@ def test_connect_openclaw_no_launch_option_args_use_default_tui(fake_studio):
 
 
 def test_connect_openclaw_no_launch_keeps_explicit_tui(fake_studio):
-    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch", "tui", "--message", "hi"])
+    result = CliRunner().invoke(
+        start.start_app, ["openclaw", "--no-launch", "tui", "--message", "hi"]
+    )
     assert result.exit_code == 0, result.output
     assert _launch_command(result.output) == ["openclaw", "tui", "--message", "hi"]
 
