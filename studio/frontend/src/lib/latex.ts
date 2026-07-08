@@ -173,7 +173,11 @@ function looksLikeMathBody(body: string): boolean {
  * (`**$X$**`, `__$X$__`) are always math: LLMs use that for "bold math"
  * and the heuristic would otherwise reject prose-shaped bodies like "90 - x".
  */
-function hasInlineMathCloser(content: string, offset: number): boolean {
+function hasInlineMathCloser(
+  content: string,
+  offset: number,
+  mathRegions: Array<[number, number]>,
+): boolean {
   const MAX_SPAN = 200;
   const limit = Math.min(content.length, offset + 1 + MAX_SPAN);
   for (let i = offset + 1; i < limit; i++) {
@@ -181,6 +185,9 @@ function hasInlineMathCloser(content: string, offset: number): boolean {
     if (c === "\n") return false;
     if (c !== "$") continue;
     if (content[i - 1] === "\\") continue;
+    // A `$` opening a generated span (from `\(...\)`) is not a currency closer;
+    // pairing with it would swallow the price into math (`$5 + x \(y\)`).
+    if (isInRegion(i, mathRegions)) return false;
     if (content[i + 1] === "$") {
       i++;
       continue;
@@ -294,7 +301,22 @@ function convertLatexDelimiters(content: string): {
       continue;
     }
     append(content.slice(last, match.index));
-    const wrapped = isDisplay ? `\n$$\n${body}\n$$\n` : `$${body}$`;
+    let wrapped: string;
+    if (isDisplay) {
+      // Keep the opener's leading indentation so a `$$` block inside a list item
+      // stays in the container instead of breaking out at column 0. Only when the
+      // opener is whitespace-prefixed, so inline `text \[x\]` keeps column 0.
+      const lineStart =
+        match.index > 0 ? content.lastIndexOf("\n", match.index - 1) + 1 : 0;
+      const prefix = content.slice(lineStart, match.index);
+      const indent = /^\s*$/.test(prefix) ? prefix : "";
+      // Indent every body line, not just the first, so multi-line display math
+      // (`\[a\nb\]`) stays wholly inside the container.
+      const inner = indent ? body.replace(/\n/g, `\n${indent}`) : body;
+      wrapped = `\n${indent}$$\n${indent}${inner}\n${indent}$$\n`;
+    } else {
+      wrapped = `$${body}$`;
+    }
     const start = append(wrapped);
     mathRegions.push([start, offset]);
     last = matchEnd;
@@ -334,7 +356,7 @@ export function preprocessLaTeX(content: string): string {
     if (isInRegion(offset, mathRegions)) {
       return match;
     }
-    if (hasInlineMathCloser(text, offset)) {
+    if (hasInlineMathCloser(text, offset, mathRegions)) {
       return match;
     }
     return "\\" + match;

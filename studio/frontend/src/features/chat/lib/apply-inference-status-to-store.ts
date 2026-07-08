@@ -3,17 +3,20 @@
 
 import { getInferenceStatus } from "../api/chat-api";
 import { mergeBackendRecommendedInference } from "../presets/preset-policy";
+import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import {
   CHAT_REASONING_ENABLED_KEY,
   loadedGpuMemoryFields,
-  loadOptionalBool,
   type ReasoningEffort,
   type ReasoningStyle,
+  loadOptionalBool,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
-import { isMultimodalResponse, type InferenceStatusResponse } from "../types/api";
-import { clampReasoningEffortToLevels } from "../provider-capabilities";
+import {
+  type InferenceStatusResponse,
+  isMultimodalResponse,
+} from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
@@ -32,7 +35,10 @@ export function normalizeSpeculativeType(
     return "ngram";
   }
   if (s === "mtp+ngram") return "mtp+ngram";
-  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+  const parts = s
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
   const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
   const hasNgram = parts.some(
     (p) => p === "ngram" || p === "ngram-mod" || p === "ngram-simple",
@@ -198,6 +204,12 @@ export function applyActiveModelStatusToStore(
     ggufContextLength: currentGgufContextLength,
     ggufMaxContextLength,
     ggufNativeContextLength,
+    // A non-GGUF status must also drop a stale native-path token: without this the
+    // isGguf OR (activeGgufVariant || activeNativePathToken || ggufContextLength)
+    // stays true after switching from a native GGUF to a transformers model, so a
+    // Codex-only detection would auto-select for a model its preflight rejects. A real
+    // GGUF load reports is_gguf: true, so its token is preserved (the load path owns it).
+    ...(status.is_gguf ? {} : { activeNativePathToken: null }),
     modelRequiresTrustRemoteCode: status.requires_trust_remote_code ?? false,
     defaultChatTemplate: nextDefaultChatTemplate,
     loadedIsMultimodal: isMultimodalResponse(status),
@@ -249,7 +261,7 @@ export function applyActiveModelStatusToStore(
     const mid = checkpointId.toLowerCase();
     if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
       const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
-      if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
+      if (sizeMatch && Number.parseFloat(sizeMatch[1]) < 9) {
         reasoningDefault = false;
       }
     }
@@ -285,8 +297,7 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
   }
 
   // Re-check after the await: keep a checkpoint the user picked meanwhile.
-  const previousCheckpoint =
-    useChatRuntimeStore.getState().params.checkpoint;
+  const previousCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
   if (previousCheckpoint) {
     return true;
   }

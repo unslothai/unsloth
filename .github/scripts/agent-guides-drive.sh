@@ -376,7 +376,7 @@ case "$MODE" in
       hermes)   patch_hermes_tools none
                 invoke_via_connect "$OUT" -z "$PROMPT" ;;
       openclaw) patch_openclaw_agent notools
-                invoke_via_connect "$OUT" agent --local --agent ci \
+                CONNECT_CMD_OVERRIDE=openclaw invoke_via_connect "$OUT" agent --local --agent ci \
                   --model "unsloth/${UNSLOTH_MODEL_ID}" --message "$PROMPT" ;;
       *)        invoke_via_connect "$OUT" "$PROMPT" ;;
     esac
@@ -449,7 +449,7 @@ case "$MODE" in
           fi ;;
         opencode) invoke_via_connect "$out" run "$prompt" ;;
         hermes)   invoke_via_connect "$out" -z "$prompt" ;;
-        openclaw) invoke_via_connect "$out" agent --local --agent ci \
+        openclaw) CONNECT_CMD_OVERRIDE=openclaw invoke_via_connect "$out" agent --local --agent ci \
                     --model "unsloth/${UNSLOTH_MODEL_ID}" --message "$prompt" ;;
         *)        invoke_via_connect "$out" "$prompt" ;;
       esac
