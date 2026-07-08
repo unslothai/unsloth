@@ -7,16 +7,13 @@ Re-exports the shared API and injects Studio's marker-aware cache purge
 (``prepare_cache_for_transport``) so the download manager keeps its ``.transport``
 marker semantics on the HTTP retry.
 
-Import discipline: ``unsloth_zoo``'s package ``__init__`` eagerly imports ``transformers``.
-The training/inference workers import this shim during startup (to decide the per-worker Xet
-env flip) *before* activating the correct ``transformers`` sidecar for the model. If importing
-this shim pulled in ``unsloth_zoo`` -> ``transformers`` at that point, the default
-``transformers`` (4.57.x) would be cached in ``sys.modules`` before the 5.x sidecar is prepended
-to ``sys.path`` -- and since ``activate_transformers_for_subprocess`` only prepends the path, the
-already-cached module wins. That regressed Qwen3.5 / GLM-4.7 / gemma-4 training with
-``Tokenizer class TokenizersBackend does not exist`` and ``... not supported in transformers==4.57.6``.
-So the shared backend is loaded **lazily** (``_load_shared``), on first use of a heavy download
-helper -- which only happens *after* the sidecar is activated. The lightweight
+Import discipline: ``unsloth_zoo``'s ``__init__`` eagerly imports ``transformers``. The workers
+import this shim at startup (to decide the per-worker Xet env flip) *before* activating the model's
+``transformers`` sidecar. Activation only prepends the sidecar to ``sys.path``, so a ``transformers``
+already cached in ``sys.modules`` (via an eager ``unsloth_zoo`` import here) wins -- pinning the
+default 4.57.x and regressing Qwen3.5 / GLM-4.7 / gemma-4 training with
+``Tokenizer class TokenizersBackend does not exist``. So the shared backend is loaded **lazily**
+(``_load_shared``), only on first use of a heavy download helper, i.e. after the sidecar is active.
 ``child_should_disable_xet`` and the ``DEFAULT_*`` constants are defined locally so importing them
 never triggers the heavy load.
 """
@@ -26,8 +23,8 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable, Optional
 
-# Defaults mirror unsloth_zoo.hf_xet_fallback (kept as plain literals so they resolve -- including
-# as default argument values below -- without importing unsloth_zoo/transformers).
+# Defaults mirror unsloth_zoo.hf_xet_fallback; plain literals so they resolve (including as
+# default args below) without importing unsloth_zoo/transformers.
 DEFAULT_GRACE_PERIOD = 10.0
 DEFAULT_HEARTBEAT_INTERVAL = 30.0
 DEFAULT_STALL_TIMEOUT = 180.0
@@ -40,10 +37,9 @@ _load_lock = threading.Lock()
 
 
 def _load_shared() -> bool:
-    """Import ``unsloth_zoo.hf_xet_fallback`` on demand. Returns True if the shared backend is
-    available. Deferred so importing this module (at worker startup) does not pull transformers in
-    before the sidecar is activated. Degrades (returns False) rather than crashing when unsloth_zoo
-    is unavailable."""
+    """Import ``unsloth_zoo.hf_xet_fallback`` on demand; return True if available. Deferred so
+    importing this module at worker startup does not pull transformers in before the sidecar is
+    activated. Degrades (returns False) rather than crashing when unsloth_zoo is unavailable."""
     global _shared, _shared_available, _shared_import_error
     if _shared_available is not None:
         return _shared_available
@@ -59,8 +55,7 @@ def _load_shared() -> bool:
             return True
         except Exception as exc:  # noqa: BLE001 - any import failure must degrade, not crash
             # unsloth_zoo's __init__ runs torch/GPU detection, which raises on a torch-less/GPU-less
-            # Studio host. The download helper needs none of it, so retry via the light
-            # UNSLOTH_ZOO_DISABLE_GPU_INIT path before giving up.
+            # host. The download helper needs none of it, so retry via UNSLOTH_ZOO_DISABLE_GPU_INIT.
             _shared_import_error = exc
             import os as _os
 
@@ -94,9 +89,9 @@ def _load_shared() -> bool:
 
 def child_should_disable_xet(config: dict) -> bool:
     """Single source of truth for the per-worker Xet env flip (mirrors
-    ``unsloth_zoo.hf_xet_fallback.child_should_disable_xet``). Intentionally lightweight: importing
-    or calling it must NOT pull in unsloth_zoo/transformers, so the worker can make this decision
-    before activating the transformers sidecar (see the module docstring)."""
+    ``unsloth_zoo.hf_xet_fallback.child_should_disable_xet``). Deliberately lightweight: importing or
+    calling it must NOT pull in unsloth_zoo/transformers, so the worker can decide before activating
+    the transformers sidecar (see the module docstring)."""
     return bool(config.get("disable_xet"))
 
 
@@ -210,18 +205,17 @@ def _degraded_snapshot_download_with_xet_fallback(
 # --- lazy attribute access for the heavy shared API -------------------------------------------
 # ``DownloadStallError`` (class identity matters for ``except``), ``start_watchdog`` and
 # ``get_hf_download_state`` come from the shared backend when available, else the degraded stubs.
-# Resolved via PEP 562 ``__getattr__`` so a bare ``from utils.hf_xet_fallback import X`` triggers
-# the load only for these heavy names -- not for ``child_should_disable_xet`` / ``DEFAULT_*``.
+# Resolved via PEP 562 ``__getattr__`` so ``from utils.hf_xet_fallback import X`` triggers the load
+# only for these heavy names, not for ``child_should_disable_xet`` / ``DEFAULT_*``.
 _DEGRADED_ATTRS = {
     "DownloadStallError": _DegradedDownloadStallError,
     "start_watchdog": _degraded_start_watchdog,
     "get_hf_download_state": _degraded_get_hf_download_state,
 }
 
-# Annotation-only declarations for the three names above. They bind NO value, so attribute lookup
-# still misses and PEP 562 ``__getattr__`` resolves them lazily -- but ruff/pyflakes now see them as
-# defined, so listing them in ``__all__`` does not trip F822 while F822 stays active for the rest of
-# the list (a real typo there is still caught).
+# Annotation-only declarations for the three names above: they bind NO value, so lookup still misses
+# and PEP 562 ``__getattr__`` resolves them lazily -- but ruff/pyflakes see them as defined, so listing
+# them in ``__all__`` does not trip F822 (while F822 still catches a real typo elsewhere in the list).
 DownloadStallError: type
 start_watchdog: Any
 get_hf_download_state: Any
@@ -236,8 +230,7 @@ def __getattr__(name: str) -> Any:
 
 
 # Indirection seam the public wrappers call (and tests monkeypatch): lazy-load the shared backend,
-# then dispatch to it or the degraded stub. Keeping these named ``_shared_*`` preserves the
-# pre-refactor internal contract.
+# then dispatch to it or the degraded stub. The ``_shared_*`` names preserve the pre-refactor contract.
 def _shared_hf_hub_download_with_xet_fallback(*args: Any, **kwargs: Any) -> str:
     impl = (
         _shared.hf_hub_download_with_xet_fallback

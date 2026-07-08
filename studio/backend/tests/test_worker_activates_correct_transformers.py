@@ -5,28 +5,28 @@
 sidecar, the in-process ``transformers`` must be the sidecar version the model requires -- not the
 default 4.57.x that the base environment ships.
 
-This is the CPU-only "does it choose the correct transformers version" guard. It is stronger than the
-pure import-order check in ``test_training_worker_import_discipline.py``: it runs the REAL tier
-detection (``get_transformers_tier``) and the REAL activation (``activate_transformers_for_subprocess``)
-for a transformers-5.x model (Qwen3.5, tier 530) and asserts the version actually switched. It therefore
-catches the whole failure family at once:
+The CPU-only "does it choose the correct transformers version" guard, stronger than the pure
+import-order check in ``test_training_worker_import_discipline.py``: it runs the REAL tier detection
+(``get_transformers_tier``) and REAL activation (``activate_transformers_for_subprocess``) for a
+transformers-5.x model (Qwen3.5, tier 530) and asserts the version actually switched. It catches the
+whole failure family at once:
 
   * a stale pre-activation ``transformers`` import (the #6951 / ``TokenizersBackend`` regression: an
     already-cached 4.57.x defeats the sidecar's ``sys.path`` prepend),
-  * a wrong tier being selected for a 5.x model, and
+  * a wrong tier selected for a 5.x model, and
   * activation not actually swapping the resident module.
 
 Why the CUDA spoof matters (verified): ``unsloth_zoo``'s eager ``import transformers`` only happens on
 its full, GPU-present init path. On a GPU-less runner it silently degrades and never preloads
 transformers -- which would MASK the stale-import bug (the check would falsely pass). Spoofing
-``torch.cuda`` so ``unsloth_zoo`` believes a GPU is present forces the real init path, so the regression
-is actually exposed on CPU CI. The spoof mirrors ``tests/_zoo_aggressive_cuda_spoof.py`` but is inlined
-here so the test is self-contained in the ``studio-backend-ci`` matrix (whose conftest does not apply the
-shared spoof). No GPU, network, model weights, or real sidecar are needed: a one-line stub sidecar stands
-in for the 5.x venv, so all we assert is that activation lands on it.
+``torch.cuda`` so ``unsloth_zoo`` believes a GPU is present forces the real init path, exposing the
+regression on CPU CI. The spoof mirrors ``tests/_zoo_aggressive_cuda_spoof.py`` but is inlined so the
+test is self-contained in the ``studio-backend-ci`` matrix (whose conftest does not apply the shared
+spoof). No GPU/network/weights/real sidecar needed: a one-line stub sidecar stands in for the 5.x venv,
+so we only assert activation lands on it.
 
-Proven behaviour: passes on the fixed tree (active == 5.3.0) and fails on the buggy tree
-(active == 4.57.x) on a simulated GPU-less runner.
+Proven: passes on the fixed tree (active == 5.3.0) and fails on the buggy tree (active == 4.57.x) on
+a simulated GPU-less runner.
 """
 
 from __future__ import annotations
@@ -36,9 +36,9 @@ import sys
 from pathlib import Path
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
-# Canonical CUDA spoof, committed at the repo root (studio/backend -> studio -> repo root). Loaded by
-# the subprocess when present so it matches what the consolidated CI uses; absent in a standalone
-# studio checkout, where the subprocess falls back to a minimal inline spoof.
+# Canonical CUDA spoof at the repo root (studio/backend -> studio -> repo root). Loaded by the
+# subprocess when present (matches the consolidated CI); absent in a standalone studio checkout, where
+# the subprocess falls back to a minimal inline spoof.
 _SPOOF_PATH = _BACKEND_DIR.parent.parent / "tests" / "_zoo_aggressive_cuda_spoof.py"
 
 # Runs in a fresh interpreter with cwd == studio/backend so ``utils.*`` resolves like the worker.

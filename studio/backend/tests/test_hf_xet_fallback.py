@@ -288,9 +288,8 @@ def test_degrades_when_shared_helper_import_raises_importerror():
 def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     """GPU detection in unsloth_zoo's __init__ raises NotImplementedError on a GPU-less host. The shim
     retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1, restores the env, and degrades if the retry fails.
-
-    The shared backend is loaded lazily (on first use of a heavy helper), not at import, so this
-    triggers the load explicitly before asserting the retry/degrade behavior."""
+    The backend loads lazily (first use of a heavy helper), so this triggers the load explicitly
+    before asserting the retry/degrade behavior."""
     import importlib
     import os
 
@@ -324,10 +323,10 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     sys.meta_path.insert(0, finder)
     try:
         degraded = importlib.import_module("utils.hf_xet_fallback")
-        # Import is light (lazy backend); nothing has attempted to load unsloth_zoo yet.
+        # Import is light (lazy backend); unsloth_zoo not loaded yet.
         assert seen_env == [], seen_env
-        # First real use of a heavy helper triggers the load: first attempt without the light env,
-        # then a retry with it set. Accessing DownloadStallError drives it via __getattr__.
+        # First use of a heavy helper triggers the load (attempt without the light env, then a retry
+        # with it set); accessing DownloadStallError drives it via __getattr__.
         stall_error = degraded.DownloadStallError
         assert seen_env == [None, "1"], seen_env
         # Both attempts raised -> Studio still boots in degraded mode.
@@ -344,10 +343,10 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
 
 def test_importing_child_should_disable_xet_stays_light(monkeypatch):
     """Regression guard for the stale-transformers-sidecar bug: importing the shim (and
-    ``child_should_disable_xet``) must NOT pull in ``transformers``/``unsloth_zoo``. The training
-    worker calls this at startup to decide the Xet env flip BEFORE activating the correct
-    transformers sidecar; an eager import here would cache the default transformers 4.57.x in
-    sys.modules, defeating the sidecar sys.path prepend and breaking 5.x models (Qwen3.5/GLM/gemma-4)."""
+    ``child_should_disable_xet``) must NOT pull in ``transformers``/``unsloth_zoo``. The worker calls
+    this at startup to decide the Xet env flip BEFORE activating the sidecar; an eager import here
+    would cache the default transformers 4.57.x in sys.modules, defeating the sidecar sys.path prepend
+    and breaking 5.x models (Qwen3.5/GLM/gemma-4)."""
     import importlib
 
     for name in [
