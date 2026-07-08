@@ -587,7 +587,8 @@ def test_strip_leading_bare_json_call_drops_complete_call():
     # A complete Llama-3.2 bare-JSON call is removed; trailing prose is kept.
     assert strip_leading_bare_json_call('{"name":"web_search","parameters":{"query":"cats"}}') == ""
     assert (
-        strip_leading_bare_json_call('{"name":"get_weather","parameters":{"code":"x"}} done') == "done"
+        strip_leading_bare_json_call('{"name":"get_weather","parameters":{"code":"x"}} done')
+        == "done"
     )
 
 

@@ -142,7 +142,9 @@ def apply_tool_strip_patterns(
             continue
         if pat in _REHEARSAL_STRIP_PATS:
             text = pat.sub(
-                lambda m: "" if _markerless_promotable(m.group(1), enabled_tool_names) else m.group(0),
+                lambda m: ""
+                if _markerless_promotable(m.group(1), enabled_tool_names)
+                else m.group(0),
                 text,
             )
         else:

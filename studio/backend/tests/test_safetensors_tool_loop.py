@@ -333,7 +333,9 @@ class TestParser:
         so generated content starts inside the thought and carries only a closing
         </think>. A call rehearsed in that leading thought must be skipped, while a
         real call after the close still fires."""
-        text = 'planning web_search[ARGS]{"query":"draft"}</think>get_weather[ARGS]{"code":"print(1)"}'
+        text = (
+            'planning web_search[ARGS]{"query":"draft"}</think>get_weather[ARGS]{"code":"print(1)"}'
+        )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "get_weather"
@@ -1263,9 +1265,7 @@ class TestMarkerlessExecToolGuardLoop:
             ['<|tool_call>call:terminal{command:<|"|>id<|"|>}<tool_call|>'],
             ["All done."],
         ]
-        loop, exec_fn = _make_loop(
-            turns = turns, exec_results = ["uid=0(root)"], max_tool_iterations = 3
-        )
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["uid=0(root)"], max_tool_iterations = 3)
         events = _collect_events(loop)
         assert [name for name, _args in exec_fn.calls] == ["terminal"]
         assert any(e.get("type") == "tool_start" for e in events)
@@ -1273,9 +1273,7 @@ class TestMarkerlessExecToolGuardLoop:
     def test_marker_rehearsal_execution_call_in_loop_still_executes(self):
         # The [TOOL_CALLS] marker makes the rehearsal trusted, so terminal still runs.
         turns = [['[TOOL_CALLS]terminal[ARGS]{"command":"id"}'], ["done"]]
-        loop, exec_fn = _make_loop(
-            turns = turns, exec_results = ["uid=0"], max_tool_iterations = 3
-        )
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["uid=0"], max_tool_iterations = 3)
         _collect_events(loop)
         assert [name for name, _args in exec_fn.calls] == ["terminal"]
 
