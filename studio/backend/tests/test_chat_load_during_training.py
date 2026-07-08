@@ -833,15 +833,23 @@ class TestStripSplitPredicates(unittest.TestCase):
         from models.inference import LoadRequest
         return LoadRequest(model_path = "unsloth/Qwen3-1.7B", **kw)
 
-    def test_should_strip_tensor_split_only_for_manual_ratio(self):
-        # The new predicate: True only for manual mode WITH a per-GPU ratio.
+    def test_should_strip_tensor_split_for_manual_explicit_offload(self):
+        # Manual explicit offload (gpu_layers >= 0) owns the split, so strip an
+        # inherited --tensor-split whether the ratio is set OR cleared -- else the
+        # cleared case silently keeps the stale inherited ratio while status
+        # reports None.
         self.assertTrue(
             self.route._should_strip_tensor_split(
                 self._req(gpu_memory_mode = "manual", gpu_layers = 8, tensor_split = [2, 1])
             )
         )
-        self.assertFalse(  # manual, no ratio
+        self.assertTrue(  # manual, ratio cleared -> still strip the stale inherited ratio
             self.route._should_strip_tensor_split(self._req(gpu_memory_mode = "manual", gpu_layers = 8))
+        )
+        self.assertFalse(  # manual + Auto layers (gpu_layers < 0): --fit owns placement
+            self.route._should_strip_tensor_split(
+                self._req(gpu_memory_mode = "manual", gpu_layers = -1)
+            )
         )
         self.assertFalse(self.route._should_strip_tensor_split(self._req()))  # auto
 

@@ -2454,14 +2454,17 @@ def _should_strip_split_mode(request: LoadRequest, backend_extra: Optional[list[
 def _should_strip_tensor_split(request: LoadRequest) -> bool:
     """Whether an inherited --tensor-split alone should be stripped on reload.
 
-    Manual mode with a per-GPU ratio emits its own --tensor-split, which an
-    inherited one (appended last) would override, so strip the inherited ratio.
+    Manual explicit offload (gpu_layers >= 0) owns the per-GPU split: with a ratio
+    it emits its own --tensor-split (an inherited one, appended last, would
+    override it), and with the ratio cleared it wants llama.cpp's default
+    free-VRAM split. Either way an inherited --tensor-split must go, else the
+    cleared case silently keeps the stale ratio while status reports None.
     Unlike _should_strip_split_mode this leaves --split-mode untouched, so a
     user's row/none/layer mode survives a Studio split-ratio edit. When the
     Tensor Parallelism toggle IS overriding the mode, _should_strip_split_mode
     (called alongside this at every site) strips --split-mode anyway.
     """
-    return request.gpu_memory_mode == "manual" and bool(request.tensor_split)
+    return request.gpu_memory_mode == "manual" and request.gpu_layers >= 0
 
 
 def _carry_preserved_tensor_intent(
