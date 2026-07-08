@@ -4174,6 +4174,7 @@ def warn_if_zoo_cannot_merge_moe_experts():
     (the LoRA adapter itself still saves and reloads correctly)."""
     try:
         from unsloth_zoo import saving_utils as _saving_utils
+
         # _fold_perexpert_lora_into_fused is the helper that folds these experts.
         if hasattr(_saving_utils, "_fold_perexpert_lora_into_fused"):
             return
