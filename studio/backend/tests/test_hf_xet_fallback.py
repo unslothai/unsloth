@@ -287,7 +287,10 @@ def test_degrades_when_shared_helper_import_raises_importerror():
 
 def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     """GPU detection in unsloth_zoo's __init__ raises NotImplementedError on a GPU-less host. The shim
-    retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1, restores the env, and degrades if the retry fails."""
+    retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1, restores the env, and degrades if the retry fails.
+
+    The shared backend is loaded lazily (on first use of a heavy helper), not at import, so this
+    triggers the load explicitly before asserting the retry/degrade behavior."""
     import importlib
     import os
 
@@ -321,11 +324,15 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     sys.meta_path.insert(0, finder)
     try:
         degraded = importlib.import_module("utils.hf_xet_fallback")
-        # First attempt without the light env, then a retry with it set.
+        # Import is light (lazy backend); nothing has attempted to load unsloth_zoo yet.
+        assert seen_env == [], seen_env
+        # First real use of a heavy helper triggers the load: first attempt without the light env,
+        # then a retry with it set. Accessing DownloadStallError drives it via __getattr__.
+        stall_error = degraded.DownloadStallError
         assert seen_env == [None, "1"], seen_env
         # Both attempts raised -> Studio still boots in degraded mode.
-        assert issubclass(degraded.DownloadStallError, RuntimeError)
-        # The env override must not leak past the import.
+        assert issubclass(stall_error, RuntimeError)
+        # The env override must not leak past the load.
         assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
     finally:
         sys.meta_path.remove(finder)
@@ -333,3 +340,31 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
         sys.modules.update(saved)
         if saved_shim is not None:
             sys.modules["utils.hf_xet_fallback"] = saved_shim
+
+
+def test_importing_child_should_disable_xet_stays_light(monkeypatch):
+    """Regression guard for the stale-transformers-sidecar bug: importing the shim (and
+    ``child_should_disable_xet``) must NOT pull in ``transformers``/``unsloth_zoo``. The training
+    worker calls this at startup to decide the Xet env flip BEFORE activating the correct
+    transformers sidecar; an eager import here would cache the default transformers 4.57.x in
+    sys.modules, defeating the sidecar sys.path prepend and breaking 5.x models (Qwen3.5/GLM/gemma-4)."""
+    import importlib
+
+    for name in [
+        m
+        for m in list(sys.modules)
+        if m == "transformers"
+        or m.startswith("transformers.")
+        or m == "unsloth_zoo"
+        or m.startswith("unsloth_zoo.")
+        or m == "utils.hf_xet_fallback"
+    ]:
+        monkeypatch.delitem(sys.modules, name, raising = False)
+
+    mod = importlib.import_module("utils.hf_xet_fallback")
+    # The lightweight decision works without the heavy backend.
+    assert mod.child_should_disable_xet({"disable_xet": True}) is True
+    assert mod.child_should_disable_xet({}) is False
+    # And nothing heavy was imported as a side effect.
+    assert "transformers" not in sys.modules, "importing the shim must not import transformers"
+    assert "unsloth_zoo" not in sys.modules, "importing the shim must not import unsloth_zoo"
