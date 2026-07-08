@@ -435,15 +435,10 @@ def test_opencode_inline_config_beats_project_config(fake_studio):
     # permissions) ride in OPENCODE_CONFIG_CONTENT, which outranks project config.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "--yolo"])
     assert result.exit_code == 0, result.output
-    content_line = next(
-        ln for ln in result.output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
-    )
-    inline = json.loads(
-        shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0]
-    )
+    inline = _opencode_inline_config(result.output)
     assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
     assert inline["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
-    assert "sk-unsloth" not in content_line  # key stays in the private file
+    assert "sk-unsloth" not in result.output  # key stays in the private file, not the env
 
 
 def test_opencode_inline_config_omits_permission_without_yolo(fake_studio):
@@ -452,12 +447,7 @@ def test_opencode_inline_config_omits_permission_without_yolo(fake_studio):
     # user's project rules; clearing our own config is the fix, and the inline pins the model.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
-    content_line = next(
-        ln for ln in result.output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
-    )
-    inline = json.loads(
-        shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0]
-    )
+    inline = _opencode_inline_config(result.output)
     assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
     assert "permission" not in inline
 
@@ -1427,10 +1417,34 @@ def test_write_opencode_config_keeps_foreign_disabled_providers(tmp_path):
 
 
 def _opencode_inline_config(output: str) -> dict:
-    line = next(
-        ln for ln in output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
-    )
-    return json.loads(shlex.split(line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0])
+    # --no-launch prints OPENCODE_CONFIG_CONTENT as a POSIX `export NAME=<shell-quoted>`
+    # line on Unix/WSL and a PowerShell `$env:NAME = "<escaped>"` line on native Windows;
+    # parse whichever the host emitted so the opencode tests are shell-agnostic.
+    name = "OPENCODE_CONFIG_CONTENT"
+    for raw in output.splitlines():
+        line = raw.strip()
+        if line.startswith(f"export {name}="):
+            return json.loads(shlex.split(line.removeprefix(f"export {name}="))[0])
+        prefix = f'$env:{name} = "'
+        if line.startswith(prefix) and line.endswith('"'):
+            escaped = line[len(prefix) : -1]
+            # Reverse _print_env's PowerShell escaping (backtick is the escape char).
+            value = escaped.replace("`$", "$").replace('`"', '"').replace("``", "`")
+            return json.loads(value)
+    raise AssertionError(f"{name} not found in:\n{output}")
+
+
+def test_opencode_inline_scopes_session_to_studio_provider(fake_studio):
+    # opencode filters even config-defined providers through enabled/disabled_providers,
+    # and a model pin does not bypass that gate. The inline overlay (session-only, highest
+    # layer, arrays replace) allowlists our provider and clears the denylist so the Studio
+    # model always loads regardless of the user's config, without reading or editing it.
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    inline = _opencode_inline_config(result.output)
+    assert inline["enabled_providers"] == [start._OPENCODE_PROVIDER]
+    assert inline["disabled_providers"] == []
+    assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
 
 
 def test_opencode_passthrough_flags_omit_model_flag(fake_studio):
@@ -1466,23 +1480,23 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
     config_path = tmp_path / "agents" / "opencode" / "opencode.json"
     # OPENCODE_CONFIG overlay points at the session file, not the user's global config.
     _assert_env_set(result.output, "OPENCODE_CONFIG", str(config_path))
-    content_line = next(
-        ln for ln in result.output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
-    )
-    inline_config = json.loads(
-        shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0]
-    )
+    inline_config = _opencode_inline_config(result.output)
     config = json.loads(config_path.read_text())
     provider = config["provider"][start._OPENCODE_PROVIDER]
     assert provider["options"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+    # The session config file (a throwaway overlay, not the user's real config) does not
+    # carry provider filters; the session scoping rides in the inline env layer only.
     assert "disabled_providers" not in config
-    assert inline_config == {"model": f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"}
-    assert _launch_command(result.output)[:3] == [
-        "opencode",
-        "--model",
-        f"{start._OPENCODE_PROVIDER}/{MODEL['id']}",
-    ]
+    assert "enabled_providers" not in config
+    assert inline_config == {
+        "model": f"{start._OPENCODE_PROVIDER}/{MODEL['id']}",
+        "enabled_providers": [start._OPENCODE_PROVIDER],
+        "disabled_providers": [],
+    }
+    # --no-launch prints an append-safe base command (no --model before a subcommand a
+    # driver may append); the model is forced by the inline pin above.
+    assert _launch_command(result.output) == ["opencode"]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
 

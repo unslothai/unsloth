@@ -1461,12 +1461,19 @@ def opencode(
         launch = launch,
     )
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
-    # Only add --model on a bare launch. Any passthrough (a subcommand like serve/run,
-    # or top-level flags like --dir/--print-logs that may precede a subcommand) is left
-    # untouched: inserting --model before a subcommand can be misparsed, and it is not
-    # needed anyway because the inline OPENCODE_CONFIG_CONTENT below pins the model in
-    # the highest-priority layer, so the session model is forced without the flag.
-    command = ["opencode", *ctx.args] if ctx.args else ["opencode", "--model", opencode_model]
+    # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority
+    # layer, so the session model is forced without a --model flag. Only add --model for
+    # an interactive bare launch (a convenience so the TUI opens on our model). It is
+    # omitted for passthrough (inserting it before a subcommand can be misparsed) and for
+    # --no-launch, where the printed command is consumed by drivers that append a
+    # subcommand such as `run <prompt>`; a leading --model would land before that
+    # subcommand and break it. Those paths rely on the inline pin instead.
+    if ctx.args:
+        command = ["opencode", *ctx.args]
+    elif launch:
+        command = ["opencode", "--model", opencode_model]
+    else:
+        command = ["opencode"]
     with _session_config("opencode", launch) as cfg:
         config_path = cfg / "opencode.json"
         # OPENCODE_CONFIG is an overlay (loaded between the user's global and project
@@ -1478,11 +1485,21 @@ def opencode(
         # outranks project config; the API key stays in the private file, never the env.
         # Only --yolo carries a permission here (its allow must win over a project config);
         # a non-yolo session returns no permission, so the project's own rules are honored.
-        # The session model is served by the dedicated _OPENCODE_PROVIDER id, which a
-        # user's disabled_providers list would never target, so this overlay does not
-        # touch disabled_providers at all: the user's own disables (in any config
-        # layer) are left exactly as they are and the session model still loads.
-        inline_config: dict = {"model": opencode_model}
+        # opencode filters every provider (a config-defined custom one included) through
+        # its enabled_providers allowlist and disabled_providers denylist, and a model pin
+        # does not bypass that gate -- a filtered provider resolves to ModelNotFoundError.
+        # To guarantee the session model loads without reading or modifying the user's real
+        # config, scope THIS session to our provider alone: allowlist _OPENCODE_PROVIDER and
+        # clear the denylist. These arrays are replaced (not merged) by higher layers, so
+        # setting them in the highest-priority inline overlay neutralizes any user allowlist
+        # or denylist for the launch. It is session-only: it lives in OPENCODE_CONFIG_CONTENT
+        # for this invocation and never touches the user's config files, so their normal
+        # `opencode` is unchanged; only this session is limited to the Studio provider.
+        inline_config: dict = {
+            "model": opencode_model,
+            "enabled_providers": [_OPENCODE_PROVIDER],
+            "disabled_providers": [],
+        }
         if session_permission:
             inline_config["permission"] = session_permission
         env = {
