@@ -1561,14 +1561,12 @@ def opencode(
         launch = launch,
     )
     opencode_model = f"unsloth/{entry['id']}"
-    # Force the model for the TUI (bare launch, with or without top-level flags like
-    # --dir/--continue). A passthrough that starts with a subcommand (serve/run/...)
-    # takes the model from the pinned config, so --model must not be inserted before
-    # it. A leading "-" means TUI flags, not a subcommand, so --model still applies.
-    if ctx.args and not ctx.args[0].startswith("-"):
-        command = ["opencode", *ctx.args]
-    else:
-        command = ["opencode", "--model", opencode_model, *ctx.args]
+    # Only add --model on a bare launch. Any passthrough (a subcommand like serve/run,
+    # or top-level flags like --dir/--print-logs that may precede a subcommand) is left
+    # untouched: inserting --model before a subcommand can be misparsed, and it is not
+    # needed anyway because the inline OPENCODE_CONFIG_CONTENT below pins the model in
+    # the highest-priority layer, so the session model is forced without the flag.
+    command = ["opencode", *ctx.args] if ctx.args else ["opencode", "--model", opencode_model]
     with _session_config("opencode", launch) as cfg:
         config_path = cfg / "opencode.json"
         # OPENCODE_CONFIG is an overlay (loaded between the user's global and project

@@ -1466,14 +1466,16 @@ def test_opencode_inline_no_disable_when_unsloth_allowed(fake_studio, monkeypatc
     assert "disabled_providers" not in _opencode_inline_config(result.output)
 
 
-def test_opencode_tui_flags_keep_model_flag(fake_studio):
-    # Top-level TUI flags (not a subcommand) must still pin --model; only a real
-    # subcommand like `serve` takes the model from config.
+def test_opencode_passthrough_flags_omit_model_flag(fake_studio):
+    # Any passthrough (top-level flags that may precede a subcommand, or a subcommand)
+    # is left untouched; --model is not injected. The model is pinned by the inline
+    # OPENCODE_CONFIG_CONTENT (highest layer) instead, so it is still forced.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "--dir", "repo"])
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
-    assert command[:3] == ["opencode", "--model", f"unsloth/{MODEL['id']}"]
-    assert command[3:] == ["--dir", "repo"]
+    assert command == ["opencode", "--dir", "repo"]
+    assert "--model" not in command
+    assert _opencode_inline_config(result.output)["model"] == f"unsloth/{MODEL['id']}"
 
 
 def test_opencode_effective_disabled_project_overrides_global(tmp_path, monkeypatch):
