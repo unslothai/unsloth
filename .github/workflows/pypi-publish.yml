@@ -177,6 +177,18 @@ jobs:
         # before any tarball runs, on the injection pattern itself.
         run: python3 scripts/lockfile_supply_chain_audit.py
 
+      - name: Frozen frontend install (fail closed on lockfile drift)
+        # build.sh later runs `npm install`, which can re-resolve deps and
+        # rewrite the committed package-lock.json (the file the wheel ships)
+        # when package.json has drifted from it -- after the audit above already
+        # scanned the committed lock. Run `npm ci` first: it exits on any
+        # package.json/lock mismatch and never writes the lockfile, so the
+        # release can't publish unaudited resolutions. This is the enforcement
+        # .npmrc mandates for CI and wheel-smoke.yml already uses; it also
+        # applies the .npmrc min-release-age cooldown to the frozen install.
+        working-directory: studio/frontend
+        run: npm ci --no-fund --no-audit
+
       - name: Resolve Studio release version
         id: studio
         # On the push trigger this takes the newest reachable v* tag, so push
