@@ -18,7 +18,7 @@ import {
   useExternalProvidersStore,
 } from "@/features/chat";
 import { cn } from "@/lib/utils";
-import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
+import { HelpCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMessage, useMessageTiming } from "@assistant-ui/react";
 import type { FC, ReactNode } from "react";
@@ -341,7 +341,7 @@ export const MessageResponseDetailsSheet: FC<{
         <SheetHeader className="border-b p-4">
           <SheetTitle className="flex items-center gap-2 pr-10 font-heading text-base">
             <HugeiconsIcon
-              icon={FileDatabaseIcon}
+              icon={HelpCircleIcon}
               strokeWidth={1.75}
               className="size-icon text-chat-icon-fg"
             />
