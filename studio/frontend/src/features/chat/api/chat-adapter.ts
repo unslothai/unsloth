@@ -1387,7 +1387,7 @@ async function autoLoadSmallestModel(): Promise<{
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const specSettings = resolveSpeculativeSettingsForLoad();
   const toastId = toast("Loading a model…", {
-    description: "Auto-selecting a downloaded model.",
+    description: "Auto-selecting the smallest downloaded model.",
     duration: 5000,
     closeButton: true,
   });
@@ -1541,7 +1541,7 @@ async function autoLoadSmallestModel(): Promise<{
             const variant = variants.variants.find(
               (entry) =>
                 entry.downloaded &&
-                entry.quant.toLowerCase() ===
+                entry.quant?.toLowerCase() ===
                   lastLoaded.ggufVariant?.toLowerCase() &&
                 isAutoLoadableGgufVariant(entry),
             );
