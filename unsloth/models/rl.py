@@ -1370,6 +1370,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # [TODO] See https://fengyao.notion.site/off-policy-rl
             # https://github.com/huggingface/trl/pull/3867 (August 7th)
             "vllm_importance_sampling_correction": False,
+            # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001); the optimized
+            # GRPO forward does not compute it, so default off. Opt in via router_aux_loss_coef > 0.
+            "router_aux_loss_coef": 0.0,
         }
         for k, v in replacements.items():
             x = f"{k}( = [^,\n]{{1,}})?,\n"
