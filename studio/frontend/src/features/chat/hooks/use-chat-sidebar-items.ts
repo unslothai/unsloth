@@ -25,6 +25,7 @@ import {
 export interface SidebarItem {
   type: "single" | "compare";
   id: string;
+  threadIds: string[];
   title: string;
   createdAt: number;
   isFork?: boolean;
@@ -36,7 +37,7 @@ export function groupThreads(
   archived = false,
 ): SidebarItem[] {
   const items: SidebarItem[] = [];
-  const seenPairs = new Set<string>();
+  const pairs = new Map<string, SidebarItem>();
 
   for (const t of threads) {
     // Coerce archived to a boolean before comparing. Legacy threads (from the
@@ -48,21 +49,27 @@ export function groupThreads(
       continue;
     }
     if (t.pairId) {
-      if (seenPairs.has(t.pairId)) {
+      const existing = pairs.get(t.pairId);
+      if (existing) {
+        existing.threadIds.push(t.id);
+        existing.createdAt = Math.max(existing.createdAt, t.createdAt);
         continue;
       }
-      seenPairs.add(t.pairId);
-      items.push({
+      const item = {
         type: "compare",
         id: t.pairId,
+        threadIds: [t.id],
         title: t.title,
         createdAt: t.createdAt,
         projectId: t.projectId ?? null,
-      });
+      } satisfies SidebarItem;
+      pairs.set(t.pairId, item);
+      items.push(item);
     } else if (!t.pairId) {
       items.push({
         type: "single",
         id: t.id,
+        threadIds: [t.id],
         title: t.title,
         createdAt: t.createdAt,
         isFork: Boolean(t.forkedFromThreadId),
