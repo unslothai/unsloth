@@ -43,9 +43,9 @@ def test_cuda12_torch2110_pins_matching_local_build(cuda: str):
     reqs = _reqs(_extra(f"{cuda}onlytorch2110"))
     for pkg in _TORCH_TRIO:
         spec = str(reqs[pkg].specifier)
-        assert spec == f"=={('2.11.0' if pkg != 'torchvision' else '0.26.0')}+{cuda}", (
-            f"{cuda}onlytorch2110: {pkg} pinned as '{spec}', expected the +{cuda} local build"
-        )
+        assert (
+            spec == f"=={('2.11.0' if pkg != 'torchvision' else '0.26.0')}+{cuda}"
+        ), f"{cuda}onlytorch2110: {pkg} pinned as '{spec}', expected the +{cuda} local build"
     # xformers must come from the same CUDA index.
     xf = reqs["xformers"]
     assert xf.url and f"/whl/{cuda}/" in xf.url, f"xformers not on the {cuda} index: {xf.url}"
