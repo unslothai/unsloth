@@ -114,31 +114,21 @@ _CUDA_TORCH_PKG_SPEC: tuple[str, str, str] = (
     "torchaudio>=2.4,<2.11.0",
 )
 
-# torchao's C++ extensions are built against ONE exact torch release AND a
-# specific CUDA major; a torch-release mismatch makes torchao skip its cpp kernels
-# ("Skipping import of cpp extensions due to incompatible torch version ...") and
-# fall back to slow Python, while a CUDA-major mismatch fails to load outright
-# ("libcudart.so.12: cannot open shared object file"). Because the torch pin above
-# is a range (and every CUDA index now tops out at torch 2.10), the torch actually
-# installed drifts ahead of a fixed torchao pin. So pick the torchao whose build
-# matches the torch in the venv. Table: pytorch/ao#2919.
-#   torch 2.9.x                -> torchao 0.14.0 (today's pin; built for torch 2.9.0)
-#   torch 2.10.x, CUDA <= 12    -> torchao 0.16.0 (cpp built for torch 2.10.0; loads
-#                                 against the CUDA-12 PyPI wheel)
-#   torch 2.10.x, CUDA >= 13    -> torchao 0.17.0 (Blackwell / cu130: 0.16.0's
-#                                 CUDA-12 cpp can't load against a CUDA-13 torch and
-#                                 errors with libcudart.so.12; 0.17.0's cpp targets
-#                                 torch 2.11, so it is skipped cleanly rather than
-#                                 crashing)
-#   torch 2.11.x               -> torchao 0.17.0 (built for torch 2.11.0; reachable
-#                                 via ROCm rocm7.2)
-# Unknown/older torch keeps the conservative default (no regression vs today).
+# torchao's cpp extensions are pinned to ONE torch release AND CUDA major. A torch
+# mismatch just skips the cpp kernels (slow Python fallback); a CUDA mismatch fails
+# to import ("libcudart.so.12: cannot open shared object file"). The torch pin is a
+# range, so match torchao to the installed torch (table: pytorch/ao#2919):
+#   2.9.x            -> 0.14.0
+#   2.10.x, CUDA<=12 -> 0.16.0 (cpp built for 2.10, loads via the CUDA-12 wheel)
+#   2.10.x, CUDA>=13 -> 0.17.0 (cu130: 0.16.0's CUDA-12 cpp crashes on load; 0.17.0
+#                       targets torch 2.11 so its cpp is cleanly skipped, not crashed)
+#   2.11.x           -> 0.17.0 (reachable via ROCm rocm7.2)
+# Unknown/older torch keeps the conservative default.
 _TORCHAO_DEFAULT_SPEC = "torchao==0.14.0"
 _TORCHAO_TORCH_210_SPEC = "torchao==0.16.0"
 _TORCHAO_TORCH_210_CUDA13_SPEC = "torchao==0.17.0"
 _TORCHAO_TORCH_211_PLUS_SPEC = "torchao==0.17.0"
-# torch 2.10 wheels built against CUDA >= this major can't load the CUDA-12 PyPI
-# torchao cpp extensions, so they take the CUDA-13 spec instead.
+# torch 2.10 built against CUDA >= this major can't load 0.16.0's CUDA-12 cpp.
 _TORCHAO_CUDA13_MIN_MAJOR = 13
 
 
@@ -175,8 +165,7 @@ def _select_torchao_spec(torch_version: str | None) -> str:
     if minor >= 11:
         return _TORCHAO_TORCH_211_PLUS_SPEC  # newest known build; covers 2.11+
     if minor == 10:
-        # Blackwell (cu130+) can't load 0.16.0's CUDA-12 cpp extensions; give it
-        # 0.17.0 (cpp skipped cleanly) instead of a libcudart.so.12 crash.
+        # cu130+ can't load 0.16.0's CUDA-12 cpp; use 0.17.0 (cpp skipped, not crashed).
         cuda_major = _cuda_major_from_torch_version(str(torch_version))
         if cuda_major is not None and cuda_major >= _TORCHAO_CUDA13_MIN_MAJOR:
             return _TORCHAO_TORCH_210_CUDA13_SPEC
