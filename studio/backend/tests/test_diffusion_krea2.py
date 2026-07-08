@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Unit tests for the Krea 2 per-component pipeline loader (CPU-only, no network)."""
 
 from __future__ import annotations
