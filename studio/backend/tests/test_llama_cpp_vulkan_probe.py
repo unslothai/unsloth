@@ -88,7 +88,12 @@ def _mock_probe(rows: list[str], captured_env: dict | None = None):
     return mock.patch("subprocess.run", side_effect = fake_run)
 
 
-def _row(idx: int, free_bytes: int, is_igpu: int, total_bytes: int = 0) -> str:
+def _row(
+    idx: int,
+    free_bytes: int,
+    is_igpu: int,
+    total_bytes: int = 0,
+) -> str:
     return f"{idx}\t{free_bytes}\t{is_igpu}\t{total_bytes}"
 
 
