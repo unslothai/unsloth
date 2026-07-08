@@ -38,7 +38,12 @@ _SHARD = "model-00001-of-00001.safetensors"
 _FP8 = _FP8_DTYPES[0] if _FP8_DTYPES else None
 
 
-def _write_checkpoint(path, tensors, filename = _SHARD, include_index = True):
+def _write_checkpoint(
+    path,
+    tensors,
+    filename = _SHARD,
+    include_index = True,
+):
     save_file(tensors, os.path.join(path, filename))
     if include_index:
         weight_map = {name: filename for name in tensors}
@@ -89,10 +94,13 @@ def test_restore_dequantizes_orphaned_scale():
     model.layer = _bf16_linear(4, 4, raw)
 
     with tempfile.TemporaryDirectory() as d:
-        _write_checkpoint(d, {
-            "layer.weight": raw.to(torch.float32),
-            "layer.weight_scale_inv": scale,
-        })
+        _write_checkpoint(
+            d,
+            {
+                "layer.weight": raw.to(torch.float32),
+                "layer.weight_scale_inv": scale,
+            },
+        )
         restored, skipped = _restore_dropped_fp8_scales(model, d, local_files_only = True)
 
     assert restored == 1
@@ -193,8 +201,9 @@ def test_single_file_checkpoint_without_index():
     model.layer = _bf16_linear(4, 4, raw)
 
     with tempfile.TemporaryDirectory() as d:
-        _write_checkpoint(d, {"layer.weight_scale_inv": scale},
-                          filename = "model.safetensors", include_index = False)
+        _write_checkpoint(
+            d, {"layer.weight_scale_inv": scale}, filename = "model.safetensors", include_index = False
+        )
         restored, _ = _restore_dropped_fp8_scales(model, d, local_files_only = True)
 
     assert restored == 1
@@ -273,9 +282,7 @@ def test_noop_when_not_block_fp8():
     """A non-fp8 (or non-block) quantization config is ignored."""
     scale = torch.rand(2, 2)
     model = nn.Module()
-    model.config = SimpleNamespace(
-        quantization_config = {"quant_method": "compressed-tensors"}
-    )
+    model.config = SimpleNamespace(quantization_config = {"quant_method": "compressed-tensors"})
     model.layer = nn.Linear(4, 4, bias = False)
     with tempfile.TemporaryDirectory() as d:
         _write_checkpoint(d, {"layer.weight_scale_inv": scale})

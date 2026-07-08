@@ -363,7 +363,8 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
 
 
 _FP8_DTYPES = tuple(
-    dtype for dtype in (getattr(torch, "float8_e4m3fn", None), getattr(torch, "float8_e5m2", None))
+    dtype
+    for dtype in (getattr(torch, "float8_e4m3fn", None), getattr(torch, "float8_e5m2", None))
     if dtype is not None
 )
 
@@ -395,21 +396,37 @@ def _fp8_block_size_from_config(model):
     return [int(block[0]), int(block[1])]
 
 
-def _load_fp8_weight_map(model_name, local_files_only, token, revision = None, subfolder = None, cache_dir = None):
+def _load_fp8_weight_map(
+    model_name,
+    local_files_only,
+    token,
+    revision = None,
+    subfolder = None,
+    cache_dir = None,
+):
     """Return the checkpoint's tensor->file map, using the same snapshot the load used.
 
     Prefers the sharded `model.safetensors.index.json`; falls back to a single `model.safetensors`
     (every tensor maps to that one file) so unsharded checkpoints are covered too.
     """
+
     def _local_path(filename):
-        return os.path.join(model_name, subfolder, filename) if subfolder else os.path.join(model_name, filename)
+        return (
+            os.path.join(model_name, subfolder, filename)
+            if subfolder
+            else os.path.join(model_name, filename)
+        )
 
     def _remote_path(filename):
         from huggingface_hub import hf_hub_download
         return hf_hub_download(
-            model_name, filename,
-            revision = revision, subfolder = subfolder, cache_dir = cache_dir,
-            local_files_only = local_files_only, token = token,
+            model_name,
+            filename,
+            revision = revision,
+            subfolder = subfolder,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+            token = token,
         )
 
     index_file = "model.safetensors.index.json"
@@ -446,15 +463,32 @@ def _load_fp8_weight_map(model_name, local_files_only, token, revision = None, s
         return None
 
 
-def _resolve_fp8_shard(model_name, shard, local_files_only, token, revision = None, subfolder = None, cache_dir = None):
+def _resolve_fp8_shard(
+    model_name,
+    shard,
+    local_files_only,
+    token,
+    revision = None,
+    subfolder = None,
+    cache_dir = None,
+):
     """Resolve a checkpoint shard filename to a local path (repo id or local dir)."""
     if os.path.isdir(model_name):
-        return os.path.join(model_name, subfolder, shard) if subfolder else os.path.join(model_name, shard)
+        return (
+            os.path.join(model_name, subfolder, shard)
+            if subfolder
+            else os.path.join(model_name, shard)
+        )
     from huggingface_hub import hf_hub_download
+
     return hf_hub_download(
-        model_name, shard,
-        revision = revision, subfolder = subfolder, cache_dir = cache_dir,
-        local_files_only = local_files_only, token = token,
+        model_name,
+        shard,
+        revision = revision,
+        subfolder = subfolder,
+        cache_dir = cache_dir,
+        local_files_only = local_files_only,
+        token = token,
     )
 
 
@@ -475,9 +509,14 @@ def _match_fp8_module(module_by_name, base):
 
 
 def _restore_dropped_fp8_scales(
-    model, model_name, *,
-    local_files_only = False, token = None,
-    revision = None, subfolder = None, cache_dir = None,
+    model,
+    model_name,
+    *,
+    local_files_only = False,
+    token = None,
+    revision = None,
+    subfolder = None,
+    cache_dir = None,
 ):
     """Re-apply block-fp8 `weight_scale_inv` tensors that transformers dropped on load.
 
@@ -497,7 +536,9 @@ def _restore_dropped_fp8_scales(
         # a scale would corrupt those already-correct 16bit weights, so do nothing.
         if not any(p.dtype in _FP8_DTYPES for p in model.parameters()):
             return (0, 0)
-        weight_map = _load_fp8_weight_map(model_name, local_files_only, token, revision, subfolder, cache_dir)
+        weight_map = _load_fp8_weight_map(
+            model_name, local_files_only, token, revision, subfolder, cache_dir
+        )
         if not weight_map:
             return (0, 0)
 
@@ -517,7 +558,11 @@ def _restore_dropped_fp8_scales(
             if module is None:
                 continue
             weight = getattr(module, "weight", None)
-            if not isinstance(weight, torch.Tensor) or weight.device.type == "meta" or weight.ndim != 2:
+            if (
+                not isinstance(weight, torch.Tensor)
+                or weight.device.type == "meta"
+                or weight.ndim != 2
+            ):
                 continue
             if weight.dtype in _FP8_DTYPES:
                 # Correctly converted fp8 module: the scale is handled by the fp8 path already.
@@ -529,7 +574,13 @@ def _restore_dropped_fp8_scales(
                 if shard not in shard_cache:
                     from safetensors import safe_open
                     shard_path = _resolve_fp8_shard(
-                        model_name, shard, local_files_only, token, revision, subfolder, cache_dir,
+                        model_name,
+                        shard,
+                        local_files_only,
+                        token,
+                        revision,
+                        subfolder,
+                        cache_dir,
                     )
                     shard_cache[shard] = safe_open(shard_path, framework = "pt")
                 scale = shard_cache[shard].get_tensor(scale_key).to(torch.float32)
@@ -548,7 +599,9 @@ def _restore_dropped_fp8_scales(
                 scale_expanded = scale.repeat_interleave(bs0, dim = 0).repeat_interleave(bs1, dim = 1)
                 scale_expanded = scale_expanded[:out_features, :in_features].to(weight.device)
                 with torch.no_grad():
-                    module.weight.data = (weight.to(torch.float32) * scale_expanded).to(weight.dtype)
+                    module.weight.data = (weight.to(torch.float32) * scale_expanded).to(
+                        weight.dtype
+                    )
                 restored += 1
             except Exception:
                 failed += 1
