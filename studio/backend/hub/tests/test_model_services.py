@@ -105,6 +105,10 @@ def test_repo_id_validation_accepts_hf_repo_id_contract(repo_id):
     assert paths.is_valid_repo_id(repo_id)
 
 
+def test_repo_id_validation_accepts_max_length_namespaced_repo():
+    assert paths.is_valid_repo_id(f"{'a' * 96}/{'b' * 96}")
+
+
 @pytest.mark.parametrize(
     "repo_id",
     [
@@ -119,6 +123,48 @@ def test_repo_id_validation_accepts_hf_repo_id_contract(repo_id):
 )
 def test_repo_id_validation_rejects_unsafe_or_invalid_ids(repo_id):
     assert not paths.is_valid_repo_id(repo_id)
+
+
+def test_download_state_preserves_readable_keys_when_safe(monkeypatch, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
+
+    path = state_dir.marker_path("model", "Owner/Repo", "Q4_K_M")
+
+    assert path is not None
+    assert path.name == "models--owner--repo--variant--q4_k_m.json"
+
+
+@pytest.mark.parametrize("variant", ["bad variant with spaces", "q" * 64])
+def test_download_state_bounds_long_repo_variant_filenames(monkeypatch, tmp_path, variant):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
+    repo_id = f"{'a' * 96}/{'b' * 96}"
+
+    assert paths.is_valid_repo_id(repo_id)
+    assert download_manifest.write_cancel_marker("model", repo_id, variant, "http")
+    assert download_manifest.write_manifest(
+        "model",
+        repo_id,
+        variant,
+        [download_manifest.ExpectedFile(path = "model.gguf", size = 1)],
+        "http",
+    )
+
+    marker_path = state_dir.marker_path("model", repo_id, variant)
+    manifest_path = state_dir.manifest_path("model", repo_id, variant)
+
+    assert marker_path is not None
+    assert manifest_path is not None
+    assert "--sha256-" in marker_path.name
+    assert len(marker_path.name.encode("utf-8")) <= 255
+    assert len(f".{marker_path.name}.tmp-00000000".encode("utf-8")) <= 255
+    assert download_manifest.has_cancel_marker("model", repo_id, variant)
+    assert download_manifest.read_manifest("model", repo_id, variant) is not None
+    assert list(download_manifest.iter_variant_markers("model", repo_id)) == [
+        (variant, marker_path)
+    ]
+    assert list(download_manifest.iter_variant_manifests("model", repo_id)) == [
+        (variant, manifest_path)
+    ]
 
 
 class _RecordingLogger:
@@ -168,6 +214,16 @@ def test_resolve_browse_target_rejects_sensitive_dir(tmp_path):
     assert exc_info.value.status_code == 403
 
 
+def test_resolve_browse_target_rejects_sensitive_root(tmp_path):
+    ssh = tmp_path / "home" / ".ssh"
+    ssh.mkdir(parents = True)
+
+    with pytest.raises(HTTPException) as exc_info:
+        folder_browser._resolve_browse_target(str(ssh), [ssh])
+
+    assert exc_info.value.status_code == 403
+
+
 def test_browse_folders_hides_sensitive_dirs(monkeypatch, tmp_path):
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents = True)
@@ -179,6 +235,24 @@ def test_browse_folders_hides_sensitive_dirs(monkeypatch, tmp_path):
     names = {entry.name for entry in response.entries}
     assert "models" in names
     assert ".ssh" not in names
+
+
+def test_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    media_root = tmp_path / "run" / "media" / "dspofu" / "nvmeB"
+    model_dir = media_root / "modelsAI" / "gguf" / "qwen3.6"
+    home.mkdir()
+    model_dir.mkdir(parents = True)
+    monkeypatch.setattr(folder_browser.Path, "home", lambda: home)
+    monkeypatch.setattr(folder_browser, "linux_run_media_mount_roots", lambda: [media_root])
+    monkeypatch.setattr(folder_browser, "_resolve_hf_cache_dir", lambda: tmp_path / "missing-hf")
+    monkeypatch.setattr(scan_folders, "list_scan_folders", lambda: [])
+    monkeypatch.setattr(folder_browser, "well_known_model_dirs", lambda: [])
+
+    allowlist = folder_browser._build_browse_allowlist()
+
+    assert media_root.resolve() in allowlist
+    assert folder_browser._resolve_browse_target(str(model_dir), allowlist) == model_dir.resolve()
 
 
 def test_get_models_folder_response_creates_and_returns_dir(monkeypatch, tmp_path):

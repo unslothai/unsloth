@@ -52,6 +52,49 @@ from io import BytesIO as _BytesIO
 from types import SimpleNamespace
 
 
+def _emitter_client_text(events: list[str]) -> str:
+    """Concatenate the text_delta payloads an SSE event list carries."""
+    text = ""
+    for line in events:
+        for raw in line.split("\n"):
+            raw = raw.strip()
+            if not raw.startswith("data: "):
+                continue
+            data = json.loads(raw[len("data: ") :])
+            delta = data.get("delta", {})
+            if delta.get("type") == "text_delta":
+                text += delta.get("text", "")
+    return text
+
+
+def test_anthropic_emitter_closes_reasoning_only_think_block():
+    # A reasoning-only reply streams <think>X live then shrinks to bare X at EOF.
+    # This emitter diffs cumulative snapshots and drops the shrink, so without a
+    # closing pass the client text would end on an unclosed <think>. finish()
+    # must balance it.
+    emitter = AnthropicStreamEmitter()
+    events = emitter.start("msg_1", "m")
+    events += emitter.feed({"type": "content", "text": "<think>The capital"})
+    events += emitter.feed({"type": "content", "text": "<think>The capital of France is Paris."})
+    # The generator's final bare-text shrink (dropped by the cumulative diff).
+    events += emitter.feed({"type": "content", "text": "The capital of France is Paris."})
+    events += emitter.finish()
+
+    assert _emitter_client_text(events) == "<think>The capital of France is Paris.</think>"
+
+
+def test_anthropic_emitter_does_not_double_close_balanced_think():
+    # A reasoning-then-answer reply already closes its own </think>; the balancer
+    # must not append a second one.
+    emitter = AnthropicStreamEmitter()
+    events = emitter.start("msg_1", "m")
+    events += emitter.feed({"type": "content", "text": "<think>Thinking."})
+    events += emitter.feed({"type": "content", "text": "<think>Thinking.</think>Answer."})
+    events += emitter.finish()
+
+    assert _emitter_client_text(events) == "<think>Thinking.</think>Answer."
+
+
 def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch):
     import routes.inference as inf_mod
 
@@ -128,13 +171,7 @@ class TestToolActionNudge:
         assert "call render_html once" in nudge
 
     def test_balanced_nudge_empty_without_known_tool_categories(self):
-        assert (
-            _build_tool_action_nudge(
-                tools = [],
-                model_name = "Llama-3.1-8B-Instruct",
-            )
-            == ""
-        )
+        assert _build_tool_action_nudge(tools = [], model_name = "Llama-3.1-8B-Instruct") == ""
 
 
 # =====================================================================
@@ -894,6 +931,24 @@ class TestAnthropicToolNonStreaming:
         assert tool_blocks[0]["id"].startswith("toolu_")
         assert tool_blocks[0]["name"] == "render_html"
         assert tool_blocks[0]["input"] == {"code": "<!doctype html><html></html>"}
+
+    def test_display_strip_gates_on_declared_tools(self):
+        # A final answer containing NAME[ARGS]{json} is gated on the declared tools: undeclared
+        # ``foo`` markup is prose and survives, the declared web_search rehearsal strips.
+        def _run_gen():
+            yield {
+                "type": "content",
+                "text": 'Try foo[ARGS]{"x": 1} but not web_search[ARGS]{"q": "hi"} here.',
+            }
+
+        tools = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_run_gen, "msg_1", "m", openai_tools = tools)
+        )
+        body = json.loads(response.body)
+        text = "".join(b["text"] for b in body["content"] if b["type"] == "text")
+        assert 'foo[ARGS]{"x": 1}' in text  # inactive name preserved as prose
+        assert "web_search[ARGS]" not in text  # active name stripped from display
 
 
 # =====================================================================

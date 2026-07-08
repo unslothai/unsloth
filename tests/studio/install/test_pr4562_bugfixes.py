@@ -658,15 +658,21 @@ class TestSourceCodePatterns:
         assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
 
-    def test_setup_sh_routes_to_fork_only_on_usable_gpu(self):
-        """Linux routing gates NVIDIA on GPU usability, not nvidia-smi presence, so
-        CPU-only/hidden-GPU hosts get the ggml CPU prebuilt. Guards the old presence-only loop."""
+    def test_setup_sh_routes_every_host_to_fork(self):
+        """CPU-only Linux (the last ggml-org artifact consumer) now routes to the
+        fork like every other host, so the release-repo decision is unconditional.
+        Guards against a silent reintroduction of a ggml-org CPU routing branch.
+        GPU usability detection (used for PyTorch / source decisions) must stay."""
         content = SETUP_SH.read_text()
+        assert '_HELPER_RELEASE_REPO="unslothai/llama.cpp"' in content
+        assert '_HELPER_RELEASE_REPO="ggml-org/llama.cpp"' not in content
+        # Usability gating (not routing) still distinguishes a hidden GPU.
         assert '[ "$_setup_nvidia_usable" = true ]' in content
         assert "CUDA_VISIBLE_DEVICES" in content
-        # nvidia-smi must NOT be back in the bare presence loop.
-        assert "for _GPU_TOOL in nvidia-smi" not in content
-        assert "for _GPU_TOOL in rocminfo amd-smi hipconfig hipinfo" in content
+        # The GPU-tooling probe (PR #4562) stays: ROCm detection goes through
+        # command -v, not a bare presence loop that mishandled a hidden nvidia-smi.
+        assert "command -v rocminfo" in content
+        assert "command -v amd-smi" in content
 
     def test_setup_sh_reports_installed_prebuilt_release(self):
         """Shell wrapper should report the installed prebuilt release from metadata."""
