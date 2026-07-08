@@ -65,6 +65,7 @@ def _make_backend(monkeypatch, streams: list[list[str]], payloads: list[dict]):
         response,
         _cancel_event,
         first_token_deadline = None,
+        client = None,
     ):
         yield from response.chunks
 

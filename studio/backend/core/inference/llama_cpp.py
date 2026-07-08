@@ -240,6 +240,11 @@ _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
 # is exempt because it needs immediate artifact feedback.
 _PROVISIONAL_ARGS_MIN_CHARS = 256
 _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
+# httpcore binds the socket read timeout once when body iteration starts, so a
+# mid-stream stall can't be caught by lowering the read timeout. A watchdog
+# thread polls the elapsed-since-last-chunk deadline at this cadence instead and
+# closes the response when the first-token or stall window elapses.
+_STREAM_WATCHDOG_POLL_S = 0.5
 # Cap tool calls from a single TEXTUAL-fallback turn (mirrors the safetensors
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
@@ -8261,10 +8266,11 @@ class LlamaCppBackend:
     @contextlib.contextmanager
     def _open_stream(self, url: str, payload: dict, cancel_event):
         """Open a streaming POST to llama-server, retrying through prefill, and
-        yield ``(response, first_token_deadline)`` once a 200 lands. Owns the
-        httpx.Client + auth headers for the stream's lifetime; raises
+        yield ``(response, first_token_deadline, client)`` once a 200 lands. Owns
+        the httpx.Client + auth headers for the stream's lifetime; raises
         RuntimeError on a non-200. Shared scaffold for the streaming consumers,
-        which differ only in how they parse the SSE body."""
+        which differ only in how they parse the SSE body. The client is exposed
+        so the stall watchdog can shut its socket down to abort a blocked read."""
         stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
         with httpx.Client(
             timeout = stream_timeout,
@@ -8285,7 +8291,7 @@ class LlamaCppBackend:
                     raise RuntimeError(
                         f"llama-server returned {response.status_code}: {error_body}"
                     )
-                yield response, first_token_deadline
+                yield response, first_token_deadline, client
 
     @staticmethod
     def _iter_text_cancellable(
@@ -8293,52 +8299,89 @@ class LlamaCppBackend:
         cancel_event: Optional[threading.Event] = None,
         stall_timeout_s: float = _DEFAULT_STREAM_STALL_TIMEOUT_S,
         first_token_deadline: Optional[float] = None,
-        post_first_chunk_read_timeout_s: Optional[float] = _DEFAULT_STREAM_STALL_TIMEOUT_S,
+        client: Optional["httpx.Client"] = None,
     ) -> Generator[str, None, None]:
-        """Iterate a stream while polling cancel and stall timeouts."""
+        """Iterate a stream while enforcing cancel, first-token, and stall windows.
+
+        httpcore binds the socket read timeout once when body iteration starts
+        (``_receive_response_body`` in httpcore 1.0.9), so lowering the request's
+        read timeout mid-stream is a no-op and a genuine no-byte stall would hang
+        for the whole first-token deadline. Enforce the windows from Python
+        instead: a watchdog thread shuts the socket down once the active deadline
+        elapses (the long first-token deadline before any content, then the short
+        stall window after the last chunk), which unblocks the reader with a
+        stream error we surface as a ``ReadTimeout``. ``response.close()`` alone
+        does not interrupt a blocked read, so we mirror the cancel watcher in
+        ``_stream_with_retry`` and shut the socket down."""
         text_iter = response.iter_text()
         if first_token_deadline is None:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-        last_chunk_at: Optional[float] = None
-        while True:
-            if cancel_event is not None and cancel_event.is_set():
-                response.close()
-                return
-            try:
-                if last_chunk_at is None:
-                    remaining_s = first_token_deadline - time.monotonic()
-                    if remaining_s <= 0:
-                        raise httpx.ReadTimeout("The model did not produce a first token in time.")
-                    LlamaCppBackend._set_stream_read_timeout(response, remaining_s)
-                chunk = next(text_iter)
-                if chunk:
-                    if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:
-                        LlamaCppBackend._set_stream_read_timeout(
-                            response,
-                            post_first_chunk_read_timeout_s,
-                        )
-                    last_chunk_at = time.monotonic()
-                yield chunk
-            except StopIteration:
-                return
-            except httpx.ReadTimeout:
-                now = time.monotonic()
-                if last_chunk_at is None:
-                    if now >= first_token_deadline:
-                        raise
-                elif now - last_chunk_at >= stall_timeout_s:
-                    raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
-                continue
 
-    @staticmethod
-    def _set_stream_read_timeout(response: "httpx.Response", read_timeout_s: float) -> None:
-        """Lower only post-header stream reads; keep prefill timeout long."""
+        # Shared with the watchdog thread; the GIL makes these single dict
+        # reads/writes atomic enough for a monotonic deadline check (no lock).
+        # ``reading_since`` is the monotonic time the current ``next()`` began
+        # blocking on the socket, or None while suspended at ``yield`` — so the
+        # window measures upstream silence only, never a slow/backpressured
+        # consumer between chunks.
+        watch_state = {"reading_since": None, "got_first_chunk": False, "timed_out": False}
+        watchdog_stop = threading.Event()
+
+        def _stall_watchdog() -> None:
+            while not watchdog_stop.wait(timeout = _STREAM_WATCHDOG_POLL_S):
+                reading_since = watch_state["reading_since"]
+                if reading_since is None:
+                    continue
+                if watch_state["got_first_chunk"]:
+                    deadline = reading_since + stall_timeout_s
+                else:
+                    deadline = first_token_deadline
+                if time.monotonic() >= deadline:
+                    watch_state["timed_out"] = True
+                    try:
+                        if client is not None:
+                            LlamaCppBackend._shutdown_active_httpx_sockets(client)
+                        response.close()
+                    except Exception:
+                        logger.debug("Stall watchdog could not close response", exc_info = True)
+                    return
+
+        watchdog = threading.Thread(
+            target = _stall_watchdog, daemon = True, name = "stream-stall-watchdog"
+        )
+        watchdog.start()
         try:
-            timeout_ext = response.request.extensions.get("timeout")
-            if isinstance(timeout_ext, dict):
-                timeout_ext["read"] = read_timeout_s
-        except Exception:
-            logger.debug("Could not lower response read timeout", exc_info = True)
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    response.close()
+                    return
+                watch_state["reading_since"] = time.monotonic()
+                try:
+                    chunk = next(text_iter)
+                except StopIteration:
+                    return
+                except (httpx.RequestError, httpx.StreamError) as exc:
+                    # The watchdog (or a cancel) closes the response to abort a
+                    # blocked read: a watchdog close is the stall/first-token
+                    # timeout, a cancel close is a clean stop, and anything else
+                    # is a genuine upstream error that must propagate.
+                    if watch_state["timed_out"]:
+                        if watch_state["got_first_chunk"]:
+                            raise httpx.ReadTimeout(
+                                "The model stopped producing tokens mid-response."
+                            ) from exc
+                        raise httpx.ReadTimeout(
+                            "The model did not produce a first token in time."
+                        ) from exc
+                    if cancel_event is not None and cancel_event.is_set():
+                        return
+                    raise
+                # Stop the read clock before yielding so consumer time is excluded.
+                watch_state["reading_since"] = None
+                if chunk:
+                    watch_state["got_first_chunk"] = True
+                yield chunk
+        finally:
+            watchdog_stop.set()
 
     @staticmethod
     def _shutdown_active_httpx_sockets(client: "httpx.Client") -> None:
@@ -8539,6 +8582,7 @@ class LlamaCppBackend:
             with self._open_stream(url, payload, cancel_event) as (
                 response,
                 first_token_deadline,
+                stream_client,
             ):
                 buffer = ""
                 has_content_tokens = False
@@ -8547,6 +8591,7 @@ class LlamaCppBackend:
                     response,
                     cancel_event,
                     first_token_deadline = first_token_deadline,
+                    client = stream_client,
                 ):
                     buffer += raw_chunk
                     while "\n" in buffer:
@@ -8976,12 +9021,14 @@ class LlamaCppBackend:
                 with self._open_stream(url, payload, cancel_event) as (
                     response,
                     first_token_deadline,
+                    stream_client,
                 ):
                     raw_buf = ""
                     for raw_chunk in self._iter_text_cancellable(
                         response,
                         cancel_event,
                         first_token_deadline = first_token_deadline,
+                        client = stream_client,
                     ):
                         raw_buf += raw_chunk
                         while "\n" in raw_buf:
@@ -9848,12 +9895,14 @@ class LlamaCppBackend:
             with self._open_stream(url, stream_payload, cancel_event) as (
                 response,
                 first_token_deadline,
+                stream_client,
             ):
                 buffer = ""
                 for raw_chunk in self._iter_text_cancellable(
                     response,
                     cancel_event,
                     first_token_deadline = first_token_deadline,
+                    client = stream_client,
                 ):
                     buffer += raw_chunk
                     while "\n" in buffer:

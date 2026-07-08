@@ -827,6 +827,31 @@ function parseSseEvent(rawEvent: string): string[] {
   return dataLines;
 }
 
+// Client-side backstop so the UI leaves "running" if the backend goes silent
+// without ever terminating the stream (wedged event loop, a dropped connection
+// that never resets). The backend's own first-token (~20 min) and stall (~2 min)
+// windows normally surface an SSE error first; this sits just past the backend's
+// longest legitimate silence (a slow prefill) so it never preempts a real run.
+const STREAM_INACTIVITY_TIMEOUT_MS = 21 * 60 * 1000;
+
+async function readWithInactivityTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("The model stopped responding.")),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([reader.read(), timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
@@ -854,7 +879,10 @@ export async function* streamChatCompletions(
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithInactivityTimeout(
+        reader,
+        STREAM_INACTIVITY_TIMEOUT_MS,
+      );
       if (done) {
         completed = true;
         break;

@@ -90,6 +90,7 @@ def _make_backend(monkeypatch, streams: list[list[str]]):
         response,
         _cancel_event,
         first_token_deadline = None,
+        client = None,
     ):
         yield from response.chunks
 
