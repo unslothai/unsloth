@@ -567,14 +567,15 @@ def test_trl_truncate_with_protected_tokens_optional(tag: str):
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_grpo_peft_ref_adapter_block_contract(tag: str):
-    """rl.py (trl>=1.7.0) strips TRL's PEFT ref-adapter init with a re.DOTALL
+    """rl.py (trl>=1.4.0) strips TRL's PEFT ref-adapter init with a re.DOTALL
     regex anchored on `elif is_peft_model(model) and args.beta != 0.0:` ...
     `ref_param.data.copy_(param.data)`. Both anchors must exist (else the
     regex no-ops and the ref adapter is created under Unsloth), and the
     following `enable_input_require_grads` gradient-checkpointing block must
-    remain present -- the tightened regex must NOT swallow it (PR #6904)."""
-    if not _tag_ge(tag, "1.7.0"):
-        pytest.skip(f"{tag}: pre-1.7.0 PEFT block handled by rl.py's 0.26/0.27 branches")
+    remain present -- the tightened regex must NOT swallow it (PR #6904). The
+    `elif` block shape appeared in TRL 1.4.0, so this contract runs from there."""
+    if not _tag_ge(tag, "1.4.0"):
+        pytest.skip(f"{tag}: pre-1.4.0 uses the `if is_peft_available()...` form (rl.py 0.27 branch)")
     src = fetch_text("huggingface/trl", tag, "trl/trainer/grpo_trainer.py")
     assert src is not None
     assert "elif is_peft_model(model) and args.beta != 0.0:" in src, (
