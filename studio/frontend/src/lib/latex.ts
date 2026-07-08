@@ -66,20 +66,39 @@ const LINK_DEST_RE =
   /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/gd;
 
 /**
- * Find the destination spans of inline links/images, so a `\(...\)` written with
- * escaped parens inside a URL isn't rewritten as math (which would break the
- * link). Only the destination is returned, not the link text, so math in the
- * visible text still converts. Sorted, non-overlapping (matches are disjoint).
+ * Reference-link definition `[label]: DEST` (group 1 = angle `<...>`, group 2 =
+ * bare run). `d` flag for indices, `m` to anchor at line start. Its URL, like an
+ * inline destination, must not be rewritten as math.
+ */
+const REF_DEF_DEST_RE =
+  /^ {0,3}\[(?:\\.|[^\]\n\\])+\]:[^\S\n]*(?:<([^>\n]*)>|([^\s<][^\s]*))/gmd;
+
+/**
+ * Destination spans of inline links/images and reference-link definitions, so a
+ * `\(...\)` inside a URL isn't rewritten as math. Link text is not returned, so
+ * math in the visible text still converts.
  */
 function findLinkDestinationRegions(content: string): Array<[number, number]> {
-  if (!content.includes("](")) return [];
+  const hasInline = content.includes("](");
+  const hasRefDef = content.includes("]:");
+  if (!hasInline && !hasRefDef) return [];
   const regions: Array<[number, number]> = [];
   let match: RegExpExecArray | null;
-  LINK_DEST_RE.lastIndex = 0;
-  while ((match = LINK_DEST_RE.exec(content)) !== null) {
-    // `indices` is present (the `d` flag); group 1 spans the destination.
-    regions.push(match.indices![1]);
+  if (hasInline) {
+    LINK_DEST_RE.lastIndex = 0;
+    while ((match = LINK_DEST_RE.exec(content)) !== null) {
+      regions.push(match.indices![1]); // `d` flag: group 1 is the destination.
+    }
   }
+  if (hasRefDef) {
+    REF_DEF_DEST_RE.lastIndex = 0;
+    while ((match = REF_DEF_DEST_RE.exec(content)) !== null) {
+      const span = match.indices![1] ?? match.indices![2];
+      if (span) regions.push(span);
+    }
+  }
+  // Inline and ref-def spans can interleave (never overlap), so sort.
+  regions.sort((a, b) => a[0] - b[0]);
   return regions;
 }
 
@@ -173,7 +192,11 @@ function looksLikeMathBody(body: string): boolean {
  * (`**$X$**`, `__$X$__`) are always math: LLMs use that for "bold math"
  * and the heuristic would otherwise reject prose-shaped bodies like "90 - x".
  */
-function hasInlineMathCloser(content: string, offset: number): boolean {
+function hasInlineMathCloser(
+  content: string,
+  offset: number,
+  mathRegions: Array<[number, number]>,
+): boolean {
   const MAX_SPAN = 200;
   const limit = Math.min(content.length, offset + 1 + MAX_SPAN);
   for (let i = offset + 1; i < limit; i++) {
@@ -181,6 +204,9 @@ function hasInlineMathCloser(content: string, offset: number): boolean {
     if (c === "\n") return false;
     if (c !== "$") continue;
     if (content[i - 1] === "\\") continue;
+    // A `$` opening a generated span (from `\(...\)`) is not a currency closer;
+    // pairing with it would swallow the price into math (`$5 + x \(y\)`).
+    if (isInRegion(i, mathRegions)) return false;
     if (content[i + 1] === "$") {
       i++;
       continue;
@@ -294,7 +320,18 @@ function convertLatexDelimiters(content: string): {
       continue;
     }
     append(content.slice(last, match.index));
-    const wrapped = isDisplay ? `\n$$\n${body}\n$$\n` : `$${body}$`;
+    let wrapped: string;
+    if (isDisplay) {
+      // Keep the opener's leading indentation so a `$$` block inside a list item
+      // stays in the container instead of breaking out at column 0. Only when the
+      // opener is whitespace-prefixed, so inline `text \[x\]` keeps column 0.
+      const lineStart = content.lastIndexOf("\n", match.index - 1) + 1;
+      const prefix = content.slice(lineStart, match.index);
+      const indent = /^\s*$/.test(prefix) ? prefix : "";
+      wrapped = `\n${indent}$$\n${indent}${body}\n${indent}$$\n`;
+    } else {
+      wrapped = `$${body}$`;
+    }
     const start = append(wrapped);
     mathRegions.push([start, offset]);
     last = matchEnd;
@@ -334,7 +371,7 @@ export function preprocessLaTeX(content: string): string {
     if (isInRegion(offset, mathRegions)) {
       return match;
     }
-    if (hasInlineMathCloser(text, offset)) {
+    if (hasInlineMathCloser(text, offset, mathRegions)) {
       return match;
     }
     return "\\" + match;
