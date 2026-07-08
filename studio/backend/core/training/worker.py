@@ -2082,7 +2082,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # ── 12. Save and finalize ──
     if trainer.stop_requested:
         if not _stop_save[0]:
-            # User clicked "Cancel" (save=False) — skip saving.
+            # Cancel (save=False): skip saving.
             _send("complete", output_dir = None, status_message = "Training cancelled")
         else:
             _send("status", status_message = "Saving stopped model...")
@@ -2133,8 +2133,7 @@ def run_mlx_training_process(
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
     if not transformers_activated:
-        # Activate before hardware detection: detect_hardware() validates the
-        # MLX stack by importing mlx_lm, which imports transformers.
+        # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
         _activate_transformers_version_or_warn(model_name, config.get("hf_token") or None)
 
     from utils.hardware import hardware as _hw
@@ -2261,8 +2260,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     mlx_transformers_activated = False
     if mlx_backend_requested and _is_current_process_apple_silicon():
-        # Must happen before detect_hardware(): the MLX stack check can import
-        # mlx_lm, which imports transformers.
+        # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
         _activate_transformers_version_or_warn(model_name, config.get("hf_token") or None)
         mlx_transformers_activated = True
 

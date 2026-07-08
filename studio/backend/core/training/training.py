@@ -816,7 +816,6 @@ class TrainingBackend:
         # treat this fresh setup as a recoverable death.
         self._pump_running = False
 
-        # Build config dict for the subprocess.
         config = _build_training_worker_config(kwargs)
 
         # Split GPU validation from placement around the VRAM hook:

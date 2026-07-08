@@ -109,9 +109,8 @@ def _save_or_push_model(model, tokenizer, args, is_mlx):
         print("Warning: The model is not saved!")
         return
 
-    # Enter the GGUF branch when saving *or* pushing GGUF, so --push_gguf
-    # works even when --save_gguf is omitted (the local save is guarded
-    # separately below).
+    # Enter the GGUF branch when saving or pushing GGUF, so --push_gguf works
+    # without --save_gguf (the local save is guarded separately below).
     if args.save_gguf or args.push_gguf:
         if not args.save_gguf:
             print("Warning: --save_gguf not set, pushing GGUF to hub without saving locally.")

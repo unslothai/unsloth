@@ -19,8 +19,7 @@ def _should_use_mlx_backend_for_cli() -> bool:
 
 
 def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None:
-    # Activate before any code path that may import transformers. Model-type
-    # detection in the adapter imports utils.models, which builds registry sets.
+    # Activate before any transformers import: adapter model-type detection imports utils.models.
     ensure_studio_backend_path()
     from utils.transformers_version import activate_transformers_for_subprocess
     try:
@@ -32,8 +31,7 @@ def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None
 def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
     if _should_use_mlx_backend_for_cli():
         _activate_mlx_transformers(model_name, hf_token)
-        # MLX runs torch-free; route to the lightweight adapter without
-        # importing trainer.py (which pulls in torch/unsloth/trl at module load).
+        # MLX is torch-free: use the lightweight adapter, not trainer.py (imports torch/unsloth/trl at load).
         ensure_studio_backend_path()
         from studio.backend.core.training.training import create_mlx_trainer_adapter
 
