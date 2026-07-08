@@ -11,6 +11,8 @@ outputs/
 exports/
 /datasets/
 studio/backend/assets/datasets/
+# Generated async worker / reviewer transcripts (never part of the product).
+studio/backend/async_task_outputs/
 unsloth_training_checkpoints/
 *.gguf
 *.safetensors

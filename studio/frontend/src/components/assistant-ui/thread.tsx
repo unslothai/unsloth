@@ -12,6 +12,10 @@ import {
 import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
+import {
+  MessageResponseDetailsSheet,
+  MessageResponseModelBadge,
+} from "@/components/assistant-ui/message-response-details-sheet";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
@@ -3564,6 +3568,9 @@ const AssistantMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
+  const hasReasoningParts = useAuiState(({ message }) =>
+    message.parts.some((part) => part.type === "reasoning"),
+  );
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth
@@ -3620,7 +3627,7 @@ const AssistantMessage: FC = () => {
 
   return (
     <MessagePrimitive.Root
-      className="aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
+      className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
@@ -3649,6 +3656,11 @@ const AssistantMessage: FC = () => {
           </div>
         ) : (
           <>
+            {!hasReasoningParts ? (
+              <div className="pointer-events-none relative h-0 min-w-0">
+                <MessageResponseModelBadge className="absolute -top-6 left-0 max-w-[min(22rem,100%)]" />
+              </div>
+            ) : null}
             <GeneratingIndicator />
             <CancelledIndicator />
             <DiffusionCanvas />
@@ -3893,58 +3905,76 @@ const EditAssistantMessageButton: FC = () => {
 
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   return (
-    <ActionBarPrimitive.Root
-      hideWhenRunning={true}
-      className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
-    >
-      <CopyButton />
-      <EditAssistantMessageButton />
-      <ActionBarPrimitive.Reload asChild={true}>
-        <TooltipIconButton tooltip="Refresh">
-          <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Reload>
-      <ForkCountBadge />
-      <DeleteMessageButton />
-      <ActionBarMorePrimitive.Root>
-        <ActionBarMorePrimitive.Trigger asChild={true}>
-          <TooltipIconButton
-            tooltip="More"
-            className="data-[state=open]:bg-accent"
-          >
-            <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+    <>
+      <ActionBarPrimitive.Root
+        hideWhenRunning={true}
+        className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
+      >
+        <CopyButton />
+        <EditAssistantMessageButton />
+        <ActionBarPrimitive.Reload asChild={true}>
+          <TooltipIconButton tooltip="Refresh">
+            <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
           </TooltipIconButton>
-        </ActionBarMorePrimitive.Trigger>
-        <ActionBarMorePrimitive.Content
-          side="bottom"
-          align="start"
-          onCloseAutoFocus={(e) => e.preventDefault()}
-          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[9px] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
-        >
-          <ActionBarMorePrimitive.Item
-            disabled={forkDisabled}
-            onSelect={() => void forkMessage()}
-            className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+        </ActionBarPrimitive.Reload>
+        <ForkCountBadge />
+        <DeleteMessageButton />
+        <ActionBarMorePrimitive.Root>
+          <ActionBarMorePrimitive.Trigger asChild={true}>
+            <TooltipIconButton
+              tooltip="More"
+              className="data-[state=open]:bg-accent"
+            >
+              <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+            </TooltipIconButton>
+          </ActionBarMorePrimitive.Trigger>
+          <ActionBarMorePrimitive.Content
+            side="bottom"
+            align="start"
+            onCloseAutoFocus={(e) => e.preventDefault()}
+            className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[9px] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
           >
-            <GitBranchIcon strokeWidth={1.75} className="size-icon" />
-            Fork in new chat
-          </ActionBarMorePrimitive.Item>
-          <ActionBarPrimitive.ExportMarkdown asChild={true}>
-            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+            <ActionBarMorePrimitive.Item
+              disabled={forkDisabled}
+              onSelect={() => void forkMessage()}
+              className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+            >
+              <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+              Fork in new chat
+            </ActionBarMorePrimitive.Item>
+            <ActionBarPrimitive.ExportMarkdown asChild={true}>
+              <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+                <HugeiconsIcon
+                  icon={Download01Icon}
+                  strokeWidth={1.75}
+                  className="size-icon"
+                />
+                Export as Markdown
+              </ActionBarMorePrimitive.Item>
+            </ActionBarPrimitive.ExportMarkdown>
+            <ActionBarMorePrimitive.Item
+              onSelect={() => setDetailsOpen(true)}
+              className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+            >
               <HugeiconsIcon
-                icon={Download01Icon}
+                icon={FileDatabaseIcon}
                 strokeWidth={1.75}
                 className="size-icon"
               />
-              Export as Markdown
+              See response details
             </ActionBarMorePrimitive.Item>
-          </ActionBarPrimitive.ExportMarkdown>
-        </ActionBarMorePrimitive.Content>
-      </ActionBarMorePrimitive.Root>
-      <MessageTiming side="top" className="h-8 px-2" />
-    </ActionBarPrimitive.Root>
+          </ActionBarMorePrimitive.Content>
+        </ActionBarMorePrimitive.Root>
+        <MessageTiming side="top" className="h-8 px-2" />
+      </ActionBarPrimitive.Root>
+      <MessageResponseDetailsSheet
+        open={detailsOpen}
+        onOpenChange={setDetailsOpen}
+      />
+    </>
   );
 };
 

@@ -1756,7 +1756,6 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         # Base-class-from-config path (modern transformers): derive inv_freq like
         # transformers so config.rope_scaling is not dropped (#2405). Scaled
         # subclasses are excluded to avoid double-scaling.
-        config_inv_freq = None
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
             base = _get_rope_theta(config, default = base)
@@ -1769,32 +1768,17 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             device = DEVICE_TYPE_TORCH
             max_position_embeddings = config.max_position_embeddings
 
-            rope_scaling = getattr(config, "rope_scaling", None)
-            if rope_scaling is not None and type(self) is LlamaRotaryEmbedding:
-                config_inv_freq, self.attention_scaling = _compute_config_rope_inv_freq(
-                    config,
-                    rope_scaling,
-                )
-
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
+        # Kept so the v5 rope repair can rebuild the scaled inv_freq (#2405).
+        self._unsloth_rope_config = config
         # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
         self.multi_gpu_cos_cached = [None] * DEVICE_COUNT
         self.multi_gpu_sin_cached = [None] * DEVICE_COUNT
 
-        if config_inv_freq is not None:
-            inv_freq = config_inv_freq  # already scaled; skip subclass scaling
-        else:
-            # Normal Llama-3 RoPE
-            inv_freq = 1.0 / (
-                self.base
-                ** (
-                    torch.arange(0, self.dim, 2, dtype = torch.int64, device = "cpu").float() / self.dim
-                )
-            )
-            inv_freq = self._apply_inv_freq_scaling(inv_freq)
+        inv_freq = self._unsloth_recompute_inv_freq()
         self.register_buffer("inv_freq", inv_freq, persistent = False)
 
         # Build here to make `torch.jit.trace` work.
@@ -1816,6 +1800,25 @@ class LlamaRotaryEmbedding(torch.nn.Module):
     def _apply_inv_freq_scaling(self, inv_freq):
         """Override to apply custom inv_freq scaling (e.g., extended RoPE)."""
         return inv_freq
+
+    def _unsloth_recompute_inv_freq(self):
+        # Config scaling (llama3/yarn) first, else vanilla + subclass scaling.
+        # Shared by __init__ and the v5 rope repair so they cannot diverge.
+        config = getattr(self, "_unsloth_rope_config", None)
+        config_inv_freq = None
+        rope_scaling = getattr(config, "rope_scaling", None) if config is not None else None
+        if rope_scaling is not None and type(self) is LlamaRotaryEmbedding:
+            config_inv_freq, self.attention_scaling = _compute_config_rope_inv_freq(
+                config,
+                rope_scaling,
+            )
+        if config_inv_freq is not None:
+            return config_inv_freq
+        inv_freq = 1.0 / (
+            self.base
+            ** (torch.arange(0, self.dim, 2, dtype = torch.int64, device = "cpu").float() / self.dim)
+        )
+        return self._apply_inv_freq_scaling(inv_freq)
 
     def _apply_time_scaling(self, t):
         """Override to apply custom time scaling (e.g., linear scaling)."""
@@ -1927,11 +1930,18 @@ class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
 
     # From https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/api/model.py#L41
     def _apply_inv_freq_scaling(self, freqs: torch.Tensor):
-        # Values obtained from grid search
-        scale_factor = 8
-        low_freq_factor = 1
-        high_freq_factor = 4
-        old_context_len = 8192  # original llama3 length
+        # llama3 factors from config; Llama-3.1 defaults when built without one
+        # (legacy codegen path). Hardcoding 8 is wrong for e.g. Llama-3.2 (32).
+        # v5 renames rope_scaling -> rope_parameters; read either so the factor
+        # survives even if the rope_scaling back-compat shim is dropped.
+        config = getattr(self, "_unsloth_rope_config", None)
+        rope_scaling = _rope_scaling_as_dict(
+            getattr(config, "rope_scaling", None) or getattr(config, "rope_parameters", None) or {}
+        )
+        scale_factor = rope_scaling.get("factor", 8)
+        low_freq_factor = rope_scaling.get("low_freq_factor", 1)
+        high_freq_factor = rope_scaling.get("high_freq_factor", 4)
+        old_context_len = rope_scaling.get("original_max_position_embeddings", 8192)
 
         low_freq_wavelen = old_context_len / low_freq_factor
         high_freq_wavelen = old_context_len / high_freq_factor
