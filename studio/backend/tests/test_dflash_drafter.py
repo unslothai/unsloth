@@ -155,6 +155,14 @@ def test_detect_gguf_model_rejects_infix_dflash_drafter(tmp_path):
     assert detect_gguf_model(str(drafter)) is None
 
 
+def test_detect_dflash_file_ignores_quant_only_weight_name(tmp_path):
+    # A native weight named after its quant (Q8_0.gguf) must not attach a foreign
+    # drafter via the drafter's quant suffix (OtherModel-DFlash-q8_0 -> q8_0).
+    (tmp_path / "Q8_0.gguf").touch()
+    (tmp_path / "OtherModel-DFlash-q8_0.gguf").touch()
+    assert detect_dflash_file(str(tmp_path / "Q8_0.gguf")) is None
+
+
 def test_detect_dflash_file_prefers_quantized_over_bf16(tmp_path):
     # The documented flow produces `<model>-DFlash-bf16.gguf` then quantizes to
     # `-q8_0.gguf`, leaving both beside the model. Pick the smaller (quantized)

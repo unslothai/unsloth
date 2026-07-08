@@ -1109,6 +1109,16 @@ def _is_mmproj(filename: str) -> bool:
 # hub.utils.gguf.is_mtp_drafter_path (layering forbids a shared import).
 _DFLASH_DRAFTER_RE = re.compile(r"(?:^|[-_.])dflash(?:[-_.]|$)", re.IGNORECASE)
 
+# A basename token that is purely a quant/precision tag (Q4_K_M, IQ2_XXS, Q8_0,
+# BF16, fp16, ...). Used to drop the quant side when pairing a DFlash drafter by
+# model name, so ``<model>-DFlash-q8_0.gguf`` doesn't attach to a weight whose
+# own name starts with that quant (e.g. a native ``Q8_0.gguf``).
+_GGUF_QUANT_TAG_RE = re.compile(
+    r"^(?:ud-)?(?:mxfp\d+(?:_[a-z0-9]+)*|iq\d+_[a-z]+(?:_[a-z0-9]+)?|tq\d+_\d+"
+    r"|q\d+_k(?:_[a-z]+)?|q\d+_\d+|q\d+_k|bf16|f16|f32|fp16)$",
+    re.IGNORECASE,
+)
+
 
 def _is_mtp_drafter(path: str) -> bool:
     """True for a separate-file speculative drafter (MTP or DFlash), a companion
@@ -1427,9 +1437,13 @@ def detect_dflash_file(path: str, search_root: Optional[str] = None) -> Optional
                 continue
             # The model identity is whichever side of the dflash token isn't a
             # quant tag: `dflash-<model>` -> after; `<model>-DFlash` -> before;
-            # `<model>-DFlash-<quant>` -> before still prefixes the weight.
+            # `<model>-DFlash-<quant>` -> before. Drop a pure quant-tag side so a
+            # `<other>-DFlash-q8_0.gguf` can't attach to a weight whose own name
+            # starts with that quant (e.g. a native `Q8_0.gguf`).
             candidates = [
-                c for c in (stem[: m.start()].strip("-_."), stem[m.end() :].strip("-_.")) if c
+                c
+                for c in (stem[: m.start()].strip("-_."), stem[m.end() :].strip("-_."))
+                if c and not _GGUF_QUANT_TAG_RE.match(c)
             ]
             if weight_name is not None and not any(weight_name.startswith(c) for c in candidates):
                 continue

@@ -2546,11 +2546,11 @@ def _request_matches_loaded_settings(
     # fixed drafter at the same path engages -- otherwise the path compare below
     # dedupes on the unchanged name and the fallback sticks (the
     # dflash_drafter_incompatible message tells the user to replace the drafter).
-    if (
-        llama_backend.spec_fallback_reason
-        in ("dflash_drafter_incompatible", "dflash_runtime_error")
-        and req_mode == "auto"
-        and not _extra_args_set_spec_type(effective_extra)
+    # These reasons are DFlash-specific, so fire regardless of mode or whether
+    # the spec came from Auto or validated extra args (both can hit the failure).
+    if llama_backend.spec_fallback_reason in (
+        "dflash_drafter_incompatible",
+        "dflash_runtime_error",
     ):
         return False
     # spec_draft_n_max only matters with a model-draft variant; None means
@@ -3120,10 +3120,12 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
 
 
 def _remote_gguf_companion_bytes(
-    repo: str, *, hf_token: Optional[str], include_mmproj: bool
+    repo: str, *, hf_token: Optional[str], include_mmproj: bool, include_dflash: bool = True
 ) -> int:
     """Bytes of MTP/DFlash/mmproj companion GGUFs Studio auto-downloads. 0 on
-    error, so it can only add headroom, never refuse a load by itself."""
+    error, so it can only add headroom, never refuse a load by itself.
+    ``include_dflash`` is False for vision loads, which suppress DFlash and so
+    never fetch the drafter."""
     try:
         from huggingface_hub import model_info
 
@@ -3140,9 +3142,10 @@ def _remote_gguf_companion_bytes(
                 total += getattr(sibling, "size", 0) or 0
         # DFlash: only the preferred (quantized) drafter is fetched, so count that
         # one, not every -DFlash- build a repo may ship alongside it.
-        dflash = preferred_dflash_sibling(siblings)
-        if dflash is not None:
-            total += getattr(dflash, "size", 0) or 0
+        if include_dflash:
+            dflash = preferred_dflash_sibling(siblings)
+            if dflash is not None:
+                total += getattr(dflash, "size", 0) or 0
         return total
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
@@ -3194,7 +3197,11 @@ def _estimate_gguf_required_gb(
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
+        # Vision loads suppress DFlash, so don't charge its drafter there.
+        _cfg_is_vision = bool(getattr(config, "gguf_mmproj_file", None))
         for attr in ("gguf_mmproj_file", "gguf_mtp_file", "gguf_dflash_file"):
+            if attr == "gguf_dflash_file" and _cfg_is_vision:
+                continue
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
                 total_bytes += Path(f).stat().st_size
@@ -3215,7 +3222,10 @@ def _estimate_gguf_required_gb(
             if main_bytes is None:
                 return None
             companions = _remote_gguf_companion_bytes(
-                repo, hf_token = hf_token, include_mmproj = bool(has_vision)
+                repo,
+                hf_token = hf_token,
+                include_mmproj = bool(has_vision),
+                include_dflash = not bool(has_vision),
             )
             return (main_bytes + companions) / (1024**3)
         return None
