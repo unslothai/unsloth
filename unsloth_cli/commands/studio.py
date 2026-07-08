@@ -198,6 +198,60 @@ def _studio_venv_python() -> Optional[Path]:
     return p if p.is_file() else None
 
 
+def _reexec_into_studio_venv(args: List[str]) -> None:
+    """Re-exec into the Studio venv if the backend deps are not importable here.
+
+    The outer ``unsloth`` CLI package does not depend on ``fastmcp``; on a
+    normal install the backend deps live in ``STUDIO_HOME/unsloth_studio``. The
+    MCP commands must therefore hand off to that interpreter before importing
+    ``mcp_server`` (mirrors the re-exec in ``studio run``). If already running
+    inside the Studio venv -- or the full backend dependency set is already
+    importable (e.g. a dev checkout with deps in the current interpreter) --
+    returns; otherwise execs (POSIX) or spawns-and-waits (Windows) and never
+    returns.
+    """
+    import importlib.util
+
+    # Probe the backend's hard deps together: fastmcp alone is not enough (the
+    # backend also needs structlog/starlette/...), so a partial outer install
+    # still triggers the venv hand-off.
+    _needed = ("fastmcp", "structlog", "starlette", "fastapi")
+
+    def _deps_present() -> bool:
+        return all(importlib.util.find_spec(mod) is not None for mod in _needed)
+
+    studio_venv_dir = STUDIO_HOME / "unsloth_studio"
+    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    if in_studio_venv or _deps_present():
+        return  # the backend can be imported in this interpreter
+
+    studio_python = _studio_venv_python()
+    if not studio_python:
+        typer.echo(
+            "Studio MCP needs the Studio environment (backend deps not found and no "
+            "Studio venv detected). Run `unsloth studio setup` first.",
+            err = True,
+        )
+        raise typer.Exit(1)
+    # Console scripts are created as Scripts/unsloth.exe on Windows, unsloth elsewhere.
+    exe_name = "unsloth.exe" if sys.platform == "win32" else "unsloth"
+    studio_bin = studio_python.parent / exe_name
+    if not studio_bin.is_file():
+        typer.echo("Studio venv missing 'unsloth' entry point. Re-run: unsloth studio setup")
+        raise typer.Exit(1)
+
+    full_args = [str(studio_bin), *args]
+    if sys.platform == "win32":
+        proc = subprocess.Popen(full_args)
+        try:
+            rc = proc.wait()
+        except KeyboardInterrupt:
+            rc = proc.wait()
+        raise typer.Exit(rc)
+    else:
+        os.execvp(str(studio_bin), full_args)
+
+
 def _find_run_py() -> Optional[Path]:
     """Find studio/backend/run.py.
 
@@ -1952,3 +2006,104 @@ def reset_password():
         raise typer.Exit(0)
 
     typer.echo("Auth database deleted. Restart Unsloth Studio to get a new password.")
+
+
+@studio_app.command()
+def mcp(
+    enable: List[str] = typer.Option(
+        None,
+        "--enable",
+        help = (
+            "Feature group to expose (repeatable): models, data, train, export, recipe. "
+            "Defaults to all. Only the `models` group is fully read-only; `data` includes "
+            "data_register, which writes to the dataset store."
+        ),
+    ),
+    disable: List[str] = typer.Option(
+        None,
+        "--disable",
+        help = "Feature group to hide (repeatable). Applied after --enable.",
+    ),
+):
+    """Run Unsloth Studio as an MCP server over stdio.
+
+    Exposes Studio's models, datasets, training, export and Data Designer
+    recipe features as MCP tools so any MCP client (Claude Desktop, Cursor,
+    Cline, ...) can drive Unsloth Studio directly. Reuses Studio's in-process
+    backend; long-running work (training, export, recipe) runs in the existing
+    subprocess backends and is surfaced as start / status / stop tools.
+
+    Connect from an MCP client with a config like::
+
+        {"mcpServers": {"unsloth-studio": {"command": "unsloth", "args": ["studio", "mcp"]}}}
+
+    For a read-only agent profile (catalog/config discovery only)::
+
+        {"mcpServers": {"unsloth-studio": {"command": "unsloth", "args": ["studio", "mcp", "--enable", "models"]}}}
+    """
+    _ensure_studio_env_exported()
+
+    # fastmcp/backend deps live in the Studio venv; re-exec there first.
+    fwd = ["studio", "mcp"]
+    fwd += [tok for g in (enable or []) for tok in ("--enable", g)]
+    fwd += [tok for g in (disable or []) for tok in ("--disable", g)]
+    _reexec_into_studio_venv(fwd)
+
+    from unsloth_cli._inference import configure_quiet_logging, ensure_studio_backend_path
+
+    ensure_studio_backend_path()
+    configure_quiet_logging()
+
+    from mcp_server import run_stdio
+    from mcp_server.tools import resolve_groups
+
+    try:
+        selected = resolve_groups(enable, disable)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err = True)
+        raise typer.Exit(code = 2)
+
+    typer.echo(
+        f"Unsloth Studio MCP server (stdio) starting with groups: {', '.join(selected)}",
+        err = True,
+    )
+    run_stdio(enabled = selected)
+
+
+@studio_app.command("mcp-list-tools")
+def mcp_list_tools(
+    enable: List[str] = typer.Option(
+        None, "--enable", help = "Feature group to include (repeatable)."
+    ),
+    disable: List[str] = typer.Option(
+        None, "--disable", help = "Feature group to exclude (repeatable)."
+    ),
+):
+    """Print the MCP tools that would be exposed (dry-run, no server started)."""
+    _ensure_studio_env_exported()
+
+    # Resolves the same Studio-venv fastmcp dependency as `mcp`.
+    fwd = ["studio", "mcp-list-tools"]
+    fwd += [tok for g in (enable or []) for tok in ("--enable", g)]
+    fwd += [tok for g in (disable or []) for tok in ("--disable", g)]
+    _reexec_into_studio_venv(fwd)
+
+    from unsloth_cli._inference import ensure_studio_backend_path
+
+    ensure_studio_backend_path()
+
+    import asyncio
+
+    from mcp_server.server import list_tools
+    from mcp_server.tools import resolve_groups
+
+    try:
+        selected = resolve_groups(enable, disable)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err = True)
+        raise typer.Exit(code = 2)
+
+    tools = asyncio.run(list_tools(enabled = selected))
+    typer.echo(f"Groups: {', '.join(selected)}  ({len(tools)} tools)")
+    for tool in tools:
+        typer.echo(f"  {tool['name']:<26} [{tool['group']}]  {tool['description']}")

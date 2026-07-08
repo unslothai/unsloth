@@ -241,6 +241,12 @@ class TrainingBackend:
         self.current_job_id: Optional[str] = None
         self._output_dir: Optional[str] = None
 
+        # Last structured error payload from the worker (e.g. a remote-code
+        # consent block carrying the approval fingerprint). Surfaced by status
+        # callers (MCP) that otherwise only see the error text.
+        self.last_error_kind: Optional[str] = None
+        self.last_remote_code: Optional[dict] = None
+
         # DB persistence
         self._metric_buffer: list[dict] = []
         self._run_finalized: bool = False
@@ -1039,6 +1045,10 @@ class TrainingBackend:
             elif etype == "error":
                 self._progress.is_training = False
                 self._progress.error = event.get("error", "Unknown error")
+                # Preserve structured payloads (e.g. remote-code consent
+                # fingerprint) so non-HTTP callers can recover the detail.
+                self.last_error_kind = event.get("error_kind")
+                self.last_remote_code = event.get("remote_code")
                 logger.error("Training error: %s", event.get("error"))
                 stack = event.get("stack", "")
                 if stack:

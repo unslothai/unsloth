@@ -53,6 +53,12 @@ class ExportOrchestrator:
         self.is_vision: bool = False
         self.is_peft: bool = False
 
+        # Last structured error payload from the worker (e.g. a remote-code
+        # consent block carrying the approval fingerprint). Surfaced by status
+        # callers (MCP) that can't see the raw worker response.
+        self.last_error_kind: Optional[str] = None
+        self.last_remote_code: Optional[dict] = None
+
         # Thread-safe ring buffer of worker log lines; powers the export logs SSE endpoint.
         self._log_buffer: Deque[Dict[str, Any]] = deque(maxlen = _LOG_BUFFER_MAXLEN)
         self._log_lock = threading.Lock()
@@ -441,6 +447,10 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    # Preserve structured payloads (e.g. remote-code consent
+                    # fingerprint) so non-HTTP callers can recover the detail.
+                    self.last_error_kind = resp.get("error_kind")
+                    self.last_remote_code = resp.get("remote_code")
                     op_success, op_message = False, error
                     return False, error
             finally:
