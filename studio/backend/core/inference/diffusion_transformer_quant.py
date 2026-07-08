@@ -97,7 +97,8 @@ def exclude_tokens_for_scheme(scheme: str) -> tuple[str, ...]:
 # the lower-precision schemes listed as fallbacks for that arch tier. On Blackwell, fp8
 # leads: measured on a B200, plain fp8 dynamic is both faster AND more accurate than the
 # alternatives for the DiT's shapes. mxfp8's block scaling adds overhead without a speed
-# win, so it sits below fp8. nvfp4 is intentionally below fp8 too: the FP4 tensor-core
+# win, so it sits below fp8. nvfp4 is intentionally DISABLED in the auto ladder (opt-in only;
+# see the TODO on the Blackwell tier below): the FP4 tensor-core
 # GEMM is real once torch>=2.11 + torchao's CUTLASS FP4 kernel is present (verified: a
 # 16384^3 GEMM hits ~3826 TFLOPS, 1.37x fp8), but it only beats fp8 on very large GEMMs.
 # At the DiT's actual shapes (hidden ~3072, MLP ~12288, M~4096) it is *slower* than fp8
@@ -110,7 +111,14 @@ def exclude_tokens_for_scheme(scheme: str) -> tuple[str, ...]:
 # accumulate throughput, while int8 runs full-rate (int32 accumulate is not nerfed), so int8
 # is as fast or faster than fp8 on every consumer NVIDIA / AMD / Intel part.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
-    ((10, 0), (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+
+    # TODO(nvfp4): NVFP4 is disabled in the auto ladder for now. Re-enable it by restoring the
+    # commented line below (nvfp4 between fp8 and mxfp8) once the FP4 tensor-core GEMM wins at
+    # the DiT's real shapes (hidden ~3072, MLP ~12288, M~4096); today it is slower (0.81x
+    # end-to-end on Z-Image 1024px) AND less accurate (LPIPS 0.166 vs fp8's 0.044). nvfp4 stays
+    # an explicit opt-in (transformer_quant="nvfp4"); a future MSLK-equipped box may flip the
+    # tradeoff. See commit 3a21f12500.
+    ((10, 0), (TQ_FP8, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+ (nvfp4 disabled; see TODO)
+    # ((10, 0), (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8)),  # restore to re-enable nvfp4 in auto
     ((8, 9), (TQ_FP8, TQ_INT8)),  # Ada sm_89 / Hopper sm_90
     ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
 )
