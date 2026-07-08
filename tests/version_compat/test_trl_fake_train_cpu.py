@@ -197,7 +197,6 @@ def _require_stack():
     torch.compile = _eager_compile
     try:
         import torch._dynamo  # noqa: E402
-
         torch._dynamo.config.disable = True
     except Exception:
         pass
