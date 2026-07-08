@@ -44,6 +44,7 @@ import {
   mergeBackendRecommendedInference,
   resolveLoadMaxSeqLength,
 } from "../presets/preset-policy";
+import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import {
   isMultimodalResponse,
 } from "../types/api";
@@ -812,6 +813,22 @@ export function useChatModelRuntime() {
               }
             }
             await refresh({ signal: abortCtrl.signal });
+            if (
+              !isLora &&
+              !nativePathToken &&
+              !isLocalModelPath(modelId) &&
+              !isExternalModelId(modelId)
+            ) {
+              const kind =
+                loadResponse.is_gguf || isGguf || ggufVariant
+                  ? "gguf"
+                  : "model";
+              recordLastLocalModelLoad({
+                id: modelId,
+                kind,
+                ggufVariant: kind === "gguf" ? ggufVariant ?? null : null,
+              });
+            }
             // A successful load owns the shared (pick-unscoped) settings fields,
             // so any surviving stage is stale: the just-loaded pick itself, or a
             // pick queued for a different model mid-load whose knobs this load
