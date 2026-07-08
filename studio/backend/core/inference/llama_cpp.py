@@ -5644,34 +5644,51 @@ class LlamaCppBackend:
                             or _mtp_probe_raised
                         )
                     )
+                    # DFlash auto-engages in Auto with a resolved sibling (never
+                    # on a vision load -- multimodal drafting is unsupported). It
+                    # is a separate drafter, mechanically like the Gemma MTP
+                    # drafter, so it needs its weights+KV reserved. No binary
+                    # probe here: if the prebuilt lacks draft-dflash the launch
+                    # falls back to --spec-default, so reserving errs conservative
+                    # (over-reserve, never OOM), matching MTP's reserve-on-uncertain.
+                    _auto_studio_dflash = bool(
+                        not _extra_args_set_spec_type(extra_args)
+                        and dflash_draft_path
+                        and _mtp_effective == "auto"
+                        and not effective_is_vision
+                    )
                     _mtp_will_engage = bool(
-                        _user_mtp_via_extras or _user_draft_via_extras or _auto_studio_mtp
+                        _user_mtp_via_extras
+                        or _user_draft_via_extras
+                        or _auto_studio_mtp
+                        or _auto_studio_dflash
                     )
                     # The duplicated full target-KV copy (ctx_tgt) is an MTP-only
                     # cost: the MTP head runs a second context over the target
                     # model's own KV geometry. The separate-drafter spec modes
-                    # (draft-simple/draft-eagle3, reached via _user_draft_via_extras)
-                    # load a small distinct drafter with its own KV and keep no such
-                    # copy, so only charge it when the engaged mode is truly MTP.
+                    # (draft-simple/draft-eagle3, DFlash) load a small distinct
+                    # drafter with its own KV and keep no such copy, so only charge
+                    # it when the engaged mode is truly MTP.
                     _engaged_is_mtp = bool(_user_mtp_via_extras or _auto_studio_mtp)
 
                     # Effective draft depth: extras win (last-wins at launch), else
-                    # the field, else the platform default (2 GPU / 3 CPU).
+                    # the field, else the platform default (DFlash 4; MTP 2 GPU /
+                    # 3 CPU -- _emit_dflash uses 4, so the reserve must match).
                     _extra_n_max = _extra_args_spec_draft_n_max(extra_args)
                     _mtp_eff_n_max = _extra_n_max if _extra_n_max is not None else spec_draft_n_max
                     if _mtp_eff_n_max is None:
-                        _mtp_eff_n_max = 2 if gpus else 3
+                        _mtp_eff_n_max = 4 if _auto_studio_dflash else (2 if gpus else 3)
                     # Separate-drafter weights live on GPU (an embedded head is
                     # already in model_size). Size the drafter the launch loads, by
                     # precedence: extras --model-draft (last-wins), else Studio's
-                    # emitted mtp_draft_path, else the env drafter. Sizing the wrong
-                    # one would under-reserve and OOM.
+                    # emitted MTP or DFlash drafter, else the env drafter. Sizing the
+                    # wrong one would under-reserve and OOM.
                     _cli_draft_for_budget = _extra_args_mtp_draft_path(extra_args, env = {})
                     _studio_draft_for_budget = (
-                        mtp_draft_path
+                        (mtp_draft_path or dflash_draft_path)
                         if (
                             _mtp_will_engage
-                            and mtp_draft_path
+                            and (mtp_draft_path or dflash_draft_path)
                             and not _extra_args_set_spec_type(extra_args)
                         )
                         else None
