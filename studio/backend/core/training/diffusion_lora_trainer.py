@@ -486,7 +486,13 @@ def run_diffusion_lora_training(
         index_sampler = PermutationBatchSampler(len(pairs), rng)
 
         def _next_batch() -> tuple[list[int], list[str], list[str]]:
-            idx = index_sampler.next_batch(min(cfg.train_batch_size, len(pairs)))
+            # Draw the full configured batch, not min(batch, n): PermutationBatchSampler refills
+            # across permutation cycles so a dataset smaller than train_batch_size still yields
+            # exactly train_batch_size indices (the DiT trainer calls next_batch the same way).
+            # Clamping to len(pairs) would silently train a tiny dataset at a smaller effective
+            # batch than configured while the scheduler and samples-per-second still assume the
+            # full batch.
+            idx = index_sampler.next_batch(cfg.train_batch_size)
             chosen = [pairs[i] for i in idx]
             return idx, [c[0] for c in chosen], [c[1] for c in chosen]
 

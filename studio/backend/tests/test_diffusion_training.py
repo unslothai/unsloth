@@ -617,6 +617,24 @@ def test_permutation_sampler_covers_dataset_once_per_cycle():
     assert set(batch) == {0, 1, 2, 3}
 
 
+def test_permutation_sampler_honors_batch_on_tiny_dataset():
+    # Regression for the SDXL LoRA trainer clamp: a dataset smaller than train_batch_size must
+    # still yield exactly train_batch_size indices (refilled across cycles), so a tiny dataset
+    # trains at the configured/reported effective batch instead of silently shrinking it -- the
+    # contract the SDXL _next_batch now relies on (matching the DiT trainer, which never clamps).
+    import random
+
+    from core.training.diffusion_train_common import PermutationBatchSampler
+
+    sampler = PermutationBatchSampler(2, random.Random(0))  # 2-image dataset
+    batch = sampler.next_batch(8)  # train_batch_size = 8, not clamped to 2
+    assert len(batch) == 8
+    assert set(batch) == {0, 1}
+    # A whole-multiple batch draws each image equally, so the effective gradient matches the
+    # configured batch rather than a shrunk one.
+    assert batch.count(0) == 4 and batch.count(1) == 4
+
+
 def test_route_start_accepts_zero_max_grad_norm(client):
     # 0 is the documented "disable clipping" value (the trainer skips clip_grad_norm_);
     # the request model must not reject it.
