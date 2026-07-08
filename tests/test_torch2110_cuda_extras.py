@@ -11,11 +11,15 @@ Hermetic: only parses pyproject.toml, no network or install.
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 import pytest
 from packaging.requirements import Requirement
+
+try:  # tomllib is stdlib on Python 3.11+; older interpreters need the tomli backport.
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.9 / 3.10
+    tomllib = pytest.importorskip("tomli")
 
 PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 _TORCH_TRIO = ("torch", "torchvision", "torchaudio")
