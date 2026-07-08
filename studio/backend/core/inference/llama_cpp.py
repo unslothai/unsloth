@@ -5672,23 +5672,28 @@ class LlamaCppBackend:
                     _engaged_is_mtp = bool(_user_mtp_via_extras or _auto_studio_mtp)
 
                     # Effective draft depth: extras win (last-wins at launch), else
-                    # the field, else the platform default (DFlash 4; MTP 2 GPU /
-                    # 3 CPU -- _emit_dflash uses 4, so the reserve must match).
+                    # the field, else the platform default (DFlash 4; MTP 2 GPU / 3
+                    # CPU). Only the log note reads it -- the byte estimate's verify
+                    # buffer rides in the ctx-fit headroom -- but keep it accurate.
                     _extra_n_max = _extra_args_spec_draft_n_max(extra_args)
                     _mtp_eff_n_max = _extra_n_max if _extra_n_max is not None else spec_draft_n_max
                     if _mtp_eff_n_max is None:
                         _mtp_eff_n_max = 4 if _auto_studio_dflash else (2 if gpus else 3)
                     # Separate-drafter weights live on GPU (an embedded head is
-                    # already in model_size). Size the drafter the launch loads, by
-                    # precedence: extras --model-draft (last-wins), else Studio's
-                    # emitted MTP or DFlash drafter, else the env drafter. Sizing the
-                    # wrong one would under-reserve and OOM.
+                    # already in model_size). Size the drafter the launch actually
+                    # emits: DFlash wins Auto (its branch returns before MTP), so
+                    # size it when it engages, else the MTP drafter. Extras
+                    # --model-draft still wins below (last-wins at launch). Sizing
+                    # the wrong one would under-reserve and OOM.
+                    _engaged_studio_drafter = (
+                        dflash_draft_path if _auto_studio_dflash else mtp_draft_path
+                    )
                     _cli_draft_for_budget = _extra_args_mtp_draft_path(extra_args, env = {})
                     _studio_draft_for_budget = (
-                        (mtp_draft_path or dflash_draft_path)
+                        _engaged_studio_drafter
                         if (
                             _mtp_will_engage
-                            and (mtp_draft_path or dflash_draft_path)
+                            and _engaged_studio_drafter
                             and not _extra_args_set_spec_type(extra_args)
                         )
                         else None
