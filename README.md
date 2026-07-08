@@ -212,7 +212,7 @@ By default `unsloth studio` binds to `127.0.0.1` (this machine only). To reach i
 ```bash
 unsloth studio --secure -p 8888
 ```
-- `-H 0.0.0.0`: bind the raw port on all network interfaces, reachable from anywhere on the network. Only use this on a trusted network.
+- `-H 0.0.0.0`: bind the raw port on all network interfaces, reachable from anywhere on the network. This also starts a public Cloudflare quick-tunnel by default, publishing an internet-reachable `https://*.trycloudflare.com` URL (this works even behind a firewall). Pass `--no-cloudflare` to disable just the public link while keeping the network bind.
 ```bash
 unsloth studio -H 0.0.0.0 -p 8888
 ```
