@@ -6832,15 +6832,24 @@ def _route_to_vulkan_prebuilt(
     from UPSTREAM_REPO. Two triggers route here, both suppressed under
     --cpu-fallback (the explicit "give me CPU" last resort wins):
       * UNSLOTH_FORCE_VULKAN forces Vulkan over the detected CUDA/ROCm backend;
-      * an auto-detected Intel GPU (no usable NVIDIA/ROCm) -- the purpose of the
-        has_intel_gpu probe, since the fork manifest ships no Vulkan asset.
+      * an auto-detected Intel GPU with NO physical NVIDIA/ROCm -- the purpose
+        of the has_intel_gpu probe, since the fork manifest ships no Vulkan asset.
     Applied by BOTH the install path and the --resolve-prebuilt probe so the
     "is a prebuilt available" answer matches what actually gets installed.
 
     Returns the (possibly rewritten) host, repo, and release tag.
     """
     forced = force_vulkan_requested()
-    auto_intel = host.has_intel_gpu and not host.has_usable_nvidia and not host.has_rocm
+    # Gate auto-routing on no PHYSICAL NVIDIA, not merely no usable one: a
+    # mixed NVIDIA+Intel host that hides NVIDIA with CUDA_VISIBLE_DEVICES=""/-1
+    # keeps has_physical_nvidia=True while has_usable_nvidia goes False. Vulkan
+    # ignores CUDA_VISIBLE_DEVICES, so auto-routing such a host would let Vulkan
+    # grab the NVIDIA GPU the user reserved. An explicit UNSLOTH_FORCE_VULKAN
+    # still overrides. (Detect_host only opens this gap via CUDA masking; a
+    # genuinely unusable NVIDIA with the mask unset stays has_usable_nvidia.)
+    auto_intel = (
+        host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
+    )
     if force_cpu or not (forced or auto_intel):
         return host, published_repo, published_release_tag
     if host.is_macos:

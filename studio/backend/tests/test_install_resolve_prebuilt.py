@@ -425,6 +425,21 @@ def test_route_to_vulkan_prebuilt_cpu_fallback_wins():
     assert routed is host
 
 
+def test_route_to_vulkan_prebuilt_hidden_nvidia_not_rerouted():
+    # A mixed NVIDIA+Intel host that hid NVIDIA (CUDA_VISIBLE_DEVICES=""/-1):
+    # physical NVIDIA present but not usable. Must NOT auto-route to Vulkan, or
+    # Vulkan (which ignores CUDA_VISIBLE_DEVICES) could grab the reserved GPU.
+    host = _host(
+        is_linux = True,
+        is_x86_64 = True,
+        has_intel_gpu = True,
+        has_physical_nvidia = True,
+        has_usable_nvidia = False,
+    )
+    _routed, repo, _tag = ilp._route_to_vulkan_prebuilt(host, FORK, "", force_cpu = False)
+    assert repo == FORK
+
+
 def test_route_to_vulkan_prebuilt_rocm_host_not_rerouted():
     # An Intel iGPU alongside a usable ROCm GPU stays on its ROCm/fork path.
     host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True, has_rocm = True)
