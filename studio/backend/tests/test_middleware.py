@@ -312,9 +312,7 @@ class TestSecurityHeadersMiddleware:
         assert "Secure" in r.headers["set-cookie"]
         assert "Partitioned" in r.headers["set-cookie"]
 
-    def test_hosted_notebook_frame_cookie_survives_route_navigation(
-        self, main_module, monkeypatch
-    ):
+    def test_hosted_notebook_frame_cookie_survives_route_navigation(self, main_module, monkeypatch):
         monkeypatch.setattr(main_module, "_IS_COLAB", False)
         monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
         monkeypatch.setenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", "frame-token")

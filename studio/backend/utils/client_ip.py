@@ -38,7 +38,11 @@ def _trust_cf_connecting_ip(request) -> bool:
         return True
     try:
         if not bool(
-            getattr(getattr(getattr(request, "app", None), "state", None), "trust_cloudflare_client_ip", False)
+            getattr(
+                getattr(getattr(request, "app", None), "state", None),
+                "trust_cloudflare_client_ip",
+                False,
+            )
         ):
             return False
         return notebook_frame_cookie_matches(request.headers)

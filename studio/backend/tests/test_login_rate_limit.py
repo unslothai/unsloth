@@ -164,9 +164,7 @@ class TestClientIp:
         req = _FakeRequest("127.0.0.1", {"cf-connecting-ip": "198.51.100.7"})
         assert _client_ip(req) == "127.0.0.1"
 
-    def test_cf_connecting_ip_ignored_from_managed_tunnel_without_frame_cookie(
-        self, env_no_proxy
-    ):
+    def test_cf_connecting_ip_ignored_from_managed_tunnel_without_frame_cookie(self, env_no_proxy):
         from routes.auth import _client_ip
         req = _FakeRequest(
             "127.0.0.1",
@@ -179,6 +177,7 @@ class TestClientIp:
         self, env_no_proxy, monkeypatch
     ):
         from routes.auth import _client_ip
+
         monkeypatch.setenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", "frame-token")
         req = _FakeRequest(
             "127.0.0.1",
