@@ -1376,6 +1376,18 @@ def test_connect_openclaw_no_launch_keeps_explicit_subcommand(fake_studio):
     assert _launch_command(result.output) == ["openclaw", "crestodian"]
 
 
+def test_connect_openclaw_no_launch_option_args_use_default_tui(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch", "--message", "hi"])
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["openclaw", "tui", "--local", "--message", "hi"]
+
+
+def test_connect_openclaw_no_launch_keeps_explicit_tui(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch", "tui", "--message", "hi"])
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["openclaw", "tui", "--message", "hi"]
+
+
 # ── OpenCode (OpenAI /v1/chat/completions) ───────────────────────────
 
 
