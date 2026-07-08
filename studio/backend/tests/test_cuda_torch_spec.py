@@ -70,7 +70,7 @@ def test_cuda_spec_matches_rocm72_upper_bound(monkeypatch):
                 return clause.version
         raise AssertionError(f"no upper bound in {pkg_spec!r}")
 
-    for cuda_pkg, rocm_pkg in zip(mod._CUDA_TORCH_PKG_SPEC, rocm72):
+    for cuda_pkg, rocm_pkg in zip(mod._CUDA_TORCH_PKG_SPEC, rocm72, strict = True):
         assert _upper(cuda_pkg) == _upper(
             rocm_pkg
         ), f"CUDA {cuda_pkg!r} upper bound must match rocm7.2 {rocm_pkg!r}"
