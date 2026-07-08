@@ -339,6 +339,11 @@ jobs:
         env:
           UNSLOTH_IS_PRESENT: '1'
           UNSLOTH_COMPILE_DISABLE: '1'
+          # Disable dynamo/inductor at the process level, before conftest.py's early
+          # `import unsloth`, so the GRPO hot path never compiles on the GPU-less runner
+          # (defense in depth; the CPU fake-train also flips this at runtime).
+          TORCHDYNAMO_DISABLE: '1'
+          TORCH_COMPILE_DISABLE: '1'
           PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
         run: |
           cd unsloth
@@ -354,6 +359,8 @@ jobs:
         env:
           UNSLOTH_IS_PRESENT: '1'
           UNSLOTH_COMPILE_DISABLE: '1'
+          TORCHDYNAMO_DISABLE: '1'
+          TORCH_COMPILE_DISABLE: '1'
           PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
         run: |
           pip install --upgrade "git+https://github.com/huggingface/trl"
