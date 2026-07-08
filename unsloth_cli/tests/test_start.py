@@ -679,7 +679,42 @@ def test_resolve_model_loopback_does_not_casefold_model_directory_paths(monkeypa
     assert any(u.endswith("/api/inference/load") for _, u, _ in calls)
 
 
-def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
+def test_resolve_model_loopback_does_not_casefold_visible_local_paths(tmp_path, monkeypatch):
+    # Preserve the old local-path behavior for two-segment paths the CLI can see.
+    # When Studio and the CLI share a cwd, Outputs/Run1 and outputs/run1 are
+    # distinct local directories on case-sensitive filesystems, not Hub IDs.
+    (tmp_path / "Outputs" / "Run1").mkdir(parents = True)
+    (tmp_path / "outputs" / "run1").mkdir(parents = True)
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url, payload))
+        if url.endswith("/v1/models"):
+            model_id = "outputs/run1" if state["loaded"] else "Outputs/Run1"
+            return {"data": [{"id": model_id, "loaded": True, "context_length": 131072}]}
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "outputs/run1"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "outputs/run1")
+
+    assert entry["id"] == "outputs/run1"
+    assert any(u.endswith("/api/inference/load") for _, u, _ in calls)
+
+
+def test_model_id_matching_does_not_casefold_local_paths(tmp_path, monkeypatch):
     existing_local = tmp_path / "Org" / "Foo"
     existing_local.mkdir(parents = True)
 
@@ -690,6 +725,12 @@ def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
 
     assert not start._is_hub_model_id("Models/Foo")
     assert not start._model_id_matches("Models/Foo", "models/foo")
+
+    visible_local = tmp_path / "Outputs" / "Run1"
+    visible_local.mkdir(parents = True)
+    monkeypatch.chdir(tmp_path)
+    assert not start._is_hub_model_id("Outputs/Run1")
+    assert not start._model_id_matches("Outputs/Run1", "outputs/run1")
 
     # Two-segment server-relative weight files are not hub ids either; classifying by
     # syntax avoids probing the CLI cwd, which can differ from the Studio server cwd.

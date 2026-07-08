@@ -622,11 +622,18 @@ def _is_hub_model_id(value: object) -> bool:
         return False
     if any(part in ("", ".", "..") or not _HF_REPO_ID_SEGMENT_RE.match(part) for part in parts):
         return False
+    # Preserve the visible local-path guard from utils.paths.is_local_path(): if
+    # the CLI cwd can see this relative path, it is local and must not be
+    # casefold-attached to a differently cased path. The CLI cwd can differ from
+    # Studio's cwd, so this is only an early rejection, not the only path guard.
+    try:
+        if Path(text).expanduser().exists():
+            return False
+    except (OSError, ValueError):
+        pass
     # Studio also accepts server-relative paths under common local model roots
-    # (e.g. Models/Foo for ./models/Foo). Those are indistinguishable from a Hub
-    # repo id by charset alone, so keep this syntactic instead of probing
-    # Path.exists(): the CLI cwd may differ from the Studio server cwd even on
-    # loopback.
+    # (e.g. Models/Foo for ./models/Foo) even when the CLI cannot see them.
+    # Those are indistinguishable from a Hub repo id by charset alone.
     if parts[0].casefold() in _LOCAL_MODEL_PATH_ROOTS:
         return False
     # A two-segment weight-file path (Models/Foo.gguf) is also not a repo id.
