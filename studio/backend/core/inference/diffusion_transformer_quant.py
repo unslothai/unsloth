@@ -133,20 +133,23 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
 #   qwen-image + mxfp8 -> real semantic damage at 1024px (CLIP delta mean 0.0146, worst
 #                         cases 0.064 / 0.102 -- 2x the per-case bound).
 #   qwen-image + nvfp4 -> LPIPS mean 0.51 vs bf16: unusable.
-#   wan2.2   + fp8     -> every frame black (mean luma 0.0000, LPIPS ~0.80 vs bf16),
-#                         reproduced on B200 at 512x320 and 704x480 with the production
-#                         torch._scaled_mm per-row fp8 path (no MSLK): the Wan DiT's
-#                         activation outliers exceed per-row fp8's range, the same failure
-#                         mode as qwen-image. int8 dynamic (per-token) is clean on Wan
-#                         (non-black, correct contrast; First-Block-Cache engages normally
-#                         instead of over-caching the degenerate black activations).
-# int8 dynamic (per-token) is excellent on Qwen (LPIPS mean 0.069 / SSIM 0.958) and clean on
-# Wan, so the auto ladder falls through to it. mxfp8 / nvfp4 are denied alongside fp8 on the
-# Wan families conservatively (the same per-block scaled_mm family as the confirmed-black fp8,
-# and mxfp8 is a prototype) so auto lands on the battle-tested int8; they can be re-enabled per
-# family once separately validated in-bar, like the nvfp4 auto-ladder TODO. The deny also
-# applies to an EXPLICIT request: a scheme that renders black frames has no legitimate use, and
-# returning None gives the caller the same fallback contract as an unsupported scheme (GGUF).
+#   wan2.2 / hunyuanvideo-1.5 + fp8 -> every frame black (mean luma 0.0000, LPIPS ~0.80-0.82
+#                         vs bf16), reproduced on B200 with the production torch._scaled_mm
+#                         per-row fp8 path (no MSLK): the DiT's activation outliers exceed
+#                         per-row fp8's range, the same failure mode as qwen-image. int8
+#                         dynamic (per-token) is clean on both (non-black, correct contrast;
+#                         First-Block-Cache engages normally instead of over-caching the
+#                         degenerate black activations).
+# NOTE this is NOT universal across video: ltx-2 + fp8 renders clean (mean 153.7, non-black) on
+# the same stack, so it is deliberately NOT denied -- the deny is measured per family, not a
+# blanket video rule. int8 dynamic (per-token) is excellent on Qwen (LPIPS mean 0.069 / SSIM
+# 0.958) and clean on Wan / Hunyuan, so the auto ladder falls through to it there. mxfp8 / nvfp4
+# are denied alongside fp8 on the black-frame families conservatively (the same per-block
+# scaled_mm family as the confirmed-black fp8, and mxfp8 is a prototype) so auto lands on the
+# battle-tested int8; they can be re-enabled per family once separately validated in-bar, like
+# the nvfp4 auto-ladder TODO. The deny also applies to an EXPLICIT request: a scheme that renders
+# black frames has no legitimate use, and returning None gives the caller the same fallback
+# contract as an unsupported scheme (GGUF build).
 _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
     "qwen-image-edit": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),  # same DiT + activations
@@ -154,6 +157,11 @@ _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     # 5B TI2V and the A14B MoE share the DiT class + activation profile, so both deny -> int8.
     "wan2.2-ti2v-5b": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
     "wan2.2-t2v-a14b": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
+    # HunyuanVideo-1.5 DiT (HunyuanVideo15Transformer3DModel): fp8 renders black frames (measured,
+    # LPIPS 0.82); int8 is clean. The 480p and 720p repacks share the DiT + activations, so both
+    # deny -> int8. (ltx-2 fp8 measures clean on the same stack, so it is intentionally absent.)
+    "hunyuanvideo-1.5": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
+    "hunyuanvideo-1.5-720p": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
 }
 
 

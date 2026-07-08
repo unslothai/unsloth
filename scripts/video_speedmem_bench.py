@@ -310,7 +310,7 @@ def _apply_levers(pipe, cfg: dict, *, fam_name: str, fam_obj, force_fp32_vae: bo
 
 
 def _timed_video(pipe, *, steps, width, height, num_frames, guidance, seed, cache_mode,
-                 dit_quant_active, default_steps, logger=None):
+                 dit_quant_active, default_steps, guidance_via_guider=False, logger=None):
     """One clip generation. Re-checks FBCache per generation (maybe_toggle_step_cache) exactly
     like the loader, then times total + per-step. Returns (output, total_s, [per_step_ms])."""
     import torch
@@ -337,18 +337,26 @@ def _timed_video(pipe, *, steps, width, height, num_frames, guidance, seed, cach
         last[0] = now
         return kw
 
+    kwargs = dict(
+        prompt=PROMPT, width=width, height=height, num_frames=num_frames,
+        num_inference_steps=steps, generator=g,
+    )
+    if guidance_via_guider:
+        # HunyuanVideo-1.5: CFG lives on a guider component and __call__ takes no
+        # guidance_scale / callback_on_step_end (the loader writes the scale onto pipe.guider).
+        guider = getattr(pipe, "guider", None)
+        if guider is not None and hasattr(guider, "guidance_scale"):
+            try:
+                guider.guidance_scale = guidance
+            except Exception:
+                pass
+    else:
+        kwargs["guidance_scale"] = guidance
+        kwargs["callback_on_step_end"] = _cb
+
     _sync()
     t0 = time.perf_counter()
-    out = pipe(
-        prompt=PROMPT,
-        width=width,
-        height=height,
-        num_frames=num_frames,
-        num_inference_steps=steps,
-        guidance_scale=guidance,
-        generator=g,
-        callback_on_step_end=_cb,
-    )
+    out = pipe(**kwargs)
     _sync()
     return out, (time.perf_counter() - t0), step_ts
 
@@ -365,6 +373,7 @@ def _run_config(name: str, cfg: dict, *, family: str, steps: int, width: int, he
     guidance = spec.get("guidance", 5.0)
     fam_obj = detect_video_family(repo)
     default_steps = getattr(fam_obj, "default_steps", 50)
+    gvg = bool(getattr(fam_obj, "guidance_via_guider", False))
 
     _empty(); _reset_peak()
     pipe = _build_pipe(repo, force_fp32)
@@ -382,7 +391,7 @@ def _run_config(name: str, cfg: dict, *, family: str, steps: int, width: int, he
     _timed_video(
         pipe, steps=steps, width=width, height=height, num_frames=num_frames, guidance=guidance,
         seed=seed, cache_mode=cache_mode, dit_quant_active=dit_active, default_steps=default_steps,
-        logger=logger,
+        guidance_via_guider=gvg, logger=logger,
     )
     _reset_peak()
     dts, steps_ms = [], []
@@ -391,7 +400,7 @@ def _run_config(name: str, cfg: dict, *, family: str, steps: int, width: int, he
         last_out, dt, st = _timed_video(
             pipe, steps=steps, width=width, height=height, num_frames=num_frames, guidance=guidance,
             seed=seed, cache_mode=cache_mode, dit_quant_active=dit_active, default_steps=default_steps,
-            logger=logger,
+            guidance_via_guider=gvg, logger=logger,
         )
         dts.append(dt)
         steps_ms.append(_median(st) if st else 0.0)

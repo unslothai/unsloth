@@ -575,6 +575,18 @@ def test_family_deny_refuses_explicit_fp8_for_wan(monkeypatch):
     assert select_transformer_quant_scheme(_target(), "int8", family = "wan2.2-ti2v-5b") == TQ_INT8
 
 
+def test_family_deny_auto_skips_fp8_for_hunyuan(monkeypatch):
+    # HunyuanVideo-1.5 DiT also renders black frames on fp8 (measured, LPIPS 0.82); both the
+    # 480p and 720p repacks deny fp8/mxfp8/nvfp4 and fall to int8. ltx-2 is NOT denied (its
+    # fp8 measures clean), so the deny is per family, not a blanket video rule.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "auto", family = "hunyuanvideo-1.5") == TQ_INT8
+    assert select_transformer_quant_scheme(_target(), "auto", family = "hunyuanvideo-1.5-720p") == TQ_INT8
+    # ltx-2 keeps the ladder head (fp8) -- it is not a black-frame family.
+    assert select_transformer_quant_scheme(_target(), "auto", family = "ltx-2") == TQ_FP8
+
+
 def test_family_deny_no_family_keeps_ladder(monkeypatch):
     # Without a family (or an unknown one) the ladder is unchanged: fp8 first on B200.
     _stub_torch(monkeypatch, cc = (10, 0))
