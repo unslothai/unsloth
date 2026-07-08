@@ -17,10 +17,10 @@
 #   * Unsloth's runtime kernels are Triton, which JIT-compiles per device at
 #     first run. JIT targets the ACTUAL device cap, and the bundled cu12.8
 #     ptxas/NVRTC cannot emit compute_103 (sm_103) or compute_121 (sm_121).
-#     arm64 sm_121 (DGX Spark) is handled by the cu13 NVRTC/ptxas override
-#     below; amd64 sm_103 (B300/GB300) has no cu13 override yet, so JIT-heavy
-#     paths there can fail until that lands (tracked separately). Precompiled
-#     SASS still runs on sm_103 via the sm_100 forward-compat above.
+#     Both are handled by the cu13 NVRTC/ptxas override below: amd64 sm_103
+#     (B300/GB300) and arm64 sm_121 (DGX Spark / GB10). Precompiled SASS also
+#     runs on sm_103 via sm_100 forward-compat and on sm_121 via sm_120
+#     forward-compat, so only JIT-heavy paths depend on the override.
 #   * Anything that DOES need to be source-built (rare on this pin set) compiles
 #     against TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX",
 #     covering every current NVIDIA compute capability per
@@ -135,15 +135,20 @@ RUN python -m venv ${VENV} && ${VENV}/bin/pip install -U pip wheel setuptools
 #     (pytorch.org/whl/cu128 + pypi.org) are equally trusted.
 #   --extra-index-url https://download.pytorch.org/whl/cu128
 #     Where torch's +cu128 wheels live, plus the xformers/cu128 URLs referenced
-#     by unsloth's `cu128onlytorch2100` extra.
+#     by unsloth's `cu128onlytorch2110` extra.
 #
-# Why the extra is `cu128-ampere-torch2100` (not `cu128-torch2100-ampere`):
-#   See unsloth_src/pyproject.toml:835. The ordering is ampere-then-torch-ver.
+# Why the extra is `cu128-ampere-torch2110` (not `cu128-torch2110-ampere`):
+#   The ordering is ampere-then-torch-ver (see the `cu*-ampere-torch2110`
+#   extras in unsloth's pyproject.toml). The torch2110 family pulls
+#   xformers 0.0.35, which does not pin torch and so pairs with the torch
+#   2.11.0 line held below; the older torch2100 extra pins xformers 0.0.34 ->
+#   torch==2.10.0 and would conflict. Needs an unsloth that carries the
+#   torch2110 CUDA extras on main.
 #
 # Why arm64 uses a different extra:
-#   `cu128-ampere-torch2100` transitively pulls `cu128onlytorch2100` whose
+#   `cu128-ampere-torch2110` transitively pulls `cu128onlytorch2110` whose
 #   xformers wheel URL is hardcoded to manylinux_2_28_x86_64. There is no
-#   cu128 aarch64 wheel for xformers as of 0.0.34. We use the plain
+#   cu128 aarch64 wheel for xformers as of 0.0.35. We use the plain
 #   `huggingface` extra on arm64 -- Unsloth falls back to its native SDPA
 #   kernels (a ~5-10% slowdown vs xformers; functionally complete).
 #
@@ -158,7 +163,7 @@ ARG UNSLOTH_REF=main
 ARG UNSLOTH_ZOO_REF=main
 RUN set -eux \
  && case "${TARGETARCH:-amd64}" in \
-        amd64) UNSLOTH_EXTRA="cu128-ampere-torch2100" ;; \
+        amd64) UNSLOTH_EXTRA="cu128-ampere-torch2110" ;; \
         arm64) UNSLOTH_EXTRA="huggingface" ;; \
         *)     echo "ERROR: unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac \
@@ -311,7 +316,7 @@ RUN ${VENV}/bin/uv pip install \
         "soundfile==0.14.0" "evaluate==0.4.6" "jiwer==4.0.0" "tensorboard==2.20.0" \
         "langid==1.1.6" "easydict==1.13" "protobuf==6.33.6" \
         "omegaconf==2.3.1" "einx==0.4.3" "librosa==0.11.0" "ftfy==6.3.1" \
- && ${VENV}/bin/python -c "import torch, numpy, numba; from packaging.version import Version; assert torch.__version__.startswith('2.10.0'), torch.__version__; assert Version(numpy.__version__) >= Version('2.3'), numpy.__version__; assert Version(numba.__version__) >= Version('0.65'), numba.__version__; print('notebook-deps pins OK:', torch.__version__, numpy.__version__, numba.__version__)"
+ && ${VENV}/bin/python -c "import torch, numpy, numba; from packaging.version import Version; assert torch.__version__.startswith('2.11.0'), torch.__version__; assert Version(numpy.__version__) >= Version('2.3'), numpy.__version__; assert Version(numba.__version__) >= Version('0.65'), numba.__version__; print('notebook-deps pins OK:', torch.__version__, numpy.__version__, numba.__version__)"
 
 # decord (ERNIE-VL video decode) publishes wheels only for x86_64 / win_amd64.
 # Install it on its own: HARD on amd64 (a missing/incompatible wheel is a real
@@ -560,42 +565,40 @@ RUN CUDA_PKG="$(echo "${CUDA_VERSION}" | awk -F. '{print $1"-"$2}')" \
 
 COPY --from=builder /opt/unsloth-venv /opt/unsloth-venv
 
-# DGX Spark / GB10 (sm_121) fix, arm64 ONLY.
+# Blackwell JIT fix for sm_103 (B300/GB300, amd64) and sm_121 (DGX Spark /
+# GB10, arm64). Precompiled SASS already runs on both via forward-compat
+# (sm_100 SASS -> sm_103, sm_120 SASS -> sm_121); this covers the JIT gap.
 #
-# Two cu13 components need to override what the cu128 stack ships, because
-# nothing in CUDA 12.8 -- toolkit or wheel -- knows about sm_121:
+# Two cu12.8 compilers baked into the stack cannot emit compute_103 /
+# compute_121, so JIT-heavy paths error out or silently downgrade:
 #
-#   (1) torch's bundled libnvrtc.so.12 (from CUDA 12.8) does not accept
-#       sm_121 as --gpu-architecture. The jiterator C++ side queries the
-#       device cap directly, so any path that JIT-compiles a kernel (e.g.
+#   (1) torch's bundled libnvrtc.so.12 is CUDA 12.8. The jiterator C++ side
+#       queries the device cap directly, so any NVRTC JIT path (e.g.
 #       torch.fft.rfft(complex).abs(), used inside mel-spectrogram code)
-#       errors out. Fix: symlink libnvrtc.so.13 over the bundled .so.12.
+#       errors out. Fix: symlink cu13 libnvrtc.so.13 over the bundled .so.12.
 #
-#   (2) Triton's nvidia backend invokes ptxas. Triton wheels older than
-#       3.6.0 bundled cu12.8 ptxas which tops out at sm_120 and refuses
-#       sm_121, silently downgrading to sm_80 per triton-lang/triton#8335.
-#       Triton 3.6.0 (which we pin above) bundles cu13 ptxas, but for
-#       defense in depth we ALSO install cuda-nvcc-13-0 and point Triton
-#       at it via TRITON_PTXAS_PATH.
+#   (2) Triton's nvidia backend invokes its OWN bundled ptxas, which in the
+#       triton 3.6.0 we pin is still CUDA 12.8 (V12.8.93): it tops out at
+#       sm_120, rejects sm_103, and silently downgrades sm_121 to sm_80 per
+#       triton-lang/triton#8335. Fix: install cu13 ptxas and point Triton at
+#       it with TRITON_PTXAS_PATH (ENV below). cu13.0 ptxas still spans
+#       sm_70..sm_90 (Volta through Hopper), so routing every JIT through it
+#       does not regress the older GPUs in the arch list above.
 #
-# NVRTC and ptxas are CPU-side compilers; they do NOT call into libcuda,
-# so we can install cu13 alongside the cu128 runtime without any driver
-# requirement bump (toolkit driver floor stays 570+).
-#
-# amd64 image is untouched: no sm_121 hardware exists on amd64, and the
-# extra ~400 MB would be dead weight.
-RUN if [ "${TARGETARCH:-amd64}" = "arm64" ]; then \
-        set -eux; \
-        # The nvidia/cuda base already configures the CUDA apt repo
-        # (sbsa for arm64) with its own Signed-By keyring at
+# NVRTC and ptxas are CPU-side compilers; they do NOT call into libcuda, so
+# cu13 installs alongside the cu128 runtime with no driver-floor bump (570+).
+# Both arches carry the ~400 MB now: amd64 needs it for sm_103, arm64 for
+# sm_121.
+RUN set -eux; \
+        # The nvidia/cuda base already configures the CUDA apt repo (x86_64 or
+        # sbsa) with its own Signed-By keyring at
         # /usr/share/keyrings/cuda-archive-keyring.gpg. Installing
-        # cuda-keyring_1.1-1_all.deb on top adds a second sources file
-        # with a different Signed-By, which makes `apt-get update` refuse
-        # the entire repo ("Conflicting values set for option Signed-By").
-        # The base's repo URL is monolithic and serves every CUDA version
-        # including 13.x, so we install cu13 packages directly without
-        # touching the keyring at all. Empirically verified on the
-        # ubuntu-24.04-arm GitHub Actions runner.
+        # cuda-keyring_1.1-1_all.deb on top adds a second sources file with a
+        # different Signed-By, which makes `apt-get update` refuse the entire
+        # repo ("Conflicting values set for option Signed-By"). The base's repo
+        # URL is monolithic and serves every CUDA version including 13.x, so we
+        # install cu13 packages directly without touching the keyring at all.
+        # Verified on the ubuntu-24.04 (x86_64) and ubuntu-24.04-arm runners.
         apt-get update; \
         apt-get install -y --no-install-recommends \
             cuda-nvrtc-13-0 \
@@ -606,8 +609,12 @@ RUN if [ "${TARGETARCH:-amd64}" = "arm64" ]; then \
         if [ -f "${NVRTC_DIR}/libnvrtc.so.12" ]; then \
             mv "${NVRTC_DIR}/libnvrtc.so.12" "${NVRTC_DIR}/libnvrtc.so.12.cu128.orig"; \
             ln -s /usr/local/cuda-13.0/lib64/libnvrtc.so.13 "${NVRTC_DIR}/libnvrtc.so.12"; \
-        fi; \
-    fi
+        fi
+# (2) ptxas override. Route every Triton JIT through the cu13 ptxas installed
+# above (triton 3.6.0's own ptxas is cu12.8, no sm_103/sm_121). Set globally,
+# not per-arch: cu13.0 ptxas spans sm_70..sm_121 so it is correct for every GPU
+# this image supports, and ENV cannot be made conditional per arch.
+ENV TRITON_PTXAS_PATH=/usr/local/cuda-13.0/bin/ptxas
 
 # Register the venv's torch + NVIDIA lib dirs with the loader so torchcodec
 # (installed in the builder, see the bake comment there) can dlopen them.
