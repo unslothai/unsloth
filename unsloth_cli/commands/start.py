@@ -50,6 +50,12 @@ _HERMES_PROVIDER = "unsloth"
 # windows and scales the compaction threshold back down to the real window.
 _HERMES_MIN_CONTEXT = 65536
 _PI_PROVIDER = "unsloth"
+# OpenCode selects a model by "<providerID>/<modelID>" and honors a user
+# disabled_providers list. Register the session provider under a dedicated id a
+# user's disable list would never target, so the model is always selectable
+# without the wrapper having to reconstruct (and override) OpenCode's full,
+# multi-layer disabled_providers resolution.
+_OPENCODE_PROVIDER = "unsloth-studio"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 _CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
@@ -1106,113 +1112,6 @@ def write_openclaw_config(
         typer.echo(f"Updated {path}")
 
 
-def _strip_jsonc(text: str) -> str:
-    # Best-effort JSONC -> JSON: drop // line and /* */ block comments (outside
-    # strings) and trailing commas, so opencode's .jsonc configs parse. Imperfect
-    # inputs fall back to no data at the call site rather than raising.
-    out = []
-    i, n = 0, len(text)
-    in_str = False
-    quote = ""
-    while i < n:
-        ch = text[i]
-        if in_str:
-            out.append(ch)
-            if ch == "\\" and i + 1 < n:
-                out.append(text[i + 1])
-                i += 2
-                continue
-            if ch == quote:
-                in_str = False
-            i += 1
-            continue
-        if ch in ('"', "'"):
-            in_str = True
-            quote = ch
-            out.append(ch)
-            i += 1
-            continue
-        if ch == "/" and i + 1 < n and text[i + 1] == "/":
-            i += 2
-            while i < n and text[i] not in "\r\n":
-                i += 1
-            continue
-        if ch == "/" and i + 1 < n and text[i + 1] == "*":
-            i += 2
-            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
-                i += 1
-            i += 2
-            continue
-        out.append(ch)
-        i += 1
-    stripped = "".join(out)
-    stripped = re.sub(r",(\s*[}\]])", r"\1", stripped)
-    return stripped
-
-
-def _load_opencode_config(path: Path) -> Optional[dict]:
-    # Read an opencode config file, tolerating JSONC. None on any failure.
-    try:
-        text = path.read_text(encoding = "utf-8")
-    except OSError:
-        return None
-    for candidate in (text, _strip_jsonc(text)):
-        try:
-            data = json.loads(candidate)
-        except Exception:
-            continue
-        return data if isinstance(data, dict) else None
-    return None
-
-
-def _opencode_dir_disabled_providers(directory: Path) -> Optional[list]:
-    # opencode's loader reads config.json, then opencode.json, then opencode.jsonc
-    # from a config dir; the last file that sets disabled_providers wins (arrays
-    # replace). Return that list, or None if no file in this dir sets it.
-    result: Optional[list] = None
-    for name in ("config.json", "opencode.json", "opencode.jsonc"):
-        data = _load_opencode_config(directory / name)
-        if data is not None and isinstance(data.get("disabled_providers"), list):
-            result = data["disabled_providers"]
-    return result
-
-
-def _opencode_effective_disabled_providers() -> list:
-    # The disabled_providers opencode effectively applies, which the session's
-    # highest-priority (inline) layer must override to re-enable unsloth. Under
-    # array-replace semantics that is the project config's list if the current
-    # repo sets one, otherwise the user's global config. Best-effort: unreadable
-    # or absent configs contribute nothing.
-    # opencode discovers the project config by walking up from the cwd, so use the
-    # nearest ancestor that sets disabled_providers, not just the cwd itself.
-    project = None
-    try:
-        cwd = Path.cwd()
-    except OSError:
-        cwd = None
-    if cwd is not None:
-        for directory in (cwd, *cwd.parents):
-            project = _opencode_dir_disabled_providers(directory)
-            if project is not None:
-                break
-    if project is not None:
-        return project
-    dirs: list[Path] = []
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    if xdg:
-        dirs.append(Path(xdg) / "opencode")
-    dirs.append(Path.home() / ".config" / "opencode")
-    if os.name == "nt":
-        appdata = os.environ.get("APPDATA")
-        if appdata:
-            dirs.append(Path(appdata) / "opencode")
-    for directory in dirs:
-        found = _opencode_dir_disabled_providers(directory)
-        if found is not None:
-            return found
-    return []
-
-
 def write_opencode_config(
     base: str,
     key: str,
@@ -1223,16 +1122,17 @@ def write_opencode_config(
     config = _read_json_object(path)
     if config is None:
         typer.echo(
-            f"Warning: couldn't parse {path} — add an 'unsloth' provider there "
-            "yourself, or move the file aside and re-run.",
+            f"Warning: couldn't parse {path} — add an '{_OPENCODE_PROVIDER}' provider "
+            "there yourself, or move the file aside and re-run.",
             err = True,
         )
         return {}
     before = json.dumps(config, sort_keys = True)
     config.setdefault("$schema", "https://opencode.ai/config.json")
-    # Re-enabling a disabled "unsloth" provider is handled by the caller in the
-    # inline OPENCODE_CONFIG_CONTENT layer, which outranks the project config that
-    # could otherwise re-disable it; this overlay only adds the provider and model.
+    # The session provider is registered under a dedicated id (_OPENCODE_PROVIDER)
+    # that a user's disabled_providers list would never target, so it is always
+    # selectable without this overlay having to reconstruct or override OpenCode's
+    # disabled_providers resolution.
     model_entry = {"name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
@@ -1241,14 +1141,14 @@ def write_opencode_config(
         # disables OpenCode's auto-compaction; declare the real window (and a sane
         # output cap) so it compacts instead of overflowing the server.
         model_entry["limit"] = {"context": window, "output": min(window // 4, 8192)}
-    _subdict(config, "provider")["unsloth"] = {
+    _subdict(config, "provider")[_OPENCODE_PROVIDER] = {
         "npm": "@ai-sdk/openai-compatible",
         "name": "Unsloth Studio",
         "options": {"baseURL": f"{base}/v1", "apiKey": key},
         "models": {model["id"]: model_entry},
     }
     # OpenCode selects a model by "<providerID>/<modelID>".
-    config["model"] = f"unsloth/{model['id']}"
+    config["model"] = f"{_OPENCODE_PROVIDER}/{model['id']}"
     if window:
         # Compact with ~10% headroom (near 90% full). The fixed 20k-token default
         # buffer over-compacts, or never settles, on a small local context.
@@ -1560,7 +1460,7 @@ def opencode(
         serve = serve,
         launch = launch,
     )
-    opencode_model = f"unsloth/{entry['id']}"
+    opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
     # Only add --model on a bare launch. Any passthrough (a subcommand like serve/run,
     # or top-level flags like --dir/--print-logs that may precede a subcommand) is left
     # untouched: inserting --model before a subcommand can be misparsed, and it is not
@@ -1578,17 +1478,13 @@ def opencode(
         # outranks project config; the API key stays in the private file, never the env.
         # Only --yolo carries a permission here (its allow must win over a project config);
         # a non-yolo session returns no permission, so the project's own rules are honored.
+        # The session model is served by the dedicated _OPENCODE_PROVIDER id, which a
+        # user's disabled_providers list would never target, so this overlay does not
+        # touch disabled_providers at all: the user's own disables (in any config
+        # layer) are left exactly as they are and the session model still loads.
         inline_config: dict = {"model": opencode_model}
         if session_permission:
             inline_config["permission"] = session_permission
-        # Re-enable the unsloth provider when the user disabled it. The inline layer
-        # outranks the global and project configs (and is recomputed every run, so
-        # --no-launch reruns never reuse a stale list), so set disabled_providers to
-        # the effective list minus unsloth -- only when unsloth is actually disabled,
-        # to avoid clobbering the user's other disables when it is not.
-        effective_disabled = _opencode_effective_disabled_providers()
-        if "unsloth" in effective_disabled:
-            inline_config["disabled_providers"] = [p for p in effective_disabled if p != "unsloth"]
         env = {
             "OPENCODE_CONFIG": str(config_path),
             "OPENCODE_CONFIG_CONTENT": json.dumps(inline_config),
