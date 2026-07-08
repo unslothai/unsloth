@@ -188,6 +188,16 @@ fn managed_bin_fingerprint(bin: &Path) -> Option<ManagedBinFingerprint> {
 }
 
 fn capability_cache_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(home) = std::env::var_os("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME") {
+        return Some(
+            PathBuf::from(home)
+                .join(".unsloth")
+                .join("studio")
+                .join("desktop_capability_cache.json"),
+        );
+    }
+
     dirs::home_dir().map(|home| {
         home.join(".unsloth")
             .join("studio")
@@ -400,6 +410,12 @@ fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
 
 pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     let started = Instant::now();
+    // Always verify the managed CLI actually launches before trusting the cache.
+    // A matching capability fingerprint does not prove the binary can still run:
+    // its venv interpreter or a runtime dependency can be broken while the
+    // path/size/mtime/markers are unchanged, so the -h probe runs first and a
+    // non-launchable install is reported Stale for repair. The capability cache
+    // below still skips the heavier desktop-capabilities probe on a hit.
     if !run_cli_probe(&bin, &["-h"]).await {
         info!(
             "Managed preflight: cli unusable for {:?} in {}ms",

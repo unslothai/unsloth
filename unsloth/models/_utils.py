@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.6.9"
+__version__ = "2026.7.1"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -2834,6 +2834,7 @@ def patch_llama_rope_scaling(
                 dim = self.head_dim,
                 max_position_embeddings=self.max_position_embeddings,
                 base=self.rope_theta,
+                config=self.config,
             )
         elif scaling_type == "longrope":
             self.rotary_emb = {longrope_rope_function}(
