@@ -38,7 +38,10 @@ HAS_XFORMERS = xformers is not None
 def _xformers_runs_on_device() -> bool:
     """One tiny attention forward; True iff the xformers kernel actually runs here."""
     try:
-        q = torch.zeros((1, 8, 1, 64), device = "cuda", dtype = torch.bfloat16)
+        # Pre-Ampere GPUs (sm < 80: Turing/Volta) have no bfloat16 attention kernel
+        # but run xformers fine in float16, so pick the dtype the device supports.
+        dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
+        q = torch.zeros((1, 8, 1, 64), device = "cuda", dtype = dtype)
         attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
         xformers_attention(q, q, q, attn_bias = attn_bias)
         return True

@@ -41,3 +41,24 @@ def test_probe_shapes_are_valid_on_working_gpu():
     # disable xformers on Blackwell even where it works. On any GPU with a functional
     # xformers (the CI/dev boxes are pre-sm_120), the real probe must succeed.
     assert ad._xformers_runs_on_device() is True
+
+
+@pytest.mark.parametrize(
+    "supports_bf16, expected_dtype",
+    [(True, torch.bfloat16), (False, torch.float16)],
+)
+def test_probe_dtype_follows_bf16_support(monkeypatch, supports_bf16, expected_dtype):
+    # Pre-Ampere GPUs (sm < 80: Turing/Volta, e.g. T4/V100) run xformers fine in
+    # float16 but have no bfloat16 attention kernel, so a hardcoded bf16 probe would
+    # raise there, get swallowed to False, and misreport a working xformers as broken.
+    # The probe must pick its dtype from SUPPORTS_BFLOAT16 (no Turing GPU needed here).
+    captured = {}
+
+    def fake_zeros(*args, dtype = None, **kwargs):
+        captured["dtype"] = dtype
+        raise RuntimeError("stop after capturing the probe dtype")
+
+    monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", supports_bf16)
+    monkeypatch.setattr(ad.torch, "zeros", fake_zeros)
+    ad._xformers_runs_on_device()  # RuntimeError is swallowed; only the dtype matters
+    assert captured["dtype"] is expected_dtype
