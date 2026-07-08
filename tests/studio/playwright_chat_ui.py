@@ -1250,10 +1250,7 @@ with sync_playwright() as p:
     try:
         refresh_status = int(refresh_proc.stdout.strip())
     except ValueError:
-        fail(
-            f"curl refresh-token check returned invalid status: "
-            f"{refresh_proc.stdout!r}"
-        )
+        fail(f"curl refresh-token check returned invalid status: " f"{refresh_proc.stdout!r}")
     if refresh_status == 200:
         fail(f"/api/auth/refresh should fail after CLI rotation; got 200")
     info(
