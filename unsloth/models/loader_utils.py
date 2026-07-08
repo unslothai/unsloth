@@ -504,11 +504,11 @@ def _match_fp8_module(module_by_name, base):
         return module_by_name[base]
     candidates = []
     if "language_model." in base:
-        candidates.append(base.replace("language_model.", "", 1))          # text-only: drop wrapper
+        candidates.append(base.replace("language_model.", "", 1))  # text-only: drop wrapper
     if "language_model.model." in base:
         candidates.append(base.replace("language_model.model.", "model.language_model.", 1))
     if base.startswith("language_model."):
-        candidates.append("model." + base)                                 # add model. prefix
+        candidates.append("model." + base)  # add model. prefix
     for candidate in candidates:
         if candidate in module_by_name:
             return module_by_name[candidate]

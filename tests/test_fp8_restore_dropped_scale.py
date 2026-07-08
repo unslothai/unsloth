@@ -283,7 +283,9 @@ def test_vlm_language_model_model_alias():
     model.anchor = _fp8_anchor()
     model.model = nn.Module()
     model.model.language_model = nn.Module()
-    model.model.language_model.gate_proj = _bf16_linear(2, 2, raw)  # -> model.language_model.gate_proj
+    model.model.language_model.gate_proj = _bf16_linear(
+        2, 2, raw
+    )  # -> model.language_model.gate_proj
     with tempfile.TemporaryDirectory() as d:
         _write_checkpoint(d, {"language_model.model.gate_proj.weight_scale_inv": scale})
         restored, _ = _restore_dropped_fp8_scales(model, d, local_files_only = True)

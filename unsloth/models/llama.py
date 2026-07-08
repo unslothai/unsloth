@@ -2665,8 +2665,10 @@ class FastLlamaModel:
                 )
                 # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
                 _restore_dropped_fp8_scales(
-                    model, model_name,
-                    local_files_only = kwargs.get("local_files_only", False), token = token,
+                    model,
+                    model_name,
+                    local_files_only = kwargs.get("local_files_only", False),
+                    token = token,
                     revision = revision,
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
