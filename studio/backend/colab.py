@@ -403,11 +403,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
         logger.info(f"   Studio is already running on port {port} — reusing existing server.")
         # try/finally: tear the tunnel down even if interrupted mid-start/render.
         try:
-            cf_url = (
-                start_cloudflare_tunnel(port)
-                if effective_cloudflare
-                else None
-            )
+            cf_url = start_cloudflare_tunnel(port) if effective_cloudflare else None
             _publish_cloudflare_url(cf_url)
             _show_and_embed(port, cloudflare_url = cf_url)
             for _ in range(10000):

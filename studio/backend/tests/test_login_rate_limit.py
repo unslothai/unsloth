@@ -145,19 +145,16 @@ class TestClientIp:
 
     def test_cf_connecting_ip_used_from_loopback_peer(self, env_no_proxy):
         from routes.auth import _client_ip
-
         req = _FakeRequest("127.0.0.1", {"cf-connecting-ip": "198.51.100.7"})
         assert _client_ip(req) == "198.51.100.7"
 
     def test_cf_connecting_ip_ignored_from_non_loopback_peer(self, env_no_proxy):
         from routes.auth import _client_ip
-
         req = _FakeRequest("203.0.113.9", {"cf-connecting-ip": "198.51.100.7"})
         assert _client_ip(req) == "203.0.113.9"
 
     def test_invalid_cf_connecting_ip_falls_back_to_client_host(self, env_no_proxy):
         from routes.auth import _client_ip
-
         req = _FakeRequest("127.0.0.1", {"cf-connecting-ip": "not-an-ip"})
         assert _client_ip(req) == "127.0.0.1"
 
