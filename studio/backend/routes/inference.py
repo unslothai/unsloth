@@ -2547,7 +2547,8 @@ def _request_matches_loaded_settings(
     # dedupes on the unchanged name and the fallback sticks (the
     # dflash_drafter_incompatible message tells the user to replace the drafter).
     if (
-        llama_backend.spec_fallback_reason in ("dflash_drafter_incompatible", "dflash_runtime_error")
+        llama_backend.spec_fallback_reason
+        in ("dflash_drafter_incompatible", "dflash_runtime_error")
         and req_mode == "auto"
         and not _extra_args_set_spec_type(effective_extra)
     ):
