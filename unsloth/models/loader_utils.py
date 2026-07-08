@@ -329,12 +329,12 @@ def _offline_quantize_to_fp8(
     new_model_name = os.path.join(temp_dir, cache_name)
     print(f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead")
 
-    if os.path.isdir(new_model_name) and not any(
+    has_safetensors_cache = os.path.isdir(new_model_name) and any(
         filename.endswith(".safetensors") for filename in os.listdir(new_model_name)
-    ):
-        shutil.rmtree(new_model_name)
+    )
+    needs_refresh = os.path.isdir(new_model_name) and not has_safetensors_cache
 
-    if not os.path.isdir(new_model_name):
+    if not os.path.isdir(new_model_name) or needs_refresh:
         from ._utils import _apply_text_only_key_mapping
 
         qconfig = _get_torchao_fp8_config(fp8_mode)
@@ -345,18 +345,27 @@ def _offline_quantize_to_fp8(
             config = text_config
         auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
+        # Regenerate into a staging dir and only replace an existing (bin-only) cache once the
+        # safetensors save has succeeded, so a failed re-quantization (offline / gated / removed
+        # source model) leaves the previous loadable cache intact rather than deleting it. #6749
+        staging_dir = new_model_name + ".fp8tmp"
+        if os.path.isdir(staging_dir):
+            shutil.rmtree(staging_dir)
         model = auto_model.from_pretrained(
             model_name,
             config = config,
             **load_kwargs,
         )
         tokenizer = auto_processor.from_pretrained(model_name)
-        model.save_pretrained(new_model_name, safe_serialization = True)
+        model.save_pretrained(staging_dir, safe_serialization = True)
         del model
         for _ in range(2):
             torch.cuda.empty_cache()
             gc.collect()
-        tokenizer.save_pretrained(new_model_name)
+        tokenizer.save_pretrained(staging_dir)
+        if os.path.isdir(new_model_name):
+            shutil.rmtree(new_model_name)
+        os.replace(staging_dir, new_model_name)
     return new_model_name
 
 
@@ -535,32 +544,24 @@ def _fp8_scale_snapshot_allow_patterns(
     variant = None,
     use_safetensors = None,
 ):
-    """Glob patterns limiting the scale-restore snapshot to the same safetensors artifact
-    from_pretrained selected. Without this, snapshot_download would pull the FULL repo
-    (.bin shards, alternate variants, large extras) after the model already loaded, which
-    exhausts disk/network and defeats the safetensors-only selection. #6749"""
+    """First-pass patterns for the scale-restore snapshot: the index plus the single-file
+    default model/pytorch_model safetensors only, never the shard globs. Sharded scale shards
+    are then fetched by exact name from the index in a second pass (_fp8_scale_index_extra_patterns),
+    so a large sharded checkpoint is not fully re-downloaded and alternate variants/extras are
+    never pulled. #6749"""
     if use_safetensors is False:
         return []
     if variant:
-        # Default model/pytorch_model variant artifacts plus index, not bare *.{variant}
-        # globs that would also pull alternate component safetensors; custom shard names come
-        # from the index-extra pass. Transformers applies the variant before the shard suffix. #6749
         patterns = [
             f"model.{variant}.safetensors",
             f"pytorch_model.{variant}.safetensors",
-            f"model.{variant}-*-of-*.safetensors",
-            f"pytorch_model.{variant}-*-of-*.safetensors",
             f"model.safetensors.index.{variant}.json",
             f"pytorch_model.safetensors.index.{variant}.json",
         ]
     else:
-        # Default (non-variant) model/pytorch_model artifacts plus index, not a bare
-        # *.safetensors that would also pull alternate variant shards. #6749
         patterns = [
             "model.safetensors",
             "pytorch_model.safetensors",
-            "model-*-of-*.safetensors",
-            "pytorch_model-*-of-*.safetensors",
             "model.safetensors.index.json",
             "pytorch_model.safetensors.index.json",
         ]
@@ -574,11 +575,10 @@ def _fp8_scale_index_extra_patterns(
     subfolder = None,
     variant = None,
 ):
-    """Exact safetensors shard names an FP8 scale index references that the default snapshot
-    globs above do not cover. `_resolve_fp8_scale_safetensors_files` follows the index
-    `weight_map` verbatim, so a repo that maps a scale tensor to a shard named outside
-    `model*`/`pytorch_model*` would never be downloaded and the restore would silently find
-    no scales even though the main load reads that shard by its index name. #6749"""
+    """Exact safetensors shard names the FP8 scale index maps scale tensors to. The first
+    snapshot pass fetches only the index, so this returns just the scale-bearing shards
+    (`_resolve_fp8_scale_safetensors_files` follows the index `weight_map` verbatim); the
+    second pass downloads only these, never every model shard or an alternate variant. #6749"""
     scan_dir = os.path.join(model_dir, subfolder) if subfolder else model_dir
     if not os.path.isdir(scan_dir):
         return []
@@ -849,12 +849,14 @@ def _restore_missing_fp8_weight_scale_inv(
             # HF FP8 scales live in _parameters; keep them Parameters rather than demoting to a
             # buffer, which would break tensor-parallel/optimizer/PEFT parameter inspection. #6749
             existing = module._parameters[attr_name]
-            if isinstance(existing, torch.nn.Parameter):
+            if isinstance(existing, torch.nn.Parameter) and existing.device.type != "meta":
                 # Update in place so runtime metadata (e.g. `block_size` fp8 dequant reads via
                 # getattr) survives; a fresh Parameter would drop it and force default geometry. #6749
                 with torch.no_grad():
                     existing.data = restored_scale
             else:
+                # A meta placeholder Parameter cannot take `.data = <materialized>` (torch rejects
+                # meta -> concrete set_data), so replace it to materialize the scale. #6749
                 module._parameters[attr_name] = torch.nn.Parameter(
                     restored_scale,
                     requires_grad = bool(getattr(existing, "requires_grad", False)),

@@ -405,9 +405,10 @@ def test_remote_scale_restore_constrains_snapshot_download_patterns(monkeypatch)
     assert all("bin" not in pattern for pattern in allow_patterns)
 
 
-def test_no_variant_snapshot_patterns_exclude_alternate_variants():
-    # No-variant patterns cover default single-file/sharded/index names, not alternate
-    # variant safetensors a repo may also publish. #6749
+def test_no_variant_snapshot_patterns_are_index_and_single_file_only():
+    # First-pass patterns cover only the default single-file names and index; shards are pulled
+    # by exact name in the index-extra pass, so shard globs and alternate variants are excluded
+    # and a large sharded checkpoint is not fully re-downloaded. #6749
     import fnmatch
 
     loader_utils = _load_loader_utils()
@@ -418,12 +419,14 @@ def test_no_variant_snapshot_patterns_exclude_alternate_variants():
 
     for name in (
         "model.safetensors",
-        "model-00001-of-00002.safetensors",
-        "pytorch_model-00001-of-00002.safetensors",
+        "pytorch_model.safetensors",
         "model.safetensors.index.json",
+        "pytorch_model.safetensors.index.json",
     ):
         assert matched(name), name
     for name in (
+        "model-00001-of-00002.safetensors",
+        "pytorch_model-00001-of-00002.safetensors",
         "model.fp8.safetensors",
         "model.fp8-00001-of-00002.safetensors",
         "pytorch_model.bin",
@@ -1395,14 +1398,15 @@ def test_parameter_scale_restore_preserves_metadata_and_identity():
     )
 
 
-def test_variant_snapshot_patterns_exclude_alternate_component_safetensors():
+def test_variant_snapshot_patterns_are_index_and_single_file_only():
     loader_utils = _load_loader_utils()
     patterns = loader_utils._fp8_scale_snapshot_allow_patterns(variant = "fp8")
-    # Default variant model shards and index are covered.
+    # First pass covers the single-file variant name and the variant index only.
     assert any(fnmatch.fnmatch("model.fp8.safetensors", p) for p in patterns)
-    assert any(fnmatch.fnmatch("model.fp8-00001-of-00002.safetensors", p) for p in patterns)
     assert any(fnmatch.fnmatch("model.safetensors.index.fp8.json", p) for p in patterns)
-    # A stray alternate-component variant safetensors must NOT be pulled by the broad glob.
+    # Shards come from the index-extra pass, so the shard glob is not in the first pass, and a
+    # stray alternate-component variant safetensors is never pulled.
+    assert not any(fnmatch.fnmatch("model.fp8-00001-of-00002.safetensors", p) for p in patterns)
     assert not any(fnmatch.fnmatch("adapter.fp8.safetensors", p) for p in patterns)
     assert not any(fnmatch.fnmatch("vision_tower.fp8.safetensors", p) for p in patterns)
 
@@ -1453,3 +1457,70 @@ def test_restores_static_activation_scale():
     assert skipped == 0
     assert hasattr(model.fp8, "activation_scale")
     assert torch.equal(model.fp8.activation_scale, torch.tensor([0.25], dtype = torch.float16))
+
+
+def test_restores_scale_when_placeholder_is_meta_parameter():
+    # A meta Parameter placeholder cannot take `.data = <materialized>` (torch rejects
+    # meta -> concrete set_data); the restore must replace it instead of crashing. #6749
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
+    model.fp8.weight_scale_inv = torch.nn.Parameter(
+        torch.empty(1, dtype = torch.float16, device = "meta"), requires_grad = False
+    )
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.75], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert isinstance(model.fp8.weight_scale_inv, torch.nn.Parameter)
+    assert model.fp8.weight_scale_inv.device.type == "cpu"
+    assert torch.equal(
+        model.fp8.weight_scale_inv.detach(), torch.tensor([1.75], dtype = torch.float16)
+    )
+
+
+def test_offline_quantize_preserves_bin_cache_on_failed_regeneration(monkeypatch, tmp_path):
+    # A failed re-quantization (offline / gated / removed source) must not delete a usable
+    # bin-only cache before the safetensors save has succeeded. #6749
+    loader_utils = _load_loader_utils()
+    import transformers
+
+    monkeypatch.setattr(loader_utils.tempfile, "gettempdir", lambda: str(tmp_path))
+    cache_dir = tmp_path / "mymodel-fp8-e4m3"
+    cache_dir.mkdir()
+    (cache_dir / "pytorch_model.bin").write_text("old-cache")
+
+    class _Cfg:
+        architectures = []
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("model is gated/offline")
+
+    def _make(from_pretrained):
+        return type("_Auto", (), {"from_pretrained": staticmethod(from_pretrained)})
+
+    monkeypatch.setattr(transformers, "AutoConfig", _make(lambda *a, **k: _Cfg()))
+    monkeypatch.setattr(transformers, "AutoModelForCausalLM", _make(_raise))
+    monkeypatch.setattr(transformers, "AutoModelForImageTextToText", _make(_raise))
+    monkeypatch.setattr(transformers, "AutoTokenizer", _make(lambda *a, **k: None))
+    monkeypatch.setattr(transformers, "AutoProcessor", _make(lambda *a, **k: None))
+    monkeypatch.setattr(transformers, "TorchAoConfig", lambda *a, **k: object())
+    monkeypatch.setattr(loader_utils, "_get_torchao_fp8_config", lambda mode: {})
+
+    with pytest.raises(RuntimeError):
+        loader_utils._offline_quantize_to_fp8("org/mymodel", "e4m3")
+
+    # The loadable bin cache survives, and no partial staging dir is left behind.
+    assert cache_dir.is_dir()
+    assert (cache_dir / "pytorch_model.bin").read_text() == "old-cache"
+    assert not (tmp_path / "mymodel-fp8-e4m3.fp8tmp").exists()
