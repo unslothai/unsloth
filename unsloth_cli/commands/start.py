@@ -860,18 +860,34 @@ def _print_env(
 
 
 def _refresh_windows_path() -> None:
-    # A Windows installer persists its directory to the User/Machine PATH in the
-    # registry and updates only its own process, so this process keeps a stale PATH
-    # until it restarts (the installers themselves print "restart your terminal").
-    # Merge the registry hives back into PATH so the post-install shutil.which can
-    # see a just-installed agent without the user opening a new shell. No-op off
-    # Windows and on any read error; only ever augments PATH.
+    # Merge Windows registry PATH hives after the current process PATH so a
+    # freshly installed agent is visible without changing existing precedence.
     if os.name != "nt":
         return
     try:
         import winreg
     except Exception:
         return
+
+    entries = []
+    seen = set()
+
+    def add_path(value: str) -> bool:
+        added = False
+        for entry in str(value).split(os.pathsep):
+            entry = entry.strip()
+            if not entry:
+                continue
+            key = os.path.normcase(entry).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(entry)
+            added = True
+        return added
+
+    add_path(os.environ.get("PATH", ""))
+    added_registry = False
     hives = (
         (winreg.HKEY_CURRENT_USER, "Environment"),
         (
@@ -879,7 +895,6 @@ def _refresh_windows_path() -> None:
             r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
         ),
     )
-    reg_paths = []
     for root, sub in hives:
         try:
             with winreg.OpenKey(root, sub) as key:
@@ -887,11 +902,9 @@ def _refresh_windows_path() -> None:
         except OSError:
             continue
         if value:
-            reg_paths.append(os.path.expandvars(str(value)))
-    if not reg_paths:
-        return
-    reg_paths.append(os.environ.get("PATH", ""))
-    os.environ["PATH"] = os.pathsep.join(p for p in reg_paths if p)
+            added_registry = add_path(os.path.expandvars(str(value))) or added_registry
+    if added_registry:
+        os.environ["PATH"] = os.pathsep.join(entries)
 
 
 def _install_agent(name: str, install_hint: str) -> Optional[str]:

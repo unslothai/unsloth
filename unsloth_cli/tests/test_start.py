@@ -158,11 +158,10 @@ def test_refresh_windows_path_noop_off_windows(monkeypatch):
 
 
 def test_refresh_windows_path_merges_registry_hives(monkeypatch):
-    # Fake the Windows registry: User + Machine "Path" values the process cannot
-    # see yet because it started before the installer wrote them.
+    # Fake Windows registry PATH values written after this process started.
     hkcu, hklm = object(), object()
     reg = {
-        (hkcu, "Environment"): r"C:\Users\me\hermes\bin",
+        (hkcu, "Environment"): r"C:\existing;C:\Users\me\hermes\bin",
         (
             hklm,
             r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
@@ -191,20 +190,18 @@ def test_refresh_windows_path_merges_registry_hives(monkeypatch):
         QueryValueEx = lambda key, name: (key._value, 1),
     )
     monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.os, "pathsep", ";")
     monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
-    monkeypatch.setenv("PATH", r"C:\existing")
+    monkeypatch.setenv("PATH", r"C:\custom;C:\existing")
 
     start._refresh_windows_path()
 
-    # os.pathsep is ":" on this host, which also appears in "C:\...", so assert on
-    # substring membership rather than splitting (the join uses os.pathsep, which
-    # is ";" on real Windows).
-    path = os.environ["PATH"]
-    assert r"C:\Users\me\hermes\bin" in path  # newly installed agent dir now visible
-    assert r"C:\Windows\System32" in path
-    assert r"C:\existing" in path  # prior PATH preserved
-    # Registry values are merged ahead of the stale in-process PATH.
-    assert path.index(r"C:\Users\me\hermes\bin") < path.index(r"C:\existing")
+    assert os.environ["PATH"].split(";") == [
+        r"C:\custom",
+        r"C:\existing",
+        r"C:\Users\me\hermes\bin",
+        r"C:\Windows\System32",
+    ]
 
 
 def test_install_agent_declined_returns_none(monkeypatch):
