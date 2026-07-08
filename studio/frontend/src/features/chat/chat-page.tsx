@@ -2670,13 +2670,21 @@ export function ChatPage({
         loadingModel={loadingModel}
         onReloadModel={() => {
           const state = useChatRuntimeStore.getState();
-          if (state.params.checkpoint) {
+          const checkpoint = state.params.checkpoint;
+          if (checkpoint) {
+            const isLoadedGguf =
+              state.activeGgufVariant != null ||
+              state.activeNativePathToken != null ||
+              checkpoint.toLowerCase().endsWith(".gguf") ||
+              state.ggufContextLength != null;
             selectModel({
-              id: state.params.checkpoint,
+              id: checkpoint,
               ggufVariant: state.activeGgufVariant ?? undefined,
+              nativePathToken: state.activeNativePathToken ?? undefined,
               forceReload: true,
               isDownloaded: true,
-              loadingDescription: "Reloading with updated chat template.",
+              isGguf: isLoadedGguf,
+              loadingDescription: "Reloading with updated model settings.",
             });
           }
         }}

@@ -577,6 +577,7 @@ export function useChatModelRuntime() {
             const validateMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,
               ggufVariant,
+              isGguf,
               customContextLength: loadCustomContextLength,
               ggufContextLength: loadGgufContextLength,
               currentCheckpoint,
