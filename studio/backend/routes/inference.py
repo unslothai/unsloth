@@ -9,7 +9,6 @@ import os
 import sys
 import time
 import uuid
-from urllib.parse import quote
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
@@ -270,7 +269,6 @@ def _effective_max_tokens(payload):
 
 
 _OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV = "UNSLOTH_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS"
-_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_DEFAULT = 1024
 _OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV = "UNSLOTH_OPENAI_COMPAT_MAX_TOKENS_CEILING"
 _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV = "UNSLOTH_OPENAI_COMPAT_STREAM_STALL_TIMEOUT"
 _OPENAI_COMPAT_STREAM_PREHEADER_FALLBACK_TIMEOUT_ENV = (
@@ -300,18 +298,15 @@ def _positive_float_env(env_name: str, default):
     return value if value > 0 else None
 
 
-def _openai_compat_implicit_max_tokens() -> int:
-    """Local serving default for OpenAI-compatible requests without a cap.
+def _openai_compat_implicit_max_tokens():
+    """Opt-in output cap for OpenAI-compatible requests that omit their own.
 
-    This is a latency/safety guard for local backends, not a strict OpenAI
-    behavior emulation. A future Studio setting can replace the environment
-    lookup without changing the callers: explicit request caps still win, and
-    this helper remains the single source for the omitted-cap policy.
+    OpenAI leaves an omitted ``max_tokens`` bounded only by the context window,
+    and Studio matches that by default (returns ``None``). Deployments that
+    want a local guard against runaway generations from cap-omitting clients
+    can set the env var; explicit request caps always win.
     """
-    return _positive_int_env(
-        _OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV,
-        _OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_DEFAULT,
-    )
+    return _positive_int_env(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, None)
 
 
 def _openai_compat_max_tokens_ceiling():
@@ -324,13 +319,13 @@ def _openai_compat_max_tokens_ceiling():
     return _positive_int_env(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, None)
 
 
-def _effective_openai_max_tokens_from_values(max_tokens, max_completion_tokens = None) -> int:
+def _effective_openai_max_tokens_from_values(max_tokens, max_completion_tokens = None):
     """Resolve the local OpenAI-compatible generation cap from raw request values.
 
-    OpenAI Chat Completions permits omitting ``max_tokens``. For local GGUF
-    serving, forwarding ``None`` lets lower layers expand the request to the
-    full context window, which can make small auxiliary client requests run for
-    minutes. Explicit client caps are preserved unless the deployment opts into
+    Returns ``None`` when the client omitted both fields and no local cap is
+    configured, so callers keep their context-window default (OpenAI treats an
+    omitted cap as bounded only by the context window). Explicit client caps
+    are preserved unless the deployment opts into
     ``UNSLOTH_OPENAI_COMPAT_MAX_TOKENS_CEILING``.
     """
 
@@ -365,11 +360,11 @@ def _effective_openai_max_tokens_from_values(max_tokens, max_completion_tokens =
     max_tokens = explicit if explicit is not None else _openai_compat_implicit_max_tokens()
     ceiling = _openai_compat_max_tokens_ceiling()
     if ceiling is not None:
-        max_tokens = min(max_tokens, ceiling)
+        max_tokens = ceiling if max_tokens is None else min(max_tokens, ceiling)
     return max_tokens
 
 
-def _effective_openai_max_tokens(payload) -> int:
+def _effective_openai_max_tokens(payload):
     return _effective_openai_max_tokens_from_values(
         getattr(payload, "max_tokens", None),
         getattr(payload, "max_completion_tokens", None),
@@ -955,12 +950,16 @@ def _chat_content_chunk(completion_id, created, model_name, text) -> str:
 
 
 def _chat_reasoning_chunk(completion_id, created, model_name, text) -> str:
-    """Like ``_chat_content_chunk`` but on ``reasoning_content`` (renders the UI thinking block)."""
+    """Like ``_chat_content_chunk`` but on ``reasoning_content`` (renders the UI thinking block).
+
+    Carries ``content: ""`` alongside, like the GGUF and passthrough paths, so
+    strict OpenAI adapters don't drop the reasoning-only delta.
+    """
     return _chat_chunk_sse(
         completion_id,
         created,
         model_name,
-        delta = ChoiceDelta(reasoning_content = text),
+        delta = ChoiceDelta(content = "", reasoning_content = text),
         finish_reason = None,
     )
 
@@ -1208,25 +1207,21 @@ def _set_stream_response_read_timeout(
 _STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
 _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
-_OPENAI_PASSTHROUGH_RESUMABLE_LOOKUP_INTERVAL_S = 0.5
-_OPENAI_PASSTHROUGH_RESUMABLE_LOOKUP_TIMEOUT_S = 0.25
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
-_OPENAI_PASSTHROUGH_STREAM_STALL_TIMEOUT_DEFAULT = 30.0
 _OPENAI_PASSTHROUGH_PREHEADER_FALLBACK_DEFAULT = None
 
 
 def _openai_compat_stream_stall_timeout():
     """Max silent gap after an OpenAI passthrough stream has produced data.
 
-    Local llama-server should continue emitting token chunks once generation has
-    started. If the socket goes silent after valid SSE data, keeping the client
-    open for the backend-wide stall timeout can look like a hung agent request.
-    The default is deliberately local-serving oriented and configurable; set the
-    env var to 0 to disable this shorter guard.
+    If the socket goes silent after valid SSE data, this bounds how long the
+    client is kept open. Defaults to the backend-wide stall timeout so this
+    path stalls out like every sibling stream; set the env var to tighten it
+    for local serving, or to 0 to disable the guard.
     """
     return _positive_float_env(
         _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV,
-        _OPENAI_PASSTHROUGH_STREAM_STALL_TIMEOUT_DEFAULT,
+        _DEFAULT_STREAM_STALL_TIMEOUT_S,
     )
 
 
@@ -1235,11 +1230,10 @@ def _openai_compat_stream_preheader_fallback_timeout():
 
     Studio always keeps the downstream SSE connection alive with comment
     heartbeats while llama-server is still in prefill/header wait. Retrying via
-    the non-streaming path is intentionally opt-in: before upstream headers are
-    returned, llama-server has not created a resumable stream session yet, so
-    Studio cannot prove that closing the HTTP request has released a
-    single-slot backend. Starting a second request too early can queue behind
-    the first one and worsen latency for agent clients.
+    the non-streaming path is intentionally opt-in: Studio cannot prove that
+    closing the HTTP request has released a single-slot backend, so starting a
+    second request too early can queue behind the first one and worsen latency
+    for agent clients.
 
     Set ``UNSLOTH_OPENAI_COMPAT_STREAM_PREHEADER_FALLBACK_TIMEOUT`` to a
     positive number to opt into the retry; leave it unset or set it to 0 to keep
@@ -1251,104 +1245,13 @@ def _openai_compat_stream_preheader_fallback_timeout():
     )
 
 
-def _openai_passthrough_upstream_stream_id(completion_id: str) -> str:
-    return f"studio-{completion_id}-{uuid.uuid4().hex[:12]}"
-
-
-def _openai_passthrough_upstream_headers(
-    stream_id: Optional[str] = None, *, llama_backend = None
-) -> dict:
+def _openai_passthrough_upstream_headers(*, llama_backend = None) -> dict:
     headers = {}
     auth_headers = getattr(llama_backend, "_auth_headers", None)
     if isinstance(auth_headers, dict):
         headers.update(auth_headers)
     headers["Connection"] = "close"
-    if stream_id:
-        headers["X-Conversation-Id"] = stream_id
     return headers
-
-
-def _openai_resumable_session_has_replay_bytes(session) -> bool:
-    if not isinstance(session, dict):
-        return False
-    value = session.get("total_bytes")
-    return not isinstance(value, bool) and isinstance(value, (int, float)) and value > 0
-
-
-async def _openai_open_resumable_stream(
-    base_url: str,
-    stream_id: str,
-    headers: Optional[dict] = None,
-):
-    """Open llama-server's resumable SSE replay stream when available.
-
-    Newer llama-server builds attach a replay buffer when the original
-    streaming POST includes ``X-Conversation-Id``. This gives Studio a clean
-    recovery path for the Windows/httpx case where the original POST task does
-    not return headers even though llama-server has already started or finished
-    producing SSE chunks. Returns ``(client, response)`` or ``(None, None)`` so
-    callers can fall back to the original POST path on older servers.
-    """
-    client = httpx.AsyncClient(
-        timeout = httpx.Timeout(_OPENAI_PASSTHROUGH_RESUMABLE_LOOKUP_TIMEOUT_S),
-        limits = httpx.Limits(max_keepalive_connections = 0),
-        trust_env = False,
-    )
-    try:
-        lookup = await client.post(
-            f"{base_url}/v1/streams/lookup",
-            json = {"conversation_ids": [stream_id]},
-            headers = headers,
-        )
-        if lookup.status_code != 200:
-            return None, None
-        try:
-            sessions = lookup.json()
-        except Exception:
-            return None, None
-        if not isinstance(sessions, list) or not sessions:
-            return None, None
-        if not any(_openai_resumable_session_has_replay_bytes(s) for s in sessions):
-            return None, None
-        stream_url = f"{base_url}/v1/stream/{quote(stream_id, safe = '')}?from=0"
-        req = client.build_request("GET", stream_url, headers = headers)
-        resp = await client.send(req, stream = True)
-        if resp.status_code != 200:
-            try:
-                await resp.aclose()
-            except Exception:
-                pass
-            return None, None
-        return client, resp
-    except Exception as exc:
-        logger.debug("openai passthrough resumable stream unavailable: %s", exc)
-        return None, None
-    finally:
-        # Ownership transfers to the caller only when a response is returned.
-        if "resp" not in locals() or resp is None or getattr(resp, "status_code", None) != 200:
-            try:
-                await client.aclose()
-            except Exception:
-                pass
-
-
-async def _openai_delete_resumable_stream(
-    base_url: str,
-    stream_id: str,
-    headers: Optional[dict] = None,
-) -> None:
-    try:
-        async with httpx.AsyncClient(
-            timeout = httpx.Timeout(2.0),
-            limits = httpx.Limits(max_keepalive_connections = 0),
-            trust_env = False,
-        ) as client:
-            await client.delete(
-                f"{base_url}/v1/stream/{quote(stream_id, safe = '')}",
-                headers = headers,
-            )
-    except Exception:
-        pass
 
 
 class _CompatSameTaskTimeout:
@@ -8678,7 +8581,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         if not isinstance(body, dict):
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
-    body["max_tokens"] = _effective_openai_max_tokens_from_values(body.get("max_tokens"))
+    _resolved_max_tokens = _effective_openai_max_tokens_from_values(body.get("max_tokens"))
+    body["max_tokens"] = (
+        _resolved_max_tokens
+        if _resolved_max_tokens is not None
+        else (llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR)
+    )
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
@@ -11541,7 +11449,7 @@ def _build_passthrough_payload(
     if stream and stream_options is not None:
         body["stream_options"] = stream_options
     body["max_tokens"] = (
-        max_tokens if max_tokens is not None else _openai_compat_implicit_max_tokens()
+        max_tokens if max_tokens is not None else (backend_ctx or _DEFAULT_MAX_TOKENS_FLOOR)
     )
     # Normalize stop the same way the non-passthrough path does (the passthrough
     # was previously the one path that forwarded an empty stop string verbatim).
@@ -12331,11 +12239,7 @@ async def _openai_passthrough_stream_upstream(
     tracker,
 ):
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    upstream_stream_id = _openai_passthrough_upstream_stream_id(completion_id)
-    upstream_headers = _openai_passthrough_upstream_headers(
-        upstream_stream_id,
-        llama_backend = llama_backend,
-    )
+    upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
 
     _tracker = tracker
     client = None
@@ -12361,20 +12265,6 @@ async def _openai_passthrough_stream_upstream(
     def _new_preheader_fallback_deadline() -> Optional[float]:
         timeout_s = _openai_compat_stream_preheader_fallback_timeout()
         return None if timeout_s is None else time.monotonic() + timeout_s
-
-    async def _delete_resumable_stream_for_cleanup() -> bool:
-        try:
-            await _openai_delete_resumable_stream(
-                llama_backend.base_url,
-                upstream_stream_id,
-                upstream_headers,
-            )
-            return False
-        except asyncio.CancelledError:
-            return True
-        except BaseException:
-            logger.debug("openai passthrough stream cleanup delete failed", exc_info = True)
-            return False
 
     async def _aclose_stream_resources_for_cleanup(**kwargs) -> bool:
         try:
@@ -12458,15 +12348,13 @@ async def _openai_passthrough_stream_upstream(
                 if cancel_event is not None:
                     cancel_event.set()
                 api_monitor.finish(monitor_id, "cancelled")
-                delete_cancelled = False
                 close_cancelled = False
                 try:
                     await _aclose_send_task(send_task)
                     close_cancelled = await _aclose_client_for_cleanup(client)
-                    delete_cancelled = await _delete_resumable_stream_for_cleanup()
                 finally:
                     _tracker.__exit__(None, None, None)
-                if close_cancelled or delete_cancelled:
+                if close_cancelled:
                     raise asyncio.CancelledError()
                 return _SameTaskStreamingResponse(
                     iter(()),
@@ -12604,8 +12492,6 @@ async def _openai_passthrough_stream_upstream(
                 await _aclose_stream_resources(resp = resp, client = client)
                 resp = None
                 client = None
-                if await _delete_resumable_stream_for_cleanup():
-                    raise asyncio.CancelledError()
                 fallback_response = await _openai_passthrough_non_streaming(
                     llama_backend,
                     payload,
@@ -12624,40 +12510,6 @@ async def _openai_passthrough_stream_upstream(
                     completion_id,
                     model_name,
                 )
-
-            async def _adopt_resumable_response() -> bool:
-                nonlocal resp, send_task, client, preheader_fallback_deadline
-                resume_client = None
-                resume_resp = None
-                try:
-                    resume_client, resume_resp = await _openai_open_resumable_stream(
-                        llama_backend.base_url,
-                        upstream_stream_id,
-                        upstream_headers,
-                    )
-                    if resume_resp is None:
-                        if resume_client is not None:
-                            await _aclose_stream_resources_for_cleanup(client = resume_client)
-                        return False
-                    logger.info(
-                        "openai passthrough stream: using llama-server resumable stream for delayed upstream response"
-                    )
-                    await _aclose_send_task(send_task)
-                    send_task = None
-                    await _aclose_stream_resources(resp = resp, client = client)
-                    resp = resume_resp
-                    client = resume_client
-                    resume_resp = None
-                    resume_client = None
-                    preheader_fallback_deadline = None
-                    return True
-                except BaseException:
-                    if resume_resp is not None or resume_client is not None:
-                        await _aclose_stream_resources_for_cleanup(
-                            resp = resume_resp,
-                            client = resume_client,
-                        )
-                    raise
 
             def _heal_transform(chunk_data: dict, raw_line: str) -> list:
                 """SSE lines to emit in place of one upstream line (healing on)."""
@@ -12730,8 +12582,11 @@ async def _openai_passthrough_stream_upstream(
                     if send_task is not None:
                         last_keepalive_at = time.monotonic()
                         while not send_task.done():
+                            # Wake often enough that _preheader_cancelled keeps
+                            # cancel/disconnect latency sub-second during prefill;
+                            # keepalives still pace off last_keepalive_at.
                             wait_timeout = min(
-                                _OPENAI_PASSTHROUGH_RESUMABLE_LOOKUP_INTERVAL_S,
+                                _STREAM_DISCONNECT_POLL_TIMEOUT_S,
                                 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S,
                             )
                             if preheader_fallback_deadline is not None:
@@ -12751,8 +12606,6 @@ async def _openai_passthrough_stream_upstream(
                                 return_when = asyncio.FIRST_COMPLETED,
                             )
                             if send_task in done:
-                                break
-                            if await _adopt_resumable_response():
                                 break
                             if await _preheader_cancelled(cancel_event, request):
                                 api_monitor.finish(monitor_id, "cancelled")
@@ -13077,7 +12930,6 @@ async def _openai_passthrough_stream_upstream(
                 err = _openai_stream_error_chunk(e)
                 yield _openai_stream_error_sse(err)
             finally:
-                delete_cancelled = False
                 close_cancelled = False
                 try:
                     await _aclose_send_task(send_task)
@@ -13087,10 +12939,9 @@ async def _openai_passthrough_stream_upstream(
                         resp = resp,
                         client = client,
                     )
-                    delete_cancelled = await _delete_resumable_stream_for_cleanup()
                 finally:
                     _tracker.__exit__(None, None, None)
-                if close_cancelled or delete_cancelled:
+                if close_cancelled:
                     raise asyncio.CancelledError()
 
         async def _unstarted_cleanup() -> None:
@@ -13098,17 +12949,15 @@ async def _openai_passthrough_stream_upstream(
             # finally never ran. Release the eagerly-opened upstream resp/client
             # and the cancel-registry entry here; the watchers and line iterator
             # are created inside _stream(), so there is nothing else to close.
-            delete_cancelled = False
             close_cancelled = False
             try:
                 await _aclose_send_task(send_task)
                 close_cancelled = await _aclose_stream_resources_for_cleanup(
                     resp = resp, client = client
                 )
-                delete_cancelled = await _delete_resumable_stream_for_cleanup()
             finally:
                 _tracker.__exit__(None, None, None)
-            if close_cancelled or delete_cancelled:
+            if close_cancelled:
                 raise asyncio.CancelledError()
 
         return _SameTaskStreamingResponse(
@@ -13129,15 +12978,13 @@ async def _openai_passthrough_stream_upstream(
         else:
             detail = exc.detail if isinstance(exc, HTTPException) else _friendly_error(exc)
             api_monitor.fail(monitor_id, str(detail))
-        delete_cancelled = False
         close_cancelled = False
         try:
             await _aclose_send_task(send_task)
             close_cancelled = await _aclose_stream_resources_for_cleanup(resp = resp, client = client)
-            delete_cancelled = await _delete_resumable_stream_for_cleanup()
         finally:
             _tracker.__exit__(None, None, None)
-        if close_cancelled or delete_cancelled:
+        if close_cancelled:
             raise asyncio.CancelledError()
         raise
 

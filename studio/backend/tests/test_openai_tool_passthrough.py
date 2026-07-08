@@ -53,19 +53,16 @@ from routes.inference import (
     _openai_compat_stream_stall_timeout,
     _openai_messages_for_gguf_chat,
     _openai_non_stream_chat_response_sse_lines,
-    _openai_open_resumable_stream,
     _openai_passthrough_sse_line_terminal_state,
     _openai_passthrough_upstream_headers,
     _openai_passthrough_non_streaming,
     _openai_passthrough_stream,
-    _openai_resumable_session_has_replay_bytes,
     _openai_stream_error_sse,
     _openai_stream_usage_chunk,
     _openai_compat_implicit_max_tokens,
     _openai_compat_max_tokens_ceiling,
     _proxy_to_external_provider,
     _SameTaskStreamingResponse,
-    _OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_DEFAULT,
     _OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV,
     _OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV,
     _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV,
@@ -100,136 +97,6 @@ def test_aclose_stream_resources_attempts_remaining_closes_after_cancel():
         assert iterator.closed
         assert resp.closed
         assert client.closed
-
-    asyncio.run(_run())
-
-
-@pytest.mark.parametrize(
-    ("session", "expected"),
-    [
-        ({"id": "s", "total_bytes": 1}, True),
-        ({"id": "s", "total_bytes": 0}, False),
-        ({"id": "s", "total_bytes": True}, False),
-        ({"id": "s", "bytes": 2}, False),
-        ({"id": "s", "has_data": True}, False),
-        ({"id": "s"}, False),
-        ("s", False),
-    ],
-)
-def test_openai_resumable_session_has_replay_bytes(session, expected):
-    assert _openai_resumable_session_has_replay_bytes(session) is expected
-
-
-def test_openai_resumable_lookup_waits_for_buffered_bytes(monkeypatch):
-    async def _run():
-        import routes.inference as inf_mod
-
-        captured = {"closed": False, "sent": False}
-
-        class FakeAsyncClient:
-            def __init__(self, *, timeout, limits, trust_env):
-                captured["timeout"] = timeout
-                captured["limits"] = limits
-                captured["trust_env"] = trust_env
-
-            async def post(
-                self,
-                url,
-                *,
-                json = None,
-                headers = None,
-            ):
-                captured["post_url"] = url
-                captured["post_json"] = json
-                captured["post_headers"] = headers
-                return httpx.Response(200, json = [{"id": "stream-1", "total_bytes": 0}])
-
-            def build_request(self, *_args, **_kwargs):
-                raise AssertionError("replay GET must wait until lookup reports bytes")
-
-            async def send(self, *_args, **_kwargs):
-                captured["sent"] = True
-                raise AssertionError("replay GET must wait until lookup reports bytes")
-
-            async def aclose(self):
-                captured["closed"] = True
-
-        monkeypatch.setattr(inf_mod.httpx, "AsyncClient", FakeAsyncClient)
-
-        client, response = await _openai_open_resumable_stream(
-            "http://llama.test",
-            "stream-1",
-            headers = {"Authorization": "Bearer secret"},
-        )
-
-        assert client is None
-        assert response is None
-        assert captured["post_url"] == "http://llama.test/v1/streams/lookup"
-        assert captured["post_json"] == {"conversation_ids": ["stream-1"]}
-        assert captured["post_headers"] == {"Authorization": "Bearer secret"}
-        assert captured["timeout"].read == inf_mod._OPENAI_PASSTHROUGH_RESUMABLE_LOOKUP_TIMEOUT_S
-        assert captured["sent"] is False
-        assert captured["closed"] is True
-
-    asyncio.run(_run())
-
-
-def test_openai_resumable_lookup_opens_replay_after_buffered_bytes(monkeypatch):
-    async def _run():
-        import routes.inference as inf_mod
-
-        captured = {"closed": False, "sent": False}
-
-        class FakeAsyncClient:
-            def __init__(self, *, timeout, limits, trust_env):
-                captured["timeout"] = timeout
-
-            async def post(self, *_args, **_kwargs):
-                return httpx.Response(200, json = [{"id": "stream-1", "total_bytes": 12}])
-
-            def build_request(
-                self,
-                method,
-                url,
-                *,
-                headers = None,
-            ):
-                captured["method"] = method
-                captured["url"] = url
-                captured["headers"] = headers
-                return httpx.Request(method, url, headers = headers)
-
-            async def send(
-                self,
-                request,
-                *,
-                stream = False,
-            ):
-                captured["sent"] = True
-                captured["stream"] = stream
-                return httpx.Response(200, content = b"data: [DONE]\n\n", request = request)
-
-            async def aclose(self):
-                captured["closed"] = True
-
-        monkeypatch.setattr(inf_mod.httpx, "AsyncClient", FakeAsyncClient)
-
-        client, response = await _openai_open_resumable_stream(
-            "http://llama.test",
-            "stream-1",
-            headers = {"Authorization": "Bearer secret"},
-        )
-
-        assert client is not None
-        assert response is not None
-        assert response.status_code == 200
-        assert captured["method"] == "GET"
-        assert captured["url"] == "http://llama.test/v1/stream/stream-1?from=0"
-        assert captured["headers"] == {"Authorization": "Bearer secret"}
-        assert captured["stream"] is True
-        assert captured["sent"] is True
-        assert captured["closed"] is False
-        await client.aclose()
 
     asyncio.run(_run())
 
@@ -838,7 +705,7 @@ class TestChatCompletionRequestToolFields:
             context_length = 4096
 
             def generate_chat_completion(self, **kwargs):
-                assert kwargs["max_tokens"] == _OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_DEFAULT
+                assert kwargs["max_tokens"] is None
                 yield "plain response"
 
         monitor = ApiMonitor(max_entries = 3)
@@ -1133,14 +1000,13 @@ class TestBuildPassthroughPayloadToolChoice:
         assert body.get("repeat_penalty") == 1.1
         assert "repetition_penalty" not in body
 
-    def test_omitted_passthrough_max_tokens_uses_openai_compat_cap(self, monkeypatch):
-        monkeypatch.delenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, raising = False)
+    def test_omitted_passthrough_max_tokens_uses_backend_context(self):
         args = self._args()
         args["max_tokens"] = None
 
-        body = _build_passthrough_payload(**args)
+        body = _build_passthrough_payload(**args, backend_ctx = 4096)
 
-        assert body["max_tokens"] == _OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_DEFAULT
+        assert body["max_tokens"] == 4096
 
     def test_passthrough_body_merges_system_and_developer_messages(self):
         payload = ChatCompletionRequest(
@@ -1333,11 +1199,11 @@ class TestOpenAICompatibilityHelpers:
         payload = SimpleNamespace(max_tokens = 128, max_completion_tokens = 64)
         assert _effective_max_tokens(payload) == 64
 
-    def test_openai_compat_max_tokens_uses_implicit_cap_when_omitted(self, monkeypatch):
+    def test_openai_compat_max_tokens_returns_none_when_omitted(self, monkeypatch):
         monkeypatch.delenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, raising = False)
         monkeypatch.delenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, raising = False)
         payload = SimpleNamespace(max_tokens = None, max_completion_tokens = None)
-        assert _effective_openai_max_tokens(payload) == _OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_DEFAULT
+        assert _effective_openai_max_tokens(payload) is None
 
     def test_openai_compat_max_tokens_uses_env_override_when_omitted(self, monkeypatch):
         monkeypatch.setenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, "512")
@@ -1347,11 +1213,11 @@ class TestOpenAICompatibilityHelpers:
         assert _effective_openai_max_tokens(payload) == 512
 
     @pytest.mark.parametrize("raw_value", ["", "0", "-3", "not-an-int"])
-    def test_openai_compat_max_tokens_invalid_env_uses_default(self, monkeypatch, raw_value):
+    def test_openai_compat_max_tokens_invalid_env_keeps_no_cap(self, monkeypatch, raw_value):
         monkeypatch.setenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, raw_value)
         monkeypatch.delenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, raising = False)
         payload = SimpleNamespace(max_tokens = None, max_completion_tokens = None)
-        assert _effective_openai_max_tokens(payload) == _OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_DEFAULT
+        assert _effective_openai_max_tokens(payload) is None
 
     def test_openai_compat_max_tokens_preserves_explicit_value_without_ceiling(self, monkeypatch):
         monkeypatch.setenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, "512")
@@ -1387,15 +1253,23 @@ class TestOpenAICompatibilityHelpers:
         assert exc.value.detail["error"]["param"] == param
         assert exc.value.detail["error"]["code"] == "invalid_type"
 
-    def test_passthrough_upstream_headers_include_backend_auth_and_stream_id(self):
+    def test_chat_reasoning_chunk_carries_empty_content(self):
+        from routes.inference import _chat_reasoning_chunk
+
+        line = _chat_reasoning_chunk("chatcmpl-test", 123, "gguf", "thinking...")
+        chunk = json.loads(line[len("data: "):])
+        delta = chunk["choices"][0]["delta"]
+
+        assert delta["reasoning_content"] == "thinking..."
+        assert delta["content"] == ""
+
+    def test_passthrough_upstream_headers_include_backend_auth(self):
         headers = _openai_passthrough_upstream_headers(
-            "stream-123",
             llama_backend = SimpleNamespace(_auth_headers = {"Authorization": "Bearer secret"}),
         )
 
         assert headers["Authorization"] == "Bearer secret"
         assert headers["Connection"] == "close"
-        assert headers["X-Conversation-Id"] == "stream-123"
 
     @pytest.mark.parametrize("raw_value", ["", "0", "-3", "not-an-int"])
     def test_openai_compat_explicit_ceiling_invalid_env_disables_guard(
@@ -1421,7 +1295,7 @@ class TestOpenAICompatibilityHelpers:
         payload = SimpleNamespace(max_tokens = 512, max_completion_tokens = None)
         assert _effective_openai_max_tokens(payload) == 512
 
-    def test_openai_compat_explicit_ceiling_caps_implicit_default(self, monkeypatch):
+    def test_openai_compat_explicit_ceiling_applies_when_omitted(self, monkeypatch):
         monkeypatch.delenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, raising = False)
         monkeypatch.setenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, "256")
         payload = SimpleNamespace(max_tokens = None, max_completion_tokens = None)
@@ -1429,7 +1303,7 @@ class TestOpenAICompatibilityHelpers:
 
     def test_openai_compat_stream_stall_timeout_uses_default(self, monkeypatch):
         monkeypatch.delenv(_OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV, raising = False)
-        assert _openai_compat_stream_stall_timeout() == 30.0
+        assert _openai_compat_stream_stall_timeout() == 120.0
 
     def test_openai_compat_stream_stall_timeout_uses_env_override(self, monkeypatch):
         monkeypatch.setenv(_OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV, "4.5")
@@ -1440,7 +1314,7 @@ class TestOpenAICompatibilityHelpers:
         self, monkeypatch, raw_value
     ):
         monkeypatch.setenv(_OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV, raw_value)
-        assert _openai_compat_stream_stall_timeout() == 30.0
+        assert _openai_compat_stream_stall_timeout() == 120.0
 
     @pytest.mark.parametrize("raw_value", ["0", "-1"])
     def test_openai_compat_stream_stall_timeout_non_positive_env_disables(
@@ -2384,7 +2258,7 @@ class TestGgufVisionToolRouting:
         ]
 
         def _plain(**kwargs):
-            assert kwargs["max_tokens"] == _OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_DEFAULT
+            assert kwargs["max_tokens"] is None
             yield "plain response"
 
         def _tools(**_kwargs):
@@ -3065,7 +2939,6 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert "data: [DONE]\n\n" in "".join(chunks)
             assert captured_headers["authorization"] == "Bearer secret"
             assert captured_headers["connection"] == "close"
-            assert captured_headers["x-conversation-id"].startswith("studio-chatcmpl-test-")
 
         asyncio.run(_run())
 
@@ -3131,107 +3004,6 @@ class TestApiMonitorProviderAndCompletionStreams:
             ]
             body = "".join(chunks)
             assert "data: [DONE]\n\n" in body
-
-        asyncio.run(_run())
-
-    def test_passthrough_stream_uses_resumable_replay_when_headers_stall(self, monkeypatch):
-        async def _run():
-            import routes.inference as inf_mod
-
-            entered = asyncio.Event()
-            cancelled = asyncio.Event()
-            deleted = []
-            resumable_headers = {}
-
-            async def fake_send(*_args, **_kwargs):
-                entered.set()
-                try:
-                    await asyncio.Event().wait()
-                except asyncio.CancelledError:
-                    cancelled.set()
-                    raise
-
-            async def fake_resumable(
-                _base_url,
-                stream_id,
-                headers = None,
-            ):
-                resumable_headers["open"] = headers
-                body = (
-                    'data: {"id":"chatcmpl-test","created":1,"model":"gguf",'
-                    '"choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}\n\n'
-                    'data: {"id":"chatcmpl-test","created":1,"model":"gguf",'
-                    '"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
-                    'data: {"id":"chatcmpl-test","created":1,"model":"gguf",'
-                    '"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n'
-                    "data: [DONE]\n\n"
-                )
-                return None, httpx.Response(200, content = body.encode("utf-8"))
-
-            async def fake_delete(
-                _base_url,
-                stream_id,
-                headers = None,
-            ):
-                resumable_headers["delete"] = headers
-                deleted.append(stream_id)
-
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
-            monkeypatch.setattr(inf_mod, "_openai_open_resumable_stream", fake_resumable)
-            monkeypatch.setattr(inf_mod, "_openai_delete_resumable_stream", fake_delete)
-            monkeypatch.setattr(inf_mod, "_OPENAI_PASSTHROUGH_RESUMABLE_LOOKUP_INTERVAL_S", 0.01)
-
-            payload = ChatCompletionRequest(
-                model = "default",
-                messages = [ChatMessage(role = "user", content = "hi")],
-                stream = True,
-            )
-
-            response = await asyncio.wait_for(
-                _openai_passthrough_stream(
-                    Request(),
-                    threading.Event(),
-                    SimpleNamespace(
-                        base_url = "http://llama.test",
-                        context_length = 4096,
-                        _auth_headers = {"Authorization": "Bearer secret"},
-                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                    ),
-                    payload,
-                    "gguf",
-                    "chatcmpl-test",
-                    monitor_id = monitor_id,
-                ),
-                timeout = 0.2,
-            )
-            await asyncio.wait_for(entered.wait(), timeout = 0.2)
-            chunks = [
-                chunk.decode() if isinstance(chunk, bytes) else chunk
-                async for chunk in response.body_iterator
-            ]
-            body = "".join(chunks)
-
-            assert "OK" in body
-            assert body.endswith("data: [DONE]\n\n")
-            await asyncio.wait_for(cancelled.wait(), timeout = 0.2)
-            assert deleted
-            assert resumable_headers["open"]["Authorization"] == "Bearer secret"
-            assert resumable_headers["delete"]["Authorization"] == "Bearer secret"
-            [entry] = monitor.snapshot()
-            assert entry["status"] == "completed"
-            assert entry["reply"] == "OK"
 
         asyncio.run(_run())
 
@@ -4403,22 +4175,12 @@ class TestApiMonitorProviderAndCompletionStreams:
                 yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
                 await asyncio.sleep(3600)
 
-            deleted = []
             cancel_id = "passthrough-stream-delete-cancel"
-
-            async def fake_delete(
-                _base_url,
-                stream_id,
-                headers = None,
-            ):
-                deleted.append((stream_id, headers))
-                raise asyncio.CancelledError()
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
-            monkeypatch.setattr(inf_mod, "_openai_delete_resumable_stream", fake_delete)
             monitor_id = monitor.start(
                 endpoint = "/v1/chat/completions",
                 method = "POST",
@@ -4471,9 +4233,6 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert entry["status"] == "cancelled"
             assert entry["reply"] == "hello"
             assert monitor.active_count() == 0
-            assert deleted
-            assert deleted[0][0].startswith("studio-chatcmpl-test-")
-            assert deleted[0][1]["Authorization"] == "Bearer secret"
             assert cancel_id not in inf_mod._CANCEL_REGISTRY
 
         asyncio.run(_run())
