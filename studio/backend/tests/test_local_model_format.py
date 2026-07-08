@@ -187,3 +187,21 @@ def test_local_task_video_name_without_pipeline_not_surfaced(tmp_path):
     d = tmp_path / "ltx-loose"
     _touch(d / "ltx-2.safetensors")  # loose weights, no model_index.json
     assert models_route._local_model_task(_local(d, model_id = "Lightricks/LTX-2")) is None
+
+
+def test_local_task_ignores_family_token_in_parent_path(tmp_path):
+    # model.id is the full on-disk path for a scanned On-Device model, and the family-token
+    # matcher treats any path segment as a hint. A family token in a PARENT dir (e.g.
+    # /models/qwen-image/misc) must NOT tag an unrelated single-file as text-to-image: that
+    # would surface it in the Images picker and evict the GPU owner before from_single_file
+    # fails on the unrelated weights. Detection is scoped to the leaf name, not the raw path.
+    d = tmp_path / "misc"
+    _touch(d / "unrelated.safetensors")  # one non-family single file, no model_index.json
+    m = _local(d, id = "/models/qwen-image/misc", display_name = "misc")
+    assert models_route._local_is_diffusers(m) is False
+    assert models_route._local_model_task(m) is None
+    # Regression guard: a leaf name that itself carries a family hint is still tagged.
+    d2 = tmp_path / "z-image-turbo"
+    _touch(d2 / "model.safetensors")
+    m2 = _local(d2, id = str(d2), display_name = "z-image-turbo")
+    assert models_route._local_is_diffusers(m2) is True

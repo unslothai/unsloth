@@ -3292,7 +3292,7 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
         try:
             from core.inference.video import _is_trusted_video_repo
             from core.inference.video_families import detect_video_family
-            for needle in (model.model_id, model.display_name, model.id):
+            for needle in (model.model_id, model.display_name, Path(model.id).name):
                 if (
                     needle
                     and detect_video_family(needle) is not None
@@ -3320,7 +3320,7 @@ def _local_is_diffusers(model: "LocalModelInfo") -> bool:
         pass
     try:
         from core.inference.diffusion_families import detect_family
-        for needle in (model.model_id, model.display_name, model.id):
+        for needle in (model.model_id, model.display_name, Path(model.id).name):
             if needle and detect_family(needle) is not None:
                 return True
     except Exception:
