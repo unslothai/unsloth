@@ -640,7 +640,12 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
-    frame_ancestors = _HOSTED_FRAME_ANCESTORS if _IS_HOSTED_NOTEBOOK else "'none'"
+    if _IS_COLAB:
+        frame_ancestors = "*"
+    elif _IS_HOSTED_NOTEBOOK:
+        frame_ancestors = _HOSTED_FRAME_ANCESTORS
+    else:
+        frame_ancestors = "'none'"
 
     # In Colab, the kernel/output scaffolding injects scripts and fetch/WS from
     # *.prod.colab.dev and *.googleusercontent.com, so widen script-src and

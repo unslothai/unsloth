@@ -284,7 +284,14 @@ class TestSecurityHeadersMiddleware:
         nonced = main_module._build_csp("XYZ")
         assert "script-src 'self' 'nonce-XYZ';" in nonced
 
-    def test_hosted_notebook_csp_allows_frame_ancestors(self, main_module, monkeypatch):
+    def test_colab_csp_keeps_broad_frame_ancestors(self, main_module, monkeypatch):
+        monkeypatch.setattr(main_module, "_IS_COLAB", True)
+        monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
+        csp = main_module._build_csp()
+        assert "frame-ancestors *" in csp
+
+    def test_kaggle_csp_uses_frame_ancestor_allowlist(self, main_module, monkeypatch):
+        monkeypatch.setattr(main_module, "_IS_COLAB", False)
         monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
         csp = main_module._build_csp()
         assert "frame-ancestors *" not in csp

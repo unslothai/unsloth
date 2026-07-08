@@ -198,9 +198,17 @@ def _forwarded_for_from_element(element: str) -> str:
     return ""
 
 
+def _is_loopback_addr(value: str | None) -> bool:
+    try:
+        return bool(value) and ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
 def _client_ip(request: Request | None) -> str:
     if request is None:
         return "_unknown"
+    client_host = (request.client.host if request.client else None) or "_unknown"
     if _trust_forwarded_for():
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
@@ -214,7 +222,11 @@ def _client_ip(request: Request | None) -> str:
             normalized = _forwarded_for_from_element(fwd.split(",", 1)[0])
             if normalized:
                 return normalized
-    return (request.client.host if request.client else None) or "_unknown"
+    if _is_loopback_addr(client_host):
+        cf = _normalize_forwarded_addr(request.headers.get("cf-connecting-ip", ""))
+        if cf:
+            return cf
+    return client_host
 
 
 def _bucket_key(request: Request | None, username: str) -> tuple[str, str]:

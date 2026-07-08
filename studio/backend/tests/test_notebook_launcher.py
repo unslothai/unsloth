@@ -64,7 +64,7 @@ def test_publish_cloudflare_url_suppresses_public_bootstrap_injection(monkeypatc
     assert app.state.suppress_bootstrap_injection_for_public_tunnel is False
 
 
-def test_kaggle_start_auto_tunnels_and_marks_hosted(monkeypatch):
+def test_kaggle_reuse_path_keeps_bootstrap_guard(monkeypatch):
     calls = {}
     env = {}
     monkeypatch.setattr(os, "environ", env)
@@ -92,7 +92,7 @@ def test_kaggle_start_auto_tunnels_and_marks_hosted(monkeypatch):
 
     colab.start(8888)
 
-    assert calls["tunnel"] == (8888, True)
+    assert calls["tunnel"] == (8888, False)
     assert calls["published"] == "https://ready.trycloudflare.com"
     assert calls["embed"] == (8888, "https://ready.trycloudflare.com")
     assert calls["stopped"] is True

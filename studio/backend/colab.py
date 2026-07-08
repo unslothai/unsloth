@@ -404,10 +404,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
         # try/finally: tear the tunnel down even if interrupted mid-start/render.
         try:
             cf_url = (
-                start_cloudflare_tunnel(
-                    port,
-                    allow_bootstrap_pending = is_kaggle,
-                )
+                start_cloudflare_tunnel(port)
                 if effective_cloudflare
                 else None
             )
