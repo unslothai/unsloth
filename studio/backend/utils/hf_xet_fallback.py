@@ -218,6 +218,14 @@ _DEGRADED_ATTRS = {
     "get_hf_download_state": _degraded_get_hf_download_state,
 }
 
+# Annotation-only declarations for the three names above. They bind NO value, so attribute lookup
+# still misses and PEP 562 ``__getattr__`` resolves them lazily -- but ruff/pyflakes now see them as
+# defined, so listing them in ``__all__`` does not trip F822 while F822 stays active for the rest of
+# the list (a real typo there is still caught).
+DownloadStallError: type
+start_watchdog: Any
+get_hf_download_state: Any
+
 
 def __getattr__(name: str) -> Any:
     if name in _DEGRADED_ATTRS:
