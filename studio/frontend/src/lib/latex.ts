@@ -66,49 +66,21 @@ const LINK_DEST_RE =
   /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/gd;
 
 /**
- * Reference-link definition `[label]: DEST` (group 1 = angle `<...>`, group 2 =
- * bare run). `d` flag for indices, `m` to anchor at line start. `(?!\^)` skips
- * GFM footnotes (`[^id]: text`), whose body is prose, not a URL. Its URL, like
- * an inline destination, must not be rewritten as math.
- */
-const REF_DEF_DEST_RE =
-  /^ {0,3}\[(?!\^)(?:\\.|[^\]\n\\])+\]:[^\S\n]*(?:<([^>\n]*)>|([^\s<][^\s]*))/gmd;
-
-/**
- * Destination spans of inline links/images and reference-link definitions, so a
- * `\(...\)` inside a URL isn't rewritten as math. Link text is not returned, so
- * math in the visible text still converts.
+ * Find the destination spans of inline links/images, so a `\(...\)` written with
+ * escaped parens inside a URL isn't rewritten as math (which would break the
+ * link). Only the destination is returned, not the link text, so math in the
+ * visible text still converts. Sorted, non-overlapping (matches are disjoint).
  */
 function findLinkDestinationRegions(content: string): Array<[number, number]> {
-  const hasInline = content.includes("](");
-  const hasRefDef = content.includes("]:");
-  if (!hasInline && !hasRefDef) return [];
+  if (!content.includes("](")) return [];
   const regions: Array<[number, number]> = [];
   let match: RegExpExecArray | null;
-  if (hasInline) {
-    LINK_DEST_RE.lastIndex = 0;
-    while ((match = LINK_DEST_RE.exec(content)) !== null) {
-      regions.push(match.indices![1]); // `d` flag: group 1 is the destination.
-    }
+  LINK_DEST_RE.lastIndex = 0;
+  while ((match = LINK_DEST_RE.exec(content)) !== null) {
+    // `indices` is present (the `d` flag); group 1 spans the destination.
+    regions.push(match.indices![1]);
   }
-  if (hasRefDef) {
-    REF_DEF_DEST_RE.lastIndex = 0;
-    while ((match = REF_DEF_DEST_RE.exec(content)) !== null) {
-      const span = match.indices![1] ?? match.indices![2];
-      if (span) regions.push(span);
-    }
-  }
-  // Sort, then merge overlaps: a reference-def token can nest inline-link spans
-  // (`[1]: http://h/[a](b)/foo\(x\)`), and isInRegion's binary search needs
-  // disjoint spans.
-  regions.sort((a, b) => a[0] - b[0]);
-  const merged: Array<[number, number]> = [];
-  for (const span of regions) {
-    const last = merged[merged.length - 1];
-    if (last && span[0] <= last[1]) last[1] = Math.max(last[1], span[1]);
-    else merged.push(span);
-  }
-  return merged;
+  return regions;
 }
 
 /**
@@ -338,7 +310,10 @@ function convertLatexDelimiters(content: string): {
         match.index > 0 ? content.lastIndexOf("\n", match.index - 1) + 1 : 0;
       const prefix = content.slice(lineStart, match.index);
       const indent = /^\s*$/.test(prefix) ? prefix : "";
-      wrapped = `\n${indent}$$\n${indent}${body}\n${indent}$$\n`;
+      // Indent every body line, not just the first, so multi-line display math
+      // (`\[a\nb\]`) stays wholly inside the container.
+      const inner = indent ? body.replace(/\n/g, `\n${indent}`) : body;
+      wrapped = `\n${indent}$$\n${indent}${inner}\n${indent}$$\n`;
     } else {
       wrapped = `$${body}$`;
     }
