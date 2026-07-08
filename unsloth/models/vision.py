@@ -26,6 +26,7 @@ try:
 except:
     from transformers import AutoModelForVision2Seq
 from ..kernels import (
+    fast_cross_entropy_loss,
     post_patch_loss_function,
 )
 from ._utils import (
@@ -41,6 +42,7 @@ from ._utils import (
     set_task_config_attr,
 )
 from ._utils import *
+from .mtp import patch_mtp_loss
 from .loader_utils import _exclude_rope_inv_freq_from_ddp, _get_fp8_mode_and_check_settings
 from ..save import patch_saving_functions
 from ..models.loader_utils import is_distributed
@@ -1527,6 +1529,7 @@ class FastBaseModel:
                     raise
                 raise _patch_err
         model = post_patch_loss_function(model)
+        model = patch_mtp_loss(model, fast_cross_entropy_loss)
 
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):
