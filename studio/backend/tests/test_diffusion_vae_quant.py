@@ -29,7 +29,12 @@ from core.inference.diffusion_vae_quant import (
 )
 
 
-def _target(*, device = "cuda", dtype = "bfloat16", cc = (10, 0)):
+def _target(
+    *,
+    device = "cuda",
+    dtype = "bfloat16",
+    cc = (10, 0),
+):
     return types.SimpleNamespace(device = device, dtype = dtype, _cc = cc)
 
 
@@ -43,7 +48,12 @@ class _Weight:
         return len(self.shape)
 
 
-def _stub_torch(monkeypatch, *, with_fp8 = True, cc = (10, 0)):
+def _stub_torch(
+    monkeypatch,
+    *,
+    with_fp8 = True,
+    cc = (10, 0),
+):
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
     torch.float16 = "float16"
@@ -164,9 +174,7 @@ def test_select_offload_uses_layerwise_fp8(monkeypatch):
     monkeypatch.setattr(
         vq, "_vae_fp8_dynamic_probe", lambda device: pytest.fail("probe must not run under offload")
     )
-    assert (
-        select_vae_quant_scheme(_target(), "auto", offload_active = True) == VAE_QUANT_FP8
-    )
+    assert select_vae_quant_scheme(_target(), "auto", offload_active = True) == VAE_QUANT_FP8
 
 
 def test_select_force_fp32_stays_dense(monkeypatch):
@@ -258,6 +266,7 @@ def test_fp8_dynamic_conv_filter(monkeypatch):
     assert ff(_mod(nn.Conv2d, (128, 128, 3, 3)), "decoder.conv_norm_out") is False
     assert ff(_mod(nn.Conv2d, (128, 128, 3, 3)), "decoder.norm_out.conv") is False
     assert ff(_mod(nn.Linear, (512, 512)), "decoder.proj_out") is False
+
     # A non-conv/linear module (e.g. a GroupNorm) is excluded outright.
     class _GroupNorm:
         pass

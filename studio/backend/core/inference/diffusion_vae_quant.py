@@ -269,7 +269,9 @@ def _cast_vae_fp8_dynamic(vae: Any, target: Any) -> None:
         name = fqn.lower() if fqn else ""
         return not any(tok in name for tok in _VAE_KEEP_DENSE_TOKENS)
 
-    quantize_(vae, Float8DynamicActivationFloat8WeightConfig(granularity = PerTensor()), filter_fn = filter_fn)
+    quantize_(
+        vae, Float8DynamicActivationFloat8WeightConfig(granularity = PerTensor()), filter_fn = filter_fn
+    )
 
 
 def _cast_vae_fp8(vae: Any, target: Any) -> None:

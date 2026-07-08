@@ -2268,7 +2268,9 @@ class DiffusionBackend:
 
     @staticmethod
     def _align_vae_dtype(
-        pipe: Any, denoiser_attr: str = "transformer", vae_quant: Optional[str] = None
+        pipe: Any,
+        denoiser_attr: str = "transformer",
+        vae_quant: Optional[str] = None,
     ) -> None:
         """Cast the VAE to the denoiser's compute dtype before an image-conditioned
         call. The img2img/inpaint pipelines VAE-encode the input image at the text-
