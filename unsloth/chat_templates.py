@@ -2151,7 +2151,15 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
 
         texts = []
         for row_idx in range(n_rows):
-            row_values = {column: examples[column][row_idx] for column in columns}
+            # Coerce missing (None) columns to "" so they do not render as the
+            # literal string "None" in the emitted text. In a [[...]] block only
+            # the first column gates the block, so a later column can still be
+            # None here; required columns can be None too. Coercing at the source
+            # covers both, and leaves the "" gate below unchanged.
+            row_values = {
+                column: ("" if (value := examples[column][row_idx]) is None else value)
+                for column in columns
+            }
             formatter_values = {}
 
             for formatter_template in formatter_templates:
@@ -2162,15 +2170,8 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
                     continue
 
                 _, optional_name, prompt, needed_columns = formatter_template
-                if row_values[needed_columns[0]] not in (None, ""):
-                    # Coerce missing (None) columns to "" so they do not render as the
-                    # literal string "None" in the emitted text. A [[...]] block may
-                    # reference several columns; only the first gates the block, so a
-                    # later column can still be None here.
-                    prompt_values = {
-                        column: ("" if row_values[column] is None else row_values[column])
-                        for column in needed_columns
-                    }
+                if row_values[needed_columns[0]] != "":
+                    prompt_values = {column: row_values[column] for column in needed_columns}
                     formatter_values[optional_name] = prompt.format(**prompt_values)
                 else:
                     formatter_values[optional_name] = ""

@@ -73,3 +73,17 @@ def test_single_column_optional_block_gated_out_on_none():
     merged_prompt = "Name: [[{name}]]!"
     out = _render(merged_prompt, ["name"], {"name": [None, "Bob"]})
     assert out == ["Name: !", "Name: Bob!"]
+
+
+def test_required_column_none_does_not_render_none():
+    # A required (non-[[...]]) column that is None must not render as the
+    # literal "None" either; coercion happens at the row source, so both the
+    # required and optional branches are covered.
+    merged_prompt = "Location: {city}, {country} end"
+    out = _render(
+        merged_prompt,
+        ["city", "country"],
+        {"city": ["Paris"], "country": [None]},
+    )
+    assert out[0] == "Location: Paris,  end"
+    assert "None" not in out[0]
