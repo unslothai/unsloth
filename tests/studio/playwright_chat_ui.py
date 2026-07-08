@@ -1264,11 +1264,28 @@ with sync_playwright() as p:
     # placeholder, and /api/health goes unreachable shortly after.
     # ─────────────────────────────────────────────────────
     step("Shutdown via account menu")
-    # Re-login with NEW2 for a valid /api/shutdown token (CLI rotation
-    # invalidated the old one). The stale token can make the SPA auth guard
-    # abort this goto with ERR_ABORTED, or redirect to the same /login URL
-    # ("interrupted by another navigation"); resolve on domcontentloaded and
-    # tolerate either -- the pw-field wait below confirms we are on /login.
+    # Start fresh after the CLI rotation invalidates this browser session.
+    try:
+        page.close()
+    except Exception:
+        pass
+    try:
+        ctx.close()
+    except Exception as exc:
+        info(f"WARN closing stale browser context failed: {exc!r}")
+    ctx = browser.new_context(
+        viewport = {"width": 1280, "height": 900},
+        reduced_motion = "reduce",
+    )
+    install_view_transition_killer(ctx)
+    page = ctx.new_page()
+    page.set_default_timeout(60_000)
+    page.on("pageerror", lambda e: page_errors.append(str(e)))
+    page.on("console", _on_console)
+
+    # Re-login with NEW2 for a valid /api/shutdown token. Route changes can
+    # still abort or interrupt this navigation, so the field wait below is the
+    # final confirmation that we reached /login.
     _tolerated_nav = ("ERR_ABORTED", "interrupted by another navigation")
     try:
         page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)

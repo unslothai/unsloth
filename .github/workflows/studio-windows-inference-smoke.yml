@@ -1334,40 +1334,50 @@ jobs:
             try { Add-MpPreference -ExclusionPath $p -ErrorAction Stop } catch { }
           }
 
-      - name: Hide Visual Studio + CMake (simulate a host with no build tools)
+      - name: Prepare no-build-tools simulation
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # A Program Files dir can hold a transient handle (Defender / MSBuild node)
-          # so Rename-Item intermittently fails with "Access is denied"; retry to ride it out.
-          function Rename-WithRetry($Path, $NewName) {
-            for ($i = 1; $i -le 6; $i++) {
-              try { Rename-Item -LiteralPath $Path -NewName $NewName -ErrorAction Stop; return }
-              catch { if ($i -eq 6) { throw }; Start-Sleep -Seconds 3 }
+          $root = Join-Path $env:GITHUB_WORKSPACE 'no-build-tools'
+          $pf = Join-Path $root 'ProgramFiles'
+          $pfx86 = Join-Path $root 'ProgramFilesx86'
+          New-Item -ItemType Directory -Force -Path $pf, $pfx86 | Out-Null
+
+          $blocked = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($tool in @('cmake', 'cl.exe')) {
+            foreach ($cmd in (Get-Command $tool -All -ErrorAction SilentlyContinue)) {
+              if ($cmd.Source) {
+                $dir = Split-Path -Parent $cmd.Source
+                if ($dir) { [void] $blocked.Add($dir) }
+              }
             }
           }
-          # Rename the Visual Studio install roots (incl. the Installer that holds
-          # vswhere.exe) so Find-VsBuildTools' vswhere + filesystem scan both miss.
-          foreach ($d in @("$env:ProgramFiles\Microsoft Visual Studio", "${env:ProgramFiles(x86)}\Microsoft Visual Studio")) {
-            if (Test-Path -LiteralPath $d) {
-              Rename-WithRetry $d ((Split-Path $d -Leaf) + '.vsoff')
-              Write-Host "Hid VS: $d"
-            }
+
+          $pathParts = $env:Path -split [IO.Path]::PathSeparator |
+            Where-Object { $_ -and -not $blocked.Contains($_) }
+          $noBuildToolsPath = $pathParts -join [IO.Path]::PathSeparator
+
+          "NO_BUILD_TOOLS_PROGRAMFILES=$pf" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PROGRAMFILES_X86=$pfx86" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PATH<<NO_BUILD_TOOLS_PATH_EOF" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $noBuildToolsPath | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PATH_EOF" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "ProgramFiles simulation root: $pf"
+          Write-Host "ProgramFiles(x86) simulation root: $pfx86"
+          if ($blocked.Count -gt 0) {
+            Write-Host "Removed build-tool PATH dirs:"
+            $blocked | Sort-Object | ForEach-Object { Write-Host "  $_" }
+          } else {
+            Write-Host "No cmake or cl.exe PATH dirs found to remove."
           }
-          # Surgically rename each cmake executable on PATH (not its parent dir --
-          # cmake can share a dir with other shims) so Get-Command cmake fails.
-          $hidden = @()
-          foreach ($c in (Get-Command cmake -All -ErrorAction SilentlyContinue)) {
-            if ($c.Source -and (Test-Path -LiteralPath $c.Source)) {
-              Rename-WithRetry $c.Source ((Split-Path $c.Source -Leaf) + '.off')
-              $hidden += $c.Source
-              Write-Host "Hid cmake: $($c.Source)"
-            }
-          }
-          ("HIDDEN_CMAKE=" + ($hidden -join '|')) | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Assert Visual Studio + CMake are genuinely undetectable
         shell: pwsh
+        env:
+          ProgramFiles: ${{ env.NO_BUILD_TOOLS_PROGRAMFILES }}
+          ProgramFiles(x86): ${{ env.NO_BUILD_TOOLS_PROGRAMFILES_X86 }}
+          Path: ${{ env.NO_BUILD_TOOLS_PATH }}
         run: |
           $ErrorActionPreference = 'Stop'
           . (Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1/Get-FunctionSource.ps1')
@@ -1393,6 +1403,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+          ProgramFiles: ${{ env.NO_BUILD_TOOLS_PROGRAMFILES }}
+          ProgramFiles(x86): ${{ env.NO_BUILD_TOOLS_PROGRAMFILES_X86 }}
+          Path: ${{ env.NO_BUILD_TOOLS_PATH }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           $ProgressPreference = 'SilentlyContinue'
@@ -1480,19 +1493,11 @@ jobs:
           [ -n "$CONTENT" ] && [ "$CONTENT" != "null" ] || { echo "::error::empty completion"; exit 1; }
           echo "Inference OK without Visual Studio: $CONTENT"
 
-      - name: Restore Visual Studio + CMake
+      - name: Clean no-build-tools simulation
         if: always()
         shell: pwsh
         run: |
-          foreach ($d in @("$env:ProgramFiles\Microsoft Visual Studio", "${env:ProgramFiles(x86)}\Microsoft Visual Studio")) {
-            $off = "$d.vsoff"
-            if (Test-Path -LiteralPath $off) { Rename-Item -LiteralPath $off -NewName (Split-Path $d -Leaf); Write-Host "Restored $d" }
-          }
-          if ($env:HIDDEN_CMAKE) {
-            foreach ($src in ($env:HIDDEN_CMAKE -split '\|')) {
-              if ($src -and (Test-Path -LiteralPath "$src.off")) { Rename-Item -LiteralPath "$src.off" -NewName (Split-Path $src -Leaf) }
-            }
-          }
+          Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'no-build-tools') -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Stop Studio
         if: always()
@@ -1540,21 +1545,34 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Hide Visual Studio
+      - name: Prepare no-build-tools simulation
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # Retry the rename: a Program Files dir can hold a transient handle that
-          # makes Rename-Item intermittently fail with "Access is denied".
-          function Rename-WithRetry($Path, $NewName) {
-            for ($i = 1; $i -le 6; $i++) {
-              try { Rename-Item -LiteralPath $Path -NewName $NewName -ErrorAction Stop; return }
-              catch { if ($i -eq 6) { throw }; Start-Sleep -Seconds 3 }
+          $root = Join-Path $env:GITHUB_WORKSPACE 'no-build-tools'
+          $pf = Join-Path $root 'ProgramFiles'
+          $pfx86 = Join-Path $root 'ProgramFilesx86'
+          New-Item -ItemType Directory -Force -Path $pf, $pfx86 | Out-Null
+
+          $blocked = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($tool in @('cmake', 'cl.exe')) {
+            foreach ($cmd in (Get-Command $tool -All -ErrorAction SilentlyContinue)) {
+              if ($cmd.Source) {
+                $dir = Split-Path -Parent $cmd.Source
+                if ($dir) { [void] $blocked.Add($dir) }
+              }
             }
           }
-          foreach ($d in @("$env:ProgramFiles\Microsoft Visual Studio", "${env:ProgramFiles(x86)}\Microsoft Visual Studio")) {
-            if (Test-Path -LiteralPath $d) { Rename-WithRetry $d ((Split-Path $d -Leaf) + '.vsoff'); Write-Host "Hid VS: $d" }
-          }
+
+          $pathParts = $env:Path -split [IO.Path]::PathSeparator |
+            Where-Object { $_ -and -not $blocked.Contains($_) }
+          $noBuildToolsPath = $pathParts -join [IO.Path]::PathSeparator
+
+          "NO_BUILD_TOOLS_PROGRAMFILES=$pf" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PROGRAMFILES_X86=$pfx86" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PATH<<NO_BUILD_TOOLS_PATH_EOF" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $noBuildToolsPath | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PATH_EOF" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Windows CUDA and ROCm prebuilts exist in unslothai/llama.cpp (what GPU users download, no VS)
         env:
@@ -1579,6 +1597,9 @@ jobs:
       - name: The prebuilt resolver runs without Visual Studio
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ProgramFiles: ${{ env.NO_BUILD_TOOLS_PROGRAMFILES }}
+          ProgramFiles(x86): ${{ env.NO_BUILD_TOOLS_PROGRAMFILES_X86 }}
+          Path: ${{ env.NO_BUILD_TOOLS_PATH }}
         run: |
           # Resolver-only (no GPU on hosted runners, so the host resolves to the
           # CPU bundle). The point is that resolution needs no compiler/VS.
@@ -1588,14 +1609,11 @@ jobs:
           cat /tmp/resolve.json
           echo "Prebuilt resolver ran with no Visual Studio present."
 
-      - name: Restore Visual Studio
+      - name: Clean no-build-tools simulation
         if: always()
         shell: pwsh
         run: |
-          foreach ($d in @("$env:ProgramFiles\Microsoft Visual Studio", "${env:ProgramFiles(x86)}\Microsoft Visual Studio")) {
-            $off = "$d.vsoff"
-            if (Test-Path -LiteralPath $off) { Rename-Item -LiteralPath $off -NewName (Split-Path $d -Leaf); Write-Host "Restored $d" }
-          }
+          Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'no-build-tools') -Recurse -Force -ErrorAction SilentlyContinue
 
   # ── folded from studio-setup-ps1-vs2026.yml: setup.ps1 unit tests + real-VS detection + vcredist ──
   pester:
