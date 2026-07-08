@@ -849,6 +849,16 @@ def _restore_missing_fp8_weight_scale_inv(
                 restored_scale = restored_scale.to(dtype = weight.dtype)
             except Exception:
                 pass
+        # Blockwise FP8 kernels read block geometry off the scale (getattr(weight_scale,
+        # "block_size", ...)); carry the module's block_size onto a restored scale whose
+        # placeholder was dropped, else the forward defaults to [128, 128] and mis-dequantizes
+        # non-default-block checkpoints. The _parameters branch below keeps the old attrs. #6749
+        if not hasattr(restored_scale, "block_size"):
+            module_block_size = getattr(module, "block_size", None)
+            if module_block_size is None and isinstance(weight, torch.Tensor):
+                module_block_size = getattr(weight, "block_size", None)
+            if module_block_size is not None:
+                restored_scale.block_size = module_block_size
         if attr_name in module._buffers:
             module._buffers[attr_name] = restored_scale
         elif attr_name in module._parameters:

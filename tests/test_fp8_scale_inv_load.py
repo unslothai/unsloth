@@ -1662,3 +1662,27 @@ def test_prefers_weight_device_over_cpu_scale_placeholder():
     assert restored == 1
     assert skipped == 0
     assert model.fp8.weight_scale_inv.device.type == "cuda"
+
+
+def test_restored_scale_inherits_module_block_size_when_placeholder_dropped():
+    # A dropped-placeholder scale registered as a bare buffer must carry the module's block_size,
+    # else the FP8 forward defaults to [128, 128] and mis-dequantizes non-default-block ckpts. #6749
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(256, 256, dtype = torch.float16))
+    model.fp8.block_size = [64, 64]
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.randn(4, 4, dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert getattr(model.fp8.weight_scale_inv, "block_size", None) == [64, 64]
