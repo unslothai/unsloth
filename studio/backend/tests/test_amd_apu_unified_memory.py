@@ -127,7 +127,6 @@ class TestApuMemoryCeiling:
     @staticmethod
     def _patch_wsl(monkeypatch, is_wsl):
         import utils.paths.path_utils as path_utils
-
         monkeypatch.setattr(path_utils, "_is_wsl", lambda: is_wsl)
 
     def test_field_case_6834_strix_halo_bare_metal_allows(self, monkeypatch):

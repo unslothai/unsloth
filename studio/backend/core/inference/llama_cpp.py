@@ -2895,9 +2895,7 @@ class LlamaCppBackend:
             try:
                 gpu_free = LlamaCppBackend._get_gpu_free_memory()
                 if gpu_indices is not None:
-                    gpu_free = [
-                        (idx, free) for idx, free in gpu_free if idx in gpu_indices
-                    ]
+                    gpu_free = [(idx, free) for idx, free in gpu_free if idx in gpu_indices]
                 if gpu_free:
                     return sum(free for _idx, free in gpu_free), "GPU memory"
             except Exception:
@@ -2921,9 +2919,7 @@ class LlamaCppBackend:
         if need_mib <= avail_mib - headroom_mib:
             return None
         wsl_hint = (
-            " (on WSL, raise the memory limit in .wslconfig)"
-            if source == "system RAM"
-            else ""
+            " (on WSL, raise the memory limit in .wslconfig)" if source == "system RAM" else ""
         )
         return (
             f"This model needs about {need_mib / 1024:.0f} GB but only about "
