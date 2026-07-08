@@ -64,6 +64,7 @@ from utils.transformers_version import (
     _VENV_T5_530_PACKAGES,
     _VENV_T5_550_PACKAGES,
     _VENV_T5_510_PACKAGES,
+    _purge_modules,
     hf_endpoint_unreachable,
 )
 
@@ -1641,6 +1642,41 @@ class TestActivateLoggingClarity:
         # transformers 5.x imports audio_utils while resolving BLOOM via PEFT/TRL.
         for packages in (_VENV_T5_530_PACKAGES, _VENV_T5_550_PACKAGES, _VENV_T5_510_PACKAGES):
             assert "soxr" in packages
+
+    def test_purge_removes_stale_unsloth_zoo_import_hooks(self):
+        class StaleZooFinder:
+            pass
+
+        class OtherFinder:
+            pass
+
+        StaleZooFinder.__module__ = "unsloth_zoo.fused_losses.forward_install"
+        stale_finder = StaleZooFinder()
+        other_finder = OtherFinder()
+        saved_meta_path = list(sys.meta_path)
+        saved_modules = {
+            name: sys.modules.get(name)
+            for name in ("transformers", "unsloth_zoo", "unsloth_zoo.fused_losses")
+        }
+        try:
+            sys.meta_path[:] = [stale_finder, other_finder, *saved_meta_path]
+            sys.modules["transformers"] = _types.ModuleType("transformers")
+            sys.modules["unsloth_zoo"] = _types.ModuleType("unsloth_zoo")
+            sys.modules["unsloth_zoo.fused_losses"] = _types.ModuleType("unsloth_zoo.fused_losses")
+
+            _purge_modules()
+
+            assert stale_finder not in sys.meta_path
+            assert other_finder in sys.meta_path
+            assert "unsloth_zoo" not in sys.modules
+            assert "unsloth_zoo.fused_losses" not in sys.modules
+        finally:
+            sys.meta_path[:] = saved_meta_path
+            for name, module in saved_modules.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
 
     def test_activate_prefers_local_checkpoint_tier_over_resolved_base(self, caplog, tmp_path):
         # Base resolves to an offline/private id (default tier); the local config.json wins.

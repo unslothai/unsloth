@@ -1354,6 +1354,14 @@ def _purge_modules() -> int:
     Returns the number of modules purged.
     """
     importlib.invalidate_caches()
+    sys.meta_path[:] = [
+        finder
+        for finder in sys.meta_path
+        if not any(
+            type(finder).__module__ == p or type(finder).__module__.startswith(p + ".")
+            for p in _PURGE_PREFIXES
+        )
+    ]
     to_remove = [
         k
         for k in list(sys.modules.keys())
