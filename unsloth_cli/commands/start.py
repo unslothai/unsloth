@@ -600,6 +600,8 @@ def _loaded_models(base: str, key: str) -> list:
 _HF_REPO_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _MODEL_FILE_SUFFIXES = (".gguf", ".ggml", ".safetensors", ".bin", ".pt", ".pth", ".onnx")
 
+_LOCAL_MODEL_PATH_ROOTS = {"model", "models"}
+
 
 def _is_hub_model_id(value: object) -> bool:
     if not isinstance(value, str):
@@ -620,9 +622,14 @@ def _is_hub_model_id(value: object) -> bool:
         return False
     if any(part in ("", ".", "..") or not _HF_REPO_ID_SEGMENT_RE.match(part) for part in parts):
         return False
-    # A two-segment weight-file path (Models/Foo.gguf) is also not a repo id; keep
-    # this syntactic instead of probing Path.exists(), because the CLI cwd may differ
-    # from the Studio server cwd even on loopback.
+    # Studio also accepts server-relative paths under common local model roots
+    # (e.g. Models/Foo for ./models/Foo). Those are indistinguishable from a Hub
+    # repo id by charset alone, so keep this syntactic instead of probing
+    # Path.exists(): the CLI cwd may differ from the Studio server cwd even on
+    # loopback.
+    if parts[0].casefold() in _LOCAL_MODEL_PATH_ROOTS:
+        return False
+    # A two-segment weight-file path (Models/Foo.gguf) is also not a repo id.
     if text.lower().endswith(_MODEL_FILE_SUFFIXES):
         return False
     return True

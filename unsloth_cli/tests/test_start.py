@@ -647,6 +647,38 @@ def test_resolve_model_loopback_does_not_casefold_weight_file_paths(monkeypatch)
     assert any(u.endswith("/api/inference/load") for _, u, _ in calls)
 
 
+def test_resolve_model_loopback_does_not_casefold_model_directory_paths(monkeypatch):
+    # Even without a weight-file suffix, Models/Foo can be a server-relative
+    # directory under Studio's ./models root. Do not casefold it to models/foo;
+    # ask the server to resolve/load the requested spelling instead.
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url, payload))
+        if url.endswith("/v1/models"):
+            model_id = "models/foo" if state["loaded"] else "Models/Foo"
+            return {"data": [{"id": model_id, "loaded": True, "context_length": 131072}]}
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "models/foo"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "models/foo")
+
+    assert entry["id"] == "models/foo"
+    assert any(u.endswith("/api/inference/load") for _, u, _ in calls)
+
+
 def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
     existing_local = tmp_path / "Org" / "Foo"
     existing_local.mkdir(parents = True)
@@ -655,6 +687,9 @@ def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
     assert not start._model_id_matches(str(existing_local), str(existing_local).lower())
     assert not start._model_id_matches("./Models/Foo", "./models/foo")
     assert not start._model_id_matches(r".\Models\Foo", r".\models\foo")
+
+    assert not start._is_hub_model_id("Models/Foo")
+    assert not start._model_id_matches("Models/Foo", "models/foo")
 
     # Two-segment server-relative weight files are not hub ids either; classifying by
     # syntax avoids probing the CLI cwd, which can differ from the Studio server cwd.
