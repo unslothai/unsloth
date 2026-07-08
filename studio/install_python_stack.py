@@ -104,26 +104,27 @@ _PYTORCH_WHL_BASE = (
 ).rstrip("/")
 
 # CUDA torch repair specs (see _ensure_cuda_torch). torchvision/torchaudio are
-# pinned to the torch<2.11 family rather than left bare: the install uses an
+# pinned to the torch 2.4-2.11 family rather than left bare: the install uses an
 # exclusive --index-url (no PyPI fallback), so a bare name could resolve a
 # torchvision built against a different torch major (e.g. 0.27 for torch 2.12)
-# and fail at runtime with an ABI mismatch. Same bounds as the _default ROCm
-# spec above, which targets the same torch family.
+# and fail at runtime with an ABI mismatch. The upper bound tracks the newest
+# torch the CUDA indexes publish (torch 2.11.x, matching the rocm7.2 spec above
+# and the torch 2.11.0 Docker base image); bump both together at 2.12.x.
 _CUDA_TORCH_PKG_SPEC: tuple[str, str, str] = (
-    "torch>=2.4,<2.11.0",
-    "torchvision>=0.19,<0.26.0",
-    "torchaudio>=2.4,<2.11.0",
+    "torch>=2.4,<2.12.0",
+    "torchvision>=0.19,<0.27.0",
+    "torchaudio>=2.4,<2.12.0",
 )
 
 # torchao's C++ extensions are built against ONE exact torch release; a newer
 # torch makes torchao skip its cpp kernels ("Skipping import of cpp extensions
 # due to incompatible torch version ...") and fall back to slow Python. Because
-# the torch pin above is a range (and every CUDA index now tops out at torch
-# 2.10), the torch actually installed drifts ahead of a fixed torchao pin. So
+# the torch pin above is a range (and the CUDA indexes now publish up to torch
+# 2.11.x), the torch actually installed drifts ahead of a fixed torchao pin. So
 # pick the torchao whose build matches the torch in the venv. Table: pytorch/ao#2919.
 #   torch 2.9.x  -> torchao 0.14.0 (today's pin; built for torch 2.9.0)
 #   torch 2.10.x -> torchao 0.16.0 (built for torch 2.10.0)
-#   torch 2.11.x -> torchao 0.17.0 (built for torch 2.11.0; reachable via ROCm rocm7.2)
+#   torch 2.11.x -> torchao 0.17.0 (built for torch 2.11.0; CUDA cu12x/cu13x + ROCm rocm7.2)
 # Unknown/older torch keeps the conservative default (no regression vs today).
 _TORCHAO_DEFAULT_SPEC = "torchao==0.14.0"
 _TORCHAO_BY_TORCH_MINOR: dict[int, str] = {
