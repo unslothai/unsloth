@@ -155,6 +155,19 @@ def test_detect_gguf_model_rejects_infix_dflash_drafter(tmp_path):
     assert detect_gguf_model(str(drafter)) is None
 
 
+def test_detect_dflash_file_prefers_quantized_over_bf16(tmp_path):
+    # The documented flow produces `<model>-DFlash-bf16.gguf` then quantizes to
+    # `-q8_0.gguf`, leaving both beside the model. Pick the smaller (quantized)
+    # so Studio doesn't launch the oversized full-precision drafter.
+    (tmp_path / "Qwen3-4B-Q4_K_M.gguf").touch()
+    bf16 = tmp_path / "Qwen3-4B-DFlash-bf16.gguf"
+    bf16.write_bytes(b"\0" * 4096)
+    q8 = tmp_path / "Qwen3-4B-DFlash-q8_0.gguf"
+    q8.write_bytes(b"\0" * 512)
+    found = detect_dflash_file(str(tmp_path / "Qwen3-4B-Q4_K_M.gguf"))
+    assert found == str(q8.resolve())
+
+
 # ── Flag emission ────────────────────────────────────────────────────
 
 _CAPS_WITH_DFLASH = {

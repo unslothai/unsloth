@@ -1400,7 +1400,10 @@ def detect_dflash_file(path: str, search_root: Optional[str] = None) -> Optional
     drafter (the side of the ``dflash`` token that isn't a quant tag) must prefix
     the weight filename. An unmatched drafter is skipped (fail-safe: no DFlash).
     The drafter may sit at the root while the weight is in a quant subdir, so scan
-    the weight's directory and ``search_root``.
+    the weight's directory and ``search_root``. The documented conversion flow
+    leaves both the ``-bf16`` converter output and its quantized copy beside the
+    model, so among matches in a directory pick the smallest (a quantized drafter
+    over the full-precision one) rather than whichever sorts first.
     """
     p = Path(path)
     weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
@@ -1413,6 +1416,7 @@ def detect_dflash_file(path: str, search_root: Optional[str] = None) -> Optional
             entries = sorted(d.iterdir())
         except OSError:
             continue
+        matches: list[tuple[int, str]] = []
         for f in entries:
             name = f.name.lower()
             if not name.endswith(".gguf"):
@@ -1431,9 +1435,11 @@ def detect_dflash_file(path: str, search_root: Optional[str] = None) -> Optional
                 continue
             try:
                 if f.is_file():
-                    return str(f.resolve())
+                    matches.append((f.stat().st_size, str(f.resolve())))
             except OSError:
                 continue
+        if matches:
+            return min(matches)[1]
     return None
 
 
