@@ -485,6 +485,7 @@ class MLXInferenceBackend:
 
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
+            detect_think_prefill,
             render_with_native_template_fallback,
         )
 
@@ -517,6 +518,15 @@ class MLXInferenceBackend:
             preserve_thinking = preserve_thinking,
             hf_token = model_info.get("hf_token"),
         )
+
+        # An open <think> prefilled by the template lives in the prompt, not
+        # the generated tokens; re-emit it so the frontend renders the block.
+        think_prefix = detect_think_prefill(
+            prompt, getattr(self._tokenizer, "all_special_tokens", None)
+        )
+        # Emit it before the first token so the block renders during prefill.
+        if think_prefix:
+            yield think_prefix
 
         sampler = make_sampler(
             temp = temperature,
@@ -570,7 +580,7 @@ class MLXInferenceBackend:
                         token_ids,
                         skip_special_tokens = True,
                     )
-                    yield cumulative
+                    yield think_prefix + cumulative
 
                     if cancel_event and cancel_event.is_set():
                         break
@@ -634,7 +644,13 @@ class MLXInferenceBackend:
         # mlx_vlm's stream_generate handles pixel_values (None for text-only)
         images = [image] if image is not None else None
 
-        cumulative = ""
+        from core.inference.chat_template_helpers import detect_think_prefill
+
+        # Re-emit an open <think> prefill from the prompt (see _generate_text).
+        cumulative = detect_think_prefill(prompt, getattr(chat_target, "all_special_tokens", None))
+        # Emit it before the first token so the block renders during prefill.
+        if cumulative:
+            yield cumulative
         logger.info(
             "VLM generating: prompt_len=%d, has_image=%s",
             len(prompt),
