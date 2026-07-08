@@ -560,7 +560,6 @@ def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
     assert any(u.endswith("/api/inference/load") for _, u in calls)
 
 
-
 def test_resolve_model_attaches_to_annotated_loaded_hub_case_variant_without_reload(monkeypatch):
     # New Studio versions mark live HF GGUF loads explicitly, so the CLI can
     # preserve a case-only Hub spelling difference without calling /load.
@@ -813,12 +812,8 @@ def test_model_id_matching_does_not_casefold_local_paths(tmp_path, monkeypatch):
     assert not start._model_id_matches("./Models/Foo", "./models/foo")
     assert not start._model_id_matches(r".\Models\Foo", r".\models\foo")
 
-    assert not start._model_entry_matches(
-        {"id": "Models/Foo"}, "models/foo", allow_casefold = True
-    )
-    assert not start._model_entry_matches(
-        {"id": "Runs/Foo"}, "runs/foo", allow_casefold = True
-    )
+    assert not start._model_entry_matches({"id": "Models/Foo"}, "models/foo", allow_casefold = True)
+    assert not start._model_entry_matches({"id": "Runs/Foo"}, "runs/foo", allow_casefold = True)
 
     visible_local = tmp_path / "Outputs" / "Run1"
     visible_local.mkdir(parents = True)

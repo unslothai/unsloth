@@ -711,9 +711,7 @@ def _resolve_model(
             (
                 m
                 for m in models
-                if any(
-                    _model_entry_matches(m, w, allow_casefold = allow_casefold) for w in wanted
-                )
+                if any(_model_entry_matches(m, w, allow_casefold = allow_casefold) for w in wanted)
             ),
             None,
         )
