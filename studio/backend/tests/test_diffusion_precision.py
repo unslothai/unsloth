@@ -316,7 +316,12 @@ def _stub_transformer_quant(monkeypatch, captured):
     dtq._make_quant_config = lambda scheme, *a, **k: f"cfg:{scheme}"
     dtq.exclude_tokens_for_scheme = lambda scheme: ("modulation",)
 
-    def _make_filter_fn(min_features, exclude_name_tokens = (), *, require_bf16 = False):
+    def _make_filter_fn(
+        min_features,
+        exclude_name_tokens = (),
+        *,
+        require_bf16 = False,
+    ):
         def _f(module, fqn = ""):
             return not any(tok in fqn for tok in exclude_name_tokens)
 
