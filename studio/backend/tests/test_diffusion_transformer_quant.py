@@ -554,6 +554,27 @@ def test_family_deny_refuses_explicit_fp8_for_qwen(monkeypatch):
     assert select_transformer_quant_scheme(_target(), "fp8", family = "z-image") == TQ_FP8
 
 
+def test_family_deny_auto_skips_fp8_for_wan(monkeypatch):
+    # B200 with every scheme available: auto must NOT pick fp8 / nvfp4 / mxfp8 for the Wan
+    # video DiT (per-row fp8 renders black frames on it, measured; see _FAMILY_SCHEME_DENY)
+    # and falls through the ladder to int8, which is clean on Wan. Both the 5B TI2V and the
+    # A14B MoE share the WanTransformer3DModel activation profile, so both deny to int8.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "auto", family = "wan2.2-ti2v-5b") == TQ_INT8
+    assert select_transformer_quant_scheme(_target(), "auto", family = "wan2.2-t2v-a14b") == TQ_INT8
+
+
+def test_family_deny_refuses_explicit_fp8_for_wan(monkeypatch):
+    # An explicit fp8 request on a Wan family returns None (same GGUF-fallback contract as
+    # qwen); int8 stays honored on Wan, and fp8 stays honored on video families outside the
+    # deny table (e.g. an untested family keeps the default ladder until validated).
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "fp8", family = "wan2.2-ti2v-5b") is None
+    assert select_transformer_quant_scheme(_target(), "int8", family = "wan2.2-ti2v-5b") == TQ_INT8
+
+
 def test_family_deny_no_family_keeps_ladder(monkeypatch):
     # Without a family (or an unknown one) the ladder is unchanged: fp8 first on B200.
     _stub_torch(monkeypatch, cc = (10, 0))
