@@ -120,6 +120,28 @@ def test_baked_in_repo_plans_unchanged():
     assert plans["q4_k_m"].target_filenames == ("Qwen3.6-27B-MTP-Q4_K_M.gguf",)
 
 
+DFLASH_SIBLINGS = [
+    _sib("Qwen3-4B-Q4_K_M.gguf", 4_000, "main-q4"),
+    _sib("Qwen3-4B-DFlash-bf16.gguf", 1_200, "dflash-bf16"),
+    _sib("Qwen3-4B-DFlash-q8_0.gguf", 575, "dflash-q8"),
+]
+
+
+def test_variant_plans_carry_dflash_drafter_preferring_quant():
+    plans = build_gguf_variant_plans(DFLASH_SIBLINGS)
+
+    # The -DFlash- files are companions, never selectable quants (no phantom q8_0).
+    assert set(plans) == {"q4_k_m"}
+    plan = plans["q4_k_m"]
+    # The quantized drafter is fetched with the variant; the oversized bf16 is not.
+    assert "Qwen3-4B-DFlash-q8_0.gguf" in plan.target_filenames
+    assert "Qwen3-4B-DFlash-bf16.gguf" not in plan.target_filenames
+    assert "dflash-q8" in plan.companion_hashes
+    assert "dflash-q8" not in plan.main_hashes
+    # Download size = main + quantized drafter (not the bf16).
+    assert plan.download_size_bytes == 4_575
+
+
 def test_old_manifest_resume_reclassifies_drafter():
     # Pre-fix manifests could leak the drafter into a quant's expected
     # files; resume must classify it as a companion, not a main shard.

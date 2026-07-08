@@ -113,6 +113,15 @@ def is_mtp_drafter_path(path: str) -> bool:
     return name.startswith("mtp-") or "/mtp/" in f"/{p}" or bool(_DFLASH_DRAFTER_RE.search(name))
 
 
+def is_dflash_drafter_path(path: str) -> bool:
+    """True for a DFlash drafter specifically (``dflash`` as a delimited token),
+    excluding the MTP drafters is_mtp_drafter_path also covers."""
+    p = path.lower()
+    if not p.endswith(".gguf"):
+        return False
+    return bool(_DFLASH_DRAFTER_RE.search(p.rsplit("/", 1)[-1]))
+
+
 def is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 

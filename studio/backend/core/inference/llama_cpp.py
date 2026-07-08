@@ -4552,6 +4552,41 @@ class LlamaCppBackend:
             label = "MTP drafter",
         )
 
+    def _download_dflash(
+        self,
+        *,
+        hf_repo: str,
+        hf_token: Optional[str] = None,
+    ) -> Optional[str]:
+        """Download the separate DFlash drafter from a GGUF repo, matching the
+        local detect_dflash_file pick: a ``dflash`` delimited-token GGUF,
+        preferring a quantized build over the full-precision converter output
+        (bf16/f16/f32). Repos with no such sibling return None."""
+
+        def _pick_dflash(candidates: list[str]) -> Optional[str]:
+            dflash_files = [
+                f
+                for f in candidates
+                if f.lower().endswith(".gguf") and _DFLASH_DRAFTER_RE.search(Path(f).name.lower())
+            ]
+            if not dflash_files:
+                return None
+            # Prefer a quantized drafter (smaller) over the bf16/f16/f32 output.
+            return sorted(
+                dflash_files,
+                key = lambda f: (
+                    any(t in Path(f).name.lower() for t in ("bf16", "f16", "f32", "fp16")),
+                    f,
+                ),
+            )[0]
+
+        return self._download_companion_gguf(
+            hf_repo = hf_repo,
+            hf_token = hf_token,
+            pick = _pick_dflash,
+            label = "DFlash drafter",
+        )
+
     def _resolve_launch_mmproj_path(
         self, *, model_path: str, mmproj_path: Optional[str]
     ) -> Optional[str]:
@@ -5299,6 +5334,19 @@ class LlamaCppBackend:
                         and not _extra_args_set_spec_type(extra_args)
                     ):
                         mtp_draft_path = self._download_mtp(
+                            hf_repo = hf_repo,
+                            hf_token = hf_token,
+                        )
+                    # DFlash auto-engages only in Auto (no forced dflash mode);
+                    # fetch its sibling for -hf loads the same way as MTP so a
+                    # Hub GGUF repo shipping a dflash drafter engages it. A repo
+                    # has at most one of the two, so the other download no-ops.
+                    if (
+                        not dflash_draft_path
+                        and _spec_canon == "auto"
+                        and not _extra_args_set_spec_type(extra_args)
+                    ):
+                        dflash_draft_path = self._download_dflash(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
                         )

@@ -10,10 +10,13 @@ from hub.utils.download_manifest import ExpectedFile
 from hub.utils.gguf import (
     extract_quant_label,
     is_big_endian_gguf_path,
+    is_dflash_drafter_path,
     is_gguf_filename,
     is_mmproj_filename,
     is_mtp_drafter_path,
 )
+
+_FLOAT_PRECISION_LABELS = frozenset({"BF16", "F16", "F32"})
 
 
 @dataclass(frozen = True)
@@ -118,6 +121,29 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     return candidates[0] if candidates else None
 
 
+def preferred_dflash_sibling(siblings: Sequence) -> Optional[object]:
+    """The separate DFlash drafter to fetch with every variant, matching the
+    loader's detect_dflash_file resolution: a ``dflash`` delimited-token GGUF
+    (``dflash-<model>`` or ``<model>-DFlash[-<quant>]``), preferring a quantized
+    build over the full-precision converter output (bf16/f16/f32) so a repo
+    shipping both doesn't download and launch the oversized drafter. None for
+    repos with the head baked into the main GGUF (Qwen)."""
+    candidates = [
+        s
+        for s in siblings
+        if (name := _gguf_rfilename(s)) and is_dflash_drafter_path(name.rsplit("/", 1)[-1])
+    ]
+    if not candidates:
+        return None
+    return sorted(
+        candidates,
+        key = lambda s: (
+            extract_quant_label(getattr(s, "rfilename")).upper() in _FLOAT_PRECISION_LABELS,
+            getattr(s, "rfilename"),
+        ),
+    )[0]
+
+
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     main: dict[str, list] = {}
     all_mmproj = mmproj_siblings(siblings)
@@ -131,8 +157,12 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     companion_expected = expected_file_from_sibling(companion) if companion is not None else None
     mtp_sibling = preferred_mtp_sibling(siblings)
     mtp_expected = expected_file_from_sibling(mtp_sibling) if mtp_sibling is not None else None
+    dflash_sibling = preferred_dflash_sibling(siblings)
+    dflash_expected = (
+        expected_file_from_sibling(dflash_sibling) if dflash_sibling is not None else None
+    )
     companions_expected = tuple(
-        file for file in (companion_expected, mtp_expected) if file is not None
+        file for file in (companion_expected, mtp_expected, dflash_expected) if file is not None
     )
 
     for sibling in siblings:
