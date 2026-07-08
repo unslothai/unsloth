@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional, Union, Generator, Tuple
 from utils.models import ModelConfig, get_base_model_from_lora
 from utils.paths import is_model_cached
+from utils.transformers_dtype import dtype_kwargs
 from utils.utils import format_error_message
 from utils.hardware import (
     get_device,
@@ -440,7 +441,7 @@ class InferenceBackend:
                         feature_extractor = tokenizer.feature_extractor,
                         processor = tokenizer,
                         return_language = True,
-                        torch_dtype = torch.float16,
+                        **dtype_kwargs(torch.float16),
                     )
                     self.models[model_name]["model"] = model
                     self.models[model_name]["tokenizer"] = tokenizer
