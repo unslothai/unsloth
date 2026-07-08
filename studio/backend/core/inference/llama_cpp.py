@@ -3995,8 +3995,7 @@ class LlamaCppBackend:
         # get_device_type() ("needs a GPU"), even though the shim only drives the
         # CPU visual-server binary and does no torch GPU work. Allow the CPU device
         # so the runner starts; the visual server still runs on the CPU llama.cpp build.
-        cpu_only = self._effective_gpu_count() == 0
-        if cpu_only:
+        if self._effective_gpu_count() == 0:
             env.setdefault("UNSLOTH_ALLOW_CPU", "1")
         env["DG_VISUAL_BIN"] = visual_bin
         env["DG_GPU"] = gpu
@@ -4044,9 +4043,7 @@ class LlamaCppBackend:
         self._is_audio = False  # clear any prior TTS/audio model's routing flag
         self._model_identifier = model_identifier
         self._cache_type_kv = None
-        # CPU-only diffusion holds no VRAM, so training_vram.py must not treat it
-        # as a GPU-resident model (matches the llama-server path's _classify_gpu_offload).
-        self._gpu_offload_active = not cpu_only
+        self._gpu_offload_active = True
         if hf_variant:
             self._hf_variant = hf_variant
         elif gguf_path:
@@ -4064,7 +4061,7 @@ class LlamaCppBackend:
         healthy = self._wait_for_health(timeout = 600.0)
         if healthy:
             self._healthy = True
-            self._gpu_offload_active = not cpu_only
+            self._gpu_offload_active = True
             if extra_args is not None:
                 self._extra_args = list(extra_args)
                 self._extra_args_source = (model_identifier, hf_variant)
