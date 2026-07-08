@@ -1253,7 +1253,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return {
         params,
         ...(checkpointChanged
-          ? { contextUsage: null, ...clearedLoadedGgufMetadata() }
+          ? {
+              contextUsage: null,
+              activeGgufVariant: null,
+              ...clearedLoadedGgufMetadata(),
+            }
           : {}),
       };
     }),
