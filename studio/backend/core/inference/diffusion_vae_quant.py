@@ -12,20 +12,25 @@ int8 path does not apply -- there is no int8 Conv3d kernel. Exactly two schemes 
                 Float8DynamicActivationFloat8WeightConfig quantises Conv2d (4D) and
                 Conv3d (5D) weights, not just Linear, and torchao auto-skips any conv
                 whose C_out / C_in is not a multiple of 16 (so the 3-channel RGB
-                ``conv_out`` head stays dense). Needs fp8-GEMM silicon (cc >= 8.9) and a
-                resident (non-offloaded) VAE -- the fp8 tensor subclasses reject the
-                Module.to() an offload hook uses.
+                ``conv_out`` head stays dense). torchao 0.17's fp8 conv kernel additionally
+                rejects POINTWISE (1x1 / 1x1x1) convs ("Activation and filter channels must
+                match" at decode), so those are kept dense too. Needs fp8-GEMM silicon
+                (cc >= 8.9) and a resident (non-offloaded) VAE -- the fp8 tensor subclasses
+                reject the Module.to() an offload hook uses.
   fp8         - diffusers layerwise casting: 8-bit (e4m3) STORAGE, upcast per layer to the
                 compute dtype. Storage-only, so it runs on ANY conv (2D / 3D) on any
                 fp8-capable card (cc >= 8.9) and survives group offload.
 
-There is no int8 (no Conv3d int8 kernel) and no nvfp4 for the VAE. ``auto`` (the loader
-default) walks (fp8_dynamic, fp8): fp8_dynamic on resident data-center / Ada+ silicon that
-passes a live conv smoke probe, else layerwise fp8, else dense. ``none``/``off`` keeps the
-VAE dense bf16; an explicit scheme forces it (re-gated). A quantised VAE MUST NOT be
-``.to(dtype=...)``'d afterwards (the fp8 tensor subclasses mishandle it), so the loader
-skips the img2img/inpaint VAE re-align when a scheme engaged. torch / diffusers / torchao
-are imported lazily so the module stays importable in a no-torch runtime.
+There is no int8 (no Conv3d int8 kernel) and no nvfp4 for the VAE. A decoded-image
+LPIPS / SSIM sweep vs the dense bf16 VAE (B200) showed layerwise ``fp8`` holds across
+families (SSIM >= 0.977 on all but SDXL) while ``fp8_dynamic`` (PerTensor conv compute)
+only stays in-bar on a couple of VAEs (FLUX.2, Hunyuan) and is catastrophic on others
+(Qwen-Image SSIM 0.46). So ``auto`` (the loader default) engages layerwise ``fp8`` ONLY --
+the memory win with no measured quality loss -- and ``fp8_dynamic`` is an explicit opt-in,
+re-gated by a per-family deny list. ``none``/``off`` keeps the VAE dense bf16. A quantised
+VAE MUST NOT be ``.to(dtype=...)``'d afterwards (the fp8 tensor subclasses mishandle it), so
+the loader skips the img2img/inpaint VAE re-align when a scheme engaged. torch / diffusers /
+torchao are imported lazily so the module stays importable in a no-torch runtime.
 """
 
 from __future__ import annotations
@@ -46,15 +51,32 @@ VAE_QUANT_MODES = (VAE_QUANT_FP8, VAE_QUANT_FP8_DYNAMIC)
 # group-norm), whose low-magnitude outputs the coarse fp8 grid would band.
 _VAE_KEEP_DENSE_TOKENS = ("conv_out", "proj_out", "conv_norm_out", "norm_out")
 
-# Best-first ``auto`` order: fp8_dynamic (compute fp8 on the conv tensor cores) leads; layerwise
-# ``fp8`` (storage-only) is the universal fallback and the sole scheme that survives group offload.
-_VAE_AUTO_LADDER = (VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8)
+# ``auto`` engages layerwise ``fp8`` ONLY. The decoded-image accuracy sweep found fp8_dynamic
+# (PerTensor conv compute) in-bar on just FLUX.2 / Hunyuan and out-of-bar or catastrophic
+# elsewhere, and for a VAE decode (a few % of end-to-end) fp8_dynamic's fp8-matmul speedup over
+# storage-only fp8 is negligible -- so auto never risks it. fp8_dynamic stays an EXPLICIT opt-in
+# (reachable via a direct request, re-gated by the deny list below). Layerwise fp8 is storage-only
+# and is the sole scheme that survives group offload. The loop in select_vae_quant_scheme keeps
+# its per-scheme gates generic so re-adding fp8_dynamic here later needs no extra plumbing.
+_VAE_AUTO_LADDER = (VAE_QUANT_FP8,)
 
-# VAEs whose activation ranges break a scheme at the MODEL level (measured decoded-image
-# LPIPS / SSIM vs the dense bf16 VAE). Populated from the accuracy sweep; a denied scheme is
-# skipped by ``auto`` and refused when requested explicitly. Empty by default -- the
-# vae_force_fp32 video families are gated separately at the loader (they never quantise).
-_VAE_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {}
+# VAEs whose activation ranges break a scheme at the MODEL level -- from the decoded-image
+# LPIPS / SSIM sweep vs the dense bf16 VAE (B200; bar LPIPS <= 0.05, SSIM >= 0.95). A denied
+# scheme is skipped by ``auto`` and refused when requested explicitly.
+#   sdxl            - layerwise fp8 marginal (SSIM 0.935) AND fp8_dynamic worse (0.894): deny BOTH,
+#                     so its small VAE just stays dense (negligible memory cost).
+#   fp8_dynamic-only denials (layerwise fp8 is fine for these; auto still quantises them):
+#     flux.1 / flux.1-kontext  SSIM 0.935, qwen-image / qwen-image-edit  SSIM 0.46 (catastrophic),
+#     ltx-2  SSIM 0.942. FLUX.2 (klein/dev) and Hunyuan-1.5 pass fp8_dynamic, so they are not denied.
+# The vae_force_fp32 video families (Wan) are gated separately at the loader (never quantise).
+_VAE_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
+    "sdxl":             frozenset({VAE_QUANT_FP8, VAE_QUANT_FP8_DYNAMIC}),
+    "flux.1":           frozenset({VAE_QUANT_FP8_DYNAMIC}),
+    "flux.1-kontext":   frozenset({VAE_QUANT_FP8_DYNAMIC}),
+    "qwen-image":       frozenset({VAE_QUANT_FP8_DYNAMIC}),
+    "qwen-image-edit":  frozenset({VAE_QUANT_FP8_DYNAMIC}),
+    "ltx-2":            frozenset({VAE_QUANT_FP8_DYNAMIC}),
+}
 
 # Cache of device -> bool for the fp8_dynamic conv smoke probe (run once per device).
 _VAE_DYNAMIC_PROBE_CACHE: dict[str, bool] = {}
@@ -107,11 +129,13 @@ def _vae_family_denied(family: Optional[str], scheme: str) -> bool:
 
 def _vae_fp8_dynamic_probe(device: str) -> bool:
     """True iff torchao's fp8_dynamic CONV path runs on this build: quantise a tiny
-    Conv2d(16, 16, 1) (channels a multiple of 16 so torchao does not skip it) with the
-    PerTensor fp8 config and run one forward. Cached per device. This makes ``auto`` robust
-    to a torchao build whose Float8 config lacks the conv path (the Linear-only fp8 the
-    transformer probes does not prove the conv path works) -- it fails here and the ladder
-    falls to layerwise fp8 rather than crashing at the first decode."""
+    Conv2d(16, 16, 3, padding=1) (channels a multiple of 16 so torchao does not skip it;
+    a SPATIAL 3x3 kernel, NOT 1x1 -- torchao 0.17's fp8 conv kernel rejects pointwise convs,
+    which is the path _cast_vae_fp8_dynamic actually casts) with the PerTensor fp8 config and
+    run one forward. Cached per device. This makes an explicit fp8_dynamic request robust to a
+    torchao build whose Float8 config lacks the conv path (the Linear-only fp8 the transformer
+    probes does not prove the conv path works) -- it fails here and the request stays dense
+    rather than crashing at the first decode."""
     if device in _VAE_DYNAMIC_PROBE_CACHE:
         return _VAE_DYNAMIC_PROBE_CACHE[device]
     ok = False
@@ -124,7 +148,7 @@ def _vae_fp8_dynamic_probe(device: str) -> bool:
             quantize_,
         )
 
-        conv = nn.Conv2d(16, 16, 1).to(device = device, dtype = torch.bfloat16)
+        conv = nn.Conv2d(16, 16, 3, padding = 1).to(device = device, dtype = torch.bfloat16)
         quantize_(
             conv,
             Float8DynamicActivationFloat8WeightConfig(granularity = PerTensor()),
@@ -231,6 +255,13 @@ def quantize_vae(
             return None
         if not vae_quant_supported(target, mode):
             return None
+        # fp8_dynamic additionally needs torchao's fp8 CONV kernel to actually run on this build
+        # (a spatial-conv smoke probe); otherwise the cast succeeds but the first decode crashes.
+        if mode == VAE_QUANT_FP8_DYNAMIC and not _vae_fp8_dynamic_probe(
+            str(getattr(target, "device", "cuda"))
+        ):
+            _note(logger, "vae 'fp8_dynamic' skipped: torchao build lacks a working fp8 conv path")
+            return None
     vae = getattr(pipe, "vae", None)
     if vae is None:
         return None
@@ -265,6 +296,12 @@ def _cast_vae_fp8_dynamic(vae: Any, target: Any) -> None:
         if weight is None or weight.dim() < 2:
             return False
         if weight.shape[0] % 16 != 0 or weight.shape[1] % 16 != 0:
+            return False
+        # torchao 0.17's fp8 conv kernel (f8f8bf16_conv) rejects POINTWISE (1x1 / 1x1x1) convs
+        # ("Activation and filter channels must match"): they cast fine but crash at the first
+        # decode. Leave them dense (they are cheap 1x1 projections -- little to gain anyway).
+        kernel_size = getattr(module, "kernel_size", None)
+        if isinstance(kernel_size, tuple) and kernel_size and all(k == 1 for k in kernel_size):
             return False
         name = fqn.lower() if fqn else ""
         return not any(tok in name for tok in _VAE_KEEP_DENSE_TOKENS)

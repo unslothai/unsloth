@@ -158,17 +158,21 @@ def test_vae_quant_supported_fp8_dynamic_requires_sm89(monkeypatch):
 # ── auto ladder (select_vae_quant_scheme) ───────────────────────────────────────
 
 
-def test_select_datacenter_prefers_fp8_dynamic(monkeypatch):
-    # Data-center fp8-GEMM silicon with a passing conv probe: fp8_dynamic leads the ladder.
+def test_select_datacenter_uses_layerwise_fp8(monkeypatch):
+    # ``auto`` engages layerwise fp8 ONLY -- the accuracy sweep keeps fp8_dynamic out of the
+    # auto ladder (only in-bar on a couple of VAEs). Even on data-center fp8-GEMM silicon it
+    # resolves to fp8, and the fp8_dynamic conv probe is never consulted for auto.
     _stub_capability(monkeypatch, (10, 0))
     _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
-    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device: True)
-    assert select_vae_quant_scheme(_target(), "auto", family = "flux.1") == VAE_QUANT_FP8_DYNAMIC
+    monkeypatch.setattr(
+        vq, "_vae_fp8_dynamic_probe", lambda device: pytest.fail("auto must not probe fp8_dynamic")
+    )
+    assert select_vae_quant_scheme(_target(), "auto", family = "flux.1") == VAE_QUANT_FP8
 
 
 def test_select_offload_uses_layerwise_fp8(monkeypatch):
-    # Under offload the torchao fp8_dynamic mode (rejects Module.to()) is skipped BEFORE the
-    # probe -> layerwise fp8. The probe must not even run.
+    # Under offload ``auto`` still resolves to layerwise fp8 (the storage-only scheme that
+    # survives Module.to()); the fp8_dynamic conv probe is never consulted.
     _stub_capability(monkeypatch, (10, 0))
     _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
     monkeypatch.setattr(
@@ -186,14 +190,13 @@ def test_select_force_fp32_stays_dense(monkeypatch):
 
 
 def test_select_family_deny_skips_scheme(monkeypatch):
+    # The only scheme ``auto`` walks is layerwise fp8, so denying fp8 for a family leaves it
+    # dense (None). (This is the SDXL case in the real deny list: fp8 marginal -> stay dense.)
     _stub_capability(monkeypatch, (10, 0))
     _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
     monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device: True)
-    monkeypatch.setattr(
-        vq, "_VAE_FAMILY_SCHEME_DENY", {"badfam": frozenset({VAE_QUANT_FP8_DYNAMIC})}
-    )
-    # fp8_dynamic denied for this family -> falls to layerwise fp8.
-    assert select_vae_quant_scheme(_target(), "auto", family = "badfam") == VAE_QUANT_FP8
+    monkeypatch.setattr(vq, "_VAE_FAMILY_SCHEME_DENY", {"badfam": frozenset({VAE_QUANT_FP8})})
+    assert select_vae_quant_scheme(_target(), "auto", family = "badfam") is None
 
 
 def test_select_no_capability_is_none(monkeypatch):
@@ -202,19 +205,19 @@ def test_select_no_capability_is_none(monkeypatch):
     assert select_vae_quant_scheme(_target(), "auto") is None
 
 
-def test_select_support_gate_falls_to_fp8(monkeypatch):
-    # fp8_dynamic hardware-unsupported (only fp8 allowed) -> layerwise fp8.
+def test_select_support_gate_uses_fp8(monkeypatch):
+    # fp8-capable silicon with fp8 supported -> ``auto`` resolves to layerwise fp8.
     _stub_capability(monkeypatch, (8, 9))
     _allow_vae(monkeypatch, {VAE_QUANT_FP8})
-    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device: True)
     assert select_vae_quant_scheme(_target(), "auto") == VAE_QUANT_FP8
 
 
-def test_select_smoke_failure_falls_to_fp8(monkeypatch):
-    # fp8_dynamic is hardware-supported but its conv probe fails -> layerwise fp8.
+def test_select_auto_never_uses_fp8_dynamic(monkeypatch):
+    # Even with fp8_dynamic hardware-supported and its conv probe passing, ``auto`` stays on
+    # layerwise fp8: fp8_dynamic is deliberately kept out of the auto ladder (explicit opt-in).
     _stub_capability(monkeypatch, (10, 0))
     _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
-    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device: False)
+    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device: True)
     assert select_vae_quant_scheme(_target(), "auto") == VAE_QUANT_FP8
 
 
@@ -247,20 +250,26 @@ def test_fp8_dynamic_conv_filter(monkeypatch):
     ff = captured["filter_fn"]
     nn = torch.nn
 
-    def _mod(cls, shape):
+    def _mod(cls, shape, kernel_size = None):
         m = cls()
         m.weight = _Weight(shape)
+        if kernel_size is not None:
+            m.kernel_size = kernel_size
         return m
 
     # Conv2d (4D) / Conv3d (5D) with both channel dims a multiple of 16 quantise.
-    assert ff(_mod(nn.Conv2d, (128, 128, 3, 3)), "decoder.up.0.resnets.0.conv1") is True
-    assert ff(_mod(nn.Conv3d, (64, 64, 3, 3, 3)), "decoder.mid_block.conv3d") is True
-    # nn.Linear (mid-block attention projections) also quantise.
+    assert ff(_mod(nn.Conv2d, (128, 128, 3, 3), (3, 3)), "decoder.up.0.resnets.0.conv1") is True
+    assert ff(_mod(nn.Conv3d, (64, 64, 3, 3, 3), (3, 3, 3)), "decoder.mid_block.conv3d") is True
+    # nn.Linear (mid-block attention projections) also quantise (no kernel_size attr).
     assert ff(_mod(nn.Linear, (512, 512)), "decoder.mid_block.attentions.0.to_q") is True
+    # POINTWISE (1x1 / 1x1x1) convs excluded even at %16 channels: torchao 0.17's fp8 conv
+    # kernel rejects them ("Activation and filter channels must match") -> crash at decode.
+    assert ff(_mod(nn.Conv2d, (128, 128, 1, 1), (1, 1)), "decoder.mid_block.attentions.0.proj_conv") is False
+    assert ff(_mod(nn.Conv3d, (64, 64, 1, 1, 1), (1, 1, 1)), "decoder.time_mix.conv") is False
     # Channels not a multiple of 16 excluded (torchao would skip them regardless): the RGB
     # in/out head (C=3) and any off-16 dim.
-    assert ff(_mod(nn.Conv2d, (128, 3, 3, 3)), "encoder.conv_in") is False
-    assert ff(_mod(nn.Conv2d, (24, 128, 3, 3)), "decoder.up.1.upsamplers.0.conv") is False
+    assert ff(_mod(nn.Conv2d, (128, 3, 3, 3), (3, 3)), "encoder.conv_in") is False
+    assert ff(_mod(nn.Conv2d, (24, 128, 3, 3), (3, 3)), "decoder.up.1.upsamplers.0.conv") is False
     # conv_out / proj_out / norm_out excluded by NAME even with %16 channels.
     assert ff(_mod(nn.Conv2d, (16, 128, 3, 3)), "decoder.conv_out") is False
     assert ff(_mod(nn.Conv2d, (128, 128, 3, 3)), "decoder.conv_norm_out") is False
@@ -375,14 +384,49 @@ def test_quantize_vae_tolerates_caster_failure(monkeypatch):
 
 
 def test_quantize_vae_auto_resolves_and_applies(monkeypatch):
-    # End-to-end: mode="auto" resolves via the ladder then applies the resolved caster.
+    # End-to-end: mode="auto" resolves via the ladder (layerwise fp8) then applies that caster.
     _stub_torch(monkeypatch, cc = (10, 0))
     _stub_capability(monkeypatch, (10, 0))
     _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
+    monkeypatch.setattr(vq, "_cast_vae_fp8_dynamic", lambda v, t: pytest.fail("auto must not use fp8_dynamic"))
+    calls: list = []
+    monkeypatch.setattr(vq, "_cast_vae_fp8", lambda v, t: calls.append(v))
+    vae = object()
+    pipe = types.SimpleNamespace(vae = vae)
+    assert quantize_vae(pipe, _target(), mode = "auto", family = "flux.1") == VAE_QUANT_FP8
+    assert calls == [vae]
+
+
+def test_quantize_vae_explicit_fp8_dynamic_probe_gates(monkeypatch):
+    # An explicit fp8_dynamic request runs the conv smoke probe: a build whose torchao lacks a
+    # working fp8 conv path (probe False) stays dense; a passing probe applies the caster.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
+    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device: False)
+    monkeypatch.setattr(vq, "_cast_vae_fp8_dynamic", lambda v, t: pytest.fail("probe failed: must not cast"))
+    pipe = types.SimpleNamespace(vae = object())
+    assert quantize_vae(pipe, _target(), mode = "fp8_dynamic", family = "flux.2-klein") is None
     monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device: True)
     calls: list = []
     monkeypatch.setattr(vq, "_cast_vae_fp8_dynamic", lambda v, t: calls.append(v))
-    vae = object()
-    pipe = types.SimpleNamespace(vae = vae)
-    assert quantize_vae(pipe, _target(), mode = "auto", family = "flux.1") == VAE_QUANT_FP8_DYNAMIC
-    assert calls == [vae]
+    assert quantize_vae(pipe, _target(), mode = "fp8_dynamic", family = "flux.2-klein") == VAE_QUANT_FP8_DYNAMIC
+    assert len(calls) == 1
+
+
+def test_real_family_deny_list_policy(monkeypatch):
+    # The shipped _VAE_FAMILY_SCHEME_DENY (from the B200 sweep), exercised through the real
+    # select path -- no deny-list monkeypatch. Confirms the per-family auto/explicit outcomes.
+    _stub_capability(monkeypatch, (10, 0))
+    _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
+    # SDXL denies BOTH schemes -> auto stays dense (its layerwise fp8 was marginal).
+    assert select_vae_quant_scheme(_target(), "auto", family = "sdxl") is None
+    assert select_vae_quant_scheme(_target(), "fp8", family = "sdxl") is None
+    # Qwen-Image: auto -> layerwise fp8 (safe); explicit fp8_dynamic refused (catastrophic).
+    assert select_vae_quant_scheme(_target(), "auto", family = "qwen-image") == VAE_QUANT_FP8
+    assert select_vae_quant_scheme(_target(), "fp8_dynamic", family = "qwen-image") is None
+    # FLUX.1 / LTX-2 keep layerwise fp8 on auto but deny explicit fp8_dynamic.
+    assert select_vae_quant_scheme(_target(), "auto", family = "ltx-2") == VAE_QUANT_FP8
+    assert select_vae_quant_scheme(_target(), "fp8_dynamic", family = "flux.1") is None
+    # FLUX.2 / Hunyuan keep fp8_dynamic available as an explicit opt-in (measured in-bar).
+    assert select_vae_quant_scheme(_target(), "fp8_dynamic", family = "flux.2-klein") == VAE_QUANT_FP8_DYNAMIC
+    assert select_vae_quant_scheme(_target(), "fp8_dynamic", family = "hunyuanvideo-1.5") == VAE_QUANT_FP8_DYNAMIC
