@@ -364,6 +364,7 @@ jobs:
             tests/utils/test_attention_masks.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py \
+            tests/test_bad_mappings_redirect.py \
             tests/test_prefetch_snapshot_scope.py \
             --deselect 'tests/utils/test_attention_masks.py::test_run_attention_flash_varlen_receives_window_and_softcap'
           # The deselected test monkeypatches flash_attn_varlen_func, which is
