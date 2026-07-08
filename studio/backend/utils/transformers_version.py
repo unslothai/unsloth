@@ -1369,6 +1369,7 @@ _VENV_T5_530_PACKAGES = (
     "huggingface_hub==1.8.0",
     "hf_xet==1.4.2",
     "tiktoken",
+    "soxr",
 )
 
 _VENV_T5_510_PACKAGES = (
@@ -1376,6 +1377,7 @@ _VENV_T5_510_PACKAGES = (
     "huggingface_hub==1.8.0",
     "hf_xet==1.4.2",
     "tiktoken",
+    "soxr",
 )
 
 _VENV_T5_550_PACKAGES = (
@@ -1383,6 +1385,7 @@ _VENV_T5_550_PACKAGES = (
     "huggingface_hub==1.8.0",
     "hf_xet==1.4.2",
     "tiktoken",
+    "soxr",
 )
 
 # Backwards-compat alias

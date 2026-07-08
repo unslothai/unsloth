@@ -61,6 +61,9 @@ from utils.transformers_version import (
     activate_transformers_for_subprocess,
     _venv_dir_is_valid,
     _ensure_venv_dir,
+    _VENV_T5_530_PACKAGES,
+    _VENV_T5_550_PACKAGES,
+    _VENV_T5_510_PACKAGES,
     hf_endpoint_unreachable,
 )
 
@@ -1633,6 +1636,11 @@ class TestActivateLoggingClarity:
 
         assert imported.__version__ == "5.3.0"
         assert imported is not stale
+
+    def test_5x_sidecars_include_soxr_for_transformers_audio_imports(self):
+        # transformers 5.x imports audio_utils while resolving BLOOM via PEFT/TRL.
+        for packages in (_VENV_T5_530_PACKAGES, _VENV_T5_550_PACKAGES, _VENV_T5_510_PACKAGES):
+            assert "soxr" in packages
 
     def test_activate_prefers_local_checkpoint_tier_over_resolved_base(self, caplog, tmp_path):
         # Base resolves to an offline/private id (default tier); the local config.json wins.
