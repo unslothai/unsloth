@@ -60,6 +60,17 @@ concurrency:
   # Per-commit group. A global group would let GitHub cancel an earlier *pending*
   # publish (it keeps only one pending run per group) when a newer release-pin
   # push queues, dropping that intermediate version. Per-SHA, every release runs.
+  #
+  # Accepted residual: two commits that both land the gate for the *same* $ver
+  # (e.g. a pin bump then an installer hotfix keeping that version) can race the
+  # immutable upload, and skip-existing makes the loser a no-op -- so the version
+  # is always published *complete*, but whichever run uploads first decides which
+  # tree's bytes win. A version-keyed group would serialize this, but $ver is
+  # computed in `decide` and isn't available in this workflow-level context; a
+  # job-level "defer to the newer tip" guard is unsound (a same-version tip that
+  # touched no gate file never triggers its own run, so deferring would strand
+  # the release). The harm needs two commits sharing one $ver but shipping
+  # different packaged bytes -- itself a versioning mistake -- so we accept it.
   group: pypi-publish-${{ github.sha }}
   cancel-in-progress: false
 
