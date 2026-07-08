@@ -339,23 +339,33 @@ cu130onlytorch2100 = [
 ]
 cu126onlytorch2110 = [
     # xformers 0.0.35 does not hard-pin torch the way 0.0.34 pinned torch==2.10.0,
-    # so pin the torch 2.11.x trio explicitly to keep this "torch2110" extra faithful
-    # (a bare resolve otherwise floats torch up to 2.12.x). Mirrors studio's
-    # torch>=2.11.0,<2.12.0 convention and the xpu torch2110 extra.
-    "torch>=2.11.0,<2.12.0",
-    "torchvision>=0.26.0,<0.27.0",
-    "torchaudio>=2.11.0,<2.12.0",
+    # so the torch 2.11 trio is pinned explicitly. Use the +cu126 LOCAL build, not
+    # a bare torch>=2.11: torch 2.11's default PyPI wheel is CUDA 13.0 (2.10 was
+    # CUDA 12.x), so a bare resolve would pair a cu130 torch with the cu126
+    # xformers below and fail at import. The +cu126 label only resolves from the
+    # matching download.pytorch.org/whl/cu126 index the installer configures, so
+    # torch stays on the same CUDA as xformers (or fails loudly if that index is
+    # absent) instead of silently mismatching.
+    "torch==2.11.0+cu126",
+    "torchvision==0.26.0+cu126",
+    "torchaudio==2.11.0+cu126",
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32')",
 ]
 cu128onlytorch2110 = [
-    "torch>=2.11.0,<2.12.0",
-    "torchvision>=0.26.0,<0.27.0",
-    "torchaudio>=2.11.0,<2.12.0",
+    # +cu128 local build for the same reason as cu126onlytorch2110 above: torch
+    # 2.11's default PyPI wheel is CUDA 13.0, so pin to the cu128 index to keep the
+    # torch trio on the same CUDA as the cu128 xformers wheel.
+    "torch==2.11.0+cu128",
+    "torchvision==0.26.0+cu128",
+    "torchaudio==2.11.0+cu128",
     "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
     "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32')",
 ]
 cu130onlytorch2110 = [
+    # No +cu130 local pin needed: torch 2.11's DEFAULT PyPI wheel is already CUDA
+    # 13.0, so a bare resolve lands on a cu130 torch that matches the cu130
+    # xformers below even without a dedicated index.
     "torch>=2.11.0,<2.12.0",
     "torchvision>=0.26.0,<0.27.0",
     "torchaudio>=2.11.0,<2.12.0",
