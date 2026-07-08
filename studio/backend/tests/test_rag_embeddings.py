@@ -237,14 +237,18 @@ def _patch_auto_backend(monkeypatch, *, binary, is_vulkan, gpu_free):
 
 def test_resolve_auto_cuda_gpu_picks_sentence_transformers(monkeypatch):
     # A torch-usable (CUDA/ROCm) GPU -> ST wins bulk indexing.
-    _patch_auto_backend(monkeypatch, binary = "/fake/llama-server", is_vulkan = False, gpu_free = [(0, 24000)])
+    _patch_auto_backend(
+        monkeypatch, binary = "/fake/llama-server", is_vulkan = False, gpu_free = [(0, 24000)]
+    )
     assert embeddings._resolve_auto() == "sentence-transformers"
 
 
 def test_resolve_auto_vulkan_gpu_picks_llama_server(monkeypatch):
     # A Vulkan build's GPU is not torch-usable, so its free-memory report must
     # NOT steer auto to ST (which would run on CPU/XPU); llama-server can use it.
-    _patch_auto_backend(monkeypatch, binary = "/fake/llama-server", is_vulkan = True, gpu_free = [(0, 8000)])
+    _patch_auto_backend(
+        monkeypatch, binary = "/fake/llama-server", is_vulkan = True, gpu_free = [(0, 8000)]
+    )
     assert embeddings._resolve_auto() == "llama-server"
 
 

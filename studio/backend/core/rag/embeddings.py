@@ -282,7 +282,9 @@ def _resolve_auto() -> str:
     # A Vulkan build's GPU is not torch-usable (torch has no Vulkan backend), so
     # its free-memory report must not steer auto to sentence-transformers, which
     # would then run on CPU/XPU; the llama-server Vulkan build is the fast path.
-    if not LlamaCppBackend._is_vulkan_backend(binary) and LlamaCppBackend._get_gpu_free_memory(binary):
+    if not LlamaCppBackend._is_vulkan_backend(binary) and LlamaCppBackend._get_gpu_free_memory(
+        binary
+    ):
         return "sentence-transformers"
     if binary:
         return "llama-server"
