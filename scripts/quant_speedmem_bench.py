@@ -105,6 +105,60 @@ def _median(xs: list[float]) -> float:
     return sorted(xs)[len(xs) // 2] if xs else 0.0
 
 
+_LP: dict = {}
+
+
+def _lpips_alex(ref_arr, arr):
+    """LPIPS(AlexNet) between two HxWx3 uint8 images (net kept on CPU). None if lpips missing."""
+    try:
+        import lpips
+        import torch
+
+        fn = _LP.get("fn")
+        if fn is None:
+            fn = lpips.LPIPS(net="alex", verbose=False).eval()
+            _LP["fn"] = fn
+
+        def _t(a):
+            import torch as _torch
+
+            return _torch.from_numpy(a).float().permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0
+
+        with torch.no_grad():
+            return round(float(fn(_t(ref_arr), _t(arr)).item()), 4)
+    except Exception:
+        return None
+
+
+def _timed_generate(pipe, *, steps, res, seed):
+    """One generation returning (PIL image, total seconds, [per-step ms]). Per-step wall-clock
+    via callback_on_step_end (each step synchronised)."""
+    import time as _time
+
+    import torch
+
+    g = torch.Generator(device="cuda").manual_seed(seed)
+    step_ts: list[float] = []
+    last = [0.0]
+
+    def _cb(pp, i, t, kw):
+        torch.cuda.synchronize()
+        now = _time.perf_counter()
+        if last[0]:
+            step_ts.append((now - last[0]) * 1000.0)
+        last[0] = now
+        return kw
+
+    _sync()
+    t0 = _time.perf_counter()
+    img = pipe(
+        prompt=PROMPT, width=res, height=res, num_inference_steps=steps, generator=g,
+        callback_on_step_end=_cb,
+    ).images[0]
+    _sync()
+    return img, (_time.perf_counter() - t0), step_ts
+
+
 def _import_diffusers():
     """diffusers with the bnb quantiser disabled (we quant via torchao / layerwise only)."""
     import torch  # noqa: F401  (torch/torchao first so their extensions register)
@@ -567,11 +621,107 @@ def measure_e2e(
     return rows
 
 
+# ── mode: dit (transformer quant, the real speed lever) ───────────────────────
+def _compile_blocks(transformer) -> bool:
+    """Regional block compile (the real feature path); torchao dynamic quant is ~30x slower eager,
+    so both dense and quant variants are compiled for a fair speedup comparison."""
+    fn = getattr(transformer, "compile_repeated_blocks", None)
+    if not callable(fn):
+        return False
+    for kw in ({"dynamic": True}, {}):
+        try:
+            fn(**kw)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _dit_run(
+    repo: str, family: str, *, dit_quant: str, steps: int, res: int, seed: int, iters: int,
+    compile_blocks: bool = True, logger=None,
+):
+    """Load the full pipeline dense, quantise ONLY the transformer (TE + VAE stay dense to isolate
+    the DiT), regional-compile it (the real feature path), then measure per-step + total latency and
+    peak resident memory. Returns row + image."""
+    import torch
+
+    from core.inference.diffusion_transformer_quant import quantize_transformer
+
+    diffusers = _import_diffusers()
+    _empty(); _reset_peak()
+    pipe = diffusers.DiffusionPipeline.from_pretrained(repo, torch_dtype=torch.bfloat16).to("cuda")
+    load_peak = _peak_gb()
+    engaged = None
+    if dit_quant and dit_quant != "none":
+        engaged = quantize_transformer(pipe, _target(), mode=dit_quant, family=family, logger=logger)
+        _empty()
+    weights_gb = _alloc_gb()
+    compiled = _compile_blocks(getattr(pipe, "transformer", None)) if compile_blocks else False
+
+    img, _, _ = _timed_generate(pipe, steps=steps, res=res, seed=seed)  # warmup (triggers compile)
+    _reset_peak()
+    dts, steps_ms, last_img = [], [], img
+    for _ in range(iters):
+        last_img, dt, st = _timed_generate(pipe, steps=steps, res=res, seed=seed)
+        dts.append(dt)
+        steps_ms.append(_median(st) if st else 0.0)
+    gen_peak = _peak_gb()
+    del pipe
+    _empty()
+    return {
+        "family": family,
+        "dit_quant": dit_quant,
+        "dit_scheme": engaged or "dense",
+        "compiled": compiled,
+        "load_peak_gb": round(load_peak, 2),
+        "weights_gb": round(weights_gb, 2),
+        "gen_peak_gb": round(gen_peak, 2),
+        "gen_latency_s": round(_median(dts), 3),
+        "per_step_ms": round(_median(steps_ms), 1),
+    }, last_img
+
+
+def measure_dit(family: str, *, schemes, steps: int, res: int, seed: int, iters: int, out: Path, logger=None):
+    """Dense reference + each DiT scheme (auto/fp8/int8/mxfp8), reporting speedup, peak-memory drop,
+    and LPIPS(AlexNet) vs the dense render (the whole-image accuracy metric)."""
+    import numpy as np
+
+    repo = _FAMILIES[family]["repo"]
+    dense_row, dense_img = _dit_run(
+        repo, family, dit_quant="none", steps=steps, res=res, seed=seed, iters=iters, logger=logger
+    )
+    try:
+        dense_img.save(out / f"dit_{family}_dense.png")
+    except Exception:
+        pass
+    ref_arr = np.array(dense_img)
+    dense_row["lpips_vs_dense"] = 0.0
+    dense_row["speedup_vs_dense"] = 1.0
+    rows = [dense_row]
+    print(f"  dit dense: {json.dumps(dense_row)}", flush=True)
+    base_lat = dense_row["gen_latency_s"] or 1.0
+    for scheme in schemes:
+        row, img = _dit_run(
+            repo, family, dit_quant=scheme, steps=steps, res=res, seed=seed, iters=iters, logger=logger
+        )
+        row["lpips_vs_dense"] = _lpips_alex(ref_arr, np.array(img))
+        row["speedup_vs_dense"] = round(base_lat / row["gen_latency_s"], 3) if row["gen_latency_s"] else None
+        try:
+            img.save(out / f"dit_{family}_{scheme}.png")
+        except Exception:
+            pass
+        rows.append(row)
+        print(f"  dit {scheme:5s}: {json.dumps(row)}", flush=True)
+    return rows
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--family", required=True, choices=sorted(_FAMILIES))
-    ap.add_argument("--mode", required=True, choices=("te", "vae", "e2e", "teacc"))
+    ap.add_argument("--mode", required=True, choices=("te", "vae", "e2e", "teacc", "dit"))
+    ap.add_argument("--dit-schemes", default="auto", help="dit mode: comma list e.g. auto,fp8,int8,mxfp8")
     ap.add_argument("--warmup", type=int, default=2)
     ap.add_argument("--iters", type=int, default=5)
     ap.add_argument("--steps", type=int, default=20, help="e2e denoise steps")
@@ -592,7 +742,13 @@ def main(argv=None) -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     print(f"== speed+mem bench: family={args.family} mode={args.mode} ==", flush=True)
-    if args.mode == "teacc":
+    if args.mode == "dit":
+        schemes = [s.strip() for s in args.dit_schemes.split(",") if s.strip()]
+        rows = measure_dit(
+            args.family, schemes=schemes, steps=args.steps, res=args.res, seed=args.seed,
+            iters=args.e2e_iters, out=out, logger=logger
+        )
+    elif args.mode == "teacc":
         rows = measure_te_accuracy(args.family, logger=logger)
     elif args.mode == "te":
         rows = measure_te(args.family, warmup=args.warmup, iters=args.iters, scheme=args.te_scheme, logger=logger)
