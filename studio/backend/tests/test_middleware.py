@@ -4,6 +4,7 @@
 """Tests for MaxBodyMiddleware, SecurityHeadersMiddleware, and the /api/health auth gate."""
 
 import asyncio
+import ast
 import importlib.util
 import json
 import os
@@ -286,7 +287,25 @@ class TestSecurityHeadersMiddleware:
     def test_hosted_notebook_csp_allows_frame_ancestors(self, main_module, monkeypatch):
         monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
         csp = main_module._build_csp()
-        assert "frame-ancestors *" in csp
+        assert "frame-ancestors *" not in csp
+        assert "https://colab.research.google.com" in csp
+        assert "https://www.kaggle.com" in csp
+
+    def test_hosted_notebook_run_server_disables_uvicorn_proxy_headers(self):
+        run_path = _BACKEND_ROOT / "run.py"
+        tree = ast.parse(run_path.read_text(encoding = "utf-8"))
+        run_server = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "run_server"
+        )
+        branch = next(
+            node for node in ast.walk(run_server)
+            if isinstance(node, ast.If) and ast.unparse(node.test) == "_IS_HOSTED_NOTEBOOK"
+        )
+        body = "\n".join(ast.unparse(stmt) for stmt in branch.body)
+        assert "proxy_headers" in body
+        assert "False" in body
+        assert "forwarded_allow_ips" not in body
 
     def test_img_and_media_allow_https_sources(self, main_module):
         # Model-card READMEs and citation favicons pull images/media from many

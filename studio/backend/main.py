@@ -617,23 +617,22 @@ _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
 
 
-# /content is Colab's working directory — more reliable than env vars, which
-# aren't always set depending on Colab runtime version. Kaggle-backed Colab
-# sessions use /kaggle/working and KAGGLE_* env vars instead.
-import importlib.util as _importlib_util
+from utils.notebook_env import (  # noqa: E402
+    is_colab_environment as _is_colab_environment,
+    is_hosted_notebook_environment as _is_hosted_notebook_environment,
+    is_kaggle_environment as _is_kaggle_environment,
+)
 
-_IS_COLAB = os.path.isdir("/content") and (
-    bool(os.environ.get("COLAB_BACKEND_URL"))
-    or bool(os.environ.get("COLAB_JUPYTER_IP"))
-    or _importlib_util.find_spec("google.colab") is not None
-)
-_IS_KAGGLE = os.path.isdir("/kaggle/working") or any(
-    key.startswith("KAGGLE_") for key in os.environ
-)
-_IS_HOSTED_NOTEBOOK = (
-    _IS_COLAB
-    or _IS_KAGGLE
-    or os.environ.get("UNSLOTH_STUDIO_HOSTED_NOTEBOOK") == "1"
+_IS_COLAB = _is_colab_environment()
+_IS_KAGGLE = _is_kaggle_environment()
+_IS_HOSTED_NOTEBOOK = _is_hosted_notebook_environment()
+_HOSTED_FRAME_ANCESTORS = (
+    "https://colab.research.google.com "
+    "https://*.googleusercontent.com "
+    "https://*.prod.colab.dev "
+    "https://www.kaggle.com "
+    "https://*.kaggle.com "
+    "https://*.kaggleusercontent.com"
 )
 
 
@@ -641,10 +640,7 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
-    # Hosted notebook parent frames span Colab/Kaggle hosts, multi-level proxy
-    # or tunnel subdomains, and null-origin iframes; use '*' since these are
-    # already single-user notebook environments.
-    frame_ancestors = "*" if _IS_HOSTED_NOTEBOOK else "'none'"
+    frame_ancestors = _HOSTED_FRAME_ANCESTORS if _IS_HOSTED_NOTEBOOK else "'none'"
 
     # In Colab, the kernel/output scaffolding injects scripts and fetch/WS from
     # *.prod.colab.dev and *.googleusercontent.com, so widen script-src and
@@ -1320,6 +1316,11 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     return html.encode("utf-8"), nonce
 
 
+def _bootstrap_injection_suppressed(app: FastAPI) -> bool:
+    """True when a public notebook tunnel must not receive bootstrap credentials."""
+    return bool(getattr(app.state, "suppress_bootstrap_injection_for_public_tunnel", False))
+
+
 _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
 
@@ -1413,7 +1414,9 @@ def setup_frontend(app: FastAPI, build_path: Path):
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
         # Bootstrap pw is same-origin only; Vary: Origin keeps caches honest.
-        if _is_same_origin_request(request):
+        # Public notebook tunnels disable injection and show the password-file
+        # path in notebook output instead.
+        if _is_same_origin_request(request) and not _bootstrap_injection_suppressed(app):
             content, nonce = _inject_bootstrap(content, app)
         else:
             nonce = None

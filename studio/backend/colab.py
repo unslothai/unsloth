@@ -22,14 +22,13 @@ import _platform_compat  # noqa: F401
 
 
 from loggers import get_logger
+from utils.notebook_env import is_kaggle_environment
 
 logger = get_logger(__name__)
 
 
 def _is_kaggle_environment() -> bool:
-    return Path("/kaggle/working").exists() or any(
-        key.startswith("KAGGLE_") for key in os.environ
-    )
+    return is_kaggle_environment()
 
 
 def _wait_for_public_url(url: str, timeout: float = 45.0) -> bool:
@@ -49,18 +48,24 @@ def _wait_for_public_url(url: str, timeout: float = 45.0) -> bool:
     health_url = url.rstrip("/") + "/api/health"
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
-    while time.monotonic() < deadline:
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
             req = urllib.request.Request(
                 health_url,
                 headers = {"User-Agent": "unsloth-studio-notebook/1"},
             )
-            with urllib.request.urlopen(req, timeout = 5) as resp:
+            with urllib.request.urlopen(req, timeout = min(5.0, max(0.1, remaining))) as resp:
                 if 200 <= getattr(resp, "status", 200) < 500:
                     return True
         except Exception as exc:
             last_error = exc
-        time.sleep(1)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(1.0, remaining))
 
     logger.warning(
         f"Notebook tunnel URL did not become reachable before embedding; "
@@ -169,16 +174,17 @@ def _bootstrap_password_pending() -> bool:
 def start_cloudflare_tunnel(
     port: int,
     *,
-    allow_bootstrap_password: bool = False,
+    allow_bootstrap_pending: bool = False,
 ) -> "str | None":
     """Open a shareable Cloudflare quick tunnel to localhost:*port*, or None.
 
     run_server suppresses the tunnel on Colab by design, so we start it directly.
-    Refused while the bootstrap password is pending; any failure collapses to None
-    and the Colab proxy still works.
+    Refused while the bootstrap password is pending unless the caller will suppress
+    public bootstrap injection; any failure collapses to None and the Colab proxy
+    still works.
     """
     bootstrap_pending = _bootstrap_password_pending()
-    if bootstrap_pending and not allow_bootstrap_password:
+    if bootstrap_pending and not allow_bootstrap_pending:
         logger.warning(
             "Cloudflare link not started: the admin account still has its temporary "
             "bootstrap password, which is exposed to anyone who can load the page. "
@@ -189,8 +195,9 @@ def start_cloudflare_tunnel(
     if bootstrap_pending:
         logger.warning(
             "Starting the tunnel before the admin password is changed because this "
-            "Kaggle-backed notebook has no usable Colab proxy. Keep the generated "
-            "trycloudflare.com URL private and change the admin password after login."
+            "Kaggle-backed notebook has no usable Colab proxy. Bootstrap credentials "
+            "will not be injected into the public tunnel page; use the notebook-local "
+            "password file to sign in, then change the admin password."
         )
     try:
         from cloudflare_tunnel import start_studio_tunnel
@@ -220,6 +227,9 @@ def _publish_cloudflare_url(cloudflare_url: "str | None") -> None:
     try:
         from main import app as _studio_app
         _studio_app.state.cloudflare_url = cloudflare_url
+        _studio_app.state.suppress_bootstrap_injection_for_public_tunnel = bool(
+            cloudflare_url and _bootstrap_password_pending()
+        )
     except Exception as e:
         logger.info(f"Could not publish Cloudflare URL to /api/health ({e}).")
 
@@ -235,6 +245,7 @@ def _stop_cloudflare_tunnel() -> None:
     try:
         from main import app as _studio_app
         _studio_app.state.cloudflare_url = None
+        _studio_app.state.suppress_bootstrap_injection_for_public_tunnel = False
     except Exception:
         pass
 
@@ -281,13 +292,38 @@ def _shareable_link_html(cloudflare_url: str) -> str:
     """
 
 
+def _bootstrap_login_notice_html() -> "str | None":
+    """Notebook-local login hint for public tunnels with bootstrap injection off."""
+    try:
+        from auth import storage
+        if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
+            return None
+        bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
+        return f"""
+    <div style="display: inline-block; padding: 16px 20px; background: #fff7d6; border: 2px solid #b88700;
+                border-radius: 10px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
+        <div style="color:#3b2a00;font-weight:800;font-size:15px;margin-bottom:8px;">Bootstrap login required</div>
+        <div style="color:#3b2a00;font-size:13px;line-height:1.45;">
+            Username: <code>{storage.DEFAULT_ADMIN_USERNAME}</code><br>
+            Password file: <code>{bootstrap_path}</code><br>
+            The password is intentionally not embedded in the public Cloudflare page.
+        </div>
+    </div>
+    """
+    except Exception as exc:
+        logger.info(f"Could not render bootstrap login notice ({exc}).")
+        return None
+
+
 def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
     """Render the Studio header + iframe for *port*, with a shareable-link card above
     when *cloudflare_url* is set. Falls back to serve_kernel_port_as_iframe."""
-    if cloudflare_url:
-        _wait_for_public_url(cloudflare_url)
     url = get_colab_url(port)
-    if cloudflare_url and (_is_kaggle_environment() or url.startswith("http://localhost:")):
+    use_cloudflare_iframe = bool(
+        cloudflare_url and (_is_kaggle_environment() or url.startswith("http://localhost:"))
+    )
+    if use_cloudflare_iframe:
+        _wait_for_public_url(cloudflare_url)
         url = cloudflare_url
     logger.info(f"🌐 Unsloth Studio URL: {url}")
     if cloudflare_url:
@@ -308,6 +344,9 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
             short_url = url
 
         if cloudflare_url:
+            bootstrap_notice = _bootstrap_login_notice_html()
+            if bootstrap_notice:
+                display(HTML(bootstrap_notice))
             display(HTML(_shareable_link_html(cloudflare_url)))
 
         display(
@@ -338,25 +377,26 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
             pass
 
 
-def start(port: int = 8888, *, cloudflare: bool = False):
+def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     """Start Unsloth Studio in Colab and display the URL.
 
     Args:
         port: Port to bind/serve on.
-        cloudflare: Opt in to a shareable Cloudflare HTTPS link reachable from any
-            device (default OFF). It exposes Studio's login page beyond Colab, so it
-            stays an explicit opt-in on Colab. Kaggle-backed Colab sessions enable it
-            automatically because the Colab proxy URL is not reachable there.
+        cloudflare: Opt in/out of a shareable Cloudflare HTTPS link reachable
+            from any device. ``None`` means auto: off on Colab, on in Kaggle
+            because the Colab proxy URL is not reachable there. ``False`` is an
+            explicit opt-out.
 
     Usage:
-        start()                    # Colab-proxy iframe only (default)
-        start(cloudflare=True)     # also open a shareable Cloudflare link
+        start()                    # auto: Colab proxy, Kaggle tunnel
+        start(cloudflare=False)    # never open a tunnel
+        start(cloudflare=True)     # force a shareable Cloudflare link
     """
     import time
 
     logger.info("🦥 Starting Unsloth Studio...")
     is_kaggle = _is_kaggle_environment()
-    effective_cloudflare = cloudflare or is_kaggle
+    effective_cloudflare = is_kaggle if cloudflare is None else bool(cloudflare)
     if is_kaggle:
         os.environ.setdefault("UNSLOTH_STUDIO_HOSTED_NOTEBOOK", "1")
 
@@ -369,7 +409,7 @@ def start(port: int = 8888, *, cloudflare: bool = False):
             cf_url = (
                 start_cloudflare_tunnel(
                     port,
-                    allow_bootstrap_password = is_kaggle,
+                    allow_bootstrap_pending = is_kaggle,
                 )
                 if effective_cloudflare
                 else None
@@ -446,7 +486,7 @@ def start(port: int = 8888, *, cloudflare: bool = False):
         cf_url = (
             start_cloudflare_tunnel(
                 actual_port,
-                allow_bootstrap_password = is_kaggle,
+                allow_bootstrap_pending = is_kaggle,
             )
             if effective_cloudflare
             else None

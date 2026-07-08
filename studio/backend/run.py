@@ -1271,13 +1271,11 @@ def run_server(
         access_log = False,
         server_header = False,
     )
-    # Hosted notebooks only: trust X-Forwarded-* from the notebook proxy or
-    # tunnel so the app sees the real https origin. forwarded_allow_ips="*" is
-    # safe in single-user notebook sandboxes but too lax for local/standalone,
-    # so leave uvicorn's loopback-only default elsewhere.
+    # Hosted notebooks keep app-level client-IP trust authoritative. Uvicorn's
+    # proxy middleware rewrites scope["client"] before routes.auth can apply
+    # UNSLOTH_STUDIO_TRUST_FORWARDED, so disable it on notebook/tunnel paths.
     if _IS_HOSTED_NOTEBOOK:
-        config_kwargs["proxy_headers"] = True
-        config_kwargs["forwarded_allow_ips"] = "*"
+        config_kwargs["proxy_headers"] = False
     config = uvicorn.Config(app, **config_kwargs)
     _server = _ReadyServer(config)
     _shutdown_event = Event()
