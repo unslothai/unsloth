@@ -3164,21 +3164,25 @@ class TestRocmGfxForwarding:
         assert "--rocm-gfx" in source
         assert "$script:ROCmGfxArch" in source
 
-    def test_setup_sh_routes_inferred_gfx_to_fork(self):
-        # An inferred gfx arch must route to the fork even without ROCm tooling.
-        # Pin the specific guard (a bare "${_setup_gfx:-}" also appears elsewhere).
+    def test_setup_sh_routes_unconditionally_to_fork(self):
+        # CPU-only hosts no longer fall back to ggml-org -- the release-repo
+        # decision is an unconditional fork assignment now. Pin the line text.
         source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
-        assert '[ "$_LINUX_HAS_GPU" = false ] && [ -n "${_setup_gfx:-}" ]' in source
+        assert '_HELPER_RELEASE_REPO="unslothai/llama.cpp"' in source
+        assert '_HELPER_RELEASE_REPO="ggml-org/llama.cpp"' not in source
 
-    def test_setup_ps1_routes_inferred_gfx_to_fork(self):
-        # On Windows, a resolved $script:ROCmGfxArch counts as a fork install
-        # even when $HasROCm is false (Adrenalin-only, no HIP runtime).
+    def test_setup_ps1_routes_unconditionally_to_fork(self):
+        # Same on Windows: the fork now ships the windows-cpu / windows-arm64
+        # bundles, so $HelperReleaseRepo is an unconditional fork assignment.
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
-        assert "$HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch" in source
+        assert '$HelperReleaseRepo = "unslothai/llama.cpp"' in source
+        assert "$HelperReleaseRepo = if (" not in source
 
-    # The assertions above pin the guard *text*; the tests below *execute* the
-    # real routing block and assert the resolved repo, so a refactor that keeps
-    # the literal but breaks the inferred-gfx -> fork decision is still caught.
+    # The text pins above guard the literal. The tests below *execute* the real
+    # routing line from setup.sh / setup.ps1 and assert the resolved release repo,
+    # so a refactor that reintroduces a conditional (or a ggml-org branch) is still
+    # caught. Inputs are varied -- CPU-only, inferred/forwarded gfx, usable NVIDIA --
+    # to prove no host slips back onto ggml-org. No GPU, no tooling, no network.
 
     @staticmethod
     def _resolve_setup_sh_repo(
@@ -3187,15 +3191,18 @@ class TestRocmGfxForwarding:
         setup_gfx,
         rocm_gfx_arch_env = "",
     ):
-        """Run setup.sh's routing block under bash with PATH emptied (no ROCm tooling) and return _HELPER_RELEASE_REPO."""
+        """Run setup.sh's release-repo routing block under bash and return the
+        resolved _HELPER_RELEASE_REPO. PATH is emptied so any stray tooling probe
+        misses; routing is unconditional, so the GPU inputs only prove no branch
+        reroutes a host to ggml-org."""
         import shutil
 
         bash = shutil.which("bash")
         if bash is None:
             pytest.skip("bash not available")
         source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
-        start = source.index("\n_LINUX_HAS_GPU=false\n") + 1
-        end = source.index("\nunset _GPU_TOOL", start) + len("\nunset _GPU_TOOL")
+        start = source.index('\n_HELPER_RELEASE_REPO="unslothai/llama.cpp"\n') + 1
+        end = source.index("\n_LLAMA_PR=", start)
         block = source[start:end]
         assert "_HELPER_RELEASE_REPO" in block, "setup.sh routing anchors not found"
         env = {
@@ -3217,25 +3224,31 @@ class TestRocmGfxForwarding:
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
-    def test_setup_sh_inferred_gfx_resolves_to_fork(self):
-        # Only a name-inferred gfx arch -> route to the fork's per-gfx prebuilt
-        # (not ggml-org). x64 and arm64 share the fork branch.
-        assert self._resolve_setup_sh_repo("x86_64", False, "gfx1100") == "unslothai/llama.cpp"
-        assert self._resolve_setup_sh_repo("aarch64", False, "gfx1100") == "unslothai/llama.cpp"
-
-    def test_setup_sh_env_forwarded_gfx_resolves_to_fork(self):
-        # No probe fired but UNSLOTH_ROCM_GFX_ARCH is set: adopt the env arch
-        # and route to the fork, same as name-inference.
-        repo = self._resolve_setup_sh_repo("x86_64", False, "", rocm_gfx_arch_env = "gfx1100")
-        assert repo == "unslothai/llama.cpp"
-
-    def test_setup_sh_cpu_host_still_resolves_to_ggml(self):
-        # A real CPU host (no GPU, no inferred gfx, no env override) must keep routing to ggml-org.
-        assert self._resolve_setup_sh_repo("x86_64", False, "") == "ggml-org/llama.cpp"
+    @pytest.mark.parametrize(
+        "machine, nvidia_usable, setup_gfx, env_gfx",
+        [
+            ("x86_64", False, "", ""),  # plain CPU host (used to take ggml-org)
+            ("aarch64", False, "", ""),  # plain CPU arm64 host (used to take ggml-org)
+            ("x86_64", False, "gfx1100", ""),  # name-inferred gfx
+            ("x86_64", False, "", "gfx1100"),  # env-forwarded gfx
+            ("x86_64", True, "", ""),  # usable NVIDIA
+        ],
+    )
+    def test_setup_sh_routing_block_always_resolves_to_fork(
+        self, machine, nvidia_usable, setup_gfx, env_gfx
+    ):
+        assert (
+            self._resolve_setup_sh_repo(
+                machine, nvidia_usable, setup_gfx, rocm_gfx_arch_env = env_gfx
+            )
+            == "unslothai/llama.cpp"
+        )
 
     @staticmethod
-    def _resolve_setup_ps1_repo(has_nvidia, has_rocm, gfx_arch):
-        """Run setup.ps1's $HelperReleaseRepo selection under pwsh and return the resolved repo."""
+    def _resolve_setup_ps1_repo():
+        """Run setup.ps1's $HelperReleaseRepo assignment under pwsh and return the
+        resolved repo. The assignment is unconditional now, so there are no host
+        inputs to vary."""
         import shutil
 
         pwsh = shutil.which("pwsh")
@@ -3243,21 +3256,11 @@ class TestRocmGfxForwarding:
             pytest.skip("pwsh not available")
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
         line = next(
-            (
-                ln
-                for ln in source.splitlines()
-                if ln.strip().startswith("$HelperReleaseRepo = if (")
-            ),
+            (ln for ln in source.splitlines() if ln.strip().startswith("$HelperReleaseRepo =")),
             None,
         )
         assert line is not None, "$HelperReleaseRepo selection not found in setup.ps1"
-        harness = (
-            f"$HasNvidiaSmi = ${'true' if has_nvidia else 'false'}\n"
-            f"$HasROCm = ${'true' if has_rocm else 'false'}\n"
-            f"$script:ROCmGfxArch = '{gfx_arch}'\n"
-            f"{line}\n"
-            "Write-Output $HelperReleaseRepo"
-        )
+        harness = f"{line}\nWrite-Output $HelperReleaseRepo"
         result = subprocess.run(
             [pwsh, "-NoProfile", "-Command", harness],
             capture_output = True,
@@ -3267,13 +3270,10 @@ class TestRocmGfxForwarding:
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
-    def test_setup_ps1_inferred_gfx_resolves_to_fork(self):
-        # Adrenalin-only host: $HasROCm false but gfx inferred -> fork's windows-rocm bundle.
-        assert self._resolve_setup_ps1_repo(False, False, "gfx1100") == "unslothai/llama.cpp"
-
-    def test_setup_ps1_cpu_host_still_resolves_to_ggml(self):
-        # No NVIDIA, no ROCm, no inferred gfx -> CPU host stays on ggml-org.
-        assert self._resolve_setup_ps1_repo(False, False, "") == "ggml-org/llama.cpp"
+    def test_setup_ps1_routing_resolves_to_fork(self):
+        # Windows routing is unconditional now: CPU-only Windows (x64 and arm64)
+        # uses the fork's windows-cpu / windows-arm64 bundles, not ggml-org.
+        assert self._resolve_setup_ps1_repo() == "unslothai/llama.cpp"
 
 
 # TEST: _pick_rocm_gfx_target -- visible-device selection from rocminfo output.

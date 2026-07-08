@@ -41,6 +41,7 @@ export const en = {
       recipes: "Recipes",
       export: "Export",
       recents: "Recents",
+      noChatsYet: "No chats yet",
       settings: "Settings",
       api: "API",
       lightMode: "Light Mode",
@@ -444,6 +445,8 @@ export const en = {
       codingAgentsHint:
         "Launch a coding agent against this server. It uses the loaded model; a local server mints an API key automatically, a remote one includes it in the command.",
       codingAgentsSwap: "Swap claude for codex, openclaw, opencode, hermes, or pi.",
+      codingAgentDetected: "Installed on this machine",
+      codingAgentsDetectedHint: "Detected on this machine: {agents}.",
       relativeNever: "never",
       relativeJustNow: "just now",
       relativeHoursAgo: "{count}h ago",
