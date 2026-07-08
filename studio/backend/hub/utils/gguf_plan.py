@@ -16,7 +16,16 @@ from hub.utils.gguf import (
     is_mtp_drafter_path,
 )
 
-_FLOAT_PRECISION_LABELS = frozenset({"BF16", "F16", "F32"})
+# Full-precision converter output (never the preferred drafter when a quant
+# exists). Matched on the filename token so it catches ``fp16`` too, which
+# extract_quant_label does not recognize; kept in lockstep with the direct
+# loader's _download_dflash picker in core/inference/llama_cpp.py.
+_FULL_PRECISION_GGUF_TOKENS = ("bf16", "f16", "f32", "fp16")
+
+
+def _is_full_precision_gguf(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1].lower()
+    return any(token in name for token in _FULL_PRECISION_GGUF_TOKENS)
 
 
 @dataclass(frozen = True)
@@ -135,13 +144,7 @@ def preferred_dflash_sibling(siblings: Sequence) -> Optional[object]:
     ]
     if not candidates:
         return None
-    return sorted(
-        candidates,
-        key = lambda s: (
-            extract_quant_label(getattr(s, "rfilename")).upper() in _FLOAT_PRECISION_LABELS,
-            getattr(s, "rfilename"),
-        ),
-    )[0]
+    return sorted(candidates, key = lambda s: (_is_full_precision_gguf(getattr(s, "rfilename")), getattr(s, "rfilename")))[0]
 
 
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:

@@ -142,6 +142,21 @@ def test_variant_plans_carry_dflash_drafter_preferring_quant():
     assert plan.download_size_bytes == 4_575
 
 
+def test_variant_plans_prefer_quant_over_fp16_dflash():
+    # fp16 is full precision even though extract_quant_label doesn't tag it, so
+    # the quantized drafter must still win the download pick.
+    plans = build_gguf_variant_plans(
+        [
+            _sib("Qwen3-4B-Q4_K_M.gguf", 4_000, "main-q4"),
+            _sib("Qwen3-4B-DFlash-fp16.gguf", 1_200, "dflash-fp16"),
+            _sib("Qwen3-4B-DFlash-q8_0.gguf", 575, "dflash-q8"),
+        ]
+    )
+    plan = plans["q4_k_m"]
+    assert "Qwen3-4B-DFlash-q8_0.gguf" in plan.target_filenames
+    assert "Qwen3-4B-DFlash-fp16.gguf" not in plan.target_filenames
+
+
 def test_old_manifest_resume_reclassifies_drafter():
     # Pre-fix manifests could leak the drafter into a quant's expected
     # files; resume must classify it as a companion, not a main shard.

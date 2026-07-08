@@ -420,11 +420,28 @@ def _route_dedup_backend(gguf_path, *, hf_repo):
     return backend
 
 
-def test_hf_load_with_snapshot_dflash_sibling_does_not_thrash(tmp_path):
-    # A dflash-*.gguf sits in the HF snapshot dir, but HF loads never populate
-    # dflash_draft_path (no -hf auto-resolve yet). The route dedup must NOT
-    # compare the detected sibling against the permanently-None stored path,
-    # or every duplicate /load reloads the server (never converges).
+def test_hf_load_dedups_when_dflash_drafter_matches(tmp_path):
+    # HF loads now resolve the DFlash drafter (_download_dflash), so the dedup
+    # runs for HF too: when the stored drafter matches the snapshot sibling, a
+    # duplicate /load dedups (no thrash).
+    routes = _load_inference_routes_module()
+    from models.inference import LoadRequest
+
+    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
+    weight.touch()
+    drafter = tmp_path / "dflash-Qwen3-4B.gguf"
+    drafter.touch()
+
+    req = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
+    backend = _route_dedup_backend(str(weight), hf_repo = "unsloth/Qwen3-4B-GGUF")
+    backend._dflash_draft_path = str(drafter.resolve())
+    assert routes._request_matches_loaded_settings(req, backend) is True
+
+
+def test_hf_load_reloads_when_dflash_appears_unresolved(tmp_path):
+    # A DFlash file present in the HF snapshot but not yet the stored drafter
+    # must force a reload so the newly available drafter engages, rather than
+    # sticking on already_loaded.
     routes = _load_inference_routes_module()
     from models.inference import LoadRequest
 
@@ -434,7 +451,7 @@ def test_hf_load_with_snapshot_dflash_sibling_does_not_thrash(tmp_path):
 
     req = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
     backend = _route_dedup_backend(str(weight), hf_repo = "unsloth/Qwen3-4B-GGUF")
-    assert routes._request_matches_loaded_settings(req, backend) is True
+    assert routes._request_matches_loaded_settings(req, backend) is False
 
 
 def test_vision_load_with_dflash_sibling_does_not_thrash(tmp_path):
