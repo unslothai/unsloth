@@ -1855,11 +1855,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   applyRememberedLoadSettings: (settings) =>
     // Coalesce every field: a blob persisted by an older/newer build can omit
     // keys, and a raw spread would push `undefined` into fields typed non-null.
-    // The GPU knobs are spread only when present so an older blob (which lacked
-    // them) leaves the staged baseline's GPU mode/knobs untouched rather than
-    // forcing them to Auto/defaults. selectedGpuIds keeps a meaningful null (all
-    // GPUs), so it keys off `undefined`, not nullishness.
+    // The GPU knobs are spread only when present, but first reset the per-model
+    // ones to defaults: this path (load-on-selection) starts from the currently
+    // loaded model's baseline and skips the model-switch reset, so a blob that
+    // omits gpuLayers/nCpuMoe/selectedGpuIds (an older build) or splitRatio
+    // (deliberately never remembered) must not inherit the previous model's
+    // placement. gpuMemoryMode is a standing preference, so it is NOT reset --
+    // only applied when the blob carries it. selectedGpuIds keeps a meaningful
+    // null (all GPUs), so it keys off `undefined`, not nullishness.
     set({
+      gpuLayers: GPU_LAYERS_AUTO,
+      nCpuMoe: 0,
+      splitRatio: null,
+      selectedGpuIds: null,
       customContextLength: settings.contextLength ?? null,
       kvCacheDtype: settings.kvCacheDtype ?? null,
       speculativeType: settings.speculativeType ?? "auto",
