@@ -36,6 +36,10 @@ import sys
 from pathlib import Path
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
+# Canonical CUDA spoof, committed at the repo root (studio/backend -> studio -> repo root). Loaded by
+# the subprocess when present so it matches what the consolidated CI uses; absent in a standalone
+# studio checkout, where the subprocess falls back to a minimal inline spoof.
+_SPOOF_PATH = _BACKEND_DIR.parent.parent / "tests" / "_zoo_aggressive_cuda_spoof.py"
 
 # Runs in a fresh interpreter with cwd == studio/backend so ``utils.*`` resolves like the worker.
 # STUB_HOME (a pytest tmp dir) holds a throwaway ``.venv_t5_530`` sidecar exporting transformers 5.3.0.
@@ -43,26 +47,36 @@ _SNIPPET = r"""
 import os, sys
 sys.path.insert(0, os.getcwd())
 
-# Best-effort CUDA spoof so unsloth_zoo takes its full, transformers-importing init path on a
-# GPU-less runner. Without it unsloth_zoo degrades and never preloads transformers, which would MASK
-# the stale-import regression under test (verified). Mirrors tests/_zoo_aggressive_cuda_spoof.py;
-# kept minimal and self-contained. If torch is absent the fixed tree still passes below; the bug just
+# CUDA spoof so unsloth_zoo takes its full, transformers-importing init path on a GPU-less runner.
+# Without it unsloth_zoo degrades and never preloads transformers, which would MASK the stale-import
+# regression under test (verified). Prefer the repo's canonical spoof (single source of truth, and the
+# one the consolidated CI already relies on); fall back to a minimal inline spoof so this also works in
+# a standalone studio checkout. If torch is absent the fixed tree still passes below; the bug just
 # would not be exposable in that shard.
 try:
-    import torch
-    torch.cuda.is_available = lambda: True
-    torch.cuda.device_count = lambda: 1
-    torch.cuda.current_device = lambda: 0
-    torch.cuda.get_device_capability = lambda *a, **k: (8, 0)
-    torch.cuda.get_device_name = lambda *a, **k: "NVIDIA A100-SPOOFED"
-    torch.cuda.is_bf16_supported = lambda *a, **k: True
-    class _Props:
-        name = "NVIDIA A100-SPOOFED"
-        major = 8
-        minor = 0
-        total_memory = 80 * 1024**3
-        multi_processor_count = 108
-    torch.cuda.get_device_properties = lambda *a, **k: _Props()
+    import torch  # noqa: F401
+    _sp = os.environ.get("SPOOF_PATH")
+    if _sp and os.path.exists(_sp):
+        import importlib.util
+        _spec = importlib.util.spec_from_file_location("_zoo_aggressive_cuda_spoof", _sp)
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        _mod.apply()
+    else:
+        torch.cuda.is_available = lambda: True
+        torch.cuda.device_count = lambda: 1
+        torch.cuda.current_device = lambda: 0
+        torch.cuda.get_device_capability = lambda *a, **k: (8, 0)
+        torch.cuda.get_device_name = lambda *a, **k: "NVIDIA A100-SPOOFED"
+        torch.cuda.is_bf16_supported = lambda *a, **k: True
+        class _Props:
+            name = "NVIDIA A100-SPOOFED"
+            major = 8
+            minor = 0
+            total_memory = 80 * 1024**3
+            multi_processor_count = 108
+        torch.cuda.get_device_properties = lambda *a, **k: _Props()
+        torch.cuda.mem_get_info = lambda *a, **k: (0, 80 * 1024**3)
 except Exception:
     pass
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
@@ -110,7 +124,11 @@ def test_worker_activates_correct_transformers_version(tmp_path):
     result = subprocess.run(
         [sys.executable, "-c", _SNIPPET],
         cwd = str(_BACKEND_DIR),
-        env = {**__import__("os").environ, "STUB_HOME": str(tmp_path)},
+        env = {
+            **__import__("os").environ,
+            "STUB_HOME": str(tmp_path),
+            **({"SPOOF_PATH": str(_SPOOF_PATH)} if _SPOOF_PATH.exists() else {}),
+        },
         capture_output = True,
         text = True,
     )
