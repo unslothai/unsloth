@@ -719,7 +719,6 @@ def test_resolve_model_loopback_does_not_casefold_visible_local_paths(tmp_path, 
     assert any(u.endswith("/api/inference/load") for _, u, _ in calls)
 
 
-
 def test_resolve_model_loopback_does_not_casefold_ambiguous_two_segment_paths(monkeypatch):
     # If Studio runs from a different cwd, the CLI cannot see whether Runs/Foo
     # exists there. Treat every one-slash case variant as ambiguous and let the
