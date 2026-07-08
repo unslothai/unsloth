@@ -360,6 +360,26 @@ def test_direct_upstream_arm64_intel_prefers_vulkan():
     assert plan.attempts[0].name == "llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz"
 
 
+def test_direct_upstream_intel_with_hidden_nvidia_is_cpu_only():
+    # A host with a physical NVIDIA hidden via CUDA_VISIBLE_DEVICES (physical
+    # True, usable False) + an Intel iGPU must NOT get the Vulkan archive even
+    # when planning directly against upstream: Vulkan ignores CUDA_VISIBLE_DEVICES
+    # and could grab the reserved card. It falls through to the CPU asset.
+    host = _host(
+        is_linux = True,
+        is_x86_64 = True,
+        has_intel_gpu = True,
+        has_physical_nvidia = True,
+        has_usable_nvidia = False,
+    )
+    rel = _upstream_release(
+        "b9925",
+        ["llama-b9925-bin-ubuntu-vulkan-x64.tar.gz", "llama-b9925-bin-ubuntu-x64.tar.gz"],
+    )
+    plan = ilp.direct_upstream_release_plan(rel, host, UPSTREAM, "latest")
+    assert [a.install_kind for a in plan.attempts] == ["linux-cpu"]
+
+
 def test_direct_upstream_arm64_without_intel_is_cpu_only():
     host = _host(is_linux = True, is_arm64 = True, machine = "aarch64")
     rel = _upstream_release(

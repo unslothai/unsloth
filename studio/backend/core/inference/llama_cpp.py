@@ -6661,6 +6661,13 @@ class LlamaCppBackend:
                             ", ".join(unsupported_cache_flags),
                         )
 
+                # Vulkan pins via --device (a cmd arg, unlike the env-based
+                # CUDA/ROCm pin below), so emit it BEFORE user extras: llama.cpp's
+                # last-wins parsing then lets a user --device in llama_extra_args
+                # override Studio's auto-selection (force CPU, a different device).
+                if is_vulkan_backend and gpu_indices is not None:
+                    cmd += LlamaCppBackend._vulkan_pin_args(gpu_indices)
+
                 # User pass-through args go last so llama.cpp's last-wins parsing
                 # lets the user override Studio's auto-set flags. Already
                 # validated by the route via validate_extra_args().
@@ -6726,38 +6733,31 @@ class LlamaCppBackend:
                     )
 
                 # Pin to selected GPU(s). On ROCm, narrowing only
-                # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full
-                # set, so set HIP_VISIBLE_DEVICES too.
-                if gpu_indices is not None:
-                    if is_vulkan_backend:
-                        # gpu_indices are ggml's compact Vulkan ordinals; pin by
-                        # device name via --device (see _vulkan_pin_args), never
-                        # GGML_VK_VISIBLE_DEVICES (raw pre-filter index space).
-                        # Leave any user-set GGML_VK_VISIBLE_DEVICES in env so
-                        # ggml applies it to the same list the probe enumerated.
-                        cmd += LlamaCppBackend._vulkan_pin_args(gpu_indices)
-                    else:
-                        pinned = ",".join(str(i) for i in gpu_indices)
-                        env["CUDA_VISIBLE_DEVICES"] = pinned
-                        try:
-                            import torch as _torch
-                            if getattr(_torch.version, "hip", None) is not None:
-                                env["HIP_VISIBLE_DEVICES"] = pinned
-                                # Do NOT also set ROCR_VISIBLE_DEVICES to the same
-                                # value. ROCR_VISIBLE_DEVICES filters at the HSA/ROCr
-                                # layer and HIP_VISIBLE_DEVICES at the HIP layer, so
-                                # setting both with the same physical indices applies
-                                # the mask twice: ROCR reduces the visible set and
-                                # re-indexes it from 0, then HIP indexes into the
-                                # already-reduced set. A single non-zero pin (e.g.
-                                # "1") then points out of range at the HIP layer, HIP
-                                # enumerates 0 devices, and llama.cpp falls back to
-                                # CPU ("ggml_cuda_init: no ROCm-capable device is
-                                # detected"). The HIP mask alone narrows correctly;
-                                # clear any inherited ROCR mask so it can't double up.
-                                env.pop("ROCR_VISIBLE_DEVICES", None)
-                        except Exception as e:
-                            logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
+                # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full set, so
+                # set HIP_VISIBLE_DEVICES too. Vulkan is pinned via --device (a cmd
+                # arg placed before user extras, above), not here.
+                if gpu_indices is not None and not is_vulkan_backend:
+                    pinned = ",".join(str(i) for i in gpu_indices)
+                    env["CUDA_VISIBLE_DEVICES"] = pinned
+                    try:
+                        import torch as _torch
+                        if getattr(_torch.version, "hip", None) is not None:
+                            env["HIP_VISIBLE_DEVICES"] = pinned
+                            # Do NOT also set ROCR_VISIBLE_DEVICES to the same
+                            # value. ROCR_VISIBLE_DEVICES filters at the HSA/ROCr
+                            # layer and HIP_VISIBLE_DEVICES at the HIP layer, so
+                            # setting both with the same physical indices applies
+                            # the mask twice: ROCR reduces the visible set and
+                            # re-indexes it from 0, then HIP indexes into the
+                            # already-reduced set. A single non-zero pin (e.g.
+                            # "1") then points out of range at the HIP layer, HIP
+                            # enumerates 0 devices, and llama.cpp falls back to
+                            # CPU ("ggml_cuda_init: no ROCm-capable device is
+                            # detected"). The HIP mask alone narrows correctly;
+                            # clear any inherited ROCR mask so it can't double up.
+                            env.pop("ROCR_VISIBLE_DEVICES", None)
+                    except Exception as e:
+                        logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
                 # Captured before any text-only fallback strips it from cmd.
                 launched_with_mmproj = "--mmproj" in cmd

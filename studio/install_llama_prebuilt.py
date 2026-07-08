@@ -1484,8 +1484,11 @@ def direct_upstream_release_plan(
                         install_kind = "windows-hip",
                     )
                 )
-        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt.
-        elif host.has_intel_gpu:
+        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt. Gate
+        # on no PHYSICAL NVIDIA (not just no usable one): a host that hid NVIDIA
+        # via CUDA_VISIBLE_DEVICES must not be sent to Vulkan, which ignores that
+        # mask and could enumerate the reserved card. Falls through to CPU below.
+        elif host.has_intel_gpu and not host.has_physical_nvidia:
             vulkan_asset = f"llama-{release_tag}-bin-win-vulkan-x64.zip"
             vulkan_url = assets.get(vulkan_asset)
             if vulkan_url:
@@ -1562,9 +1565,10 @@ def direct_upstream_release_plan(
         # ROCm hosts are excluded: this ggml-org path ships no per-gfx ROCm
         # asset, so they fall through to the empty-attempts raise (HIP source
         # build) rather than silently getting a CPU binary on a GPU host.
-        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt.
-        # The elif already guarantees no usable NVIDIA and no ROCm.
-        if host.has_intel_gpu:
+        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt. The
+        # elif already excludes usable NVIDIA and ROCm; also require no PHYSICAL
+        # NVIDIA so a CUDA-hidden card isn't reached through Vulkan (CPU below).
+        if host.has_intel_gpu and not host.has_physical_nvidia:
             vulkan_asset = f"llama-{release_tag}-bin-ubuntu-vulkan-x64.tar.gz"
             vulkan_url = assets.get(vulkan_asset)
             if vulkan_url:
@@ -1599,7 +1603,8 @@ def direct_upstream_release_plan(
         # Altra, GitHub-hosted ubuntu-24.04-arm runners, etc.).
         # Intel (or other non-NVIDIA/non-AMD) GPU: prefer the Vulkan prebuilt,
         # mirroring the x86_64 branch. Upstream ships bin-ubuntu-vulkan-arm64.
-        if host.has_intel_gpu and not host.has_rocm:
+        # No physical NVIDIA: don't reach a CUDA-hidden card through Vulkan.
+        if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
             vulkan_asset = f"llama-{release_tag}-bin-ubuntu-vulkan-arm64.tar.gz"
             vulkan_url = assets.get(vulkan_asset)
             if vulkan_url:
@@ -3952,8 +3957,10 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                 "falling back to source build with HIP support"
             )
 
-        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt.
-        if host.has_intel_gpu and not host.has_usable_nvidia and not host.has_rocm:
+        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt. No
+        # physical NVIDIA (not just no usable one): a CUDA-hidden card must not
+        # be reached through Vulkan, which ignores CUDA_VISIBLE_DEVICES.
+        if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
             vulkan_name = f"llama-{llama_tag}-bin-ubuntu-vulkan-x64.tar.gz"
             if vulkan_name in upstream_assets:
                 log(f"Intel GPU detected -- using upstream Vulkan prebuilt {vulkan_name}")
@@ -4009,8 +4016,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                 )
             log("AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU")
 
-        # Intel (or other non-NVIDIA/non-AMD) GPU on Windows: use Vulkan.
-        if host.has_intel_gpu and not host.has_usable_nvidia and not host.has_rocm:
+        # Intel (or other non-NVIDIA/non-AMD) GPU on Windows: use Vulkan. No
+        # physical NVIDIA so a CUDA-hidden card isn't reached through Vulkan.
+        if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
             vulkan_name = f"llama-{llama_tag}-bin-win-vulkan-x64.zip"
             if vulkan_name in upstream_assets:
                 log(
