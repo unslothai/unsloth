@@ -3120,7 +3120,11 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
 
 
 def _remote_gguf_companion_bytes(
-    repo: str, *, hf_token: Optional[str], include_mmproj: bool, include_dflash: bool = True
+    repo: str,
+    *,
+    hf_token: Optional[str],
+    include_mmproj: bool,
+    include_dflash: bool = True,
 ) -> int:
     """Bytes of MTP/DFlash/mmproj companion GGUFs Studio auto-downloads. 0 on
     error, so it can only add headroom, never refuse a load by itself.
