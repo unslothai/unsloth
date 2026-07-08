@@ -3,12 +3,15 @@
 
 """Separate-file DFlash drafter contracts.
 
-DFlash is a standalone block-diffusion draft GGUF (``dflash-*.gguf``) paired to
-a target, mechanically the Gemma-style separate-drafter case. Pins: the
-companion predicate + its two layering mirrors, sibling detection /
+DFlash is a standalone block-diffusion draft GGUF paired to a target,
+mechanically the Gemma-style separate-drafter case. Its name carries ``dflash``
+as a delimited token anywhere (``dflash-<model>.gguf`` and the
+``<model>-DFlash[-<quant>].gguf`` form llama.cpp's converter documents). Pins:
+the companion predicate + its two layering mirrors, sibling detection /
 foreign-drafter rejection, the ``draft-dflash`` flag emission (including the
 no-binary fallback and that it does not fire in a forced ``mtp`` mode), and the
-reload-dedup bounce when the drafter appears / changes / disappears.
+reload-dedup bounce when the drafter appears / changes / disappears or its
+draft depth changes.
 """
 
 from __future__ import annotations
@@ -40,11 +43,17 @@ from core.inference.llama_cpp import (
 # ── Companion predicate + layering mirrors ───────────────────────────
 
 DFLASH_DRAFTER_CASES = [
+    # unsloth's dflash- prefix form.
     ("dflash-Qwen3-4B.gguf", True),
     ("models/dflash-qwen3.6-27b.gguf", True),
-    # Not a companion: dflash appears mid-name, not as the prefix.
-    ("Qwen3-4B-dflash-Q4_K_M.gguf", False),
-    ("model-dflash-test.gguf", False),
+    # llama.cpp's documented converter output + community/HF naming: dflash as a
+    # delimited token in the middle or at the end of the name.
+    ("Qwen3-4B-DFlash.gguf", True),
+    ("Qwen3-4B-DFlash-q8_0.gguf", True),
+    ("qwen3-4b-dflash-Q4_K_M.gguf", True),
+    # "dflash" embedded in a word (no delimiter) is not a drafter.
+    ("mydflashmodel.gguf", False),
+    # Not a gguf, and a real quant with no dflash token.
     ("dflash-readme.txt", False),
     ("Qwen3-4B-Q4_K_M.gguf", False),
 ]
@@ -52,7 +61,7 @@ DFLASH_DRAFTER_CASES = [
 
 @pytest.mark.parametrize("path,expected", DFLASH_DRAFTER_CASES)
 def test_dflash_predicate_and_mirrors_agree(path, expected):
-    # The three mirrors must change in lockstep; a dflash-*.gguf is a companion
+    # The three mirrors must change in lockstep; a DFlash drafter is a companion
     # everywhere mmproj / mtp- are.
     assert is_mtp_drafter_path(path) is expected
     assert _is_mtp_drafter(path) is expected
@@ -118,6 +127,32 @@ def test_detect_dflash_and_mtp_are_disjoint(tmp_path):
     weight = str(tmp_path / "Qwen3-4B-Q4_K_M.gguf")
     assert detect_dflash_file(weight).endswith("dflash-Qwen3-4B.gguf")
     assert detect_mtp_file(weight).endswith("mtp-Qwen3-4B.gguf")
+
+
+@pytest.mark.parametrize(
+    "drafter_name",
+    [
+        # llama.cpp's documented converter output (docs/speculative.md).
+        "Qwen3-4B-DFlash.gguf",
+        # community / HF releases append a quant tag.
+        "Qwen3-4B-DFlash-q8_0.gguf",
+    ],
+)
+def test_detect_dflash_file_finds_infix_dflash(tmp_path, drafter_name):
+    # The `<model>-DFlash[-<quant>].gguf` form pairs with a quant of that model,
+    # so a drafter following llama.cpp's own naming is actually engaged.
+    (tmp_path / "Qwen3-4B-Q4_K_M.gguf").touch()
+    drafter = tmp_path / drafter_name
+    drafter.touch()
+    found = detect_dflash_file(str(tmp_path / "Qwen3-4B-Q4_K_M.gguf"))
+    assert found == str(drafter.resolve())
+
+
+def test_detect_gguf_model_rejects_infix_dflash_drafter(tmp_path):
+    # A `<model>-DFlash.gguf` must not be offered as the selectable main model.
+    drafter = tmp_path / "Qwen3-4B-DFlash.gguf"
+    drafter.touch()
+    assert detect_gguf_model(str(drafter)) is None
 
 
 # ── Flag emission ────────────────────────────────────────────────────
@@ -358,3 +393,26 @@ def test_local_load_still_reloads_when_dflash_sibling_appears(tmp_path):
     req = LoadRequest(model_path = str(weight))
     backend = _route_dedup_backend(str(weight), hf_repo = None)
     assert routes._request_matches_loaded_settings(req, backend) is False
+
+
+def test_dflash_nmax_change_forces_reload(tmp_path):
+    # DFlash engages only in Auto (backend_mode stays "auto"), so the route must
+    # key the n-max compare off the resolved draft-dflash spec, else a changed
+    # --spec-draft-n-max is deduped and the backend n-max guard never runs.
+    routes = _load_inference_routes_module()
+    from models.inference import LoadRequest
+
+    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
+    weight.touch()
+    drafter = tmp_path / "dflash-Qwen3-4B.gguf"
+    drafter.touch()
+
+    backend = _route_dedup_backend(str(weight), hf_repo = None)
+    backend._speculative_type = "draft-dflash"
+    backend._spec_draft_n_max = 4
+    backend._dflash_draft_path = str(drafter)
+
+    changed = LoadRequest(model_path = str(weight), spec_draft_n_max = 8)
+    assert routes._request_matches_loaded_settings(changed, backend) is False
+    same = LoadRequest(model_path = str(weight), spec_draft_n_max = 4)
+    assert routes._request_matches_loaded_settings(same, backend) is True

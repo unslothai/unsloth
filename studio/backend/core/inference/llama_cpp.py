@@ -787,10 +787,16 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
     return False
 
 
+# DFlash drafter names carry ``dflash`` as a delimited token anywhere
+# (``dflash-<model>`` or ``<model>-DFlash[-<quant>]``), not just a fixed prefix.
+# Mirrors utils/models/model_config._DFLASH_DRAFTER_RE.
+_DFLASH_DRAFTER_RE = re.compile(r"(?:^|[-_.])dflash(?:[-_.]|$)", re.IGNORECASE)
+
+
 def _is_companion_gguf_path(path: str) -> bool:
     """True for a non-main GGUF: vision mmproj or a separate drafter -- the
-    MTP repo-root ``mtp-*.gguf`` / ``MTP/`` subdir copies (Gemma 4), or a
-    DFlash ``dflash-*.gguf``.
+    MTP repo-root ``mtp-*.gguf`` / ``MTP/`` subdir copies (Gemma 4), or a DFlash
+    drafter (``dflash-<model>`` or ``<model>-DFlash[-<quant>]``).
 
     Mirrors hub.utils.gguf so variant resolution never picks a companion as
     the main model -- e.g. a Gemma ``Q8_0`` request must not resolve to the
@@ -802,7 +808,11 @@ def _is_companion_gguf_path(path: str) -> bool:
     if "mmproj" in p:
         return True
     name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}" or name.startswith("dflash-")
+    return (
+        name.startswith("mtp-")
+        or "/mtp/" in f"/{p}"
+        or bool(_DFLASH_DRAFTER_RE.search(name))
+    )
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)

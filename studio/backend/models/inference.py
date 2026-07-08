@@ -410,8 +410,9 @@ class InferenceStatusResponse(BaseModel):
         description = (
             "Why MTP was disabled on the loaded model despite being requested "
             "(auto on an MTP model, or forced mtp / mtp+ngram). "
-            "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
-            "re-enable it (show the update affordance); 'runtime_error' -> the "
+            "'binary_no_mtp' / 'binary_no_dflash' / 'binary_outdated' -> a newer "
+            "prebuilt would re-enable it (show the update affordance); "
+            "'runtime_error' -> the "
             "current build could not run it; 'drafter_not_found' -> the model's "
             "separate MTP drafter could not be resolved; 'mla_mtp_disabled' -> "
             "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "

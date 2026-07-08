@@ -568,6 +568,7 @@ export function ChatSettingsPanel({
   // Only binary fallback states are solved by a newer prebuilt.
   const mtpUpdatable =
     specFallbackReason === "binary_no_mtp" ||
+    specFallbackReason === "binary_no_dflash" ||
     specFallbackReason === "binary_outdated";
   const {
     status: llamaUpdateStatus,
@@ -1134,10 +1135,15 @@ export function ChatSettingsPanel({
                           ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
                           : specFallbackReason === "drafter_not_found"
                             ? "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
-                            : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
-                              (llamaUpdateStatus?.update_available
-                                ? " Update llama.cpp to enable it."
-                                : "")}
+                            : specFallbackReason === "binary_no_dflash"
+                              ? "DFlash speculative decoding is not available in the installed llama.cpp build, so this model is running without it." +
+                                (llamaUpdateStatus?.update_available
+                                  ? " Update llama.cpp to enable it."
+                                  : "")
+                              : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
+                                (llamaUpdateStatus?.update_available
+                                  ? " Update llama.cpp to enable it."
+                                  : "")}
                       </p>
                       {mtpUpdatable && llamaUpdateStatus?.update_available && (
                         <Button

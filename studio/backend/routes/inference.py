@@ -2539,9 +2539,15 @@ def _request_matches_loaded_settings(
         and not _extra_args_set_spec_type(effective_extra)
     ):
         return False
-    # spec_draft_n_max only matters with an MTP variant; None means "platform
-    # default" and matches whatever the backend chose.
-    if backend_mode in ("mtp", "mtp+ngram") and request.spec_draft_n_max is not None:
+    # spec_draft_n_max only matters with a model-draft variant; None means
+    # "platform default" and matches whatever the backend chose. DFlash has no
+    # forced UI mode, so an Auto load stays backend_mode "auto"; key off the
+    # resolved spec instead, else this route dedup short-circuits before the
+    # backend's own draft-dflash n-max check and the new value is dropped.
+    _draft_n_max_engaged = backend_mode in ("mtp", "mtp+ngram") or (
+        llama_backend.speculative_type == "draft-dflash"
+    )
+    if _draft_n_max_engaged and request.spec_draft_n_max is not None:
         if int(request.spec_draft_n_max) != (llama_backend.spec_draft_n_max or 0):
             return False
     _effective_cto = (

@@ -1100,6 +1100,16 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
+# A DFlash drafter carries ``dflash`` as a delimited token anywhere in the
+# basename, case-insensitive: the ``dflash-<model>.gguf`` form unsloth ships and
+# the ``<model>-DFlash[-<quant>].gguf`` form llama.cpp's own converter documents
+# (docs/speculative.md) and community/HF releases use. Bare ``dflash`` embedded
+# in a word (``mydflash.gguf``) is not a drafter, so both sides need a delimiter.
+# CANONICAL COPY mirrored in llama_cpp._is_companion_gguf_path and
+# hub.utils.gguf.is_mtp_drafter_path (layering forbids a shared import).
+_DFLASH_DRAFTER_RE = re.compile(r"(?:^|[-_.])dflash(?:[-_.]|$)", re.IGNORECASE)
+
+
 def _is_mtp_drafter(path: str) -> bool:
     """True for a separate-file speculative drafter (MTP or DFlash), a companion
     to the main model rather than a selectable quant: the MTP repo-root
@@ -1116,7 +1126,11 @@ def _is_mtp_drafter(path: str) -> bool:
     if not p.endswith(".gguf"):
         return False
     name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}" or name.startswith("dflash-")
+    return (
+        name.startswith("mtp-")
+        or "/mtp/" in f"/{p}"
+        or bool(_DFLASH_DRAFTER_RE.search(name))
+    )
 
 
 # Family tokens for #5347's filename fallback. Lowercase; order irrelevant.
@@ -1378,14 +1392,55 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
 
 
 def detect_dflash_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
-    """Find the separate DFlash drafter (``dflash-*.gguf``) for a local GGUF.
+    """Find the separate DFlash drafter for a local GGUF.
 
     DFlash is always a standalone block-diffusion draft GGUF paired to a target
-    (never an embedded head), so the discovery is identical to the Gemma MTP
-    drafter: a ``dflash-<model>.gguf`` sibling whose stem prefixes the weight
-    filename (e.g. ``dflash-Qwen3-4B.gguf`` next to ``Qwen3-4B-Q4_K_M.gguf``).
+    (never an embedded head). Unlike the ``mtp-`` prefix, real DFlash GGUFs carry
+    ``dflash`` as a delimited token anywhere in the name: ``dflash-<model>.gguf``
+    (unsloth), and the ``<model>-DFlash[-<quant>].gguf`` form llama.cpp's own
+    converter documents and community/HF releases ship (e.g.
+    ``Qwen3-4B-DFlash.gguf`` next to ``Qwen3-4B-Q4_K_M.gguf``). Pairs by name so a
+    multi-model folder can't attach a foreign drafter: the model portion of the
+    drafter (the side of the ``dflash`` token that isn't a quant tag) must prefix
+    the weight filename. An unmatched drafter is skipped (fail-safe: no DFlash).
+    The drafter may sit at the root while the weight is in a quant subdir, so scan
+    the weight's directory and ``search_root``.
     """
-    return _detect_drafter_sibling(path, "dflash-", search_root)
+    p = Path(path)
+    weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
+    start_dir = p.parent if p.is_file() else p
+    dirs = [start_dir]
+    if search_root is not None:
+        dirs.append(Path(search_root))
+    for d in dirs:
+        try:
+            entries = sorted(d.iterdir())
+        except OSError:
+            continue
+        for f in entries:
+            name = f.name.lower()
+            if not name.endswith(".gguf"):
+                continue
+            stem = name[: -len(".gguf")]
+            m = _DFLASH_DRAFTER_RE.search(stem)
+            if not m:
+                continue
+            # The model identity is whichever side of the dflash token isn't a
+            # quant tag: `dflash-<model>` -> after; `<model>-DFlash` -> before;
+            # `<model>-DFlash-<quant>` -> before still prefixes the weight.
+            candidates = [
+                c for c in (stem[: m.start()].strip("-_."), stem[m.end() :].strip("-_.")) if c
+            ]
+            if weight_name is not None and not any(
+                weight_name.startswith(c) for c in candidates
+            ):
+                continue
+            try:
+                if f.is_file():
+                    return str(f.resolve())
+            except OSError:
+                continue
+    return None
 
 
 def detect_gguf_model(path: str) -> Optional[str]:
