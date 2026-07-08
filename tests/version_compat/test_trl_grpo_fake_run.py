@@ -55,7 +55,6 @@ _stub_module("torchcodec")
 def _trl_version():
     import trl
     from packaging.version import Version
-
     return Version(trl.__version__.split("+")[0])
 
 
@@ -116,16 +115,15 @@ def test_grpo_patch_three_tuple_return(generated_grpo_source):
     _get_per_token_logps_and_entropies; the injected replacement must return
     (logps, entropies, aux_loss)."""
     from packaging.version import Version
-
     if _trl_version() >= Version("1.7.0"):
         assert "return logprobs.detach(), entropies, aux_loss" in generated_grpo_source, (
             "3-tuple per-token-logps return missing; the arity version-gate in "
             "rl_replacements.py did not emit the >=1.7.0 form"
         )
     else:
-        assert "return logprobs.detach(), entropies, aux_loss" not in generated_grpo_source, (
-            "2-tuple TRL got the 3-tuple return; arity gate mis-fired"
-        )
+        assert (
+            "return logprobs.detach(), entropies, aux_loss" not in generated_grpo_source
+        ), "2-tuple TRL got the 3-tuple return; arity gate mis-fired"
 
 
 def test_grpo_patch_preserves_grad_checkpointing_block(generated_grpo_source):
@@ -148,12 +146,12 @@ def test_grpo_patch_neutralizes_ref_adapter_and_qlora_cast(generated_grpo_source
 
     if _trl_version() < Version("1.7.0"):
         pytest.skip("targets the TRL >= 1.7.0 PEFT / _is_quantized_model shapes")
-    assert "ref_param.data.copy_(param.data)" not in generated_grpo_source, (
-        "TRL's PEFT ref-adapter init survived; rl.py peft_pattern re.sub no-oped"
-    )
-    assert "if _is_quantized_model:" not in generated_grpo_source, (
-        "TRL's hardcoded QLoRA bf16 cast survived; rl.py neutralization no-oped"
-    )
+    assert (
+        "ref_param.data.copy_(param.data)" not in generated_grpo_source
+    ), "TRL's PEFT ref-adapter init survived; rl.py peft_pattern re.sub no-oped"
+    assert (
+        "if _is_quantized_model:" not in generated_grpo_source
+    ), "TRL's hardcoded QLoRA bf16 cast survived; rl.py neutralization no-oped"
 
 
 # SFT / DPO: no #6904-specific contract, but the same source-transform patcher
