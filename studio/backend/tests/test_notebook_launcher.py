@@ -76,7 +76,9 @@ def test_kaggle_start_auto_tunnels_and_marks_hosted(monkeypatch):
         return "https://ready.trycloudflare.com"
 
     monkeypatch.setattr(colab, "start_cloudflare_tunnel", _fake_tunnel)
-    monkeypatch.setattr(colab, "_publish_cloudflare_url", lambda url: calls.setdefault("published", url))
+    monkeypatch.setattr(
+        colab, "_publish_cloudflare_url", lambda url: calls.setdefault("published", url)
+    )
     monkeypatch.setattr(
         colab,
         "_show_and_embed",
@@ -108,7 +110,9 @@ def test_kaggle_start_explicit_cloudflare_false_disables_tunnel(monkeypatch):
         "start_cloudflare_tunnel",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("tunnel should not start")),
     )
-    monkeypatch.setattr(colab, "_publish_cloudflare_url", lambda url: calls.setdefault("published", url))
+    monkeypatch.setattr(
+        colab, "_publish_cloudflare_url", lambda url: calls.setdefault("published", url)
+    )
     monkeypatch.setattr(
         colab,
         "_show_and_embed",

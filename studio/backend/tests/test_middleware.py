@@ -295,11 +295,13 @@ class TestSecurityHeadersMiddleware:
         run_path = _BACKEND_ROOT / "run.py"
         tree = ast.parse(run_path.read_text(encoding = "utf-8"))
         run_server = next(
-            node for node in ast.walk(tree)
+            node
+            for node in ast.walk(tree)
             if isinstance(node, ast.FunctionDef) and node.name == "run_server"
         )
         branch = next(
-            node for node in ast.walk(run_server)
+            node
+            for node in ast.walk(run_server)
             if isinstance(node, ast.If) and ast.unparse(node.test) == "_IS_HOSTED_NOTEBOOK"
         )
         body = "\n".join(ast.unparse(stmt) for stmt in branch.body)

@@ -171,11 +171,7 @@ def _bootstrap_password_pending() -> bool:
         return True
 
 
-def start_cloudflare_tunnel(
-    port: int,
-    *,
-    allow_bootstrap_pending: bool = False,
-) -> "str | None":
+def start_cloudflare_tunnel(port: int, *, allow_bootstrap_pending: bool = False) -> "str | None":
     """Open a shareable Cloudflare quick tunnel to localhost:*port*, or None.
 
     run_server suppresses the tunnel on Colab by design, so we start it directly.
@@ -296,6 +292,7 @@ def _bootstrap_login_notice_html() -> "str | None":
     """Notebook-local login hint for public tunnels with bootstrap injection off."""
     try:
         from auth import storage
+
         if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
             return None
         bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
