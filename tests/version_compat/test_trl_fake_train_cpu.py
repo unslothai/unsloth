@@ -39,7 +39,9 @@ import pytest
 # torch is needed for everything below (daily-fresh-fetch collects this dir with
 # only pytest installed); skip the whole module cleanly when it is absent.
 if importlib.util.find_spec("torch") is None:
-    pytest.skip("torch not installed; fake CPU train needs the real runtime", allow_module_level = True)
+    pytest.skip(
+        "torch not installed; fake CPU train needs the real runtime", allow_module_level = True
+    )
 
 # Apply the CUDA spoof before any unsloth-touching import.
 _SPOOF_DIR = Path(__file__).resolve().parents[1]
@@ -50,12 +52,17 @@ _spoof.apply()
 
 import torch  # noqa: E402
 
+
 # The generated GRPO trainer hard-decorates hot functions with @torch.compile,
 # which dynamo processes even under the disable env vars, reaching into
 # torch.accelerator (real CUDA) on a GPU-less box. Make torch.compile an eager
 # passthrough before unsloth generates/imports the trainer -- same logic, no
 # dynamo. (An eager CPU run is exactly what we want here.)
-def _eager_compile(model = None, *args, **kwargs):
+def _eager_compile(
+    model = None,
+    *args,
+    **kwargs,
+):
     if callable(model):
         return model
     return lambda fn: fn
@@ -68,7 +75,6 @@ torch.compile = _eager_compile
 # reaching torch.accelerator -> real CUDA on a GPU-less box.
 try:
     import torch._dynamo  # noqa: E402
-
     torch._dynamo.config.suppress_errors = True
 except Exception:
     pass
@@ -88,14 +94,28 @@ def _is_cuda_dev(d):
 
 
 for _name in (
-    "empty", "zeros", "ones", "full", "tensor", "arange", "randn", "rand", "randint",
-    "empty_like", "zeros_like", "ones_like",
+    "empty",
+    "zeros",
+    "ones",
+    "full",
+    "tensor",
+    "arange",
+    "randn",
+    "rand",
+    "randint",
+    "empty_like",
+    "zeros_like",
+    "ones_like",
 ):
     _orig = getattr(torch, _name, None)
     if _orig is None:
         continue
 
-    def _redir(*args, _orig = _orig, **kwargs):
+    def _redir(
+        *args,
+        _orig = _orig,
+        **kwargs,
+    ):
         if _is_cuda_dev(kwargs.get("device")):
             kwargs["device"] = "cpu"
         return _orig(*args, **kwargs)
@@ -120,7 +140,6 @@ torch.Tensor.cuda = lambda self, *a, **k: self
 torch.cuda.is_current_stream_capturing = lambda *a, **k: False
 try:
     import torch.cuda.graphs as _cg  # noqa: E402
-
     _cg._cuda_isCurrentStreamCapturing = lambda *a, **k: False
 except Exception:
     pass
@@ -129,7 +148,6 @@ except Exception:
 # is_mlx_array probe on Linux; disable it.
 try:
     import transformers.utils.generic as _g  # noqa: E402
-
     _g._is_mlx_available = False
 except Exception:
     pass
@@ -178,10 +196,18 @@ def test_sft_trains_on_cpu():
     model, tok = _load_plain()
     ds = Dataset.from_list([{"text": "The quick brown fox jumps over the lazy dog."}] * 8)
     cfg = SFTConfig(
-        output_dir = "temp/ci_sft", per_device_train_batch_size = 2, max_steps = 2,
-        logging_steps = 1, report_to = "none", save_strategy = "no", use_cpu = True,
-        max_length = None, padding_free = False, dataset_text_field = "text",
-        fp16 = False, bf16 = False,
+        output_dir = "temp/ci_sft",
+        per_device_train_batch_size = 2,
+        max_steps = 2,
+        logging_steps = 1,
+        report_to = "none",
+        save_strategy = "no",
+        use_cpu = True,
+        max_length = None,
+        padding_free = False,
+        dataset_text_field = "text",
+        fp16 = False,
+        bf16 = False,
     )
     SFTTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
 
@@ -194,15 +220,27 @@ def test_grpo_trains_on_cpu():
     model, tok = _load_plain()
     ds = Dataset.from_list([{"prompt": "hi there"}] * 4)
     cfg = GRPOConfig(
-        output_dir = "temp/ci_grpo", per_device_train_batch_size = 2, num_generations = 2,
-        max_steps = 2, max_completion_length = 8, logging_steps = 1, report_to = "none",
-        temperature = 1.0, beta = 0.0, save_strategy = "no", use_cpu = True, use_vllm = False,
-        fp16 = False, bf16 = False,
+        output_dir = "temp/ci_grpo",
+        per_device_train_batch_size = 2,
+        num_generations = 2,
+        max_steps = 2,
+        max_completion_length = 8,
+        logging_steps = 1,
+        report_to = "none",
+        temperature = 1.0,
+        beta = 0.0,
+        save_strategy = "no",
+        use_cpu = True,
+        use_vllm = False,
+        fp16 = False,
+        bf16 = False,
     )
     GRPOTrainer(
-        model = model, processing_class = tok,
+        model = model,
+        processing_class = tok,
         reward_funcs = [lambda completions, **k: [float(len(c)) for c in completions]],
-        args = cfg, train_dataset = ds,
+        args = cfg,
+        train_dataset = ds,
     ).train()
 
 
@@ -212,10 +250,19 @@ def test_dpo_trains_on_cpu():
 
     assert DPOTrainer.__name__ == "UnslothDPOTrainer", "DPO patch did not apply"
     model, tok = _load_plain()
-    ds = Dataset.from_list([{"prompt": "Hi", "chosen": " hello friend", "rejected": " go away"}] * 8)
+    ds = Dataset.from_list(
+        [{"prompt": "Hi", "chosen": " hello friend", "rejected": " go away"}] * 8
+    )
     cfg = DPOConfig(
-        output_dir = "temp/ci_dpo", per_device_train_batch_size = 2, max_steps = 2,
-        logging_steps = 1, report_to = "none", save_strategy = "no", use_cpu = True,
-        beta = 0.1, fp16 = False, bf16 = False,
+        output_dir = "temp/ci_dpo",
+        per_device_train_batch_size = 2,
+        max_steps = 2,
+        logging_steps = 1,
+        report_to = "none",
+        save_strategy = "no",
+        use_cpu = True,
+        beta = 0.1,
+        fp16 = False,
+        bf16 = False,
     )
     DPOTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
