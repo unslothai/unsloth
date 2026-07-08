@@ -178,13 +178,13 @@ jobs:
           studio="${OVERRIDE:-}"
           [ -n "$studio" ] || studio=$(git describe --tags --abbrev=0 --match 'v[0-9]*' || true)
           [ -n "$studio" ] || { echo "::error::no v* Studio tag found to stamp"; exit 1; }
-          # A manual override feeds an immutable wheel stamp, so reject a
-          # date-style backend version (e.g. v2026.6.9) mistyped for a Studio
-          # tag; stamp_studio_release.py enforces the rest of the v-SemVer shape.
-          # git describe only ever yields real v* Studio tags, so this is a
-          # no-op on the push path.
-          if printf '%s' "$studio" | grep -Eq '^v?20[0-9][0-9]\.[0-9]+\.[0-9]+'; then
-            echo "::error::studio_version is a date-style backend version, not a Studio v* tag: $studio"; exit 1
+          # A manual override feeds an immutable wheel stamp, so require it to
+          # name a real, pushed tag (rejects a typo, a date-style backend
+          # version, or a tag not yet pushed). checkout uses fetch-depth: 0, so
+          # every tag is present. git describe only ever yields existing v*
+          # tags, so this is a no-op on the push path.
+          if [ -n "${OVERRIDE:-}" ] && ! git show-ref -q --verify "refs/tags/$studio"; then
+            echo "::error::studio_version does not name an existing Studio tag: $studio"; exit 1
           fi
           echo "Studio release version: $studio"
           echo "studio=$studio" >> "$GITHUB_OUTPUT"
