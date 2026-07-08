@@ -45,9 +45,21 @@ DISABLE_ENV_VAR = "UNSLOTH_DISABLE_MLX_AUTOREPAIR"
 # deps). mlx-vlm especially must be >=0.4.4: an older one still imports but
 # breaks VLM Train/Export, so installing it would wrongly clear chat-only.
 _MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.22.0", "mlx-vlm": "0.4.4"}
+# mlx-lm 0.31.3 regressed QK-norm archs (gemma4 / qwen3_5): strict load_weights
+# rejects q_norm/k_norm, so a self-heal must not pull it. mlx-lm #1242.
+_MLX_BAD_VERSIONS = {"mlx-lm": ("0.31.3",)}
 _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
-MLX_PACKAGES = tuple(f"{name}>={version}" for name, version in _MLX_MIN_VERSIONS.items())
+
+
+def _mlx_spec(name: str, version: str) -> str:
+    spec = f"{name}>={version}"
+    for bad in _MLX_BAD_VERSIONS.get(name, ()):
+        spec += f",!={bad}"
+    return spec
+
+
+MLX_PACKAGES = tuple(_mlx_spec(name, version) for name, version in _MLX_MIN_VERSIONS.items())
 _MLX_REINSTALL_ARGS = tuple(
     arg for name in _MLX_PACKAGE_NAMES for arg in ("--reinstall-package", name)
 )
@@ -140,7 +152,12 @@ def _mlx_versions_satisfy_minimums() -> bool:
         return False
     for name, minimum in _MLX_MIN_VERSIONS.items():
         try:
-            if Version(_dist_version(name)) < Version(minimum):
+            installed = Version(_dist_version(name))
+            if installed < Version(minimum):
+                return False
+            # A known-broken build counts as unsatisfied so the self-heal
+            # reinstalls a good one; Version compare matches 0.31.3(.0/+local).
+            if any(installed == Version(bad) for bad in _MLX_BAD_VERSIONS.get(name, ())):
                 return False
         except PackageNotFoundError:
             return False
