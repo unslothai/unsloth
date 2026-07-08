@@ -64,7 +64,10 @@ def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_devi
     return not probe()
 
 
-if HAS_XFORMERS and torch.cuda.is_available():
+# FlashAttention always wins in select_attention_backend and nothing downgrades
+# flash -> xformers, so when it's installed xformers is never selected; skip the
+# import-time GPU probe entirely there rather than pay its launch/JIT for nothing.
+if HAS_XFORMERS and not HAS_FLASH_ATTENTION and torch.cuda.is_available():
     if _xformers_disabled_for_capability(torch.cuda.get_device_capability()):
         HAS_XFORMERS = False
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
