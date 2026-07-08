@@ -546,9 +546,7 @@ def iter_recursive_scan_dirs(
     Symlinks are never followed; depth and visited-entry caps bound the walk."""
     base_depth = len(folder_path.parts)
     visited = 0
-    for dirpath, dirnames, _filenames in os.walk(
-        folder_path, topdown = True, followlinks = False
-    ):
+    for dirpath, dirnames, _filenames in os.walk(folder_path, topdown = True, followlinks = False):
         current = Path(dirpath)
         depth = len(current.parts) - base_depth
         if depth >= max_depth or (entry_limit is not None and visited > entry_limit):

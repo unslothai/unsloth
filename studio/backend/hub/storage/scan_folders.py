@@ -85,9 +85,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             row[1] for row in conn.execute("PRAGMA table_info(scan_folders)").fetchall()
         }
         if "recursive" not in existing_cols:
-            conn.execute(
-                "ALTER TABLE scan_folders ADD COLUMN recursive INTEGER NOT NULL DEFAULT 0"
-            )
+            conn.execute("ALTER TABLE scan_folders ADD COLUMN recursive INTEGER NOT NULL DEFAULT 0")
         conn.commit()
         _schema_ready = True
 

@@ -831,7 +831,6 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
             custom_models = _generic
             if folder.get("recursive"):
                 from hub.services.models.local_inventory import iter_recursive_scan_dirs
-
                 seen = {(m.path, m.model_format, m.format_variant) for m in custom_models}
                 for subdir in iter_recursive_scan_dirs(folder_path):
                     if len(custom_models) >= _MAX_MODELS_PER_FOLDER:
