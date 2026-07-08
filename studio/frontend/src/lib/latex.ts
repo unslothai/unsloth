@@ -67,11 +67,12 @@ const LINK_DEST_RE =
 
 /**
  * Reference-link definition `[label]: DEST` (group 1 = angle `<...>`, group 2 =
- * bare run). `d` flag for indices, `m` to anchor at line start. Its URL, like an
- * inline destination, must not be rewritten as math.
+ * bare run). `d` flag for indices, `m` to anchor at line start. `(?!\^)` skips
+ * GFM footnotes (`[^id]: text`), whose body is prose, not a URL. Its URL, like
+ * an inline destination, must not be rewritten as math.
  */
 const REF_DEF_DEST_RE =
-  /^ {0,3}\[(?:\\.|[^\]\n\\])+\]:[^\S\n]*(?:<([^>\n]*)>|([^\s<][^\s]*))/gmd;
+  /^ {0,3}\[(?!\^)(?:\\.|[^\]\n\\])+\]:[^\S\n]*(?:<([^>\n]*)>|([^\s<][^\s]*))/gmd;
 
 /**
  * Destination spans of inline links/images and reference-link definitions, so a
