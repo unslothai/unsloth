@@ -12,6 +12,43 @@ import json
 import logging
 from typing import Optional
 
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def detect_think_prefill(prompt: Optional[str], special_tokens = None) -> str:
+    """Return the trailing open ``<think>`` prefill of a rendered prompt.
+
+    Reasoning templates (Qwen3.6, DeepSeek-R1-style) end the generation
+    prompt with ``<think>\\n`` so the model starts reasoning immediately.
+    Because that opening tag is part of the *prompt*, skip_prompt streaming
+    never emits it, and the frontend's ``<think>``/``</think>`` parser shows
+    the reasoning as plain text instead of a thinking block. (The GGUF path
+    is unaffected: llama-server's reasoning parser returns
+    ``reasoning_content``, which gets re-wrapped in think tags.)
+
+    Returns the exact prompt tail to re-emit at the start of the generated
+    stream (e.g. ``"<think>\\n"``), or ``""`` when the prompt does not end
+    with an open think block, including the ``enable_thinking=False`` case
+    where templates prefill an already-closed ``<think>\\n\\n</think>``.
+
+    ``special_tokens`` is the tokenizer's special-token list. If ``</think>``
+    is one, the streamer's skip_special_tokens strips the model's closing tag,
+    so re-emitting the open would leave an unclosed block that swallows the
+    answer. In that case return ``""`` and fall back to plain text.
+    """
+    if not prompt:
+        return ""
+    open_idx = prompt.rfind(_THINK_OPEN)
+    if open_idx == -1:
+        return ""
+    tail = prompt[open_idx:]
+    if _THINK_CLOSE in tail or tail.strip() != _THINK_OPEN:
+        return ""
+    if special_tokens and _THINK_CLOSE in set(special_tokens):
+        return ""
+    return tail
+
 
 logger = logging.getLogger(__name__)
 

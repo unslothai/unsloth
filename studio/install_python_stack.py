@@ -103,33 +103,47 @@ _PYTORCH_WHL_BASE = (
     os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
 ).rstrip("/")
 
-# CUDA torch repair specs (see _ensure_cuda_torch). torchvision/torchaudio are
-# pinned to the torch<2.11 family rather than left bare: the install uses an
-# exclusive --index-url (no PyPI fallback), so a bare name could resolve a
-# torchvision built against a different torch major (e.g. 0.27 for torch 2.12)
-# and fail at runtime with an ABI mismatch. Same bounds as the _default ROCm
-# spec above, which targets the same torch family.
+# CUDA torch repair specs (see _ensure_cuda_torch). torch 2.11 is allowed: its
+# torchao 0.17 cpp kernels load cleanly (0.16 crashes on cu130), and the flash-attn
+# / causal-conv1d / mamba torch2.10 wheels load and pass their upstream suites on
+# 2.11 (see wheel_utils._PREBUILT_WHEEL_TORCH_MM). torchvision/torchaudio are pinned
+# (not bare) because the install uses an exclusive --index-url (no PyPI fallback), so
+# a bare name could resolve one built against a different torch major (e.g. 0.27 for
+# torch 2.12) and fail at runtime with an ABI mismatch.
 _CUDA_TORCH_PKG_SPEC: tuple[str, str, str] = (
-    "torch>=2.4,<2.11.0",
-    "torchvision>=0.19,<0.26.0",
-    "torchaudio>=2.4,<2.11.0",
+    "torch>=2.4,<2.12.0",
+    "torchvision>=0.19,<0.27.0",
+    "torchaudio>=2.4,<2.12.0",
 )
 
-# torchao's C++ extensions are built against ONE exact torch release; a newer
-# torch makes torchao skip its cpp kernels ("Skipping import of cpp extensions
-# due to incompatible torch version ...") and fall back to slow Python. Because
-# the torch pin above is a range (and every CUDA index now tops out at torch
-# 2.10), the torch actually installed drifts ahead of a fixed torchao pin. So
-# pick the torchao whose build matches the torch in the venv. Table: pytorch/ao#2919.
-#   torch 2.9.x  -> torchao 0.14.0 (today's pin; built for torch 2.9.0)
-#   torch 2.10.x -> torchao 0.16.0 (built for torch 2.10.0)
-#   torch 2.11.x -> torchao 0.17.0 (built for torch 2.11.0; reachable via ROCm rocm7.2)
-# Unknown/older torch keeps the conservative default (no regression vs today).
+# torchao's cpp extensions are pinned to ONE torch release AND CUDA major. A torch
+# mismatch just skips the cpp kernels (slow Python fallback); a CUDA mismatch fails
+# to import ("libcudart.so.12: cannot open shared object file"). The torch pin is a
+# range, so match torchao to the installed torch (table: pytorch/ao#2919):
+#   2.9.x            -> 0.14.0
+#   2.10.x, CUDA<=12 -> 0.16.0 (cpp built for 2.10, loads via the CUDA-12 wheel)
+#   2.10.x, CUDA>=13 -> 0.17.0 (cu130: 0.16.0's CUDA-12 cpp crashes on load; 0.17.0
+#                       targets torch 2.11 so its cpp is cleanly skipped, not crashed)
+#   2.11.x           -> 0.17.0 (reachable via CUDA or ROCm rocm7.2)
+# Unknown/older torch keeps the conservative default.
 _TORCHAO_DEFAULT_SPEC = "torchao==0.14.0"
-_TORCHAO_BY_TORCH_MINOR: dict[int, str] = {
-    10: "torchao==0.16.0",
-    11: "torchao==0.17.0",
-}
+_TORCHAO_TORCH_210_SPEC = "torchao==0.16.0"
+_TORCHAO_TORCH_210_CUDA13_SPEC = "torchao==0.17.0"
+_TORCHAO_TORCH_211_PLUS_SPEC = "torchao==0.17.0"
+# torch 2.10 built against CUDA >= this major can't load 0.16.0's CUDA-12 cpp.
+_TORCHAO_CUDA13_MIN_MAJOR = 13
+
+
+def _cuda_major_from_torch_version(torch_version: str) -> int | None:
+    """Extract the CUDA major from a torch local version tag, e.g. '2.10.0+cu130'
+    -> 13, '2.10.0+cu128' -> 12. Returns None for rocm/cpu/tagless builds."""
+    local = str(torch_version).split("+", 1)
+    if len(local) < 2 or not local[1].startswith("cu"):
+        return None
+    digits = re.sub(r"[^0-9].*", "", local[1][2:])  # 'cu130' -> '130'
+    if not digits:
+        return None
+    return int(digits) // 10  # '130' -> 13, '128' -> 12, '118' -> 11
 
 
 def _select_torchao_spec(torch_version: str | None) -> str:
@@ -151,8 +165,14 @@ def _select_torchao_spec(torch_version: str | None) -> str:
     if major != 2:
         return _TORCHAO_DEFAULT_SPEC
     if minor >= 11:
-        return _TORCHAO_BY_TORCH_MINOR[11]  # newest known build; covers 2.11+
-    return _TORCHAO_BY_TORCH_MINOR.get(minor, _TORCHAO_DEFAULT_SPEC)
+        return _TORCHAO_TORCH_211_PLUS_SPEC  # newest known build; covers 2.11+
+    if minor == 10:
+        # cu130+ can't load 0.16.0's CUDA-12 cpp; use 0.17.0 (cpp skipped, not crashed).
+        cuda_major = _cuda_major_from_torch_version(str(torch_version))
+        if cuda_major is not None and cuda_major >= _TORCHAO_CUDA13_MIN_MAJOR:
+            return _TORCHAO_TORCH_210_CUDA13_SPEC
+        return _TORCHAO_TORCH_210_SPEC
+    return _TORCHAO_DEFAULT_SPEC
 
 
 def _probe_installed_torch_version() -> str | None:
