@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import importlib
 import importlib.machinery
+import importlib.util
 import inspect
 import sys
 import types
@@ -29,6 +30,12 @@ from pathlib import Path
 
 import pytest
 
+
+# daily-fresh-fetch collects tests/version_compat/ with only pytest installed;
+# the spoof and the rest of this module need the real torch runtime. Skip the
+# whole module cleanly when torch is absent rather than crashing collection.
+if importlib.util.find_spec("torch") is None:
+    pytest.skip("torch not installed; fake-run needs the real runtime", allow_module_level = True)
 
 # Apply the spoof BEFORE any unsloth-touching import (mirrors
 # tests/vllm_compat/test_extended_module_imports.py).
