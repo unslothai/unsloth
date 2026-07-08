@@ -28,8 +28,13 @@ export interface SidebarItem {
   threadIds: string[];
   title: string;
   createdAt: number;
+  updatedAt: number;
   isFork?: boolean;
   projectId?: string | null;
+}
+
+function lastActivityAt(thread: ThreadRecord): number {
+  return thread.updatedAt ?? thread.createdAt;
 }
 
 export function groupThreads(
@@ -37,7 +42,7 @@ export function groupThreads(
   archived = false,
 ): SidebarItem[] {
   const items: SidebarItem[] = [];
-  const pairs = new Map<string, SidebarItem>();
+  const pairItems = new Map<string, SidebarItem>();
 
   for (const t of threads) {
     // Coerce archived to a boolean before comparing. Legacy threads (from the
@@ -49,21 +54,23 @@ export function groupThreads(
       continue;
     }
     if (t.pairId) {
-      const existing = pairs.get(t.pairId);
+      const existing = pairItems.get(t.pairId);
       if (existing) {
         existing.threadIds.push(t.id);
         existing.createdAt = Math.max(existing.createdAt, t.createdAt);
+        existing.updatedAt = Math.max(existing.updatedAt, lastActivityAt(t));
         continue;
       }
-      const item = {
+      const item: SidebarItem = {
         type: "compare",
         id: t.pairId,
         threadIds: [t.id],
         title: t.title,
         createdAt: t.createdAt,
+        updatedAt: lastActivityAt(t),
         projectId: t.projectId ?? null,
-      } satisfies SidebarItem;
-      pairs.set(t.pairId, item);
+      };
+      pairItems.set(t.pairId, item);
       items.push(item);
     } else if (!t.pairId) {
       items.push({
@@ -72,13 +79,14 @@ export function groupThreads(
         threadIds: [t.id],
         title: t.title,
         createdAt: t.createdAt,
+        updatedAt: lastActivityAt(t),
         isFork: Boolean(t.forkedFromThreadId),
         projectId: t.projectId ?? null,
       });
     }
   }
 
-  return items.sort((a, b) => b.createdAt - a.createdAt);
+  return items.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 // Streaming fires CHAT_HISTORY_UPDATED_EVENT per chunk. Debounce so each quiet
@@ -91,6 +99,7 @@ export function useChatSidebarItems(options?: {
   requireMessages?: boolean;
 }) {
   const [allThreads, setAllThreads] = useState<ThreadRecord[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const enabled = options?.enabled ?? true;
   const requireMessages = options?.requireMessages ?? true;
 
@@ -118,6 +127,7 @@ export function useChatSidebarItems(options?: {
         // were in flight, or if the effect was torn down.
         if (cancelled || seq !== requestSeq) return;
         setAllThreads(threads);
+        setLoaded(true);
       } catch (error) {
         if (isExpectedBackgroundChatStorageError(error)) {
           return;
@@ -151,7 +161,7 @@ export function useChatSidebarItems(options?: {
   const archivedItems = groupThreads(allThreads ?? [], true);
   const canCompare = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
 
-  return { items, archivedItems, canCompare };
+  return { items, archivedItems, canCompare, loaded };
 }
 
 function cancelIfRunning(threadId: string): void {

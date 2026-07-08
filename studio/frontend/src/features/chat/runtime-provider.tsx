@@ -22,7 +22,6 @@ import {
   unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
-import mammoth from "mammoth";
 import {
   type ReactElement,
   type ReactNode,
@@ -33,7 +32,6 @@ import {
   useMemo,
   useRef,
 } from "react";
-import { extractText, getDocumentProxy } from "unpdf";
 import { toast } from "sonner";
 import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
 import {
@@ -180,7 +178,10 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const buffer = new Uint8Array(await attachment.file.arrayBuffer());
+    const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
+      import("unpdf"),
+      attachment.file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
+    ]);
     const pdf = await getDocumentProxy(buffer);
     const { text } = await extractText(pdf, { mergePages: true });
     return {
@@ -297,7 +298,10 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const arrayBuffer = await attachment.file.arrayBuffer();
+    const [{ default: mammoth }, arrayBuffer] = await Promise.all([
+      import("mammoth"),
+      attachment.file.arrayBuffer(),
+    ]);
     const { value } = await mammoth.extractRawText({ arrayBuffer });
     return {
       id: attachment.id,

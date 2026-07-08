@@ -50,6 +50,18 @@ _DISPATCH_DRAIN_TIMEOUT = 5.0
 _UNLOAD_GEN_LOCK_TIMEOUT = 15.0
 
 
+class GenStreamError(str):
+    """A stream chunk carrying a real backend/generation error, not model text.
+
+    Subclasses str so existing display/logging consumers are unaffected, while
+    callers that must abort a distributed run on error (raise_on_streamed_error)
+    can distinguish a real error from model output whose visible text starts with
+    "Error:" by checking isinstance(chunk, GenStreamError).
+    """
+
+    __slots__ = ()
+
+
 class InferenceOrchestrator:
     """
     Inference backend orchestrator — subprocess-based.
@@ -108,13 +120,11 @@ class InferenceOrchestrator:
 
     @property
     def default_models(self) -> list[str]:
-        # Wait up to 5s for background HF fetch
-        self._top_models_ready.wait(timeout = 5)
         top_gguf = self._top_gguf_cache or []
         top_hub = self._top_hub_cache or []
-        # Curated static defaults first, then HF download-ranked to backfill.
-        # Send extras so the frontend keeps 4 per category after removing
-        # downloaded ones.
+        # Never wait for the remote Hugging Face ranking during startup. Chat's
+        # first /api/models/list needs curated defaults immediately; the
+        # background fetch backfills extra choices on later calls.
         result: list[str] = []
         seen: set[str] = set()
         for m in self._static_models + top_gguf + top_hub:
@@ -484,13 +494,13 @@ class InferenceOrchestrator:
         initial_resp_queue = self._resp_queue
         while True:
             if self._proc is not initial_proc or self._resp_queue is not initial_resp_queue:
-                yield f"Error: {self._subprocess_crash_message(crash_context)}"
+                yield GenStreamError(f"Error: {self._subprocess_crash_message(crash_context)}")
                 return
             resp = read_one(read_timeout)
             if resp is None:
                 # Check subprocess health
                 if not self._ensure_subprocess_alive():
-                    yield f"Error: {self._subprocess_crash_message(crash_context)}"
+                    yield GenStreamError(f"Error: {self._subprocess_crash_message(crash_context)}")
                     return
                 continue
 
@@ -500,7 +510,7 @@ class InferenceOrchestrator:
             # Subprocess-level error (no request_id); request-scoped failures
             # arrive as gen_error below.
             if rtype == "error" and not resp.get("request_id"):
-                yield f"Error: {resp.get('error', 'Unknown error')}"
+                yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
                 return
 
             if rtype == "token":
@@ -515,7 +525,7 @@ class InferenceOrchestrator:
                     stats_holder["stats"] = resp.get("stats")
                 return
             elif rtype == "gen_error":
-                yield f"Error: {resp.get('error', 'Unknown error')}"
+                yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
                 return
 
     # ------------------------------------------------------------------
@@ -642,11 +652,11 @@ class InferenceOrchestrator:
         GPU work stays serialized; this only avoids orchestrator lock contention.
         """
         if not self._ensure_subprocess_alive():
-            yield "Error: Inference subprocess is not running"
+            yield GenStreamError("Error: Inference subprocess is not running")
             return
 
         if not self.active_model_name:
-            yield "Error: No active model"
+            yield GenStreamError("Error: No active model")
             return
         # Latch the target model so the recheck below can detect a switch that completed
         # between _start_dispatcher and mailbox registration (mirrors the locked path's
@@ -657,7 +667,7 @@ class InferenceOrchestrator:
         # so without this early-out a compare request would enqueue a generate on the
         # outgoing model and delay the switch.
         if self._unload_pending:
-            yield "Error: model is being unloaded"
+            yield GenStreamError("Error: model is being unloaded")
             return
 
         # Ensure the dispatcher runs. _start_dispatcher serializes concurrent starters under
@@ -729,7 +739,7 @@ class InferenceOrchestrator:
             # _stop_dispatcher joins the dispatcher, which itself takes that lock.
             if orphaned_dispatcher:
                 self._stop_dispatcher()
-            yield "Error: model is being unloaded"
+            yield GenStreamError("Error: model is being unloaded")
             return
 
         try:
@@ -737,7 +747,7 @@ class InferenceOrchestrator:
         except RuntimeError as exc:
             with self._mailbox_lock:
                 self._mailboxes.pop(request_id, None)
-            yield f"Error: {exc}"
+            yield GenStreamError(f"Error: {exc}")
             return
 
         def read_mailbox(timeout):
@@ -815,6 +825,59 @@ class InferenceOrchestrator:
         self._stop_dispatcher()
         return True
 
+    def share_distributed_object(
+        self,
+        obj,
+        timeout: Optional[float] = 300.0,
+    ):
+        """Share a small object through the worker's MLX distributed group."""
+        if not self._ensure_subprocess_alive():
+            raise RuntimeError("Inference subprocess is not running")
+
+        self._wait_dispatcher_idle()
+        with self._mailbox_lock:
+            if self._mailboxes:
+                raise RuntimeError(
+                    "Cannot share distributed objects while compare requests are active"
+                )
+        request_id = str(uuid.uuid4())
+        cmd = {
+            "type": "share_object",
+            "request_id": request_id,
+            "object": obj,
+        }
+
+        with self._gen_lock:
+            self._send_cmd(cmd)
+            deadline = None if timeout is None else time.monotonic() + timeout
+            while deadline is None or time.monotonic() < deadline:
+                remaining = 1.0 if deadline is None else max(0.1, deadline - time.monotonic())
+                resp = self._read_resp(timeout = min(remaining, 1.0))
+                if resp is None:
+                    if not self._ensure_subprocess_alive():
+                        raise RuntimeError(self._subprocess_crash_message("sharing chat turn"))
+                    continue
+
+                rtype = resp.get("type", "")
+                rid = resp.get("request_id")
+                if rid and rid != request_id:
+                    logger.debug(
+                        "Skipping response for request_id=%s while sharing request_id=%s",
+                        rid,
+                        request_id,
+                    )
+                    continue
+                if rtype == "shared":
+                    return resp.get("object")
+                if rtype == "share_error":
+                    raise RuntimeError(resp.get("error", "Failed to share object"))
+                if rtype == "error":
+                    raise RuntimeError(resp.get("error", "Subprocess error"))
+                if rtype == "status":
+                    continue
+
+            raise RuntimeError("Timeout waiting for distributed object share")
+
     # ------------------------------------------------------------------
     # Public API — same interface as InferenceBackend
     # ------------------------------------------------------------------
@@ -830,6 +893,8 @@ class InferenceOrchestrator:
         approved_remote_code_fingerprint: Optional[str] = None,
         gpu_ids: Optional[list[int]] = None,
         subject: Optional[str] = None,
+        tensor_parallel: bool = False,
+        mlx_distributed: bool = False,
     ) -> bool:
         """Load a model for inference.
 
@@ -855,6 +920,11 @@ class InferenceOrchestrator:
                 "approved_remote_code_fingerprint": approved_remote_code_fingerprint,
                 "subject": subject,
                 "gpu_ids": gpu_ids,
+                "tensor_parallel": bool(tensor_parallel),
+                "mlx_distributed": bool(mlx_distributed),
+                "mlx_parallel_mode": ("tensor" if tensor_parallel else "pipeline")
+                if mlx_distributed
+                else None,
             }
             resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
                 gpu_ids,
@@ -1340,11 +1410,11 @@ class InferenceOrchestrator:
         readers don't consume each other's tokens off the shared resp_queue.
         """
         if not self._ensure_subprocess_alive():
-            yield "Error: Inference subprocess is not running"
+            yield GenStreamError("Error: Inference subprocess is not running")
             return
 
         if not self.active_model_name:
-            yield "Error: No active model"
+            yield GenStreamError("Error: No active model")
             return
         expected_model = self.active_model_name
 
@@ -1361,7 +1431,7 @@ class InferenceOrchestrator:
             # so we never generate on the wrong one.
             if self._unload_pending or self.active_model_name != expected_model:
                 # Won the lock handoff during a switch; don't start on the outgoing model.
-                yield "Error: model is being unloaded"
+                yield GenStreamError("Error: model is being unloaded")
                 return
             request_id = str(uuid.uuid4())
             image_b64 = self._pil_to_base64(image) if image is not None else None
@@ -1387,7 +1457,7 @@ class InferenceOrchestrator:
             try:
                 self._send_cmd(cmd)
             except RuntimeError as exc:
-                yield f"Error: {exc}"
+                yield GenStreamError(f"Error: {exc}")
                 return
 
             yield from self._consume_token_stream(
@@ -1546,10 +1616,10 @@ class InferenceOrchestrator:
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR)."""
         if not self._ensure_subprocess_alive():
-            yield "Error: Inference subprocess is not running"
+            yield GenStreamError("Error: Inference subprocess is not running")
             return
         if not self.active_model_name:
-            yield "Error: No active model"
+            yield GenStreamError("Error: No active model")
             return
         expected_model = self.active_model_name
 
@@ -1558,7 +1628,7 @@ class InferenceOrchestrator:
             # cleared or swapped the model while we waited.
             if self._unload_pending or self.active_model_name != expected_model:
                 # Won the lock handoff during a switch; don't start on the outgoing model.
-                yield "Error: model is being unloaded"
+                yield GenStreamError("Error: model is being unloaded")
                 return
             request_id = str(uuid.uuid4())
 
@@ -1585,7 +1655,7 @@ class InferenceOrchestrator:
             try:
                 self._send_cmd(cmd)
             except RuntimeError as exc:
-                yield f"Error: {exc}"
+                yield GenStreamError(f"Error: {exc}")
                 return
 
             yield from self._consume_token_stream(

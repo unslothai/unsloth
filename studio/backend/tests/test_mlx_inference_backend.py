@@ -4,6 +4,8 @@ import sys
 import types
 from types import SimpleNamespace
 
+import pytest
+
 
 class _DummyMetal:
     @staticmethod
@@ -183,6 +185,129 @@ def test_mlx_inference_vlm_lora_uses_unsloth_loader_without_native_adapter_rewri
     assert backend._is_vlm is True
     assert isinstance(backend._processor, _DummyProcessor)
     assert isinstance(backend._tokenizer, _DummyTokenizer)
+
+
+def test_mlx_inference_distributed_vlm_forwards_group_to_fast_mlx(monkeypatch):
+    _install_fake_mlx(monkeypatch)
+    calls = []
+    _install_fake_fast_mlx(monkeypatch, calls)
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    group = SimpleNamespace(size = lambda: 2, rank = lambda: 0)
+    config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
+    for mode, group_key in (("tensor", "tensor_group"), ("pipeline", "pipeline_group")):
+        calls.clear()
+        assert MLXInferenceBackend().load_model(config, parallel_mode = mode, distributed_group = group)
+        _, kwargs = calls.pop()
+        assert kwargs["text_only"] is False and kwargs[group_key] is group
+
+    calls.clear()
+    singleton = SimpleNamespace(size = lambda: 1, rank = lambda: 0)
+    assert MLXInferenceBackend().load_model(
+        config, parallel_mode = "tensor", distributed_group = singleton
+    )
+    assert not {"tensor_group", "pipeline_group"} & set(calls.pop()[1])
+
+    config = SimpleNamespace(identifier = "fake/adapter", is_vision = False, is_lora = True)
+    with pytest.raises(ValueError, match = "LoRA adapter repos"):
+        MLXInferenceBackend().load_model(config, parallel_mode = "tensor", distributed_group = group)
+
+
+@pytest.mark.parametrize("accepts_backend", (True, False))
+def test_mlx_distributed_init_selects_jaccl_backend(monkeypatch, accepts_backend):
+    _install_fake_mlx(monkeypatch)
+    from core.inference.mlx_inference import _init_mlx_distributed
+
+    group = SimpleNamespace(rank = lambda: 1, size = lambda: 2)
+    calls = []
+
+    def _init(**kwargs):
+        calls.append(kwargs)
+        if kwargs and not accepts_backend:
+            raise TypeError("backend keyword unsupported")
+        return group
+
+    sys.modules["mlx.core"].distributed = SimpleNamespace(init = _init)
+    monkeypatch.setenv("MLX_JACCL_COORDINATOR", "127.0.0.1:12345")
+    monkeypatch.setenv("MLX_IBV_DEVICES", "/tmp/devices.json")
+
+    assert _init_mlx_distributed() == (group, 1, 2)
+    assert calls == ([{"backend": "jaccl"}] if accepts_backend else [{"backend": "jaccl"}, {}])
+
+
+def test_worker_share_object_receives_distributed_payload(monkeypatch):
+    from core.inference import worker
+
+    shared_obj = {"type": "turn", "text": "hi"}
+    payload = worker._encode_share_object(shared_obj)
+
+    def _array(value):
+        val = value.item() if hasattr(value, "item") else value
+        return SimpleNamespace(
+            item = lambda: val,
+            tolist = lambda: list(val) if hasattr(val, "__iter__") else [val],
+        )
+
+    mlx_pkg = types.ModuleType("mlx")
+    mlx_core = types.ModuleType("mlx.core")
+    mlx_core.uint8 = "uint8"
+    mlx_core.array = _array
+    mlx_core.zeros = lambda *_a, **_k: _array([])
+
+    def _all_sum(value, group = None):
+        value = value.item() if hasattr(value, "item") else value
+        return _array(len(payload)) if value == 0 else _array(payload)
+
+    mlx_core.distributed = SimpleNamespace(all_sum = _all_sum)
+    mlx_pkg.core = mlx_core
+    monkeypatch.setitem(sys.modules, "mlx", mlx_pkg)
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+
+    responses = []
+    worker._handle_share_object(
+        SimpleNamespace(
+            _distributed_group = object(),
+            _distributed_rank = 1,
+            _distributed_world_size = 2,
+        ),
+        {"type": "share_object", "request_id": "rid", "object": None},
+        SimpleNamespace(put = responses.append),
+    )
+
+    response = responses[0]
+    assert response["object"] == shared_obj
+
+
+def test_worker_share_object_oversize_notifies_peers(monkeypatch):
+    from core.inference import worker
+
+    calls = []
+
+    mlx_pkg = types.ModuleType("mlx")
+    mlx_core = types.ModuleType("mlx.core")
+    mlx_core.array = lambda value, **_kwargs: SimpleNamespace(item = lambda: value)
+    mlx_core.eval = lambda value: value
+    mlx_core.distributed = SimpleNamespace(
+        all_sum = lambda value, group = None: calls.append(value.item()) or value
+    )
+    mlx_pkg.core = mlx_core
+    monkeypatch.setitem(sys.modules, "mlx", mlx_pkg)
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+    monkeypatch.setattr(worker, "_SHARE_OBJECT_MAX_BYTES", 8)
+
+    responses = []
+    worker._handle_share_object(
+        SimpleNamespace(
+            _distributed_group = object(),
+            _distributed_rank = 0,
+            _distributed_world_size = 2,
+        ),
+        {"type": "share_object", "request_id": "rid", "object": {"text": "too long"}},
+        SimpleNamespace(put = responses.append),
+    )
+
+    assert calls == [worker._SHARE_OBJECT_ERROR_SIZE]
+    assert responses[0]["type"] == "share_error"
 
 
 # Regression: generate_chat_response must accept the four template kwargs
