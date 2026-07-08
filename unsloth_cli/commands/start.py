@@ -597,68 +597,21 @@ def _loaded_models(base: str, key: str) -> list:
     return _http_json("GET", f"{base}/v1/models", key, error = "Couldn't list models").get("data", [])
 
 
-_HF_REPO_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-_MODEL_FILE_SUFFIXES = (".gguf", ".ggml", ".safetensors", ".bin", ".pt", ".pth", ".onnx")
-
-_LOCAL_MODEL_PATH_ROOTS = {"model", "models"}
-
-
-def _is_hub_model_id(value: object) -> bool:
-    if not isinstance(value, str):
-        return False
-    text = value.strip()
-    if "\\" in text:
-        return False
-    if text.startswith(("/", "./", "../", "~")):
-        return False
-    if len(text) >= 2 and text[1] == ":" and text[0].isalpha():
-        return False
-    # A hub id is exactly "namespace/name" over a restricted charset. Anything with
-    # extra path segments (e.g. a server-side relative path such as
-    # models/Llama/Foo.gguf) is not a hub id and must not be casefold-matched against
-    # a differently cased path on a case-sensitive filesystem.
-    parts = text.split("/")
-    if len(parts) != 2:
-        return False
-    if any(part in ("", ".", "..") or not _HF_REPO_ID_SEGMENT_RE.match(part) for part in parts):
-        return False
-    # Preserve the visible local-path guard from utils.paths.is_local_path(): if
-    # the CLI cwd can see this relative path, it is local and must not be
-    # casefold-attached to a differently cased path. The CLI cwd can differ from
-    # Studio's cwd, so this is only an early rejection, not the only path guard.
-    try:
-        if Path(text).expanduser().exists():
-            return False
-    except (OSError, ValueError):
-        pass
-    # Studio also accepts server-relative paths under common local model roots
-    # (e.g. Models/Foo for ./models/Foo) even when the CLI cannot see them.
-    # Those are indistinguishable from a Hub repo id by charset alone.
-    if parts[0].casefold() in _LOCAL_MODEL_PATH_ROOTS:
-        return False
-    # A two-segment weight-file path (Models/Foo.gguf) is also not a repo id.
-    if text.lower().endswith(_MODEL_FILE_SUFFIXES):
-        return False
-    return True
-
-
 def _model_id_matches(
     actual: object,
     requested: object,
     *,
-    allow_casefold: bool = True,
+    allow_casefold: bool = False,
 ) -> bool:
     if actual == requested:
         return True
-    # Case-insensitive matching is only safe for values that are syntactically HF
-    # repo ids. Local/server paths are case-sensitive on some hosts, and the CLI
-    # cannot reliably probe the Studio server cwd, so path-like strings must defer
-    # to exact matching and let the load endpoint resolve them.
-    if not allow_casefold:
-        return False
-    if not (_is_hub_model_id(actual) and _is_hub_model_id(requested)):
-        return False
-    return str(actual).casefold() == str(requested).casefold()
+    # Never casefold-match /v1/models entries. Any one-slash identifier that
+    # looks like a Hub repo id can also be a server-relative local path in
+    # Studio's cwd (which may differ from the CLI cwd), so a case-insensitive
+    # shortcut can attach an agent to the wrong local model. Case variants must
+    # go through /api/inference/load, where Studio resolves paths/repo ids from
+    # its own cwd and returns the canonical loaded id for the exact match below.
+    return False
 
 
 def _resolve_model(
@@ -668,10 +621,10 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
 ) -> dict:
     models = _loaded_models(base, key)
-    # Only casefold-match ids against a loopback Studio after _is_hub_model_id rejects
-    # syntactic paths. Remote Studios still use exact matching because even a
-    # two-segment string could be a server-relative path there.
-    allow_casefold = is_loopback_url(base)
+    # Match /v1/models exactly only. Case variants intentionally fall through to
+    # /api/inference/load, because any one-slash id could be a server-relative
+    # local path in Studio's cwd even when it also looks like a Hub repo id.
+    allow_casefold = False
     # /v1/models reports the model id but not the active GGUF variant or runtime load
     # settings, so an id match alone can hide the wrong quant (Q8_0 serving while the
     # user asked for UD-Q4_K_XL). When the user passed any explicit load knob, defer to

@@ -457,20 +457,25 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     assert (home / "unsloth_api.config.toml").exists()
 
 
-def test_connect_codex_matches_requested_model_case_insensitively(fake_studio, tmp_path):
+def test_connect_codex_loads_requested_model_case_variant(fake_studio, tmp_path):
+    requested = "unsloth/gemma-4-26b-a4b-it-gguf"
     result = CliRunner().invoke(
         start.start_app,
         [
             "codex",
             "--no-launch",
             "--model",
-            "unsloth/gemma-4-26b-a4b-it-gguf",
+            requested,
         ],
     )
     assert result.exit_code == 0, result.output
+    assert any(
+        url.endswith("/api/inference/load") and payload == {"model_path": requested}
+        for _, url, payload in fake_studio
+    )
     home = tmp_path / "agents" / "codex"
     profile = _parse_toml((home / "unsloth_api.config.toml").read_text())
-    assert profile["model"] == MODEL["id"]
+    assert profile["model"] == requested
 
 
 def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch):
@@ -553,7 +558,7 @@ def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
 
 
 def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch):
-    # The mirror case: a loaded entry (loaded == True) that case-matches attaches with
+    # The mirror case: an exact loaded entry (loaded == True) attaches with
     # no /api/inference/load call.
     calls = []
 
@@ -574,7 +579,7 @@ def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch
 
     monkeypatch.setattr(start, "_http_json", http_json)
 
-    entry = start._resolve_model(BASE, "sk-test", "unsloth/gemma-4-gguf")
+    entry = start._resolve_model(BASE, "sk-test", "unsloth/Gemma-4-GGUF")
 
     assert entry["id"] == "unsloth/Gemma-4-GGUF"
     assert not any(u.endswith("/api/inference/load") for _, u in calls)
@@ -714,43 +719,62 @@ def test_resolve_model_loopback_does_not_casefold_visible_local_paths(tmp_path, 
     assert any(u.endswith("/api/inference/load") for _, u, _ in calls)
 
 
+
+def test_resolve_model_loopback_does_not_casefold_ambiguous_two_segment_paths(monkeypatch):
+    # If Studio runs from a different cwd, the CLI cannot see whether Runs/Foo
+    # exists there. Treat every one-slash case variant as ambiguous and let the
+    # server resolve the requested spelling through /api/inference/load.
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url, payload))
+        if url.endswith("/v1/models"):
+            model_id = "runs/foo" if state["loaded"] else "Runs/Foo"
+            return {"data": [{"id": model_id, "loaded": True, "context_length": 131072}]}
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "runs/foo"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "runs/foo")
+
+    assert entry["id"] == "runs/foo"
+    assert any(u.endswith("/api/inference/load") for _, u, _ in calls)
+
+
 def test_model_id_matching_does_not_casefold_local_paths(tmp_path, monkeypatch):
     existing_local = tmp_path / "Org" / "Foo"
     existing_local.mkdir(parents = True)
 
-    assert start._model_id_matches("Org/Foo", "org/foo")
+    # Case variants never attach directly from /v1/models: any one-slash id
+    # can also be a server-relative local path in Studio's cwd. The load
+    # endpoint is the authority for resolving and deduping case variants.
+    assert not start._model_id_matches("Org/Foo", "org/foo")
+    assert start._model_id_matches("Org/Foo", "Org/Foo")
     assert not start._model_id_matches(str(existing_local), str(existing_local).lower())
     assert not start._model_id_matches("./Models/Foo", "./models/foo")
     assert not start._model_id_matches(r".\Models\Foo", r".\models\foo")
-
-    assert not start._is_hub_model_id("Models/Foo")
     assert not start._model_id_matches("Models/Foo", "models/foo")
+    assert not start._model_id_matches("Runs/Foo", "runs/foo")
 
     visible_local = tmp_path / "Outputs" / "Run1"
     visible_local.mkdir(parents = True)
     monkeypatch.chdir(tmp_path)
-    assert not start._is_hub_model_id("Outputs/Run1")
     assert not start._model_id_matches("Outputs/Run1", "outputs/run1")
 
-    # Two-segment server-relative weight files are not hub ids either; classifying by
-    # syntax avoids probing the CLI cwd, which can differ from the Studio server cwd.
-    assert not start._is_hub_model_id("Models/Foo.gguf")
-    assert not start._is_hub_model_id("Models/Foo.safetensors")
     assert not start._model_id_matches("Models/Foo.gguf", "models/foo.gguf")
-    # A server-side relative path (extra path segments) is not a hub id even when it
-    # does not exist on the CLI host, so it must not casefold-match a differently
-    # cased path on a case-sensitive server filesystem.
-    assert not start._is_hub_model_id("models/Llama/Foo.gguf")
     assert not start._model_id_matches("models/Llama/Foo.gguf", "models/llama/foo.gguf")
-    # A genuine two-segment hub id still matches case-insensitively.
-    assert start._is_hub_model_id("unsloth/Gemma-3-4b-it-GGUF")
-    assert start._model_id_matches("unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf")
-    # Casefolding is gated to loopback studios (allow_casefold). With it disabled (a
-    # remote studio, where a two-segment string could be a server-side path), even a
-    # genuine hub-id case variant must not match, so the load endpoint resolves it.
-    assert not start._model_id_matches(
-        "unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf", allow_casefold = False
-    )
+    assert not start._model_id_matches("unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf")
     assert start._model_id_matches("unsloth/Foo", "unsloth/Foo", allow_casefold = False)
 
 
