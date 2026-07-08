@@ -1200,7 +1200,9 @@ def test_offline_fp8_cache_forces_safetensors_loads():
                 ):
                     hit_lines.add(child.lineno)
 
-    assert len(hit_lines) == 2
+    # Two loader paths, each forcing safetensors in both the offline-quantize branch and the
+    # mapped pre-quantized FP8 sibling branch: 4 assignments total. #6749
+    assert len(hit_lines) == 4
 
 
 def test_fp8_probe_skips_missing_optional_kernel_module():
@@ -1517,10 +1519,117 @@ def test_offline_quantize_preserves_bin_cache_on_failed_regeneration(monkeypatch
     monkeypatch.setattr(transformers, "TorchAoConfig", lambda *a, **k: object())
     monkeypatch.setattr(loader_utils, "_get_torchao_fp8_config", lambda mode: {})
 
-    with pytest.raises(RuntimeError):
-        loader_utils._offline_quantize_to_fp8("org/mymodel", "e4m3")
+    # A preserved bin-only cache is returned as a fallback rather than propagating the error.
+    result = loader_utils._offline_quantize_to_fp8("org/mymodel", "e4m3")
 
-    # The loadable bin cache survives, and no partial staging dir is left behind.
+    assert result == str(cache_dir)
     assert cache_dir.is_dir()
     assert (cache_dir / "pytorch_model.bin").read_text() == "old-cache"
     assert not (tmp_path / "mymodel-fp8-e4m3.fp8tmp").exists()
+
+
+def test_offline_quantize_raises_when_no_cache_to_fall_back_to(monkeypatch, tmp_path):
+    # With no prior cache to fall back to, a failed regeneration must still surface the error.
+    loader_utils = _load_loader_utils()
+    import transformers
+
+    monkeypatch.setattr(loader_utils.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    class _Cfg:
+        architectures = []
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("model is gated/offline")
+
+    def _make(from_pretrained):
+        return type("_Auto", (), {"from_pretrained": staticmethod(from_pretrained)})
+
+    monkeypatch.setattr(transformers, "AutoConfig", _make(lambda *a, **k: _Cfg()))
+    monkeypatch.setattr(transformers, "AutoModelForCausalLM", _make(_raise))
+    monkeypatch.setattr(transformers, "AutoModelForImageTextToText", _make(_raise))
+    monkeypatch.setattr(transformers, "AutoTokenizer", _make(lambda *a, **k: None))
+    monkeypatch.setattr(transformers, "AutoProcessor", _make(lambda *a, **k: None))
+    monkeypatch.setattr(transformers, "TorchAoConfig", lambda *a, **k: object())
+    monkeypatch.setattr(loader_utils, "_get_torchao_fp8_config", lambda mode: {})
+
+    with pytest.raises(RuntimeError):
+        loader_utils._offline_quantize_to_fp8("org/mymodel", "e4m3")
+    assert not (tmp_path / "mymodel-fp8-e4m3").exists()
+    assert not (tmp_path / "mymodel-fp8-e4m3.fp8tmp").exists()
+
+
+class _ProjFp8Owner(torch.nn.Module):
+    def __init__(self, gate_up_proj):
+        super().__init__()
+        self.gate_up_proj = gate_up_proj
+        self.quant_method = "fp8"
+
+
+def test_restores_projection_scale_when_placeholder_is_meta():
+    # A projection-only FP8 expert (materialized gate_up_proj, no weight) whose scale placeholder
+    # is still meta must restore onto the live projection device, not skip on the meta ref. #6749
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.expert = _ProjFp8Owner(torch.randn(4, 4, dtype = torch.float16))
+    model.expert.register_buffer(
+        "gate_up_proj_scale_inv", torch.empty(1, dtype = torch.float16, device = "meta")
+    )
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"expert.gate_up_proj_scale_inv": torch.tensor([1.5], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert model.expert.gate_up_proj_scale_inv.device.type == "cpu"
+
+
+def test_meta_parameter_replacement_preserves_metadata():
+    # Replacing a meta Parameter placeholder must carry over custom attributes (e.g. block_size
+    # the fp8 kernels read) rather than dropping them. #6749
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
+    placeholder = torch.nn.Parameter(
+        torch.empty(1, dtype = torch.float16, device = "meta"), requires_grad = False
+    )
+    placeholder.block_size = [64, 64]
+    model.fp8.weight_scale_inv = placeholder
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.0], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert isinstance(model.fp8.weight_scale_inv, torch.nn.Parameter)
+    assert model.fp8.weight_scale_inv.device.type == "cpu"
+    assert getattr(model.fp8.weight_scale_inv, "block_size", None) == [64, 64]
+
+
+def test_fp8_sibling_branch_forces_safetensors():
+    import re
+
+    src = LOADER.read_text()
+    # Both pre-quantized FP8 sibling branches must force safetensors right after clearing
+    # load_in_fp8, so a caller-supplied use_safetensors=False cannot make from_pretrained look
+    # for absent .bin weights in a safetensors-only FP8 repo. #6749
+    pattern = re.compile(
+        r"restore_fp8_scales = True\s+load_in_fp8 = False\s+#[^\n]*\n(?:\s+#[^\n]*\n)*"
+        r"\s+kwargs\[.use_safetensors.\] = True"
+    )
+    assert len(pattern.findall(src)) == 2

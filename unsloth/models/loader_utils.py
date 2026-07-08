@@ -351,18 +351,28 @@ def _offline_quantize_to_fp8(
         staging_dir = new_model_name + ".fp8tmp"
         if os.path.isdir(staging_dir):
             shutil.rmtree(staging_dir)
-        model = auto_model.from_pretrained(
-            model_name,
-            config = config,
-            **load_kwargs,
-        )
-        tokenizer = auto_processor.from_pretrained(model_name)
-        model.save_pretrained(staging_dir, safe_serialization = True)
-        del model
-        for _ in range(2):
-            torch.cuda.empty_cache()
-            gc.collect()
-        tokenizer.save_pretrained(staging_dir)
+        try:
+            model = auto_model.from_pretrained(
+                model_name,
+                config = config,
+                **load_kwargs,
+            )
+            tokenizer = auto_processor.from_pretrained(model_name)
+            model.save_pretrained(staging_dir, safe_serialization = True)
+            del model
+            for _ in range(2):
+                torch.cuda.empty_cache()
+                gc.collect()
+            tokenizer.save_pretrained(staging_dir)
+        except Exception:
+            # Regeneration failed (offline / gated / removed source). If a previous bin-only
+            # cache is still on disk, fall back to it so an already-usable cache keeps loading
+            # after an upgrade instead of hard-failing. #6749
+            if os.path.isdir(staging_dir):
+                shutil.rmtree(staging_dir, ignore_errors = True)
+            if needs_refresh and os.path.isdir(new_model_name):
+                return new_model_name
+            raise
         if os.path.isdir(new_model_name):
             shutil.rmtree(new_model_name)
         os.replace(staging_dir, new_model_name)
@@ -785,18 +795,21 @@ def _restore_missing_fp8_weight_scale_inv(
             skipped += 1
             continue
         # Prefer a materialized device: a meta scale placeholder can sit next to an already
-        # loaded weight (device-map/low-memory), so fall back to the live weight/projection
-        # device rather than skipping on the placeholder's meta device. #6749
+        # loaded weight/projection (device-map/low-memory), so a live device is tried before any
+        # meta placeholder. A projection-only expert has no weight, so its live projection device
+        # is preferred over a meta reference too, else its scale would be skipped. #6749
+        projection_device = _fp8_projection_device(module, attr_name)
         if isinstance(reference, torch.Tensor) and reference.device.type != "meta":
             target_device = reference.device
         elif isinstance(weight, torch.Tensor) and weight.device.type != "meta":
             target_device = weight.device
+        elif projection_device is not None and projection_device.type != "meta":
+            target_device = projection_device
         elif isinstance(reference, torch.Tensor):
             target_device = reference.device
         elif isinstance(weight, torch.Tensor):
             target_device = weight.device
         else:
-            projection_device = _fp8_projection_device(module, attr_name)
             target_device = (
                 projection_device if projection_device is not None else scale_tensor.device
             )
@@ -856,11 +869,16 @@ def _restore_missing_fp8_weight_scale_inv(
                     existing.data = restored_scale
             else:
                 # A meta placeholder Parameter cannot take `.data = <materialized>` (torch rejects
-                # meta -> concrete set_data), so replace it to materialize the scale. #6749
-                module._parameters[attr_name] = torch.nn.Parameter(
+                # meta -> concrete set_data), so replace it to materialize the scale, copying the
+                # existing parameter's custom attributes (e.g. `block_size` the fp8 kernels read)
+                # so non-default block geometry is not lost. #6749
+                new_param = torch.nn.Parameter(
                     restored_scale,
                     requires_grad = bool(getattr(existing, "requires_grad", False)),
                 )
+                for meta_key, meta_val in vars(existing).items():
+                    setattr(new_param, meta_key, meta_val)
+                module._parameters[attr_name] = new_param
         else:
             if hasattr(module, attr_name):
                 delattr(module, attr_name)

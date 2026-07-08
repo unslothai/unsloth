@@ -514,6 +514,10 @@ class FastLanguageModel(FastLlamaModel):
                 if load_in_fp8 != False and new_model_name != old_model_name:
                     restore_fp8_scales = True
                     load_in_fp8 = False
+                    # Pre-quantized FP8 siblings are safetensors-only, so force safetensors like
+                    # the offline path above; otherwise a caller-supplied use_safetensors=False
+                    # makes from_pretrained look for absent .bin weights and fail. #6749
+                    kwargs["use_safetensors"] = True
 
         # Check if pre-quantized models are allowed
         # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
@@ -1214,6 +1218,10 @@ class FastModel(FastBaseModel):
                 if load_in_fp8 != False and new_model_name != old_model_name:
                     restore_fp8_scales = True
                     load_in_fp8 = False
+                    # Pre-quantized FP8 siblings are safetensors-only, so force safetensors like
+                    # the offline path above; otherwise a caller-supplied use_safetensors=False
+                    # makes from_pretrained look for absent .bin weights and fail. #6749
+                    kwargs["use_safetensors"] = True
 
         # Check if pre-quantized models are allowed
         # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
