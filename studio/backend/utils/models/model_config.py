@@ -1120,6 +1120,30 @@ _GGUF_QUANT_TAG_RE = re.compile(
 )
 
 
+def _dflash_pairs_weight(drafter_basename: str, weight_basename: Optional[str]) -> bool:
+    """True if a ``dflash`` drafter basename pairs with the weight by model name:
+    the non-quant side of the dflash token (``dflash-<model>`` -> after;
+    ``<model>-DFlash[-<quant>]`` -> before) must prefix the weight filename. A
+    None weight (unknown) pairs with any dflash drafter. Shared by the local
+    detect_dflash_file and the -hf drafter pick so both resolve the same file."""
+    name = drafter_basename.lower()
+    if not name.endswith(".gguf"):
+        return False
+    stem = name[: -len(".gguf")]
+    m = _DFLASH_DRAFTER_RE.search(stem)
+    if not m:
+        return False
+    candidates = [
+        c
+        for c in (stem[: m.start()].strip("-_."), stem[m.end() :].strip("-_."))
+        if c and not _GGUF_QUANT_TAG_RE.match(c)
+    ]
+    if weight_basename is None:
+        return True
+    weight = weight_basename.lower()
+    return any(weight.startswith(c) for c in candidates)
+
+
 def _is_mtp_drafter(path: str) -> bool:
     """True for a separate-file speculative drafter (MTP or DFlash), a companion
     to the main model rather than a selectable quant: the MTP repo-root
@@ -1428,24 +1452,7 @@ def detect_dflash_file(path: str, search_root: Optional[str] = None) -> Optional
             continue
         matches: list[tuple[int, str]] = []
         for f in entries:
-            name = f.name.lower()
-            if not name.endswith(".gguf"):
-                continue
-            stem = name[: -len(".gguf")]
-            m = _DFLASH_DRAFTER_RE.search(stem)
-            if not m:
-                continue
-            # The model identity is whichever side of the dflash token isn't a
-            # quant tag: `dflash-<model>` -> after; `<model>-DFlash` -> before;
-            # `<model>-DFlash-<quant>` -> before. Drop a pure quant-tag side so a
-            # `<other>-DFlash-q8_0.gguf` can't attach to a weight whose own name
-            # starts with that quant (e.g. a native `Q8_0.gguf`).
-            candidates = [
-                c
-                for c in (stem[: m.start()].strip("-_."), stem[m.end() :].strip("-_."))
-                if c and not _GGUF_QUANT_TAG_RE.match(c)
-            ]
-            if weight_name is not None and not any(weight_name.startswith(c) for c in candidates):
+            if not _dflash_pairs_weight(f.name, weight_name):
                 continue
             try:
                 if f.is_file():

@@ -4562,17 +4562,21 @@ class LlamaCppBackend:
         *,
         hf_repo: str,
         hf_token: Optional[str] = None,
+        weight_name: Optional[str] = None,
     ) -> Optional[str]:
         """Download the separate DFlash drafter from a GGUF repo, matching the
-        local detect_dflash_file pick: a ``dflash`` delimited-token GGUF,
-        preferring a quantized build over the full-precision converter output
-        (bf16/f16/f32). Repos with no such sibling return None."""
+        local detect_dflash_file pick: a ``dflash`` delimited-token GGUF paired
+        by model name to ``weight_name`` (so a multi-model repo can't attach a
+        foreign drafter), preferring a quantized build over the full-precision
+        converter output (bf16/f16/f32). Repos with no such sibling return None."""
+        from utils.models.model_config import _dflash_pairs_weight
 
         def _pick_dflash(candidates: list[str]) -> Optional[str]:
             dflash_files = [
                 f
                 for f in candidates
-                if f.lower().endswith(".gguf") and _DFLASH_DRAFTER_RE.search(Path(f).name.lower())
+                if f.lower().endswith(".gguf")
+                and _dflash_pairs_weight(Path(f).name, weight_name)
             ]
             if not dflash_files:
                 return None
@@ -5357,6 +5361,7 @@ class LlamaCppBackend:
                         dflash_draft_path = self._download_dflash(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            weight_name = Path(model_path).name if model_path else None,
                         )
             elif gguf_path:
                 if not Path(gguf_path).is_file():
@@ -5655,16 +5660,26 @@ class LlamaCppBackend:
                     # DFlash auto-engages in Auto with a resolved sibling (never
                     # on a vision load -- multimodal drafting is unsupported). It
                     # is a separate drafter, mechanically like the Gemma MTP
-                    # drafter, so it needs its weights+KV reserved. No binary
-                    # probe here: if the prebuilt lacks draft-dflash the launch
-                    # falls back to --spec-default, so reserving errs conservative
-                    # (over-reserve, never OOM), matching MTP's reserve-on-uncertain.
-                    _auto_studio_dflash = bool(
+                    # drafter, so it needs its weights+KV reserved. Gate on the
+                    # binary probe (like _auto_studio_mtp): if the prebuilt lacks
+                    # draft-dflash the launch falls through to MTP or spec-default,
+                    # so marking DFlash here would mis-size the reserve (charge a
+                    # separate drafter for a load that runs MTP, or nothing).
+                    _dflash_wanted = bool(
                         not _extra_args_set_spec_type(extra_args)
                         and dflash_draft_path
                         and _mtp_effective == "auto"
                         and not effective_is_vision
                     )
+                    _dflash_binary_ok = False
+                    if _dflash_wanted:
+                        try:
+                            _dflash_binary_ok = bool(
+                                (self.probe_server_capabilities(binary) or {}).get("dflash_token")
+                            )
+                        except Exception:
+                            _dflash_binary_ok = False
+                    _auto_studio_dflash = _dflash_wanted and _dflash_binary_ok
                     _mtp_will_engage = bool(
                         _user_mtp_via_extras
                         or _user_draft_via_extras

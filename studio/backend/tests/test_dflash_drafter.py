@@ -155,6 +155,23 @@ def test_detect_gguf_model_rejects_infix_dflash_drafter(tmp_path):
     assert detect_gguf_model(str(drafter)) is None
 
 
+def test_dflash_pairs_weight_by_model_name():
+    # The shared pairing predicate: a drafter pairs only with a weight its model
+    # side prefixes, so a multi-model repo can't attach a foreign drafter (used
+    # by both detect_dflash_file and the -hf drafter pick).
+    from utils.models.model_config import _dflash_pairs_weight
+
+    assert _dflash_pairs_weight("Qwen3-8B-DFlash-q8_0.gguf", "Qwen3-8B-Q4_K_M.gguf") is True
+    assert _dflash_pairs_weight("dflash-Qwen3-8B.gguf", "Qwen3-8B-Q4_K_M.gguf") is True
+    # A 4B drafter must not attach to an 8B weight (multi-model repo).
+    assert _dflash_pairs_weight("Qwen3-4B-DFlash-q8_0.gguf", "Qwen3-8B-Q4_K_M.gguf") is False
+    # The quant suffix side never pairs a quant-only weight name.
+    assert _dflash_pairs_weight("OtherModel-DFlash-q8_0.gguf", "Q8_0.gguf") is False
+    # Unknown weight (None) pairs with any dflash drafter; a non-dflash file never.
+    assert _dflash_pairs_weight("Qwen3-8B-DFlash.gguf", None) is True
+    assert _dflash_pairs_weight("Qwen3-8B-Q4_K_M.gguf", None) is False
+
+
 def test_detect_dflash_file_ignores_quant_only_weight_name(tmp_path):
     # A native weight named after its quant (Q8_0.gguf) must not attach a foreign
     # drafter via the drafter's quant suffix (OtherModel-DFlash-q8_0 -> q8_0).

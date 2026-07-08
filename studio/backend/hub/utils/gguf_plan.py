@@ -163,7 +163,10 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     companion_expected = expected_file_from_sibling(companion) if companion is not None else None
     mtp_sibling = preferred_mtp_sibling(siblings)
     mtp_expected = expected_file_from_sibling(mtp_sibling) if mtp_sibling is not None else None
-    dflash_sibling = preferred_dflash_sibling(siblings)
+    # Vision repos suppress DFlash at load (unsupported multimodal drafting), so
+    # don't fetch the drafter with every variant -- it would only waste disk /
+    # bandwidth and can fail an otherwise valid download on tight machines.
+    dflash_sibling = None if all_mmproj else preferred_dflash_sibling(siblings)
     dflash_expected = (
         expected_file_from_sibling(dflash_sibling) if dflash_sibling is not None else None
     )

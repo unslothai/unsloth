@@ -142,6 +142,21 @@ def test_variant_plans_carry_dflash_drafter_preferring_quant():
     assert plan.download_size_bytes == 4_575
 
 
+def test_variant_plans_skip_dflash_for_vision_repos():
+    # A vision repo suppresses DFlash at load, so the download plan must not
+    # fetch the drafter with every variant.
+    plans = build_gguf_variant_plans(
+        [
+            _sib("Qwen3-VL-4B-Q4_K_M.gguf", 4_000, "main"),
+            _sib("mmproj-F16.gguf", 500, "mmproj"),
+            _sib("Qwen3-VL-4B-DFlash-q8_0.gguf", 575, "dflash"),
+        ]
+    )
+    plan = plans["q4_k_m"]
+    assert not any("dflash" in name.lower() for name in plan.target_filenames)
+    assert plan.mmproj_filenames == frozenset({"mmproj-F16.gguf"})
+
+
 def test_variant_plans_prefer_quant_over_fp16_dflash():
     # fp16 is full precision even though extract_quant_label doesn't tag it, so
     # the quantized drafter must still win the download pick.
