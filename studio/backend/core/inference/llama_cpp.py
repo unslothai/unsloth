@@ -67,7 +67,6 @@ from core.tool_healing import (
     _strip_bracket_tag_calls,
     apply_tool_strip_patterns,
     strip_outside_think,
-    strip_tool_call_markup,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -699,6 +698,16 @@ def detect_reasoning_flags(
         else []
     )
     if effort_levels:
+        # DeepSeek-V4's encoder accepts reasoning_effort {'high', 'max'} but its
+        # template only branches on 'max', so the literal scan misses 'high'. Add it
+        # (matched on whole repo-name segments, so 'deepseek-v40' won't false-match)
+        # to expose the full none/high/max ladder instead of none/max.
+        segments = re.split(r"[-_.]", (model_identifier or "").lower().split("/")[-1])
+        is_dsv4 = "deepseek4" in segments or any(
+            a == "deepseek" and b == "v4" for a, b in zip(segments, segments[1:])
+        )
+        if is_dsv4 and "high" not in effort_levels:
+            effort_levels = sorted(set(effort_levels) | {"high"}, key = _REASONING_EFFORT_SCALE.index)
         # GLM-5.2-style: an enable_thinking on/off gate PLUS a reasoning_effort
         # level among a discrete set (e.g. 'high' | 'max'). Distinct from
         # gpt-oss (reasoning_effort only, no on/off gate) and Qwen
@@ -1860,9 +1869,13 @@ class LlamaCppBackend:
                 # 'low' effort the way gpt-oss does (those models genuinely
                 # cannot disable).
                 thinking_off = enable_thinking is False or reasoning_effort == "none"
-                if enable_thinking is not None or reasoning_effort == "none":
+                # A named effort level implies thinking on, so emit enable_thinking
+                # even if the caller sent only reasoning_effort (else the template
+                # defaults it off and the requested level never renders).
+                effort_on = reasoning_effort in self._reasoning_effort_levels
+                if enable_thinking is not None or reasoning_effort == "none" or effort_on:
                     kwargs["enable_thinking"] = not thinking_off
-                if not thinking_off and reasoning_effort in self._reasoning_effort_levels:
+                if not thinking_off and effort_on:
                     kwargs["reasoning_effort"] = reasoning_effort
             elif self._reasoning_style == "reasoning_effort":
                 if reasoning_effort in ("none", "low", "medium", "high"):
@@ -1884,6 +1897,13 @@ class LlamaCppBackend:
         # frames are dropped by the agentic tool loop; never route it through tools.
         if self._is_diffusion:
             return False
+        return self._supports_tools
+
+    @property
+    def supports_tool_passthrough(self) -> bool:
+        # supports_tools is forced off for DiffusionGemma (its agentic loop drops the
+        # per-step canvas frames), but client passthrough skips that loop, so it uses
+        # the real _supports_tools.
         return self._supports_tools
 
     @property
@@ -3248,6 +3268,12 @@ class LlamaCppBackend:
     _CTX_COMPUTE_BYTES_PER_EMBD = 2.25  # quantized KV, regular attention (dequant scratch)
     _CTX_COMPUTE_BYTES_PER_EMBD_MLA = 1.25  # quantized KV, MLA (compressed attn: measured 0.94x)
     _CTX_COMPUTE_F16_MASK_SAFETY = 1.5  # f16/bf16/f32 KV: KQ mask only (n_ubatch*2 B/tok)
+    # DeepSeek-V4 (deepseek4): its lightning indexer + sparse attention reserve a large
+    # context-scaling compute buffer the rates above miss (present even with an f16
+    # cache). Measured on UD-Q4_K_XL (ub=512): ~2 GiB at 16k -> ~65.5 GiB at 1M. Without
+    # it auto-fit commits the full 1M train context, OOMs the reserve, and spills to CPU.
+    _DSV4_CTX_COMPUTE_FLAT_BYTES = 2 * 1024**3  # ctx-independent indexer scratch
+    _DSV4_CTX_COMPUTE_BYTES_PER_TOK = 72000  # per token at ub=512 (~72 GiB at 1M)
 
     def _estimate_compute_buffer_bytes(
         self,
@@ -3297,6 +3323,14 @@ class LlamaCppBackend:
         if n_embd <= 0 or n_ctx <= 0:
             return 0
         ub = max(1, int(n_ubatch if n_ubatch else self._DEFAULT_N_UBATCH))
+        if getattr(self, "_architecture", None) == "deepseek4":
+            # DSV4 indexer/CSA buffer (see constants): flat + linear, ub-scaled. Fires
+            # for any KV type -- the indexer scratch is present even with an f16 cache.
+            ub_scale = ub / self._DEFAULT_N_UBATCH
+            return int(
+                self._DSV4_CTX_COMPUTE_FLAT_BYTES
+                + self._DSV4_CTX_COMPUTE_BYTES_PER_TOK * n_ctx * ub_scale
+            )
         if _kv_bytes_per_elem(cache_type_kv) < 2.0:
             # Quantized cache: the dequant scratch dominates and scales with n_embd.
             # MLA (compressed KV) needs far less of it: measured 0.94 x n_embd on
@@ -8784,12 +8818,30 @@ class LlamaCppBackend:
             }
 
         def _flush_reasoning_and_buffer():
-            """Append buffered reasoning (as a <think> block) then the held
+            """Close a live-streamed <think> block (or emit the buffered reasoning
+            as one block if it never streamed), then append the held
             content_buffer to the cumulative display text."""
-            nonlocal cumulative_display
-            if reasoning_accum:
+            nonlocal cumulative_display, in_thinking
+            if in_thinking:
+                cumulative_display += "</think>"
+                in_thinking = False
+            elif reasoning_accum:
                 cumulative_display += "<think>" + reasoning_accum + "</think>"
             cumulative_display += content_buffer
+
+        def _close_streamed_think() -> bool:
+            """Close a live-streamed <think> before a tool call drains, so
+            consumers without a reasoning extractor (Anthropic) get a balanced
+            block. Returns True when the caller should yield the result."""
+            nonlocal cumulative_display, in_thinking, _last_emitted
+            if not in_thinking:
+                return False
+            cumulative_display += "</think>"
+            in_thinking = False
+            if len(cumulative_display) > len(_last_emitted) and not _suppress_visible_output:
+                _last_emitted = cumulative_display
+                return True
+            return False
 
         def _looks_like_enabled_bare_json(text: str, enabled_tool_names: set) -> bool:
             """True when ``text`` opens with an ENABLED markerless bare-JSON call; an ordinary JSON answer returns False."""
@@ -8978,6 +9030,10 @@ class LlamaCppBackend:
                                     # the structured tool call.
                                     has_structured_tc = True
                                     detect_state = _S_DRAINING
+                                    # Close the reasoning prefix before the tool card
+                                    # (mirrors the is_match path).
+                                    if _close_streamed_think():
+                                        yield {"type": "content", "text": cumulative_display}
                                     for tc_d in tc_deltas:
                                         idx = tc_d.get("index", 0)
                                         if idx not in tool_calls_acc:
@@ -9063,17 +9119,17 @@ class LlamaCppBackend:
                                     continue
 
                                 # ── Reasoning tokens ──
-                                # Yield only in STREAMING. In BUFFERING and
-                                # DRAINING, accumulate silently so we don't
-                                # corrupt the consumer's prev_text tracker
-                                # (routes/inference.py never resets it
-                                # between tool iterations).
+                                # Stream live except while DRAINING: reasoning is
+                                # orthogonal to tool detection (content_buffer
+                                # only), and the route resets prev_text on
+                                # tool_start, so the <think> block stays a
+                                # monotonic prefix like the no-tool path.
                                 reasoning = delta.get("reasoning_content", "")
                                 if reasoning:
                                     if _reasoning_started_at is None:
                                         _reasoning_started_at = time.monotonic()
                                     reasoning_accum += reasoning
-                                    if detect_state == _S_STREAMING:
+                                    if detect_state != _S_DRAINING:
                                         if not in_thinking:
                                             cumulative_display += "<think>"
                                             in_thinking = True
@@ -9201,9 +9257,15 @@ class LlamaCppBackend:
                                                     _hold_buffer = True
 
                                         if _drain_silently:
-                                            # No visible prefix -- the buffered text IS
-                                            # the call; drain without yielding it.
+                                            # The buffered content IS the call; drain it
+                                            # without yielding. A live <think> prefix is
+                                            # separate from it -- close that.
                                             detect_state = _S_DRAINING
+                                            if _close_streamed_think():
+                                                yield {
+                                                    "type": "content",
+                                                    "text": cumulative_display,
+                                                }
                                         elif is_match:
                                             # Tool signal -- flush any visible
                                             # prefix before DRAINING so the
@@ -9296,7 +9358,9 @@ class LlamaCppBackend:
                                     ),
                                 }
                         elif reasoning_accum and not has_content_tokens:
-                            # Reasoning-only reply: show it as plain text.
+                            # Reasoning-only reply: show it as the main response,
+                            # not a thinking block (mirrors the no-tool path; the
+                            # route's extractor closes the streamed <think>).
                             if _reasoning_started_at is not None and not _reasoning_summary_emitted:
                                 _reasoning_summary_emitted = True
                                 yield _reasoning_summary_event(_reasoning_started_at)

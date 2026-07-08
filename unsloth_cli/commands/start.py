@@ -44,12 +44,31 @@ _CODEX_PROFILE = "unsloth_api"
 _CODEX_ENV_KEY = "UNSLOTH_STUDIO_AUTH_TOKEN"
 _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
 _HERMES_PROVIDER = "unsloth"
+# Skip the installer's interactive setup wizard: `unsloth start hermes` runs
+# this hint unattended and then writes its own session-scoped Hermes config, so
+# the wizard's global API-key/model prompts would block the launch and point the
+# user at a different (global) provider than the one Unsloth just configured.
+# Both installers expose a skip flag: `-SkipSetup` (PowerShell) and
+# `--skip-setup` (POSIX; passed to the piped script via `bash -s --`).
+_HERMES_WINDOWS_INSTALL_HINT = (
+    "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -SkipSetup"
+)
+_HERMES_POSIX_INSTALL_HINT = (
+    "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
+    "/main/scripts/install.sh | bash -s -- --skip-setup"
+)
 # Hermes refuses to initialize when the model window is under 64,000 tokens; its
 # error message points at the model.context_length / auxiliary.compression
 # overrides in config.yaml. write_hermes_config claims this value for smaller
 # windows and scales the compaction threshold back down to the real window.
 _HERMES_MIN_CONTEXT = 65536
 _PI_PROVIDER = "unsloth"
+# OpenCode selects a model by "<providerID>/<modelID>" and honors a user
+# disabled_providers list. Register the session provider under a dedicated id a
+# user's disable list would never target, so the model is always selectable
+# without the wrapper having to reconstruct (and override) OpenCode's full,
+# multi-layer disabled_providers resolution.
+_OPENCODE_PROVIDER = "unsloth-studio"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 _CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
@@ -130,6 +149,10 @@ _YOLO_COMMAND_FLAGS = {
 def _yolo_command_flags(agent: str, yolo: bool) -> list:
     # .get so a config-based agent (or a typo) yields no flag instead of a KeyError.
     return _YOLO_COMMAND_FLAGS.get(agent, []) if yolo else []
+
+
+def _hermes_install_hint() -> str:
+    return _HERMES_WINDOWS_INSTALL_HINT if os.name == "nt" else _HERMES_POSIX_INSTALL_HINT
 
 
 class LoadOptions(NamedTuple):
@@ -918,6 +941,54 @@ def _print_env(
     typer.echo(" ".join((*inline, shlex.join(command))))
 
 
+def _refresh_windows_path() -> None:
+    # Merge Windows registry PATH hives after the current process PATH so a
+    # freshly installed agent is visible without changing existing precedence.
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+    except Exception:
+        return
+
+    entries = []
+    seen = set()
+
+    def add_path(value: str) -> bool:
+        added = False
+        for entry in str(value).split(os.pathsep):
+            entry = entry.strip()
+            if not entry:
+                continue
+            key = os.path.normcase(entry).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(entry)
+            added = True
+        return added
+
+    add_path(os.environ.get("PATH", ""))
+    added_registry = False
+    hives = (
+        (winreg.HKEY_CURRENT_USER, "Environment"),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+    )
+    for root, sub in hives:
+        try:
+            with winreg.OpenKey(root, sub) as key:
+                value, _ = winreg.QueryValueEx(key, "Path")
+        except OSError:
+            continue
+        if value:
+            added_registry = add_path(os.path.expandvars(str(value))) or added_registry
+    if added_registry:
+        os.environ["PATH"] = os.pathsep.join(entries)
+
+
 def _install_agent(name: str, install_hint: str) -> Optional[str]:
     # Missing agent under --launch: offer to run its documented install command, then
     # re-resolve it on PATH. Consent-based (we never auto-run a remote install script
@@ -936,6 +1007,9 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
         install_command = ["/bin/sh", "-c", install_hint]
     if subprocess.run(install_command).returncode != 0:
         _fail(f"Install command failed. Run it yourself, then re-run: {install_hint}")
+    # The installer just wrote PATH to the registry (Windows); pull it into this
+    # process so the freshly installed agent resolves without a shell restart.
+    _refresh_windows_path()
     executable = shutil.which(name)
     if executable is None:
         _fail(
@@ -1192,13 +1266,17 @@ def write_opencode_config(
     config = _read_json_object(path)
     if config is None:
         typer.echo(
-            f"Warning: couldn't parse {path} — add an 'unsloth' provider there "
-            "yourself, or move the file aside and re-run.",
+            f"Warning: couldn't parse {path} — add an '{_OPENCODE_PROVIDER}' provider "
+            "there yourself, or move the file aside and re-run.",
             err = True,
         )
         return {}
     before = json.dumps(config, sort_keys = True)
     config.setdefault("$schema", "https://opencode.ai/config.json")
+    # The session provider is registered under a dedicated id (_OPENCODE_PROVIDER)
+    # that a user's disabled_providers list would never target, so it is always
+    # selectable without this overlay having to reconstruct or override OpenCode's
+    # disabled_providers resolution.
     model_entry = {"name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
@@ -1207,14 +1285,14 @@ def write_opencode_config(
         # disables OpenCode's auto-compaction; declare the real window (and a sane
         # output cap) so it compacts instead of overflowing the server.
         model_entry["limit"] = {"context": window, "output": min(window // 4, 8192)}
-    _subdict(config, "provider")["unsloth"] = {
+    _subdict(config, "provider")[_OPENCODE_PROVIDER] = {
         "npm": "@ai-sdk/openai-compatible",
         "name": "Unsloth Studio",
         "options": {"baseURL": f"{base}/v1", "apiKey": key},
         "models": {model["id"]: model_entry},
     }
     # OpenCode selects a model by "<providerID>/<modelID>".
-    config["model"] = f"unsloth/{model['id']}"
+    config["model"] = f"{_OPENCODE_PROVIDER}/{model['id']}"
     if window:
         # Compact with ~10% headroom (near 90% full). The fixed 20k-token default
         # buffer over-compacts, or never settles, on a small local context.
@@ -1526,7 +1604,20 @@ def opencode(
         serve = serve,
         launch = launch,
     )
-    command = ["opencode", *ctx.args]
+    opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
+    # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority
+    # layer, so the session model is forced without a --model flag. Only add --model for
+    # an interactive bare launch (a convenience so the TUI opens on our model). It is
+    # omitted for passthrough (inserting it before a subcommand can be misparsed) and for
+    # --no-launch, where the printed command is consumed by drivers that append a
+    # subcommand such as `run <prompt>`; a leading --model would land before that
+    # subcommand and break it. Those paths rely on the inline pin instead.
+    if ctx.args:
+        command = ["opencode", *ctx.args]
+    elif launch:
+        command = ["opencode", "--model", opencode_model]
+    else:
+        command = ["opencode"]
     with _session_config("opencode", launch) as cfg:
         config_path = cfg / "opencode.json"
         # OPENCODE_CONFIG is an overlay (loaded between the user's global and project
@@ -1538,7 +1629,26 @@ def opencode(
         # outranks project config; the API key stays in the private file, never the env.
         # Only --yolo carries a permission here (its allow must win over a project config);
         # a non-yolo session returns no permission, so the project's own rules are honored.
-        inline_config: dict = {"model": f"unsloth/{entry['id']}"}
+        # opencode filters every provider (a config-defined custom one included) through
+        # its enabled_providers allowlist and disabled_providers denylist, and a model pin
+        # does not bypass that gate -- a filtered provider resolves to ModelNotFoundError.
+        # To guarantee the session model loads without reading or modifying the user's real
+        # config, scope THIS session to our provider alone: allowlist _OPENCODE_PROVIDER and
+        # clear the denylist. These arrays are replaced (not merged) by higher layers, so
+        # setting them in the highest-priority inline overlay neutralizes any user allowlist
+        # or denylist for the launch. It is session-only: it lives in OPENCODE_CONFIG_CONTENT
+        # for this invocation and never touches the user's config files, so their normal
+        # `opencode` is unchanged; only this session is limited to the Studio provider.
+        # small_model is opencode's separate model for lightweight tasks; pin it to the
+        # session model too, or a user/project small_model on another (now filtered)
+        # provider would resolve a not-found error mid-session. The session serves one
+        # model, so the session model is the only valid target here anyway.
+        inline_config: dict = {
+            "model": opencode_model,
+            "small_model": opencode_model,
+            "enabled_providers": [_OPENCODE_PROVIDER],
+            "disabled_providers": [],
+        }
         if session_permission:
             inline_config["permission"] = session_permission
         env = {
@@ -1570,10 +1680,7 @@ def hermes(
         launch = launch,
     )
     command = ["hermes", *_yolo_command_flags("hermes", yolo), *ctx.args]
-    install_hint = (
-        "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
-        "/main/scripts/install.sh | bash"
-    )
+    install_hint = _hermes_install_hint()
     with _session_config("hermes", launch) as home:
         # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state)
         # like CODEX_HOME, so the user's ~/.hermes is left untouched for the session.

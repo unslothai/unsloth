@@ -99,3 +99,16 @@ def test_malware_and_consent_gates_cover_the_lora_base():
         if runs_gate and not resolves_base:
             offenders.append(f"{rel} runs a load gate but never resolves the LoRA base")
     assert not offenders, "\n".join(offenders)
+
+
+def test_rag_embedding_path_runs_the_malware_gate():
+    """The RAG embedding model is set through /settings and later loaded by
+    SentenceTransformer, which deserializes pickles; both sites must run the malware gate
+    or a flagged repo loads unscanned (bypassing the normal model-load protections)."""
+    offenders = []
+    for rel in ("routes/settings.py", "core/rag/embeddings.py"):
+        if "evaluate_file_security(" not in (_BACKEND / rel).read_text():
+            offenders.append(
+                f"{rel} loads/persists an embedding model without evaluate_file_security"
+            )
+    assert not offenders, "\n".join(offenders)
