@@ -2316,17 +2316,27 @@ class LlamaCppBackend:
 
     @staticmethod
     def _is_vulkan_backend(binary: Optional[str] = None) -> bool:
-        """True if the installed llama.cpp build is the Vulkan one.
+        """True if the installed llama.cpp build is Vulkan-only.
 
-        Builds are single-backend, so the presence of the Vulkan ggml
-        backend library next to llama-server is sufficient. Used to keep
-        the free-memory probe and the GPU pin in the same device-index
-        space (ggml's Vulkan ordinals, not nvidia-smi order).
+        The official prebuilts are single-backend, so the Vulkan ggml backend
+        library next to llama-server identifies a Vulkan build. Used to keep the
+        free-memory probe and the GPU pin in ggml's Vulkan device-index space.
+        Guard the assumption for a custom multi-backend build: if a CUDA or HIP
+        ggml library sits alongside Vulkan, defer to that (the nvidia-smi/torch
+        probes and the CUDA/HIP pin), since those backends are torch-usable and
+        the memory probe/pin are better understood there than on Vulkan.
         """
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
             return False
-        return (_llama_lib_dir(binary) / _vulkan_lib_filename()).is_file()
+        lib_dir = _llama_lib_dir(binary)
+        if not (lib_dir / _vulkan_lib_filename()).is_file():
+            return False
+        for _backend in ("cuda", "hip"):
+            sibling = f"ggml-{_backend}.dll" if sys.platform == "win32" else f"libggml-{_backend}.so"
+            if (lib_dir / sibling).is_file():
+                return False
+        return True
 
     @staticmethod
     def _resolve_visible_physical_ids() -> Optional[list[int]]:

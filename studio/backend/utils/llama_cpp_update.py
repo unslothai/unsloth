@@ -514,6 +514,12 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
         logger.info("llama update: installing", cmd = " ".join(cmd))
         # Stream progress lines into job["progress"].
         env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
+        # Preserve a Vulkan install across updates. The marker asset records the
+        # backend, but detect_host on a CUDA/ROCm box would re-route to that
+        # backend and silently replace the Vulkan build; re-assert the Vulkan
+        # choice via the same env flag setup uses (mirrors _rocm_install_args).
+        if asset and "vulkan" in asset.lower():
+            env["UNSLOTH_FORCE_VULKAN"] = "1"
         proc = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,

@@ -53,7 +53,11 @@ _maybe_stub("loggers", _build_loggers_stub)
 _maybe_stub("structlog", lambda: _types.ModuleType("structlog"))
 
 from core.inference import llama_cpp as _llama_mod  # noqa: E402
-from core.inference.llama_cpp import LlamaCppBackend, _vulkan_lib_filename  # noqa: E402
+from core.inference.llama_cpp import (  # noqa: E402
+    LlamaCppBackend,
+    _llama_lib_dir,
+    _vulkan_lib_filename,
+)
 
 MIB = 1024 * 1024
 GIB = 1024 * MIB
@@ -150,6 +154,21 @@ def test_vulkan_pin_args_uses_device_names_not_env_mask():
     assert LlamaCppBackend._vulkan_pin_args([1, 2]) == ["--device", "Vulkan1,Vulkan2"]
     assert LlamaCppBackend._vulkan_pin_args(None) == []
     assert LlamaCppBackend._vulkan_pin_args([]) == []
+
+
+def test_vulkan_only_build_is_detected(tmp_path):
+    binary = _make_vulkan_install(tmp_path)
+    assert LlamaCppBackend._is_vulkan_backend(binary) is True
+
+
+def test_multi_backend_build_is_not_vulkan_only(tmp_path):
+    # A custom build that ships CUDA (or HIP) alongside Vulkan must NOT be
+    # treated as Vulkan-only, or its CUDA GPU would be probed/pinned as a Vulkan
+    # device; defer to the CUDA/HIP path instead.
+    binary = _make_vulkan_install(tmp_path)
+    cuda = "ggml-cuda.dll" if sys.platform == "win32" else "libggml-cuda.so"
+    (_llama_lib_dir(binary) / cuda).write_bytes(b"stub")
+    assert LlamaCppBackend._is_vulkan_backend(binary) is False
 
 
 if __name__ == "__main__":

@@ -52,12 +52,8 @@ def _mock_auto(monkeypatch, *, gpus, binary):
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
-    # _resolve_auto passes the resolved binary to _get_gpu_free_memory and probes
-    # _is_vulkan_backend (a Vulkan GPU is not torch-usable); accept the arg and
-    # keep these non-Vulkan so the CUDA/no-CUDA selection is what's exercised.
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda *a: gpus))
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: gpus))
     monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary))
-    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *a: False))
 
 
 def _stub_st_load(monkeypatch):
