@@ -115,6 +115,9 @@ def test_mlx_training_arguments_accept_trl_style_kwargs():
 def test_mlx_training_arguments_do_not_warn_for_implemented_or_falsey_extras():
     """Implemented and falsey inert compatibility kwargs should stay quiet."""
     unsloth = _import_mlx_unsloth()
+    supported_eval_kwargs = {}
+    if "eval_strategy" in unsloth._MLX_TRAINING_CONFIG_FIELDS:
+        supported_eval_kwargs = {"eval_strategy": "no", "eval_delay": 1}
 
     with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
@@ -125,12 +128,16 @@ def test_mlx_training_arguments_do_not_warn_for_implemented_or_falsey_extras():
             remove_unused_columns = False,
             assistant_only_loss = False,
             completion_only_loss = False,
+            **supported_eval_kwargs,
         )
 
     assert args.warmup_steps == 2
     assert args.padding_free is False
     assert args.remove_unused_columns is False
     assert args.completion_only_loss is False
+    if supported_eval_kwargs:
+        assert args.eval_strategy == "no"
+        assert args.eval_delay == 1
     assert caught == []
 
 
@@ -705,23 +712,84 @@ def test_mlx_trainer_rejects_unsafe_unsupported_sft_kwargs():
         )
 
 
-def test_mlx_trainer_rejects_metrics_and_callbacks():
-    """Trainer hooks should fail because MLXTrainer cannot honor them yet."""
+def test_mlx_trainer_accepts_compute_metrics():
+    """compute_metrics is routed to MLXTrainer when the zoo backend supports it."""
+    import inspect
+
     unsloth = _import_mlx_unsloth()
 
-    with pytest.raises(NotImplementedError, match = "callbacks"):
-        unsloth.UnslothTrainer(
-            model = _DummyModel(),
-            tokenizer = None,
-            train_dataset = [],
-            callbacks = [object()],
-        )
-    with pytest.raises(NotImplementedError, match = "compute_metrics"):
+    if "compute_metrics" not in inspect.signature(unsloth.MLXTrainer.__init__).parameters:
+        pytest.skip("requires unsloth-zoo MLXTrainer compute_metrics support")
+
+    compute_metrics = lambda *_: None
+    preprocess = lambda logits, labels: logits
+    trainer = unsloth.UnslothTrainer(
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        compute_metrics = compute_metrics,
+        preprocess_logits_for_metrics = preprocess,
+    )
+    assert trainer.compute_metrics is compute_metrics
+    assert trainer.preprocess_logits_for_metrics is preprocess
+
+
+def test_mlx_trainer_rejects_compute_metrics_with_old_zoo(monkeypatch):
+    """Older unsloth-zoo builds should fail clearly instead of TypeError."""
+    unsloth = _import_mlx_unsloth()
+
+    monkeypatch.setattr(
+        unsloth,
+        "_mlx_trainer_supports_kwarg",
+        lambda name: name not in {"compute_metrics", "preprocess_logits_for_metrics"},
+    )
+
+    with pytest.raises(NotImplementedError, match = "compute_metrics.*require"):
         unsloth.UnslothTrainer(
             model = _DummyModel(),
             tokenizer = None,
             train_dataset = [],
             compute_metrics = lambda *_: None,
+        )
+
+
+def test_mlx_trainer_accepts_callbacks():
+    """Callbacks are routed to MLXTrainer when the zoo backend supports them."""
+    unsloth = _import_mlx_unsloth()
+    from transformers import TrainerCallback
+
+    if not unsloth._mlx_trainer_supports_kwarg("callbacks"):
+        pytest.skip("requires unsloth-zoo MLXTrainer callback support")
+
+    class Callback(TrainerCallback):
+        pass
+
+    trainer = unsloth.UnslothTrainer(
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        callbacks = [Callback()],
+    )
+    assert any(isinstance(cb, Callback) for cb in trainer.callback_handler.callbacks)
+
+
+def test_mlx_trainer_rejects_callbacks_with_old_zoo(monkeypatch):
+    """Older unsloth-zoo builds should fail clearly instead of TypeError."""
+    unsloth = _import_mlx_unsloth()
+    from transformers import TrainerCallback
+
+    monkeypatch.setattr(
+        unsloth,
+        "_mlx_trainer_supports_kwarg",
+        lambda name: name != "callbacks",
+    )
+
+    with pytest.raises(NotImplementedError, match = "callbacks require"):
+        unsloth.UnslothTrainer(
+            model = _DummyModel(),
+            tokenizer = None,
+            train_dataset = [],
+            callbacks = [TrainerCallback()],
         )
 
 
