@@ -1807,6 +1807,34 @@ class FastBaseModel:
             )
             target_parameters = get_moe_target_parameters(model, _moe_targets)
 
+        # Per-expert Linear expert layouts (e.g. gpt-oss bnb-4bit) target experts via
+        # target_modules, not fused Parameters. Extend either form PEFT accepts: a leaf
+        # list (explicit) or a regex string (auto / all-linear / scoped). No-op otherwise.
+        _moe_module_detect = _select_moe_detection_targets(
+            _moe_detect_target,
+            target_modules,
+            finetune_mlp_modules = finetune_mlp_modules,
+            finetune_language_layers = finetune_language_layers,
+        )
+        _moe_module_targets = get_moe_target_modules(model, _moe_module_detect)
+        if _moe_module_targets:
+            if isinstance(target_modules, (list, tuple)):
+                target_modules = list(target_modules) + [
+                    target for target in _moe_module_targets if target not in target_modules
+                ]
+            elif isinstance(target_modules, str):
+                _expert_leaves = sorted({t.rsplit(".", 1)[0] for t in _moe_module_targets})
+                _expert_alt = (
+                    r".*\.experts\.(?:"
+                    + "|".join(re.escape(leaf) for leaf in _expert_leaves)
+                    + r")\.\d+"
+                )
+                target_modules = f"(?:{target_modules})|(?:{_expert_alt})"
+            print(
+                f"Unsloth: Detected MoE model with per-expert Linear experts. "
+                f"Enabling LoRA on {len(_moe_module_targets)} expert projection modules."
+            )
+
         if finetune_last_n_layers is not None and layers_to_transform is None:
             _total_layers = _get_total_transformer_layers(model)
             if _total_layers is not None and _total_layers > 0:

@@ -86,6 +86,7 @@ __all__ = [
     "maybe_prefetch_hf_snapshot",
     "is_moe_model",
     "get_moe_target_parameters",
+    "get_moe_target_modules",
     "_select_moe_detection_targets",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
@@ -4060,13 +4061,17 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         alternate_name = "experts.down_proj",
     )
 
-    # gate_up_proj combines both gate_proj and up_proj in MoE
-    # Also match "gate_up_proj" directly since users may specify the fused name
+    # gate_up_proj combines gate_proj and up_proj; also match the fused name directly.
+    # Only target a fused expert Parameter that exists: per-expert Linear layouts
+    # (e.g. gpt-oss bnb-4bit) have no fused Parameter and are handled by
+    # get_moe_target_modules, so skip them rather than pass PEFT a dead path.
     if "gate_proj" in target_set or "up_proj" in target_set or "gate_up_proj" in target_set:
-        moe_params.append(gate_up_name)
+        if _moe_parameter_exists(model, gate_up_name):
+            moe_params.append(gate_up_name)
 
     if "down_proj" in target_set:
-        moe_params.append(down_name)
+        if _moe_parameter_exists(model, down_name):
+            moe_params.append(down_name)
 
     if moe_params:
         print(
@@ -4075,6 +4080,67 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         return moe_params
 
     return None
+
+
+def _moe_parameter_exists(model, name: str) -> bool:
+    """True if ``name`` is an exact suffix of some parameter path on the model."""
+    if not hasattr(model, "named_parameters"):
+        return False
+    try:
+        for parameter_name, _ in model.named_parameters():
+            if parameter_name == name or parameter_name.endswith("." + name):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def get_moe_target_modules(model, target_modules = None) -> List[str]:
+    """Per-expert ``target_modules`` suffixes for MoE models whose experts are stored
+    as per-expert ``nn.Linear`` ModuleLists rather than fused nn.Parameters.
+
+    gpt-oss bnb-4bit is the canonical case (mlp.experts.gate_up_projs.<i> /
+    down_projs.<i> as Linear4bit): no fused Parameter, and the plain
+    gate/up/down_proj leaves do not match, so LoRA skips them. Returning the
+    per-expert suffixes makes PEFT attach via ordinary suffix matching (the
+    module-LoRA counterpart of get_moe_target_parameters). Returns [] for non-MoE,
+    fused-parameter MoEs, an absent per-expert layout, or a request that omits the
+    MLP experts (so an attention-only run does not train experts).
+    """
+    if not is_moe_model(model):
+        return []
+    if target_modules is None:
+        return []
+    if isinstance(target_modules, str):
+        target_set = _moe_target_set_from_string(target_modules)
+    else:
+        target_set = {
+            target
+            for target in target_modules or ()
+            if (isinstance(target, str) and "." not in target and target in _MOE_BROAD_MLP_TARGETS)
+        }
+    if not (target_set & _MOE_BROAD_MLP_TARGETS):
+        return []
+
+    if not hasattr(model, "named_modules"):
+        return []
+
+    targets = set()
+    for name, module in model.named_modules():
+        if not isinstance(module, torch.nn.ModuleList) or len(module) == 0:
+            continue
+        parent, _, leaf = name.rpartition(".")
+        # ModuleList directly under an ``experts`` container, holding only Linear
+        # leaves (bnb Linear4bit / Linear8bitLt subclass nn.Linear).
+        if not parent.endswith("experts"):
+            continue
+        if not all(isinstance(child, torch.nn.Linear) for child in module):
+            continue
+        # One entry per expert index; ``leaf.<i>`` matches expert i in every layer.
+        for expert_index in range(len(module)):
+            targets.add(f"{leaf}.{expert_index}")
+
+    return sorted(targets)
 
 
 def _select_moe_detection_targets(
