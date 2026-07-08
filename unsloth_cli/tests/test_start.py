@@ -24,7 +24,13 @@ from typer.testing import CliRunner
 import unsloth_cli.commands.start as start
 
 BASE = "http://127.0.0.1:8888"
-MODEL = {"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "context_length": 131072}
+MODEL = {
+    "id": "unsloth/gemma-4-26B-A4B-it-GGUF",
+    "context_length": 131072,
+    "loaded": True,
+    "source": "huggingface",
+    "hf_repo": "unsloth/gemma-4-26B-A4B-it-GGUF",
+}
 
 
 # --no-launch prints shell setup as POSIX (export/unset) on Unix/WSL and
@@ -457,7 +463,7 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     assert (home / "unsloth_api.config.toml").exists()
 
 
-def test_connect_codex_loads_requested_model_case_variant(fake_studio, tmp_path):
+def test_connect_codex_attaches_loaded_hub_case_variant(fake_studio, tmp_path):
     requested = "unsloth/gemma-4-26b-a4b-it-gguf"
     result = CliRunner().invoke(
         start.start_app,
@@ -469,13 +475,10 @@ def test_connect_codex_loads_requested_model_case_variant(fake_studio, tmp_path)
         ],
     )
     assert result.exit_code == 0, result.output
-    assert any(
-        url.endswith("/api/inference/load") and payload == {"model_path": requested}
-        for _, url, payload in fake_studio
-    )
+    assert not any(url.endswith("/api/inference/load") for _, url, _ in fake_studio)
     home = tmp_path / "agents" / "codex"
     profile = _parse_toml((home / "unsloth_api.config.toml").read_text())
-    assert profile["model"] == requested
+    assert profile["model"] == MODEL["id"]
 
 
 def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch):
@@ -557,6 +560,43 @@ def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
     assert any(u.endswith("/api/inference/load") for _, u in calls)
 
 
+
+def test_resolve_model_attaches_to_annotated_loaded_hub_case_variant_without_reload(monkeypatch):
+    # New Studio versions mark live HF GGUF loads explicitly, so the CLI can
+    # preserve a case-only Hub spelling difference without calling /load.
+    calls = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url))
+        if url.endswith("/v1/models"):
+            return {
+                "data": [
+                    {
+                        "id": "unsloth/Gemma-4-GGUF",
+                        "loaded": True,
+                        "source": "huggingface",
+                        "hf_repo": "unsloth/Gemma-4-GGUF",
+                        "context_length": 131072,
+                    }
+                ]
+            }
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "unsloth/gemma-4-gguf")
+
+    assert entry["id"] == "unsloth/Gemma-4-GGUF"
+    assert not any(u.endswith("/api/inference/load") for _, u in calls)
+
+
 def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch):
     # The mirror case: an exact loaded entry (loaded == True) attaches with
     # no /api/inference/load call.
@@ -603,7 +643,15 @@ def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
         calls.append((method, url))
         if url.endswith("/v1/models"):
             return {
-                "data": [{"id": "unsloth/Gemma-4-GGUF", "loaded": True, "context_length": 131072}]
+                "data": [
+                    {
+                        "id": "unsloth/Gemma-4-GGUF",
+                        "loaded": True,
+                        "source": "huggingface",
+                        "hf_repo": "unsloth/Gemma-4-GGUF",
+                        "context_length": 131072,
+                    }
+                ]
             }
         if url.endswith("/api/inference/load"):
             state["loaded"] = True
@@ -755,25 +803,59 @@ def test_model_id_matching_does_not_casefold_local_paths(tmp_path, monkeypatch):
     existing_local = tmp_path / "Org" / "Foo"
     existing_local.mkdir(parents = True)
 
-    # Case variants never attach directly from /v1/models: any one-slash id
-    # can also be a server-relative local path in Studio's cwd. The load
-    # endpoint is the authority for resolving and deduping case variants.
+    # Bare /v1/models case variants never attach directly: any one-slash id
+    # can also be a server-relative local path in Studio's cwd. Only a live
+    # loopback entry that Studio explicitly marks as a HF GGUF source may
+    # casefold-attach.
     assert not start._model_id_matches("Org/Foo", "org/foo")
     assert start._model_id_matches("Org/Foo", "Org/Foo")
     assert not start._model_id_matches(str(existing_local), str(existing_local).lower())
     assert not start._model_id_matches("./Models/Foo", "./models/foo")
     assert not start._model_id_matches(r".\Models\Foo", r".\models\foo")
-    assert not start._model_id_matches("Models/Foo", "models/foo")
-    assert not start._model_id_matches("Runs/Foo", "runs/foo")
+
+    assert not start._model_entry_matches(
+        {"id": "Models/Foo"}, "models/foo", allow_casefold = True
+    )
+    assert not start._model_entry_matches(
+        {"id": "Runs/Foo"}, "runs/foo", allow_casefold = True
+    )
 
     visible_local = tmp_path / "Outputs" / "Run1"
     visible_local.mkdir(parents = True)
     monkeypatch.chdir(tmp_path)
-    assert not start._model_id_matches("Outputs/Run1", "outputs/run1")
+    assert not start._model_entry_matches(
+        {"id": "Outputs/Run1"}, "outputs/run1", allow_casefold = True
+    )
 
-    assert not start._model_id_matches("Models/Foo.gguf", "models/foo.gguf")
-    assert not start._model_id_matches("models/Llama/Foo.gguf", "models/llama/foo.gguf")
-    assert not start._model_id_matches("unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf")
+    assert not start._model_entry_matches(
+        {"id": "Models/Foo.gguf"}, "models/foo.gguf", allow_casefold = True
+    )
+    assert not start._model_entry_matches(
+        {"id": "models/Llama/Foo.gguf"}, "models/llama/foo.gguf", allow_casefold = True
+    )
+    assert not start._model_entry_matches(
+        {"id": "unsloth/Gemma-3-4b-it-GGUF"},
+        "unsloth/gemma-3-4b-it-gguf",
+        allow_casefold = True,
+    )
+    assert start._model_entry_matches(
+        {
+            "id": "unsloth/Gemma-3-4b-it-GGUF",
+            "source": "huggingface",
+            "hf_repo": "unsloth/Gemma-3-4b-it-GGUF",
+        },
+        "unsloth/gemma-3-4b-it-gguf",
+        allow_casefold = True,
+    )
+    assert not start._model_entry_matches(
+        {
+            "id": "unsloth/Gemma-3-4b-it-GGUF",
+            "source": "huggingface",
+            "hf_repo": "unsloth/Gemma-3-4b-it-GGUF",
+        },
+        "unsloth/gemma-3-4b-it-gguf",
+        allow_casefold = False,
+    )
     assert start._model_id_matches("unsloth/Foo", "unsloth/Foo", allow_casefold = False)
 
 

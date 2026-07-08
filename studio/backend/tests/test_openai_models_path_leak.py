@@ -3,6 +3,7 @@
 
 """GET /v1/models must report a clean public id, never the on-disk .gguf path."""
 
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -11,7 +12,15 @@ _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-import routes.inference as inf  # noqa: E402
+# Load the route module directly so this focused unit test does not import
+# routes/__init__.py and pull unrelated dataset/training dependencies.
+_SPEC = importlib.util.spec_from_file_location(
+    "inference_under_test", _BACKEND / "routes" / "inference.py"
+)
+assert _SPEC and _SPEC.loader
+inf = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = inf
+_SPEC.loader.exec_module(inf)
 
 
 class _FakeLlama:
@@ -20,6 +29,7 @@ class _FakeLlama:
     context_length = 4096
     max_context_length = None
     native_context_length = None
+    hf_repo = None
 
 
 class _FakeUnsloth:
@@ -43,3 +53,31 @@ def test_openai_models_returns_clean_id_without_path(monkeypatch):
     assert ".gguf" not in blob
     # Context fields still flow through.
     assert objs[0]["context_length"] == 4096
+
+
+class _FakeHubLlama:
+    is_loaded = True
+    model_identifier = "unsloth/Gemma-4-GGUF"
+    hf_repo = "unsloth/Gemma-4-GGUF"
+    context_length = 8192
+    max_context_length = None
+    native_context_length = None
+
+
+def test_openai_models_marks_loaded_hf_gguf_source(monkeypatch):
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeHubLlama())
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+
+    objs = inf._openai_model_objects()
+
+    assert objs == [
+        {
+            "id": "unsloth/Gemma-4-GGUF",
+            "object": "model",
+            "created": objs[0]["created"],
+            "owned_by": "unsloth-studio",
+            "source": "huggingface",
+            "hf_repo": "unsloth/Gemma-4-GGUF",
+            "context_length": 8192,
+        }
+    ]

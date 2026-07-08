@@ -605,13 +605,36 @@ def _model_id_matches(
 ) -> bool:
     if actual == requested:
         return True
-    # Never casefold-match /v1/models entries. Any one-slash identifier that
-    # looks like a Hub repo id can also be a server-relative local path in
-    # Studio's cwd (which may differ from the CLI cwd), so a case-insensitive
-    # shortcut can attach an agent to the wrong local model. Case variants must
-    # go through /api/inference/load, where Studio resolves paths/repo ids from
-    # its own cwd and returns the canonical loaded id for the exact match below.
-    return False
+    if not allow_casefold or not isinstance(actual, str) or not isinstance(requested, str):
+        return False
+    return actual.casefold() == requested.casefold()
+
+
+def _model_entry_allows_casefold(model: object) -> bool:
+    if not isinstance(model, dict):
+        return False
+    # Only trust the Studio-owned source marker added for live HF GGUF loads. A
+    # bare one-slash id in /v1/models remains ambiguous: it may be a
+    # server-relative local path in Studio's cwd, which the CLI cannot probe.
+    return model.get("source") == "huggingface" and isinstance(model.get("hf_repo"), str)
+
+
+def _model_entry_matches(
+    model: object,
+    requested: object,
+    *,
+    allow_casefold: bool = False,
+) -> bool:
+    if not isinstance(model, dict):
+        return False
+    actual = model.get("id")
+    if _model_id_matches(actual, requested):
+        return True
+    if not allow_casefold or not _model_entry_allows_casefold(model):
+        return False
+    return _model_id_matches(actual, requested, allow_casefold = True) or _model_id_matches(
+        model.get("hf_repo"), requested, allow_casefold = True
+    )
 
 
 def _resolve_model(
@@ -621,10 +644,11 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
 ) -> dict:
     models = _loaded_models(base, key)
-    # Match /v1/models exactly only. Case variants intentionally fall through to
-    # /api/inference/load, because any one-slash id could be a server-relative
-    # local path in Studio's cwd even when it also looks like a Hub repo id.
-    allow_casefold = False
+    # Loopback Studio annotates live HF GGUF entries with source="huggingface"
+    # and hf_repo. Only those annotated entries may casefold-attach; all bare
+    # one-slash ids still fall through to /api/inference/load so Studio resolves
+    # possible local paths from its own cwd.
+    allow_casefold = is_loopback_url(base)
     # /v1/models reports the model id but not the active GGUF variant or runtime load
     # settings, so an id match alone can hide the wrong quant (Q8_0 serving while the
     # user asked for UD-Q4_K_XL). When the user passed any explicit load knob, defer to
@@ -644,7 +668,7 @@ def _resolve_model(
             (
                 m
                 for m in models
-                if _model_id_matches(m.get("id"), requested, allow_casefold = allow_casefold)
+                if _model_entry_matches(m, requested, allow_casefold = allow_casefold)
                 and m.get("loaded") is not False
             ),
             None,
@@ -688,7 +712,7 @@ def _resolve_model(
                 m
                 for m in models
                 if any(
-                    _model_id_matches(m.get("id"), w, allow_casefold = allow_casefold) for w in wanted
+                    _model_entry_matches(m, w, allow_casefold = allow_casefold) for w in wanted
                 )
             ),
             None,
