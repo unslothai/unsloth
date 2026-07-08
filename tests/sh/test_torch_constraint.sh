@@ -108,6 +108,10 @@ assert_eq "\$TORCH_CONSTRAINT used in pip install" "yes" "$_has_var"
 _hardcoded=$(grep -c '"torch>=2.4,<2.11.0"' "$INSTALL_SH" || true)
 assert_eq "hardcoded torch>=2.4 appears exactly once" "1" "$_hardcoded"
 
+# CUDA 13 (cu130 / Blackwell) index-family override raises the ceiling to torch 2.11.
+_count=$(grep -cE '\*/cu130\).*torch>=2\.4,<2\.12\.0' "$INSTALL_SH" || true)
+assert_eq "cu130 (Blackwell) torch 2.11 override present" "1" "$_count"
+
 echo ""
 echo "=== Structural: tokenizers in no-torch-runtime.txt ==="
 
