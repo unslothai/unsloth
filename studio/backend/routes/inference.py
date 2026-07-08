@@ -3185,10 +3185,6 @@ def _estimate_gguf_required_gb(
         repo = getattr(config, "gguf_hf_repo", None)
         variant = getattr(config, "gguf_variant", None)
         if repo and variant:
-            # Remote (not-yet-downloaded) GGUF: the layer count lives in the
-            # header, which isn't local yet, so manual offload can't be credited
-            # here. Returning the full size over-blocks a CPU-heavy manual load
-            # during training, which is the safe direction (never under-estimate).
             from utils.models.model_config import list_gguf_variants
 
             variants, has_vision = list_gguf_variants(repo, hf_token = hf_token)
@@ -3200,7 +3196,28 @@ def _estimate_gguf_required_gb(
             companions = _remote_gguf_companion_bytes(
                 repo, hf_token = hf_token, include_mmproj = bool(has_vision)
             )
-            return (main_bytes + companions) / (1024**3)
+            main_gb = main_bytes / (1024**3)
+            # A repo-id GGUF already downloaded in the HF cache is local in all but
+            # name (ModelConfig leaves gguf_file unset for repo ids). Credit the
+            # manual offload fraction from the cached header, mirroring the local
+            # branch above -- otherwise a CPU-heavy manual load (gpu_layers=0 or a
+            # small count) is wrongly blocked as full GPU residency during
+            # training. A not-yet-downloaded GGUF has no local header to read, so
+            # it keeps the full remote size (the safe over-estimate).
+            if gpu_memory_mode == "manual" and gpu_layers >= 0:
+                from hub.utils.gguf import resolve_local_gguf_path
+
+                cached_main = resolve_local_gguf_path(repo, variant)
+                if cached_main:
+                    frac = _manual_gpu_layer_fraction(cached_main, gpu_layers)
+                    if frac is not None:
+                        main_gb = (
+                            LlamaCppBackend._get_gguf_size_bytes(cached_main) / (1024**3)
+                            + _estimate_gguf_kv_gb(
+                                cached_main, max_seq_length, llama_extra_args, n_parallel
+                            )
+                        ) * frac
+            return main_gb + companions / (1024**3)
         return None
     except Exception as e:
         logger.warning(f"Could not size GGUF model for training guard: {e}")

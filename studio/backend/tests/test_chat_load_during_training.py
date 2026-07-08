@@ -667,6 +667,45 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(gb, 3000 / (1024**3), places = 9)
         self.assertGreater(gb, 0.0)  # regression guard: not silently ~0
 
+    def test_manual_scales_cached_hf_repo_by_gpu_layer_fraction(self):
+        # A repo-id GGUF that's already in the HF cache is local in all but name
+        # (ModelConfig leaves gguf_file unset for repo ids). The manual offload
+        # fraction must be credited from the cached header, not left at the full
+        # remote size -- else a CPU-heavy load is over-blocked during training.
+        # A not-yet-cached repo (resolve returns None) keeps the full size.
+        import hub.utils.gguf as gguf_mod
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+        with (
+            patch.object(mc, "list_gguf_variants", return_value = ([variant], False)),
+            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
+            patch.object(
+                self.route.LlamaCppBackend, "_get_gguf_size_bytes", return_value = 8 * 1024**3
+            ),
+            patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 2.0),
+            patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.25),
+        ):
+            with patch.object(gguf_mod, "resolve_local_gguf_path", return_value = "/cache/m.gguf"):
+                cached = self.route._estimate_gguf_required_gb(
+                    cfg, gpu_memory_mode = "manual", gpu_layers = 8
+                )
+            with patch.object(gguf_mod, "resolve_local_gguf_path", return_value = None):
+                not_cached = self.route._estimate_gguf_required_gb(
+                    cfg, gpu_memory_mode = "manual", gpu_layers = 8
+                )
+            auto = self.route._estimate_gguf_required_gb(cfg)  # auto never scales
+        self.assertAlmostEqual(cached, (8.0 + 2.0) * 0.25, places = 6)  # cached header, scaled
+        self.assertAlmostEqual(not_cached, 10.0, places = 6)  # no local header -> full remote
+        self.assertAlmostEqual(auto, 10.0, places = 6)  # default never scales
+
     def test_manual_gpu_layer_fraction_clamps_and_reads_layers(self):
         # _manual_gpu_layer_fraction imports read_gguf_staged_dims lazily, so
         # patch it at its source module.
