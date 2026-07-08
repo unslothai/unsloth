@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import pytest
+import importlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1588,6 +1589,50 @@ class TestActivateLoggingClarity:
         assert (
             "sys.path" in text or "path only" in text
         ), f"early activation log does not clarify it is path-prepend only: {text!r}"
+
+    def test_activate_530_purges_stale_transformers_before_sidecar_import(self, tmp_path):
+        sidecar = tmp_path / "t5_530"
+        package = sidecar / "transformers"
+        package.mkdir(parents = True)
+        (package / "__init__.py").write_text('__version__ = "5.3.0"\n')
+
+        stale = _types.ModuleType("transformers")
+        stale.__version__ = "4.57.6"
+        snap = self._snapshot_env()
+        saved_modules = {
+            name: sys.modules.get(name)
+            for name in ("transformers", "transformers.models", "huggingface_hub")
+        }
+        sys.modules["transformers"] = stale
+        sys.modules["transformers.models"] = _types.ModuleType("transformers.models")
+        try:
+            with (
+                patch(
+                    "utils.transformers_version._resolve_base_model",
+                    side_effect = lambda m: m,
+                ),
+                patch(
+                    "utils.transformers_version.get_transformers_tier",
+                    return_value = "530",
+                ),
+                patch(
+                    "utils.transformers_version._ensure_venv_t5_530_exists",
+                    return_value = True,
+                ),
+                patch("utils.transformers_version._VENV_T5_530_DIR", str(sidecar)),
+            ):
+                activate_transformers_for_subprocess("Qwen/Qwen3.5-9B")
+                imported = importlib.import_module("transformers")
+        finally:
+            self._restore_env(snap)
+            for name, module in saved_modules.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+
+        assert imported.__version__ == "5.3.0"
+        assert imported is not stale
 
     def test_activate_prefers_local_checkpoint_tier_over_resolved_base(self, caplog, tmp_path):
         # Base resolves to an offline/private id (default tier); the local config.json wins.

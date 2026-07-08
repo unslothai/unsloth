@@ -263,6 +263,8 @@ def activate_transformers_for_subprocess(model_name: str, hf_token: str | None =
         # surface, but path names alone must not upgrade a plain adapter.
         tier = _higher_tier(tier, get_transformers_tier(model_name, hf_token))
 
+    stale_transformers = _get_in_memory_version()
+
     if tier == "510":
         if not _ensure_venv_t5_510_exists():
             raise RuntimeError(
@@ -316,6 +318,16 @@ def activate_transformers_for_subprocess(model_name: str, hf_token: str | None =
         os.environ["PYTHONPATH"] = _VENV_T5_530_DIR + (os.pathsep + _pp if _pp else "")
     else:
         logger.info("Using default transformers (4.57.x) for %s", model_name)
+        return
+
+    if stale_transformers is not None:
+        count = _purge_modules()
+        logger.warning(
+            "Purged %d stale module(s) after subprocess transformers sidecar activation "
+            "(previous transformers=%s)",
+            count,
+            stale_transformers,
+        )
 
 
 def _has_adapter_weights(path: Path) -> bool:
