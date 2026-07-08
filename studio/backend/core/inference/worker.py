@@ -906,6 +906,14 @@ def run_inference_process(
                 )
         return
 
+    # ── Stub torchao on Windows ROCm before ANY transformers import ──
+    # Must precede every path that pulls transformers, not just the ML imports in section 2:
+    # a local LoRA adapter with no recorded base reaches transformers here via
+    # _resolve_base_model -> utils.models. See core/_torchao_stub.py; no-op off Windows ROCm.
+    from core._torchao_stub import install_torchao_windows_rocm_stub
+
+    install_torchao_windows_rocm_stub()
+
     # ── Resolve the effective base once, before activation/gates/install (no ML import) ──
     # A remote LoRA's base is in its Hub adapter_config.json (else surfaced only by ModelConfig
     # after import). _lora_base is set only for a genuine adapter, never a full fine-tune's base.
@@ -1002,13 +1010,6 @@ def run_inference_process(
         from core.import_guards import ensure_real_packages
 
         ensure_real_packages("unsloth_zoo", "unsloth")
-
-        # Stub torchao on Windows ROCm before importing transformers / unsloth
-        # (RCCL absent). No-op off Windows ROCm. Must run before the import below,
-        # which pulls in transformers transitively via InferenceBackend.
-        from core._torchao_stub import install_torchao_windows_rocm_stub
-
-        install_torchao_windows_rocm_stub()
 
         from core.inference.inference import InferenceBackend
 
