@@ -45,7 +45,9 @@ def test_loaded_gguf_classifier_is_shared_by_reload_and_settings_sheet():
     sheet_src = _src(SETTINGS_SHEET)
 
     helper_start = store_src.index("export function hasLoadedGgufSource")
-    helper_body = store_src[helper_start : store_src.index("/** A local-disk model id", helper_start)]
+    helper_body = store_src[
+        helper_start : store_src.index("/** A local-disk model id", helper_start)
+    ]
     assert "x.activeGgufVariant != null" in helper_body
     assert "hasUsableNativePathToken" in helper_body
     assert "x.activeNativePathTokenExpiresAtMs != null" in helper_body
