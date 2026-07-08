@@ -36,6 +36,7 @@ elif v  < V('2.8.9'): x = 'cu{}{}-torch280'
 elif v  < V('2.9.1'): x = 'cu{}{}-torch290'
 elif v  < V('2.9.2'): x = 'cu{}{}-torch291'
 elif v  < V('2.10.1'): x = 'cu{}{}-torch2100'
+elif v  < V('2.11.1'): x = 'cu{}{}-torch2110'
 else: raise RuntimeError(f"Torch = {v} too new!")
 if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
 if v >= V('2.10.0') and cuda not in ("12.6", "12.8", "13.0"): raise RuntimeError(f"Torch 2.10 requires CUDA 12.6, 12.8, or 13.0! Got CUDA = {cuda}")
