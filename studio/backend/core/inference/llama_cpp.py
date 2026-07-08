@@ -4132,17 +4132,18 @@ class LlamaCppBackend:
             # cold whenever free disk is below the full weight footprint,
             # even though nothing needs downloading.
             already_cached_bytes = 0
+            # Cross-snapshot / case-variant cache reuse is offline-only (see the download
+            # path below); online, hf_hub_download fetches the current revision and
+            # resumes partials, so an old snapshot must not be counted as cached here or
+            # the preflight would under-count the download and skip the disk fallback.
+            offline = os.environ.get("HF_HUB_OFFLINE") == "1"
             # A split GGUF whose shards are not co-located in a single snapshot is
-            # refetched as a whole set later (see the co-location check below), so it
-            # must not be counted as cached here. Otherwise the preflight can read 0
-            # bytes to download, skip the smaller-variant fallback, and then fail the
-            # full download on a low-disk machine.
+            # refetched as a whole set later, so it must not be counted as cached here.
             split_needs_refetch = False
-            if not force and gguf_extra_shards:
-                # Match the download path: scan all snapshots for one that holds the
-                # whole set co-located, so a newer snapshot with only the first shard
-                # does not mask an older complete one and needlessly trip the disk
-                # fallback for an already-cached split model.
+            if offline and not force and gguf_extra_shards:
+                # Scan all snapshots for one that holds the whole set co-located, so a
+                # newer snapshot with only the first shard does not mask an older
+                # complete one and needlessly trip the disk fallback.
                 if (
                     _cached_colocated_split_main(
                         hf_repo, gguf_filename, gguf_extra_shards, expected_sizes
@@ -4158,7 +4159,10 @@ class LlamaCppBackend:
                         cached_path = try_to_load_from_cache(hf_repo, p.path)
                     except Exception:
                         cached_path = None
-                    if not (isinstance(cached_path, str) and os.path.exists(cached_path)):
+                    if (
+                        not (isinstance(cached_path, str) and os.path.exists(cached_path))
+                        and offline
+                    ):
                         cached_path = _cached_hf_snapshot_file(
                             hf_repo,
                             p.path,
@@ -4253,7 +4257,11 @@ class LlamaCppBackend:
             dl_start = time.monotonic()
             # Xet primary, HTTP fallback on stall; per-file so finished shards stay cached.
             local_path = None
-            if not force:
+            # Reuse a cached copy from another snapshot / case-variant repo dir only when
+            # offline. Online, fall through to hf_hub_download so its revision/etag check
+            # fetches the current file (and resumes a partial) instead of serving a stale
+            # same-name blob from an older revision.
+            if not force and os.environ.get("HF_HUB_OFFLINE") == "1":
                 if gguf_extra_shards:
                     # A split GGUF must load every shard from one snapshot; reuse only a
                     # snapshot that holds the whole set co-located, scanning past a newer
