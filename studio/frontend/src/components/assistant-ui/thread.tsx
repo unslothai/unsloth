@@ -199,6 +199,7 @@ type PromptQueueItem = {
   prompt: string;
   target: PromptQueueTarget;
   dispatched: boolean;
+  dispatchRetries: number;
 };
 
 type PromptQueueRun = {
@@ -212,6 +213,8 @@ type PromptQueueRun = {
 };
 
 const PROMPT_QUEUE_INDEXING_RETRY_MS = 500;
+const PROMPT_QUEUE_DISPATCH_RETRY_MS = 500;
+const PROMPT_QUEUE_MAX_DISPATCH_RETRIES = 5;
 const PROMPT_QUEUE_GLOBAL_CONCURRENCY = 1;
 
 const promptQueueRuns = new Map<string, PromptQueueRun>();
@@ -303,11 +306,17 @@ function appendQueuedPrompt(run: PromptQueueRun, item: PromptQueueItem) {
   syncPromptQueueUI();
   try {
     item.target.append(item.prompt);
-  } catch {
+  } catch (error) {
     item.dispatched = false;
     promptQueueActiveRunIds.delete(run.id);
     syncPromptQueueUI();
-    scheduleQueuedPromptDispatch(run, item, 500);
+    item.dispatchRetries += 1;
+    if (item.dispatchRetries > PROMPT_QUEUE_MAX_DISPATCH_RETRIES) {
+      console.error("Prompt queue dispatch failed permanently:", error);
+      deletePromptQueueRun(run);
+      return;
+    }
+    scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_DISPATCH_RETRY_MS);
   }
 }
 
@@ -368,7 +377,9 @@ function scheduleQueuedPromptDispatch(
 
 function getPromptQueueActiveGenerationCount() {
   return Math.max(
-    Object.keys(useChatRuntimeStore.getState().runningByThreadId).length,
+    Object.values(useChatRuntimeStore.getState().runningByThreadId).filter(
+      Boolean,
+    ).length,
     promptQueueActiveRunIds.size + promptQueueDispatchingRunIds.size,
   );
 }
@@ -489,6 +500,7 @@ function createQueuedPrompt(prompt: string, target: PromptQueueTarget) {
     prompt,
     target,
     dispatched: false,
+    dispatchRetries: 0,
   };
 }
 

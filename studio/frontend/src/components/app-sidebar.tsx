@@ -289,7 +289,7 @@ function NavItem({
 }
 
 function getSidebarItemThreadIds(item: SidebarItem) {
-  return item.threadIds.length > 0 ? item.threadIds : [item.id];
+  return item.threadIds?.length ? item.threadIds : [item.id];
 }
 
 export function AppSidebar() {
