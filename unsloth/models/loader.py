@@ -1576,9 +1576,8 @@ class FastModel(FastBaseModel):
             # Check base model again for PEFT
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
-                # Compare against a separate local, not old_model_name: old_model_name still
-                # holds the adapter repo that PeftModel.from_pretrained loads below, so reusing
-                # it here would attach the base checkpoint instead of the adapter. #6749
+                # Use a separate local, not old_model_name, which still holds the adapter repo
+                # PeftModel.from_pretrained loads below; reusing it would attach the base. #6749
                 base_before_remap = model_name
                 model_name = get_model_name(
                     model_name,

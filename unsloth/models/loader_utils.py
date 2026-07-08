@@ -535,21 +535,16 @@ def _fp8_scale_snapshot_allow_patterns(
     if use_safetensors is False:
         return []
     if variant:
-        # transformers applies the variant BEFORE the shard suffix, so a sharded variant shard
-        # is `model.<variant>-00001-of-00002.safetensors` (matched by `*.<variant>-*.safetensors`),
-        # not `model.<variant>.safetensors` (only the single-file form). Cover both, else
-        # snapshot_download fetches the variant index but none of its shards and no scales load. #6749
+        # Cover single-file and sharded variant forms; transformers applies the variant before
+        # the shard suffix, so a sharded shard is `model.<variant>-00001-of-00002.safetensors`. #6749
         patterns = [
             f"*.{variant}.safetensors",
             f"*.{variant}-*.safetensors",
             f"*.safetensors.index.{variant}.json",
         ]
     else:
-        # Restrict to the default (non-variant) transformers artifact names the scanner opens
-        # (model / pytorch_model, single-file or sharded, plus their index), NOT a bare
-        # *.safetensors: a repo that also publishes alternate variants would otherwise pull
-        # those unused shards too. These cover every file _resolve_fp8_scale_safetensors_files
-        # reads for the no-variant case, so nothing needed is skipped. #6749
+        # Default (non-variant) model/pytorch_model artifacts plus index, not a bare
+        # *.safetensors that would also pull alternate variant shards. #6749
         patterns = [
             "model.safetensors",
             "pytorch_model.safetensors",
@@ -636,9 +631,8 @@ def _find_fp8_scale_inv_tensors(
         except Exception:
             return []
 
-        # The default globs cover standard shard names; if the index instead maps scale tensors
-        # to shards named outside them, pull those exact shards too so the restore below can read
-        # them. Only the shards the first pass missed are fetched, so standard repos add nothing.
+        # Fetch any scale shards the index maps to names outside the default globs; the first
+        # pass covers standard names, so standard repos add nothing here.
         extra_patterns = _fp8_scale_index_extra_patterns(model_dir, subfolder, variant)
         missing = [
             pattern
@@ -695,8 +689,7 @@ def _find_fp8_scale_inv_tensors(
     ]
 
 
-# Projection tensors kept by weightless FP8 experts (FP8Experts /
-# FbgemmFp8Llama4TextExperts) in place of a top-level `weight`.
+# Projections weightless FP8 experts keep in place of a top-level `weight`.
 _FP8_PROJECTION_ATTRS = ("gate_up_proj", "gate_proj", "up_proj", "down_proj")
 
 
@@ -808,9 +801,8 @@ def _restore_missing_fp8_weight_scale_inv(
             and scale_tensor.ndim > 0
             and weight.ndim > 0
             and scale_tensor.shape[0] > weight.shape[0]
-            # A transposed/column-wise scale has shape[0] == weight.shape[1] and is a layout the
-            # FP8 kernel handles (see unsloth/kernels/fp8.py transposed weight/scale branch), so
-            # only reject scales whose row count matches neither the weight rows nor columns. #6749
+            # Keep transposed/column-wise scales (shape[0] == weight.shape[1]) the FP8 kernel
+            # handles; reject only scales matching neither weight rows nor columns. #6749
             and (weight.ndim < 2 or scale_tensor.shape[0] != weight.shape[1])
         ):
             skipped += 1
@@ -827,10 +819,8 @@ def _restore_missing_fp8_weight_scale_inv(
             and weight.is_floating_point()
             and not _has_float8_dtype(weight.dtype)
         ):
-            # Floating (fp16/bf16) FP8 owner whose scale placeholder was dropped: no reference to
-            # match, so mirror the weight dtype like the placeholder path does instead of leaving
-            # the buffer in the checkpoint's fp32. Packed (int8) and real float8 weights keep the
-            # checkpoint dtype. #6749
+            # Floating (fp16/bf16) FP8 owner with no reference scale: mirror the weight dtype
+            # instead of the checkpoint fp32. Packed/int8 and real float8 keep checkpoint dtype. #6749
             try:
                 restored_scale = restored_scale.to(dtype = weight.dtype)
             except Exception:
@@ -838,15 +828,12 @@ def _restore_missing_fp8_weight_scale_inv(
         if attr_name in module._buffers:
             module._buffers[attr_name] = restored_scale
         elif attr_name in module._parameters:
-            # HF FP8Linear.weight_scale_inv / FbgemmFp8Linear.weight_scale live in _parameters,
-            # so keep them Parameters here instead of delattr + register_buffer: demoting a scale
-            # to a buffer changes the module's parameter set and breaks tensor-parallel/optimizer/
-            # PEFT parameter inspection that expects these FP8 scales to stay parameters. #6749
+            # HF FP8 scales live in _parameters; keep them Parameters rather than demoting to a
+            # buffer, which would break tensor-parallel/optimizer/PEFT parameter inspection. #6749
             existing = module._parameters[attr_name]
             if isinstance(existing, torch.nn.Parameter):
-                # Update in place so any runtime metadata the kernels read off the scale (e.g.
-                # `block_size`, which fp8 dequant pulls via getattr) survives; building a fresh
-                # Parameter would drop those attributes and force default block geometry. #6749
+                # Update in place so runtime metadata (e.g. `block_size` fp8 dequant reads via
+                # getattr) survives; a fresh Parameter would drop it and force default geometry. #6749
                 with torch.no_grad():
                     existing.data = restored_scale
             else:

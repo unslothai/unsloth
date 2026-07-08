@@ -1,3 +1,19 @@
+# Unsloth Zoo - Utilities for Unsloth
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 import ast
 import fnmatch
 import importlib.util
@@ -355,8 +371,8 @@ def test_safetensors_index_opens_only_scale_shards(monkeypatch):
 
 
 def test_remote_scale_restore_constrains_snapshot_download_patterns(monkeypatch):
-    # A remote FP8 scale restore must not re-pull the whole repo after the model already
-    # loaded: constrain snapshot_download to the index + selected safetensors, never .bin. #6749
+    # A remote scale restore must constrain snapshot_download to the index + selected
+    # safetensors, not re-pull the whole repo. #6749
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.fp8 = _PackedFp8Owner()
@@ -390,8 +406,8 @@ def test_remote_scale_restore_constrains_snapshot_download_patterns(monkeypatch)
 
 
 def test_no_variant_snapshot_patterns_exclude_alternate_variants():
-    # The no-variant patterns must cover the default single-file/sharded/index names the scanner
-    # opens, but NOT alternate variant safetensors a repo may also publish. #6749
+    # No-variant patterns cover default single-file/sharded/index names, not alternate
+    # variant safetensors a repo may also publish. #6749
     import fnmatch
 
     loader_utils = _load_loader_utils()
@@ -446,17 +462,15 @@ def test_remote_scale_restore_snapshot_patterns_respect_variant(monkeypatch):
     assert skipped == 0
     allow_patterns = recorded["allow_patterns"]
     assert allow_patterns is not None
-    # Every pattern must be variant-scoped (mentions the variant) and none may be the bare
-    # non-variant safetensors/index globs, so the snapshot stays limited to the selected variant.
+    # Every pattern must be variant-scoped, none the bare non-variant globs, so the
+    # snapshot stays limited to the selected variant.
     assert all("fp8" in p for p in allow_patterns)
     assert not any(p in ("*.safetensors", "*.safetensors.index.json") for p in allow_patterns)
 
 
 def test_remote_scale_restore_snapshot_patterns_cover_sharded_variant_shards(monkeypatch):
-    # transformers names a sharded variant shard `model.<variant>-00001-of-00002.safetensors`
-    # (variant applied before the shard suffix). The scale-restore allow_patterns must cover that
-    # form, or snapshot_download pulls the variant index but none of its shards and no scales are
-    # restored - a silent regression for remote sharded variant FP8 checkpoints. #6749
+    # allow_patterns must cover the sharded variant form
+    # `model.<variant>-00001-of-00002.safetensors`, else the index downloads but no shards. #6749
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.fp8 = _PackedFp8Owner()
@@ -501,9 +515,8 @@ def test_remote_scale_restore_snapshot_patterns_cover_sharded_variant_shards(mon
 
 
 def test_restored_floating_owner_scale_matches_weight_dtype():
-    # A floating (fp16/bf16) FP8 owner with no scale placeholder has no reference dtype to match,
-    # so the restored buffer must mirror the weight dtype (like the placeholder path) rather than
-    # keep the checkpoint's fp32, which would disagree with the module dtype at matmul. #6749
+    # A floating (fp16/bf16) FP8 owner with no scale placeholder must get a buffer mirroring
+    # the weight dtype, not the checkpoint fp32 that would mismatch at matmul. #6749
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.bfloat16))
@@ -1061,10 +1074,8 @@ def test_fastmodel_peft_base_mapping_clears_fp8_after_remap():
 
 
 def test_fastmodel_peft_preserves_adapter_name_for_peft_load():
-    # The FP8 base remap must compare against a pre-remap base name, but that comparison must
-    # NOT reuse old_model_name: old_model_name still points at the adapter repo that
-    # PeftModel.from_pretrained loads, so clobbering it inside the is_peft block would make
-    # PEFT attach the base checkpoint instead of the adapter. #6749
+    # The FP8 base remap must compare against a pre-remap base name without reusing
+    # old_model_name, which still points at the adapter repo PeftModel loads. #6749
     tree = ast.parse(LOADER.read_text())
     offending = []
 
@@ -1233,9 +1244,8 @@ def test_restored_scale_stays_a_parameter_when_placeholder_is_a_parameter():
     loader_utils = _load_loader_utils()
     model = torch.nn.Module()
     model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16))
-    # HF FP8Linear.weight_scale_inv / FbgemmFp8Linear.weight_scale are Parameters; the restore
-    # must keep them Parameters rather than delattr + register_buffer (which would silently
-    # demote the scale to a buffer and hide it from parameter inspection).
+    # HF FP8 scales are Parameters; the restore must keep them Parameters, not demote them
+    # to buffers hidden from parameter inspection.
     model.fp8.weight_scale_inv = torch.nn.Parameter(
         torch.tensor([9.0], dtype = torch.float16), requires_grad = False
     )
