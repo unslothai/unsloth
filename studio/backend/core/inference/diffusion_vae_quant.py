@@ -27,7 +27,10 @@ families (SSIM >= 0.977 on all but SDXL) while ``fp8_dynamic`` (PerTensor conv c
 only stays in-bar on a couple of VAEs (FLUX.2, Hunyuan) and is catastrophic on others
 (Qwen-Image SSIM 0.46). So ``auto`` (the loader default) engages layerwise ``fp8`` ONLY --
 the memory win with no measured quality loss -- and ``fp8_dynamic`` is an explicit opt-in,
-re-gated by a per-family deny list. ``none``/``off`` keeps the VAE dense bf16. A quantised
+re-gated by a per-family deny list. ``auto`` also SIZE-GATES: it only quantises VAEs above a
+~1 GB floor, because the small image AutoencoderKLs (~0.2 GB) save ~nothing and only slow their
+tiny decode, while the video Conv3d VAEs (~2.5 GB) halve to ~1.2 GB at ~2% decode cost. An
+explicit scheme skips the size gate. ``none``/``off`` keeps the VAE dense bf16. A quantised
 VAE MUST NOT be ``.to(dtype=...)``'d afterwards (the fp8 tensor subclasses mishandle it), so
 the loader skips the img2img/inpaint VAE re-align when a scheme engaged. torch / diffusers /
 torchao are imported lazily so the module stays importable in a no-torch runtime.
@@ -81,6 +84,14 @@ _VAE_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
 # Cache of device -> bool for the fp8_dynamic conv smoke probe (run once per device).
 _VAE_DYNAMIC_PROBE_CACHE: dict[str, bool] = {}
 
+# ``auto`` only quantises a VAE big enough for the saving to be worth the fp8-decode overhead.
+# A decoded-image speed/memory sweep showed the split is by kind: image AutoencoderKLs are
+# ~0.15-0.26 GB (halving saves ~0.1 GB and costs +6-16% on their tiny decode -- net negative),
+# while the video Conv3d VAEs are ~2.5 GB (halving saves ~1.2 GB at only +2% on their heavy
+# decode). So auto skips VAEs whose dense weights are under this floor; an explicit request is
+# still honoured (the user opted in). ~1 GB cleanly separates the two populations.
+_VAE_AUTO_MIN_BYTES = 1_000_000_000
+
 
 def normalize_vae_quant(value: Optional[str]) -> Optional[str]:
     """Lower/strip a requested VAE quant; None / "" / "none" / "off" -> None,
@@ -125,6 +136,16 @@ def vae_quant_supported(target: Any, mode: str) -> bool:
 
 def _vae_family_denied(family: Optional[str], scheme: str) -> bool:
     return scheme in _VAE_FAMILY_SCHEME_DENY.get((family or "").strip().lower(), frozenset())
+
+
+def _vae_param_bytes(vae: Any) -> int:
+    """Dense weight footprint of the VAE in bytes (sum of param numel * element size). Used to
+    size-gate ``auto`` so it only quantises VAEs large enough for the saving to matter."""
+    try:
+        return sum(p.numel() * p.element_size() for p in vae.parameters())
+    except Exception:
+        # Unknown size -> do not let the gate wrongly skip; treat as above the floor.
+        return _VAE_AUTO_MIN_BYTES
 
 
 def _vae_fp8_dynamic_probe(device: str) -> bool:
@@ -226,7 +247,16 @@ def quantize_vae(
     mode = normalize_vae_quant(mode)
     if mode is None:
         return None
+    vae = getattr(pipe, "vae", None)
+    if vae is None:
+        return None
     if mode == VAE_QUANT_AUTO:
+        # Size gate: a small (image) VAE saves ~nothing and only slows its tiny decode, so auto
+        # leaves it dense; the big video Conv3d VAEs clear the floor and quantise. Explicit
+        # requests below skip this gate (the user asked for it directly).
+        if _vae_param_bytes(vae) < _VAE_AUTO_MIN_BYTES:
+            _note(logger, "vae auto: VAE under the ~1GB size floor; staying dense (quant saves ~nothing)")
+            return None
         mode = select_vae_quant_scheme(
             target,
             VAE_QUANT_AUTO,
@@ -262,9 +292,6 @@ def quantize_vae(
         ):
             _note(logger, "vae 'fp8_dynamic' skipped: torchao build lacks a working fp8 conv path")
             return None
-    vae = getattr(pipe, "vae", None)
-    if vae is None:
-        return None
     try:
         if mode == VAE_QUANT_FP8_DYNAMIC:
             _cast_vae_fp8_dynamic(vae, target)

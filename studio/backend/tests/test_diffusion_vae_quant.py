@@ -393,8 +393,47 @@ def test_quantize_vae_auto_resolves_and_applies(monkeypatch):
     monkeypatch.setattr(vq, "_cast_vae_fp8", lambda v, t: calls.append(v))
     vae = object()
     pipe = types.SimpleNamespace(vae = vae)
+    # large VAE -> clears the size gate
+    monkeypatch.setattr(vq, "_vae_param_bytes", lambda v: 3_000_000_000)
     assert quantize_vae(pipe, _target(), mode = "auto", family = "flux.1") == VAE_QUANT_FP8
     assert calls == [vae]
+
+
+def test_quantize_vae_auto_size_gate_skips_small(monkeypatch):
+    # auto leaves a small (image) VAE dense: halving ~0.2GB saves ~nothing and only slows decode.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _stub_capability(monkeypatch, (10, 0))
+    _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
+    monkeypatch.setattr(vq, "_vae_param_bytes", lambda v: 200_000_000)  # ~0.2 GB image VAE
+    monkeypatch.setattr(vq, "_cast_vae_fp8", lambda v, t: pytest.fail("small VAE must stay dense"))
+    monkeypatch.setattr(vq, "_cast_vae_fp8_dynamic", lambda v, t: pytest.fail("small VAE must stay dense"))
+    pipe = types.SimpleNamespace(vae = object())
+    assert quantize_vae(pipe, _target(), mode = "auto", family = "flux.1") is None
+
+
+def test_quantize_vae_auto_size_gate_allows_large(monkeypatch):
+    # auto quantises a large (video Conv3d) VAE: halving ~2.5GB saves ~1.2GB at ~2% decode.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _stub_capability(monkeypatch, (10, 0))
+    _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
+    monkeypatch.setattr(vq, "_vae_param_bytes", lambda v: 2_500_000_000)  # ~2.5 GB video VAE
+    calls: list = []
+    monkeypatch.setattr(vq, "_cast_vae_fp8", lambda v, t: calls.append(v))
+    pipe = types.SimpleNamespace(vae = object())
+    assert quantize_vae(pipe, _target(), mode = "auto", family = "hunyuanvideo-1.5") == VAE_QUANT_FP8
+    assert len(calls) == 1
+
+
+def test_quantize_vae_explicit_bypasses_size_gate(monkeypatch):
+    # An explicit request quantises even a small VAE -- the user opted in directly.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow_vae(monkeypatch, {VAE_QUANT_FP8})
+    monkeypatch.setattr(vq, "_vae_param_bytes", lambda v: 200_000_000)  # small, but explicit
+    calls: list = []
+    monkeypatch.setattr(vq, "_cast_vae_fp8", lambda v, t: calls.append(v))
+    pipe = types.SimpleNamespace(vae = object())
+    assert quantize_vae(pipe, _target(), mode = "fp8", family = "flux.1") == VAE_QUANT_FP8
+    assert len(calls) == 1
 
 
 def test_quantize_vae_explicit_fp8_dynamic_probe_gates(monkeypatch):
