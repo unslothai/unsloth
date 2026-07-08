@@ -43,6 +43,7 @@ export const en = {
       video: "Video",
       export: "Export",
       recents: "Recents",
+      noChatsYet: "No chats yet",
       settings: "Settings",
       api: "API",
       lightMode: "Light Mode",
