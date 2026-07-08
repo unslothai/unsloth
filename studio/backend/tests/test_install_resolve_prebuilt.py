@@ -398,31 +398,43 @@ def test_linux_vulkan_health_glob_matches_bare_cpu_lib():
     assert ["libggml-cpu-*.so*"] not in groups
 
 
-def test_route_to_vulkan_prebuilt_auto_intel_goes_upstream():
+def test_route_to_vulkan_prebuilt_auto_intel_goes_upstream_and_drops_fork_pin():
+    # Routing fork -> upstream also drops the fork release pin, which is in a
+    # different tag namespace and would make the upstream resolver miss.
     host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
-    routed, repo = ilp._route_to_vulkan_prebuilt(host, FORK, force_cpu = False)
+    routed, repo, tag = ilp._route_to_vulkan_prebuilt(host, FORK, "b9596-mix-abc", force_cpu = False)
     assert repo == UPSTREAM
+    assert tag == ""
     assert routed.has_intel_gpu is True
+
+
+def test_route_to_vulkan_prebuilt_preserves_explicit_upstream_pin():
+    # A pin set WITH an explicit upstream repo is already on upstream -> kept.
+    host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
+    _routed, repo, tag = ilp._route_to_vulkan_prebuilt(host, UPSTREAM, "b9596", force_cpu = False)
+    assert repo == UPSTREAM
+    assert tag == "b9596"
 
 
 def test_route_to_vulkan_prebuilt_cpu_fallback_wins():
     # --cpu-fallback suppresses Vulkan routing even for an Intel host.
     host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
-    routed, repo = ilp._route_to_vulkan_prebuilt(host, FORK, force_cpu = True)
+    routed, repo, tag = ilp._route_to_vulkan_prebuilt(host, FORK, "b9596-mix-abc", force_cpu = True)
     assert repo == FORK
+    assert tag == "b9596-mix-abc"
     assert routed is host
 
 
 def test_route_to_vulkan_prebuilt_rocm_host_not_rerouted():
     # An Intel iGPU alongside a usable ROCm GPU stays on its ROCm/fork path.
     host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True, has_rocm = True)
-    routed, repo = ilp._route_to_vulkan_prebuilt(host, FORK, force_cpu = False)
+    _routed, repo, _tag = ilp._route_to_vulkan_prebuilt(host, FORK, "", force_cpu = False)
     assert repo == FORK
 
 
 def test_route_to_vulkan_prebuilt_non_intel_unchanged():
     host = _host(is_linux = True, is_x86_64 = True)
-    routed, repo = ilp._route_to_vulkan_prebuilt(host, FORK, force_cpu = False)
+    routed, repo, _tag = ilp._route_to_vulkan_prebuilt(host, FORK, "", force_cpu = False)
     assert repo == FORK
     assert routed is host
 

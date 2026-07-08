@@ -6824,8 +6824,8 @@ def _vulkan_only_host(host: HostInfo) -> HostInfo:
 
 
 def _route_to_vulkan_prebuilt(
-    host: HostInfo, published_repo: str, *, force_cpu: bool
-) -> tuple[HostInfo, str]:
+    host: HostInfo, published_repo: str, published_release_tag: str, *, force_cpu: bool
+) -> tuple[HostInfo, str, str]:
     """Point a Vulkan-capable host at the upstream ggml-org Vulkan prebuilt.
 
     The unsloth published repo ships only CUDA/ROCm/CPU assets, so Vulkan comes
@@ -6836,18 +6836,20 @@ def _route_to_vulkan_prebuilt(
         has_intel_gpu probe, since the fork manifest ships no Vulkan asset.
     Applied by BOTH the install path and the --resolve-prebuilt probe so the
     "is a prebuilt available" answer matches what actually gets installed.
+
+    Returns the (possibly rewritten) host, repo, and release tag.
     """
     forced = force_vulkan_requested()
     auto_intel = host.has_intel_gpu and not host.has_usable_nvidia and not host.has_rocm
     if force_cpu or not (forced or auto_intel):
-        return host, published_repo
+        return host, published_repo, published_release_tag
     if host.is_macos:
         if forced:
             log(
                 "UNSLOTH_FORCE_VULKAN is set but ignored on macOS "
                 "(Metal is used; there is no Vulkan prebuilt)"
             )
-        return host, published_repo
+        return host, published_repo, published_release_tag
     if forced:
         log(
             "UNSLOTH_FORCE_VULKAN is set; installing the upstream Vulkan "
@@ -6858,7 +6860,15 @@ def _route_to_vulkan_prebuilt(
         host = _vulkan_only_host(host)
     else:
         log("Intel GPU detected; installing the upstream Vulkan llama.cpp prebuilt")
-    return host, UPSTREAM_REPO
+    # Swapping the fork for upstream invalidates a fork release pin: the two use
+    # different tag namespaces (fork b9596-mix-<sha> vs upstream b9596), so a
+    # pinned fork tag would make the upstream resolver query a nonexistent
+    # release and fall back to source. Drop it and let the upstream resolver
+    # pick by the requested llama tag. A pin set WITH an explicit upstream repo
+    # is already on upstream (repo unchanged here) and is preserved.
+    if published_repo != UPSTREAM_REPO:
+        published_release_tag = ""
+    return host, UPSTREAM_REPO, published_release_tag
 
 
 def diffusion_visual_server_backfill_needed(
@@ -6903,7 +6913,9 @@ def install_prebuilt(
         override_rocm_gfx = override_rocm_gfx,
         force_cpu = force_cpu,
     )
-    host, published_repo = _route_to_vulkan_prebuilt(host, published_repo, force_cpu = force_cpu)
+    host, published_repo, published_release_tag = _route_to_vulkan_prebuilt(
+        host, published_repo, published_release_tag, force_cpu = force_cpu
+    )
     choice: AssetChoice | None = None
     try:
         with install_lock(install_lock_path(install_dir)):
@@ -7206,12 +7218,12 @@ def main() -> int:
         )
         # Same Vulkan routing the install path applies, so the probe's answer
         # matches what would install (an Intel/forced-Vulkan host -> upstream).
-        host, repo = _route_to_vulkan_prebuilt(
-            host, args.published_repo, force_cpu = args.cpu_fallback
+        host, repo, release_tag = _route_to_vulkan_prebuilt(
+            host, args.published_repo, args.published_release_tag or "", force_cpu = args.cpu_fallback
         )
         try:
             _requested, plans = resolve_simple_install_release_plans(
-                args.resolve_prebuilt, host, repo, args.published_release_tag or ""
+                args.resolve_prebuilt, host, repo, release_tag
             )
             choice = plans[0].attempts[0] if plans and plans[0].attempts else None
             if choice is None:
