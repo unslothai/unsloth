@@ -182,10 +182,25 @@ def _load_plain():
 
 @pytest.fixture(autouse = True)
 def _require_stack():
+    global torch  # the `import torch._dynamo` below would otherwise shadow it as local
     if importlib.util.find_spec("unsloth") is None or importlib.util.find_spec("trl") is None:
         pytest.skip("unsloth or trl not installed")
     # A real import failure is a regression we want to surface, so do not guard it.
     import unsloth  # noqa: F401  -- patches TRL trainers to the Unsloth variants
+
+    # `import unsloth` reinstalls the real torch.compile (overwriting the eager
+    # passthrough set at module load), so the GRPO hot path (chunked_selective_
+    # log_softmax) would really compile -- and inductor picks the spoofed CUDA
+    # device, crashing on device props (`gcnArchName`). Re-apply the eager
+    # passthrough and flip dynamo's call-time kill switch so every @torch.compile
+    # runs eager regardless of when it was decorated. CPU eager is what we want.
+    torch.compile = _eager_compile
+    try:
+        import torch._dynamo  # noqa: E402
+
+        torch._dynamo.config.disable = True
+    except Exception:
+        pass
 
 
 def test_sft_trains_on_cpu():
@@ -208,6 +223,7 @@ def test_sft_trains_on_cpu():
         dataset_text_field = "text",
         fp16 = False,
         bf16 = False,
+        optim = "adamw_torch",
     )
     SFTTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
 
@@ -234,6 +250,7 @@ def test_grpo_trains_on_cpu():
         use_vllm = False,
         fp16 = False,
         bf16 = False,
+        optim = "adamw_torch",
     )
     GRPOTrainer(
         model = model,
@@ -264,5 +281,6 @@ def test_dpo_trains_on_cpu():
         beta = 0.1,
         fp16 = False,
         bf16 = False,
+        optim = "adamw_torch",
     )
     DPOTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
