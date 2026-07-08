@@ -661,11 +661,7 @@ def _notebook_frame_request_allowed(scope) -> bool:
     return expected in values
 
 
-def _build_csp(
-    script_nonce: "str | None" = None,
-    *,
-    allow_hosted_frame: bool = True,
-) -> str:
+def _build_csp(script_nonce: "str | None" = None, *, allow_hosted_frame: bool = True) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"

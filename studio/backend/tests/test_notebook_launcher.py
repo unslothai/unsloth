@@ -147,9 +147,7 @@ def test_start_and_publish_tunnel_fails_closed_when_publish_fails(monkeypatch):
     monkeypatch.setattr(colab, "_publish_cloudflare_url", lambda *args, **kwargs: False)
     monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda: calls.append("stopped"))
 
-    assert (
-        colab._start_and_publish_cloudflare_tunnel(8888, allow_bootstrap_pending = True) is None
-    )
+    assert colab._start_and_publish_cloudflare_tunnel(8888, allow_bootstrap_pending = True) is None
     assert calls == ["stopped"]
 
 

@@ -60,6 +60,7 @@ class _FakeRequest:
         trust_cloudflare_client_ip = False,
     ):
         from starlette.datastructures import Headers
+
         self.client = type("Client", (), {"host": client_host})()
         self.headers = Headers(headers or {})
         self.app = type(
@@ -173,6 +174,7 @@ class TestClientIp:
 
     def test_cf_connecting_ip_used_when_explicitly_trusted(self, env_no_proxy, monkeypatch):
         from routes.auth import _client_ip
+
         monkeypatch.setenv("UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP", "1")
         req = _FakeRequest("127.0.0.1", {"cf-connecting-ip": "198.51.100.7"})
         assert _client_ip(req) == "198.51.100.7"
@@ -197,7 +199,6 @@ class TestClientIp:
 
     def test_rotating_cf_connecting_ip_without_tunnel_stays_one_bucket(self, env_no_proxy):
         from routes import auth as auth_routes
-
         for idx in range(5):
             req = _FakeRequest("127.0.0.1", {"cf-connecting-ip": f"198.51.100.{idx}"})
             auth_routes._record_login_failure(auth_routes._bucket_key(req, "admin"))

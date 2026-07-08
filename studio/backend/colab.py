@@ -274,9 +274,7 @@ def _set_public_tunnel_bootstrap_suppression(enabled: bool) -> bool:
 
 
 def _publish_cloudflare_url(
-    cloudflare_url: "str | None",
-    *,
-    suppress_bootstrap: "bool | None" = None,
+    cloudflare_url: "str | None", *, suppress_bootstrap: "bool | None" = None
 ) -> bool:
     """Publish a directly-started tunnel URL onto app.state so /api/health advertises it.
 
@@ -288,6 +286,7 @@ def _publish_cloudflare_url(
         return True
     try:
         from main import app as _studio_app
+
         _studio_app.state.cloudflare_url = cloudflare_url
         _studio_app.state.suppress_bootstrap_injection_for_public_tunnel = bool(
             _bootstrap_password_pending() if suppress_bootstrap is None else suppress_bootstrap
@@ -300,9 +299,7 @@ def _publish_cloudflare_url(
 
 
 def _start_and_publish_cloudflare_tunnel(
-    port: int,
-    *,
-    allow_bootstrap_pending: bool = False,
+    port: int, *, allow_bootstrap_pending: bool = False
 ) -> "str | None":
     bootstrap_pending = _bootstrap_password_pending()
     if bootstrap_pending and allow_bootstrap_pending:
@@ -341,6 +338,7 @@ def _stop_cloudflare_tunnel() -> None:
     # Stop /api/health advertising a dead tunnel.
     try:
         from main import app as _studio_app
+
         _studio_app.state.cloudflare_url = None
         _studio_app.state.suppress_bootstrap_injection_for_public_tunnel = False
         _studio_app.state.trust_cloudflare_client_ip = False
