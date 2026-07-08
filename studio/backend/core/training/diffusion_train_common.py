@@ -304,6 +304,7 @@ def native_bf16_supported() -> bool:
     guard so all three stay in sync."""
     try:
         import torch
+
         if not torch.cuda.is_available():
             return False
         is_rocm = bool(getattr(getattr(torch, "version", None), "hip", None))

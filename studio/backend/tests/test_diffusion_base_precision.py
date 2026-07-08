@@ -146,7 +146,9 @@ def test_bf16_unsupported_reason(monkeypatch):
     # report is_bf16_supported() True, so the gate is native compute capability (major >= 8), not
     # is_bf16_supported() -- otherwise the emulation case would slip through and evict-then-fail.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)  # emulation reports True
+    monkeypatch.setattr(
+        torch.cuda, "is_bf16_supported", lambda *a, **k: True
+    )  # emulation reports True
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (7, 5))  # Turing
     assert "bfloat16" in (bf16_unsupported_reason("flux.1") or "")
 
@@ -168,7 +170,9 @@ def test_native_bf16_supported_gates_on_capability(monkeypatch):
     from core.training.diffusion_train_common import native_bf16_supported
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)  # emulation reports True
+    monkeypatch.setattr(
+        torch.cuda, "is_bf16_supported", lambda *a, **k: True
+    )  # emulation reports True
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (7, 5))  # Turing
     assert native_bf16_supported() is False
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))  # Ampere

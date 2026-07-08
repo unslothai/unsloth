@@ -311,7 +311,9 @@ def test_train_precision_modes_pre_ampere_is_nf4_only(monkeypatch):
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)  # emulation reports True
+    monkeypatch.setattr(
+        torch.cuda, "is_bf16_supported", lambda *a, **k: True
+    )  # emulation reports True
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (7, 5))  # Turing
     modes, recommended = train_precision_modes()
     assert modes == ["nf4"]
