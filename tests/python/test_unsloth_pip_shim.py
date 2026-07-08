@@ -328,3 +328,132 @@ def test_attached_short_upgrade_package_protected_dropped(shim):
     execd, _ = _run(shim, "uv", ["-Ptorch", "peft"])
     assert execd == ["peft"], execd
     assert "torch" not in execd and "-P" not in execd
+
+
+# --------------------------------------------------------------------------
+# Item 3541773143 -- a bare wheel filename (no ./ or / prefix) is still a pip
+# target from the CWD, so its protected distribution must be parsed too.
+# --------------------------------------------------------------------------
+def test_bare_torch_wheel_filename_dropped(shim):
+    # `pip install torch-2.11.0-...whl` from the CWD must not reinstall torch.
+    execd, _ = _run(shim, "pip", ["torch-2.11.0+cu128-cp312-cp312-linux_x86_64.whl"])
+    assert execd is None, execd
+
+
+def test_bare_wheel_in_subdir_dropped(shim):
+    execd, _ = _run(shim, "pip", ["dist/torch-2.11.0-cp312-cp312-linux_x86_64.whl"])
+    assert execd is None, execd
+
+
+def test_bare_unprotected_wheel_filename_kept(shim):
+    execd, _ = _run(shim, "pip", ["numpy-2.1.0-cp312-cp312-linux_x86_64.whl"])
+    assert execd == ["numpy-2.1.0-cp312-cp312-linux_x86_64.whl"], execd
+
+
+# --------------------------------------------------------------------------
+# Item 3541773157 -- a protected VCS URL WITHOUT an #egg= fragment (the egg-less
+# form this repo recommends) must be dropped via its repo basename.
+# --------------------------------------------------------------------------
+def test_vcs_url_without_egg_protected_dropped(shim):
+    # git+https://github.com/huggingface/transformers.git -> transformers.
+    execd, _ = _run(shim, "pip", ["git+https://github.com/huggingface/transformers.git", "peft"])
+    assert execd == ["peft"], execd
+
+
+def test_vcs_url_without_egg_with_ref_dropped(shim):
+    execd, _ = _run(
+        shim, "pip", ["git+https://github.com/unslothai/unsloth-zoo.git@main", "peft"]
+    )
+    assert execd == ["peft"], execd
+
+
+def test_vcs_url_without_egg_unprotected_kept(shim):
+    url = "git+https://github.com/someone/coolpkg.git"
+    execd, _ = _run(shim, "pip", [url])
+    assert execd == [url], execd
+
+
+# --------------------------------------------------------------------------
+# Item 3541773153 -- refuse remote (URL) requirement / constraint files in shim
+# mode; their protected pins cannot be inspected before the real tool installs.
+# --------------------------------------------------------------------------
+def test_remote_requirement_url_only_noops(shim):
+    execd, _ = _run(shim, "pip", ["-r", "https://example.com/reqs.txt"])
+    assert execd is None, execd  # dropped, and no dangling -r left behind
+
+
+def test_remote_requirement_url_with_other_target_kept(shim):
+    execd, _ = _run(shim, "pip", ["-r", "https://example.com/reqs.txt", "peft"])
+    assert execd == ["peft"], execd
+
+
+def test_remote_requirement_inline_form_dropped(shim):
+    execd, _ = _run(shim, "pip", ["--requirement=https://example.com/reqs.txt", "peft"])
+    assert execd == ["peft"], execd
+
+
+def test_remote_requirement_attached_form_dropped(shim):
+    execd, _ = _run(shim, "pip", ["-rhttps://example.com/reqs.txt", "peft"])
+    assert execd == ["peft"], execd
+
+
+def test_remote_constraint_url_dropped_target_kept(shim):
+    execd, _ = _run(shim, "pip", ["-c", "https://example.com/constraints.txt", "peft"])
+    assert execd == ["peft"], execd
+
+
+def test_nested_remote_include_dropped(shim, tmp_path):
+    # A local reqs file that pulls a remote include must have that include
+    # stripped, not passed through for the real pip to fetch unfiltered.
+    req = tmp_path / "reqs.txt"
+    req.write_text("-r https://example.com/evil.txt\nsnac==1.2.0\n", encoding = "utf-8")
+    execd, _ = _run(shim, "pip", ["-r", str(req)])
+    assert execd is not None and execd[0] == "-r", execd
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    assert "snac==1.2.0" in filtered
+    assert "example.com" not in filtered and "://" not in filtered
+
+
+# --------------------------------------------------------------------------
+# Item 3541773164 -- resolver-wide reinstall / ignore-installed flags are
+# stripped so they cannot rebuild already-satisfied baked deps.
+# --------------------------------------------------------------------------
+def test_force_reinstall_flag_stripped(shim):
+    execd, _ = _run(shim, "pip", ["--force-reinstall", "peft"])
+    assert execd == ["peft"], execd
+
+
+def test_ignore_installed_short_flag_stripped(shim):
+    execd, _ = _run(shim, "pip", ["-I", "peft"])
+    assert execd == ["peft"], execd
+
+
+def test_uv_reinstall_flag_stripped(shim):
+    execd, _ = _run(shim, "uv", ["--reinstall", "peft"])
+    assert execd == ["peft"], execd
+
+
+# --------------------------------------------------------------------------
+# Item 3541773168 -- uv's --reinstall-package selector is filtered through _KEEP
+# exactly like -P/--upgrade-package (both forms, no dangling flag).
+# --------------------------------------------------------------------------
+def test_reinstall_package_protected_separated_dropped(shim):
+    execd, _ = _run(shim, "uv", ["--reinstall-package", "torch", "peft"])
+    assert execd == ["peft"], execd
+    assert "torch" not in execd and "--reinstall-package" not in execd
+
+
+def test_reinstall_package_protected_inline_dropped(shim):
+    execd, _ = _run(shim, "uv", ["--reinstall-package=torch", "peft"])
+    assert execd == ["peft"], execd
+
+
+def test_reinstall_package_unprotected_kept(shim):
+    execd, _ = _run(shim, "uv", ["--reinstall-package", "requests", "requests"])
+    assert execd == ["--reinstall-package", "requests", "requests"], execd
+
+
+def test_reinstall_package_transformers_pin_recorded(shim):
+    execd, marker = _run(shim, "uv", ["--reinstall-package", "transformers==4.55.0", "peft"])
+    assert execd == ["peft"], execd
+    assert marker == "4.55.0", marker

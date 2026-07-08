@@ -36,7 +36,9 @@ assert_eq() {
     fi
 }
 
-# $1 = compute_cap the mock nvidia-smi reports ("none" -> no nvidia-smi on PATH).
+# $1 = compute_cap(s) the mock nvidia-smi reports, ONE PER LINE ("none" -> no
+# nvidia-smi on PATH). A multi-line value models a mixed-GPU host so we can check
+# that every visible cap is scanned, not just the first.
 # Builds a fake Studio venv NVRTC dir (libnvrtc.so.12 symlinked to a stand-in
 # cu13 lib, with the cu128 original saved beside it exactly as the build does)
 # and runs the function against it via UNSLOTH_STUDIO_HOME. The hardcoded base
@@ -47,7 +49,10 @@ run_select() {
     _tmp=$(mktemp -d)
     mkdir -p "$_tmp/bin"
     if [ "$_cap" != "none" ]; then
-        printf '#!/bin/sh\necho "%s"\n' "$_cap" > "$_tmp/bin/nvidia-smi"
+        # nvidia-smi --query-gpu=compute_cap prints one cap per line; cat a file
+        # so an embedded newline in $_cap survives into the mock's output.
+        printf '%s\n' "$_cap" > "$_tmp/caps.txt"
+        printf '#!/bin/sh\ncat "%s"\n' "$_tmp/caps.txt" > "$_tmp/bin/nvidia-smi"
         chmod +x "$_tmp/bin/nvidia-smi"
     fi
     _nvrtc="$_tmp/studio/unsloth_studio/lib/python3.12/site-packages/nvidia/cuda_nvrtc/lib"
@@ -82,6 +87,15 @@ assert_eq "no nvidia-smi -> cu128 NVRTC restored" "UNSET libnvrtc.so.12.cu128.or
 # the assertion that matters is that the cu13 NVRTC is preserved for these arches.
 assert_eq "sm_103 B300 -> cu13 NVRTC kept"      "UNSET libnvrtc.so.13.stub" "$(run_select 10.3)"
 assert_eq "sm_121 DGX Spark -> cu13 NVRTC kept" "UNSET libnvrtc.so.13.stub" "$(run_select 12.1)"
+
+# Mixed-GPU hosts: a datacenter Blackwell (sm_103 / sm_121) sitting BEHIND an
+# H100/B200 in the nvidia-smi ordering must still enable cu13 -- every visible
+# cap is scanned, not just the first. And a host with no datacenter Blackwell at
+# all restores cu12.8 regardless of order.
+assert_eq "H100 then B300 -> cu13 NVRTC kept"    "UNSET libnvrtc.so.13.stub"       "$(run_select "$(printf '9.0\n10.3')")"
+assert_eq "B200 then GB10 -> cu13 NVRTC kept"    "UNSET libnvrtc.so.13.stub"       "$(run_select "$(printf '10.0\n12.1')")"
+assert_eq "B300 then H100 -> cu13 NVRTC kept"    "UNSET libnvrtc.so.13.stub"       "$(run_select "$(printf '10.3\n9.0')")"
+assert_eq "H100 then A100 -> cu128 restored"     "UNSET libnvrtc.so.12.cu128.orig" "$(run_select "$(printf '9.0\n8.0')")"
 
 rm -f "$_FUNC_FILE"
 

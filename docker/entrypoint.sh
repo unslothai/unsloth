@@ -39,35 +39,43 @@ set -euo pipefail
 # applies. Best-effort: a read-only / --user-dropped rootfs that cannot
 # re-point the NVRTC symlink is left unchanged.
 select_cuda_jit_tools() {
-    local cc="" nvrtc_dir orig
+    local caps="" cc nvrtc_dir orig need_cu13=0
     if command -v nvidia-smi >/dev/null 2>&1; then
-        cc="$( { nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true; } \
-               | head -n1 | tr -d '[:space:]' )"
+        caps="$( { nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true; } )"
     fi
-    case "${cc}" in
-        10.3|12.1)
-            # Blackwell datacenter: the build already points each venv's
-            # libnvrtc.so.12 at cu13, so only Triton's ptxas needs redirecting.
-            # -z guard leaves an explicit `docker run -e TRITON_PTXAS_PATH` win.
-            if [[ -x /usr/local/cuda-13.0/bin/ptxas && -z "${TRITON_PTXAS_PATH:-}" ]]; then
-                export TRITON_PTXAS_PATH=/usr/local/cuda-13.0/bin/ptxas
-            fi
-            ;;
-        *)
-            # Every other arch (or an undetectable / CPU host): leave
-            # TRITON_PTXAS_PATH unset so Triton uses its bundled cu12.8 ptxas,
-            # and restore the cu12.8 NVRTC in each venv that saved the original,
-            # so a 570-579 driver never sees a cu13 cubin. Covers the base venv
-            # and, on the Studio image, the Studio venv.
-            for nvrtc_dir in \
-                /opt/unsloth-venv/lib/python*/site-packages/nvidia/cuda_nvrtc/lib \
-                "${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do
-                orig="${nvrtc_dir}/libnvrtc.so.12.cu128.orig"
-                [[ -e "${orig}" ]] || continue
-                ln -sf libnvrtc.so.12.cu128.orig "${nvrtc_dir}/libnvrtc.so.12" 2>/dev/null || true
-            done
-            ;;
-    esac
+    # Scan EVERY visible GPU, not just the first: a Blackwell datacenter part
+    # (sm_103 B300/GB300 or sm_121 GB10/DGX Spark) can sit behind an H100/B200 in
+    # the nvidia-smi ordering, so keying off only the first compute_cap would
+    # restore cu12.8 and leave that later device unable to JIT. If ANY visible
+    # GPU needs cu13, enable it for the whole process -- those parts only ship on
+    # >= 580 drivers, so the host tolerates cu13 cubins for every arch present.
+    while IFS= read -r cc || [[ -n "${cc}" ]]; do
+        cc="$(printf '%s' "${cc}" | tr -d '[:space:]')"
+        case "${cc}" in
+            10.3|12.1) need_cu13=1 ;;
+        esac
+    done <<< "${caps}"
+    if [[ "${need_cu13}" -eq 1 ]]; then
+        # Blackwell datacenter present: the build already points each venv's
+        # libnvrtc.so.12 at cu13, so only Triton's ptxas needs redirecting.
+        # -z guard leaves an explicit `docker run -e TRITON_PTXAS_PATH` win.
+        if [[ -x /usr/local/cuda-13.0/bin/ptxas && -z "${TRITON_PTXAS_PATH:-}" ]]; then
+            export TRITON_PTXAS_PATH=/usr/local/cuda-13.0/bin/ptxas
+        fi
+    else
+        # No datacenter Blackwell present (or an undetectable / CPU host): leave
+        # TRITON_PTXAS_PATH unset so Triton uses its bundled cu12.8 ptxas, and
+        # restore the cu12.8 NVRTC in each venv that saved the original, so a
+        # 570-579 driver never sees a cu13 cubin. Covers the base venv and, on
+        # the Studio image, the Studio venv.
+        for nvrtc_dir in \
+            /opt/unsloth-venv/lib/python*/site-packages/nvidia/cuda_nvrtc/lib \
+            "${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do
+            orig="${nvrtc_dir}/libnvrtc.so.12.cu128.orig"
+            [[ -e "${orig}" ]] || continue
+            ln -sf libnvrtc.so.12.cu128.orig "${nvrtc_dir}/libnvrtc.so.12" 2>/dev/null || true
+        done
+    fi
 }
 # Best-effort: never let JIT-tool selection block container startup.
 select_cuda_jit_tools || true
