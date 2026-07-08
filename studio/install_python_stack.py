@@ -31,9 +31,9 @@ if str(_BACKEND_DIR) not in sys.path:
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
-    has_blackwell_gpu,
     install_wheel,
     probe_torch_wheel_env,
+    should_skip_flash_attn_for_blackwell,
     url_exists,
 )
 from backend.utils.uv_path_safety import uv_safe_path as _uv_safe_path
@@ -1759,13 +1759,6 @@ def _ensure_flash_attn() -> None:
         return
     if NO_TORCH:
         return
-    if has_blackwell_gpu():
-        _step(
-            "warning",
-            "Skipping flash-attn: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
-            _cyan,
-        )
-        return
     if IS_WINDOWS or IS_MACOS:
         return
     if (
@@ -1779,6 +1772,13 @@ def _ensure_flash_attn() -> None:
         return
 
     env = probe_torch_wheel_env()
+    if should_skip_flash_attn_for_blackwell(env):
+        _step(
+            "warning",
+            "Skipping flash-attn: Blackwell GPU needs a CUDA >= 12.8 torch build for prebuilt kernels",
+            _cyan,
+        )
+        return
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
     if wheel_url and url_exists(wheel_url):
         for installer, wheel_result in install_wheel(

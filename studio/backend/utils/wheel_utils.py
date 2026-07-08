@@ -26,9 +26,11 @@ FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/rele
 def has_blackwell_gpu() -> bool:
     """Return True if any visible NVIDIA GPU has compute capability >= 10.0 (Blackwell).
 
-    Dao-AILab ships no flash-attention wheels for these archs and older-arch wheels
-    fail to load, so callers use this to skip the flash-attn install path. Cached
-    for the process lifetime; tests mocking nvidia-smi must call
+    flash-attention ships prebuilt wheels with sm_100 / sm_120 kernels since v2.7.3,
+    but only when the wheel was built with CUDA >= 12.8. Callers combine this with
+    ``cuda_supports_blackwell_flash_attn`` (see ``should_skip_flash_attn_for_blackwell``)
+    to decide whether a Blackwell box can use the prebuilt wheel. Cached for the
+    process lifetime; tests mocking nvidia-smi must call
     ``has_blackwell_gpu.cache_clear()`` first.
     """
     exe = shutil.which("nvidia-smi")
@@ -91,6 +93,7 @@ def probe_torch_wheel_env(*, timeout: int | None = None) -> dict[str, str] | Non
                     "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
                     "'torch_mm': torch_mm, "
                     "'cuda_major': str(int(str(torch.version.cuda).split('.', 1)[0])) if torch.version.cuda else '', "
+                    "'cuda_version': str(torch.version.cuda) if torch.version.cuda else '', "
                     "'hip_version': str(torch.version.hip) if getattr(torch.version, 'hip', None) else '', "
                     "'cxx11abi': str(torch._C._GLIBCXX_USE_CXX11_ABI).upper()"
                     "}))"
@@ -162,6 +165,44 @@ def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
         release_base_url = FLASH_ATTN_RELEASE_BASE_URL,
         env = env,
     )
+
+
+# flash-attention's prebuilt wheels only carry Blackwell (sm_100 / sm_120) SASS when
+# built with CUDA >= 12.8 -- the compute_100 / compute_120 gencode gate added in
+# flash-attention v2.7.3. Wheel filenames encode only the CUDA major (cu12 / cu13),
+# so decide off the installed torch's full CUDA version instead.
+BLACKWELL_MIN_CUDA = (12, 8)
+
+
+def cuda_supports_blackwell_flash_attn(cuda_version: str | None) -> bool:
+    """True when ``cuda_version`` (e.g. '13.0', '12.8') is >= 12.8, the CUDA release
+    from which flash-attention wheels contain sm_100 / sm_120 kernels. False for a
+    missing or unparseable version.
+    """
+    if not cuda_version:
+        return False
+    parts = str(cuda_version).split(".")
+    try:
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+    except (IndexError, ValueError):
+        return False
+    return (major, minor) >= BLACKWELL_MIN_CUDA
+
+
+def should_skip_flash_attn_for_blackwell(env: dict[str, str] | None = None) -> bool:
+    """True when a Blackwell GPU is present but the installed torch's CUDA build is
+    older than 12.8, so the matching prebuilt flash-attn wheel would lack sm_100 /
+    sm_120 kernels (installs fine, then crashes at kernel launch). Returns False for
+    non-Blackwell GPUs and for Blackwell on CUDA >= 12.8, letting the normal
+    prebuilt-wheel install path run. Pass a pre-probed ``env`` to avoid re-probing.
+    """
+    if not has_blackwell_gpu():
+        return False
+    if env is None:
+        env = probe_torch_wheel_env()
+    cuda_version = env.get("cuda_version") if env else None
+    return not cuda_supports_blackwell_flash_attn(cuda_version)
 
 
 def install_wheel(

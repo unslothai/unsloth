@@ -48,9 +48,9 @@ from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
-    has_blackwell_gpu,
     install_wheel,
     probe_torch_wheel_env,
+    should_skip_flash_attn_for_blackwell,
     url_exists,
 )
 
@@ -1030,10 +1030,10 @@ def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
 def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -> None:
     if not _should_try_runtime_flash_attn_install(max_seq_length):
         return
-    if has_blackwell_gpu():
+    if should_skip_flash_attn_for_blackwell():
         _send_status(
             event_queue,
-            "Skipping flash-attn install: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
+            "Skipping flash-attn install: Blackwell GPU needs a CUDA >= 12.8 torch build for prebuilt kernels",
         )
         return
 

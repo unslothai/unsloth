@@ -37,9 +37,9 @@ def _load_worker_module():
         for name in (
             "direct_wheel_url",
             "flash_attn_wheel_url",
-            "has_blackwell_gpu",
             "install_wheel",
             "probe_torch_wheel_env",
+            "should_skip_flash_attn_for_blackwell",
             "url_exists",
         ):
             setattr(wheel_utils, name, lambda *_args, **_kwargs: None)

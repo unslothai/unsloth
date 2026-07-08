@@ -10,6 +10,7 @@ from typing import Any
 from unittest import mock
 
 from core.training import worker
+from utils import wheel_utils
 
 
 def _missing_flash_attn_import():
@@ -59,7 +60,7 @@ def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
     statuses: list[str] = []
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
-    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
+    monkeypatch.setattr(wheel_utils, "has_blackwell_gpu", lambda: False)
     monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
     monkeypatch.setattr(
         worker,
@@ -88,7 +89,7 @@ def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
     statuses: list[str] = []
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
-    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
+    monkeypatch.setattr(wheel_utils, "has_blackwell_gpu", lambda: False)
     monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
     monkeypatch.setattr(
         worker,
@@ -141,13 +142,18 @@ def test_runtime_flash_attn_skip_env_avoids_all_install_work(monkeypatch):
     worker._sp.run.assert_not_called()
 
 
-def test_runtime_flash_attn_skips_on_blackwell(monkeypatch):
+def test_runtime_flash_attn_skips_on_blackwell_with_old_cuda(monkeypatch):
     statuses: list[str] = []
     install_mock = mock.Mock()
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker, "_should_try_runtime_flash_attn_install", lambda max_seq: True)
-    monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: True)
+    monkeypatch.setattr(wheel_utils, "has_blackwell_gpu", lambda: True)
+    monkeypatch.setattr(
+        wheel_utils,
+        "probe_torch_wheel_env",
+        lambda timeout = None: {"cuda_version": "12.6"},
+    )
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
     monkeypatch.setattr(
         worker,
@@ -160,6 +166,40 @@ def test_runtime_flash_attn_skips_on_blackwell(monkeypatch):
     install_mock.assert_not_called()
     assert len(statuses) == 1
     assert "Blackwell" in statuses[0]
+
+
+def test_runtime_flash_attn_installs_on_blackwell_with_new_cuda(monkeypatch):
+    statuses: list[str] = []
+
+    monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
+    monkeypatch.setattr(worker, "_should_try_runtime_flash_attn_install", lambda max_seq: True)
+    monkeypatch.setattr(wheel_utils, "has_blackwell_gpu", lambda: True)
+    monkeypatch.setattr(
+        wheel_utils,
+        "probe_torch_wheel_env",
+        lambda timeout = None: {"cuda_version": "13.0"},
+    )
+    monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
+    monkeypatch.setattr(
+        worker,
+        "flash_attn_wheel_url",
+        lambda env: "https://example.com/fa.whl",
+    )
+    monkeypatch.setattr(worker, "url_exists", lambda url: True)
+    monkeypatch.setattr(
+        worker,
+        "_send_status",
+        lambda queue, message: statuses.append(message),
+    )
+    monkeypatch.setattr(
+        worker,
+        "install_wheel",
+        lambda *args, **kwargs: [("pip", subprocess.CompletedProcess(["pip"], 0, ""))],
+    )
+
+    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 65536)
+
+    assert statuses == ["Installing flash-attn for faster training..."]
 
 
 def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch):

@@ -111,6 +111,63 @@ class TestHasBlackwellGpu:
             assert wheel_utils.has_blackwell_gpu() is False
 
 
+class TestCudaSupportsBlackwellFlashAttn:
+    def test_cuda_13_supported(self):
+        assert wheel_utils.cuda_supports_blackwell_flash_attn("13.0") is True
+
+    def test_cuda_128_is_the_threshold(self):
+        assert wheel_utils.cuda_supports_blackwell_flash_attn("12.8") is True
+
+    def test_cuda_129_supported(self):
+        assert wheel_utils.cuda_supports_blackwell_flash_attn("12.9") is True
+
+    def test_major_only_supported(self):
+        assert wheel_utils.cuda_supports_blackwell_flash_attn("13") is True
+
+    def test_cuda_126_below_threshold(self):
+        assert wheel_utils.cuda_supports_blackwell_flash_attn("12.6") is False
+
+    def test_cuda_118_below_threshold(self):
+        assert wheel_utils.cuda_supports_blackwell_flash_attn("11.8") is False
+
+    def test_empty_or_none_is_false(self):
+        assert wheel_utils.cuda_supports_blackwell_flash_attn("") is False
+        assert wheel_utils.cuda_supports_blackwell_flash_attn(None) is False
+
+    def test_unparseable_is_false(self):
+        assert wheel_utils.cuda_supports_blackwell_flash_attn("not-a-version") is False
+        assert wheel_utils.cuda_supports_blackwell_flash_attn("12.x") is False
+
+
+class TestShouldSkipFlashAttnForBlackwell:
+    def test_non_blackwell_never_skips(self):
+        with mock.patch.object(wheel_utils, "has_blackwell_gpu", return_value = False):
+            assert wheel_utils.should_skip_flash_attn_for_blackwell({"cuda_version": ""}) is False
+
+    def test_blackwell_with_cuda_13_does_not_skip(self):
+        with mock.patch.object(wheel_utils, "has_blackwell_gpu", return_value = True):
+            assert (
+                wheel_utils.should_skip_flash_attn_for_blackwell({"cuda_version": "13.0"}) is False
+            )
+
+    def test_blackwell_with_old_cuda_skips(self):
+        with mock.patch.object(wheel_utils, "has_blackwell_gpu", return_value = True):
+            assert (
+                wheel_utils.should_skip_flash_attn_for_blackwell({"cuda_version": "12.6"}) is True
+            )
+
+    def test_blackwell_probes_when_env_missing(self):
+        with (
+            mock.patch.object(wheel_utils, "has_blackwell_gpu", return_value = True),
+            mock.patch.object(
+                wheel_utils,
+                "probe_torch_wheel_env",
+                return_value = {"cuda_version": "12.6"},
+            ),
+        ):
+            assert wheel_utils.should_skip_flash_attn_for_blackwell() is True
+
+
 class TestFlashAttnWheelSelection:
     def test_torch_210_maps_to_v281(self):
         assert ips._select_flash_attn_version("2.10") == "2.8.1"
@@ -167,6 +224,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.object(ips, "USE_UV", True),
             mock.patch.object(ips, "UV_NEEDS_SYSTEM", False),
+            mock.patch.object(wheel_utils, "has_blackwell_gpu", return_value = False),
             mock.patch.object(
                 ips,
                 "probe_torch_wheel_env",
@@ -206,6 +264,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.object(ips, "USE_UV", True),
             mock.patch.object(ips, "UV_NEEDS_SYSTEM", True),
+            mock.patch.object(wheel_utils, "has_blackwell_gpu", return_value = False),
             mock.patch.object(
                 ips,
                 "probe_torch_wheel_env",
@@ -244,6 +303,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.object(ips, "USE_UV", True),
             mock.patch.object(ips, "UV_NEEDS_SYSTEM", False),
+            mock.patch.object(wheel_utils, "has_blackwell_gpu", return_value = False),
             mock.patch.object(
                 ips,
                 "probe_torch_wheel_env",
@@ -297,6 +357,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(wheel_utils, "has_blackwell_gpu", return_value = False),
             mock.patch.object(
                 ips,
                 "probe_torch_wheel_env",
@@ -333,7 +394,46 @@ class TestEnsureFlashAttn:
         mock_probe.assert_not_called()
         mock_install_wheel.assert_not_called()
 
-    def test_blackwell_gpu_skips_install_with_warning(self):
+    def test_blackwell_with_supported_cuda_installs_wheel(self):
+        install_calls = []
+
+        def fake_install_wheel(*args, **kwargs):
+            install_calls.append((args, kwargs))
+            return [("uv", subprocess.CompletedProcess(["uv"], 0, ""))]
+
+        with (
+            mock.patch.object(ips, "NO_TORCH", False),
+            mock.patch.object(ips, "IS_WINDOWS", False),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(ips, "USE_UV", True),
+            mock.patch.object(ips, "UV_NEEDS_SYSTEM", False),
+            mock.patch.object(wheel_utils, "has_blackwell_gpu", return_value = True),
+            mock.patch.object(
+                ips,
+                "probe_torch_wheel_env",
+                return_value = {
+                    "python_tag": "cp313",
+                    "torch_mm": "2.10",
+                    "cuda_major": "13",
+                    "cuda_version": "13.0",
+                    "cxx11abi": "TRUE",
+                    "platform_tag": "linux_x86_64",
+                },
+            ),
+            mock.patch.object(ips, "url_exists", return_value = True),
+            mock.patch.object(ips, "install_wheel", side_effect = fake_install_wheel),
+            mock.patch("subprocess.run", return_value = self._import_check()),
+        ):
+            ips._ensure_flash_attn()
+
+        assert len(install_calls) == 1
+        (url,), _ = install_calls[0]
+        assert (
+            url
+            == "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+        )
+
+    def test_blackwell_with_old_cuda_skips_with_warning(self):
         step_messages: list[tuple[str, str]] = []
 
         def fake_step(
@@ -347,19 +447,32 @@ class TestEnsureFlashAttn:
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(ips, "has_blackwell_gpu", return_value = True),
-            mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
+            mock.patch.object(wheel_utils, "has_blackwell_gpu", return_value = True),
+            mock.patch.object(
+                ips,
+                "probe_torch_wheel_env",
+                return_value = {
+                    "python_tag": "cp313",
+                    "torch_mm": "2.10",
+                    "cuda_major": "12",
+                    "cuda_version": "12.6",
+                    "cxx11abi": "TRUE",
+                    "platform_tag": "linux_x86_64",
+                },
+            ),
             mock.patch.object(ips, "install_wheel") as mock_install_wheel,
             mock.patch.object(ips, "_step", side_effect = fake_step),
             mock.patch("subprocess.run", return_value = self._import_check()),
         ):
             ips._ensure_flash_attn()
 
-        mock_probe.assert_not_called()
         mock_install_wheel.assert_not_called()
-        assert any(label == "warning" and "Blackwell" in msg for label, msg in step_messages)
+        assert any(
+            label == "warning" and "Blackwell" in msg and "CUDA" in msg
+            for label, msg in step_messages
+        )
 
-    def test_blackwell_gpu_on_windows_emits_blackwell_warning(self):
+    def test_windows_returns_before_blackwell_gate(self):
         step_messages: list[tuple[str, str]] = []
 
         def fake_step(
@@ -373,33 +486,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", True),
             mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(ips, "has_blackwell_gpu", return_value = True),
-            mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
-            mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch.object(ips, "_step", side_effect = fake_step),
-            mock.patch("subprocess.run", return_value = self._import_check()),
-        ):
-            ips._ensure_flash_attn()
-
-        mock_probe.assert_not_called()
-        mock_install_wheel.assert_not_called()
-        assert any(label == "warning" and "Blackwell" in msg for label, msg in step_messages)
-
-    def test_non_blackwell_windows_does_not_emit_blackwell_warning(self):
-        step_messages: list[tuple[str, str]] = []
-
-        def fake_step(
-            label: str,
-            value: str,
-            color_fn = None,
-        ):
-            step_messages.append((label, value))
-
-        with (
-            mock.patch.object(ips, "NO_TORCH", False),
-            mock.patch.object(ips, "IS_WINDOWS", True),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(ips, "has_blackwell_gpu", return_value = False),
+            mock.patch.object(wheel_utils, "has_blackwell_gpu", return_value = True),
             mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
             mock.patch.object(ips, "install_wheel") as mock_install_wheel,
             mock.patch.object(ips, "_step", side_effect = fake_step),
