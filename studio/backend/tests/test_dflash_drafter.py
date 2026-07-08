@@ -283,9 +283,7 @@ def test_extra_args_requests_dflash():
     assert _extra_args_requests_dflash(["--model-draft", "/d/dflash.gguf"]) is False
     assert _extra_args_requests_dflash(None) is False
     # A CLI flag wins over the env, matching llama.cpp / _effective_spec_type.
-    assert (
-        _extra_args_requests_dflash([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-dflash"}) is True
-    )
+    assert _extra_args_requests_dflash([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-dflash"}) is True
     assert (
         _extra_args_requests_dflash(
             ["--spec-type", "draft-mtp"], env = {"LLAMA_ARG_SPEC_TYPE": "draft-dflash"}
@@ -301,9 +299,7 @@ def _load_inference_routes_module():
     """Load routes/inference.py directly, bypassing routes/__init__.py (which
     imports every router, dragging in unrelated deps)."""
     route_path = Path(_BACKEND_DIR) / "routes" / "inference.py"
-    spec = importlib.util.spec_from_file_location(
-        "dflash_drafter_inference_routes", route_path
-    )
+    spec = importlib.util.spec_from_file_location("dflash_drafter_inference_routes", route_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
