@@ -1371,7 +1371,8 @@ async def _aclose_stream_resources(
     """Tear down an httpx streaming generator's resources in the required order:
     cancel + await each watcher task, then aclose() the byte/line iterator, the
     response, and the client. Each step swallows its own exceptions so teardown
-    always completes. See _anthropic_passthrough_stream for the ordering rationale."""
+    always completes; a close-time CancelledError is re-raised only after every
+    step has run. See _anthropic_passthrough_stream for the ordering rationale."""
     for watcher in watchers:
         if watcher is not None:
             watcher.cancel()
@@ -1924,7 +1925,8 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
 
     Process-wide CLI policy can default Studio's tool loop on for ordinary chat,
     but it must not steal OpenAI-compatible client tools or response_format
-    requests from the llama-server passthrough path.
+    requests from the llama-server passthrough path. A policy of ``False``
+    (--disable-tools) vetoes even an explicit ``enable_tools: true`` ask.
     """
     from state.tool_policy import get_tool_policy
 
@@ -6511,7 +6513,12 @@ async def openai_chat_completions(
     _has_tool_catalog = bool(payload.tools and len(payload.tools) > 0)
     _has_active_tool_catalog = _has_tool_catalog and payload.tool_choice != "none"
     _has_client_tool_contract = _has_active_tool_catalog or _has_tool_messages
-    _studio_tool_loop_requested = _explicit_studio_tool_loop_requested(payload)
+    # The Studio tool loop needs a tool-capable backend, so a request that asks
+    # for it on a backend that can't run it (DiffusionGemma forces supports_tools
+    # off) must not steal client tools from the passthrough (#6851).
+    _studio_tool_loop_requested = (
+        _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
+    )
     _client_disabled_tool_calls = payload.tool_choice == "none" and not _studio_tool_loop_requested
     _supports_tool_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
@@ -11635,13 +11642,17 @@ async def _anthropic_passthrough_stream(
                     yield event
                 return
         finally:
-            await _aclose_stream_resources(
-                watchers = (cancel_watcher, disconnect_watcher),
-                iterator = lines_iter,
-                resp = resp,
-                client = client,
-            )
-            _tracker.__exit__(None, None, None)
+            # Same shape as the OpenAI passthrough: a close-time CancelledError
+            # re-raised by _aclose_stream_resources must not skip the tracker exit.
+            try:
+                await _aclose_stream_resources(
+                    watchers = (cancel_watcher, disconnect_watcher),
+                    iterator = lines_iter,
+                    resp = resp,
+                    client = client,
+                )
+            finally:
+                _tracker.__exit__(None, None, None)
 
         for line in emitter.finish():
             yield line
@@ -12188,10 +12199,12 @@ async def _openai_passthrough_stream(
     """Streaming client-side pass-through for /v1/chat/completions.
 
     Forwards the client's OpenAI function-calling request to llama-server and
-    relays the SSE stream back verbatim, preserving llama-server's native
-    response ``id``, ``finish_reason`` (including ``"tool_calls"``),
-    ``delta.tool_calls``, and any client-requested trailing ``usage`` chunk so
-    the client sees a standard OpenAI response.
+    relays the SSE stream back with minimal normalization (reasoning-only
+    deltas gain ``content: ""``; errors and missing terminal markers get a
+    closing ``[DONE]``), preserving llama-server's native response ``id``,
+    ``finish_reason`` (including ``"tool_calls"``), ``delta.tool_calls``, and
+    any client-requested trailing ``usage`` chunk so the client sees a
+    standard OpenAI response.
 
     Reasoning/tool-call splitting is delegated to llama-server (``--jinja
     --reasoning-format auto``), so ``delta.content`` carries no raw markup and is
@@ -12258,7 +12271,7 @@ async def _openai_passthrough_stream_upstream(
         )
         # Text-form tool calls from small models get promoted to structured calls on
         # the way back (declared client tools only); requests without tools or with
-        # auto_heal_tool_calls=false keep the verbatim relay. tool_choice constrains
+        # auto_heal_tool_calls=false keep the unhealed relay. tool_choice constrains
         # the allowlist ("none" disables, a forced function narrows to it).
         _allowed_tools = heal_gate(
             payload.auto_heal_tool_calls, body.get("tools"), body.get("tool_choice")
@@ -12732,8 +12745,9 @@ async def _openai_passthrough_stream_upstream(
                         if _monitor_openai_error_message(chunk_data):
                             saw_stream_error = True
                     # With healing active, a content-bearing line may be replaced by
-                    # held/promoted chunks; otherwise the single upstream line
-                    # relays verbatim (monitored exactly as emitted either way).
+                    # held/promoted chunks; otherwise the single (already
+                    # normalized) line relays unchanged (monitored exactly as
+                    # emitted either way).
                     if (
                         healer is not None
                         and not healer.dormant
