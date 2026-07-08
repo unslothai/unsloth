@@ -1637,3 +1637,28 @@ def test_peft_fp8_base_remap_forces_safetensors():
         r"\s+kwargs\[.use_safetensors.\] = True"
     )
     assert len(pattern.findall(src)) >= 1
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs cuda for cross-device test")
+def test_prefers_weight_device_over_cpu_scale_placeholder():
+    # A plain-tensor CPU scale placeholder alongside a CUDA weight (device_map does not move
+    # plain attributes) must restore onto the weight device, not the placeholder's CPU. #6749
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _Fp8Owner(weight = torch.randn(4, 4, dtype = torch.float16, device = "cuda"))
+    model.fp8.weight_scale_inv = torch.tensor([2.0], dtype = torch.float16)  # plain CPU tensor
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.0], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert model.fp8.weight_scale_inv.device.type == "cuda"

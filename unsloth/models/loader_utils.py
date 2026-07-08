@@ -790,15 +790,16 @@ def _restore_missing_fp8_weight_scale_inv(
         ):
             skipped += 1
             continue
-        # Prefer a live (non-meta) reference/weight/projection device over a meta placeholder,
-        # else a projection-only expert's scale would be skipped. #6749
+        # The scale must sit on the weight/projection compute device, so prefer that live device
+        # over a reference placeholder device_map may have left elsewhere (plain-tensor scale
+        # attributes are not moved). Fall back to the reference, then meta placeholders. #6749
         projection_device = _fp8_projection_device(module, attr_name)
-        if isinstance(reference, torch.Tensor) and reference.device.type != "meta":
-            target_device = reference.device
-        elif isinstance(weight, torch.Tensor) and weight.device.type != "meta":
+        if isinstance(weight, torch.Tensor) and weight.device.type != "meta":
             target_device = weight.device
         elif projection_device is not None and projection_device.type != "meta":
             target_device = projection_device
+        elif isinstance(reference, torch.Tensor) and reference.device.type != "meta":
+            target_device = reference.device
         elif isinstance(reference, torch.Tensor):
             target_device = reference.device
         elif isinstance(weight, torch.Tensor):
