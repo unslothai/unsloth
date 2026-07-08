@@ -2628,11 +2628,11 @@ function Fast-Install {
         if (@($Args_) -contains '--index-url') {
             foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL') {
                 $saved[$n] = [Environment]::GetEnvironmentVariable($n)
-                [Environment]::SetEnvironmentVariable($n, $null)
+                Remove-Item "Env:$n" -ErrorAction SilentlyContinue
             }
         }
         try { $result = & uv pip install --python $VenvPy @Args_ 2>&1 }
-        finally { foreach ($n in $saved.Keys) { [Environment]::SetEnvironmentVariable($n, $saved[$n]) } }
+        finally { foreach ($n in $saved.Keys) { if ($null -ne $saved[$n]) { Set-Item "Env:$n" $saved[$n] } } }
         if ($LASTEXITCODE -eq 0) { return }
     }
     & python -m pip install @Args_ 2>&1

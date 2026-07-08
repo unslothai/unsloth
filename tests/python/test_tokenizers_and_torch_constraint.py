@@ -132,7 +132,8 @@ class TestSetupPs1FastInstallIndex:
     def test_fast_install_clears_uv_default_index(self):
         assert "UV_DEFAULT_INDEX" in self._ps1
         assert "UV_INDEX_URL" in self._ps1
-        assert "SetEnvironmentVariable($n, $null)" in self._ps1
+        # Must truly remove the vars (child sees no value), not set them empty.
+        assert 'Remove-Item "Env:$n"' in self._ps1
 
 
 # Group 2 -- Shell snippet tests (bash subprocess, mocked python)
