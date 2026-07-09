@@ -282,7 +282,6 @@ def _ref_cache_path(out, *, family, seed, steps, num_frames, width, height):
     frames / resolution score LPIPS against the wrong baseline. Key by all of them so a
     reference-less run only reuses a reference computed for the same parameters."""
     from pathlib import Path
-
     return Path(out) / (
         f"ref_frames_{family}_seed{seed}_st{steps}_f{num_frames}_{width}x{height}.npz"
     )
@@ -618,8 +617,13 @@ def _run_config(
             import numpy as _np
             _np.savez_compressed(
                 _ref_cache_path(
-                    out, family = family, seed = seed, steps = steps,
-                    num_frames = num_frames, width = width, height = height,
+                    out,
+                    family = family,
+                    seed = seed,
+                    steps = steps,
+                    num_frames = num_frames,
+                    width = width,
+                    height = height,
                 ),
                 *arrs,
             )
@@ -690,8 +694,13 @@ def main(argv = None) -> int:
     # If not (re)computing the reference in this run, load persisted reference frames for LPIPS.
     if "reference" not in names:
         ref_npz = _ref_cache_path(
-            out, family = args.family, seed = args.seed, steps = args.steps,
-            num_frames = args.num_frames, width = args.width, height = args.height,
+            out,
+            family = args.family,
+            seed = args.seed,
+            steps = args.steps,
+            num_frames = args.num_frames,
+            width = args.width,
+            height = args.height,
         )
         if ref_npz.exists():
             try:
