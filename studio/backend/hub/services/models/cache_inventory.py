@@ -209,7 +209,6 @@ def _is_hidden_infra_repo(*values: str | None) -> bool:
     validation probe) that are cached as a side effect of Studio itself and are
     not usable chat models."""
     from utils.models.hidden_models import is_hidden_model
-
     return is_hidden_model(*values)
 
 

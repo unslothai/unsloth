@@ -452,9 +452,7 @@ def test_cached_gguf_scan_hides_infra_repos_without_user_downloads(monkeypatch, 
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat-GGUF"]
 
 
-def test_cached_gguf_scan_keeps_infra_repo_with_user_downloaded_variant(
-    monkeypatch, tmp_path
-):
+def test_cached_gguf_scan_keeps_infra_repo_with_user_downloaded_variant(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     embedder = _repo(
         "unsloth/bge-small-en-v1.5-GGUF",
@@ -469,11 +467,7 @@ def test_cached_gguf_scan_keeps_infra_repo_with_user_downloaded_variant(
         "model",
         "unsloth/bge-small-en-v1.5-GGUF",
         "Q8_0",
-        [
-            download_manifest.ExpectedFile(
-                path = "bge-small-en-v1.5-Q8_0.gguf", size = 35_000_000
-            )
-        ],
+        [download_manifest.ExpectedFile(path = "bge-small-en-v1.5-Q8_0.gguf", size = 35_000_000)],
         "http",
     )
     monkeypatch.setattr(
@@ -489,9 +483,7 @@ def test_cached_gguf_scan_keeps_infra_repo_with_user_downloaded_variant(
 
     result = {"cached": cache_inventory._scan_cached_gguf()}
 
-    assert [row["repo_id"] for row in result["cached"]] == [
-        "unsloth/bge-small-en-v1.5-GGUF"
-    ]
+    assert [row["repo_id"] for row in result["cached"]] == ["unsloth/bge-small-en-v1.5-GGUF"]
 
 
 def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
