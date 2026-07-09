@@ -323,6 +323,8 @@ class TestSecurityHeadersMiddleware:
 
         assert "x-frame-options" not in {key.lower() for key in r.headers.keys()}
         assert "https://www.kaggle.com" in r.headers["content-security-policy"]
+        assert "__unsloth_frame=frame-token" in r.headers["set-cookie"]
+        assert "Max-Age=7200" in r.headers["set-cookie"]
 
     def test_internal_nonce_header_is_spliced_into_csp_and_stripped(self, main_module):
         nonce = "test-nonce-abc"
@@ -356,16 +358,24 @@ class TestSecurityHeadersMiddleware:
         assert "https://colab.research.google.com" in csp
         assert "https://www.kaggle.com" in csp
 
-    def test_hosted_notebook_run_server_config_disables_uvicorn_proxy_headers(self):
+    @pytest.mark.parametrize(
+        ("is_kaggle", "expected_proxy_headers"),
+        [(False, True), (True, False)],
+    )
+    def test_colab_run_server_config_sets_proxy_headers_by_notebook_type(
+        self, is_kaggle, expected_proxy_headers
+    ):
         import run
 
         kwargs = run._server_config_kwargs(
             "0.0.0.0",
             8888,
             is_hosted_notebook = True,
+            is_colab = True,
+            is_kaggle = is_kaggle,
         )
-        assert kwargs["proxy_headers"] is False
-        assert "forwarded_allow_ips" not in kwargs
+        assert kwargs["proxy_headers"] is expected_proxy_headers
+        assert ("forwarded_allow_ips" in kwargs) is expected_proxy_headers
 
     def test_img_and_media_allow_https_sources(self, main_module):
         # Model-card READMEs and citation favicons pull images/media from many

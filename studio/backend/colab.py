@@ -123,7 +123,7 @@ def _wait_for_public_url(url: str, timeout: float = 45.0) -> bool:
 
     logger.warning(
         f"Notebook tunnel URL did not become reachable before embedding; "
-        f"rendering iframe anyway. Last error: {last_error}"
+        f"not rendering the iframe yet. Last error: {last_error}"
     )
     return False
 
@@ -294,6 +294,7 @@ def _publish_cloudflare_url(
             _bootstrap_password_pending() if suppress_bootstrap is None else suppress_bootstrap
         )
         _studio_app.state.trust_cloudflare_client_ip = True
+        _studio_app.state.cloudflare_client_ip_requires_frame_cookie = True
         return True
     except Exception as e:
         logger.info(f"Could not publish Cloudflare URL to /api/health ({e}).")
@@ -325,27 +326,47 @@ def _start_and_publish_cloudflare_tunnel(
         cf_url,
         suppress_bootstrap = bootstrap_pending and allow_bootstrap_pending,
     ):
-        _stop_cloudflare_tunnel()
+        _stop_cloudflare_tunnel(expected_url = cf_url)
         return None
     return cf_url
 
 
-def _stop_cloudflare_tunnel() -> None:
+def _stop_cloudflare_tunnel(*, expected_url: "str | None" = None) -> bool:
     """Best-effort teardown of the Cloudflare tunnel started by start_cloudflare_tunnel."""
+    current_url = None
+    try:
+        from main import app as _studio_app
+
+        current_url = getattr(_studio_app.state, "cloudflare_url", None)
+        if expected_url and current_url and current_url != expected_url:
+            logger.info(
+                f"Skipping stale Cloudflare tunnel cleanup for {expected_url}; "
+                f"current tunnel is {current_url}."
+            )
+            return False
+    except Exception:
+        _studio_app = None
+
     try:
         from cloudflare_tunnel import stop_studio_tunnel
         stop_studio_tunnel()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.info(f"Cloudflare tunnel stop failed; preserving published tunnel state ({exc}).")
+        return False
+
     # Stop /api/health advertising a dead tunnel.
     try:
-        from main import app as _studio_app
+        if _studio_app is None:
+            from main import app as _studio_app
 
         _studio_app.state.cloudflare_url = None
         _studio_app.state.suppress_bootstrap_injection_for_public_tunnel = False
         _studio_app.state.trust_cloudflare_client_ip = False
-    except Exception:
-        pass
+        _studio_app.state.cloudflare_client_ip_requires_frame_cookie = True
+    except Exception as exc:
+        logger.info(f"Could not clear Cloudflare tunnel state ({exc}).")
+        return False
+    return True
 
 
 def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
@@ -386,6 +407,22 @@ def _shareable_link_html(cloudflare_url: str) -> str:
         <p style="color: #333333; margin: 16px 0 0 0; font-size: 13px; font-family: monospace; font-weight: bold;">
             🔗 {cloudflare_url}
         </p>
+    </div>
+    """
+
+
+def _public_url_not_ready_html(cloudflare_url: str) -> str:
+    return f"""
+    <div style="display: inline-block; padding: 16px 20px; background: #fff7d6; border: 2px solid #b88700;
+                border-radius: 10px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
+        <div style="color:#3b2a00;font-weight:800;font-size:15px;margin-bottom:8px;">Studio link is still starting</div>
+        <div style="color:#3b2a00;font-size:13px;line-height:1.45;">
+            The Cloudflare URL did not answer the health check yet, so the notebook iframe was not loaded.
+            Open the shareable link after a few seconds, or re-run the cell if it does not become reachable.
+        </div>
+        <div style="color:#3b2a00;margin-top:10px;font-size:13px;font-family:monospace;font-weight:bold;">
+            {cloudflare_url}
+        </div>
     </div>
     """
 
@@ -452,7 +489,9 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
             display(HTML(_shareable_link_html(cloudflare_url)))
 
         if use_cloudflare_iframe:
-            _wait_for_public_url(cloudflare_url, timeout = _public_url_wait_timeout())
+            if not _wait_for_public_url(cloudflare_url, timeout = _public_url_wait_timeout()):
+                display(HTML(_public_url_not_ready_html(cloudflare_url)))
+                return
 
         display(
             HTML(f"""
@@ -517,6 +556,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     if _is_studio_healthy(port):
         logger.info(f"   Studio is already running on port {port} — reusing existing server.")
         # try/finally: tear the tunnel down even if interrupted mid-start/render.
+        cf_url = None
         try:
             cf_url = (
                 _start_and_publish_cloudflare_tunnel(
@@ -535,7 +575,8 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
         except KeyboardInterrupt:
             logger.info("\nUnsloth Studio keepalive stopped.")
         finally:
-            _stop_cloudflare_tunnel()
+            if cf_url:
+                _stop_cloudflare_tunnel(expected_url = cf_url)
         return
 
     logger.info("   Loading backend...")
@@ -596,6 +637,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
 
     # Open the tunnel now the server is healthy, publish its URL for /api/health, and
     # tear it down on interrupt (try/finally) rather than orphan the process.
+    cf_url = None
     try:
         cf_url = (
             _start_and_publish_cloudflare_tunnel(
@@ -614,7 +656,8 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     except KeyboardInterrupt:
         logger.info("\nUnsloth Studio keepalive stopped.")
     finally:
-        _stop_cloudflare_tunnel()
+        if cf_url:
+            _stop_cloudflare_tunnel(expected_url = cf_url)
 
 
 if __name__ == "__main__":

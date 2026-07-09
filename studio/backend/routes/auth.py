@@ -35,10 +35,9 @@ from auth.authentication import (
     get_current_subject_allow_password_change,
     refresh_access_token,
 )
-from utils.notebook_frame_auth import notebook_frame_cookie_matches
+from utils.notebook_frame_auth import cloudflare_client_ip_trusted
 
 router = APIRouter()
-_TRUST_CF_CONNECTING_IP_ENV = "UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP"
 
 
 def _reset_password_command() -> str:
@@ -169,17 +168,11 @@ def _trust_forwarded_for() -> bool:
 
 
 def _trust_cf_connecting_ip(request: Request | None) -> bool:
-    if os.environ.get(_TRUST_CF_CONNECTING_IP_ENV, "").lower() in ("1", "true", "yes"):
-        return True
     try:
-        tunnel_trust = getattr(
+        return cloudflare_client_ip_trusted(
+            request.headers,
             getattr(getattr(request, "app", None), "state", None),
-            "trust_cloudflare_client_ip",
-            False,
         )
-        if not bool(tunnel_trust):
-            return False
-        return notebook_frame_cookie_matches(request.headers)
     except Exception:
         return False
 

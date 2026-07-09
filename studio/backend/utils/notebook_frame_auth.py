@@ -15,6 +15,8 @@ NOTEBOOK_FRAME_TOKEN_ENV = "UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN"
 NOTEBOOK_FRAME_TOKEN_PARAM = "__unsloth_frame"
 NOTEBOOK_FRAME_COOKIE = "__unsloth_frame"
 NOTEBOOK_FRAME_COOKIE_MAX_AGE_SECONDS = 2 * 60 * 60
+TRUST_CF_CONNECTING_IP_ENV = "UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP"
+CF_CLIENT_IP_REQUIRES_FRAME_COOKIE_STATE = "cloudflare_client_ip_requires_frame_cookie"
 
 
 def expected_notebook_frame_token(env: Mapping[str, str] | None = None) -> str:
@@ -86,3 +88,19 @@ def notebook_frame_cookie_header(token: str) -> str:
     morsel["httponly"] = True
     morsel["samesite"] = "None"
     return cookie.output(header = "").strip() + "; Partitioned"
+
+
+def _truthy_env(env: Mapping[str, str], name: str) -> bool:
+    return env.get(name, "").strip().lower() in {"1", "true", "yes"}
+
+
+def cloudflare_client_ip_trusted(headers, app_state = None, env: Mapping[str, str] | None = None) -> bool:
+    """Whether CF-Connecting-IP should be honored for a loopback tunnel request."""
+    env = os.environ if env is None else env
+    if _truthy_env(env, TRUST_CF_CONNECTING_IP_ENV):
+        return True
+    if app_state is None or not bool(getattr(app_state, "trust_cloudflare_client_ip", False)):
+        return False
+    if not bool(getattr(app_state, CF_CLIENT_IP_REQUIRES_FRAME_COOKIE_STATE, True)):
+        return True
+    return notebook_frame_cookie_matches(headers)

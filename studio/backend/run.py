@@ -1057,7 +1057,14 @@ def _cloudflare_tunnel_should_start(
     return host in ("0.0.0.0", "::") and not api_only
 
 
-def _server_config_kwargs(host: str, port: int, *, is_hosted_notebook: bool) -> dict:
+def _server_config_kwargs(
+    host: str,
+    port: int,
+    *,
+    is_hosted_notebook: bool,
+    is_colab: bool = False,
+    is_kaggle: bool = False,
+) -> dict:
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
     config_kwargs = dict(
         host = host,
@@ -1066,10 +1073,13 @@ def _server_config_kwargs(host: str, port: int, *, is_hosted_notebook: bool) -> 
         access_log = False,
         server_header = False,
     )
-    # Hosted notebooks keep app-level client-IP trust authoritative. Uvicorn's
-    # proxy middleware rewrites scope["client"] before routes.auth can apply
-    # UNSLOTH_STUDIO_TRUST_FORWARDED and managed CF-Connecting-IP handling.
-    if is_hosted_notebook:
+    if is_colab and not is_kaggle:
+        config_kwargs["proxy_headers"] = True
+        config_kwargs["forwarded_allow_ips"] = "*"
+    # Other hosted notebooks keep app-level client-IP trust authoritative.
+    # Uvicorn's proxy middleware rewrites scope["client"] before routes.auth can
+    # apply managed CF-Connecting-IP handling.
+    elif is_hosted_notebook:
         config_kwargs["proxy_headers"] = False
     return config_kwargs
 
@@ -1175,7 +1185,7 @@ def run_server(
 
     import_started = time.perf_counter()
 
-    from main import app, setup_frontend, _IS_COLAB, _IS_HOSTED_NOTEBOOK
+    from main import app, setup_frontend, _IS_COLAB, _IS_HOSTED_NOTEBOOK, _IS_KAGGLE
 
     logger.info(
         "Imported FastAPI app in %.1fms",
@@ -1284,6 +1294,8 @@ def run_server(
         host,
         port,
         is_hosted_notebook = _IS_HOSTED_NOTEBOOK,
+        is_colab = _IS_COLAB,
+        is_kaggle = _IS_KAGGLE,
     )
     config = uvicorn.Config(app, **config_kwargs)
     _server = _ReadyServer(config)
@@ -1372,6 +1384,7 @@ def run_server(
     _cloudflare_url = None
     _cloudflare_flag = cloudflare
     app.state.cloudflare_url = None
+    app.state.cloudflare_client_ip_requires_frame_cookie = True
     _cloudflare_enabled = _cloudflare_tunnel_should_start(
         cloudflare = cloudflare,
         host = host,
@@ -1388,6 +1401,7 @@ def run_server(
             _cloudflare_url = start_studio_tunnel(port)
             app.state.cloudflare_url = _cloudflare_url
             app.state.trust_cloudflare_client_ip = bool(_cloudflare_url)
+            app.state.cloudflare_client_ip_requires_frame_cookie = False
             # Backstop: tear the tunnel down even on an abnormal exit that bypasses
             # _graceful_shutdown (e.g. an exception after startup -> sys.exit). Idempotent.
             atexit.register(stop_studio_tunnel)

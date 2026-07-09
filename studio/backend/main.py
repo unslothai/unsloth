@@ -653,7 +653,7 @@ def _notebook_frame_request_state(scope) -> tuple[bool, str | None]:
     if _notebook_frame_query_matches(scope, expected):
         return True, _notebook_frame_cookie_header(expected)
     if _notebook_frame_cookie_matches(scope.get("headers", ()), expected):
-        return True, None
+        return True, _notebook_frame_cookie_header(expected)
     return False, None
 
 

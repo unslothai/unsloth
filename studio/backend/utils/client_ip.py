@@ -10,10 +10,9 @@ Trust model, in order:
      spoofable, so this assumes a proxy that appends (or overwrites) the header;
      only enable the env var behind such a proxy.
   2. If an operator explicitly opts in, or Studio's managed Cloudflare tunnel is
-     active and the request carries the notebook iframe token cookie, honor
-     ``CF-Connecting-IP``. The cookie condition stops raw localhost callers from
-     forging fresh buckets while preserving per-client buckets for notebook
-     iframe traffic that arrived through the public tunnel.
+     active, honor ``CF-Connecting-IP``. Notebook-owned tunnels require the
+     notebook iframe token cookie; local managed tunnels do not because there is
+     no notebook frame cookie in that mode.
   3. Otherwise the socket peer, so a direct LAN caller can't spoof a header to
      dodge a per-IP limit.
 """
@@ -23,10 +22,9 @@ from __future__ import annotations
 import ipaddress
 import os
 
-from utils.notebook_frame_auth import notebook_frame_cookie_matches
+from utils.notebook_frame_auth import cloudflare_client_ip_trusted
 
 _TRUST_FORWARDED_ENV = "UNSLOTH_STUDIO_TRUST_FORWARDED"
-_TRUST_CF_CONNECTING_IP_ENV = "UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP"
 
 
 def _trust_forwarded_for() -> bool:
@@ -34,18 +32,11 @@ def _trust_forwarded_for() -> bool:
 
 
 def _trust_cf_connecting_ip(request) -> bool:
-    if os.environ.get(_TRUST_CF_CONNECTING_IP_ENV, "").strip().lower() in {"1", "true", "yes"}:
-        return True
     try:
-        if not bool(
-            getattr(
-                getattr(getattr(request, "app", None), "state", None),
-                "trust_cloudflare_client_ip",
-                False,
-            )
-        ):
-            return False
-        return notebook_frame_cookie_matches(request.headers)
+        return cloudflare_client_ip_trusted(
+            request.headers,
+            getattr(getattr(request, "app", None), "state", None),
+        )
     except Exception:
         return False
 

@@ -59,6 +59,7 @@ class _FakeRequest:
         headers = None,
         *,
         trust_cloudflare_client_ip = False,
+        cloudflare_client_ip_requires_frame_cookie = True,
     ):
         from starlette.datastructures import Headers
 
@@ -71,7 +72,12 @@ class _FakeRequest:
                 "state": type(
                     "State",
                     (),
-                    {"trust_cloudflare_client_ip": trust_cloudflare_client_ip},
+                    {
+                        "trust_cloudflare_client_ip": trust_cloudflare_client_ip,
+                        "cloudflare_client_ip_requires_frame_cookie": (
+                            cloudflare_client_ip_requires_frame_cookie
+                        ),
+                    },
                 )()
             },
         )()
@@ -173,6 +179,16 @@ class TestClientIp:
         )
         assert _client_ip(req) == "127.0.0.1"
 
+    def test_managed_non_notebook_tunnel_buckets_by_cf_ip(self, env_no_proxy):
+        from routes.auth import _bucket_key
+        req = _FakeRequest(
+            "127.0.0.1",
+            {"cf-connecting-ip": "198.51.100.7"},
+            trust_cloudflare_client_ip = True,
+            cloudflare_client_ip_requires_frame_cookie = False,
+        )
+        assert _bucket_key(req, "admin") == ("198.51.100.7", "admin")
+
     def test_cf_connecting_ip_used_from_managed_tunnel_frame_cookie(
         self, env_no_proxy, monkeypatch
     ):
@@ -235,7 +251,6 @@ class TestClientIp:
             auth_routes._record_login_failure(auth_routes._bucket_key(req, "admin"))
 
         assert sorted(auth_routes._LOGIN_IP_BUCKETS) == ["127.0.0.1"]
-
 
 # ---------- bucket compose / blocking ----------
 
