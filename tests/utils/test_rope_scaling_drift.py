@@ -257,6 +257,27 @@ def test_recompute_helper_scales_on_cpu():
     ), "_unsloth_recompute_inv_freq must return vanilla inv_freq when unscaled."
 
 
+def test_extended_rope_scaling_keeps_native_and_carries_theta():
+    # Long-context extension must keep a native scaled RoPE (llama3/yarn/longrope) and,
+    # for plain RoPE, carry rope_theta so transformers v5 does not fall back to base 10000.
+    from types import SimpleNamespace
+
+    from unsloth.models.llama import _extended_rope_scaling
+
+    # llama3 model: keep native scaling, do not synthesize linear.
+    scaling, native = _extended_rope_scaling(_make_config(LLAMA3_ROPE_SCALING), 2.0)
+    assert scaling is None and native == "llama3", (
+        "must keep native llama3 scaling instead of overwriting it with linear."
+    )
+
+    # plain RoPE with theta only under v5 rope_parameters: linear must carry rope_theta.
+    v5 = SimpleNamespace(rope_parameters = {"rope_type": "default", "rope_theta": 1000000.0})
+    scaling, _ = _extended_rope_scaling(v5, 2.0)
+    assert scaling == {"type": "linear", "factor": 2.0, "rope_theta": 1000000.0}, (
+        f"linear override dropped rope_theta on v5 (got {scaling}); base would fall back to 10000."
+    )
+
+
 def test_extended_rotary_reads_config_factor():
     # LlamaExtendedRotaryEmbedding must honor the config factor, not hardcode 8
     # (Llama-3.2 uses 32); otherwise the subclass path re-drops scaling (#2405).

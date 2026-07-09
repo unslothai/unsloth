@@ -1651,6 +1651,22 @@ def _rope_scaling_as_dict(rope_scaling):
         return {}
 
 
+def _extended_rope_scaling(config, factor):
+    """RoPE scaling to extend a model past its native window. Keeps a native scaled
+    RoPE (llama3 / yarn / longrope) untouched (replacing it with linear is far worse for
+    long context); only plain RoPE gets linear scaling. Returns (scaling_or_None, type):
+    None keeps the native scaling. The linear dict carries rope_theta so transformers v5
+    (which stores it under rope_parameters) keeps the real base instead of defaulting to 10000."""
+    existing = _rope_scaling_as_dict(
+        getattr(config, "rope_scaling", None)
+        or getattr(config, "rope_parameters", None) or {}
+    )
+    existing_type = existing.get("rope_type") or existing.get("type")
+    if existing_type in (None, "default", "linear"):
+        return {"type": "linear", "factor": factor, "rope_theta": _get_rope_theta(config)}, existing_type
+    return None, existing_type
+
+
 def _llama3_inv_freq_from_config(
     config,
     rope_scaling,
@@ -2518,34 +2534,33 @@ class FastLlamaModel:
             max_seq_length = model_max_seq_length
 
         if (rope_scaling is None) and (max_seq_length > model_max_seq_length):
-            rope_scaling = max_seq_length / model_max_seq_length
+            factor = max_seq_length / model_max_seq_length
 
             if fast_inference:
                 raise NotImplementedError(
                     "Unsloth: Fast inference does not yet work with RoPE Scaling."
                 )
 
-            logger.warning_once(
-                f"Unsloth: {model_name} can only handle sequence lengths of at most "
-                f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "
-                f"{round(rope_scaling, 3)}, it can be magically be extended to "
-                f"{max_seq_length}!"
-            )
-
-            # Warn RoPE scaling isn't allowed
-            if not has_rope_scaling:
-                raise RuntimeError(
-                    f"However, {model_name} doesn't support RoPE Scaling!\n"
-                    "Please file a feature request at https://github.com/unslothai/unsloth."
+            linear_scaling, native_type = _extended_rope_scaling(model_config, factor)
+            if linear_scaling is not None:
+                logger.warning_once(
+                    f"Unsloth: {model_name} can only handle sequence lengths of at most "
+                    f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "
+                    f"{round(factor, 3)}, it can be magically be extended to "
+                    f"{max_seq_length}!"
                 )
-
-            rope_scaling = {
-                "type": "linear",
-                "factor": rope_scaling,
-            }
-
-            # Add to kwargs
-            kwargs["rope_scaling"] = rope_scaling
+                if not has_rope_scaling:
+                    raise RuntimeError(
+                        f"However, {model_name} doesn't support RoPE Scaling!\n"
+                        "Please file a feature request at https://github.com/unslothai/unsloth."
+                    )
+                kwargs["rope_scaling"] = linear_scaling
+            else:
+                # Native llama3/yarn/longrope scaling handles long context; just widen the window.
+                logger.warning_once(
+                    f"Unsloth: extending {model_name} to {max_seq_length} using its native "
+                    f"{native_type} RoPE scaling."
+                )
 
         from .loader_utils import (
             check_and_disable_bitsandbytes_loading,
