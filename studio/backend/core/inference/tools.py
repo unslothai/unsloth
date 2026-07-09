@@ -1933,7 +1933,11 @@ def _fold_call(node, _state, _depth):
                 # integer size before constructing it so static analysis of e.g.
                 # bytes(2_000_000_000) cannot OOM the Studio process (the child
                 # sandbox rlimits never get a chance to help during analysis).
-                if isinstance(args[0], int) and not isinstance(args[0], bool) and args[0] > _FOLD_MAXLEN:
+                if (
+                    isinstance(args[0], int)
+                    and not isinstance(args[0], bool)
+                    and args[0] > _FOLD_MAXLEN
+                ):
                     return None
             return _fold_cap(fn(*args))
         except Exception:
@@ -2105,7 +2109,9 @@ _CODE_DESERIALIZE_SINKS = frozenset(
 )
 # Modules whose load/loads/decode entry points run a pickle reduce payload; used to
 # resolve `import pickle as p; p.loads(x)` and `from pickle import loads as l`.
-_DESERIALIZE_MODULES = frozenset({"pickle", "marshal", "dill", "cloudpickle", "_pickle", "jsonpickle"})
+_DESERIALIZE_MODULES = frozenset(
+    {"pickle", "marshal", "dill", "cloudpickle", "_pickle", "jsonpickle"}
+)
 # Attribute names of pure decode/decompress primitives used to hide a payload.
 _DECODE_ATTRS = frozenset(
     {
