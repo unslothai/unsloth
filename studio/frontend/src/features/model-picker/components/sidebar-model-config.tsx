@@ -26,6 +26,14 @@ function leafName(id: string): string {
   return separator >= 0 ? trimmed.slice(separator + 1) : trimmed;
 }
 
+function hashString(value: string): number {
+  let hash = 5381;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (Math.imul(hash, 33) ^ value.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
 function configSignature(config: PerModelConfig): string {
   return [
     config.customContextLength ?? "",
@@ -34,7 +42,9 @@ function configSignature(config: PerModelConfig): string {
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
     config.tensorParallel ? "1" : "0",
-    config.chatTemplateOverride?.length ?? "",
+    config.chatTemplateOverride == null
+      ? ""
+      : `${config.chatTemplateOverride.length}:${hashString(config.chatTemplateOverride)}`,
   ].join("|");
 }
 

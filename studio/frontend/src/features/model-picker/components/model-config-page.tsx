@@ -112,10 +112,12 @@ function ChatTemplateSetting({
 function MaxSeqLengthSetting({
   value,
   max,
+  inputMax,
   onChange,
 }: {
   value: number;
   max: number;
+  inputMax: number;
   onChange: (value: number) => void;
 }) {
   return (
@@ -130,7 +132,7 @@ function MaxSeqLengthSetting({
         <NumericValueInput
           value={value}
           min={MAX_SEQ_LENGTH_MIN}
-          max={max}
+          max={inputMax}
           step={MAX_SEQ_LENGTH_STEP}
           onChange={onChange}
           ariaLabel="Max Seq Length"
@@ -409,12 +411,14 @@ export function ModelConfigPage({
   const activeLoadedContext =
     isActiveModel && target.isGguf ? loadedContextLength : null;
   const minContext = 128;
-  const maxContext =
+  const maxContext = Math.max(
+    minContext,
     Math.max(
       nativeContextLength ?? 0,
       activeLoadedContext ?? 0,
       config.customContextLength ?? 0,
-    ) || 32768;
+    ) || 32768,
+  );
   const contextBaseline = activeLoadedContext ?? nativeContextLength;
   const contextValue = Math.min(
     Math.max(
@@ -435,22 +439,22 @@ export function ModelConfigPage({
   const atBaseline = perModelConfigsEqual(config, baseline);
   const contextAtDefault =
     !target.isGguf ||
-    nativeContextLength == null ||
-    contextValue === nativeContextLength;
+    (nativeContextLength == null
+      ? config.customContextLength == null
+      : contextValue === nativeContextLength);
   const atDefault =
     contextAtDefault &&
     perModelConfigsEqual(
       { ...config, customContextLength: null },
       DEFAULT_PER_MODEL_CONFIG,
     );
-  const maxSeqLengthMax =
+  const nativeMaxSeqLength =
     normalizeMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
     MAX_SEQ_LENGTH_MAX;
   const maxSeqLengthValue =
-    clampMaxSeqLength(
-      normalizeMaxSeqLength(config.maxSeqLength) ?? initialMaxSeqLength,
-      maxSeqLengthMax,
-    );
+    normalizeMaxSeqLength(config.maxSeqLength) ??
+    clampMaxSeqLength(initialMaxSeqLength, nativeMaxSeqLength);
+  const maxSeqLengthMax = Math.max(nativeMaxSeqLength, maxSeqLengthValue);
   const runtimeConfig = target.isGguf
     ? {
         ...config,
@@ -605,9 +609,10 @@ export function ModelConfigPage({
             <MaxSeqLengthSetting
               value={maxSeqLengthValue}
               max={maxSeqLengthMax}
+              inputMax={MAX_SEQ_LENGTH_MAX}
               onChange={(value) =>
                 update({
-                  maxSeqLength: clampMaxSeqLength(value, maxSeqLengthMax),
+                  maxSeqLength: clampMaxSeqLength(value, MAX_SEQ_LENGTH_MAX),
                 })
               }
             />
