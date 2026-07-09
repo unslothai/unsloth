@@ -74,6 +74,7 @@ from .diffusion_auto_policy import _QUANT_STEADY_FACTOR, build_resolved_record
 from .diffusion_transformer_quant import (
     TQ_AUTO,
     dense_transformer_supported,
+    is_int8_memory_fallback,
     normalize_transformer_quant,
     quantize_transformer,
     select_transformer_quant_scheme,
@@ -1150,7 +1151,28 @@ class VideoBackend:
         # so it runs before apply_speed_optims below -- same order as diffusion.py.
         transformer_quant_engaged: Optional[str] = None
         quant_skipped_for_offload = False
-        if (
+        # Auto-quant lands on int8 for fp8-denied families (HunyuanVideo-1.5); measured on a B200,
+        # int8 is ~7% slower AND less accurate than the dense bf16 + regional-compile path (fp8, the
+        # only quant that also speeds up, is black-framed there). int8's sole benefit is memory, so
+        # when the DENSE DiT already fits resident (bf16_plan has no offload) prefer dense and skip
+        # the auto-quant. Only for an AUTO request (explicit int8/fp8 honored), only where int8 is a
+        # denied fallback on a data-center fp8-capable GPU (is_int8_memory_fallback excludes consumer
+        # / Ampere / fp8 families), and only when dense provably fits -- so no new OOM risk and the
+        # fp8 families (Wan / LTX) still quantise for their speed win.
+        quant_skipped_for_dense = (
+            kind == "pipeline"
+            and normalize_transformer_quant(transformer_quant) == TQ_AUTO
+            and dense_transformer_supported(target)
+            and bf16_plan.offload_policy == "none"
+            and is_int8_memory_fallback(target, fam.name)
+        )
+        if quant_skipped_for_dense:
+            logger.info(
+                "video.transformer_quant: skipped -- dense DiT fits resident and int8 (the fp8-denied "
+                "fallback for '%s') is slower + less accurate than dense+compile here; run dense",
+                fam.name,
+            )
+        elif (
             kind == "pipeline"
             and normalize_transformer_quant(transformer_quant) is not None
             and dense_transformer_supported(target)
@@ -1403,6 +1425,9 @@ class VideoBackend:
                             "skipped: offload moves the DiT, unsupported for torchao "
                             "tensors; pin a resident memory mode to combine them"
                             if quant_skipped_for_offload
+                            else "skipped: dense DiT fits resident and int8 (fp8-denied fallback) "
+                            "is slower + less accurate than dense+compile here"
+                            if quant_skipped_for_dense
                             else "not engaged (dense bf16 DiT loaded)"
                         ),
                     ),

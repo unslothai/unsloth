@@ -344,6 +344,28 @@ def select_transformer_quant_scheme(
     return None
 
 
+def is_int8_memory_fallback(target: Any, family: Optional[str] = None) -> bool:
+    """Whether AUTO DiT quant would land on int8 only as a black-frame / denied FALLBACK on a
+    data-center, fp8-capable GPU -- i.e. fp8 would be the arch's pick but is denied/unavailable for
+    this family (e.g. HunyuanVideo-1.5). In that case int8 is a MEMORY lever, not a speed win:
+    measured on a B200 it is ~7% slower AND less accurate than the dense bf16 + regional-compile
+    path, so the loader prefers dense when the DiT fits resident (quantising only when memory-
+    constrained). Returns False where int8 is a legitimate accelerator and must be kept:
+      - consumer / workstation GPUs (fp8 FP32-accumulate is halved, so int8 is as fast or faster);
+      - pre-Ada data-center (sm < 8.9) with no fp8 tensor cores at all (int8 is the only quant);
+      - families whose auto scheme is fp8 (Wan / LTX) -- not int8, so nothing to prefer away from.
+    Best-effort: any probe failure returns False (keep today's behaviour)."""
+    try:
+        if _is_consumer_gpu(getattr(target, "device", None)):
+            return False
+        cap = _capability()
+        if cap is None or cap < (8, 9):  # no fp8 tensor cores -> int8 is the genuine accelerator
+            return False
+        return select_transformer_quant_scheme(target, TQ_AUTO, family = family) == TQ_INT8
+    except Exception:  # noqa: BLE001 — optimisation gate only; never break the load
+        return False
+
+
 def _prefer_consumer_scheme(schemes: tuple[str, ...], device: Any) -> tuple[str, ...]:
     """Reorder an arch tier's schemes for the GPU class. On a consumer / workstation card
     move int8 to the front: consumer parts halve fp8/fp16 FP32-accumulate throughput, while

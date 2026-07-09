@@ -444,6 +444,15 @@ def _run_config(name: str, cfg: dict, *, family: str, steps: int, width: int, he
     gvg = bool(getattr(fam_obj, "guidance_via_guider", False))
 
     _empty(); _reset_peak()
+    # Fresh dynamo state per config so a prior config's compiled graphs cannot leak into this one
+    # (each config builds a fresh pipe; without this, later configs in a multi-config run can be
+    # measured against a dirty compile cache).
+    try:
+        import torch
+
+        torch._dynamo.reset()
+    except Exception:
+        pass
     pipe = _build_pipe(repo, force_fp32)
     load_peak = _peak_gb()
     engaged = _apply_levers(

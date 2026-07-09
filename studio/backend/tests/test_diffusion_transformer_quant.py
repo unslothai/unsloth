@@ -621,6 +621,35 @@ def test_family_deny_no_family_keeps_ladder(monkeypatch):
     assert select_transformer_quant_scheme(_target(), "auto", family = "sdxl") == TQ_FP8
 
 
+def test_is_int8_memory_fallback(monkeypatch):
+    # True only where AUTO lands on int8 as a black-frame/denied FALLBACK on a data-center,
+    # fp8-capable GPU (Hunyuan: fp8 denied -> int8), where dense+compile beats int8. The loader
+    # uses this (plus a 'dense fits resident' check) to prefer dense over int8. False everywhere
+    # int8 is a legitimate accelerator: fp8 families, consumer GPUs, and pre-Ada (no fp8) parts.
+    from core.inference.diffusion_transformer_quant import is_int8_memory_fallback
+
+    # data-center Blackwell, all schemes available: Hunyuan denies fp8/mx/nvfp4 -> auto int8 -> True.
+    _stub_torch(monkeypatch, cc = (10, 0), device_name = "NVIDIA B200")
+    _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
+    assert is_int8_memory_fallback(_target(), "hunyuanvideo-1.5") is True
+    assert is_int8_memory_fallback(_target(), "hunyuanvideo-1.5-720p") is True
+    # Wan / LTX resolve to fp8 (a speed win), not int8 -> False (keep quantising).
+    assert is_int8_memory_fallback(_target(), "wan2.2-ti2v-5b") is False
+    assert is_int8_memory_fallback(_target(), "wan2.2-t2v-a14b") is False
+    assert is_int8_memory_fallback(_target(), "ltx-2") is False
+    assert is_int8_memory_fallback(_target(), None) is False
+
+    # Consumer GPU (fp8 accumulate halved -> int8 can be a speed win): never prefer dense.
+    _stub_torch(monkeypatch, cc = (10, 0), device_name = "NVIDIA GeForce RTX 5090")
+    _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
+    assert is_int8_memory_fallback(_target(), "hunyuanvideo-1.5") is False
+
+    # Ampere data-center (sm_80, no fp8 tensor cores): int8 is the genuine accelerator -> False.
+    _stub_torch(monkeypatch, cc = (8, 0), device_name = "NVIDIA A100")
+    _allow(monkeypatch, {TQ_INT8})
+    assert is_int8_memory_fallback(_target(), "hunyuanvideo-1.5") is False
+
+
 def test_quantize_transformer_threads_family(monkeypatch):
     # quantize_transformer passes the family down to the selector, so a denied
     # (family, scheme) pair never reaches torchao.
