@@ -240,10 +240,9 @@ _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
 # is exempt because it needs immediate artifact feedback.
 _PROVISIONAL_ARGS_MIN_CHARS = 256
 _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
-# httpcore binds the socket read timeout once when body iteration starts, so a
-# mid-stream stall can't be caught by lowering the read timeout. A watchdog
-# thread polls the elapsed-since-last-chunk deadline at this cadence instead and
-# closes the response when the first-token or stall window elapses.
+# Watchdog poll cadence. httpcore binds the read timeout once when body
+# iteration starts, so a mid-stream stall can't be caught by lowering it; a
+# thread polls the deadline at this cadence and closes the response instead.
 _STREAM_WATCHDOG_POLL_S = 0.5
 # Cap tool calls from a single TEXTUAL-fallback turn (mirrors the safetensors
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
@@ -8319,10 +8318,9 @@ class LlamaCppBackend:
 
         # Shared with the watchdog thread; the GIL makes these single dict
         # reads/writes atomic enough for a monotonic deadline check (no lock).
-        # ``reading_since`` is the monotonic time the current ``next()`` began
-        # blocking on the socket, or None while suspended at ``yield`` — so the
-        # window measures upstream silence only, never a slow/backpressured
-        # consumer between chunks.
+        # ``reading_since`` is when the current ``next()`` began blocking on the
+        # socket, or None while suspended at ``yield``, so the window measures
+        # upstream silence only, never a slow consumer between chunks.
         watch_state = {"reading_since": None, "got_first_chunk": False, "timed_out": False}
         watchdog_stop = threading.Event()
 
@@ -8360,10 +8358,10 @@ class LlamaCppBackend:
                 except StopIteration:
                     return
                 except (httpx.RequestError, httpx.StreamError) as exc:
-                    # The watchdog (or a cancel) closes the response to abort a
+                    # The watchdog or a cancel closes the response to abort a
                     # blocked read: a watchdog close is the stall/first-token
-                    # timeout, a cancel close is a clean stop, and anything else
-                    # is a genuine upstream error that must propagate.
+                    # timeout, a cancel is a clean stop, anything else is a
+                    # genuine upstream error that must propagate.
                     if watch_state["timed_out"]:
                         if watch_state["got_first_chunk"]:
                             raise httpx.ReadTimeout(

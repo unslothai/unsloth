@@ -1143,10 +1143,10 @@ async def _aiter_llama_stream_items(
                 if post_first_item_read_timeout_s is not None:
                     # httpcore binds the per-read timeout once when body
                     # iteration starts, so lowering it mid-stream is a no-op;
-                    # enforce the stall window in-task with the same cancel-scope
-                    # helper as the first-token wait above. The wrap covers only
-                    # __anext__ (the upstream read), so a slow/backpressured
-                    # consumer between yields can't shrink the window.
+                    # enforce the stall window in-task with the same
+                    # _same_task_timeout helper as the first-token wait above.
+                    # The wrap covers only __anext__ (the upstream read), so a
+                    # slow consumer between yields can't shrink the window.
                     async with _same_task_timeout(post_first_item_read_timeout_s):
                         item = await async_iter.__anext__()
                 else:
