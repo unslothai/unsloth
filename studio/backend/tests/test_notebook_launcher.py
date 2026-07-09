@@ -217,7 +217,9 @@ def test_kaggle_reuse_path_allows_bootstrap_pending_for_owned_server(monkeypatch
 
     monkeypatch.setattr(colab, "start_cloudflare_tunnel", _fake_tunnel)
     monkeypatch.setattr(colab, "_publish_cloudflare_url", _fake_publish)
-    monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.setdefault("stopped", kwargs))
+    monkeypatch.setattr(
+        colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.setdefault("stopped", kwargs)
+    )
     monkeypatch.setattr(
         colab,
         "_show_and_embed",

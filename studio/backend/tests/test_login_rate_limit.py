@@ -175,6 +175,7 @@ class TestClientIp:
 
     def test_managed_non_notebook_tunnel_buckets_by_cf_ip(self, env_no_proxy):
         from routes.auth import _bucket_key
+
         req = _FakeRequest(
             "127.0.0.1",
             {"cf-connecting-ip": "198.51.100.7"},
