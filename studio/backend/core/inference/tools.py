@@ -163,6 +163,25 @@ _CHILD_WRITE_COMMANDS = frozenset(
         "mknod",
         "shred",
         "unlink",
+        # Archive / compression tools create files in an unguarded child (tar -cf out,
+        # zip out, unzip extracts, gzip file). In-workdir archiving should go through the
+        # guarded Python APIs.
+        "tar",
+        "zip",
+        "unzip",
+        "gzip",
+        "gunzip",
+        "bzip2",
+        "bunzip2",
+        "xz",
+        "unxz",
+        "zstd",
+        "7z",
+        "7za",
+        "rar",
+        "unrar",
+        "cpio",
+        "rsync",
     }
 )
 _BLOCKED_COMMANDS_COMMON = _BLOCKED_COMMANDS_COMMON | _INTERPRETER_COMMANDS | _CHILD_WRITE_COMMANDS
@@ -186,6 +205,44 @@ _BLOCKED_COMMANDS = (
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position (then $cmd, do $cmd, etc.).
 _SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif"})
+# POSIX / common shell binaries. A shell without an inline `-c` payload runs unscanned
+# code (a script file, -s / stdin, or a bare stdin-reading shell), so it is denied.
+_SHELL_BINARIES = frozenset({"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"})
+# Coreutils that read + print file contents. A shell-expanded ($VAR / `cmd`) path passed
+# to one of these can exfiltrate a host secret whose name the static scan cannot resolve.
+_SHELL_READ_COMMANDS = frozenset(
+    {
+        "cat",
+        "head",
+        "tail",
+        "less",
+        "more",
+        "od",
+        "xxd",
+        "hexdump",
+        "strings",
+        "nl",
+        "tac",
+        "cut",
+        "sort",
+        "uniq",
+        "wc",
+        "base64",
+        "base32",
+        "sed",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rev",
+        "fold",
+        "paste",
+        "comm",
+        "tr",
+        "dd",
+        "readlink",
+        "realpath",
+    }
+)
 # Wrappers whose next non-flag argument is the command Bash will exec.
 _COMMAND_PREFIXES = frozenset(
     {
@@ -354,7 +411,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     # Nested shell invocations (bash -c '...', bash -lc '...', cmd /c '...'):
     # on a -c/-/c flag, look back for a shell name (skipping flags) and
     # recursively scan the nested command string.
-    _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
+    _SHELLS = _SHELL_BINARIES
     _SHELLS_WIN = {"cmd", "cmd.exe"}
     for i, token in enumerate(tokens):
         tok_lower = token.lower()
@@ -431,8 +488,12 @@ def _find_blocked_commands(command: str) -> set[str]:
                     continue  # other shell flags: -l, -x, --login, --norc, ...
                 _script = t  # first non-flag operand is the script file
                 break
-            if not _has_c and _script is not None:
-                blocked.add("shell-script:" + _script)
+            # Any command-position shell WITHOUT an inline `-c` payload runs unscanned code:
+            # a script file (bash s.sh), stdin via -s, or a bare shell that reads stdin
+            # (`printf 'evil' | bash`). Only the `-c '...'` form is statically analyzable, so
+            # block everything else.
+            if not _has_c:
+                blocked.add("shell-script:" + (_script or _token_basename(tok)))
             _at_cmd_sh = False
             continue
         if not tok.startswith("-"):
@@ -2733,6 +2794,9 @@ class _ScopeAliasIndex:
         "strconst",
         "rhsnode",
         "assigned",
+        "class_shell",
+        "class_execb",
+        "class_deser",
     )
 
     def __init__(self, tree):
@@ -2750,6 +2814,17 @@ class _ScopeAliasIndex:
         self.strconst: dict = {}  # name -> folded str/bytes constant (for read scanning)
         self.rhsnode: dict = {}  # name -> single-assignment RHS node (for pathlib reads)
         self.assigned: dict = {}
+        # class NAME -> {attr: sink}: a class-body alias (class C: f = os.system) accessed
+        # as C.f from outside the class, which lexical scope resolution does not cover.
+        self.class_shell: dict = {}
+        self.class_execb: dict = {}
+        self.class_deser: dict = {}
+
+    def resolve_class_attr(self, cname, attr, kind):
+        m = getattr(self, "class_" + kind).get(cname)
+        if m:
+            return m.get(attr)
+        return None
 
     def _chain(self, node):
         s = self.node_scope.get(node, self.tree)
@@ -3029,6 +3104,16 @@ def _build_scope_alias_index(tree, const_env):
             idx.strconst[scope] = scmap
         if rnmap:
             idx.rhsnode[scope] = rnmap
+        # Class-body aliases are also reachable as ClassName.attr from OUTSIDE the class
+        # (class C: f = os.system; C.f('rm -rf /')), which lexical scope resolution does not
+        # cover, so index them by the class name too.
+        if isinstance(scope, ast.ClassDef):
+            if smap:
+                idx.class_shell[scope.name] = dict(smap)
+            if emap:
+                idx.class_execb[scope.name] = dict(emap)
+            if dmap:
+                idx.class_deser[scope.name] = dict(dmap)
     return idx
 
 
@@ -3581,6 +3666,38 @@ def _check_signal_escape_patterns(
     # check=True, text=True, capture_output=True).
     _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
 
+    def _check_shell_argv(elts):
+        """Analyze a subprocess argv VECTOR (['bash', '-c', '...'], ['sh', 's.sh']) as a
+        whole. A shell argv is only safe when it carries an inline -c payload that scans
+        clean; a script-file / -s / bare-shell / dynamic-payload form runs unscanned code
+        and is denied. Returns a set of blocked markers (empty if not a shell argv or the
+        scanned -c payload is benign)."""
+        if not elts:
+            return set()
+        first = _extract_string_from_node(elts[0])
+        if first is None or os.path.basename(first).lower() not in _SHELL_BINARIES:
+            return set()
+        found = set()
+        i = 1
+        while i < len(elts):
+            f = _extract_string_from_node(elts[i])
+            if f is not None and (
+                f == "-c" or (f.startswith("-") and not f.startswith("--") and f.endswith("c"))
+            ):
+                if i + 1 < len(elts):
+                    payload = _extract_string_from_node(elts[i + 1])
+                    if payload is None:
+                        found.add("shell-dynamic-c")  # unanalyzable inline payload
+                    else:
+                        found |= _find_blocked_commands(payload)
+                else:
+                    found.add("shell-script:" + first)  # -c with no payload
+                return found
+            i += 1
+        # No -c: a script file, -s (stdin), or a bare shell that reads stdin.
+        found.add("shell-script:" + first)
+        return found
+
     def _check_args_for_blocked(args_nodes):
         """Check if any call arguments contain blocked commands."""
         found = set()
@@ -3588,8 +3705,16 @@ def _check_signal_escape_patterns(
             s = _extract_string_from_node(arg)
             if s is not None:
                 found |= _find_blocked_commands(s)
-            strs = _extract_strings_from_list(arg)
-            for s in strs:
+                continue
+            if isinstance(arg, (ast.List, ast.Tuple)):
+                # A shell argv vector is analyzed as a whole so `['bash', '-c', 'echo hi']`
+                # scans the payload instead of tripping the bare-shell block on the 'bash'
+                # element; non-shell argv is still scanned element-wise below.
+                first = _extract_string_from_node(arg.elts[0]) if arg.elts else None
+                if first is not None and os.path.basename(first).lower() in _SHELL_BINARIES:
+                    found |= _check_shell_argv(arg.elts)
+                    continue
+            for s in _extract_strings_from_list(arg):
                 found |= _find_blocked_commands(s)
         return found
 
@@ -3636,6 +3761,9 @@ def _check_signal_escape_patterns(
             self.operator_aliases = {"operator"}
             # from operator import attrgetter as ag -> {"ag"}.
             self.attrgetter_aliases: set[str] = set()
+            # from operator import methodcaller as mc -> {"mc"}. methodcaller('__getattribute__',
+            # 'system')(os) fetches os.system, the same obfuscation as attrgetter.
+            self.methodcaller_aliases: set[str] = set()
             self.loop_depth = 0
 
         def visit_Import(self, node):
@@ -3724,6 +3852,8 @@ def _check_signal_escape_patterns(
                 for alias in node.names:
                     if alias.name == "attrgetter":
                         self.attrgetter_aliases.add(alias.asname or alias.name)
+                    elif alias.name == "methodcaller":
+                        self.methodcaller_aliases.add(alias.asname or alias.name)
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -3850,6 +3980,27 @@ def _check_signal_escape_patterns(
             name = _const_fold(n.args[0], _const_env)
             if isinstance(name, str) and "." not in name:
                 return name
+            return None
+
+        def _methodcaller_getattr_name(self, n):
+            """Return the attribute name for an ``operator.methodcaller('__getattribute__',
+            'name')`` / ``__getattr__`` call (or a from-import alias), else None. This form
+            fetches ``obj.name`` exactly like attrgetter, so it needs the same normalization."""
+            if not isinstance(n, ast.Call) or len(n.args) != 2 or n.keywords:
+                return None
+            af = n.func
+            is_mc = (
+                isinstance(af, ast.Attribute)
+                and af.attr == "methodcaller"
+                and _ast_name_matches(af.value, self.operator_aliases)
+            ) or (isinstance(af, ast.Name) and af.id in self.methodcaller_aliases)
+            if not is_mc:
+                return None
+            meth = _const_fold(n.args[0], _const_env)
+            if meth in ("__getattribute__", "__getattr__"):
+                name = _const_fold(n.args[1], _const_env)
+                if isinstance(name, str) and "." not in name:
+                    return name
             return None
 
         def _sink_ref_desc(self, n):
@@ -4020,6 +4171,12 @@ def _check_signal_escape_patterns(
                         shell_func = f"os.{_ecf.attr}"
                     elif _ecf.value.id in self.subprocess_aliases:
                         shell_func = f"subprocess.{_ecf.attr}"
+                    # class-body alias reached as ClassName.attr (class C: f = os.system;
+                    # C.f('rm -rf /')).
+                    elif _analyzer_on:
+                        shell_func = _scope_idx.resolve_class_attr(
+                            _ecf.value.id, _ecf.attr, "shell"
+                        )
             elif isinstance(_ecf, ast.Name):
                 # from-import aliases: from os import system; system(...)
                 shell_func = self.shell_exec_aliases.get(_ecf.id)
@@ -4151,6 +4308,13 @@ def _check_signal_escape_patterns(
                     and _ast_name_matches(_base.value, self.builtins_aliases)
                 ):
                     exec_func_id = _base.attr
+            elif (
+                _analyzer_on
+                and isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+            ):
+                # class-body alias reached as ClassName.attr (class C: e = eval; C.e('...')).
+                exec_func_id = _scope_idx.resolve_class_attr(func.value.id, func.attr, "execb")
             elif isinstance(func, ast.Subscript):
                 # ({'e': exec}['e'])(...) / [exec][0](...): an inline container hides the
                 # sink from the bare-name / attribute checks above.
@@ -4236,6 +4400,13 @@ def _check_signal_escape_patterns(
                     # is immediately invoked: attrgetter('__closure__')(open)[0] and the
                     # chained attrgetter('system')(os)('rm -rf /') both normalize here.
                     _attr_call = (node.args[0], ast.Constant(value = self._attrgetter_name(func)))
+                elif self._methodcaller_getattr_name(func) is not None and len(node.args) == 1:
+                    # operator.methodcaller('__getattribute__', 'name')(obj) fetches obj.name,
+                    # the same attribute obfuscation as attrgetter/getattr.
+                    _attr_call = (
+                        node.args[0],
+                        ast.Constant(value = self._methodcaller_getattr_name(func)),
+                    )
                 is_dynamic_import = (
                     _ast_name_matches(_ecf, _DYNAMIC_IMPORT_FUNCS)
                     or (
@@ -4275,6 +4446,9 @@ def _check_signal_escape_patterns(
                         _cand = f"{_canon}.{_ecf.attr}"
                         if _cand in _CODE_DESERIALIZE_SINKS:
                             _deser_fq = _cand
+                    if _deser_fq is None and _analyzer_on:
+                        # class-body alias reached as ClassName.attr (class C: l = pickle.loads).
+                        _deser_fq = _scope_idx.resolve_class_attr(_ecf.value.id, _ecf.attr, "deser")
                 elif isinstance(_ecf, ast.Name):
                     _deser_fq = self.deserialize_aliases.get(_ecf.id)
                     if _deser_fq is None and _analyzer_on:
@@ -5334,6 +5508,9 @@ def _check_signal_escape_patterns(
     _os_mod_aliases = {"os"}
     _subprocess_mod_aliases = {"subprocess"}
     _shell_name_aliases: dict[str, str] = {}
+    # from os.path import join as j / normpath / abspath -> {alias: 'join'} so a path builder
+    # folder recognizes the bare-name form open(join('/etc', 'passwd')).
+    _pathfunc_from_aliases: dict[str, str] = {}
     for _imp in ast.walk(tree):
         if isinstance(_imp, ast.ImportFrom) and _imp.module == "pathlib":
             for _a in _imp.names:
@@ -5352,6 +5529,14 @@ def _check_signal_escape_patterns(
                 _fq = f"{_imp.module}.{_a.name}"
                 if _fq in _SHELL_EXEC_FUNCS:
                     _shell_name_aliases[_a.asname or _a.name] = _fq
+        elif isinstance(_imp, ast.ImportFrom) and _imp.module in (
+            "os.path",
+            "posixpath",
+            "ntpath",
+        ):
+            for _a in _imp.names:
+                if _a.name in ("join", "normpath", "abspath"):
+                    _pathfunc_from_aliases[_a.asname or _a.name] = _a.name
         elif isinstance(_imp, ast.Import):
             for _a in _imp.names:
                 if _a.name == "shutil":
@@ -5360,6 +5545,47 @@ def _check_signal_escape_patterns(
                     _os_mod_aliases.add(_a.asname or "os")
                 elif _a.name == "subprocess":
                     _subprocess_mod_aliases.add(_a.asname or "subprocess")
+
+    def _fold_pathjoin_call(call):
+        # Fold an os.path.join/normpath/abspath call that _const_fold's owner check misses
+        # because os is aliased (import os as o -> o.path.join) or the function is
+        # from-imported (from os.path import join -> join(...)). Recurses through
+        # _fold_read_arg so scope-local constants inside the args still resolve.
+        if not isinstance(call, ast.Call):
+            return None
+        fn = call.func
+        pname = None
+        if isinstance(fn, ast.Attribute) and fn.attr in ("join", "normpath", "abspath"):
+            owner = fn.value
+            if (
+                isinstance(owner, ast.Attribute)
+                and owner.attr == "path"
+                and isinstance(owner.value, ast.Name)
+                and owner.value.id in _os_mod_aliases
+            ):
+                pname = fn.attr
+            elif isinstance(owner, ast.Name) and owner.id in ("posixpath", "ntpath"):
+                pname = fn.attr
+        elif isinstance(fn, ast.Name) and fn.id in _pathfunc_from_aliases:
+            pname = _pathfunc_from_aliases[fn.id]
+        if pname is None or not call.args:
+            return None
+        parts = []
+        for a in call.args:
+            v = _fold_read_arg(a)
+            if v is None:
+                return None
+            parts.append(v)
+        try:
+            if pname == "join":
+                return os.path.join(*parts)
+            if len(parts) == 1:
+                return (
+                    os.path.normpath(parts[0]) if pname == "normpath" else os.path.abspath(parts[0])
+                )
+        except Exception:
+            return None
+        return None
 
     def _unwrap_container_node(n):
         # `[open][0]` / `(open,)[0]` / `{'k': open}['k']`: resolve an inline literal-container
@@ -5439,6 +5665,11 @@ def _check_signal_escape_patterns(
             if isinstance(sv, (str, bytes, bytearray)):
                 return _to_text(sv)
             return None
+        # os-aliased / from-imported path builder (o.path.join(...), join(...)) that
+        # _const_fold's literal-`os` owner check misses.
+        pj = _fold_pathjoin_call(arg)
+        if isinstance(pj, (str, bytes, bytearray)):
+            return _to_text(pj)
         # A path-builder call (os.path.join(p, 'passwd'), normpath, ...) whose arguments
         # include function-local single-assignment string constants stays opaque to the
         # module-level _const_env. Augment the fold env with those scope-local names' RHS
@@ -5609,12 +5840,57 @@ def _check_signal_escape_patterns(
         cmd = _fold_read_arg(node.args[0])
         if cmd is None:
             return False
+        # Literal-path scan (absolute-sensitive + traversal) on plain whitespace tokens.
         try:
             toks = shlex.split(cmd, posix = True)
         except ValueError:
             toks = cmd.split()
         for t in toks:
             if t and not t.startswith("-") and _flag_read_path(node, t, True):
+                return True
+        # Shell EXPANSION can hide a sensitive read path from the literal scan
+        # (head -1 < $P, cat $P). Re-tokenize keeping redirects / separators and fail
+        # closed on: an input redirect (< / << / <<<) whose target is non-literal /
+        # sensitive / traversal, and a $ / backtick expansion passed to a file-reading
+        # command. Reads are not runtime-confined, so these must be blocked statically.
+        try:
+            _lx = shlex.shlex(cmd, posix = True, punctuation_chars = ";&|()`<>")
+            _lx.whitespace_split = True
+            ptoks = list(_lx)
+        except ValueError:
+            ptoks = cmd.split()
+
+        def _risky_read_target(tgt):
+            if not tgt:
+                return False
+            if "$" in tgt or "`" in tgt:
+                return True
+            tn = tgt.replace("\\", "/")
+            return _is_sensitive_abs_path(tgt) or ".." in tn.split("/")
+
+        _at_cmd = True
+        _cur_reader = False
+        for _pi, _pt in enumerate(ptoks):
+            if _pt in (";", "&&", "||", "|", "&", "(", ")", "`", "{", "}", "\n"):
+                _at_cmd = True
+                _cur_reader = False
+                continue
+            if _pt.startswith("<"):
+                _rt = _pt.lstrip("<") or (ptoks[_pi + 1] if _pi + 1 < len(ptoks) else "")
+                if _risky_read_target(_rt):
+                    _fs_block(
+                        node, f"shell input redirect from a non-literal / sensitive path {_rt!r}"
+                    )
+                    return True
+                continue
+            if _pt.startswith(">"):
+                continue  # output redirects are handled by _find_blocked_commands
+            if _at_cmd:
+                _cur_reader = os.path.basename(_pt).lower() in _SHELL_READ_COMMANDS
+                _at_cmd = False
+                continue
+            if _cur_reader and not _pt.startswith("-") and ("$" in _pt or "`" in _pt):
+                _fs_block(node, f"shell read command reads an expanded path {_pt!r}")
                 return True
         return False
 

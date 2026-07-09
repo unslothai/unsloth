@@ -2014,3 +2014,103 @@ class TestRound13Bypasses:
 
     def test_subprocess_argv_local_allowed(self):
         _ok("import subprocess\nsubprocess.run(['ls', 'data'])")
+
+
+class TestRound14Bypasses:
+    """Fourteenth-round Codex findings: shell argv vectors, archive writers, piped/bare
+    shells, shell-expanded reads, aliased path builders, methodcaller fetches, and
+    class-body sink aliases."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['sh', 's.sh'])",
+            "import subprocess\nsubprocess.run(['bash', '-s'], input='echo x > /tmp/p', text=True)",
+            "import subprocess\nsubprocess.run(['bash'])",
+            "import subprocess\nsubprocess.run(['bash', '-c', 'rm -rf /'])",
+        ],
+    )
+    def test_shell_argv_forms_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_shell_argv_inline_c_benign_allowed(self):
+        # A scanned inline -c payload that is benign stays allowed.
+        _ok("import subprocess\nsubprocess.run(['bash', '-c', 'echo hi'])")
+        _ok("import subprocess\nsubprocess.run(['echo', 'hi'])")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('tar -cf /tmp/out.tar .')",
+            "import subprocess\nsubprocess.run(['tar', '-cf', '/tmp/out.tar', '.'])",
+            "import os\nos.system('zip -r /tmp/a.zip .')",
+            "import os\nos.system('rsync -a . /tmp/dst')",
+        ],
+    )
+    def test_archive_writers_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('printf \"echo hi > /tmp/p\" | bash')",
+            "import os\nos.system('cat script | sh')",
+        ],
+    )
+    def test_piped_shell_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_benign_pipe_allowed(self):
+        _ok("import os\nos.system('echo hi | grep x')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.environ['P'] = '/etc/passwd'\nos.system('head -1 < $P')",
+            "import os\nos.system('cat $P')",
+            "import os\nos.system('head < ${SECRET}')",
+        ],
+    )
+    def test_shell_expanded_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_shell_expanded_echo_allowed(self):
+        _ok("import os\nos.system('echo $HOME')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os as o\nopen(o.path.join('/etc', 'passwd')).read()",
+            "from os.path import join\nopen(join('/etc', 'passwd')).read()",
+            "import os as o\nopen(o.path.normpath('/tmp/../etc/shadow')).read()",
+        ],
+    )
+    def test_aliased_path_builder_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_aliased_path_builder_local_allowed(self):
+        _ok("import os as o\nopen(o.path.join('data', 'x.csv')).read()")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import operator, os\noperator.methodcaller('__getattribute__', 'system')(os)('echo x > /tmp/p')",
+            "from operator import methodcaller\nmethodcaller('__getattribute__', 'eval')(__import__('builtins'))('1')",
+        ],
+    )
+    def test_methodcaller_attr_fetch_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "class C:\n    e = eval\nC.e(\"__import__('os').system('id')\")",
+            "import os\nclass C:\n    f = os.system\nC.f('rm -rf /')",
+            "import pickle\nclass C:\n    l = pickle.loads\nC.l(b'x')",
+        ],
+    )
+    def test_class_attribute_sink_alias_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_class_attribute_benign_allowed(self):
+        _ok("class C:\n    x = 1\nprint(C.x)")
