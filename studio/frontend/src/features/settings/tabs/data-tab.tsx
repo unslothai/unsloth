@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { usePlatformStore } from "@/config/env";
 import {
   EXPORT_FORMATS_LIST,
   type FineTuneFormat,
@@ -78,11 +79,22 @@ export function DataTab() {
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
+  // Chat-only hosts redirect /studio back to /chat, so loading a dataset in
+  // the Train tab would upload it and then strand the user; gate the action
+  // the same way the sidebar gates Train.
+  const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const [fineTuneAction, setFineTuneAction] = useState<
     "train" | "recipes" | "export"
-  >("train");
+  >(chatOnly ? "export" : "train");
   const [fineTuneFormat, setFineTuneFormat] =
     useState<FineTuneFormat>("openai");
+
+  // The MLX self-heal can flip chat-only while the dialog is open.
+  useEffect(() => {
+    if (chatOnly) {
+      setFineTuneAction((a) => (a === "train" ? "export" : a));
+    }
+  }, [chatOnly]);
   const archivedChatsRequested = useSettingsDialogStore(
     (s) => s.archivedChatsRequested,
   );
@@ -222,8 +234,10 @@ export function DataTab() {
   } as const;
   const fineTuneBusy = loadingTraining || openingRecipe || fineTuneExporting;
   const runFineTuneAction = () => {
-    if (fineTuneAction === "train") void handleUseInTraining();
-    else if (fineTuneAction === "recipes") void handleOpenInRecipes();
+    if (fineTuneAction === "train") {
+      if (chatOnly) return;
+      void handleUseInTraining();
+    } else if (fineTuneAction === "recipes") void handleOpenInRecipes();
     else void handleFineTuneExport();
   };
 
@@ -353,6 +367,7 @@ export function DataTab() {
                 {(["export", "train", "recipes"] as const).map((action) => (
                   <DropdownMenuItem
                     key={action}
+                    disabled={action === "train" && chatOnly}
                     onSelect={() => setFineTuneAction(action)}
                   >
                     <span className="flex-1">

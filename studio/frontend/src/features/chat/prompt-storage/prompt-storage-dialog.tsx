@@ -560,6 +560,11 @@ function messageToPlainText(msg: {
 }): string {
   const parts: string[] = [];
   const collect = (blocks: unknown) => {
+    // Legacy and imported histories can store content as a plain string.
+    if (typeof blocks === "string") {
+      if (blocks.trim()) parts.push(blocks);
+      return;
+    }
     if (!Array.isArray(blocks)) return;
     for (const b of blocks) {
       const block = b as Record<string, unknown>;
