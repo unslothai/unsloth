@@ -408,7 +408,11 @@ export function ModelConfigPage({
     isActiveModel && target.isGguf ? loadedContextLength : null;
   const minContext = 128;
   const maxContext =
-    Math.max(nativeContextLength ?? 0, activeLoadedContext ?? 0) || 32768;
+    Math.max(
+      nativeContextLength ?? 0,
+      activeLoadedContext ?? 0,
+      config.customContextLength ?? 0,
+    ) || 32768;
   const contextBaseline = activeLoadedContext ?? nativeContextLength;
   const contextValue = Math.min(
     Math.max(
