@@ -34,6 +34,9 @@ from __future__ import annotations
 
 import ast
 import functools
+import importlib
+import importlib.util
+import inspect
 import os
 import sys
 import types
@@ -242,3 +245,50 @@ def test_wrapped_rope_falls_back_only_on_seq_len_1_shape_error():
     wrapped_oom = _wrap_qwen3_5_rope(_broken_apply_other_error)
     with pytest.raises(RuntimeError, match = "out of memory"):
         wrapped_oom(q1, k1, cos1, sin1, unsqueeze_dim = 1)
+
+
+# --------------------------------------------------------------------------
+# Upstream source canary: detect when transformers fixes the vulnerable concat
+# --------------------------------------------------------------------------
+
+
+def test_upstream_source_canary():
+    # Skip if transformers doesn't ship Qwen3.5 yet (too old).
+    if importlib.util.find_spec("transformers.models.qwen3_5") is None:
+        pytest.skip("transformers has no qwen3_5 module (too old)")
+
+    try:
+        mod = importlib.import_module(
+            "transformers.models.qwen3_5.modeling_qwen3_5"
+        )
+    except Exception as exc:
+        pytest.skip(f"could not import qwen3_5 modeling module: {exc!r}")
+
+    fn = getattr(mod, "apply_rotary_pos_emb", None)
+    if fn is None:
+        pytest.skip("apply_rotary_pos_emb not found in qwen3_5 module")
+
+    try:
+        src = inspect.getsource(fn)
+    except (OSError, TypeError) as exc:
+        pytest.skip(f"could not inspect apply_rotary_pos_emb source: {exc!r}")
+
+    # The vulnerable pattern: torch.cat recombines the rotary-embedded slice
+    # with the passthrough slice.  When upstream removes this concat in favor
+    # of a shape-safe alternative, our temporary _wrap_qwen3_5_rope guard can
+    # be retired.
+    has_vulnerable_concat = (
+        "torch.cat" in src
+        and "embed" in src
+        and "pass" in src
+        and "dim" in src
+    )
+
+    if not has_vulnerable_concat:
+        pytest.fail(
+            "DRIFT DETECTED: upstream transformers' Qwen3.5 "
+            "apply_rotary_pos_emb no longer uses the vulnerable "
+            "torch.cat([...embed, ...pass], dim=-1) concat pattern. "
+            "The temporary _wrap_qwen3_5_rope seq_len==1 guard and "
+            "_patch_qwen3_5_rope_seq_len_1 can be removed."
+        )
