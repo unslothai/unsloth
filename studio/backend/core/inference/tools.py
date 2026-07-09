@@ -3901,7 +3901,13 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
 # and the realpath-before-open TOCTOU window under adversarial in-sandbox threading.
 # --------------------------------------------------------------------------
 _SANDBOX_GUARD_SRC = r"""
-import os as _os, builtins as _bi, functools as _ft
+import os as _os, builtins as _bi, functools as _ft, io as _io, pathlib as _pl
+# io + pathlib are imported BEFORE any patching on purpose: on Python <= 3.11
+# pathlib._NormalAccessor captures io.open / os.* into class attributes at import
+# time. A C builtin captured there does not bind on instance access, but a Python
+# wrapper does (self shifts into the next arg), which would corrupt Path.open /
+# Path.write_text. Importing here makes the accessor capture the originals; the
+# confinement is applied on the public os / io / Path.* APIs below instead.
 _WD = _os.path.realpath(__WORKDIR__)
 
 def _within(p):
@@ -3980,10 +3986,10 @@ def _wrap2(mod, name, both):
 for _n in ("rename", "renames", "replace", "link", "symlink"):
     _wrap2(_os, _n, True)
 
-# io.open is a separate reference from the (now patched) builtins.open, and
-# pathlib.Path.open("w") routes through it -- guard it the same way.
+# io.open is a separate reference from the (now patched) builtins.open -- guard
+# direct io.open() writers (e.g. zipfile-based) the same way. (Path.open is handled
+# explicitly below, not via this patch.)
 try:
-    import io as _io
     _io.open = _guard_open_like(_io.open)
 except Exception:
     pass
@@ -3999,7 +4005,17 @@ except Exception:
     pass
 
 try:
-    import pathlib as _pl
+    # Path.open("w"): wrap the public method directly (mode-aware). Version-robust
+    # because pathlib's accessor holds the original io.open (captured at the top).
+    _real_path_open = _pl.Path.open
+    @_ft.wraps(_real_path_open)
+    def _guarded_path_open(self, mode="r", *a, **k):
+        m = mode if isinstance(mode, str) else "r"
+        if any(c in m for c in "wax+") and not _within(self):
+            _deny(str(self), "Path.open")
+        return _real_path_open(self, mode, *a, **k)
+    _pl.Path.open = _guarded_path_open
+
     def _wrapp(name, targ):
         orig = getattr(_pl.Path, name, None)
         if orig is None:
