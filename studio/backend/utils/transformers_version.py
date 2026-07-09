@@ -28,7 +28,9 @@ Strategy:
   sys.path swap using the same directories pre-installed by setup.sh.
 """
 
+import ast
 import importlib
+import importlib.util
 import json
 import structlog
 from loggers import get_logger
@@ -870,6 +872,82 @@ def _cached_config_json(model_name: str, hf_token: str | None) -> dict | None:
     return _config_json_cache.get(_token_cache_key(model_name, hf_token))
 
 
+# --- Static tier from CONFIG_MAPPING_NAMES (no import, no network, no exec) ---
+# A model_type absent from an overlay's CONFIG_MAPPING_NAMES cannot load there.
+# Parse each sidecar's config map straight from source (AST only) and pick the
+# lowest tier that ships the model_type, so a new arch routes to the right
+# sidecar with no per-model table edit. Only ever upgrades default (never lowers).
+_config_mapping_cache: dict[str, frozenset[str]] = {}
+
+
+def _overlay_transformers_dir(tier: str) -> str | None:
+    """transformers source dir for a tier, located without importing it."""
+    if tier == "default":
+        try:
+            spec = importlib.util.find_spec("transformers")
+        except Exception:
+            return None
+        return os.path.dirname(spec.origin) if spec and spec.origin else None
+    root = {"530": _VENV_T5_530_DIR, "550": _VENV_T5_550_DIR, "510": _VENV_T5_510_DIR}.get(tier)
+    src = os.path.join(root, "transformers") if root else None
+    return src if src and _safe_is_dir(Path(src)) else None
+
+
+def _mapping_first_keys(value: ast.AST) -> set[str]:
+    """String keys of a dict literal or an OrderedDict(...)/dict(...) of 2-tuples."""
+    if isinstance(value, ast.Dict):
+        nodes = value.keys
+    elif isinstance(value, ast.Call):
+        nodes = [el.elts[0] for a in value.args if isinstance(a, (ast.List, ast.Tuple))
+                 for el in a.elts if isinstance(el, (ast.Tuple, ast.List)) and el.elts]
+    else:
+        nodes = []
+    return {n.value for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+
+
+def _config_model_types(tier: str) -> frozenset[str]:
+    """model_type keys in a tier's CONFIG_MAPPING_NAMES (5.10 moved it to auto_mappings.py)."""
+    cached = _config_mapping_cache.get(tier)
+    if cached is not None:
+        return cached
+    keys: set[str] = set()
+    tdir = _overlay_transformers_dir(tier)
+    if tdir:
+        for rel in ("models/auto/configuration_auto.py", "models/auto/auto_mappings.py"):
+            path = Path(tdir) / rel
+            if not _safe_is_file(path):
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "CONFIG_MAPPING_NAMES" for t in node.targets
+                ):
+                    keys |= _mapping_first_keys(node.value)
+    result = frozenset(keys)
+    _config_mapping_cache[tier] = result
+    return result
+
+
+def _tier_from_config_mapping(cfg: dict) -> str | None:
+    """Lowest tier whose transformers ships cfg's model_type, or None if unknown."""
+    model_type = cfg.get("model_type")
+    if not isinstance(model_type, str):
+        for key in _NESTED_CONFIG_KEYS:
+            sub = cfg.get(key)
+            if isinstance(sub, dict) and isinstance(sub.get("model_type"), str):
+                model_type = sub["model_type"]
+                break
+    if not isinstance(model_type, str):
+        return None
+    for tier in sorted(_TIER_RANK, key = _TIER_RANK.get):
+        if model_type in _config_model_types(tier):
+            return tier
+    return None
+
+
 # --- AutoConfig probe: general tier resolution for ambiguous models ----------
 # When the cheap signals only say "needs some 5.x", parse config.json with the built-in
 # parser in each candidate sidecar (lowest first) instead of guessing. Generalizes beyond
@@ -1210,6 +1288,14 @@ def get_transformers_tier(
                             match,
                         )
                         return tier
+            static = _tier_from_config_mapping(cfg)
+            if static is not None and static != "default":
+                logger.info(
+                    "Transformers tier %s selected for %s (config mapping: model_type absent below)",
+                    static,
+                    model_name,
+                )
+                return static
             local_tc = Path(model_name) / "tokenizer_config.json"
             if _safe_is_file(local_tc) and _check_tokenizer_config_needs_v5(model_name, hf_token):
                 if not probe:
@@ -1269,6 +1355,16 @@ def get_transformers_tier(
             return override
         logger.info("Transformers tier 530 selected for %s (config.json check)", model_name)
         return "530"
+    remote_cfg = _cached_config_json(model_name, hf_token)
+    if remote_cfg is not None:
+        static = _tier_from_config_mapping(remote_cfg)
+        if static is not None and static != "default":
+            logger.info(
+                "Transformers tier %s selected for %s (config mapping: model_type absent below)",
+                static,
+                model_name,
+            )
+            return static
     if _check_tokenizer_config_needs_v5(model_name, hf_token):
         if not probe:
             return "530"
