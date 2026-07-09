@@ -1374,7 +1374,13 @@ async function adoptInFlightServerLoad(
 
   let sawEvidence = await serverLoadEvidence();
   if (!sawEvidence) {
-    return false;
+    // The user may have picked a model (or a UI load may have started) during
+    // the awaits above; re-check before giving up so we do not start a
+    // competing auto-load. Mirrors the in-loop !sawEvidence exit below.
+    if (await yieldToUserModelLoad(abortSignal)) {
+      return true;
+    }
+    return await tryAdoptServerActiveModel();
   }
 
   toast.info("Waiting for model to finish loading…");

@@ -360,6 +360,7 @@ export function useChatModelRuntime() {
       if (shouldPollForCliLoad) {
         const started = Date.now();
         while (
+          !signal?.aborted &&
           !polledStatus?.active_model &&
           // Stop early if the user picks a model while we are polling.
           !useChatRuntimeStore.getState().params.checkpoint &&
