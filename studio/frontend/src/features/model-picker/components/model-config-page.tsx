@@ -458,10 +458,10 @@ export function ModelConfigPage({
   const runtimeConfig = target.isGguf
     ? {
         ...config,
-        customContextLength: resolveCustomContextLength(
-          contextValue,
-          contextBaseline,
-        ),
+        customContextLength:
+          contextBaseline == null && config.customContextLength == null
+            ? null
+            : resolveCustomContextLength(contextValue, contextBaseline),
       }
     : {
         ...config,

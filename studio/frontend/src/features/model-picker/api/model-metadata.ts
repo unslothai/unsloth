@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
@@ -17,9 +16,12 @@ export async function fetchModelMaxPositionEmbeddings(
   hfToken?: string | null,
   signal?: AbortSignal,
 ): Promise<number | null> {
+  const query = hfToken?.trim()
+    ? `?hf_token=${encodeURIComponent(hfToken.trim())}`
+    : "";
   const response = await authFetch(
-    `/api/models/config/${encodeURIComponent(modelName)}`,
-    { headers: hubTokenHeader(hfToken), signal },
+    `/api/models/config/${encodeURIComponent(modelName)}${query}`,
+    { signal },
   );
   const data = await parseJsonOrThrow<{ max_position_embeddings?: unknown }>(
     response,

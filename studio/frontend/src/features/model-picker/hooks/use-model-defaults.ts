@@ -53,28 +53,18 @@ export function useDefaultChatTemplate(
   enabled: boolean,
 ): DefaultChatTemplateState {
   const token = useHfTokenStore((s) => s.token);
-  const [state, setState] = useState<DefaultChatTemplateState>({
-    template: null,
-    loading: false,
-    error: null,
-  });
+  const cacheKey =
+    enabled && modelId ? `${modelId}::${ggufVariant ?? ""}::${token}` : null;
+  const [fetched, setFetched] = useState<{
+    key: string;
+    state: DefaultChatTemplateState;
+  } | null>(null);
 
   useEffect(() => {
-    if (!(enabled && modelId)) {
+    if (cacheKey == null || !modelId || templateCache.has(cacheKey)) {
       return;
     }
-    const cacheKey = `${modelId}::${ggufVariant ?? ""}::${token}`;
-    if (templateCache.has(cacheKey)) {
-      setState({
-        template: templateCache.get(cacheKey) ?? null,
-        loading: false,
-        error: null,
-      });
-      return;
-    }
-
     const controller = new AbortController();
-    setState({ template: null, loading: true, error: null });
     fetchDefaultChatTemplate(modelId, ggufVariant, token, controller.signal)
       .then((template) => {
         if (controller.signal.aborted) {
@@ -83,23 +73,43 @@ export function useDefaultChatTemplate(
         if (!(template === null && looksLikeLocalPath(modelId))) {
           cacheTemplate(cacheKey, template);
         }
-        setState({ template, loading: false, error: null });
+        setFetched({
+          key: cacheKey,
+          state: { template, loading: false, error: null },
+        });
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) {
           return;
         }
-        setState({
-          template: null,
-          loading: false,
-          error: err instanceof Error ? err.message : "Failed to load template",
+        setFetched({
+          key: cacheKey,
+          state: {
+            template: null,
+            loading: false,
+            error:
+              err instanceof Error ? err.message : "Failed to load template",
+          },
         });
       });
 
     return () => controller.abort();
-  }, [modelId, ggufVariant, enabled, token]);
+  }, [cacheKey, modelId, ggufVariant, token]);
 
-  return state;
+  if (cacheKey == null) {
+    return { template: null, loading: false, error: null };
+  }
+  if (templateCache.has(cacheKey)) {
+    return {
+      template: templateCache.get(cacheKey) ?? null,
+      loading: false,
+      error: null,
+    };
+  }
+  if (fetched?.key === cacheKey) {
+    return fetched.state;
+  }
+  return { template: null, loading: true, error: null };
 }
 
 export function useModelMaxPositionEmbeddings(
@@ -107,61 +117,60 @@ export function useModelMaxPositionEmbeddings(
   enabled: boolean,
 ): ModelMaxPositionState {
   const token = useHfTokenStore((s) => s.token);
-  const [state, setState] = useState<ModelMaxPositionState>({
-    maxPositionEmbeddings: null,
-    loading: false,
-    error: null,
-  });
+  const cacheKey = enabled && modelId ? `${modelId}::${token}` : null;
+  const [fetched, setFetched] = useState<{
+    key: string;
+    state: ModelMaxPositionState;
+  } | null>(null);
 
   useEffect(() => {
-    if (!(enabled && modelId)) {
-      setState({
-        maxPositionEmbeddings: null,
-        loading: false,
-        error: null,
-      });
+    if (cacheKey == null || !modelId || maxPositionCache.has(cacheKey)) {
       return;
     }
-    const cacheKey = `${modelId}::${token}`;
-    if (maxPositionCache.has(cacheKey)) {
-      setState({
-        maxPositionEmbeddings: maxPositionCache.get(cacheKey) ?? null,
-        loading: false,
-        error: null,
-      });
-      return;
-    }
-
     const controller = new AbortController();
-    setState({ maxPositionEmbeddings: null, loading: true, error: null });
     fetchModelMaxPositionEmbeddings(modelId, token, controller.signal)
       .then((maxPositionEmbeddings) => {
         if (controller.signal.aborted) {
           return;
         }
         cacheMaxPosition(cacheKey, maxPositionEmbeddings);
-        setState({
-          maxPositionEmbeddings,
-          loading: false,
-          error: null,
+        setFetched({
+          key: cacheKey,
+          state: { maxPositionEmbeddings, loading: false, error: null },
         });
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) {
           return;
         }
-        setState({
-          maxPositionEmbeddings: null,
-          loading: false,
-          error:
-            err instanceof Error
-              ? err.message
-              : "Failed to load model metadata",
+        setFetched({
+          key: cacheKey,
+          state: {
+            maxPositionEmbeddings: null,
+            loading: false,
+            error:
+              err instanceof Error
+                ? err.message
+                : "Failed to load model metadata",
+          },
         });
       });
 
     return () => controller.abort();
-  }, [modelId, enabled, token]);
+  }, [cacheKey, modelId, token]);
 
-  return state;
+  if (cacheKey == null) {
+    return { maxPositionEmbeddings: null, loading: false, error: null };
+  }
+  if (maxPositionCache.has(cacheKey)) {
+    return {
+      maxPositionEmbeddings: maxPositionCache.get(cacheKey) ?? null,
+      loading: false,
+      error: null,
+    };
+  }
+  if (fetched?.key === cacheKey) {
+    return fetched.state;
+  }
+  return { maxPositionEmbeddings: null, loading: true, error: null };
 }
