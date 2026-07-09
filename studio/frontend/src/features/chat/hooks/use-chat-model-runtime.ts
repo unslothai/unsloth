@@ -391,9 +391,15 @@ export function useChatModelRuntime() {
       const checkpointAfterPoll =
         useChatRuntimeStore.getState().params.checkpoint;
       const isExternalAfterPoll = isExternalModelId(checkpointAfterPoll);
-      // If the user selected a model while the CLI-load poll was running,
-      // a late status response must not clobber that fresh selection.
-      const userSelectedDuringPoll = shouldPollForCliLoad && !!checkpointAfterPoll;
+      // If the user selected or started loading a model while the CLI-load poll
+      // was running, a late status response must not clobber that pick. A
+      // UI-initiated load sets modelLoading immediately but only writes
+      // params.checkpoint once it completes, so gate on both -- mirrors
+      // yieldToUserModelLoad in chat-adapter.ts.
+      const userSelectedDuringPoll =
+        shouldPollForCliLoad &&
+        (!!checkpointAfterPoll ||
+          useChatRuntimeStore.getState().modelLoading);
       if (statusRes.active_model && !isExternalAfterPoll && !userSelectedDuringPoll) {
         const checkpointId = resolveInferenceCheckpointId(statusRes);
         if (checkpointId) {
