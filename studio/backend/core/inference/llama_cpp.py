@@ -1976,8 +1976,15 @@ class LlamaCppBackend:
         6.  ./llama.cpp/build/bin/llama-server        (legacy: cmake in-tree build)
         7.  llama-server on PATH                     (system install)
         8.  ./bin/llama-server                       (legacy: extracted binary)
+
+        Within each ``llama.cpp`` dir searched above (steps 1b-6), a
+        ``build-cuda/bin`` binary is preferred over the plain ``build/bin`` one
+        when an NVIDIA GPU is present (see ``_nvidia_available``).
         """
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
+        # Probed once: an NVIDIA GPU makes the CUDA-accelerated build the right
+        # pick over a CPU-only ``build`` tree left behind by an earlier setup run.
+        prefer_cuda = LlamaCppBackend._nvidia_available()
 
         def _file_status(p: Path) -> str:
             # "file", "absent", or "denied" (exists but stays access-denied
@@ -1996,9 +2003,17 @@ class LlamaCppBackend:
         def _is_file(p: Path) -> bool:
             return _file_status(p) == "file"
 
-        def _layout_candidates(d: Path) -> list:
-            # build layouts probed under a llama.cpp dir, highest priority first
-            cands = [d / binary_name, d / "build" / "bin" / binary_name]
+        def _layout_candidates(d: Path, prefer_cuda: bool = False) -> list:
+            # build layouts probed under a llama.cpp dir, highest priority first.
+            # prefer_cuda prepends the build-cuda tree so an NVIDIA-accelerated
+            # binary wins over a CPU-only ``build`` one when both exist side by
+            # side (setup.sh/.ps1 can leave both after a driver-less first build).
+            cands = []
+            if prefer_cuda:
+                cands.append(d / "build-cuda" / "bin" / binary_name)
+                if sys.platform == "win32":
+                    cands.append(d / "build-cuda" / "bin" / "Release" / binary_name)
+            cands += [d / binary_name, d / "build" / "bin" / binary_name]
             if sys.platform == "win32":
                 cands.append(d / "build" / "bin" / "Release" / binary_name)
             return cands
@@ -2038,7 +2053,7 @@ class LlamaCppBackend:
         # 1b. UNSLOTH_LLAMA_CPP_PATH: custom llama.cpp install dir
         custom_llama_cpp = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
         if custom_llama_cpp:
-            hit, locked = _scan_pinned(_layout_candidates(Path(custom_llama_cpp)))
+            hit, locked = _scan_pinned(_layout_candidates(Path(custom_llama_cpp), prefer_cuda))
             if locked is not None:
                 return _unavailable(locked)
             if hit:
@@ -2057,7 +2072,7 @@ class LlamaCppBackend:
             # way to share a build across roots.
             search_roots = [_resolved_sr / "llama.cpp"]
         for unsloth_home in search_roots:
-            hit, locked = _scan_pinned(_layout_candidates(unsloth_home))
+            hit, locked = _scan_pinned(_layout_candidates(unsloth_home, prefer_cuda))
             if locked is not None:
                 return _unavailable(locked)
             if hit:
@@ -2066,7 +2081,7 @@ class LlamaCppBackend:
         # 5-6. Legacy: in-tree build (older setup.sh / setup.ps1). A fallback,
         # so a denied candidate here just continues (no no-fallback halt).
         project_root = Path(__file__).resolve().parents[4]
-        for p in _layout_candidates(project_root / "llama.cpp"):
+        for p in _layout_candidates(project_root / "llama.cpp", prefer_cuda):
             if _is_file(p):
                 return str(p)
 
@@ -2578,6 +2593,13 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"torch GPU probe failed: {e}")
             return []
+
+    @staticmethod
+    def _nvidia_available() -> bool:
+        """True if a GPU is reachable via ``_get_gpu_memory`` (nvidia-smi or the
+        torch fallback). Used to prefer a ``build-cuda`` binary layout over a
+        CPU-only ``build`` one when both exist."""
+        return bool(LlamaCppBackend._get_gpu_memory())
 
     @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
