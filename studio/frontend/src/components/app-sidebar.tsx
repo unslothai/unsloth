@@ -98,6 +98,7 @@ import {
   createChatProject,
   deleteChatProject,
   deleteChatItem,
+  listStoredChatThreads,
   moveChatItemToProject,
   renameChatItem,
   renameChatProject,
@@ -575,7 +576,14 @@ export function AppSidebar() {
   useEffect(() => {
     if (!pendingRename) return;
     const match = allChatItems.find((i) => i.id === pendingRename.id);
-    if (match && match.title === pendingRename.title) setPendingRename(null);
+    if (!match || match.title !== pendingRename.title) return;
+    queueMicrotask(() => {
+      setPendingRename((current) =>
+        current?.id === pendingRename.id && current.title === pendingRename.title
+          ? null
+          : current,
+      );
+    });
   }, [allChatItems, pendingRename]);
   const [creatingProject, setCreatingProject] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState("");
@@ -672,12 +680,6 @@ export function AppSidebar() {
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
   const [deleteProjectFiles, setDeleteProjectFiles] = useState(false);
-
-  useEffect(() => {
-    if (confirmingDelete?.kind !== "project") {
-      setDeleteProjectFiles(false);
-    }
-  }, [confirmingDelete]);
 
   async function commitDelete() {
     const target = confirmingDelete;
@@ -1588,9 +1590,6 @@ export function AppSidebar() {
                   >
                     <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
                     <span>{t("shell.navigation.api")}</span>
-                    <span className="ml-auto rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
-                      {t("common.new")}
-                    </span>
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     ref={anchorRef as React.Ref<HTMLDivElement>}

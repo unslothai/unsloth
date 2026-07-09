@@ -151,6 +151,12 @@ class _FakeWanDiT:
     def set_attention_backend(self, backend) -> None:
         self.attention = backend
 
+    @contextlib.contextmanager
+    def cache_context(self, name):
+        # Real Wan / HV15 / LTX pipelines open a cache_context around the denoise loop; the
+        # First-Block-Cache hook needs it, so the fake transformer provides it too.
+        yield
+
 
 class _FakeWanVae:
     def __init__(self) -> None:
@@ -229,6 +235,8 @@ class _FakeWanPipeSingle(_FakeWanPipeBase):
             "num_frames": num_frames,
             **kwargs,
         }
+        with self.transformer.cache_context("cond"):  # real Wan pipeline wraps the denoise loop
+            pass
         return self._finish(num_inference_steps, num_frames, callback_on_step_end)
 
 
@@ -264,6 +272,8 @@ class _FakeWanPipeMoE(_FakeWanPipeBase):
             "num_frames": num_frames,
             **kwargs,
         }
+        with self.transformer.cache_context("cond"):  # real Wan pipeline wraps the denoise loop
+            pass
         return self._finish(num_inference_steps, num_frames, callback_on_step_end)
 
 
@@ -344,6 +354,8 @@ class _FakeHV15Pipe:
             "num_frames": num_frames,
             **kwargs,
         }
+        with self.transformer.cache_context("cond"):  # real HV15 pipeline wraps the denoise loop
+            pass
         for _ in range(int(num_inference_steps or 1)):
             self.scheduler.step()
         frames = [[object() for _ in range(int(num_frames or 1))]]
@@ -1060,6 +1072,25 @@ def test_hv15_cancel_unwinds_scheduler_loop(fake_runtime):
     # generate() must have freed the offload hooks itself (VRAM would otherwise
     # stay onloaded until the next request).
     assert pipe.hooks_freed == 1
+
+
+def test_cancel_during_export_discards_clip(fake_runtime, monkeypatch):
+    # A cancel that lands during the (blocking, uncancellable) export/mux must still discard
+    # the clip: cancel_generate() already reported success for it, so generate() must raise
+    # the cancelled sentinel rather than return the clip to be persisted to the gallery.
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        model_kind = "pipeline",
+    )
+
+    def _encode_and_cancel(frames, fps, audio, pipe):
+        backend.cancel_generate()  # cancel arrives mid-mux, after the last denoise-step check
+        return b"MP4"
+
+    monkeypatch.setattr(VideoBackend, "_encode_mp4", staticmethod(_encode_and_cancel))
+    with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+        backend.generate(prompt = "a fox", steps = 4)
 
 
 def test_singleton():

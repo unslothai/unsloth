@@ -687,6 +687,15 @@ class VideoBackend:
             if self._load_token != token:
                 return
             logger.error("video.load_failed: %s", exc)
+            # Free the debris of a failed construction (mirrors diffusion.py's _run_load):
+            # no _VideoLoadState was committed, so no later unload releases the VRAM a
+            # partially built pipeline (OOM in from_pretrained / quant / placement) left
+            # reserved in the caching allocator -- which would OOM the next load. Guarded so
+            # a sticky CUDA error cannot skip stamping the real error below.
+            try:
+                clear_gpu_cache()
+            except Exception:  # noqa: BLE001 -- cleanup is best-effort
+                pass
             from utils.native_path_leases import redact_native_paths
 
             with self._lock:
@@ -1746,6 +1755,11 @@ class VideoBackend:
                 mp4_bytes = self._encode_mp4(
                     video_frames, out_fps, audio_track, pipe if fam.has_audio else None
                 )
+                # A cancel that landed during the (blocking, uncancellable) export/mux must
+                # still discard the clip: cancel_generate() already reported success for it,
+                # so re-check here before it is returned and persisted to the gallery.
+                if cancel.is_set():
+                    raise RuntimeError(VIDEO_CANCELLED_MSG)
                 duration_s = len(video_frames) / float(out_fps) if out_fps else 0.0
                 self._gen = {"active": False}
                 return {

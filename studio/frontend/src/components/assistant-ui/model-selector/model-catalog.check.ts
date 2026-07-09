@@ -13,6 +13,7 @@ import {
   IMAGE_CATALOG,
   VIDEO_CATALOG,
   canonicalKeyFor,
+  catalogGroupFitsDevice,
   catalogToModelOptions,
   classifyGgufFit,
   groupForRepoId,
@@ -454,6 +455,49 @@ assert.equal(
 // The official image BF16 pipelines load via from_pretrained (pipeline kind).
 assert.equal(loadSpecFor("Tongyi-MAI/Z-Image-Turbo", IMAGE_CATALOG)?.kind, "pipeline");
 assert.equal(loadSpecFor("Qwen/Qwen-Image-2512", IMAGE_CATALOG)?.kind, "pipeline");
+
+// ── catalogGroupFitsDevice (the fit-on-device toggle for catalog rows) ─────────
+
+const wanA14b = groupForRepoId("Wan-AI/Wan2.2-T2V-A14B-Diffusers", VIDEO_CATALOG);
+const ltxBase = groupForRepoId("Lightricks/LTX-2", VIDEO_CATALOG);
+const hunyuanFit = groupForRepoId(
+  "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+  VIDEO_CATALOG,
+);
+assert.ok(wanA14b && ltxBase && hunyuanFit && ltxGroup);
+const consumer = { gpuGb: 24, systemRamGb: 64 }; // budget 61.6 GB
+// A bare-bf16 group over budget is hidden: this is the OOM the toggle must catch.
+assert.equal(catalogGroupFitsDevice(wanA14b, consumer, notDownloaded), false); // 114 GB
+assert.equal(catalogGroupFitsDevice(ltxBase, consumer, notDownloaded), false); // 90 GB
+// A sized bf16 group that fits the budget stays visible (Hunyuan 40/52 GB <= 61.6).
+assert.equal(catalogGroupFitsDevice(hunyuanFit, consumer, notDownloaded), true);
+// But on a tiny device even those are hidden.
+assert.equal(
+  catalogGroupFitsDevice(hunyuanFit, { gpuGb: 8, systemRamGb: 8 }, notDownloaded),
+  false,
+);
+// A GGUF in the group is always runnable (its quant ladder self-fits + offloads),
+// so LTX-2.3 stays visible even on a tiny card despite its 90 GB BF16 sibling.
+assert.equal(
+  catalogGroupFitsDevice(ltxGroup, { gpuGb: 4, systemRamGb: 4 }, notDownloaded),
+  true,
+);
+// An already-downloaded artifact keeps its group visible regardless of budget.
+assert.equal(
+  catalogGroupFitsDevice(
+    wanA14b,
+    { gpuGb: 8, systemRamGb: 8 },
+    (id) => id === "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+  ),
+  true,
+);
+// Unknown device budget keeps everything (we cannot tell), even a 114 GB group.
+assert.equal(catalogGroupFitsDevice(wanA14b, { gpuGb: 0, systemRamGb: 0 }, notDownloaded), true);
+// On a B200-class budget the large bf16 groups fit and stay visible.
+assert.equal(
+  catalogGroupFitsDevice(wanA14b, { gpuGb: 192, systemRamGb: 256 }, notDownloaded),
+  true,
+);
 
 // ── groupMatchesQuery ──────────────────────────────────────────────────────────
 

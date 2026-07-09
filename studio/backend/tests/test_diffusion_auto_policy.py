@@ -169,7 +169,8 @@ def test_candidate_none_for_an_unlisted_family(monkeypatch):
 
 
 def test_candidate_uses_prequant_transient_when_available(monkeypatch):
-    _patch_selector(monkeypatch, prequant = object())
+    # A hosted-repo prequant source (kind="repo") is available without a local-path check.
+    _patch_selector(monkeypatch, prequant = SimpleNamespace(kind = "repo", location = "org/int8"))
     est = resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "int8")
     assert est is not None and est.prequant is True
     assert est.transient_transformer_mib == est.steady_transformer_mib

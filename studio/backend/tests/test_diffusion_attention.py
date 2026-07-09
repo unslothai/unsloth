@@ -92,6 +92,21 @@ def test_explicit_backend_dropped_off_nvidia_cuda(monkeypatch):
         assert select_attention_backend(_target(device = "mps"), alias, speed_active = True) is None
 
 
+def test_aiter_honored_on_rocm(monkeypatch):
+    # AITER is the AMD ROCm kernel; on a ROCm CUDA target it must be honored, not dropped by
+    # the NVIDIA-only guard -- it is the one explicit backend that only ever works on ROCm.
+    monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: False)  # hip build
+    assert select_attention_backend(_target(), "aiter", speed_active = False) == "aiter"
+
+
+def test_aiter_dropped_off_rocm(monkeypatch):
+    # aiter on NVIDIA CUDA (or MPS / CPU) is not usable, so it drops to the native default.
+    monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: True)  # NVIDIA
+    assert select_attention_backend(_target(), "aiter", speed_active = False) is None
+    monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: False)
+    assert select_attention_backend(_target(device = "mps"), "aiter", speed_active = False) is None
+
+
 def test_explicit_native_returns_none():
     # native is the default -> nothing to set.
     assert select_attention_backend(_target(), "native", speed_active = True) is None

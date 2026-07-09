@@ -68,8 +68,32 @@ class _NonCacheMixinTransformer:
     the load runs uncached instead (e.g. Z-Image)."""
 
 
+class _CtxPipe:
+    """A pipeline whose denoise loop opens ``transformer.cache_context(...)`` (like FluxPipeline)
+    -- the First-Block-Cache hook needs it, so FBCache may engage here."""
+
+    def __init__(self, transformer):
+        self.transformer = transformer
+
+    def __call__(self, *args, **kwargs):
+        with self.transformer.cache_context("cond"):
+            return None
+
+
+class _NoCtxPipe:
+    """A pipeline that never enters a caching context (like FluxKontextPipeline / img2img /
+    inpaint / controlnet, which reuse the CacheMixin FluxTransformer2DModel): FBCache must NOT
+    engage or the hook raises "No context is set" on the first forward."""
+
+    def __init__(self, transformer):
+        self.transformer = transformer
+
+    def __call__(self, *args, **kwargs):
+        return None
+
+
 def _pipe(transformer):
-    return types.SimpleNamespace(transformer = transformer)
+    return _CtxPipe(transformer)
 
 
 def _stub_diffusers(monkeypatch, *, hook_recorder = None):
@@ -127,6 +151,17 @@ def test_non_cachemixin_runs_uncached(monkeypatch):
     t = _NonCacheMixinTransformer()
     assert apply_step_cache(_pipe(t), mode = "fbcache") is None
     assert rec == {}  # the standalone hook was never called
+
+
+def test_pipeline_without_cache_context_runs_uncached(monkeypatch):
+    # A CacheMixin transformer whose PIPELINE never opens a cache_context (Flux Kontext /
+    # img2img / inpaint / controlnet reuse the CacheMixin FluxTransformer2DModel) must run
+    # uncached -- otherwise the First-Block-Cache hook raises "No context is set" on the
+    # first forward, crashing every default generation.
+    _stub_diffusers(monkeypatch)
+    t = _MixinTransformer()
+    assert apply_step_cache(_NoCtxPipe(t), mode = "fbcache") is None
+    assert t.enabled_with is None  # enable_cache was never called
 
 
 def test_incompatible_model_runs_uncached(monkeypatch):

@@ -59,6 +59,22 @@ def test_resolve_nothing_configured_is_none():
     assert resolve_prequant_source(_fam(), "fp8", path_override = "") is None
 
 
+def test_local_prequant_path_ready(tmp_path, monkeypatch):
+    # The auto-policy planner budgets the small prequant plan only when a request-supplied
+    # path would actually load: present AND inside an allowlisted root. Missing or not
+    # allowlisted -> not ready, else the loader refuses it and rebuilds dense after evict.
+    import os
+
+    ckpt = tmp_path / "model.pt"
+    ckpt.write_bytes(b"x")
+    root = os.path.realpath(str(tmp_path))
+    monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [root])
+    assert pq.local_prequant_path_ready(str(ckpt)) is True
+    assert pq.local_prequant_path_ready(str(tmp_path / "missing.pt")) is False
+    monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [])
+    assert pq.local_prequant_path_ready(str(ckpt)) is False
+
+
 # ── load_prequantized_transformer ────────────────────────────────────────────────
 class _FakeTransformer:
     calls: dict = {}

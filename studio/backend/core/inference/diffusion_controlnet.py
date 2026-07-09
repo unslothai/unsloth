@@ -171,6 +171,11 @@ def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> Resolve
     with a clear error rather than being loaded through the wrong pipeline class later.
     """
     entry = _catalog_by_id().get(spec_id)
+    if entry is None:
+        # A curated entry addressed by its full repo id (owner/name) rather than its catalog
+        # id must still hit the family gate below, not slip through to the bare-repo fallback
+        # and get downloaded + loaded through the wrong family's ControlNet class.
+        entry = next((e for e in _CURATED if e.repo_id and e.repo_id == spec_id), None)
     if entry is not None:
         # A curated/local entry may declare the families it is built for. A client that
         # bypasses the UI filter (direct API call) could send an entry for another family;

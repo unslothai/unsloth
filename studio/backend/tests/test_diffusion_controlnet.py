@@ -58,6 +58,16 @@ def test_resolve_controlnet_enforces_family_match():
     assert dc.resolve_controlnet("qwen-union").path
 
 
+def test_resolve_controlnet_repo_id_still_family_gated():
+    # A curated ControlNet addressed by its full repo id (not its short catalog id) must still
+    # hit the family gate, not slip through the bare-repo fallback and load through the wrong
+    # family's ControlNet class.
+    with pytest.raises(ValueError, match = "is for"):
+        dc.resolve_controlnet("InstantX/Qwen-Image-ControlNet-Union", family = "flux.1")
+    r = dc.resolve_controlnet("InstantX/Qwen-Image-ControlNet-Union", family = "qwen-image")
+    assert r.path == "InstantX/Qwen-Image-ControlNet-Union" and not r.is_local
+
+
 def test_union_control_mode_maps_only_union_entries():
     # Union entries map a known control type to its integer mode; a union model always
     # needs a concrete mode, so an unmapped type (passthrough) defaults to 0. A non-union

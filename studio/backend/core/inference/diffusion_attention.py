@@ -129,6 +129,14 @@ def select_attention_backend(
         backend = _ALIASES[alias]
         if backend == "native":
             return None
+        # AITER is the AMD ROCm kernel, not an NVIDIA one: honor it on a ROCm (AMD) CUDA
+        # target and drop it everywhere else (diffusers' own set-time check rejects it off
+        # ROCm anyway). Without this special-case the NVIDIA-only guard below would silently
+        # drop the one explicit backend that only ever works on ROCm.
+        if backend == "aiter":
+            if getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target):
+                return backend
+            return None
         # Every explicit kernel here (cuDNN / flash* / sage) is CUDA+NVIDIA-only; on
         # ROCm / MPS / CPU diffusers accepts the name at set time and the first
         # generation crashes, so drop to the native default up front.

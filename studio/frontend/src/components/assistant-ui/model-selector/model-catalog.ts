@@ -675,3 +675,31 @@ export function pickDefaultArtifact(
     (a, b) => (a.approxSizeGb ?? Infinity) - (b.approxSizeGb ?? Infinity),
   )[0];
 }
+
+/** Whether the "fit on device" toggle should keep a catalog group. A group stays
+ *  visible when at least one artifact can actually run here: one already on disk
+ *  (the user has it), a GGUF (its per-quant ladder self-fits and the backend GGUF
+ *  path plans its own offload), or a sized artifact whose curated footprint is
+ *  within the 0.7*GPU + 0.7*RAM budget. A group of only over-budget (or unsized)
+ *  full-precision artifacts -- e.g. the LTX-2 base at 90 GB or Wan2.2-A14B at
+ *  114 GB on a consumer card -- is hidden, so a bare click on a fit-filtered list
+ *  can no longer start an OOM load the toggle was meant to hide. An unknown device
+ *  budget keeps everything (we cannot tell). Mirrors fitsResident/the Recommended
+ *  fit predicate, extended across a group's formats. */
+export function catalogGroupFitsDevice(
+  group: CatalogGroup,
+  budget: DeviceBudget,
+  isDownloaded: (repoId: string) => boolean,
+): boolean {
+  const budgetGb =
+    Math.max(0, budget.gpuGb || 0) * 0.7 +
+    Math.max(0, budget.systemRamGb || 0) * 0.7;
+  if (budgetGb <= 0) return true;
+  return group.artifacts.some((a) => {
+    if (isDownloaded(a.repoId)) return true;
+    // A GGUF's quant ladder self-fits (llama-server offloads), so it is always a
+    // runnable fallback -- matching pickDefaultArtifact returning it on any budget.
+    if (a.format === "gguf") return true;
+    return a.approxSizeGb !== undefined && a.approxSizeGb <= budgetGb;
+  });
+}

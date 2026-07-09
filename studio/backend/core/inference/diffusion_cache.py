@@ -64,6 +64,27 @@ def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
+def _pipeline_opens_cache_context(pipe: Any) -> bool:
+    """Whether the pipeline enters ``transformer.cache_context(...)`` in its denoise loop.
+    The First-Block-Cache hook requires it at run time, and a CacheMixin transformer alone
+    does NOT guarantee it: Flux Kontext / img2img / inpaint / controlnet reuse the CacheMixin
+    FluxTransformer2DModel but never open a cache_context. Read from the pipeline ``__call__``
+    source, resolved off the instance so a per-expert proxy view (``_SecondDiTView``)
+    delegates to the real pipe; if it cannot be read, report False so the cache stays off."""
+    import inspect
+
+    call = getattr(pipe, "__call__", None)
+    if call is None:
+        return False
+    try:
+        src = inspect.getsource(call)
+    except (OSError, TypeError):
+        return False
+    # Match the actual call `cache_context(` -- a bare mention in a comment/docstring lacks
+    # the paren, so this does not false-positive on prose.
+    return "cache_context(" in src
+
+
 def apply_step_cache(
     pipe: Any,
     *,
@@ -89,16 +110,24 @@ def apply_step_cache(
         if threshold is not None
         else (QUANT_FBCACHE_THRESHOLD if quant_active else DEFAULT_FBCACHE_THRESHOLD)
     )
-    # Only engage via the transformer's native enable_cache (the diffusers CacheMixin path).
-    # That mixin is present exactly when the pipeline wraps the transformer call in a
-    # cache_context, which the First-Block-Cache hook requires at run time. The lower-level
-    # apply_first_block_cache hook would install on a non-CacheMixin transformer too (e.g.
-    # Z-Image), but its pipeline opens no cache_context, so the first generation would crash
-    # inside the hook -- so a model without enable_cache runs uncached per the best-effort
-    # contract instead of being reported as cached and then failing.
+    # Engage only via the transformer's native enable_cache (the diffusers CacheMixin path):
+    # the lower-level apply_first_block_cache hook would install on a non-CacheMixin
+    # transformer too (e.g. Z-Image), whose pipeline opens no cache_context and would crash
+    # the first generation -- so a model without enable_cache runs uncached per the
+    # best-effort contract instead of being reported as cached and then failing.
     enable_cache = getattr(transformer, "enable_cache", None)
     if not callable(enable_cache):
         _warn(logger, mode, RuntimeError("transformer has no cache_context (not a CacheMixin)"))
+        return None
+    # A CacheMixin transformer is necessary but NOT sufficient: the First-Block-Cache hook
+    # raises "No context is set" on the first forward unless the PIPELINE wraps its denoise
+    # loop in transformer.cache_context(...). Flux Kontext / img2img / inpaint / controlnet
+    # reuse the CacheMixin FluxTransformer2DModel yet their __call__ opens no cache_context,
+    # so engaging FBCache there would crash every default generation -- run uncached instead.
+    if not _pipeline_opens_cache_context(pipe):
+        _warn(
+            logger, mode, RuntimeError("pipeline __call__ opens no cache_context; running uncached")
+        )
         return None
     try:
         try:
