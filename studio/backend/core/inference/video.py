@@ -42,7 +42,11 @@ from typing import Any, Optional
 
 from loggers import get_logger
 
-from .diffusion_attention import apply_attention_backend, select_attention_backend
+from .diffusion_attention import (
+    apply_attention_backend,
+    install_hunyuan_attention_trim,
+    select_attention_backend,
+)
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
@@ -1336,6 +1340,7 @@ class VideoBackend:
         else:
             cache_reason = "requested"
         attention_engaged = None
+        attention_trim_engaged = False
         speed_optims: tuple = ()
         for view in views:
             # apply_attention_backend / apply_speed_optims both act on ``view.transformer``;
@@ -1344,6 +1349,11 @@ class VideoBackend:
             # first pass; a dense torchao transformer on the pipeline path is not a GGUF one,
             # so is_gguf keys off the load kind (gguf) AND no quant having engaged.
             gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
+            # HunyuanVideo-1.5 only: drop the ~99% zero-padded text tokens from the joint
+            # attention so it runs the fused (cuDNN/flash) SDPA kernel instead of the dense-mask
+            # fallback (~18x/DiT-forward at 121 frames, cosine ~1.0). Must precede the backend set
+            # so the requested kernel pins onto the new processors. No-op for every other family.
+            trim = install_hunyuan_attention_trim(view, fam, logger=logger)
             engaged = apply_attention_backend(
                 view,
                 select_attention_backend(
@@ -1365,7 +1375,10 @@ class VideoBackend:
             )
             if view is pipe:
                 attention_engaged = engaged
-                speed_optims = tuple(k for k, v in applied.items() if v)
+                attention_trim_engaged = trim
+                speed_optims = tuple(k for k, v in applied.items() if v) + (
+                    ("hunyuan_attn_trim",) if trim else ()
+                )
         with self._generate_lock:
             # A cancelled/superseded load must not place weights on the GPU the arbiter
             # may already have handed to another backend; recheck right before placement
@@ -1410,6 +1423,14 @@ class VideoBackend:
                         attention_backend,
                         attention_engaged or "native",
                         "cuDNN fused attention on NVIDIA when a speed profile is active",
+                    ),
+                    "attention_trim": (
+                        None,
+                        "on" if attention_trim_engaged else "off",
+                        "HunyuanVideo-1.5: padded text tokens dropped so joint attention runs "
+                        "the fused SDPA kernel (~18x per DiT forward, cosine ~1.0)"
+                        if attention_trim_engaged
+                        else "not applicable (non-Hunyuan family)",
                     ),
                     "transformer_cache": (
                         None if cache_auto else transformer_cache,

@@ -387,3 +387,287 @@ def _restore_native_backend(set_backend_fn: Any, logger: Any) -> None:
 def _warn(logger: Any, what: str, exc: Exception) -> None:
     if logger is not None:
         logger.warning("diffusion.attention: %s unavailable (%s); using default", what, exc)
+
+
+# --------------------------------------------------------------------------------------
+# HunyuanVideo-1.5 joint-attention padding trim (accuracy-exact speed win)
+#
+# HunyuanVideo15AttnProcessor2_0 runs a JOINT [video ; text] self-attention and, on EVERY
+# block, EVERY step, materialises a dense [B,1,N,N] boolean mask (N = N_video + N_text) so
+# the video never attends to the padded text tokens. But a dense bool attn_mask DISABLES
+# every fused SDPA kernel (flash rejects it outright; cuDNN/efficient fall back), forcing the
+# slow math-style path: measured on a B200 at the production shape (N~=50k, 121 frames 480p)
+# the SAME attention is 421 ms WITH the dense mask vs 19 ms with attn_mask=None -- a ~22x tax
+# paid purely to mask out padding. And the text is ~99.5% padding: a t2v prompt fills only ~9
+# of ~1985 text slots (image 729 + byt5 256 + mllm 1000 tokens, almost all zero-padded).
+#
+# The fix is exact, not approximate: the model already zero-fills + masks the padded text and
+# DISCARDS its attention output (only the video split feeds proj_out), so removing the padded
+# tokens before attention changes nothing for the video. We do it in an eager forward pre-hook
+# (outside the regionally-compiled blocks): drop the all-zero image stream (t2v), trim the
+# mllm/byt5 streams to their globally-valid columns, and -- when nothing partially-padded
+# remains (the common batch-1 / per-guidance-branch call) -- flag the DiT so the attention
+# processor skips the dense mask and runs the fused (cuDNN/flash) path. The only numeric change
+# is the SDPA kernel (masked fallback -> fused), a rounding-level difference on par with the
+# already-shipped cuDNN backend swap. Mixed-padding batches fall back to the stock dense mask.
+_HUNYUAN15_TRANSFORMER_CLS = "HunyuanVideo15Transformer3DModel"
+_HUNYUAN15_PROCESSOR_CLS = "HunyuanVideo15AttnProcessor2_0"
+_NULL_ATTN_FLAG = "_unsloth_null_attn_mask"
+
+_NULL_PROCESSOR_CACHE: dict = {}
+
+
+def _null_mask_processor_cls():
+    """Build (once, lazily) a HunyuanVideo15AttnProcessor2_0 subclass whose ``__call__`` skips
+    the dense-mask construction and runs attn_mask=None when the DiT is flagged (padding already
+    removed by the pre-hook); otherwise it delegates to the stock processor unchanged, so a
+    mixed-padding batch and any future diffusers change to the base processor stay correct."""
+    cached = _NULL_PROCESSOR_CACHE.get("cls")
+    if cached is not None:
+        return cached
+
+    import torch
+    from diffusers.models.attention_dispatch import dispatch_attention_fn
+    from diffusers.models.transformers.transformer_hunyuan_video15 import (
+        HunyuanVideo15AttnProcessor2_0,
+    )
+
+    class _HunyuanNullMaskProcessor(HunyuanVideo15AttnProcessor2_0):
+        def __call__(
+            self,
+            attn,
+            hidden_states,
+            encoder_hidden_states=None,
+            attention_mask=None,
+            image_rotary_emb=None,
+        ):
+            # Fast path only when the pre-hook removed all padding (attn_mask redundant); a
+            # constant python bool so torch.compile const-folds the branch (no graph break).
+            if not getattr(attn, _NULL_ATTN_FLAG, False):
+                return super().__call__(
+                    attn,
+                    hidden_states,
+                    encoder_hidden_states=encoder_hidden_states,
+                    attention_mask=attention_mask,
+                    image_rotary_emb=image_rotary_emb,
+                )
+
+            # Null path = the stock body with the mask block removed and attn_mask=None.
+            query = attn.to_q(hidden_states)
+            key = attn.to_k(hidden_states)
+            value = attn.to_v(hidden_states)
+
+            query = query.unflatten(2, (attn.heads, -1))
+            key = key.unflatten(2, (attn.heads, -1))
+            value = value.unflatten(2, (attn.heads, -1))
+
+            query = attn.norm_q(query)
+            key = attn.norm_k(key)
+
+            if image_rotary_emb is not None:
+                from diffusers.models.embeddings import apply_rotary_emb
+
+                query = apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
+                key = apply_rotary_emb(key, image_rotary_emb, sequence_dim=1)
+
+            if encoder_hidden_states is not None:
+                encoder_query = attn.add_q_proj(encoder_hidden_states)
+                encoder_key = attn.add_k_proj(encoder_hidden_states)
+                encoder_value = attn.add_v_proj(encoder_hidden_states)
+
+                encoder_query = encoder_query.unflatten(2, (attn.heads, -1))
+                encoder_key = encoder_key.unflatten(2, (attn.heads, -1))
+                encoder_value = encoder_value.unflatten(2, (attn.heads, -1))
+
+                if attn.norm_added_q is not None:
+                    encoder_query = attn.norm_added_q(encoder_query)
+                if attn.norm_added_k is not None:
+                    encoder_key = attn.norm_added_k(encoder_key)
+
+                query = torch.cat([query, encoder_query], dim=1)
+                key = torch.cat([key, encoder_key], dim=1)
+                value = torch.cat([value, encoder_value], dim=1)
+
+            hidden_states = dispatch_attention_fn(
+                query,
+                key,
+                value,
+                attn_mask=None,
+                dropout_p=0.0,
+                is_causal=False,
+                backend=self._attention_backend,
+                parallel_config=self._parallel_config,
+            )
+
+            hidden_states = hidden_states.flatten(2, 3)
+            hidden_states = hidden_states.to(query.dtype)
+
+            if encoder_hidden_states is not None:
+                enc_len = encoder_hidden_states.shape[1]
+                hidden_states, encoder_hidden_states = (
+                    hidden_states[:, :-enc_len],
+                    hidden_states[:, -enc_len:],
+                )
+                if getattr(attn, "to_out", None) is not None:
+                    hidden_states = attn.to_out[0](hidden_states)
+                    hidden_states = attn.to_out[1](hidden_states)
+                if getattr(attn, "to_add_out", None) is not None:
+                    encoder_hidden_states = attn.to_add_out(encoder_hidden_states)
+                return hidden_states, encoder_hidden_states
+
+            return hidden_states
+
+    _NULL_PROCESSOR_CACHE["cls"] = _HunyuanNullMaskProcessor
+    return _HunyuanNullMaskProcessor
+
+
+def _trim_stream(states, mask):
+    """Drop the columns of a [B, S, D] text stream + its [B, S] mask that are padding for EVERY
+    batch element (globally invalid). Returns (states, mask, all_valid): all_valid is True when
+    the trimmed stream has NO partially-padded column left (so it needs no attention mask)."""
+    import torch
+
+    if states is None or mask is None or mask.dim() != 2:
+        return states, mask, True  # nothing to mask -> treat as no-padding
+    mb = mask.bool()
+    keep = mb.any(dim=0)  # column valid for at least one batch element
+    if not bool(keep.all()):
+        states = states[:, keep]
+        mask = mask[:, keep]
+        mb = mb[:, keep]
+    # all remaining slots valid for every element (vacuously True for a 0-length stream, which
+    # is fine for a secondary stream e.g. an unused byt5 in t2v -- it contributes no tokens)
+    all_valid = bool(mb.all().item())
+    return states, mask, all_valid
+
+
+def _hunyuan_trim_pre_hook(module, args, kwargs):
+    """Eager forward pre-hook: strip padded text tokens so the joint attention runs fused.
+
+    - Drop the image stream when it is entirely zero (t2v): those ~729 tokens are pure padding.
+    - Trim the mllm/byt5 text streams to their globally-valid columns.
+    - Flag every block's attention so the null-mask processor skips the dense mask when nothing
+      partially-padded remains (the batch-1 / per-guidance-branch case); otherwise leave the
+      flag False and the stock dense-mask path handles the residual padding correctly.
+
+    This hook is the correctness choke point: the null-mask flag is only valid because the padding
+    was removed HERE, on the same call. It fires on ``module(...)`` (``__call__``) -- the diffusers
+    pipeline, guider, cache_context and regional compile all go through ``__call__``. Do NOT invoke
+    a hooked DiT via ``module.forward(...)`` directly: that skips pre-hooks, so a stale True flag
+    would null the mask over un-trimmed padding and corrupt the output.
+
+    Best-effort: any anomaly leaves the inputs untouched and the flag False (stock behaviour)."""
+    import torch
+
+    original = dict(kwargs)
+    try:
+        null_ok = True
+
+        image = kwargs.get("image_embeds")
+        if image is not None and image.numel() > 0 and bool(torch.all(image == 0).item()):
+            # All-zero image == "no image" (t2v). Emptying the token axis removes the 729 always
+            # -padded image tokens; is_t2v stays True inside forward (all() of empty is vacuously
+            # True), so the model still runs its text-to-video path.
+            kwargs["image_embeds"] = image[:, :0]
+
+        for skey, mkey, required in (
+            ("encoder_hidden_states", "encoder_attention_mask", True),
+            ("encoder_hidden_states_2", "encoder_attention_mask_2", False),
+        ):
+            # Only touch streams passed by keyword (the diffusers pipeline always does). Never write
+            # a key back that was absent -- a positionally-passed encoder_hidden_states would then
+            # collide ("got multiple values for argument"). If the REQUIRED primary stream is absent
+            # we cannot vouch for the mask, so drop the fast path; an absent optional byt5 just
+            # contributes nothing and is fine.
+            if skey not in kwargs:
+                null_ok = null_ok and not required
+                continue
+            states, mask, all_valid = _trim_stream(kwargs.get(skey), kwargs.get(mkey))
+            kwargs[skey] = states
+            kwargs[mkey] = mask
+            null_ok = null_ok and all_valid
+
+        # The primary text stream (mllm) flows through the TokenRefiner's own attention; never
+        # hand it a 0-length sequence (pathological empty prompt). Revert everything and take the
+        # stock dense-mask path in that rare case.
+        primary = kwargs.get("encoder_hidden_states")
+        if primary is not None and primary.dim() == 3 and primary.shape[1] == 0:
+            kwargs.clear()
+            kwargs.update(original)
+            null_ok = False
+
+        for blk in getattr(module, "transformer_blocks", []):
+            attn = getattr(blk, "attn", None)
+            if attn is not None:
+                setattr(attn, _NULL_ATTN_FLAG, null_ok)
+
+        return args, kwargs
+    except Exception:  # noqa: BLE001 — optimisation only; never break the forward
+        for blk in getattr(module, "transformer_blocks", []):
+            attn = getattr(blk, "attn", None)
+            if attn is not None:
+                setattr(attn, _NULL_ATTN_FLAG, False)
+        return args, kwargs
+
+
+def _install_null_processors(dit: Any, logger: Any) -> bool:
+    """Swap every stock block attention processor on ``dit`` for the null-mask subclass. Only
+    touches blocks whose processor is exactly the stock class, so a diffusers change (or an
+    already-installed run) is a no-op. Preserves any attention backend already pinned."""
+    try:
+        cls = _null_mask_processor_cls()
+    except Exception as exc:  # noqa: BLE001 — diffusers moved / unavailable -> skip
+        _warn(logger, "hunyuan_attn_trim", exc)
+        return False
+    installed = 0
+    for blk in getattr(dit, "transformer_blocks", []):
+        attn = getattr(blk, "attn", None)
+        proc = getattr(attn, "processor", None) if attn is not None else None
+        if proc is None:
+            continue
+        if isinstance(proc, cls):
+            installed += 1  # already ours (idempotent)
+            continue
+        if type(proc).__name__ != _HUNYUAN15_PROCESSOR_CLS:
+            continue  # unknown processor -> leave it alone
+        new = cls()
+        # carry over any backend/parallel config the stock processor already held
+        new._attention_backend = getattr(proc, "_attention_backend", None)
+        new._parallel_config = getattr(proc, "_parallel_config", None)
+        try:
+            attn.set_processor(new)
+        except Exception:  # noqa: BLE001 — fall back to direct assignment
+            attn.processor = new
+        installed += 1
+    return installed > 0
+
+
+def install_hunyuan_attention_trim(pipe: Any, family: Any, *, logger: Any = None) -> bool:
+    """HunyuanVideo-1.5 only: make the joint attention skip padded text tokens (see module note).
+
+    Installs a null-mask processor on every denoiser DiT block plus an eager pre-hook that trims
+    the padded text/image streams each forward. Bit-exact for the video output; the fused-vs-
+    masked SDPA kernel swap is the only numeric change. Returns True when engaged. No-op (False)
+    for any other family, an unexpected transformer/processor class, or on any failure -- the
+    stock dense-mask path stays in place, so correctness never depends on this optimisation.
+
+    Call BEFORE apply_attention_backend so the requested kernel is pinned onto the new processor."""
+    if getattr(family, "transformer_class", None) != _HUNYUAN15_TRANSFORMER_CLS:
+        return False
+    engaged = False
+    for dit in _attention_dits(pipe):
+        if type(dit).__name__ != _HUNYUAN15_TRANSFORMER_CLS:
+            continue
+        if not _install_null_processors(dit, logger):
+            continue
+        if getattr(dit, "_unsloth_trim_hook", None) is None:
+            try:
+                handle = dit.register_forward_pre_hook(_hunyuan_trim_pre_hook, with_kwargs=True)
+                dit._unsloth_trim_hook = handle
+            except Exception as exc:  # noqa: BLE001 — optimisation only
+                _warn(logger, "hunyuan_attn_trim", exc)
+                continue
+        engaged = True
+    if engaged and logger is not None:
+        logger.info("diffusion.attention: hunyuan padded-text trim engaged")
+    return engaged
