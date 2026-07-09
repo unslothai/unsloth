@@ -1697,7 +1697,6 @@ def _format_template_ok(template):
         return True
     try:
         import string as _string
-
         for _lit, _field, _spec, _conv in _string.Formatter().parse(template):
             if _spec and not _format_spec_ok(_spec):
                 return False
@@ -2374,7 +2373,6 @@ def _decode_source_bytes(data):
     try:
         import io as _io_mod
         import tokenize as _tok
-
         enc, _ = _tok.detect_encoding(_io_mod.BytesIO(data).readline)
     except Exception:
         enc = "utf-8"
@@ -2389,7 +2387,7 @@ def _decode_source_bytes(data):
     lines = text.split("\n")
     for _i in range(min(2, len(lines))):
         if _CODING_COOKIE_TEXT_RE.search(lines[_i]):
-            lines[_i] = _CODING_COOKIE_TEXT_RE.sub("coding_neutralized", lines[_i], count=1)
+            lines[_i] = _CODING_COOKIE_TEXT_RE.sub("coding_neutralized", lines[_i], count = 1)
     return "\n".join(lines)
 
 
