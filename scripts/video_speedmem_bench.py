@@ -273,16 +273,37 @@ _CONFIGS: dict[str, dict[str, Any]] = {
 }
 
 
+def _ref_cache_path(out, *, family, seed, steps, num_frames, width, height):
+    """Reference-frame cache keyed by every parameter that changes the reference clip.
+
+    The persisted reference (for the "run reference once, score other configs in parallel
+    processes" workflow) shares the default --out dir across runs, so a single unkeyed
+    ref_frames.npz would let a later reference-less run of a different family / seed / steps /
+    frames / resolution score LPIPS against the wrong baseline. Key by all of them so a
+    reference-less run only reuses a reference computed for the same parameters."""
+    from pathlib import Path
+
+    return Path(out) / (
+        f"ref_frames_{family}_seed{seed}_st{steps}_f{num_frames}_{width}x{height}.npz"
+    )
+
+
 def _build_pipe(repo: str, force_fp32_vae: bool):
     import torch
 
     diffusers = _import_diffusers()
-    pipe = diffusers.DiffusionPipeline.from_pretrained(repo, torch_dtype = torch.bfloat16)
-    pipe = pipe.to("cuda")
     # Wan-style VAEs decode in fp32 for numerical stability (the loader pins this via
-    # vae_force_fp32); loading bf16 bands every clip, so mirror the loader.
+    # vae_force_fp32). A scalar bf16 torch_dtype truncates the fp32-stored VAE weights at
+    # load, and a later .to(float32) only widens the already-lossy values (banding), so the
+    # bench would measure a decode path production never runs. Pin the VAE fp32 per-component
+    # exactly like the production loader (video.py: {"vae": fp32, "default": bf16}).
+    torch_dtype = torch.bfloat16
+    if force_fp32_vae:
+        torch_dtype = {"vae": torch.float32, "default": torch.bfloat16}
+    pipe = diffusers.DiffusionPipeline.from_pretrained(repo, torch_dtype = torch_dtype)
+    pipe = pipe.to("cuda")
     if force_fp32_vae and getattr(pipe, "vae", None) is not None:
-        pipe.vae.to(torch.float32)
+        pipe.vae.to(torch.float32)  # belt-and-suspenders; a no-op on the primary path above
     return pipe
 
 
@@ -595,7 +616,13 @@ def _run_config(
     if name == "reference" and arrs:
         try:
             import numpy as _np
-            _np.savez_compressed(out / "ref_frames.npz", *arrs)
+            _np.savez_compressed(
+                _ref_cache_path(
+                    out, family = family, seed = seed, steps = steps,
+                    num_frames = num_frames, width = width, height = height,
+                ),
+                *arrs,
+            )
         except Exception:
             pass
 
@@ -662,7 +689,10 @@ def main(argv = None) -> int:
     ref_arrs = None
     # If not (re)computing the reference in this run, load persisted reference frames for LPIPS.
     if "reference" not in names:
-        ref_npz = out / "ref_frames.npz"
+        ref_npz = _ref_cache_path(
+            out, family = args.family, seed = args.seed, steps = args.steps,
+            num_frames = args.num_frames, width = args.width, height = args.height,
+        )
         if ref_npz.exists():
             try:
                 import numpy as _np
