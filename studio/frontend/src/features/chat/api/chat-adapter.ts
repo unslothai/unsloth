@@ -1496,7 +1496,7 @@ async function autoLoadSmallestModel(): Promise<{
       maxTokens:
         candidate.kind === "gguf"
           ? loadResp.context_length ?? 131072
-          : candidate.maxSeqLength,
+          : effectiveMaxSeqLength,
     });
     const autoModel: ChatModelSummary = {
       id: candidate.id,
@@ -1615,7 +1615,7 @@ async function autoLoadSmallestModel(): Promise<{
                 id: repo.repo_id,
                 kind: "model",
                 ggufVariant: null,
-                maxSeqLength: 4096,
+                maxSeqLength: store.params.maxSeqLength,
                 successLabel: `Loaded ${repo.repo_id}`,
               })
             ) {

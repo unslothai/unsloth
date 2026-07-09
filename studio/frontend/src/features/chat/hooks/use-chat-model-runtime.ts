@@ -821,6 +821,7 @@ export function useChatModelRuntime() {
             await refresh({ signal: abortCtrl.signal });
             if (
               !isLora &&
+              !(loadResponse.is_lora ?? false) &&
               !nativePathToken &&
               !isLocalModelPath(modelId) &&
               !isExternalModelId(modelId)
