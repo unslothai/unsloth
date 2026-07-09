@@ -1374,12 +1374,14 @@ jobs:
 
       - name: Assert Visual Studio + CMake are genuinely undetectable
         shell: pwsh
-        env:
-          ProgramFiles: ${{ env.NO_BUILD_TOOLS_PROGRAMFILES }}
-          ProgramFiles(x86): ${{ env.NO_BUILD_TOOLS_PROGRAMFILES_X86 }}
-          Path: ${{ env.NO_BUILD_TOOLS_PATH }}
         run: |
           $ErrorActionPreference = 'Stop'
+          # Set in-script: the runner does not apply step-level env keys with
+          # parentheses (`ProgramFiles(x86)`), so vswhere still found VS.
+          if (-not $env:NO_BUILD_TOOLS_PROGRAMFILES) { Write-Error "NO_BUILD_TOOLS_* env missing (Prepare step did not run?)"; exit 1 }
+          $env:ProgramFiles = $env:NO_BUILD_TOOLS_PROGRAMFILES
+          ${env:ProgramFiles(x86)} = $env:NO_BUILD_TOOLS_PROGRAMFILES_X86
+          $env:Path = $env:NO_BUILD_TOOLS_PATH
           . (Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1/Get-FunctionSource.ps1')
           $setup = Join-Path $env:GITHUB_WORKSPACE 'studio/setup.ps1'
           foreach ($fn in @('Resolve-VsGeneratorFromLabel', 'Find-VsBuildTools')) {
@@ -1403,10 +1405,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-          ProgramFiles: ${{ env.NO_BUILD_TOOLS_PROGRAMFILES }}
-          ProgramFiles(x86): ${{ env.NO_BUILD_TOOLS_PROGRAMFILES_X86 }}
-          Path: ${{ env.NO_BUILD_TOOLS_PATH }}
         run: |
+          # Set in-script (see the assert step); child processes inherit these.
+          $env:ProgramFiles = $env:NO_BUILD_TOOLS_PROGRAMFILES
+          ${env:ProgramFiles(x86)} = $env:NO_BUILD_TOOLS_PROGRAMFILES_X86
+          $env:Path = $env:NO_BUILD_TOOLS_PATH
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           $ProgressPreference = 'SilentlyContinue'
           & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
@@ -1595,19 +1598,28 @@ jobs:
           echo "Windows CUDA and ROCm prebuilts are available -- GPU users get them without compiling."
 
       - name: The prebuilt resolver runs without Visual Studio
+        shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ProgramFiles: ${{ env.NO_BUILD_TOOLS_PROGRAMFILES }}
-          ProgramFiles(x86): ${{ env.NO_BUILD_TOOLS_PROGRAMFILES_X86 }}
-          Path: ${{ env.NO_BUILD_TOOLS_PATH }}
         run: |
+          $ErrorActionPreference = 'Stop'
+          # pwsh: bash cannot export `ProgramFiles(x86)`; set in-script so the
+          # python child inherits the overrides.
+          $env:ProgramFiles = $env:NO_BUILD_TOOLS_PROGRAMFILES
+          ${env:ProgramFiles(x86)} = $env:NO_BUILD_TOOLS_PROGRAMFILES_X86
+          $env:Path = $env:NO_BUILD_TOOLS_PATH
           # Resolver-only (no GPU on hosted runners, so the host resolves to the
           # CPU bundle). The point is that resolution needs no compiler/VS.
           python -m pip install --upgrade huggingface_hub
-          python studio/install_llama_prebuilt.py --resolve-prebuilt latest --output-format json > /tmp/resolve.json || {
-            echo "::error::resolver exited non-zero"; cat /tmp/resolve.json || true; exit 1; }
-          cat /tmp/resolve.json
-          echo "Prebuilt resolver ran with no Visual Studio present."
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::pip install huggingface_hub failed"; exit 1 }
+          python studio/install_llama_prebuilt.py --resolve-prebuilt latest --output-format json > resolve.json
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::resolver exited non-zero"
+            if (Test-Path resolve.json) { Get-Content resolve.json }
+            exit 1
+          }
+          Get-Content resolve.json
+          Write-Host "Prebuilt resolver ran with no Visual Studio present."
 
       - name: Clean no-build-tools simulation
         if: always()
