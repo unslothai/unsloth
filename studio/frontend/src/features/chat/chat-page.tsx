@@ -941,6 +941,7 @@ function ProjectLanding({
   }, [items, pendingRename]);
 
   const openRename = useCallback((item: SidebarItem) => {
+    skipRenameBlurRef.current = false;
     setRenameDraft(item.title);
     setRenamingId(item.id);
   }, []);
@@ -1111,6 +1112,8 @@ function ProjectLanding({
                             }
                             onKeyDown={(event) => {
                               if (event.key === "Enter") {
+                                if (event.nativeEvent.isComposing || event.keyCode === 229)
+                                  return;
                                 event.preventDefault();
                                 skipRenameBlurRef.current = true;
                                 void commitRename(item);
@@ -1180,7 +1183,7 @@ function ProjectLanding({
                             type="button"
                             onClick={(event) => event.stopPropagation()}
                             aria-label="Chat options"
-                            className="absolute right-3 top-1/2 inline-flex size-8 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 pointer-events-none outline-none transition-opacity hover:bg-foreground/10 focus-visible:opacity-100 focus-visible:pointer-events-auto group-hover:opacity-100 group-hover:pointer-events-auto data-[state=open]:opacity-100 data-[state=open]:pointer-events-auto"
+                            className="absolute right-3 top-1/2 inline-flex size-8 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none transition-opacity hover:bg-foreground/10 md:opacity-0 md:pointer-events-none focus-visible:opacity-100 focus-visible:pointer-events-auto group-hover:opacity-100 group-hover:pointer-events-auto data-[state=open]:opacity-100 data-[state=open]:pointer-events-auto"
                           >
                             <HugeiconsIcon
                               icon={MoreVerticalIcon}
