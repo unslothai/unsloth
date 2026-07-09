@@ -11,12 +11,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import {
   type ChatAttachmentRecord,
@@ -39,7 +33,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState, type ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 function formatUploadedAt(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === "") return "-";
@@ -229,29 +223,22 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
   };
 }
 
-export function UploadedFilesDialog({
-  open,
-  onOpenChange,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
+/** Inline settings page listing every uploaded file (Data tab subpage). */
+export function UploadedFilesView() {
   const [rows, setRows] = useState<UploadedFileRow[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] =
     useState<UploadedFileRow | null>(null);
   const navigate = useNavigate();
 
-  // Jump to the chat thread the attachment lives in, closing this dialog and
-  // the settings dialog underneath so the thread is actually visible.
+  // Jump to the chat thread the attachment lives in, closing the settings
+  // dialog so the thread is actually visible.
   function goToThread(threadId: string) {
-    onOpenChange(false);
     useSettingsDialogStore.getState().closeDialog();
     void navigate({ to: "/chat", search: { thread: threadId } });
   }
 
   useEffect(() => {
-    if (!open) return;
     let cancelled = false;
     setLoadError(null);
     // Load both sources independently: RAG being unavailable (no sqlite-vec)
@@ -284,7 +271,7 @@ export function UploadedFilesDialog({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, []);
 
   async function handleOpen(row: UploadedFileRow) {
     try {
@@ -309,128 +296,120 @@ export function UploadedFilesDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>Uploaded files</DialogTitle>
-        </DialogHeader>
-
-        {rows === null ? (
-          <div className="flex justify-center py-8">
-            <Spinner className="size-5 text-muted-foreground" />
+    <div className="flex flex-col gap-4">
+      {rows === null ? (
+        <div className="flex justify-center py-8">
+          <Spinner className="size-5 text-muted-foreground" />
+        </div>
+      ) : loadError ? (
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          {loadError}
+        </p>
+      ) : rows.length === 0 ? (
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          No uploaded files.
+        </p>
+      ) : (
+        <div>
+          <div className="flex items-center gap-3 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
+            <span className="flex-1">Name</span>
+            <span className="w-36 shrink-0">Location</span>
+            <span className="w-16 shrink-0">Size</span>
+            <span className="w-24 shrink-0">Uploaded</span>
+            <span className="w-16 shrink-0" />
           </div>
-        ) : loadError ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            {loadError}
-          </p>
-        ) : rows.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            No uploaded files.
-          </p>
-        ) : (
-          <div className="max-h-[70vh] overflow-y-auto">
-            <div className="flex items-center gap-4 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
-              <span className="flex-1">Name</span>
-              <span className="w-44 shrink-0">Location</span>
-              <span className="w-16 shrink-0 text-right">Size</span>
-              <span className="w-28 shrink-0">Uploaded</span>
-              <span className="w-16 shrink-0" />
-            </div>
-            {rows.map((row) => (
-              <div
-                key={row.key}
-                className="group flex items-center gap-4 border-b border-border/40 px-1 py-2.5 text-sm last:border-0"
-              >
-                {/* Clicking the file jumps to its chat; files without one
+          {rows.map((row) => (
+            <div
+              key={row.key}
+              className="group flex items-center gap-3 border-b border-border/40 px-1 py-2.5 text-sm last:border-0"
+            >
+              {/* Clicking the file jumps to its chat; files without one
                 open directly. The theme scales rounded-md up to a near
                 circle at this size, so the thumb pins a small radius. */}
+              <button
+                type="button"
+                onClick={() =>
+                  row.threadId ? goToThread(row.threadId) : void handleOpen(row)
+                }
+                title={
+                  row.threadId ? `Go to ${row.location}` : `Open ${row.name}`
+                }
+                className="group/name flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden text-left"
+              >
+                <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-[7px] border border-border/50 bg-muted/40">
+                  {row.thumb}
+                </span>
+                {/* Floor keeps the name visible when the chip and fixed
+                  columns squeeze the cell at narrow widths. */}
+                <span className="min-w-[3.5rem] truncate underline-offset-2 group-hover/name:underline">
+                  {row.name}
+                </span>
+                {row.typeLabel ? (
+                  <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground dark:bg-white/[0.1]">
+                    {row.typeLabel}
+                  </span>
+                ) : null}
+                {row.failed ? (
+                  <span className="shrink-0 text-xs text-destructive">
+                    failed
+                  </span>
+                ) : null}
+              </button>
+              {row.threadId ? (
                 <button
                   type="button"
-                  onClick={() =>
-                    row.threadId
-                      ? goToThread(row.threadId)
-                      : void handleOpen(row)
-                  }
-                  title={
-                    row.threadId ? `Go to ${row.location}` : `Open ${row.name}`
-                  }
-                  className="group/name flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden text-left"
+                  onClick={() => goToThread(row.threadId as string)}
+                  title={`Go to ${row.location}`}
+                  className="w-36 shrink-0 truncate text-left text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
                 >
-                  <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-[7px] border border-border/50 bg-muted/40">
-                    {row.thumb}
-                  </span>
-                  {/* Floor keeps the name visible when the chip and fixed
-                  columns squeeze the cell at narrow widths. */}
-                  <span className="min-w-[3.5rem] truncate underline-offset-2 group-hover/name:underline">
-                    {row.name}
-                  </span>
-                  {row.typeLabel ? (
-                    <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground dark:bg-white/[0.1]">
-                      {row.typeLabel}
-                    </span>
-                  ) : null}
-                  {row.failed ? (
-                    <span className="shrink-0 text-xs text-destructive">
-                      failed
-                    </span>
-                  ) : null}
+                  {row.location}
                 </button>
-                {row.threadId ? (
-                  <button
-                    type="button"
-                    onClick={() => goToThread(row.threadId as string)}
-                    title={`Go to ${row.location}`}
-                    className="w-44 shrink-0 truncate text-left text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
-                  >
-                    {row.location}
-                  </button>
-                ) : (
-                  <span
-                    className="w-44 shrink-0 truncate text-muted-foreground"
-                    title={row.location}
-                  >
-                    {row.location}
-                  </span>
-                )}
-                <span className="w-16 shrink-0 text-right text-muted-foreground tabular-nums">
-                  {formatSize(row.sizeBytes)}
+              ) : (
+                <span
+                  className="w-36 shrink-0 truncate text-muted-foreground"
+                  title={row.location}
+                >
+                  {row.location}
                 </span>
-                <span className="w-28 shrink-0 text-muted-foreground tabular-nums">
-                  {formatUploadedAt(row.createdAt)}
-                </span>
-                <span className="flex w-16 shrink-0 items-center justify-end gap-1">
-                  <button
-                    type="button"
-                    onClick={() => void handleOpen(row)}
-                    aria-label="Open file"
-                    title="Open"
-                    className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  >
-                    <HugeiconsIcon
-                      icon={ArrowUpRight01Icon}
-                      strokeWidth={1.75}
-                      className="size-4"
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmingDelete(row)}
-                    aria-label="Delete file"
-                    title="Delete"
-                    className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                  >
-                    <HugeiconsIcon
-                      icon={Delete02Icon}
-                      strokeWidth={1.75}
-                      className="size-4"
-                    />
-                  </button>
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </DialogContent>
+              )}
+              <span className="w-16 shrink-0 text-muted-foreground tabular-nums">
+                {formatSize(row.sizeBytes)}
+              </span>
+              <span className="w-24 shrink-0 text-muted-foreground tabular-nums">
+                {formatUploadedAt(row.createdAt)}
+              </span>
+              <span className="flex w-16 shrink-0 items-center justify-end gap-1">
+                <button
+                  type="button"
+                  onClick={() => void handleOpen(row)}
+                  aria-label="Open file"
+                  title="Open"
+                  className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <HugeiconsIcon
+                    icon={ArrowUpRight01Icon}
+                    strokeWidth={1.75}
+                    className="size-4"
+                  />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(row)}
+                  aria-label="Delete file"
+                  title="Delete"
+                  className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                >
+                  <HugeiconsIcon
+                    icon={Delete02Icon}
+                    strokeWidth={1.75}
+                    className="size-4"
+                  />
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       <AlertDialog
         open={confirmingDelete !== null}
@@ -464,6 +443,6 @@ export function UploadedFilesDialog({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </Dialog>
+    </div>
   );
 }

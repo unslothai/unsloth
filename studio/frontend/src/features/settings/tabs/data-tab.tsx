@@ -36,6 +36,7 @@ import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
+  ArrowLeft01Icon,
   Delete02Icon,
   Download01Icon,
   Upload01Icon,
@@ -46,7 +47,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArchivedChatsDialog } from "../components/archived-chats-dialog";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
-import { UploadedFilesDialog } from "../components/uploaded-files-dialog";
+import { UploadedFilesView } from "../components/uploaded-files-dialog";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 export function DataTab() {
@@ -55,7 +56,8 @@ export function DataTab() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   const [archivedOpen, setArchivedOpen] = useState(false);
-  const [uploadedFilesOpen, setUploadedFilesOpen] = useState(false);
+  // "files" swaps the tab body for the Uploaded files subpage.
+  const [subpage, setSubpage] = useState<"main" | "files">("main");
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -203,6 +205,35 @@ export function DataTab() {
       setClearing(false);
     }
   };
+
+  if (subpage === "files") {
+    return (
+      <div className="flex flex-col gap-6">
+        <header className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSubpage("main")}
+            aria-label={`Back to ${t("settings.data.title")}`}
+            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+          </button>
+          <h1 className="text-xl font-semibold font-heading">
+            {t("settings.data.title")}
+          </h1>
+        </header>
+        <div className="flex flex-col gap-1">
+          <h2 className="text-sm font-semibold">
+            {t("settings.data.uploadedFiles")}
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.data.uploadedFilesDescription")}
+          </p>
+        </div>
+        <UploadedFilesView />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -389,7 +420,7 @@ export function DataTab() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setUploadedFilesOpen(true)}
+            onClick={() => setSubpage("files")}
           >
             {t("settings.data.manageAction")}
           </Button>
@@ -397,10 +428,6 @@ export function DataTab() {
       </SettingsSection>
 
       <ArchivedChatsDialog open={archivedOpen} onOpenChange={setArchivedOpen} />
-      <UploadedFilesDialog
-        open={uploadedFilesOpen}
-        onOpenChange={setUploadedFilesOpen}
-      />
 
       <Dialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>
         <DialogContent className="max-w-md">
