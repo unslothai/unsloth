@@ -12,6 +12,9 @@ import signal
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 import asyncio
+import base64
+import binascii
+import codecs
 import random
 import re
 import shlex
@@ -21,6 +24,7 @@ import sys
 import tempfile
 import threading
 import urllib.request
+import zlib
 
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
@@ -1591,7 +1595,393 @@ def _web_search(
         return f"Search failed: {e}"
 
 
-def _check_signal_escape_patterns(code: str):
+# ==========================================================================
+# Sandbox static-analysis hardening (feature-flagged; see UNSLOTH_STUDIO_SINK_ANALYZER)
+#
+# A pure, whitelist-only constant folder plus a filesystem-confinement path
+# resolver back the eval/exec payload recursion and the destructive-op gate.
+# Everything here recomputes pure transforms on *literals only* and never runs,
+# imports, or reflects on user code. All limits are bounded so the analyzer can
+# never be slower or crashier than the legacy syntactic checks; on any breach a
+# folder returns None (opaque) and the caller fails safe.
+# ==========================================================================
+
+# Folder bounds (Stage 1). Breaching any of these yields None ("un-foldable").
+_FOLD_DEPTH = 24
+_FOLD_MAXLEN = 65536
+_FOLD_OPS = 4000
+_FOLD_MAX_SEQ = 4096
+_FOLD_MAXINT = 1 << 64
+
+_UNKNOWN = object()  # sentinel: "not statically decidable"
+
+
+class _FoldState:
+    """Shared op counter + single-assignment const-prop environment."""
+
+    __slots__ = ("ops", "names")
+
+    def __init__(self, names = None):
+        self.ops = 0
+        self.names = names or {}
+
+
+def _fold_cap(value):
+    """Return value unless a str/bytes exceeds the size cap or an int the magnitude cap."""
+    if isinstance(value, (str, bytes, bytearray)) and len(value) > _FOLD_MAXLEN:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > _FOLD_MAXINT:
+        return None
+    return value
+
+
+def _fold_apply_codec(name, data):
+    """Pure data transforms only (rot13/hex/base64/zlib/text codecs). Bounded zlib."""
+    name = name.lower().replace("-", "_")
+    try:
+        if name in ("rot_13", "rot13"):
+            text = data if isinstance(data, str) else data.decode("latin-1")
+            return codecs.decode(text, "rot_13")
+        if name == "hex":
+            return codecs.decode(data, "hex")
+        if name in ("base64", "base_64"):
+            return base64.b64decode(data if isinstance(data, (bytes, bytearray)) else data.encode())
+        if name == "zlib":
+            payload = data if isinstance(data, (bytes, bytearray)) else str(data).encode()
+            d = zlib.decompressobj()
+            out = d.decompress(payload, _FOLD_MAXLEN)
+            if d.unconsumed_tail:  # would exceed the cap -> refuse
+                return None
+            return out
+        if name in ("utf_8", "utf8", "latin_1", "latin1", "ascii"):
+            if isinstance(data, (bytes, bytearray)):
+                return data.decode(name)
+            return data.encode(name)
+    except Exception:
+        return None
+    return None  # bz2/lzma/gzip and unknowns: bomb-unsafe / opaque -> refuse
+
+
+_FOLD_PURE_BUILTINS = frozenset(
+    {"chr", "ord", "str", "int", "bytes", "bytearray", "hex", "oct", "bin", "bool", "float", "len"}
+)
+_FOLD_STR_METHODS = frozenset(
+    {
+        "join", "replace", "upper", "lower", "strip", "lstrip", "rstrip", "swapcase",
+        "title", "capitalize", "format", "zfill", "ljust", "rjust", "center",
+        "encode", "decode",
+    }
+)
+_FOLD_B64_FUNCS = frozenset(
+    {
+        "b64decode", "b64encode", "urlsafe_b64decode", "standard_b64decode",
+        "b32decode", "b16decode", "a85decode", "b85decode",
+    }
+)
+
+
+def _const_fold(node, env = None, _state = None, _depth = 0):
+    """Fold an AST expression to a concrete str/bytes/int/list value, else None.
+
+    Whitelist-only and pure: it never executes user code, never imports, never
+    reflects. Only a fixed set of pure transforms over already-folded literals
+    (concat/repeat/join/format/slice/reverse, base64/hex/rot13/zlib decode, and
+    a handful of pure builtins/str methods) is supported; anything else returns
+    None. ``env`` maps single-assignment module-level names to their RHS nodes.
+    """
+    if _state is None:
+        _state = _FoldState(env)
+    _state.ops += 1
+    if node is None or _depth > _FOLD_DEPTH or _state.ops > _FOLD_OPS:
+        return None
+
+    if isinstance(node, ast.Constant):
+        v = node.value
+        if isinstance(v, (str, bytes, bytearray, int, float)) or v is None:
+            return _fold_cap(v)
+        return None
+
+    if isinstance(node, ast.Name):
+        rhs = _state.names.get(node.id)
+        if rhs is None:
+            return None
+        return _const_fold(rhs, None, _state, _depth + 1)
+
+    if isinstance(node, (ast.List, ast.Tuple)):
+        if len(node.elts) > _FOLD_MAX_SEQ:
+            return None
+        vals = []
+        for e in node.elts:
+            v = _const_fold(e, None, _state, _depth + 1)
+            if v is None and not (isinstance(e, ast.Constant) and e.value is None):
+                return None
+            vals.append(v)
+        return vals
+
+    if isinstance(node, ast.JoinedStr):
+        out = []
+        for part in node.values:
+            if isinstance(part, ast.Constant):
+                out.append(str(part.value))
+            elif isinstance(part, ast.FormattedValue):
+                v = _const_fold(part.value, None, _state, _depth + 1)
+                if v is None:
+                    return None
+                spec = ""
+                if part.format_spec is not None:
+                    spec = _const_fold(part.format_spec, None, _state, _depth + 1)
+                    if spec is None:
+                        return None
+                if part.conversion and part.conversion != -1:
+                    try:
+                        v = {114: repr, 115: str, 97: ascii}[part.conversion](v)
+                    except Exception:
+                        return None
+                try:
+                    out.append(format(v, spec if isinstance(spec, str) else ""))
+                except Exception:
+                    return None
+            else:
+                return None
+        return _fold_cap("".join(out))
+
+    if isinstance(node, ast.BinOp):
+        left = _const_fold(node.left, None, _state, _depth + 1)
+        right = _const_fold(node.right, None, _state, _depth + 1)
+        if left is None or right is None:
+            return None
+        op = node.op
+        try:
+            if isinstance(op, ast.Mult):
+                if isinstance(left, (str, bytes, bytearray)) and isinstance(right, int):
+                    if len(left) * max(right, 0) > _FOLD_MAXLEN:
+                        return None
+                if isinstance(right, (str, bytes, bytearray)) and isinstance(left, int):
+                    if len(right) * max(left, 0) > _FOLD_MAXLEN:
+                        return None
+                return _fold_cap(left * right)
+            if isinstance(op, ast.Add):
+                return _fold_cap(left + right)
+            if isinstance(op, ast.Mod):
+                return _fold_cap(left % right)
+            if isinstance(op, ast.Sub):
+                return _fold_cap(left - right)
+            if isinstance(op, ast.FloorDiv):
+                return _fold_cap(left // right)
+            if isinstance(op, ast.Div):
+                return _fold_cap(left / right)
+            if isinstance(op, ast.BitXor):
+                return _fold_cap(left ^ right)
+            if isinstance(op, ast.BitOr):
+                return _fold_cap(left | right)
+            if isinstance(op, ast.BitAnd):
+                return _fold_cap(left & right)
+            if isinstance(op, ast.LShift) and isinstance(right, int) and 0 <= right < 64:
+                return _fold_cap(left << right)
+            if isinstance(op, ast.RShift) and isinstance(right, int) and 0 <= right < 64:
+                return _fold_cap(left >> right)
+        except Exception:
+            return None
+        return None  # Pow and others: refuse (bignum DoS)
+
+    if isinstance(node, ast.UnaryOp):
+        v = _const_fold(node.operand, None, _state, _depth + 1)
+        if v is None:
+            return None
+        try:
+            return {
+                ast.USub: lambda x: -x,
+                ast.UAdd: lambda x: +x,
+                ast.Invert: lambda x: ~x,
+                ast.Not: lambda x: not x,
+            }[type(node.op)](v)
+        except Exception:
+            return None
+
+    if isinstance(node, ast.Subscript):
+        base = _const_fold(node.value, None, _state, _depth + 1)
+        if base is None or not isinstance(base, (str, bytes, bytearray, list, tuple)):
+            return None
+        sl = node.slice
+        try:
+            if isinstance(sl, ast.Slice):
+                lo = _const_fold(sl.lower, None, _state, _depth + 1) if sl.lower else None
+                hi = _const_fold(sl.upper, None, _state, _depth + 1) if sl.upper else None
+                st = _const_fold(sl.step, None, _state, _depth + 1) if sl.step else None
+                if (sl.lower is not None and lo is None) or (sl.upper is not None and hi is None) \
+                        or (sl.step is not None and st is None):
+                    return None
+                return _fold_cap(base[lo:hi:st])
+            idx = _const_fold(sl, None, _state, _depth + 1)
+            if not isinstance(idx, int):
+                return None
+            return _fold_cap(base[idx])
+        except Exception:
+            return None
+
+    if isinstance(node, ast.Call):
+        return _fold_call(node, _state, _depth)
+
+    return None
+
+
+def _fold_call(node, _state, _depth):
+    """Fold a whitelisted pure builtin / method / decode call, else None."""
+    f = node.func
+    args = []
+    for a in node.args:
+        v = _const_fold(a, None, _state, _depth + 1)
+        if v is None and not (isinstance(a, ast.Constant) and a.value is None):
+            return None
+        args.append(v)
+
+    if isinstance(f, ast.Name):
+        name = f.id
+        if name not in _FOLD_PURE_BUILTINS:
+            return None
+        try:
+            if name == "chr":
+                if len(args) == 1 and isinstance(args[0], int) and 0 <= args[0] <= 0x10FFFF:
+                    return chr(args[0])
+                return None
+            if name == "ord":
+                if len(args) == 1 and isinstance(args[0], (str, bytes, bytearray)) and len(args[0]) == 1:
+                    return ord(args[0])
+                return None
+            fn = {
+                "str": str, "bytes": bytes, "bytearray": bytearray, "int": int,
+                "hex": hex, "oct": oct, "bin": bin, "bool": bool, "float": float,
+                "len": len,
+            }[name]
+            return _fold_cap(fn(*args))
+        except Exception:
+            return None
+
+    if isinstance(f, ast.Attribute):
+        attr = f.attr
+        owner = f.value
+        if isinstance(owner, ast.Name):
+            mod = owner.id
+            try:
+                if mod == "base64" and attr in _FOLD_B64_FUNCS and len(args) >= 1:
+                    return _fold_cap(getattr(base64, attr)(args[0]))
+                if mod == "codecs" and attr in ("decode", "encode") and len(args) >= 2 \
+                        and isinstance(args[1], str):
+                    return _fold_cap(_fold_apply_codec(args[1], args[0]))
+                if mod == "binascii" and attr in ("unhexlify", "a2b_hex") and len(args) >= 1:
+                    return _fold_cap(binascii.unhexlify(args[0]))
+                if mod in ("bytes", "bytearray") and attr == "fromhex" and len(args) >= 1 \
+                        and isinstance(args[0], str):
+                    return _fold_cap(bytes.fromhex(args[0]))
+            except Exception:
+                return None
+        recv = _const_fold(owner, None, _state, _depth + 1)
+        if isinstance(recv, (str, bytes, bytearray)) and attr in _FOLD_STR_METHODS:
+            try:
+                kwargs = {}
+                for kw in node.keywords:
+                    if kw.arg is None:
+                        return None
+                    kv = _const_fold(kw.value, None, _state, _depth + 1)
+                    if kv is None:
+                        return None
+                    kwargs[kw.arg] = kv
+                call_args = []
+                for a in args:
+                    call_args.append(list(a) if attr == "join" and isinstance(a, (list, tuple)) else a)
+                return _fold_cap(getattr(recv, attr)(*call_args, **kwargs))
+            except Exception:
+                return None
+    return None
+
+
+def _build_const_prop_env(tree):
+    """Names bound exactly once by a module-level ``name = <expr>`` (single Name
+    target), never re-assigned / aug-assigned / declared global-nonlocal / used as
+    a loop / comprehension / with / except target. Maps name -> RHS node.
+
+    Conservative: any ambiguity excludes the name. Only module-level statements are
+    considered so a name shadowed inside a def / loop is never folded.
+    """
+    assigned_once: dict[str, ast.expr] = {}
+    disqualified: set[str] = set()
+
+    def _disqualify_targets(target):
+        for n in ast.walk(target):
+            if isinstance(n, ast.Name):
+                disqualified.add(n.id)
+
+    # Module-level single assignments.
+    for stmt in getattr(tree, "body", []):
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                and isinstance(stmt.targets[0], ast.Name):
+            name = stmt.targets[0].id
+            if name in assigned_once or name in disqualified:
+                disqualified.add(name)
+                assigned_once.pop(name, None)
+            else:
+                assigned_once[name] = stmt.value
+        elif isinstance(stmt, ast.Assign):
+            for t in stmt.targets:
+                _disqualify_targets(t)
+        elif isinstance(stmt, (ast.AugAssign, ast.AnnAssign)):
+            if getattr(stmt, "target", None) is not None:
+                _disqualify_targets(stmt.target)
+
+    # Any name that is ALSO written anywhere else (loops, defs, walrus, aug, params,
+    # comprehension targets, with/except/for) is disqualified.
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            nm = n.id
+            if nm in assigned_once:
+                # It is stored somewhere; allow only if that single store is the
+                # module-level assign we recorded (identity check below).
+                pass
+        if isinstance(n, (ast.AugAssign,)):
+            _disqualify_targets(n.target)
+        elif isinstance(n, ast.NamedExpr):
+            _disqualify_targets(n.target)
+        elif isinstance(n, (ast.For, ast.AsyncFor)):
+            _disqualify_targets(n.target)
+        elif isinstance(n, ast.comprehension):
+            _disqualify_targets(n.target)
+        elif isinstance(n, ast.withitem):
+            if n.optional_vars is not None:
+                _disqualify_targets(n.optional_vars)
+        elif isinstance(n, ast.ExceptHandler):
+            if n.name:
+                disqualified.add(n.name)
+        elif isinstance(n, (ast.Global, ast.Nonlocal)):
+            for nm in n.names:
+                disqualified.add(nm)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            disqualified.add(n.name)
+            args = getattr(n, "args", None)
+            if args is not None:
+                for a in list(args.args) + list(args.posonlyargs) + list(args.kwonlyargs):
+                    disqualified.add(a.arg)
+                for extra in (args.vararg, args.kwarg):
+                    if extra is not None:
+                        disqualified.add(extra.arg)
+
+    # Count how many module-level stores each recorded name really has; if more
+    # than one Store target references it anywhere, drop it.
+    store_counts: dict[str, int] = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            store_counts[n.id] = store_counts.get(n.id, 0) + 1
+
+    env = {}
+    for name, rhs in assigned_once.items():
+        if name in disqualified:
+            continue
+        if store_counts.get(name, 0) != 1:
+            continue
+        env[name] = rhs
+    return env
+
+
+def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
     """Check for patterns that could escape signal-based timeouts. Returns
     (safe: bool, details: dict). Vendored from unsloth_zoo.rl_environments to
     avoid importing unsloth_zoo (needs GPU drivers; fails on Apple Silicon)."""
