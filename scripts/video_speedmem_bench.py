@@ -67,6 +67,17 @@ _FAMILIES: dict[str, dict[str, Any]] = {
         "vae_force_fp32": False,
         "guidance": 6.0,
     },
+    "hunyuanvideo-1.5-720p": {
+        "repo": "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+        "vae_force_fp32": False,
+        "guidance": 6.0,
+    },
+    # Wan2.2-A14B is a dual-expert MoE (transformer + transformer_2); _apply_levers quantizes both.
+    "wan2.2-t2v-a14b": {
+        "repo": "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        "vae_force_fp32": True,
+        "guidance": 5.0,
+    },
 }
 
 
@@ -256,10 +267,32 @@ def _build_pipe(repo: str, force_fp32_vae: bool):
     return pipe
 
 
+class _SecondExpertView:
+    """Present ``pipe.transformer_2`` as ``.transformer`` so the single-DiT lever functions run on
+    the second expert of a dual-expert MoE (Wan2.2-A14B) unforked -- mirrors the loader's
+    _SecondDiTView (video.py). Attribute reads delegate to the real pipe except ``transformer``,
+    and a ``transformer`` write (e.g. torch.compile reassigning it) is routed to ``transformer_2``."""
+
+    def __init__(self, pipe):
+        object.__setattr__(self, "_pipe", pipe)
+
+    @property
+    def transformer(self):
+        return self._pipe.transformer_2
+
+    def __getattr__(self, name):
+        return getattr(self._pipe, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._pipe, "transformer_2" if name == "transformer" else name, value)
+
+
 def _apply_levers(pipe, cfg: dict, *, fam_name: str, fam_obj, force_fp32_vae: bool, default_steps: int,
                   logger=None) -> dict:
     """Apply the configured levers with the loader's own argument values, in the loader's order:
-    quant (dit -> te -> vae) THEN optimisation layers (cache -> attention -> speed)."""
+    quant (dit -> te -> vae) THEN optimisation layers (cache -> attention -> speed). For a
+    dual-expert MoE (pipe.transformer_2 present) every DiT-touching lever is applied to BOTH experts
+    via _SecondExpertView, exactly like the loader, so A14B latency + accuracy are real."""
     from core.inference.diffusion_precision import quantize_text_encoders
     from core.inference.diffusion_vae_quant import quantize_vae
     from core.inference.diffusion_transformer_quant import quantize_transformer
@@ -274,22 +307,31 @@ def _apply_levers(pipe, cfg: dict, *, fam_name: str, fam_obj, force_fp32_vae: bo
     tgt = _target()
     engaged = {"dit": None, "te": None, "vae": None, "attn": None, "cache": None, "speed_optims": {}}
 
-    # DiT quant (pipeline kind, resident): mutates pipe.transformer in place.
+    # DiT-touching levers run per expert: [pipe] for a single-DiT family, plus a second-expert view
+    # for a dual-expert MoE. Each view exposes the expert as ``.transformer``.
+    views = [pipe]
+    if getattr(pipe, "transformer_2", None) is not None:
+        views.append(_SecondExpertView(pipe))
+
+    # DiT quant (pipeline kind, resident): mutates each expert's transformer in place.
     if cfg["dit"] not in ("none", "off"):
-        engaged["dit"] = quantize_transformer(
-            pipe, tgt, mode=cfg["dit"], family=fam_name, logger=logger
-        )
+        schemes = [
+            quantize_transformer(v, tgt, mode=cfg["dit"], family=fam_name, logger=logger)
+            for v in views
+        ]
+        engaged["dit"] = schemes[0]
+        engaged["dit_experts"] = schemes
         _empty()
     dit_quant_active = engaged["dit"] is not None
 
-    # TE quant.
+    # TE quant (once; text encoders are shared, not per-expert).
     if cfg["te"] not in ("none", "off"):
         engaged["te"] = quantize_text_encoders(
             pipe, tgt, mode=cfg["te"], family=fam_name, offload_active=False, logger=logger
         )
         _empty()
 
-    # VAE quant (Wan force_fp32 pins dense inside quantize_vae regardless).
+    # VAE quant (once; Wan force_fp32 pins dense inside quantize_vae regardless).
     if cfg["vae"] not in ("none", "off"):
         engaged["vae"] = quantize_vae(
             pipe, tgt, mode=cfg["vae"], family=fam_name, offload_active=False,
@@ -307,27 +349,30 @@ def _apply_levers(pipe, cfg: dict, *, fam_name: str, fam_obj, force_fp32_vae: bo
         speed = "default"
         speed_active = True
 
-    # Step cache FIRST (compile keys fullgraph off an active cache).
+    # Step cache FIRST (compile keys fullgraph off an active cache); per expert.
     cache_active = False
     if cfg["cache"] == "auto":
         cache_request = TC_FBCACHE if default_steps >= FBCACHE_MIN_STEPS else None
         if cache_request is not None:
-            engaged["cache"] = apply_step_cache(
-                pipe, mode=cache_request, threshold=None,
-                quant_active=dit_quant_active, logger=logger,
-            )
+            for v in views:
+                engaged["cache"] = apply_step_cache(
+                    v, mode=cache_request, threshold=None,
+                    quant_active=dit_quant_active, logger=logger,
+                )
             cache_active = engaged["cache"] not in (None, "off")
 
-    # Attention.
+    # Attention (per expert).
     backend = select_attention_backend(tgt, cfg["attn"], speed_active=speed_active)
-    engaged["attn"] = apply_attention_backend(pipe, backend, logger=logger)
+    for v in views:
+        engaged["attn"] = apply_attention_backend(v, backend, logger=logger)
 
-    # Speed profile.
+    # Speed profile (per expert; compiles each denoiser).
     if speed != "off":
-        engaged["speed_optims"] = apply_speed_optims(
-            pipe, tgt, is_gguf=False, family=fam_obj, speed_mode=speed,
-            cache_active=cache_active, offload_active=False, logger=logger,
-        )
+        for v in views:
+            engaged["speed_optims"] = apply_speed_optims(
+                v, tgt, is_gguf=False, family=fam_obj, speed_mode=speed,
+                cache_active=cache_active, offload_active=False, logger=logger,
+            )
     engaged["_effective_speed"] = speed
     return engaged
 
@@ -452,6 +497,7 @@ def _run_config(name: str, cfg: dict, *, family: str, steps: int, width: int, he
         "family": family,
         "levers": cfg,
         "dit_scheme": engaged["dit"] or "dense",
+        "dit_experts": engaged.get("dit_experts"),
         "te_scheme": engaged["te"] or "dense",
         "vae_scheme": engaged["vae"] or "dense",
         "attn": engaged["attn"] or "native",
