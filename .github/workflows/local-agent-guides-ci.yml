@@ -476,7 +476,7 @@ jobs:
   #   Does a conversation started with `unsloth start <agent>` survive exit
   #   and resume? This drives the REAL launch path (not the --no-launch
   #   recipe the other jobs use). A plain launch relocates the agent home to
-  #   a temp dir wiped on exit, so codex/pi cannot resume; --resume routes the
+  #   a temp dir wiped on exit, so codex/pi cannot resume; --persist routes the
   #   session to the stable Unsloth agents dir so it persists. opencode/claude
   #   keep their session data in a fixed user dir, so they persist either way.
   #   Dispatch-only: it is an end-to-end experiment, not a PR gate.
@@ -489,7 +489,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # codex/pi relocate their whole home (resume broken without --resume);
+        # codex/pi relocate their whole home (resume broken without --persist);
         # opencode/claude keep session data in a fixed dir (resume already works).
         # One agent from each class proves the split end to end; openclaw/hermes
         # share codex's relocation mechanism and are covered by the unit tests.

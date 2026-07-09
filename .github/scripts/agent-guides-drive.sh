@@ -588,7 +588,7 @@ case "$MODE" in
     }
 
     # Run one headless turn through the launch path. $1=outfile, $2="" or
-    # "--resume", rest = the agent subcommand. --yolo auto-approves so no tool
+    # "--persist", rest = the agent subcommand. --yolo auto-approves so no tool
     # prompt can hang; --api-key attaches to the already-served CI model.
     launch_turn() {
       local out="$1" rflag="$2"; shift 2
@@ -603,7 +603,7 @@ case "$MODE" in
     # One pass: fresh work dir, one planting turn, set RESULT to PERSISTED/WIPED
     # from the session-store delta. Runs in the main shell (not a command
     # substitution) so a hang's guide_fail actually fails the job and the
-    # progress lines reach the CI log. $1 = "" (baseline) or "--resume".
+    # progress lines reach the CI log. $1 = "" (baseline) or "--persist".
     RESULT=""
     run_pass() {
       local rflag="$1" label="baseline"
@@ -622,12 +622,18 @@ case "$MODE" in
       if [ "$after" -gt "$before" ]; then RESULT="PERSISTED"; else RESULT="WIPED"; fi
     }
 
-    run_pass "";         BASELINE="$RESULT"
-    run_pass "--resume"; RESUME="$RESULT"
+    run_pass ""; BASELINE="$RESULT"
+    # Only the temp-dir agents (codex/pi) need the --persist pass to prove the fix.
+    # opencode/claude persist either way, so the baseline already proves it and a
+    # second full CPU turn only risks a timeout; skip it for them.
+    case "$AGENT" in
+      codex|pi) run_pass "--persist"; RESUME="$RESULT" ;;
+      *)        RESUME="n/a (persists either way)" ;;
+    esac
 
     # Expected: codex/pi relocate their whole home to the temp dir, so a plain
-    # launch is WIPED and only --resume PERSISTS. opencode/claude keep their
-    # session data in a fixed user dir, so both passes PERSIST.
+    # launch is WIPED and only --persist PERSISTS. opencode/claude keep their
+    # session data in a fixed user dir, so the baseline already PERSISTS.
     case "$AGENT" in
       codex|pi)        EXPECT_BASELINE="WIPED" ;;
       opencode|claude) EXPECT_BASELINE="PERSISTED" ;;
@@ -635,23 +641,26 @@ case "$MODE" in
 
     echo "──────────────────────────────────────────────"
     echo "[$AGENT] RESUME EXPERIMENT"
-    echo "  baseline (unsloth start ${AGENT}):            ${BASELINE}  (expected ${EXPECT_BASELINE})"
-    echo "  with --resume (unsloth start ${AGENT} --resume): ${RESUME}  (expected PERSISTED)"
+    echo "  baseline (unsloth start ${AGENT}):                 ${BASELINE}  (expected ${EXPECT_BASELINE})"
+    echo "  with --persist (unsloth start ${AGENT} --persist): ${RESUME}"
     echo "──────────────────────────────────────────────"
 
     [ "$BASELINE" = "$EXPECT_BASELINE" ] \
       || guide_fail "baseline resume behavior for ${AGENT} was ${BASELINE}, expected ${EXPECT_BASELINE}"
-    [ "$RESUME" = "PERSISTED" ] \
-      || guide_fail "--resume did not persist ${AGENT}'s session (got ${RESUME}); the session dir is still not stable"
+    case "$AGENT" in
+      codex|pi)
+        [ "$RESUME" = "PERSISTED" ] \
+          || guide_fail "--persist did not persist ${AGENT}'s session (got ${RESUME}); the session dir is still not stable" ;;
+    esac
 
-    # Flagship behavioral proof (codex only, WARN-only): after a --resume plant,
+    # Flagship behavioral proof (codex only, WARN-only): after a --persist plant,
     # resume the session and check the model actually recalls the codeword. A
     # miss is not a failure (the CI model is small); the mechanism gate above is
     # the real assertion.
     if [ "$AGENT" = "codex" ]; then
       rm -rf "$WORK"; mkdir -p "$WORK"
-      ( cd "$WORK" && launch_turn "$LOGS_DIR/codex-resume-plant.txt" "--resume" exec "$T1" ) || true
-      ( cd "$WORK" && launch_turn "$LOGS_DIR/codex-resume-recall.txt" "--resume" exec resume --last "$T2" ) || true
+      ( cd "$WORK" && launch_turn "$LOGS_DIR/codex-resume-plant.txt" "--persist" exec "$T1" ) || true
+      ( cd "$WORK" && launch_turn "$LOGS_DIR/codex-resume-recall.txt" "--persist" exec resume --last "$T2" ) || true
       if grep -q "$CODEWORD" "$LOGS_DIR/codex-resume-recall.txt" 2>/dev/null; then
         echo "[codex] behavioral recall HIT: resumed session remembered ${CODEWORD}"
       else
