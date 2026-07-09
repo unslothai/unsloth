@@ -4028,6 +4028,7 @@ async def load_model(
                     if sidecar_swap_in_progress():
                         raise _swap_409
                     await _load_model_impl(request, fastapi_request, current_subject)
+                _last_async_load_error = None
             except Exception as exc:
                 detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
                 logger.warning("inference.async_load_failed: %s", detail)

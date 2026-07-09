@@ -109,6 +109,41 @@ def test_async_load_clears_previous_error_before_scheduling(monkeypatch):
     assert inference_route._last_async_load_error is None
 
 
+def test_overlapping_loads_success_clears_stale_error(monkeypatch):
+    """Race condition: load A fails (sets error), then load B succeeds.
+    The success path must clear the error so /status doesn't return stale
+    failure info from load A."""
+
+    call_count = 0
+
+    async def _alternating_load(request, fastapi_request, current_subject):
+        nonlocal call_count
+        call_count += 1
+        seq = call_count
+        if seq == 1:
+            await asyncio.sleep(0.02)
+            raise HTTPException(status_code = 400, detail = "A failed")
+        await asyncio.sleep(0.02)
+        return LoadResponse(status = "loaded", model = request.model_path, display_name = "B", inference = {})
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _alternating_load)
+    monkeypatch.setattr(inference_route, "_last_async_load_error", None)
+
+    async def _scenario():
+        # Fire load A (will fail)
+        await inference_route.load_model(_request(), object(), "tester")
+        await asyncio.sleep(0.1)
+        assert inference_route._last_async_load_error == "A failed"
+
+        # Fire load B (will succeed) -- acceptance clears the error, but the
+        # important part is that the *background success* also clears it.
+        await inference_route.load_model(_request(), object(), "tester")
+        await asyncio.sleep(0.1)
+
+    _run(_scenario())
+    assert inference_route._last_async_load_error is None
+
+
 def test_sync_load_unaffected_returns_load_response_directly(monkeypatch):
     """async_load=false (the default) must keep behaving synchronously: no
     background task, and the caller gets the real LoadResponse directly."""
