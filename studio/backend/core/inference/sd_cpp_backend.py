@@ -378,6 +378,7 @@ class SdCppDiffusionBackend:
         # diffusers-only knobs accepted (so the route calls both engines uniformly)
         # and ignored -- sd.cpp has no torchao quant / SDPA dispatcher / fbcache.
         text_encoder_quant: Optional[str] = None,
+        vae_quant: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         transformer_quant_fast_accum: Optional[bool] = None,
         transformer_prequant_path: Optional[str] = None,
