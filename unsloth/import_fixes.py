@@ -172,6 +172,10 @@ if not UNSLOTH_ENABLE_LOGGING:
     # Deprecation warnings from torchao
     warnings.filterwarnings("ignore", message = "`int4_weight_only` is deprecated")
     warnings.filterwarnings("ignore", message = "`int8_weight_only` is deprecated")
+    # torch._check_is_size FutureWarning (called by bitsandbytes 4-bit dequant)
+    warnings.filterwarnings(
+        "ignore", message = r"_check_is_size will be removed", category = FutureWarning
+    )
 
     # TorchAO deprecated import paths (https://github.com/pytorch/ao/issues/2752)
     warnings.filterwarnings(
@@ -251,6 +255,30 @@ if not UNSLOTH_ENABLE_LOGGING:
         category = UserWarning,
         module = r"^apex\.transformer\.functional\.fused_rope$",
     )
+
+
+def fix_torch_check_is_size():
+    """Shim torch._check_is_size if a future torch removes it (bitsandbytes 4-bit
+    dequant calls it). The FutureWarning is silenced in suppress_cuda_printf."""
+    try:
+        import torch
+
+        if hasattr(torch, "_check_is_size"):
+            return
+
+        def _check_is_size(
+            i,
+            message = None,
+            *,
+            max = None,
+        ):
+            torch._check(i >= 0, message)
+            if max is not None:
+                torch._check(i <= max, message)
+
+        torch._check_is_size = _check_is_size
+    except Exception:
+        return
 
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
