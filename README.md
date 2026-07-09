@@ -10,6 +10,7 @@ Unsloth Studio lets you run and train models locally.
 </h3>
 
 <p align="center">
+  <a href="#-about-unsloth">About</a> •
   <a href="#-features">Features</a> •
   <a href="#-install">Quickstart</a> •
   <a href="#-free-notebooks">Notebooks</a> •
@@ -18,6 +19,35 @@ Unsloth Studio lets you run and train models locally.
 <br>
 <a href="https://unsloth.ai/docs/new/studio">
 <img alt="unsloth studio ui homepage" src="https://github.com/user-attachments/assets/53ae17a9-d975-44ef-9686-efb4ebd0454d" style="max-width: 100%; margin-bottom: 0;"></a>
+
+## 📖 About Unsloth
+
+**Unsloth** is a comprehensive platform that revolutionizes how you train and deploy large language models (LLMs) and other AI models. Whether you're a researcher, developer, or AI enthusiast, Unsloth provides cutting-edge tools to:
+
+- **Train 2-5x faster** with up to 70% less VRAM, with zero accuracy loss
+- **Run models locally** on your own hardware without cloud dependencies
+- **Fine-tune 500+ models** including Llama, Qwen, Gemma, Mistral, Phi, and more
+- **Perform reinforcement learning (RL)** with 80% less VRAM using GRPO, DPO, and other techniques
+- **Leverage custom optimizations** including Triton kernels and mathematical optimizations
+- **Multi-modal support** for text, vision, audio, and embedding models
+- **Deploy with ease** through local inference, APIs, or cloud integration
+
+### Key Benefits
+
+🚀 **Performance**: Custom kernels and mathematical optimizations deliver unprecedented training speed
+💾 **Efficiency**: Dramatically reduce memory footprint — train on consumer GPUs what typically requires enterprise hardware
+🔧 **Flexibility**: Supports full fine-tuning, RL, pretraining, and various quantization methods (4-bit, 16-bit, FP8)
+📊 **Observability**: Monitor training in real-time with customizable dashboards and detailed metrics
+🌐 **Multi-GPU Ready**: Seamlessly scale training across multiple GPUs with built-in distributed support
+🎯 **Production Ready**: Export to industry-standard formats (GGUF, safetensors) for easy deployment
+
+### Use Cases
+
+- **Research**: Experiment with model architectures and training techniques efficiently
+- **Fine-tuning**: Customize pre-trained models for domain-specific tasks
+- **Reinforcement Learning**: Train models using RL for improved reasoning and decision-making
+- **Data Recipes**: Auto-generate datasets from PDFs, CSVs, and other documents
+- **Local Inference**: Run chat models, embeddings, and vision models locally with no internet required
 
 ## ⚡ Get started
 
