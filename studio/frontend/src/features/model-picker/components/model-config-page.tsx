@@ -418,17 +418,13 @@ export function ModelConfigPage({
       normalizeMaxSeqLength(config.maxSeqLength) ?? initialMaxSeqLength,
       maxSeqLengthMax,
     );
-  const activeContextForRun =
-    activeLoadedContext ?? (nativeContextLength != null ? contextValue : null);
-
   const runtimeConfig = target.isGguf
     ? {
         ...config,
-        customContextLength:
-          config.customContextLength ??
-          (isActiveModel && activeContextForRun != null
-            ? resolveCustomContextLength(activeContextForRun, nativeContextLength)
-            : null),
+        customContextLength: resolveCustomContextLength(
+          contextValue,
+          nativeContextLength,
+        ),
       }
     : {
         ...config,
