@@ -1296,16 +1296,73 @@ with sync_playwright() as p:
     # still abort or interrupt this navigation, so the field wait below is the
     # final confirmation that we reached /login.
     _tolerated_nav = ("ERR_ABORTED", "interrupted by another navigation")
-    try:
-        page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
-    except Exception as exc:
-        if not any(t in str(exc) for t in _tolerated_nav):
-            raise
-        info(f"goto /login interrupted ({exc!r}); password-field wait will confirm /login")
-    pw_field = page.locator("#password")
-    pw_field.wait_for(state = "visible", timeout = 60_000)
-    pw_field.fill(NEW2)
-    page.locator('button[type="submit"]').click()
+    # A slow CI runner can make this re-login navigation time out even with the
+    # server healthy, so retry the whole goto/wait/fill/submit sequence (mirrors
+    # the change-password retry above). wait_for_health is a diagnostic pre-gate.
+    wait_for_health(BASE, timeout = 30.0, info = info)
+    relogin_err: Exception | None = None
+    for _relogin_attempt in range(3):
+        try:
+            try:
+                page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
+            except Exception as exc:
+                if not any(t in str(exc) for t in _tolerated_nav):
+                    raise
+                info(f"goto /login interrupted ({exc!r}); password-field wait will confirm /login")
+            pw_field = page.locator("#password")
+            pw_field.wait_for(state = "visible", timeout = 60_000)
+            pw_field.fill(NEW2)
+            page.locator('button[type="submit"]').click()
+            relogin_err = None
+            break
+        except Exception as e:
+            relogin_err = e
+            try:
+                cur_url = page.url
+            except Exception:
+                cur_url = "<page closed>"
+            print(
+                f"[ui]   re-login attempt {_relogin_attempt + 1} failed: "
+                f"{type(e).__name__}: {str(e)[:200]}; page.url={cur_url}; "
+                f"page_errors={len(page_errors)} console_errors={len(console_errors)}",
+                flush = True,
+            )
+            if console_errors:
+                print(
+                    f"[ui]   first console.error: {console_errors[0][:200]!r}",
+                    flush = True,
+                )
+            if page_errors:
+                print(f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True)
+            try:
+                shoot(f"18-relogin-attempt-{_relogin_attempt + 1}-fail")
+            except Exception:
+                pass
+            if _relogin_attempt < 2:
+                # ERR_NO_BUFFER_SPACE needs the OS to recover socket
+                # buffers; back off 5s then 15s before retrying.
+                if "ERR_NO_BUFFER_SPACE" in str(e):
+                    backoff_s = 5 if _relogin_attempt == 0 else 15
+                    print(
+                        f"[ui]   ENOBUFS detected; sleeping {backoff_s}s "
+                        f"before retry to let OS recover socket buffers...",
+                        flush = True,
+                    )
+                    time.sleep(backoff_s)
+                # Replace the page if it died; otherwise next iteration's
+                # page.goto() handles the reload.
+                page = recover_or_replace_page(
+                    page,
+                    ctx,
+                    default_timeout_ms = 60_000,
+                    info = lambda m: print(f"[ui]   recovery: {m}", flush = True),
+                )
+    if relogin_err is not None:
+        raise relogin_err
+    # Composer mount confirms the rotated session is authenticated. Kept OUTSIDE the
+    # retry: the loop breaks right after submit, so we never re-goto /login once login
+    # has set tokens -- that would hit the guest guard, redirect to /chat, and make a
+    # merely-slow composer look like a broken login.
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
     shoot("18-relogin-with-NEW2")
