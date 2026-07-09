@@ -2138,8 +2138,8 @@ def grpo_trainer_compute_loss(function_name, function):
             inputs.get("image_sizes", None),
         )
         num_images = inputs.get("num_images", None)
-        spatial_shapes     = inputs.get("spatial_shapes",     None)
-        num_tiles          = inputs.get("num_tiles",          None)
+        spatial_shapes = inputs.get("spatial_shapes", None)
+        num_tiles = inputs.get("num_tiles", None)
         image_position_ids = inputs.get("image_position_ids", None)
         # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
         token_type_ids = inputs.get("token_type_ids", None)
