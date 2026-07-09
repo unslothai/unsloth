@@ -3083,10 +3083,14 @@ def _remote_gguf_companion_bytes(
         info = model_info(repo, token = hf_token, files_metadata = True)
         total = 0
         for sibling in info.siblings or []:
-            base = Path(sibling.rfilename or "").name.lower()
+            name = sibling.rfilename or ""
+            base = Path(name).name.lower()
             if not base.endswith(".gguf"):
                 continue
-            if base.startswith("mtp-") or (include_mmproj and "mmproj" in base):
+            # Root-level mtp- only: -hf auto-fetches the repo-root drafter, not
+            # the MTP/ subdir copies (which now share the mtp- prefix too).
+            is_root_mtp = "/" not in name and base.startswith("mtp-")
+            if is_root_mtp or (include_mmproj and "mmproj" in base):
                 total += getattr(sibling, "size", 0) or 0
         return total
     except Exception as e:
@@ -10103,8 +10107,11 @@ async def anthropic_count_tokens(
     # Apply the same sanitization /messages does before generation, so the count
     # matches the prompt the real request would build (otherwise empty-assistant
     # sentinels / synthetic tool history inflate the count or hit the fallback).
-    openai_messages = _strip_provider_synthetic_tool_history(
-        _drop_empty_assistant_sentinels(openai_messages)
+    # Coalesce adjacent user turns left behind by dropping an empty / null assistant
+    # turn, so a strict GGUF chat template does not 400 on non-alternating roles
+    # (mirrors the GGUF chat path); a no-op for already-alternating histories.
+    openai_messages = _coalesce_consecutive_user_turns(
+        _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
 
@@ -10232,8 +10239,11 @@ async def anthropic_messages(
     # builders apply the same strip; without it an Anthropic /v1/messages caller
     # replaying a prior provider-side tool_use forwards fake builtin tool
     # history to a backend with no matching function declarations.
-    openai_messages = _strip_provider_synthetic_tool_history(
-        _drop_empty_assistant_sentinels(openai_messages)
+    # Coalesce adjacent user turns left behind by dropping an empty / null assistant
+    # turn, so a strict GGUF chat template does not 400 on non-alternating roles
+    # (mirrors the GGUF chat path); a no-op for already-alternating histories.
+    openai_messages = _coalesce_consecutive_user_turns(
+        _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
 
     # Enforce vision guard + re-encode embedded images to PNG so the Anthropic

@@ -1770,3 +1770,187 @@ class TestAnthropicMessagesToolRouting:
 
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "plain"
+
+
+def test_resumed_session_thinking_and_null_content_do_not_400():
+    # A resumed session replays assistant turns with `thinking` (and sometimes null)
+    # content. Those must be accepted (thinking dropped by the converter), not 400ed.
+    from pydantic import ValidationError
+
+    req = AnthropicMessagesRequest(
+        model = "x",
+        max_tokens = 16,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "secret reasoning", "signature": "s"},
+                    {"type": "text", "text": "the answer"},
+                    {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
+                ],
+            },
+            {"role": "assistant", "content": None},  # tool-only turn serialized as null
+        ],
+    )
+    # Known blocks still parse as their typed models; only the unknown one is loose.
+    assert type(req.messages[1].content[0]).__name__ == "AnthropicUnknownBlock"
+    assert type(req.messages[1].content[1]).__name__ == "AnthropicTextBlock"
+    assert req.messages[2].content == ""  # null coerced
+
+    openai = anthropic_messages_to_openai([m.model_dump() for m in req.messages])
+    assistant = next(m for m in openai if m["role"] == "assistant" and m.get("content"))
+    assert assistant["content"] == "the answer"
+    assert "secret reasoning" not in json.dumps(openai)  # thinking never forwarded
+
+    # A malformed KNOWN block still fails cleanly instead of being swallowed.
+    with pytest.raises(ValidationError):
+        AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [{"role": "assistant", "content": [{"type": "tool_use", "name": "f"}]}],
+        )
+
+
+def test_user_null_content_rejected():
+    # The null->"" leniency is assistant-only; a null user content must be rejected
+    # at the boundary, not coerced into an empty prompt and forwarded to the model.
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [{"role": "user", "content": None}],
+        )
+
+
+def test_user_unknown_block_rejected_not_silently_dropped():
+    # The converter skips user blocks it cannot translate, so a user turn whose only
+    # block is unknown would validate yet forward no content. Reject at the boundary
+    # to avoid that silent data loss (the assistant fallback is unaffected).
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [
+                {"role": "user", "content": [{"type": "document", "source": {}}]},
+            ],
+        )
+
+
+def test_user_translatable_blocks_still_accepted():
+    # text / image / tool_result are translatable, so a real user message built from
+    # them must still pass; the unknown-block guard only trips on other types.
+    req = AnthropicMessagesRequest(
+        model = "x",
+        max_tokens = 16,
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is this?"},
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": "AA"},
+                    },
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+                ],
+            }
+        ],
+    )
+    assert [type(b).__name__ for b in req.messages[0].content] == [
+        "AnthropicTextBlock",
+        "AnthropicImageBlock",
+        "AnthropicToolResultBlock",
+    ]
+
+    openai = anthropic_messages_to_openai([m.model_dump() for m in req.messages])
+    assert any(m["role"] == "tool" and m["tool_call_id"] == "t1" for m in openai)
+
+
+def test_user_malformed_known_block_still_rejected():
+    # The guard only allow-lists a user block's *type*; the union still validates its
+    # shape, so a known-but-malformed block (tool_result without tool_use_id) fails.
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [
+                {"role": "user", "content": [{"type": "tool_result", "content": "x"}]},
+            ],
+        )
+
+
+def test_user_content_block_non_string_type_rejected_cleanly():
+    # A user block whose `type` is a non-string (unhashable list / dict, or a stray
+    # int) must fail as a clean validation error, not raise TypeError from the
+    # frozenset membership test and escape as a 500.
+    from pydantic import ValidationError
+    for bad_type in ([], {}, 5):
+        with pytest.raises(ValidationError):
+            AnthropicMessagesRequest(
+                model = "x",
+                max_tokens = 16,
+                messages = [{"role": "user", "content": [{"type": bad_type}]}],
+            )
+
+
+def test_assistant_missing_content_key_still_rejected():
+    # The null -> "" leniency is only for an EXPLICIT null. An assistant message that
+    # omits content entirely stays malformed and must fail required-field validation.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [{"role": "assistant"}],
+        )
+    # An explicit null is still accepted and coerced (regression guard).
+    req = AnthropicMessagesRequest(
+        model = "x",
+        max_tokens = 16,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None},
+        ],
+    )
+    assert req.messages[1].content == ""
+
+
+def test_resumed_null_assistant_between_users_coalesced_on_messages_route(monkeypatch):
+    # user -> assistant(null) -> user is now accepted: the null assistant turn coerces
+    # to "" and is dropped. The route must then coalesce the two remaining user turns
+    # so a strict GGUF chat template does not 400 on non-alternating roles.
+    backend = _mock_backend(monkeypatch, context_length = 2048)
+
+    class _Req:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/messages")
+        method = "POST"
+
+        async def is_disconnected(self):
+            return False
+
+    payload = AnthropicMessagesRequest(
+        model = "x",
+        max_tokens = 16,
+        messages = [
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": None},
+            {"role": "user", "content": "please continue"},
+        ],
+    )
+
+    response = _drive(anthropic_messages(payload, request = _Req(), current_subject = "t"))
+    assert response.status_code == 200
+
+    [(_path, kwargs)] = backend.calls
+    user_turns = [m for m in kwargs["messages"] if m.get("role") == "user"]
+    assert len(user_turns) == 1  # the two user turns were merged, not left adjacent
+    merged = user_turns[0]["content"]
+    if isinstance(merged, list):
+        merged = " ".join(p.get("text", "") for p in merged if isinstance(p, dict))
+    assert "first question" in merged and "please continue" in merged
