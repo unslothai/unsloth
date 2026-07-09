@@ -6367,9 +6367,7 @@ class LlamaCppBackend:
                     )
                     self._cache_type_kv = cache_type_kv
                     logger.info(f"KV cache type: {cache_type_kv}")
-                    gpu_fallback_warning = _kv_cache_gpu_fallback_warning(
-                        cache_type_kv, bool(gpus)
-                    )
+                    gpu_fallback_warning = _kv_cache_gpu_fallback_warning(cache_type_kv, bool(gpus))
                     if gpu_fallback_warning:
                         logger.warning(gpu_fallback_warning)
                 else:
