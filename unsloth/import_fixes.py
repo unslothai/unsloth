@@ -1064,6 +1064,75 @@ def fix_triton_compiled_kernel_missing_attrs():
     )
 
 
+def fix_dynamo_config_thread_visibility():
+    """torch 2.12 made torch._dynamo/_inductor config overrides thread-local
+    (ContextVars), so `config.recompile_limit = 1024` set on the main thread is
+    invisible to the autograd worker threads that run backward. Gradient
+    checkpointing recompiles fullgraph gpt-oss kernels there against the default
+    limit of 8, raising FailOnRecompileLimitHit at step 0. Mirror direct config
+    assignments into the process-global entry default (torch <= 2.11 semantics),
+    leaving the scoped config.patch API (which writes ContextVars) untouched.
+    No-op below torch 2.12 and on any torch without this internal layout.
+    """
+    try:
+        import torch
+        if Version(torch.__version__) < Version("2.12.0"):
+            return
+        import torch._dynamo.config as _dynamo_config
+        import torch._inductor.config as _inductor_config
+        from torch.utils._config_module import ConfigModule
+        from contextvars import ContextVar
+    except Exception:
+        return
+
+    try:
+        probe = getattr(_dynamo_config, "_config", {}).get("recompile_limit", None)
+        if probe is None or not isinstance(getattr(probe, "user_override", None), ContextVar):
+            # Overrides are not context-local on this torch; nothing to fix.
+            return
+        original_setattr = ConfigModule.__setattr__
+        if getattr(original_setattr, "__unsloth_patched__", False):
+            return
+    except Exception:
+        return
+
+    mirrored_modules = ("torch._dynamo.config", "torch._inductor.config")
+
+    @functools.wraps(original_setattr)
+    def _patched_setattr(self, name, value):
+        original_setattr(self, name, value)
+        # Aliases (cache_size_limit -> recompile_limit) re-enter with the real name.
+        if self.__dict__.get("__name__", None) in mirrored_modules:
+            try:
+                entry = self.__dict__["_config"].get(name, None)
+                if entry is not None and entry.alias is None:
+                    entry.default = value
+            except Exception:
+                pass
+
+    _patched_setattr.__unsloth_patched__ = True
+    ConfigModule.__setattr__ = _patched_setattr
+
+    # Replay overrides set before this patch so worker threads see them too.
+    try:
+        from torch.utils._config_module import _UNSET_SENTINEL
+        for module in (_dynamo_config, _inductor_config):
+            for entry in module.__dict__["_config"].values():
+                try:
+                    if entry.alias is None:
+                        current = entry.user_override.get()
+                        if current is not _UNSET_SENTINEL:
+                            entry.default = current
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    logger.info(
+        "Unsloth: Patched torch config modules so dynamo/inductor settings "
+        "(e.g. recompile_limit) apply across threads on torch >= 2.12."
+    )
+
+
 def patch_trunc_normal_precision_issue():
     """
     Patch torch.nn.init.trunc_normal_ for low precision tensors to run init in fp32.
