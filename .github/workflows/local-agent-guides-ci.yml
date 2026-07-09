@@ -479,11 +479,12 @@ jobs:
   #   a temp dir wiped on exit, so codex/pi cannot resume; --persist routes the
   #   session to the stable Unsloth agents dir so it persists. opencode/claude
   #   keep their session data in a fixed user dir, so they persist either way.
-  #   Dispatch-only: it is an end-to-end experiment, not a PR gate.
+  #   Weekly + dispatch only (like file-edit) -- it drives the launch path end
+  #   to end on a 4B model, too slow and model-heavy to gate PRs.
   # ═════════════════════════════════════════════════════════════════════
   resume:
     name: resume (${{ matrix.agent }})
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
