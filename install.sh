@@ -2473,9 +2473,11 @@ esac
 # causal-conv1d / mamba reuse their torch2.10 wheels on 2.11 (see wheel_utils
 # prebuilt_wheel_torch_mm). Older CUDA (cu124/cu118), other ROCm tags, CPU and
 # macOS stay within <2.11.0 -- torch 2.11 publishes no wheels for those.
-# torch 2.11 wheels are cp310+, so gate on Python >= 3.10; 3.9 keeps the default
-# range, where those indexes still ship cp39 wheels.
-if version_ge "$PYTHON_VERSION" "3.10"; then
+# torch 2.11 wheels are cp310+, so gate on the actual venv interpreter (which may
+# be a reused 3.9 env even when PYTHON_VERSION defaults higher); 3.9 keeps the
+# default range, where those indexes still ship cp39 wheels.
+_venv_py_minor=$("$VENV_DIR/bin/python" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || echo 0)
+if [ "${_venv_py_minor:-0}" -ge 10 ] 2>/dev/null; then
     case "$TORCH_INDEX_URL" in
         */rocm7.2) TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
         */cu130)   TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
