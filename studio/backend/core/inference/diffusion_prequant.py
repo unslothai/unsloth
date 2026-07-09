@@ -86,6 +86,19 @@ def _local_prequant_path_allowed(path: str) -> bool:
     return any(real == r or real.startswith(r + os.sep) for r in roots)
 
 
+def local_prequant_path_ready(path: str) -> bool:
+    """True only when a request-supplied local pre-quant path would actually load: it is
+    inside an allowlisted root AND the checkpoint file is present. The auto-policy planner
+    uses this before budgeting the small prequant plan, so it never skips the dense shards
+    for a path ``load_prequantized_transformer`` will refuse -- which would otherwise evict
+    the resident pipeline and then rebuild dense under an undersized plan (OOM)."""
+    import os
+
+    if not _local_prequant_path_allowed(path):
+        return False
+    return os.path.isfile(os.path.expanduser(path))
+
+
 @dataclass(frozen = True)
 class PrequantSource:
     """Where a pre-quantized transformer checkpoint lives. ``kind`` is "path" (a local
