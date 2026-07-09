@@ -41,6 +41,7 @@ from routes.inference import (
     _drop_empty_assistant_sentinels,
     _effective_max_tokens,
     _effective_openai_max_tokens,
+    _effective_openai_max_tokens_from_values,
     _extract_content_parts,
     _friendly_error,
     _friendly_upstream_error,
@@ -1333,6 +1334,18 @@ class TestOpenAICompatibilityHelpers:
         assert exc.value.status_code == 400
         assert exc.value.detail["error"]["param"] == param
         assert exc.value.detail["error"]["code"] == "invalid_type"
+
+    def test_openai_compat_max_tokens_zero_is_valid_and_negative_rejected(self):
+        # Legacy completions spec: max_tokens has minimum 0, so 0 must pass
+        # through; only negatives are invalid_value.
+        assert _effective_openai_max_tokens_from_values(0) == 0
+
+        with pytest.raises(HTTPException) as exc:
+            _effective_openai_max_tokens_from_values(-1)
+
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["code"] == "invalid_value"
+        assert exc.value.detail["error"]["param"] == "max_tokens"
 
     def test_chat_reasoning_chunk_carries_empty_content(self):
         from routes.inference import _chat_reasoning_chunk
@@ -4120,6 +4133,59 @@ class TestApiMonitorProviderAndCompletionStreams:
             await openai_completions(Request(), current_subject = "test")
 
             assert captured[0]["max_tokens"] == 4096
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_completions_forwards_spec_valid_zero_max_tokens(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = "/v1/completions")
+                method = "POST"
+
+                async def json(self):
+                    return {"prompt": "hi", "stream": False, "max_tokens": 0}
+
+            captured = []
+
+            class CapturingClient:
+                async def post(self, _url, *, json, **_kwargs):
+                    captured.append(dict(json))
+                    return httpx.Response(
+                        200,
+                        json = {
+                            "id": "cmpl-test",
+                            "choices": [{"text": "", "finish_reason": "length"}],
+                            "usage": {
+                                "prompt_tokens": 1,
+                                "completion_tokens": 0,
+                                "total_tokens": 1,
+                            },
+                        },
+                    )
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.delenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, raising = False)
+            monkeypatch.delenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, raising = False)
+            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: CapturingClient())
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
+                ),
+            )
+
+            await openai_completions(Request(), current_subject = "test")
+
+            assert captured[0]["max_tokens"] == 0
             assert monitor.active_count() == 0
 
         asyncio.run(_run())

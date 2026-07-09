@@ -339,11 +339,14 @@ def _effective_openai_max_tokens_from_values(max_tokens, max_completion_tokens =
                     param = param,
                 ),
             )
-        if value <= 0:
+        # The legacy completions spec declares ``minimum: 0`` for max_tokens,
+        # so 0 is a valid (if degenerate) cap and only negatives are rejected.
+        # The chat fields never reach here with 0 (pydantic enforces ge=1).
+        if value < 0:
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
-                    f"'{param}' must be greater than 0.",
+                    f"'{param}' must be at least 0.",
                     status = 400,
                     code = "invalid_value",
                     param = param,
