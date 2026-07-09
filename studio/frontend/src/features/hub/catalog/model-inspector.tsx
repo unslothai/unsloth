@@ -506,7 +506,9 @@ export const ModelInspector = memo(function ModelInspector({
     : "N/A";
   const trainingSupported = unslothSupport.status !== "unsupported";
   const canRunModel =
-    !isDataset && (model.runtimeCapabilities?.canChat ?? true);
+    !isDataset &&
+    (model.runtimeCapabilities?.canChat ?? true) &&
+    (model.isGguf || unslothSupport.status !== "unsupported");
   const canTrainModel =
     !isDataset &&
     (model.runtimeCapabilities?.canTrain ?? false) &&
