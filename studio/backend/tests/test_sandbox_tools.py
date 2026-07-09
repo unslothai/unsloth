@@ -1808,3 +1808,90 @@ class TestRound11Bypasses:
     def test_pathlib_wrapper_and_shutil_benign_allowed(self):
         _ok("from pathlib import Path\nPath('data').joinpath('train.csv').resolve().read_text()")
         _ok("from shutil import copy as c\nc('a.txt', 'b.txt')")
+
+
+class TestRound12Bypasses:
+    """Twelfth-round Codex findings: mro().pop base extraction, attrgetter not immediately
+    invoked, container-hidden open alias, opaque obfuscated read paths, cd behind
+    command/builtin, importlib file loaders, and Kubernetes service-account tokens."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import io\nio.FileIO.mro().pop(1)('/tmp/x', 'w')",
+            "import io\nio.FileIO.mro().pop()",
+            "import io\nio.FileIO.__mro__.pop(1)",
+        ],
+    )
+    def test_mro_pop_base_extraction_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import operator\noperator.attrgetter('__closure__')(open)[0]",
+            "import operator\noperator.attrgetter('cell_contents')"
+            "(operator.attrgetter('__closure__')(open)[0])('/tmp/x','w')",
+            "from operator import attrgetter\nattrgetter('__globals__')(open)",
+        ],
+    )
+    def test_attrgetter_gadget_not_invoked_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_container_hidden_open_alias_read_blocked(self):
+        assert _check_code_safety("o = [open][0]\no('../../../etc/passwd').read()") is not None
+        # Benign local write through the same alias stays allowed.
+        _ok("o = [open][0]\no('out.txt', 'w')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open(''.join(map(chr, [47,101,116,99,47,112,97,115,115,119,100]))).read()",
+            "import base64\nopen(base64.b64decode('L2V0Yy9wYXNzd2Q=').decode()).read()",
+        ],
+    )
+    def test_opaque_obfuscated_read_path_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_opaque_read_path_benign_allowed(self):
+        _ok("fn = 'data/train.csv'\nopen(fn).read()")
+        _ok("import os\nopen(os.path.join('data', 'train.csv')).read()")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('command cd /tmp; printf x > p')",
+            "import os\nos.system('builtin cd /tmp && printf x > p')",
+        ],
+    )
+    def test_cd_behind_shell_builtin_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_command_builtin_benign_allowed(self):
+        _ok("import os\nos.system('command ls')")
+        _ok("import os\nos.system('builtin echo hi')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import importlib.machinery\n"
+            "importlib.machinery.SourceFileLoader('m', 'evil.py').load_module()",
+            "spec.loader.exec_module(mod)",
+        ],
+    )
+    def test_importlib_file_loader_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_importlib_import_module_benign_allowed(self):
+        _ok("import importlib\nimportlib.import_module('json')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open('/var/run/secrets/kubernetes.io/serviceaccount/token').read()",
+            "open('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt').read()",
+            "open('/run/secrets/kubernetes.io/serviceaccount/token').read()",
+        ],
+    )
+    def test_kubernetes_service_account_token_blocked(self, code):
+        assert _check_code_safety(code) is not None, code

@@ -434,6 +434,11 @@ def _find_blocked_commands(command: str) -> set[str]:
         if tok in _SHELL_SEPARATORS or tok in _SHELL_KEYWORDS_AS_SEP:
             _at_cmd = True
             continue
+        if _at_cmd and _token_basename(tok) in ("command", "builtin"):
+            # `command` / `builtin` run the following shell builtin with its args, so a
+            # `command cd /tmp` still changes the cwd. Stay at command position so the cd
+            # behind the wrapper is inspected (bash `help command`/`help builtin`).
+            continue
         if _at_cmd and _token_basename(tok) == "cd":
             for k in range(i + 1, len(tokens)):
                 t = tokens[k]
@@ -3152,6 +3157,10 @@ _SANDBOX_SENSITIVE_DIR_PARTS = (
     "/.config/gcloud",
     "/.kube/",
     "/.docker/",
+    # In-cluster Kubernetes service-account credentials (token / ca.crt / namespace)
+    # mounted into every pod; reading the token impersonates the pod to the API server.
+    "/var/run/secrets/kubernetes.io/",
+    "/run/secrets/kubernetes.io/",
 )
 _SANDBOX_SENSITIVE_TOKENS = (
     "id_rsa",
@@ -4173,13 +4182,14 @@ def _check_signal_escape_patterns(
                         _attr_call = (node.args[0], node.args[1])
                     elif len(node.args) == 1:
                         _attr_call = (func.value, node.args[0])
-                elif isinstance(_ecf, ast.Call):
-                    # operator.attrgetter('system')(os)(...) / attrgetter('eval')(builtins):
-                    # attrgetter is the same attribute-fetch obfuscation as getattr, so map
-                    # attrgetter('name')(obj) to the (obj, 'name') pair.
-                    _ag_name = self._attrgetter_name(_ecf.func)
-                    if _ag_name is not None and len(_ecf.args) == 1:
-                        _attr_call = (_ecf.args[0], ast.Constant(value = _ag_name))
+                elif self._attrgetter_name(func) is not None and len(node.args) == 1:
+                    # operator.attrgetter('name')(obj) evaluates to obj.name -- the same
+                    # attribute-fetch obfuscation as getattr(obj, 'name'). Detect the
+                    # attrgetter APPLICATION call itself (node.func is the attrgetter,
+                    # node.args[0] is the object) so it is caught whether or not the result
+                    # is immediately invoked: attrgetter('__closure__')(open)[0] and the
+                    # chained attrgetter('system')(os)('rm -rf /') both normalize here.
+                    _attr_call = (node.args[0], ast.Constant(value = self._attrgetter_name(func)))
                 is_dynamic_import = (
                     _ast_name_matches(_ecf, _DYNAMIC_IMPORT_FUNCS)
                     or (
@@ -4428,14 +4438,13 @@ def _check_signal_escape_patterns(
                 ):
                     dynamic_desc = "inspect.getclosurevars() recovers a guarded wrapper's closure"
                 elif (
-                    # cls.mro().__getitem__(1) / cls.__mro__.__getitem__(1): the method-call
-                    # twin of the subscripted-mro base extraction (visit_Subscript). Same
-                    # gadget shape (io.FileIO.mro().__getitem__(1) recovers the original
-                    # FileIO base), so flag a non-slice integer index via __getitem__.
+                    # cls.mro().__getitem__(1) / .pop(1) / cls.__mro__.__getitem__(1): the
+                    # method-call twin of the subscripted-mro base extraction
+                    # (visit_Subscript). Same gadget shape (io.FileIO.mro().pop(1) recovers
+                    # the original FileIO base), so flag an element-extraction method on an
+                    # mro()/__mro__ receiver.
                     isinstance(func, ast.Attribute)
-                    and func.attr == "__getitem__"
-                    and len(node.args) == 1
-                    and isinstance(_const_fold(node.args[0], _const_env), int)
+                    and func.attr in ("__getitem__", "pop")
                     and (
                         (
                             isinstance(func.value, ast.Call)
@@ -4445,20 +4454,33 @@ def _check_signal_escape_patterns(
                         )
                         or (isinstance(func.value, ast.Attribute) and func.value.attr == "__mro__")
                     )
+                    and (
+                        # pop() / pop(i) always extract an element; __getitem__ only when the
+                        # index is a plain integer (not a slice object).
+                        func.attr == "pop"
+                        or (
+                            len(node.args) == 1
+                            and isinstance(_const_fold(node.args[0], _const_env), int)
+                        )
+                    )
                 ):
-                    dynamic_desc = "mro().__getitem__(i) extracts a base class (gadget)"
+                    dynamic_desc = f"mro().{func.attr}(...) extracts a base class (gadget)"
                 elif isinstance(func, ast.Attribute) and func.attr in (
                     "runcode",
                     "runsource",
+                    "load_module",
+                    "exec_module",
                 ):
                     # code.InteractiveInterpreter().runcode(c) / InteractiveConsole()
-                    # .runsource(src) execute a code object / source string without the
-                    # recursive analysis exec/eval receive, so an opaque compile() result
-                    # (or raw source) runs un-analyzed. These method names are unique to the
-                    # code module's interpreters, so flag the call regardless of receiver.
+                    # .runsource(src) execute a code object / source string; an importlib file
+                    # loader (SourceFileLoader(...).load_module() / spec.loader.exec_module(m))
+                    # executes a local file. None run through the recursive analysis exec/eval
+                    # receive, so an opaque payload (a written evil.py, a compile() result, or
+                    # raw source) runs un-analyzed. These method names are unique to those
+                    # interpreters / loaders, so flag the call regardless of receiver.
                     dynamic_desc = (
-                        f"{func.attr}() executes code without static analysis "
-                        "(code.InteractiveInterpreter / InteractiveConsole)"
+                        f"{func.attr}() executes code / a file without static analysis "
+                        "(code interpreter / importlib file loader)"
                     )
                 if dynamic_desc:
                     dynamic_exec.append(
@@ -5290,14 +5312,31 @@ def _check_signal_escape_patterns(
                 elif _a.name == "subprocess":
                     _subprocess_mod_aliases.add(_a.asname or "subprocess")
 
+    def _unwrap_container_node(n):
+        # `[open][0]` / `(open,)[0]` / `{'k': open}['k']`: resolve an inline literal-container
+        # index to the element node so a container-hidden alias is seen through.
+        if not isinstance(n, ast.Subscript):
+            return n
+        container = n.value
+        ci = _const_fold(n.slice, _const_env)
+        if isinstance(container, (ast.List, ast.Tuple)) and isinstance(ci, int):
+            if -len(container.elts) <= ci < len(container.elts):
+                return container.elts[ci]
+        if isinstance(container, ast.Dict) and ci is not None:
+            for k, v in zip(container.keys, container.values):
+                if k is not None and _const_fold(k, _const_env) == ci:
+                    return v
+        return n
+
     def _resolves_to_open(fn):
         # A callee that is `open`, a `from os/io/builtins import open as X` alias, a
-        # single-assignment alias (o = open; o('../../etc/passwd').read()), or
-        # builtins.open / io.open / os.open.
+        # single-assignment alias (o = open; o('../../etc/passwd').read()), a
+        # container-hidden alias (o = [open][0]; o(...)), or builtins.open / io.open /
+        # os.open.
         if isinstance(fn, ast.Name):
             if fn.id == "open" or fn.id in _open_from_aliases:
                 return True
-            rhs = _scope_idx.resolve(fn.id, fn, "rhsnode")
+            rhs = _unwrap_container_node(_scope_idx.resolve(fn.id, fn, "rhsnode"))
             if isinstance(rhs, ast.Name) and rhs.id == "open":
                 return True
             if (
@@ -5537,6 +5576,14 @@ def _check_signal_escape_patterns(
                     # Path(...).read_text() receiver is resolved before skipping.
                     rp = _pathlib_receiver_path(arg)
                     if rp is not None and _flag_read_path(node, rp, is_read_callee):
+                        break
+                    # An opaque read path assembled from obfuscation primitives
+                    # (open(''.join(map(chr, [...]))).read()) can still target a host
+                    # secret, and reads are not runtime-confined. Apply the same
+                    # fail-closed obfuscation policy exec payloads get: block a read
+                    # callee whose path is built from chr/join(map)/decode/fetch/... .
+                    if is_read_callee and _payload_has_obfuscation_primitive(arg):
+                        _fs_block(node, "read path assembled from obfuscation primitives")
                         break
                     continue
                 if _flag_read_path(node, s, is_read_callee):
