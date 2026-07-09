@@ -3569,9 +3569,6 @@ const AssistantMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
-  const hasReasoningParts = useAuiState(({ message }) =>
-    message.parts.some((part) => part.type === "reasoning"),
-  );
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth
@@ -3657,11 +3654,9 @@ const AssistantMessage: FC = () => {
           </div>
         ) : (
           <>
-            {!hasReasoningParts ? (
-              <div className="pointer-events-none relative h-0 min-w-0">
-                <MessageResponseModelBadge className="absolute -top-6 left-0 max-w-[min(22rem,100%)]" />
-              </div>
-            ) : null}
+            <div className="pointer-events-none relative h-0 min-w-0">
+              <MessageResponseModelBadge className="absolute -top-6 left-0 max-w-[min(22rem,100%)]" />
+            </div>
             <GeneratingIndicator />
             <CancelledIndicator />
             <DiffusionCanvas />
