@@ -171,5 +171,23 @@ def test_multi_backend_build_is_not_vulkan_only(tmp_path):
     assert LlamaCppBackend._is_vulkan_backend(binary) is False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="shell wrapper fallback is POSIX")
+def test_shell_wrapper_entrypoint_resolves_to_real_lib_dir(tmp_path):
+    # create_exec_entrypoint falls back to a #!/bin/sh wrapper at the install root
+    # when it cannot symlink; _find_llama_server_binary returns that root entrypoint,
+    # so _llama_lib_dir must follow the wrapper's exec target to build/bin -- else
+    # _is_vulkan_backend misses libggml-vulkan.so and the Vulkan probe/pin silently
+    # never engage on a valid Vulkan install.
+    import os
+
+    binary = _make_vulkan_install(tmp_path)  # tmp_path/build/bin/llama-server + vulkan lib
+    bindir = Path(binary).parent
+    wrapper = tmp_path / "llama-server"
+    wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n')
+    os.chmod(wrapper, 0o755)
+    assert _llama_lib_dir(str(wrapper)) == bindir
+    assert LlamaCppBackend._is_vulkan_backend(str(wrapper)) is True
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

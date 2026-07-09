@@ -1460,11 +1460,24 @@ def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
 
 
 def _llama_lib_dir(binary: str) -> Path:
-    # The installer exposes llama-server as a top-level symlink into build/bin/,
-    # where the ggml backend libs live. Resolve it so callers looking for
-    # sibling libs (Vulkan detection, LD_LIBRARY_PATH, probe bindir) hit the
-    # real directory, not the symlink's parent.
-    return Path(binary).resolve().parent
+    # The installer exposes llama-server as a top-level entrypoint into build/bin/,
+    # where the ggml backend libs live, so callers looking for sibling libs (Vulkan
+    # detection, LD_LIBRARY_PATH, probe bindir) need the real dir. It is normally a
+    # symlink (resolve() reaches build/bin), but create_exec_entrypoint falls back to
+    # a shell wrapper (exec "$(dirname "$0")/build/bin/llama-server" "$@") when it
+    # cannot symlink, and resolve() stops at the wrapper file. Follow the wrapper's
+    # exec target too, so a wrapper-based install still finds build/bin.
+    resolved = Path(binary).resolve()
+    try:
+        with open(resolved, "rb") as _f:
+            _head = _f.read(256)
+        if _head.startswith(b"#!"):
+            _m = re.search(r'exec "\$\(dirname "\$0"\)/([^"]+)"', _head.decode("utf-8", "ignore"))
+            if _m:
+                return (resolved.parent / _m.group(1)).resolve().parent
+    except OSError:
+        pass
+    return resolved.parent
 
 
 def _is_external_link(path: Path) -> bool:
