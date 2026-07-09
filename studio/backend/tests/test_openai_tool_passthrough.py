@@ -1351,7 +1351,7 @@ class TestOpenAICompatibilityHelpers:
         from routes.inference import _chat_reasoning_chunk
 
         line = _chat_reasoning_chunk("chatcmpl-test", 123, "gguf", "thinking...")
-        chunk = json.loads(line[len("data: "):])
+        chunk = json.loads(line[len("data: ") :])
         delta = chunk["choices"][0]["delta"]
 
         assert delta["reasoning_content"] == "thinking..."
