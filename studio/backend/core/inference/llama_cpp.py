@@ -6410,7 +6410,8 @@ class LlamaCppBackend:
                 # cap, not the ROCm-reported VRAM, is the real ceiling); refuse an
                 # oversize load the OS would otherwise kill mid-flight. Base model
                 # only: an optional MTP drafter is dropped by the MTP-drop fallback.
-                if model_size is not None and self._amd_apu_wants_unified_memory(gpu_indices):
+                # CUDA/ROCm ids only; a Vulkan build's gpu_indices are ggml ordinals.
+                if model_size is not None and not is_vulkan_backend and self._amd_apu_wants_unified_memory(gpu_indices):
                     _ram_msg = self._apu_ram_shortfall_message(
                         model_size, self._available_system_memory_mib()
                     )
@@ -6731,14 +6732,16 @@ class LlamaCppBackend:
                         env.setdefault("OMP_NUM_THREADS", "2")
 
                 # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
-                # shared system RAM. setdefault so a user value wins.
-                if self._amd_apu_wants_unified_memory(gpu_indices):
+                # shared system RAM. setdefault so a user value wins. Skip on Vulkan
+                # (as with DC tuning below): gpu_indices are ggml ordinals, not
+                # CUDA/ROCm physical ids, and the Vulkan backend ignores GGML_CUDA_*.
+                if not is_vulkan_backend and self._amd_apu_wants_unified_memory(gpu_indices):
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
                     logger.info("AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
 
                 # DC NVIDIA GPUs: FP32 accum (+ P2P / launch queues for multi-GPU).
                 # See _apply_datacenter_env; opt out with UNSLOTH_DISABLE_DC_TUNING=1.
-                if self._apply_datacenter_env(env, gpu_indices):
+                if not is_vulkan_backend and self._apply_datacenter_env(env, gpu_indices):
                     multi_gpu = self._effective_gpu_count(gpu_indices) > 1
                     logger.info(
                         f"Data-center GPU detected: applied DC llama.cpp env tuning (multi_gpu={multi_gpu})"
