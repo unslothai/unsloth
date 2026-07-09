@@ -3077,11 +3077,13 @@ def _run_responses_stream_no_model(monkeypatch, *, enabled, active_model_name):
     return exc.value.detail
 
 
-def test_responses_stream_hint_only_when_nothing_loaded_and_off(monkeypatch):
-    # Streaming /v1/responses shares a GGUF-only 400 with the non-GGUF-loaded
-    # state, so the auto-switch hint attaches only when nothing is loaded at all
-    # (the reported bug class) and the toggle is off. A live non-GGUF model, or
-    # the toggle already on, must not draw the hint.
+def test_responses_stream_hint_matches_toggle_regardless_of_active_model(monkeypatch):
+    # Streaming /v1/responses shares the GGUF-only 400 with the other "no model
+    # loaded" sites, so the auto-switch hint attaches whenever the toggle is
+    # off -- including while a non-GGUF model is active, since auto-switch
+    # evicts it to load a resolved GGUF (_maybe_auto_switch_model's resolver
+    # branch has no active-model guard, unlike its reload-stash branch). Only
+    # the toggle being on suppresses it.
     hinted = _run_responses_stream_no_model(monkeypatch, enabled = False, active_model_name = None)
     assert "Model auto-switch" in hinted
 
@@ -3091,4 +3093,4 @@ def test_responses_stream_hint_only_when_nothing_loaded_and_off(monkeypatch):
     non_gguf_loaded = _run_responses_stream_no_model(
         monkeypatch, enabled = False, active_model_name = "unsloth/Llama-3.2-1B-Instruct"
     )
-    assert "Model auto-switch" not in non_gguf_loaded
+    assert "Model auto-switch" in non_gguf_loaded

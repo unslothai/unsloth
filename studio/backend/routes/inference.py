@@ -8993,19 +8993,14 @@ async def _responses_stream(
         # double-layer asyncgen close pattern that produces "Attempted to exit
         # cancel scope in a different task" on Python 3.13. Surface a typed 400
         # so the client sees a useful error instead of a dangling stream.
-        detail = (
-            "Streaming /v1/responses requires a GGUF model loaded via "
-            "llama-server. Use non-streaming /v1/responses, "
-            "/v1/chat/completions, or load a GGUF model."
+        raise HTTPException(
+            status_code = 400,
+            detail = _no_model_loaded_detail(
+                "Streaming /v1/responses requires a GGUF model loaded via "
+                "llama-server. Use non-streaming /v1/responses, "
+                "/v1/chat/completions, or load a GGUF model."
+            ),
         )
-        # Only when nothing is loaded at all does this become the reported
-        # "named a listed model, got a bare error" case that auto-switch fixes.
-        # A live non-GGUF (Transformers) model also trips this GGUF-only guard,
-        # and auto-switch won't evict it to load a GGUF, so the hint would
-        # mislead; skip it then. The helper still no-ops when the toggle is on.
-        if not get_inference_backend().active_model_name:
-            detail = _no_model_loaded_detail(detail)
-        raise HTTPException(status_code = 400, detail = detail)
 
     # Direct pass-through bypasses the openai_chat_completions image gate.
     if not llama_backend.is_vision and any(
