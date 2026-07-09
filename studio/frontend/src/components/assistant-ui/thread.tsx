@@ -127,6 +127,7 @@ import {
   FileDatabaseIcon,
   Folder01Icon,
   FolderAddIcon,
+  HelpCircleIcon,
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
@@ -3952,7 +3953,7 @@ const AssistantActionBar: FC = () => {
                   strokeWidth={1.75}
                   className="size-icon"
                 />
-                Export as Markdown
+                Export as markdown
               </ActionBarMorePrimitive.Item>
             </ActionBarPrimitive.ExportMarkdown>
             <ActionBarMorePrimitive.Item
@@ -3960,7 +3961,7 @@ const AssistantActionBar: FC = () => {
               className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
             >
               <HugeiconsIcon
-                icon={FileDatabaseIcon}
+                icon={HelpCircleIcon}
                 strokeWidth={1.75}
                 className="size-icon"
               />

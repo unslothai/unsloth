@@ -404,6 +404,7 @@ function ModelRow({
   vramEst,
   gpuGb,
   tooltipText,
+  hubUrl,
   optionProps,
   onArrowDownIntoChildren,
   capabilities,
@@ -420,6 +421,10 @@ function ModelRow({
   vramEst?: number;
   gpuGb?: number;
   tooltipText?: ReactNode;
+  /** Hugging Face address (e.g. "huggingface.co/owner/name") for online/Hub
+   * rows; surfaced on hover so their repo id / URL is discoverable the same
+   * way local rows show an on-disk path. Omit to show no address line. */
+  hubUrl?: string;
   optionProps?: ModelRowOptionProps;
   onArrowDownIntoChildren?: () => boolean;
   /** Capability override (HF rows have tags); falls back to name detection. */
@@ -557,30 +562,41 @@ function ModelRow({
     </button>
   );
 
-  if (vramTooltipText) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
-        <TooltipContent
-          side="left"
-          className="tooltip-compact max-w-xs break-all"
-        >
-          {label}
-          <span className="block text-[10px] mt-1">{vramTooltipText}</span>
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
+  // Optional Hugging Face address line for online/Hub rows, rendered under
+  // whichever tooltip shows so the repo id / URL is always visible on hover.
+  const hubUrlLine = hubUrl ? (
+    <span className="block mt-1 text-[10px] text-muted-foreground break-all">
+      {hubUrl}
+    </span>
+  ) : null;
 
-  if (tooltipText) {
+  const tooltipBody = vramTooltipText ? (
+    <>
+      {label}
+      <span className="block text-[10px] mt-1">{vramTooltipText}</span>
+      {hubUrlLine}
+    </>
+  ) : tooltipText ? (
+    <>
+      {tooltipText}
+      {hubUrlLine}
+    </>
+  ) : hubUrl ? (
+    <>
+      <span className="block break-words">{label}</span>
+      {hubUrlLine}
+    </>
+  ) : null;
+
+  if (tooltipBody) {
     return (
-      <Tooltip>
+      <Tooltip delayDuration={700}>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
         <TooltipContent
           side="left"
           className="tooltip-compact max-w-xs break-all"
         >
-          {tooltipText}
+          {tooltipBody}
         </TooltipContent>
       </Tooltip>
     );
@@ -1422,6 +1438,13 @@ function localPathTooltip(name: string, path: string): ReactNode {
       </span>
     </>
   );
+}
+
+/** Hugging Face address for an online/Hub row, or undefined when the repo id is
+ * missing so the row shows no (empty) address line on hover. */
+function hubRepoUrl(id: string | null | undefined): string | undefined {
+  const trimmed = id?.trim();
+  return trimmed ? `huggingface.co/${trimmed}` : undefined;
 }
 
 /** Whether a local model is an MLX build (name hint). MLX runs on Mac only, so
@@ -3010,6 +3033,7 @@ export function HubModelPicker({
                   ? stripArtifactSuffixesForDisplay(c.repo_id)
                   : c.repo_id
               }
+              tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
               meta="GGUF"
               showVision={c.has_vision ?? visionByRepo[c.repo_id]}
               selected={isSelected}
@@ -3068,6 +3092,7 @@ export function HubModelPicker({
             label={
               catalog ? stripArtifactSuffixesForDisplay(c.repo_id) : c.repo_id
             }
+            hubUrl={hubRepoUrl(c.repo_id)}
             meta={`${isMlxId(c.repo_id) ? "MLX" : "Safetensors"} · ${formatBytes(
               c.size_bytes,
             )}`}
@@ -4169,6 +4194,7 @@ export function HubModelPicker({
                             label={
                               catalog ? stripArtifactSuffixesForDisplay(id) : id
                             }
+                            hubUrl={hubRepoUrl(id)}
                             hideOwner={true}
                             downloaded={downloadedSet.has(id.toLowerCase())}
                             capabilities={capsById.get(id)}
@@ -4258,6 +4284,7 @@ export function HubModelPicker({
                       <div key={id}>
                         <ModelRow
                           label={id}
+                          hubUrl={hubRepoUrl(id)}
                           capabilities={capsById.get(id)}
                           meta={
                             isKnownGgufRepo(id)
@@ -4340,6 +4367,7 @@ export function HubModelPicker({
                         <div key={id}>
                           <ModelRow
                             label={id}
+                            hubUrl={hubRepoUrl(id)}
                             capabilities={capsById.get(id)}
                             meta={
                               isSearchGguf
