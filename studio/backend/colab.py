@@ -493,19 +493,32 @@ def _public_url_not_ready_html(cloudflare_url: str) -> str:
 def _bootstrap_login_notice_html() -> "str | None":
     """Notebook-local login hint for public tunnels with bootstrap injection off."""
     try:
+        from html import escape
         from auth import storage
 
         if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
             return None
         bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
+        bootstrap_password = storage.get_bootstrap_password()
+        if not bootstrap_password:
+            try:
+                bootstrap_password = bootstrap_path.read_text().strip()
+            except Exception:
+                bootstrap_password = ""
+        password_line = (
+            f'Temporary password: <code>{escape(bootstrap_password)}</code><br>'
+            if bootstrap_password
+            else ""
+        )
         return f"""
     <div style="display: inline-block; padding: 16px 20px; background: #fff7d6; border: 2px solid #b88700;
                 border-radius: 10px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
         <div style="color:#3b2a00;font-weight:800;font-size:15px;margin-bottom:8px;">Bootstrap login required</div>
         <div style="color:#3b2a00;font-size:13px;line-height:1.45;">
-            Username: <code>{storage.DEFAULT_ADMIN_USERNAME}</code><br>
-            Password file: <code>{bootstrap_path}</code><br>
-            The password is intentionally not embedded in the public Cloudflare page.
+            Username: <code>{escape(storage.DEFAULT_ADMIN_USERNAME)}</code><br>
+            {password_line}
+            Password file: <code>{escape(str(bootstrap_path))}</code><br>
+            This notebook-only password is intentionally not embedded in the public Cloudflare page.
         </div>
     </div>
     """
