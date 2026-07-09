@@ -4674,10 +4674,10 @@ class LlamaCppBackend:
         )
 
     def _cached_repo_mtp_drafter(self, hf_repo: str) -> Optional[str]:
-        """A drafter already in this repo's local HF cache, to reuse instead of
-        re-downloading. Prefers the repo-root ``mtp-*.gguf``; else an existing
-        ``MTP/`` copy (any precision -- the target verifies every drafted token)
-        so an older on-disk file is not re-fetched. None if none is cached."""
+        """A drafter already in this repo's local HF cache, reused offline when a
+        fresh copy can't be fetched. Prefers the repo-root ``mtp-*.gguf``; else an
+        existing ``MTP/`` copy (any precision -- the target verifies every drafted
+        token). None if none is cached."""
         try:
             from utils.models.model_config import _iter_hf_cache_snapshots
             for snap in _iter_hf_cache_snapshots(hf_repo):
@@ -4709,14 +4709,18 @@ class LlamaCppBackend:
         recommended for speculation). Repos that bake the MTP head into the
         main GGUF (e.g. Qwen) ship no such sibling and this returns None. The
         higher-precision copies under ``MTP/`` are for explicit selection and
-        are intentionally skipped. Reuses a drafter already in the local cache
-        before downloading. Returns the local path, or None.
+        are intentionally skipped. Returns the local path, or None.
         """
 
-        cached = self._cached_repo_mtp_drafter(hf_repo)
-        if cached:
-            logger.info(f"Reusing cached MTP drafter: {cached}")
-            return cached
+        # Offline, reuse any drafter already on disk (a fresh copy can't be
+        # fetched). Online, _download_companion_gguf/hf_hub_download reuse the
+        # current cached file and refetch a changed one, so skip the probe here
+        # rather than pair new weights with a stale draft.
+        if _hf_env_offline():
+            cached = self._cached_repo_mtp_drafter(hf_repo)
+            if cached:
+                logger.info(f"Reusing cached MTP drafter (offline): {cached}")
+                return cached
 
         def _pick_mtp(candidates: list[str]) -> Optional[str]:
             # Root-level only: MTP/ subdir copies now share the mtp- prefix but
