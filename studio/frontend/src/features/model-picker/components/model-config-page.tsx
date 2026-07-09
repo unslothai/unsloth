@@ -73,23 +73,28 @@ function resolveCustomContextLength(
 function ChatTemplateSetting({
   config,
   onEditTemplate,
+  readOnly = false,
 }: {
   config: PerModelConfig;
   onEditTemplate: () => void;
+  readOnly?: boolean;
 }) {
   return (
     <div className={ROW_CLASS}>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className={LABEL_CLASS}>Chat Template</span>
         <InfoHint>
-          Override the model's chat template with custom Jinja. Applies when the
-          model loads.
+          {readOnly
+            ? "Preview the model's chat template. Custom overrides apply to GGUF models for now."
+            : "Override the model's chat template with custom Jinja. Applies when the model loads."}
         </InfoHint>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <span className="text-[12px] text-muted-foreground">
-          {config.chatTemplateOverride ? "Custom" : "Default"}
-        </span>
+        {readOnly ? null : (
+          <span className="text-[12px] text-muted-foreground">
+            {config.chatTemplateOverride ? "Custom" : "Default"}
+          </span>
+        )}
         <Button
           type="button"
           size="sm"
@@ -97,7 +102,7 @@ function ChatTemplateSetting({
           className={`h-7 px-3 text-[13px] ${CONTROL_SURFACE}`}
           onClick={onEditTemplate}
         >
-          Edit
+          {readOnly ? "View" : "Edit"}
         </Button>
       </div>
     </div>
@@ -577,6 +582,7 @@ export function ModelConfigPage({
             <ChatTemplateSetting
               config={config}
               onEditTemplate={() => setTemplateOpen(true)}
+              readOnly
             />
           </>
         )}
@@ -625,6 +631,7 @@ export function ModelConfigPage({
         value={config.chatTemplateOverride}
         defaultTemplate={templateDefaults.template}
         defaultLoading={templateDefaults.loading}
+        readOnly={!target.isGguf}
         onSave={(override) => update({ chatTemplateOverride: override })}
       />
     </div>

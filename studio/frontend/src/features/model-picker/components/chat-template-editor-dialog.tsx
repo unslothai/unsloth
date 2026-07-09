@@ -27,6 +27,7 @@ interface ChatTemplateEditorDialogProps {
   defaultTemplate: string | null;
   defaultLoading: boolean;
   onSave: (override: string | null) => void;
+  readOnly?: boolean;
 }
 
 export function ChatTemplateEditorDialog({
@@ -36,6 +37,7 @@ export function ChatTemplateEditorDialog({
   defaultTemplate,
   defaultLoading,
   onSave,
+  readOnly = false,
 }: ChatTemplateEditorDialogProps) {
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -88,61 +90,81 @@ export function ChatTemplateEditorDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>Edit Chat Template</DialogTitle>
+          <DialogTitle>{readOnly ? "Chat Template" : "Edit Chat Template"}</DialogTitle>
           <DialogDescription>
-            Override the model's chat template with custom Jinja. The change
-            applies when the model loads. Saving an empty template or one that
-            matches the default clears the override.
+            {readOnly
+              ? "This is the model's chat template. Custom templates apply to GGUF models for now, so it is view only for safetensors models."
+              : "Override the model's chat template with custom Jinja. The change applies when the model loads. Saving an empty template or one that matches the default clears the override."}
           </DialogDescription>
         </DialogHeader>
         <Textarea
           value={draft}
           onChange={(event) => {
+            if (readOnly) return;
             setDraft(event.target.value);
             setError(null);
           }}
+          readOnly={readOnly}
           className="min-h-[20rem] max-h-[50vh] overflow-y-auto border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0"
           rows={14}
           spellCheck={false}
           placeholder={defaultLoading ? "Loading model default..." : ""}
         />
-        <div className="flex items-center justify-between gap-3 px-0.5 text-[11px]">
-          <span className={overLimit ? "text-amber-500" : "text-muted-foreground"}>
-            {byteLength.toLocaleString()} /{" "}
-            {MAX_CHAT_TEMPLATE_BYTES.toLocaleString()} bytes
-          </span>
-          {error ? (
-            <span className="truncate text-red-500" title={error}>
-              {error}
+        {readOnly ? null : (
+          <div className="flex items-center justify-between gap-3 px-0.5 text-[11px]">
+            <span
+              className={overLimit ? "text-amber-500" : "text-muted-foreground"}
+            >
+              {byteLength.toLocaleString()} /{" "}
+              {MAX_CHAT_TEMPLATE_BYTES.toLocaleString()} bytes
             </span>
-          ) : null}
-        </div>
-        <DialogFooter className="flex-wrap gap-2 sm:justify-between">
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => setDraft(defaultTemplate ?? "")}
-            disabled={defaultLoading || draft === (defaultTemplate ?? "")}
-            className="text-muted-foreground"
-          >
-            {defaultLoading ? <Spinner className="size-3.5" /> : "Reset to default"}
-          </Button>
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => onOpenChange(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={handleSave}
-              disabled={validating || overLimit}
-            >
-              {validating ? "Validating..." : "Save"}
-            </Button>
+            {error ? (
+              <span className="truncate text-red-500" title={error}>
+                {error}
+              </span>
+            ) : null}
           </div>
+        )}
+        <DialogFooter className="flex-wrap gap-2 sm:justify-between">
+          {readOnly ? (
+            <div className="flex w-full justify-end">
+              <Button type="button" onClick={() => onOpenChange(false)}>
+                Close
+              </Button>
+            </div>
+          ) : (
+            <>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setDraft(defaultTemplate ?? "")}
+                disabled={defaultLoading || draft === (defaultTemplate ?? "")}
+                className="text-muted-foreground"
+              >
+                {defaultLoading ? (
+                  <Spinner className="size-3.5" />
+                ) : (
+                  "Reset to default"
+                )}
+              </Button>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => onOpenChange(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={validating || overLimit}
+                >
+                  {validating ? "Validating..." : "Save"}
+                </Button>
+              </div>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
