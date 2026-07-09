@@ -336,7 +336,6 @@ def _stop_cloudflare_tunnel(*, expected_url: "str | None" = None) -> bool:
     current_url = None
     try:
         from main import app as _studio_app
-
         current_url = getattr(_studio_app.state, "cloudflare_url", None)
         if expected_url and current_url and current_url != expected_url:
             logger.info(

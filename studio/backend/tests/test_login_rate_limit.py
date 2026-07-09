@@ -252,6 +252,7 @@ class TestClientIp:
 
         assert sorted(auth_routes._LOGIN_IP_BUCKETS) == ["127.0.0.1"]
 
+
 # ---------- bucket compose / blocking ----------
 
 

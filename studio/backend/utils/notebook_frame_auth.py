@@ -94,7 +94,11 @@ def _truthy_env(env: Mapping[str, str], name: str) -> bool:
     return env.get(name, "").strip().lower() in {"1", "true", "yes"}
 
 
-def cloudflare_client_ip_trusted(headers, app_state = None, env: Mapping[str, str] | None = None) -> bool:
+def cloudflare_client_ip_trusted(
+    headers,
+    app_state = None,
+    env: Mapping[str, str] | None = None,
+) -> bool:
     """Whether CF-Connecting-IP should be honored for a loopback tunnel request."""
     env = os.environ if env is None else env
     if _truthy_env(env, TRUST_CF_CONNECTING_IP_ENV):

@@ -182,7 +182,9 @@ def test_kaggle_reuse_path_keeps_bootstrap_guard_for_external_server(monkeypatch
         "_show_and_embed",
         lambda port, *, cloudflare_url = None: calls.setdefault("embed", (port, cloudflare_url)),
     )
-    monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.setdefault("stopped", kwargs))
+    monkeypatch.setattr(
+        colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.setdefault("stopped", kwargs)
+    )
 
     import time
 
@@ -229,7 +231,9 @@ def test_kaggle_reuse_path_allows_bootstrap_pending_for_owned_server(monkeypatch
         "_show_and_embed",
         lambda port, *, cloudflare_url = None: calls.setdefault("embed", (port, cloudflare_url)),
     )
-    monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.setdefault("stopped", kwargs))
+    monkeypatch.setattr(
+        colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.setdefault("stopped", kwargs)
+    )
 
     import time
 
@@ -266,7 +270,9 @@ def test_kaggle_start_explicit_cloudflare_false_disables_tunnel(monkeypatch):
         "_show_and_embed",
         lambda port, *, cloudflare_url = None: calls.setdefault("embed", (port, cloudflare_url)),
     )
-    monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.setdefault("stopped", kwargs))
+    monkeypatch.setattr(
+        colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.setdefault("stopped", kwargs)
+    )
 
     import time
 
@@ -424,7 +430,9 @@ def test_stop_cloudflare_tunnel_preserves_state_when_stop_fails(monkeypatch):
         trust_cloudflare_client_ip = True,
         cloudflare_client_ip_requires_frame_cookie = True,
     )
-    monkeypatch.setitem(sys.modules, "main", types.SimpleNamespace(app = types.SimpleNamespace(state = state)))
+    monkeypatch.setitem(
+        sys.modules, "main", types.SimpleNamespace(app = types.SimpleNamespace(state = state))
+    )
 
     def _fail_stop():
         raise RuntimeError("still running")
@@ -449,7 +457,9 @@ def test_stop_cloudflare_tunnel_skips_stale_cleanup(monkeypatch):
         trust_cloudflare_client_ip = True,
         cloudflare_client_ip_requires_frame_cookie = True,
     )
-    monkeypatch.setitem(sys.modules, "main", types.SimpleNamespace(app = types.SimpleNamespace(state = state)))
+    monkeypatch.setitem(
+        sys.modules, "main", types.SimpleNamespace(app = types.SimpleNamespace(state = state))
+    )
     monkeypatch.setitem(
         sys.modules,
         "cloudflare_tunnel",
