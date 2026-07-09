@@ -1392,9 +1392,10 @@ class TestRound8Bypasses:
         assert _check_code_safety(code) is not None, code
 
     def test_benign_relative_redirect_allowed(self):
-        # A relative redirect stays in the workdir cwd.
-        _ok("import os\nos.system('echo hi > out.txt')")
+        # Redirects fail closed on file targets (an unguarded child follows symlinks), but
+        # fd duplications and the safe device sinks stay allowed.
         _ok("import os\nos.system('ls 2>&1')")
+        _ok("import os\nos.system('echo hi > /dev/null')")
 
     @pytest.mark.parametrize(
         "code",
@@ -1586,8 +1587,10 @@ class TestRound10Bypasses:
         assert _check_code_safety(code) is not None, code
 
     def test_benign_relative_redirect_and_cd_allowed(self):
-        _ok("import os\nos.system('cd data && echo x > out.txt')")
-        _ok("import os\nos.system('echo hi > local.txt')")
+        # cd to a relative in-workdir dir stays allowed; the redirect itself must target a
+        # safe device sink now that file targets fail closed.
+        _ok("import os\nos.system('cd data && echo x > /dev/null')")
+        _ok("import os\nos.system('cd data && ls')")
 
     @pytest.mark.parametrize(
         "code",
@@ -1936,7 +1939,9 @@ class TestRound13Bypasses:
         assert _check_code_safety(code) is not None, code
 
     def test_pushd_relative_allowed(self):
-        _ok("import os\nos.system('pushd data; echo hi > out.txt')")
+        # pushd to a relative in-workdir dir stays allowed; a file redirect now fails closed,
+        # so pair it with a safe device sink.
+        _ok("import os\nos.system('pushd data; echo hi > /dev/null')")
 
     @pytest.mark.parametrize(
         "code",
@@ -2180,11 +2185,6 @@ class TestRound15Bypasses:
     def test_relative_multicomponent_redirect_blocked(self, code):
         assert _check_code_safety(code) is not None, code
 
-    def test_single_component_redirect_allowed(self):
-        # A bare single-component relative redirect target stays in the workdir cwd.
-        _ok("import os\nos.system('echo x > out.txt')")
-        _ok("import os\nos.system('echo x > ./out.txt')")
-
 
 class TestRound16Bypasses:
     """Sixteenth-round Codex findings: a dynamic Path read, sensitive reads inside a
@@ -2258,3 +2258,76 @@ class TestRound16Bypasses:
         # A relative glob expands only within the workdir cwd, so it stays allowed.
         _ok("import os\nos.system('grep foo *.txt')")
         _ok("import os\nos.system('echo *.py')")
+
+
+class TestRound17Bypasses:
+    """Seventeenth-round Codex findings: compile via local alias, type(lambda) function
+    constructor, lambda / comprehension alias scopes, annotated single-assignment aliases,
+    ${IFS}-obfuscated shell words, workdir-shadowed guard imports, and redirects that follow
+    a pre-existing symlink."""
+
+    _SH = r"import os\nos.system('cat /etc/shadow')"
+
+    def test_compile_local_alias_functiontype_blocked(self):
+        code = (
+            "import types\ncfn = compile\nco = cfn(\"%s\", '<s>', 'exec')\n"
+            "types.FunctionType(co, {})()" % self._SH
+        )
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "ctor",
+        ["type(lambda: None)", "type(lambda: 0)", "(lambda: None).__class__"],
+    )
+    def test_type_lambda_function_constructor_blocked(self, ctor):
+        # type(lambda: None) IS types.FunctionType; running a compile() code object through
+        # it bypasses the eval/exec gate. (__class__ is covered by the gadget-dunder scan.)
+        code = "co = compile(\"%s\", '<s>', 'exec')\n%s(co, {})()" % (self._SH, ctor)
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            '(lambda e=exec: e("' + _SH + '"))()',
+            '[e("' + _SH + '") for e in [exec]]',
+            'list(e("' + _SH + '") for e in (exec,))',
+            '{e("' + _SH + '") for e in [exec]}',
+        ],
+    )
+    def test_lambda_comprehension_alias_scopes_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_annotated_assignment_alias_blocked(self):
+        assert _check_code_safety('e: object = exec\ne("' + self._SH + '")') is not None
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('cat${IFS}/etc/shadow')",
+            "import os\nos.system('head$IFS/etc/passwd')",
+            "import os\nos.system('cat${IFS%?}/etc/shadow')",
+            "import os\nos.system('rm${IFS}-rf${IFS}/tmp/x')",
+        ],
+    )
+    def test_ifs_expanded_shell_words_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_benign_ifs_echo_allowed(self):
+        _ok("import os\nos.system('echo $IFS')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('echo x > out')",
+            "import os\nos.system('echo x > out.txt')",
+            "import os\nos.system('echo x >> log')",
+        ],
+    )
+    def test_symlink_prone_redirect_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_safe_device_redirect_allowed(self):
+        # fd duplications and the standard device sinks are the only trusted targets.
+        _ok("import os\nos.system('echo hi > /dev/null')")
+        _ok("import os\nos.system('ls 2>&1')")
+        _ok("import os\nos.system('echo hi >> /dev/null 2>&1')")

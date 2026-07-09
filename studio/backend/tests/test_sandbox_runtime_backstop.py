@@ -970,3 +970,44 @@ def test_sandboxed_pathlib_local_read_allowed():
     )
     assert "GOT hi" in out
     assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_workdir_module_shadowing_neutralized(tmp_path):
+    # The exec script lives in the workdir, so Python prepends the workdir to sys.path[0].
+    # A malicious re.py / pathlib.py / os.py / io.py dropped in the workdir must NOT shadow
+    # the guard's own imports (which would run unguarded at import time before any patch).
+    session = "backstop-shadow"
+    workdir = get_sandbox_workdir(session)
+    marker = os.path.join(str(tmp_path), "shadow_ran.marker")
+    evil = "import builtins as _b\n_b.open(%r, 'w').write('pwned')\nraise SystemExit\n" % marker
+    written = []
+    for name in ("re.py", "pathlib.py", "os.py", "io.py"):
+        p = os.path.join(workdir, name)
+        with open(p, "w") as fh:
+            fh.write(evil)
+        written.append(p)
+    try:
+        # A benign snippet: if any guard import is shadowed, evil runs and writes the marker.
+        out = _python_exec("print('OK', 1 + 1)", None, 30, session, disable_sandbox = False)
+        assert "OK 2" in out
+        assert not os.path.exists(marker), "workdir module shadowed a guard import"
+        # The real, patched modules stay usable for ordinary user imports.
+        out2 = _python_exec(
+            "import re, pathlib\nprint('REOK', bool(re.match('a', 'abc')))\n",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "REOK True" in out2
+    finally:
+        for p in written:
+            if os.path.exists(p):
+                os.remove(p)
+        _pyc = os.path.join(workdir, "__pycache__")
+        if os.path.isdir(_pyc):
+            import shutil
+            shutil.rmtree(_pyc, ignore_errors = True)
+        if os.path.exists(marker):
+            os.remove(marker)

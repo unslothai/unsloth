@@ -208,6 +208,13 @@ _SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif"})
 # POSIX / common shell binaries. A shell without an inline `-c` payload runs unscanned
 # code (a script file, -s / stdin, or a bare stdin-reading shell), so it is denied.
 _SHELL_BINARIES = frozenset({"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"})
+# The only shell redirection targets trusted without a realpath check: standard device
+# sinks that cannot escape the workdir. Every other target (relative or absolute) fails
+# closed, because the unguarded child follows symlinks and resolves relative names against a
+# cwd the static scanner cannot verify (a pre-existing `out -> /tmp/host` symlink escapes).
+_SAFE_REDIRECT_TARGETS = frozenset(
+    {"/dev/null", "/dev/zero", "/dev/full", "/dev/stdout", "/dev/stderr", "/dev/tty"}
+)
 # Coreutils that read + print file contents. A shell-expanded ($VAR / `cmd`) path passed
 # to one of these can exfiltrate a host secret whose name the static scan cannot resolve.
 _SHELL_READ_COMMANDS = frozenset(
@@ -399,6 +406,18 @@ def _normalize_ansi_c_quotes(command: str) -> str:
     return "".join(res)
 
 
+_IFS_RE = re.compile(r"\$\{IFS[^}]*\}|\$IFS\b")
+
+
+def _expand_ifs(command: str) -> str:
+    """bash expands ${IFS} / $IFS to whitespace (default space/tab/newline) BEFORE word
+    splitting, so cat${IFS}/etc/shadow runs `cat /etc/shadow` in the child. Replace an IFS
+    reference with a space so the scanner tokenizes the command bash actually executes."""
+    if "IFS" not in command:
+        return command
+    return _IFS_RE.sub(" ", command)
+
+
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
@@ -413,8 +432,9 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # Normalize bash ANSI-C ($'...') / locale ($"...") quoting first: shlex leaves
     # `$'touch'` as `$touch`, so a writer/interpreter hidden behind ANSI-C quoting would
-    # never match the blocklist even though bash decodes and runs it.
-    command = _normalize_ansi_c_quotes(command)
+    # never match the blocklist even though bash decodes and runs it. Then expand ${IFS} to
+    # whitespace so a separator-obfuscated command (rm${IFS}-rf${IFS}/) is tokenized.
+    command = _expand_ifs(_normalize_ansi_c_quotes(command))
 
     # punctuation_chars splits separators into their own tokens, so command
     # position is detected even in `echo done; rm -rf x` (no whitespace) or
@@ -611,12 +631,14 @@ def _find_blocked_commands(command: str) -> set[str]:
         if not tok.startswith("-"):
             _at_cmd_sh = False
 
-    # Output redirection (> / >> / &> / N>) to a path OUTSIDE the workdir: a child shell
-    # runs unguarded, so `echo x > /tmp/p` / `>> ../p` / `> ~/p` writes past the session
-    # workdir. A relative SINGLE-component literal target (> out.txt) stays in the workdir
-    # cwd and is allowed; a NON-LITERAL target (variable / command substitution) cannot be
-    # verified, so it fails closed (`echo x > "$p"` could expand anywhere). Scanning tokens
-    # (not the raw string) avoids matching a `>` inside a quoted argument.
+    # Output redirection (> / >> / &> / N>) runs in an unguarded child shell that follows
+    # symlinks before any Python guard, so no filename target can be trusted: a relative
+    # single-component name (> out) may be a pre-existing symlink to an outside file, a
+    # relative multi-component name (> sub/out) may traverse a symlinked subdir, an absolute
+    # / ~ / .. target is plainly outside, and a $ / backtick target can expand anywhere.
+    # Fail closed on every real-file target; only fd duplications (>&2) and the standard
+    # device sinks (/dev/null, ...) are allowed. Scanning tokens (not the raw string) avoids
+    # matching a `>` inside a quoted argument.
     for i, tok in enumerate(tokens):
         rm = re.search(r">{1,2}([^\s>]*)$", tok)
         if rm is None:
@@ -625,8 +647,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         j = i
         # `>|` (noclobber override) and `>&` (stdout+stderr / fd-or-file redirect) tokenize
         # as `>` then `|` / `&`, so that punctuation is part of the redirect operator, not a
-        # pipeline / background op; skip it and take the real target after. A pure fd target
-        # (`>&2`) is a bare number that fails the path checks below and stays allowed.
+        # pipeline / background op; skip it and take the real target after.
         if not tgt and j + 1 < len(tokens) and tokens[j + 1] in ("|", "&"):
             j += 1
         if not tgt and j + 1 < len(tokens):
@@ -634,21 +655,11 @@ def _find_blocked_commands(command: str) -> set[str]:
         if not tgt:
             continue
         tn = tgt.replace("\\", "/")
-        # A relative multi-component target (sub/out.txt) resolves through a subdirectory
-        # component whose realpath the static scanner cannot verify -- if that component is
-        # a symlink pointing outside the workdir the unguarded child writes past it. Fail
-        # closed on any relative target carrying a `/` separator (a leading `./` is dropped
-        # first so `./out.txt` stays allowed); only a bare single-component name is allowed.
-        _rel = tn[2:] if tn.startswith("./") else tn
-        if (
-            tgt.startswith("~")
-            or tn.startswith("/")
-            or ".." in tn.split("/")
-            or "$" in tgt
-            or "`" in tgt
-            or "/" in _rel.rstrip("/")
-        ):
-            blocked.add("redirect:" + tgt)
+        # Allowed: a pure fd duplication (>&2, >&1 -> `&2` / a bare digit) and the safe
+        # device sinks. Everything else is a file target that fails closed.
+        if tgt.startswith("&") or tgt.isdigit() or tn in _SAFE_REDIRECT_TARGETS:
+            continue
+        blocked.add("redirect:" + tgt)
 
     # `cd` / `pushd` to a dir OUTSIDE the workdir moves the child shell's cwd so a later
     # relative redirect / write escapes (`cd /tmp; echo x > p`, `pushd /tmp; echo x > p`).
@@ -2873,8 +2884,22 @@ def _compile_mode(node, const_env):
 def _walk_scope_local(scope):
     """Yield descendants of ``scope``'s body that share its namespace, WITHOUT
     descending into nested def / lambda / class / comprehension (each of which is a
-    new scope). Used so single-assignment alias detection is scope-correct."""
-    stack = list(getattr(scope, "body", []))
+    new scope). Used so single-assignment alias detection is scope-correct.
+
+    When ``scope`` is itself a lambda or comprehension, walk its own namespace: a lambda
+    body is a single expression, and a comprehension's namespace holds its element
+    expression plus the generator iterables / conditions (target bindings are collected
+    separately). ``getattr(scope, "body", [])`` only applies to def / class / module."""
+    if isinstance(scope, ast.Lambda):
+        stack = [scope.body]
+    elif isinstance(scope, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+        stack = [scope.elt] + [g for gen in scope.generators for g in [gen.iter, *gen.ifs]]
+    elif isinstance(scope, ast.DictComp):
+        stack = [scope.key, scope.value] + [
+            g for gen in scope.generators for g in [gen.iter, *gen.ifs]
+        ]
+    else:
+        stack = list(getattr(scope, "body", []))
     _NESTED = (
         ast.FunctionDef,
         ast.AsyncFunctionDef,
@@ -2989,9 +3014,17 @@ def _build_scope_alias_index(tree, const_env):
         # own lexical function/module parent rather than the class.
         for child in ast.iter_child_nodes(node):
             idx.node_scope[child] = scope
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                # A lambda, like a def, opens its own scope: a default-bound param alias
+                # ((lambda e=exec: e(payload))()) lives in the lambda body's namespace, and
+                # anything nested inside encloses to the lambda itself.
                 idx.enclosing[child] = func_enclose
                 _rec(child, child, child)
+            elif isinstance(child, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                # A comprehension opens its own scope in Python 3; its target bindings
+                # ([e(p) for e in [exec]]) belong to that scope, enclosing to func_enclose.
+                idx.enclosing[child] = func_enclose
+                _rec(child, child, func_enclose)
             elif isinstance(child, ast.ClassDef):
                 # A class body executes immediately with its OWN namespace, so it is a
                 # real alias scope (class C: e = eval; e(...) runs eval), but its names
@@ -3112,7 +3145,19 @@ def _build_scope_alias_index(tree, const_env):
     scopes = [tree] + [
         n
         for n in ast.walk(tree)
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        if isinstance(
+            n,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+                ast.Lambda,
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+                ast.GeneratorExp,
+            ),
+        )
     ]
     for scope in scopes:
         counts: dict[str, int] = {}
@@ -3140,6 +3185,27 @@ def _build_scope_alias_index(tree, const_env):
                 and isinstance(n.targets[0], ast.Name)
             ):
                 assigns.append((n.targets[0].id, n.value))
+            elif (
+                # An annotated single-assignment (e: object = exec) is a real binding whose
+                # RHS must be recorded like a plain Assign, else e(payload) skips analysis.
+                isinstance(n, ast.AnnAssign)
+                and n.value is not None
+                and isinstance(n.target, ast.Name)
+            ):
+                assigns.append((n.target.id, n.value))
+        # A comprehension generator binds its target like a single-assignment alias when the
+        # iterable is a one-element literal: [e(p) for e in [exec]] binds e to exec, so the
+        # payload passed through e must still get eval/exec recursion.
+        for _gen in getattr(scope, "generators", []):
+            if (
+                isinstance(_gen.target, ast.Name)
+                and isinstance(_gen.iter, (ast.List, ast.Tuple, ast.Set))
+                and len(_gen.iter.elts) == 1
+            ):
+                _tn = _gen.target.id
+                counts[_tn] = counts.get(_tn, 0) + 1
+                allnames.add(_tn)
+                assigns.append((_tn, _gen.iter.elts[0]))
         idx.assigned[scope] = allnames
         smap: dict[str, str] = {}
         emap: dict[str, str] = {}
@@ -3164,7 +3230,17 @@ def _build_scope_alias_index(tree, const_env):
             eb = _rhs_exec_builtin(rhs_eff)
             if eb is not None:
                 emap[name] = eb
-            elif _rhs_is_compile_call(rhs_eff) and rhs_eff.args:
+            elif (
+                _rhs_is_compile_call(rhs_eff)
+                or (
+                    # A local alias of compile (cfn = compile; co = cfn(src, ...)) is not in
+                    # compile_aliases, so resolve the callee through this scope's exec-builtin
+                    # map (built in source order, cfn precedes co) before giving up.
+                    isinstance(rhs_eff, ast.Call)
+                    and isinstance(rhs_eff.func, ast.Name)
+                    and emap.get(rhs_eff.func.id) == "compile"
+                )
+            ) and rhs_eff.args:
                 # Any `c = compile(...)` (bare / builtins.compile / from-import alias)
                 # binds a code object, tracked for the types.FunctionType(c) execution
                 # gadget below (dynamic or foldable payload).
@@ -4761,6 +4837,23 @@ def _check_signal_escape_patterns(
                             and _ast_name_matches(func.value, self.types_aliases)
                         )
                         or (isinstance(func, ast.Name) and func.id in self.functiontype_aliases)
+                        or (
+                            # The same constructor is reachable as type(lambda: None): the
+                            # type of any function IS types.FunctionType, so
+                            # type(lambda: None)(code, {})() executes a code object too.
+                            isinstance(func, ast.Call)
+                            and not func.keywords
+                            and len(func.args) == 1
+                            and isinstance(func.args[0], ast.Lambda)
+                            and (
+                                (isinstance(func.func, ast.Name) and func.func.id == "type")
+                                or (
+                                    isinstance(func.func, ast.Attribute)
+                                    and func.func.attr == "type"
+                                    and _ast_name_matches(func.func.value, self.builtins_aliases)
+                                )
+                            )
+                        )
                     )
                     and node.args
                     and self._is_compile_result(node.args[0])
@@ -6013,8 +6106,9 @@ def _check_signal_escape_patterns(
             # not runtime-confined, so these must be blocked statically.
             if cmd is None:
                 return False
-            # Normalize ANSI-C ($'...') quoting so an obfuscated reader / path is seen.
-            cmd = _normalize_ansi_c_quotes(cmd)
+            # Normalize ANSI-C ($'...') quoting and expand ${IFS} so an obfuscated reader /
+            # path (cat${IFS}/etc/shadow) is seen the way bash runs it.
+            cmd = _expand_ifs(_normalize_ansi_c_quotes(cmd))
             # Literal-path scan (absolute-sensitive + traversal) on plain whitespace tokens.
             try:
                 toks = shlex.split(cmd, posix = True)
@@ -6316,7 +6410,18 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
 # and the realpath-before-open TOCTOU window under adversarial in-sandbox threading.
 # --------------------------------------------------------------------------
 _SANDBOX_GUARD_SRC = r"""
+import sys as _sys
+# The exec script lives INSIDE the workdir, so Python prepends the workdir to sys.path[0].
+# A malicious workdir/os.py / io.py / pathlib.py / re.py (dropped by a prior run or upload)
+# would otherwise shadow the guard's OWN imports below and execute unguarded at import time,
+# before any patch is installed. Import the guard's stdlib deps with the workdir / cwd
+# stripped from the path, then restore it so ordinary user imports still resolve (os / io /
+# pathlib / re are now cached as the real, patched modules). `import sys` is safe: sys is a
+# built-in module, never loaded from a file.
+_saved_path = list(_sys.path)
+_sys.path = [_p for _p in _sys.path if _p not in ("", ".", __WORKDIR__, __WORKDIR__ + "/")]
 import os as _os, builtins as _bi, io as _io, pathlib as _pl, re as _re
+_sys.path = _saved_path
 # io + pathlib are imported BEFORE any patching on purpose: on Python <= 3.11
 # pathlib._NormalAccessor captures io.open / os.* into class attributes at import
 # time. A C builtin captured there does not bind on instance access, but a Python
