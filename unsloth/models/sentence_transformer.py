@@ -999,6 +999,7 @@ class FastSentenceTransformer(FastModel):
         token = None,
         cache_dir = None,
         revision = None,
+        module_subfolder = "",
     ):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
@@ -1116,6 +1117,10 @@ class FastSentenceTransformer(FastModel):
                             "trust_remote_code": trust_remote_code,
                             **transformer_kwargs,
                         }
+                        # Resolve config/tokenizer from the module's saved subfolder
+                        # (modules.json "path"), like stock ST; "" (root) is a no-op.
+                        if module_subfolder:
+                            load_kwargs["subfolder"] = module_subfolder
                         if not accepts_var_kw:
                             load_kwargs = {k: v for k, v in load_kwargs.items() if k in load_params}
                         transformer_module = Transformer.load(model_name, **load_kwargs)
@@ -1237,6 +1242,7 @@ class FastSentenceTransformer(FastModel):
                         token,
                         cache_dir,
                         revision,
+                        module_subfolder = module_config.get("path") or "",
                     )
                     modules[name] = transformer_module
                 else:
