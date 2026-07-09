@@ -372,12 +372,14 @@ export async function listScanFolders(): Promise<ScanFolderInfo[]> {
 
 export async function addScanFolder(
   path: string,
-  recursive = false,
+  recursive?: boolean,
 ): Promise<ScanFolderInfo> {
   const response = await authFetch("/api/models/scan-folders", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, recursive }),
+    body: JSON.stringify(
+      recursive === undefined ? { path } : { path, recursive },
+    ),
   });
   return parseJsonOrThrow<ScanFolderInfo>(response);
 }

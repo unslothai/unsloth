@@ -924,7 +924,7 @@ def list_scan_folders() -> list[dict]:
         conn.close()
 
 
-def add_scan_folder(path: str, recursive: bool = False) -> dict:
+def add_scan_folder(path: str, recursive: bool | None = None) -> dict:
     """Add a directory to the custom scan folder list. Returns the row."""
     if not path or not path.strip():
         raise ValueError("Path cannot be empty")
@@ -937,6 +937,8 @@ def add_scan_folder(path: str, recursive: bool = False) -> dict:
         raise ValueError("Path must be a directory, not a file")
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
+    if os.path.dirname(normalized) == normalized:
+        raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
 
@@ -965,7 +967,7 @@ def add_scan_folder(path: str, recursive: bool = False) -> dict:
                 (normalized,),
             ).fetchone()
         if existing is not None:
-            if bool(existing["recursive"]) != recursive:
+            if recursive is not None and bool(existing["recursive"]) != bool(recursive):
                 conn.execute(
                     "UPDATE scan_folders SET recursive = ? WHERE id = ?",
                     (1 if recursive else 0, existing["id"]),

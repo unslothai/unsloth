@@ -104,6 +104,53 @@ def test_recursive_scan_ignores_symlinked_models_outside_folder(tmp_path):
     assert not any("model-o" in m.path or "link" in m.path for m in recursive)
 
 
+def test_recursive_scan_descends_through_weight_only_dirs(tmp_path):
+    (tmp_path / "family").mkdir()
+    (tmp_path / "family" / "orphan.safetensors").write_bytes(b"\0" * 8)
+    _make_model_dir(tmp_path / "family" / "variant" / "model-y")
+
+    recursive = local_inventory._scan_custom_folder(tmp_path, recursive = True)
+
+    assert any("model-y" in m.path for m in recursive)
+
+
+def test_walker_prunes_gguf_leaf_dirs(tmp_path):
+    (tmp_path / "gguf-model").mkdir()
+    (tmp_path / "gguf-model" / "model.gguf").write_bytes(b"\0" * 8)
+    (tmp_path / "plain").mkdir()
+
+    yielded = list(local_inventory.iter_recursive_scan_dirs(tmp_path))
+
+    assert tmp_path / "plain" in yielded
+    assert tmp_path / "gguf-model" not in yielded
+
+
+def test_walker_counts_files_toward_entry_limit(tmp_path):
+    for i in range(60):
+        (tmp_path / f"file{i:02d}.txt").write_text("x")
+    (tmp_path / "sub").mkdir()
+
+    yielded = list(local_inventory.iter_recursive_scan_dirs(tmp_path, entry_limit = 10))
+
+    assert yielded == []
+
+
+def test_recursive_scan_rejects_symlinked_weight_files(tmp_path):
+    root = tmp_path / "root"
+    (root / "x" / "a" / "model-s").mkdir(parents = True)
+    (root / "x" / "a" / "model-s" / "config.json").write_text("{}")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "real.safetensors").write_bytes(b"\0" * 8)
+    os.symlink(
+        outside / "real.safetensors", root / "x" / "a" / "model-s" / "model.safetensors"
+    )
+
+    recursive = local_inventory._scan_custom_folder(root, recursive = True)
+
+    assert not any("model-s" in m.path for m in recursive)
+
+
 def test_scan_custom_folder_recursive_does_not_duplicate(tmp_path):
     _make_model_dir(tmp_path / "sub" / "model-a")
 
@@ -136,6 +183,10 @@ def test_add_scan_folder_round_trips_recursive(tmp_path, monkeypatch):
 
     listed = scan_folders.list_scan_folders()
     assert [f["recursive"] for f in listed] == [1]
+
+    unchanged = scan_folders.add_scan_folder(str(target))
+    assert unchanged["recursive"] == 1
+    assert [f["recursive"] for f in scan_folders.list_scan_folders()] == [1]
 
     updated = scan_folders.add_scan_folder(str(target), recursive = False)
     assert updated["recursive"] == 0

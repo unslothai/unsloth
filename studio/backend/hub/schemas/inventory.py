@@ -196,8 +196,8 @@ class AddScanFolderRequest(BaseModel):
         ...,
         description = "Absolute or relative folder path, or a model weight file path",
     )
-    recursive: bool = Field(
-        False,
+    recursive: Optional[bool] = Field(
+        None,
         description = "Also scan sub-folders (bounded depth) for models",
     )
 

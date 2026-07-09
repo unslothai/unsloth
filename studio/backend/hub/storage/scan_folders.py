@@ -102,7 +102,7 @@ def list_scan_folders() -> list[dict]:
         conn.close()
 
 
-def add_scan_folder(path: str, recursive: bool = False) -> dict:
+def add_scan_folder(path: str, recursive: bool | None = None) -> dict:
     """Add a readable directory for the local OS user; not a multi-user sandbox."""
     if not path or not path.strip():
         raise ValueError("Path cannot be empty")
@@ -143,7 +143,7 @@ def add_scan_folder(path: str, recursive: bool = False) -> dict:
                 (normalized,),
             ).fetchone()
         if existing is not None:
-            if bool(existing["recursive"]) != recursive:
+            if recursive is not None and bool(existing["recursive"]) != bool(recursive):
                 conn.execute(
                     "UPDATE scan_folders SET recursive = ? WHERE id = ?",
                     (1 if recursive else 0, existing["id"]),

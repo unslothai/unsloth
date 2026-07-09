@@ -192,13 +192,16 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
                     _scan_models_dir(fp, limit = 200) + _scan_hf_once(fp) + _scan_lmstudio_dir(fp)
                 )
                 if folder.get("recursive"):
-                    from hub.services.models.local_inventory import iter_recursive_scan_dirs
-                    from hub.utils.paths import path_is_same_or_child
+                    from hub.services.models.local_inventory import (
+                        iter_recursive_scan_dirs,
+                        scan_result_within_folder,
+                    )
+
                     for subdir in iter_recursive_scan_dirs(fp):
                         found += [
                             m
                             for m in _scan_models_dir(subdir, limit = 200)
-                            if path_is_same_or_child(Path(m.path), fp)
+                            if scan_result_within_folder(m.path, fp)
                         ]
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)

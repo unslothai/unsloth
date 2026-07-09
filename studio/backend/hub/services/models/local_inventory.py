@@ -105,6 +105,48 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
     return has_config and _has_immediate_model_weight(path)
 
 
+def _is_scan_leaf_dir(path: Path, *, entry_limit: int | None) -> bool:
+    if _is_model_directory_for_scan(path, entry_limit = entry_limit):
+        return True
+    try:
+        for index, entry in enumerate(path.iterdir(), start = 1):
+            if index > _MODEL_SIGNAL_PROBE_LIMIT:
+                break
+            try:
+                if (
+                    entry.is_file()
+                    and entry.suffix.lower() == ".gguf"
+                    and _is_main_gguf_filename(entry.name)
+                ):
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        return True
+    return False
+
+
+def scan_result_within_folder(path: str, folder_path: Path) -> bool:
+    candidate = Path(path)
+    if not path_is_same_or_child(candidate, folder_path):
+        return False
+    try:
+        if not candidate.is_dir():
+            return True
+        for index, entry in enumerate(candidate.iterdir(), start = 1):
+            if index > _MODEL_SIGNAL_PROBE_LIMIT:
+                break
+            try:
+                if entry.is_file() and _is_immediate_model_weight_file(entry):
+                    if not path_is_same_or_child(entry, folder_path):
+                        return False
+            except OSError:
+                continue
+    except OSError:
+        return False
+    return True
+
+
 def _resolve_hf_cache_dir() -> Path:
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
@@ -541,14 +583,16 @@ def iter_recursive_scan_dirs(
 ):
     """Yield sub-directories of *folder_path* that should themselves be scanned.
 
-    Directories holding immediate model weights are not yielded (they are picked
-    up as children of their parent's scan) and are never descended into.
+    Directories the parent scan already classifies as models (config plus weights,
+    or a main GGUF file) are not yielded and are never descended into.
     Symlinks are never followed; depth and visited-entry caps bound the walk."""
     base_depth = len(folder_path.parts)
     visited = 0
     for dirpath, dirnames, _filenames in os.walk(folder_path, topdown = True, followlinks = False):
         current = Path(dirpath)
         depth = len(current.parts) - base_depth
+        if entry_limit is not None:
+            visited += len(_filenames)
         if depth >= max_depth or (entry_limit is not None and visited > entry_limit):
             dirnames[:] = []
             continue
@@ -561,7 +605,7 @@ def iter_recursive_scan_dirs(
                 continue
             child = current / name
             try:
-                if child.is_symlink() or _has_immediate_model_weight(child):
+                if child.is_symlink() or _is_scan_leaf_dir(child, entry_limit = entry_limit):
                     continue
             except OSError:
                 continue
@@ -604,7 +648,7 @@ def _scan_custom_folder(folder_path: Path, recursive: bool = False) -> List[Loca
                 )
             ):
                 key = (m.path, m.model_format, m.format_variant)
-                if key in seen or not path_is_same_or_child(Path(m.path), folder_path):
+                if key in seen or not scan_result_within_folder(m.path, folder_path):
                     continue
                 seen.add(key)
                 generic.append(m)
@@ -763,7 +807,7 @@ def get_scan_folders_response() -> dict:
     return {"folders": list_scan_folders()}
 
 
-def add_scan_folder_response(path: str, recursive: bool = False) -> dict:
+def add_scan_folder_response(path: str, recursive: bool | None = None) -> dict:
     try:
         folder = add_scan_folder(_coerce_scan_folder_path(path), recursive)
     except ValueError as e:

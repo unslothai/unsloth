@@ -830,9 +830,10 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
             ]
             custom_models = _generic
             if folder.get("recursive"):
-                from hub.services.models.local_inventory import iter_recursive_scan_dirs
-                from hub.utils.paths import path_is_same_or_child
-
+                from hub.services.models.local_inventory import (
+                    iter_recursive_scan_dirs,
+                    scan_result_within_folder,
+                )
                 seen = {
                     (m.path, m.model_format, getattr(m, "format_variant", None))
                     for m in custom_models
@@ -847,7 +848,7 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
                         key = (m.path, m.model_format, getattr(m, "format_variant", None))
                         if (
                             key in seen
-                            or not path_is_same_or_child(Path(m.path), folder_path)
+                            or not scan_result_within_folder(m.path, folder_path)
                             or any(
                                 p in (".studio_links", "ollama_links") for p in Path(m.path).parts
                             )
