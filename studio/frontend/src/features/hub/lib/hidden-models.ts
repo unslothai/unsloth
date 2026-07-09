@@ -2,10 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Infra models hidden from every browse/preview list (Hub discover and the chat
-// model selector). Mirrors the backend `_is_hidden_model`: the RAG embedding
-// model and the llama.cpp validation probe are not usable chat models. Per-repo
-// file/download views are NOT filtered, so a reinstall still shows the model as
-// already downloaded.
+// model selector). Mirrors the backend `utils.models.hidden_models`: the RAG
+// embedding model and the llama.cpp validation probe are not usable chat
+// models. The cached on-device inventory is filtered server-side (hub
+// cache_inventory), which un-hides a GGUF infra repo once the user downloads a
+// variant through the Hub. Per-repo file/download views are NOT filtered, so a
+// reinstall still shows the model as already downloaded.
 const HIDDEN_NEEDLES = [
   "bge-small-en-v1.5", // RAG embedder: unsloth/bge-small-en-v1.5[-GGUF]
   "ggml-org/models", // llama.cpp validation probe repo

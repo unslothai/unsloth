@@ -424,6 +424,107 @@ def test_cached_gguf_scan_includes_variant_state_without_completed_gguf(monkeypa
     assert row["capabilities"]["requires_variant"] is True
 
 
+def test_cached_gguf_scan_hides_infra_repos_without_user_downloads(monkeypatch, tmp_path):
+    probe = _repo(
+        "ggml-org/models",
+        [_file("tinyllamas/stories260K.gguf", 1_200_000)],
+        tmp_path / "probe",
+    )
+    embedder = _repo(
+        "unsloth/bge-small-en-v1.5-GGUF",
+        [_file("bge-small-en-v1.5-f16.gguf", 60_000_000)],
+        tmp_path / "embedder",
+    )
+    chat = _repo("Org/Chat-GGUF", [_file("Q4_K_M.gguf", 100)], tmp_path / "chat")
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [probe, embedder, chat])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda _repo_id, _path: False,
+    )
+
+    result = {"cached": cache_inventory._scan_cached_gguf()}
+
+    assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat-GGUF"]
+
+
+def test_cached_gguf_scan_keeps_infra_repo_with_user_downloaded_variant(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    embedder = _repo(
+        "unsloth/bge-small-en-v1.5-GGUF",
+        [
+            _file("bge-small-en-v1.5-f16.gguf", 60_000_000),
+            _file("bge-small-en-v1.5-Q8_0.gguf", 35_000_000),
+        ],
+        tmp_path / "embedder",
+    )
+    # Variant manifests only exist for user Hub downloads, not auto-downloads.
+    assert download_manifest.write_manifest(
+        "model",
+        "unsloth/bge-small-en-v1.5-GGUF",
+        "Q8_0",
+        [
+            download_manifest.ExpectedFile(
+                path = "bge-small-en-v1.5-Q8_0.gguf", size = 35_000_000
+            )
+        ],
+        "http",
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [embedder])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda _repo_id, _path: False,
+    )
+
+    result = {"cached": cache_inventory._scan_cached_gguf()}
+
+    assert [row["repo_id"] for row in result["cached"]] == [
+        "unsloth/bge-small-en-v1.5-GGUF"
+    ]
+
+
+def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
+    embedder_path = tmp_path / "hub" / "models--unsloth--bge-small-en-v1.5"
+    embedder_path.mkdir(parents = True)
+    embedder = _repo(
+        "unsloth/bge-small-en-v1.5",
+        [_file("config.json", 12), _file("model.safetensors", 130_000_000)],
+        embedder_path,
+    )
+    chat_path = tmp_path / "hub" / "models--Org--Chat"
+    chat_path.mkdir(parents = True)
+    chat = _repo(
+        "Org/Chat",
+        [_file("config.json", 12), _file("model.safetensors", 100)],
+        chat_path,
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [embedder, chat])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda _kind, _repo_id, _path: False,
+    )
+
+    result = {"cached": cache_inventory._scan_cached_models()}
+
+    assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat"]
+
+
 def test_gguf_variant_requirements_include_split_files_and_preferred_mmproj():
     requirements = gguf_variants._build_gguf_variant_requirements(
         [

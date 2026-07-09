@@ -204,6 +204,15 @@ def invalidate_hf_cache_scans() -> None:
     hf_cache_scan.invalidate_hf_cache_scans()
 
 
+def _is_hidden_infra_repo(*values: str | None) -> bool:
+    """True for infra-only repos (the RAG embedder and the llama.cpp install
+    validation probe) that are cached as a side effect of Studio itself and are
+    not usable chat models."""
+    from utils.models.hidden_models import is_hidden_model
+
+    return is_hidden_model(*values)
+
+
 def _scan_cached_gguf() -> list[dict]:
     """Synchronous HF-cache disk walk for GGUF repos; runs in a worker thread."""
     cache_scans = all_hf_cache_scans()
@@ -217,6 +226,10 @@ def _scan_cached_gguf() -> list[dict]:
                 repo_id = repo_info.repo_id
                 total_size = _repo_gguf_size_bytes(repo_info)
                 has_variant_state, variant_state_size = _gguf_variant_state_summary(repo_id)
+                # Hide infra repos unless the user downloaded a variant via
+                # the Hub; variant state only exists for user downloads.
+                if _is_hidden_infra_repo(repo_id) and not has_variant_state:
+                    continue
                 if total_size == 0 and not has_variant_state:
                     continue
                 partial = hf_cache_scan.is_gguf_repo_partial(
@@ -436,6 +449,9 @@ def _scan_cached_models() -> list[dict]:
                 if str(repo_info.repo_type) != "model":
                     continue
                 repo_id = repo_info.repo_id
+                # The non-GGUF embedder has no variant downloads; always hide.
+                if _is_hidden_infra_repo(repo_id):
+                    continue
                 has_main_gguf = _repo_has_gguf_files(repo_info)
                 payload = _repo_non_gguf_model_payload(repo_info)
                 if payload.size_bytes == 0:
