@@ -79,7 +79,7 @@ const AttachmentPreview: FC<AttachmentPreviewProps> = ({ src }) => {
       src={src}
       alt="Preview"
       className={cn(
-        "block h-auto max-h-[90dvh] w-auto max-w-[92vw] rounded-2xl object-contain",
+        "block h-auto max-h-[90dvh] w-auto max-w-[92vw] object-contain",
         isLoaded
           ? "aui-attachment-preview-image-loaded"
           : "aui-attachment-preview-image-loading invisible",
@@ -108,7 +108,7 @@ const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
           no dialog panel, and the close button sits in the screen corner. */}
       <DialogContent
         overlayClassName="bg-black/70"
-        className="aui-attachment-preview-dialog-content top-0 left-0 grid h-dvh w-screen max-w-none translate-x-0 translate-y-0 place-items-center rounded-none border-0 bg-transparent p-0 shadow-none ring-0 sm:max-w-none [&>button]:fixed [&>button]:top-4 [&>button]:right-4 [&>button]:z-20 [&>button]:size-9 [&>button]:rounded-full [&>button]:bg-white/10 [&>button]:text-white [&>button]:opacity-100 [&>button]:ring-0! [&>button]:hover:bg-white/25 [&>button]:hover:text-white [&_svg]:text-white"
+        className="aui-attachment-preview-dialog-content top-0 left-0 grid h-dvh w-screen max-w-none translate-x-0 translate-y-0 place-items-center rounded-none border-0 bg-transparent p-0 shadow-none ring-0 sm:max-w-none [&>button]:fixed [&>button]:top-4 [&>button]:right-4 [&>button]:z-20 [&>button]:size-9 [&>button]:rounded-full [&>button]:bg-transparent [&>button]:text-white [&>button]:opacity-100 [&>button]:ring-0! [&>button]:hover:bg-white/25 [&>button]:hover:text-white [&_svg]:text-white"
       >
         <DialogTitle className="aui-sr-only sr-only">
           Image Attachment Preview

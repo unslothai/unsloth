@@ -360,31 +360,6 @@ export function DataTab() {
         </SettingsRow>
 
         <SettingsRow
-          label={t("settings.chat.importChats")}
-          description={t("settings.chat.importChatsDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => importInputRef.current?.click()}
-          >
-            <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
-            {t("settings.chat.importChatsAction")}
-          </Button>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept=".jsonl,.ndjson,.csv"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (file) void handleImport(file);
-            }}
-          />
-        </SettingsRow>
-
-        <SettingsRow
           destructive={true}
           // divide-y already draws the row separator; drop the extra border.
           className="border-t-0 mt-0 pt-3"
@@ -409,6 +384,31 @@ export function DataTab() {
             <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-1.5" />
             {t("settings.chat.clearChatsAction")}
           </Button>
+        </SettingsRow>
+
+        <SettingsRow
+          label={t("settings.chat.importChats")}
+          description={t("settings.chat.importChatsDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => importInputRef.current?.click()}
+          >
+            <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
+            {t("settings.chat.importChatsAction")}
+          </Button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".jsonl,.ndjson,.csv"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void handleImport(file);
+            }}
+          />
         </SettingsRow>
       </SettingsSection>
 
