@@ -98,17 +98,17 @@ def _parse_repro_build_dirs(text: str) -> list[str]:
 
 def _make_binary(root: Path, *parts: str) -> Path:
     p = root.joinpath(*parts)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    p.parent.mkdir(parents = True, exist_ok = True)
     p.write_bytes(b"")
     return p
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _clean_llama_env(monkeypatch):
     # Both env vars can short-circuit discovery before it ever reaches
     # _layout_candidates; keep every test isolated from the host environment.
-    monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
-    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising=False)
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
 
 
 class TestBuildCudaLayoutPreference:
@@ -130,9 +130,10 @@ class TestBuildCudaLayoutPreference:
         # CPU-only build/ binary and reproduces the reporter's "no usable GPU
         # found" symptom; against the fix it resolves build-cuda/.
         build_dirs = _parse_repro_build_dirs(_REPRO_FIXTURE_TEXT)
-        assert build_dirs == ["build", "build-cuda"], (
-            f"fixture parse drifted from unslothai/unsloth#5941 repro text: {build_dirs}"
-        )
+        assert build_dirs == [
+            "build",
+            "build-cuda",
+        ], f"fixture parse drifted from unslothai/unsloth#5941 repro text: {build_dirs}"
         assert "no usable GPU found" in _REPRO_FIXTURE_TEXT
 
         # The reporter's paths carry a Windows-only build/bin/Release/ shape;
@@ -209,11 +210,14 @@ class TestBuildCudaLayoutPreference:
         # _get_gpu_memory returns results on AMD ROCm hosts (HIP reuses
         # torch.cuda), but _nvidia_available must still return False so
         # we don't incorrectly prefer build-cuda/ on an AMD system.
-        monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda: [(0, 4096, 8192)]))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda: [(0, 4096, 8192)])
+        )
 
         # Simulate a ROCm environment: torch.version.hip is set to the
         # HIP runtime version string instead of None.
         import torch
+
         monkeypatch.setattr(torch.version, "hip", "6.0.32830")
 
         assert LlamaCppBackend._nvidia_available() is False
