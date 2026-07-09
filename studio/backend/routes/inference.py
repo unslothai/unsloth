@@ -10093,9 +10093,7 @@ async def anthropic_count_tokens(
     # non-alternating roles (mirrors the GGUF chat path); a no-op for histories
     # that are already alternating.
     openai_messages = _coalesce_consecutive_user_turns(
-        _strip_provider_synthetic_tool_history(
-            _drop_empty_assistant_sentinels(openai_messages)
-        )
+        _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
 
@@ -10228,9 +10226,7 @@ async def anthropic_messages(
     # non-alternating roles (mirrors the GGUF chat path); a no-op for histories
     # that are already alternating.
     openai_messages = _coalesce_consecutive_user_turns(
-        _strip_provider_synthetic_tool_history(
-            _drop_empty_assistant_sentinels(openai_messages)
-        )
+        _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
 
     # Enforce vision guard + re-encode embedded images to PNG so the Anthropic

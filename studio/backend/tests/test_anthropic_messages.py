@@ -1907,6 +1907,7 @@ def test_assistant_missing_content_key_still_rejected():
     # turn). An assistant message that omits content entirely stays malformed and
     # must still fail required-field validation, not be silently coerced to "".
     from pydantic import ValidationError
+
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
             model = "x",
