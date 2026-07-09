@@ -489,6 +489,46 @@ def test_sandboxed_int_subclass_flags_denied(tmp_path):
 
 
 @_POSIX_ONLY
+def test_sandboxed_fileio_stateful_fspath_denied(tmp_path):
+    # io.FileIO must pass the MATERIALIZED path to the real constructor so a stateful
+    # __fspath__ cannot return a different (outside) path than was checked.
+    target = tmp_path / "fileio_fspath_escape.txt"
+    out = _python_exec(
+        "import io\n"
+        "class P:\n"
+        "    n = 0\n"
+        "    def __fspath__(self):\n"
+        "        P.n += 1\n"
+        f"        return 'ok.txt' if P.n == 1 else {str(target)!r}\n"
+        "io.FileIO(P(), 'w').write(b'x')\nprint('DONE')",
+        None,
+        30,
+        "backstop-fileio-fspath",
+        disable_sandbox = False,
+    )
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_os_chmod_fd_denied(tmp_path):
+    # A read-only fd opened on an outside file must not be reusable via os.chmod(fd).
+    victim = tmp_path / "chmod_fd_victim.txt"
+    victim.write_text("x")
+    os.chmod(victim, 0o600)
+    out = _python_exec(
+        "import os\n"
+        f"fd = os.open({str(victim)!r}, os.O_RDONLY)\n"
+        "os.chmod(fd, 0o644); print('CHMODDED')",
+        None,
+        30,
+        "backstop-chmod-fd",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out and "(fd)" in out
+    assert oct(os.stat(victim).st_mode & 0o777) == "0o600"
+
+
+@_POSIX_ONLY
 def test_sandboxed_in_workdir_ops_still_work():
     # The added guards must not break benign in-workdir writes.
     out = _python_exec(

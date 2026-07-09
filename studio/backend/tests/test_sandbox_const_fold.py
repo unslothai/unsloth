@@ -94,6 +94,22 @@ class TestConstFoldAllocationDoS:
     def test_nested_format_small_width_folds(self):
         assert _fold("'{:>{}}'.format('x', 5)") == "    x"
 
+    def test_dynamic_percent_width_refused(self):
+        # '%*s' / '%.*f' take the width/precision from a runtime arg; cannot be bounded.
+        assert _fold("'%*s' % (1000000000, 'x')") is None
+        assert _fold("'%.*f' % (1000000000, 1.0)") is None
+
+    def test_replace_expansion_refused(self):
+        assert _fold("('x' * 65536).replace('x', 'y' * 65536)") is None
+
+    def test_join_expansion_refused(self):
+        assert _fold("','.join(['y' * 65536] * 4096)") is None
+
+    def test_benign_replace_and_join_fold(self):
+        assert _fold("'aaa'.replace('a', 'b')") == "bbb"
+        assert _fold("','.join(['a', 'b', 'c'])") == "a,b,c"
+        assert _fold("'%05d' % 7") == "00007"
+
     def test_pad_method_width_refused(self):
         assert _fold("'x'.ljust(1000000000)") is None
         assert _fold("'x'.rjust(10 ** 9)") is None

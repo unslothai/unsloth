@@ -896,6 +896,10 @@ class TestReceiverAndVarsAndDynImportBypasses:
             # 605: __import__ reached through the builtins module.
             "import builtins\nbuiltins.__import__('os').system('rm -rf /')",
             "__builtins__.__import__('subprocess').run(['id'])",
+            # 158: builtins / sensitive module reached through the namespace dict.
+            "getattr(globals()['__builtins__'], '__import__')('os').system('rm -rf /')",
+            "getattr(locals()['__builtins__'], 'eval')('x')",
+            "globals()['os'].system('rm -rf /')",
         ],
     )
     def test_blocked(self, code):
@@ -915,6 +919,9 @@ class TestReceiverAndVarsAndDynImportBypasses:
             "import os\nopen(os.path.join('sub', 'a.txt'))",
             # 605: benign builtins attribute access stays allowed.
             "import builtins\nx = builtins.len([1, 2, 3])",
+            # 158: a benign globals() lookup of a normal variable stays allowed.
+            "g = globals()\nx = g['some_var']",
+            "globals()['my_config']",
         ],
     )
     def test_benign_allowed(self, code):

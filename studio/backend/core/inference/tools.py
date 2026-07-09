@@ -1724,7 +1724,7 @@ _PRINTF_WIDTH_RE = re.compile(r"%[-+ #0]*(\d+)?(?:\.(\d+))?[hlL]?[diouxXeEfFgGcr
 
 
 def _printf_ok(fmt):
-    """Percent-format string with no oversized field width / precision."""
+    """Percent-format string with no oversized (or dynamic '*') width / precision."""
     if isinstance(fmt, (bytes, bytearray)):
         try:
             fmt = fmt.decode("latin-1")
@@ -1732,8 +1732,43 @@ def _printf_ok(fmt):
             return True
     if not isinstance(fmt, str):
         return True
+    # A '*' width or precision ('%*s', '%.*f') pulls its size from a runtime argument,
+    # so it cannot be bounded statically -- refuse rather than risk a large allocation.
+    for m in re.finditer(r"%[-+ #0]*(\*)?(?:\.(\*)?\d*)?", fmt):
+        if m.group(1) == "*" or m.group(2) == "*":
+            return False
     for m in _PRINTF_WIDTH_RE.finditer(fmt):
         if any(g and _too_wide(int(g)) for g in m.groups()):
+            return False
+    return True
+
+
+def _replace_output_ok(recv, call_args):
+    """Bound str.replace/bytes.replace output before it allocates: replacing many
+    occurrences with a long replacement can build a multi-gigabyte string."""
+    if len(call_args) < 2:
+        return True
+    old, new = call_args[0], call_args[1]
+    if not isinstance(new, (str, bytes, bytearray)):
+        return True
+    lo = len(old) if isinstance(old, (str, bytes, bytearray)) else 1
+    n_repl = (len(recv) + 1) if lo == 0 else (len(recv) // max(lo, 1) + 1)
+    if len(call_args) >= 3 and isinstance(call_args[2], int) and call_args[2] >= 0:
+        n_repl = min(n_repl, call_args[2])
+    return len(recv) + n_repl * len(new) <= _FOLD_MAXLEN
+
+
+def _join_output_ok(sep, call_args):
+    """Bound str.join/bytes.join output before it allocates."""
+    if not call_args or not isinstance(call_args[0], (list, tuple)):
+        return True
+    items = call_args[0]
+    total = len(sep) * max(len(items) - 1, 0)
+    for x in items:
+        if not isinstance(x, (str, bytes, bytearray)):
+            return True  # a real join would TypeError; not an allocation concern
+        total += len(x)
+        if total > _FOLD_MAXLEN:
             return False
     return True
 
@@ -2092,6 +2127,10 @@ def _fold_call(node, _state, _depth):
                 if attr in ("center", "ljust", "rjust", "zfill") and call_args:
                     if _too_wide(call_args[0]):
                         return None
+                if attr == "replace" and not _replace_output_ok(recv, call_args):
+                    return None
+                if attr == "join" and not _join_output_ok(recv, call_args):
+                    return None
                 if attr == "format":
                     if not _format_template_ok(recv):
                         return None
@@ -2458,23 +2497,96 @@ def _walk_scope_local(scope):
                 stack.append(child)
 
 
-def _iter_scope_single_assignments(tree):
-    """Yield (name, rhs) for each Name assigned exactly once within its OWN function
-    (or module) scope and not declared global / nonlocal there. Counting per scope --
-    not tree-wide -- means a name reused independently in two functions is still a
-    single-assignment alias in each (a tree-wide count would wrongly treat both as
-    ambiguous and miss a real sink alias)."""
-    scopes = [tree]
+class _ScopeAliasIndex:
+    """Per-scope single-assignment aliases (shell sink / exec builtin / compiled
+    source) resolved with Python lexical scoping. Counting and resolution are per
+    function scope, so two functions binding the same local name neither cancel out
+    (a real sink would be missed) nor cross-contaminate (a benign call in one function
+    would be flagged, or a dynamic exec in another wrongly treated as a safe alias)."""
+
+    __slots__ = ("tree", "node_scope", "enclosing", "shell", "execb", "compiled", "assigned")
+
+    def __init__(self, tree):
+        self.tree = tree
+        self.node_scope: dict = {tree: tree}
+        self.enclosing: dict = {tree: None}
+        self.shell: dict = {}
+        self.execb: dict = {}
+        self.compiled: dict = {}
+        self.assigned: dict = {}
+
+    def _chain(self, node):
+        s = self.node_scope.get(node, self.tree)
+        while s is not None:
+            yield s
+            s = self.enclosing.get(s)
+
+    def resolve(self, name, node, kind):
+        maps = getattr(self, kind)
+        for s in self._chain(node):
+            m = maps.get(s)
+            if m and name in m:
+                return m[name]
+            if name in self.assigned.get(s, ()):  # locally shadowed by a non-alias
+                return None
+        return None
+
+    def effective(self, node, kind):
+        maps = getattr(self, kind)
+        result: dict = {}
+        shadowed: set = set()
+        for s in self._chain(node):
+            for k, v in maps.get(s, {}).items():
+                if k not in shadowed and k not in result:
+                    result[k] = v
+            shadowed |= self.assigned.get(s, set())
+        return result
+
+
+def _build_scope_alias_index(tree, const_env):
+    idx = _ScopeAliasIndex(tree)
+
+    def _rec(node, scope):
+        for child in ast.iter_child_nodes(node):
+            idx.node_scope[child] = scope
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                idx.enclosing[child] = scope
+                _rec(child, child)
+            else:
+                _rec(child, scope)
+
+    _rec(tree, tree)
+
+    # os / subprocess import + from-import aliases are collected tree-wide (imports
+    # are lexically visible module-wide in practice) and shared across scopes.
+    os_aliases = {"os"}
+    subprocess_aliases = {"subprocess"}
+    from_aliases: dict[str, str] = {}
     for n in ast.walk(tree):
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            scopes.append(n)
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                if a.name == "os":
+                    os_aliases.add(a.asname or "os")
+                elif a.name == "subprocess":
+                    subprocess_aliases.add(a.asname or "subprocess")
+        elif isinstance(n, ast.ImportFrom) and n.module in ("os", "subprocess"):
+            for a in n.names:
+                fq = f"{n.module}.{a.name}"
+                if fq in _SHELL_SINK_FUNCS:
+                    from_aliases[a.asname or a.name] = fq
+
+    scopes = [tree] + [
+        n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
     for scope in scopes:
         counts: dict[str, int] = {}
         rebound: set[str] = set()
         assigns: list[tuple[str, ast.expr]] = []
+        allnames: set[str] = set()
         for n in _walk_scope_local(scope):
             if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
                 counts[n.id] = counts.get(n.id, 0) + 1
+                allnames.add(n.id)
             elif isinstance(n, (ast.Global, ast.Nonlocal)):
                 rebound.update(n.names)
             elif (
@@ -2483,36 +2595,38 @@ def _iter_scope_single_assignments(tree):
                 and isinstance(n.targets[0], ast.Name)
             ):
                 assigns.append((n.targets[0].id, n.value))
+        idx.assigned[scope] = allnames
+        smap: dict[str, str] = {}
+        emap: dict[str, str] = {}
+        cmap: dict[str, tuple] = {}
         for name, rhs in assigns:
-            if counts.get(name) == 1 and name not in rebound:
-                yield name, rhs
-
-
-def _build_exec_env(tree, const_env):
-    """Map single-assignment names to exec builtins (`e = exec`) and to a compiled
-    source (`c = compile("...")`) so a later call through the alias is unwrapped."""
-    exec_aliases: dict[str, str] = {}
-    compiled_env: dict[str, tuple] = {}
-    # Per-scope single assignments: an alias assigned inside a function (def f():
-    # e = exec; e("...")) is unwrapped, and two functions sharing a local name do not
-    # cancel each other out (that would be a false negative).
-    for name, rhs in _iter_scope_single_assignments(tree):
-        if isinstance(rhs, ast.Name) and rhs.id in _EXEC_BUILTINS:
-            exec_aliases[name] = rhs.id
-        elif (
-            isinstance(rhs, ast.Call)
-            and isinstance(rhs.func, ast.Name)
-            and rhs.func.id == "compile"
-            and rhs.args
-        ):
-            v = _const_fold(rhs.args[0], const_env)
-            if isinstance(v, (str, bytes, bytearray)):
-                compiled_env[name] = (
-                    _recovered_source(v),
-                    _compile_mode(rhs, const_env),
-                    isinstance(v, (bytes, bytearray)),
-                )
-    return exec_aliases, compiled_env
+            if counts.get(name) != 1 or name in rebound:
+                continue
+            fq = _resolve_static_shell_sink(rhs, os_aliases, subprocess_aliases, from_aliases)
+            if fq:
+                smap[name] = fq
+            if isinstance(rhs, ast.Name) and rhs.id in _EXEC_BUILTINS:
+                emap[name] = rhs.id
+            elif (
+                isinstance(rhs, ast.Call)
+                and isinstance(rhs.func, ast.Name)
+                and rhs.func.id == "compile"
+                and rhs.args
+            ):
+                v = _const_fold(rhs.args[0], const_env)
+                if isinstance(v, (str, bytes, bytearray)):
+                    cmap[name] = (
+                        _recovered_source(v),
+                        _compile_mode(rhs, const_env),
+                        isinstance(v, (bytes, bytearray)),
+                    )
+        if smap:
+            idx.shell[scope] = smap
+        if emap:
+            idx.execb[scope] = emap
+        if cmap:
+            idx.compiled[scope] = cmap
+    return idx
 
 
 def _payload_has_obfuscation_primitive(node):
@@ -2618,7 +2732,7 @@ def _first_unsafe_reason(info):
     return "unsafe operation"
 
 
-def _recover_exec_payload(node, func_id, const_env, exec_aliases, compiled_env):
+def _recover_exec_payload(node, func_id, const_env, compiled_env):
     """Recover a statically foldable source string for eval/exec/compile.
 
     Returns ("RECOVERED", src, mode, is_bytes) / ("DYNAMIC", None, None, False) /
@@ -2779,35 +2893,6 @@ def _resolve_static_shell_sink(node, os_aliases, subprocess_aliases, from_aliase
     return None
 
 
-def _build_shell_sink_aliases(tree):
-    """Single-assignment names (stored exactly once) bound to a resolved shell sink."""
-    os_aliases = {"os"}
-    subprocess_aliases = {"subprocess"}
-    from_aliases: dict[str, str] = {}
-    for n in ast.walk(tree):
-        if isinstance(n, ast.Import):
-            for a in n.names:
-                if a.name == "os":
-                    os_aliases.add(a.asname or "os")
-                elif a.name == "subprocess":
-                    subprocess_aliases.add(a.asname or "subprocess")
-        elif isinstance(n, ast.ImportFrom) and n.module in ("os", "subprocess"):
-            for a in n.names:
-                fq = f"{n.module}.{a.name}"
-                if fq in _SHELL_SINK_FUNCS:
-                    from_aliases[a.asname or a.name] = fq
-
-    aliases: dict[str, str] = {}
-    # Per-scope single assignments: a function-local `s = os.system` is aliased, and
-    # two functions each binding their own local `s` do not cancel out (a tree-wide
-    # store count would treat both as ambiguous and miss a real sink alias).
-    for name, rhs in _iter_scope_single_assignments(tree):
-        fq = _resolve_static_shell_sink(rhs, os_aliases, subprocess_aliases, from_aliases)
-        if fq:
-            aliases[name] = fq
-    return aliases
-
-
 def _check_signal_escape_patterns(
     code: str,
     _depth: int = 0,
@@ -2842,22 +2927,24 @@ def _check_signal_escape_patterns(
     if _analyzer_on:
         try:
             _const_env = _build_const_prop_env(tree)
-            _exec_aliases, _compiled_env = _build_exec_env(tree, _const_env)
-            _sink_aliases = _build_shell_sink_aliases(tree)
+            _scope_idx = _build_scope_alias_index(tree, _const_env)
         except Exception:  # pragma: no cover - defensive: never crashier than legacy
             logger.warning("sandbox analyzer context build failed; legacy fallback", exc_info = True)
             _analyzer_on = False
-            _const_env, _exec_aliases, _compiled_env = {}, {}, {}
-            _sink_aliases = {}
+            _const_env = {}
+            _scope_idx = _ScopeAliasIndex(tree)
     else:
-        _const_env, _exec_aliases, _compiled_env = {}, {}, {}
-        _sink_aliases = {}
+        _const_env = {}
+        _scope_idx = _ScopeAliasIndex(tree)
 
     def _analyze_exec_call(node, func_id):
         """Stage 2 driver: recover + recurse a foldable payload, else dynamic policy."""
         try:
+            # Resolve compiled-code aliases (c = compile(...)) in the CALL's scope so a
+            # safe alias in one function cannot shadow a dynamic exec(c) in another.
+            _compiled_here = _scope_idx.effective(node, "compiled")
             kind, src, mode, is_bytes = _recover_exec_payload(
-                node, func_id, _const_env, _exec_aliases, _compiled_env
+                node, func_id, _const_env, _compiled_here
             )
             if kind == "NO_PAYLOAD":
                 return
@@ -3169,7 +3256,7 @@ def _check_signal_escape_patterns(
                 if fq:
                     return fq
                 if isinstance(elt, ast.Name):
-                    return _sink_aliases.get(elt.id)
+                    return _scope_idx.resolve(elt.id, elt, "shell")
                 return None
 
             container = sub.value
@@ -3244,9 +3331,10 @@ def _check_signal_escape_patterns(
             elif isinstance(func, ast.Name):
                 # from-import aliases: from os import system; system(...)
                 shell_func = self.shell_exec_aliases.get(func.id)
-                # Stage 4: single-assignment alias `s = os.system; s('rm -rf /')`.
+                # Stage 4: single-assignment alias `s = os.system; s('rm -rf /')`,
+                # resolved in the call's own scope (per-function).
                 if shell_func is None and _analyzer_on:
-                    shell_func = _sink_aliases.get(func.id)
+                    shell_func = _scope_idx.resolve(func.id, func, "shell")
             elif _analyzer_on and isinstance(func, ast.Subscript):
                 # Stage 4: inline literal container index `[os.system][0](...)`.
                 shell_func = self._resolve_container_sink(func)
@@ -3344,8 +3432,9 @@ def _check_signal_escape_patterns(
                     exec_func_id = func.id
                 elif func.id in self.exec_from_aliases:
                     exec_func_id = self.exec_from_aliases[func.id]  # from builtins import exec as e
-                elif _analyzer_on and func.id in _exec_aliases:
-                    exec_func_id = _exec_aliases[func.id]
+                elif _analyzer_on:
+                    # single-assignment `e = exec` alias, resolved in the call's scope.
+                    exec_func_id = _scope_idx.resolve(func.id, func, "execb")
             elif (
                 isinstance(func, ast.Attribute)
                 and func.attr in _DYNAMIC_EXEC_BUILTINS
@@ -3551,6 +3640,28 @@ def _check_signal_escape_patterns(
                             "type": "dynamic_exec",
                             "line": getattr(node, "lineno", -1),
                             "description": "sys.modules[...] access to a sensitive module",
+                        }
+                    )
+            # globals()['__builtins__'] / locals()[...] / vars()[...] pulls the builtins
+            # namespace (or a dangerous module) out of the namespace dict, e.g.
+            # getattr(globals()['__builtins__'], '__import__')('os'). Flag a Load of a
+            # dangerous literal key off a bare globals()/locals()/vars() call.
+            if isinstance(node.ctx, ast.Load) and (
+                isinstance(v, ast.Call)
+                and isinstance(v.func, ast.Name)
+                and v.func.id in ("globals", "locals", "vars")
+                and not v.args
+            ):
+                key = _extract_string_from_node(node.slice)
+                if key is not None and (
+                    key in ("__builtins__", "__builtin__")
+                    or key.split(".")[0] in _DANGEROUS_IMPORT_NAMES
+                ):
+                    dynamic_exec.append(
+                        {
+                            "type": "dynamic_exec",
+                            "line": getattr(node, "lineno", -1),
+                            "description": "namespace-dict access to builtins / a sensitive module",
                         }
                     )
             self.generic_visit(node)
@@ -4487,10 +4598,15 @@ def _wrap1(mod, name, what):
     def w(path, *a, **k):
         if any(k.get(_f) is not None for _f in ("dir_fd", "src_dir_fd", "dst_dir_fd")):
             _deny(path, what + " (dir_fd)")  # fd-relative target: a realpath check is meaningless
+        if isinstance(path, int):
+            # A mutating op given an fd (os.chmod(fd), os.truncate(fd), ...) can hit a
+            # file opened read-only outside the workdir; a string realpath cannot
+            # confine an fd, so deny it (fchmod/fchown are already denied separately).
+            _deny(path, what + " (fd)")
         p = _fspath1(path)
         if not _within(p):
             _deny(p, what)
-        return orig(p if not isinstance(path, int) else path, *a, **k)
+        return orig(p, *a, **k)
     setattr(mod, name, w)
 
 # Path-first single-arg mutators. mkfifo/utime/setxattr/removexattr create or mutate
@@ -4567,7 +4683,9 @@ def _guard_fileio(_realcls):
             f = _fspath1(name)
             if _mode_is_write(mode) and not _within(f):
                 _deny(f, "FileIO write")
-            super().__init__(name, mode, *a, **k)
+            # Pass the MATERIALIZED path so a stateful __fspath__ cannot return a
+            # different (outside) path to the real constructor than we checked.
+            super().__init__(f, mode, *a, **k)
     return _GuardedFileIO
 
 for _iomod in (_io, _lowio):

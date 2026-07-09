@@ -92,6 +92,30 @@ class TestPerScopeAliasCounting:
             "def b():\n    s = max\n    return s([1, 2])\na()"
         )
 
+    def test_sink_alias_does_not_leak_into_other_scope(self):
+        # A `s = os.system` in one function must NOT make a benign `s = print` call in
+        # another function look like a shell sink (would be a false positive).
+        _ok(
+            "import os\n"
+            "def a():\n    s = os.system\n    s('echo hi')\n"
+            "def b():\n    s = print\n    s('remove the rm temp files')\n"
+            "b()"
+        )
+
+    def test_safe_compiled_alias_does_not_shadow_dynamic_exec(self):
+        # A safe `c = compile('1+1')` in one function must NOT let a dynamic
+        # `c = compile(src); exec(c)` in another function be treated as safe.
+        _blocked(
+            "def a():\n    c = compile('1 + 1', '<s>', 'eval')\n    eval(c)\n"
+            "def b(src):\n    c = compile(src, '<s>', 'exec')\n    exec(c)\n"
+            "b('x')"
+        )
+
+    def test_function_local_shadow_of_module_alias_allowed(self):
+        # A module-level `s = os.system` shadowed by a local `s = print` resolves to
+        # the local binding inside that function.
+        _ok("import os\ns = os.system\ndef f():\n    s = print\n    s('please rm the files')\nf()")
+
 
 class TestAliasingLowFalsePositive:
     def test_reassigned_alias_not_treated_as_sink(self):
