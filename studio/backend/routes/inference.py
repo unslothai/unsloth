@@ -3976,9 +3976,9 @@ def _maybe_unsupported_message(msg: str) -> str:
     return msg
 
 
-# Set at the start of each async (async_load=true) /load call and updated if the
-# background load fails; surfaced on GET /status so pollers can see why a
-# fire-and-forget load never reached `loaded`. Process-wide like the backend slot.
+# Set at the start of each async (async_load=true) /load call and updated by the
+# matching background load; surfaced on GET /status so pollers can observe the
+# pending model immediately and see why a load never reached `loaded`.
 _last_async_load_error: Optional[str] = None
 _background_tasks: set = set()
 _async_load_generation = 0
@@ -4041,8 +4041,8 @@ async def load_model(
         global _last_async_load_error
         if _active_async_load_task is not None and not _active_async_load_task.done():
             raise HTTPException(
-                status_code = 409,
-                detail = "Another async model load is already in progress.",
+                status_code = status.HTTP_409_CONFLICT,
+                detail = f"Model load already in progress: {_accepted_async_load_model}",
             )
 
         _async_load_generation += 1
