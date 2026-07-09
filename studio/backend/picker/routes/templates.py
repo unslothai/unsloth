@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 from urllib.parse import unquote
 
@@ -26,7 +27,7 @@ async def validate_chat_template_route(
     body: ValidateChatTemplateRequest = Body(...),
     current_subject: str = Depends(get_current_subject),
 ) -> ValidateChatTemplateResponse:
-    return validate_chat_template(body.template)
+    return await asyncio.to_thread(validate_chat_template, body.template)
 
 
 @router.get("/chat-template/{model_name:path}", response_model = ModelTemplateResponse)
@@ -37,5 +38,7 @@ async def get_default_chat_template_route(
     current_subject: str = Depends(get_current_subject),
 ) -> ModelTemplateResponse:
     name = unquote(model_name)
-    template = read_default_chat_template(name, hf_token, gguf_variant)
+    template = await asyncio.to_thread(
+        read_default_chat_template, name, hf_token, gguf_variant
+    )
     return ModelTemplateResponse(model_name = name, chat_template = template)

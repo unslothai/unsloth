@@ -127,10 +127,13 @@ _GGUF_SCAN_MAX_DEPTH = 2
 
 
 def _iter_ggufs(dir_path: Path) -> list[Path]:
+    if dir_path == dir_path.parent:
+        return []
     root = str(dir_path)
     found: list[Path] = []
     for current, dirs, files in os.walk(root, followlinks = False):
-        depth = current[len(root) :].count(os.sep)
+        rel = os.path.relpath(current, root)
+        depth = 0 if rel == os.curdir else rel.count(os.sep) + 1
         if depth >= _GGUF_SCAN_MAX_DEPTH:
             dirs[:] = []
         for name in files:

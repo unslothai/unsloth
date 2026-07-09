@@ -47,8 +47,10 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import { isExternalModelId } from "../external-providers";
-import { applyPerModelConfigToRuntime } from "@/features/model-picker/model-config/apply-per-model-config";
-import type { PerModelConfig } from "@/features/model-picker";
+import {
+  applyPerModelConfigToRuntime,
+  type PerModelConfig,
+} from "@/features/model-picker";
 import type {
   ChatLoraSummary,
   ChatModelSummary,

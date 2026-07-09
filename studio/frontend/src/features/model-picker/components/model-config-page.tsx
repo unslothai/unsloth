@@ -45,13 +45,13 @@ import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import type { ModelPickTarget } from "./model-selector/types";
 import { NumericValueInput } from "./numeric-value-input";
 
-const ROW_CLASS = "flex min-h-7 items-center justify-between gap-4";
+const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
-  "min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg";
+  "min-w-0 truncate text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg";
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1]";
-const SELECT_TRIGGER_CLASS = `grid h-7 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
-const NUMBER_INPUT_CLASS = `h-7 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0`;
+const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
+const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0`;
 
 function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
   return (
@@ -99,7 +99,7 @@ function ChatTemplateSetting({
           type="button"
           size="sm"
           variant="ghost"
-          className={`h-7 px-3 text-[13px] ${CONTROL_SURFACE}`}
+          className={`h-8 px-3 text-[13px] ${CONTROL_SURFACE}`}
           onClick={onEditTemplate}
         >
           {readOnly ? "View" : "Edit"}
@@ -433,7 +433,16 @@ export function ModelConfigPage({
     });
   const baseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const atBaseline = perModelConfigsEqual(config, baseline);
-  const atDefault = perModelConfigsEqual(config, DEFAULT_PER_MODEL_CONFIG);
+  const contextAtDefault =
+    !target.isGguf ||
+    nativeContextLength == null ||
+    contextValue === nativeContextLength;
+  const atDefault =
+    contextAtDefault &&
+    perModelConfigsEqual(
+      { ...config, customContextLength: null },
+      DEFAULT_PER_MODEL_CONFIG,
+    );
   const maxSeqLengthMax =
     normalizeMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
     MAX_SEQ_LENGTH_MAX;
@@ -447,7 +456,7 @@ export function ModelConfigPage({
         ...config,
         customContextLength: resolveCustomContextLength(
           contextValue,
-          nativeContextLength,
+          contextBaseline,
         ),
       }
     : {
@@ -644,7 +653,15 @@ export function ModelConfigPage({
             size="sm"
             className="h-8"
             disabled={atDefault}
-            onClick={() => setConfig({ ...DEFAULT_PER_MODEL_CONFIG })}
+            onClick={() =>
+              setConfig({
+                ...DEFAULT_PER_MODEL_CONFIG,
+                customContextLength:
+                  target.isGguf && nativeContextLength != null
+                    ? nativeContextLength
+                    : null,
+              })
+            }
           >
             Reset
           </Button>

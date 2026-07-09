@@ -2,16 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  applyModelLoadConfigToRuntime,
+  currentRuntimePerModelConfig,
   type DeletedModelRef,
   type ExternalModelOption,
   type LoraModelOption,
   type ModelOption,
-  type ModelSelectorChangeMeta,
   ModelSelector,
-} from "@/features/model-picker/components/model-selector";
-import {
-  applyModelLoadConfigToRuntime,
-  currentRuntimePerModelConfig,
+  type ModelSelectorChangeMeta,
   type PerModelConfig,
   perModelConfigsEqual,
   resolveInitialConfig,
@@ -29,6 +27,7 @@ import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import {
   DOWNLOAD_KIND,
   downloadManager,
+  useRepoDownload,
 } from "@/features/hub/download-manager";
 import {
   type NativeIntent,
@@ -1678,6 +1677,8 @@ export function ChatPage({
   }, [activeThreadId, closeArtifactSurface, selectedArtifact, view]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
+  const [pendingHubAutoLoad, setPendingHubAutoLoad] =
+    useState<SelectedModelInput | null>(null);
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
       const store = useChatRuntimeStore.getState();
@@ -1723,6 +1724,15 @@ export function ChatPage({
         }
         return;
       }
+      const wantManagerStage =
+        wantManagerDownload ||
+        (selection.source === "hub" &&
+          hasGgufSource(selection) &&
+          !selection.isDownloaded);
+      if (wantManagerStage) {
+        setPendingHubAutoLoad(selection);
+        return;
+      }
       const previousConfig = currentRuntimePerModelConfig({
         includeMaxSeqLength: true,
       });
@@ -1737,6 +1747,65 @@ export function ChatPage({
     },
     [selectModel, loadingModel, rememberedConfigFor],
   );
+  useRepoDownload({
+    kind: DOWNLOAD_KIND.MODEL,
+    repoId: pendingHubAutoLoad?.id ?? "__hub_autoload_idle__",
+    activeVariant: pendingHubAutoLoad?.ggufVariant ?? null,
+    onComplete: (variant) => {
+      const pending = pendingHubAutoLoad;
+      if (!pending || (pending.ggufVariant ?? null) !== (variant ?? null)) {
+        return;
+      }
+      setPendingHubAutoLoad(null);
+      void stageOrLoad({ ...pending, isDownloaded: true });
+    },
+    onError: (variant) => {
+      if (
+        pendingHubAutoLoad &&
+        (pendingHubAutoLoad.ggufVariant ?? null) === (variant ?? null)
+      ) {
+        setPendingHubAutoLoad(null);
+      }
+    },
+    onCancelled: (variant) => {
+      if (
+        pendingHubAutoLoad &&
+        (pendingHubAutoLoad.ggufVariant ?? null) === (variant ?? null)
+      ) {
+        setPendingHubAutoLoad(null);
+      }
+    },
+  });
+  useEffect(() => {
+    const pending = pendingHubAutoLoad;
+    if (!pending) return;
+    let active = true;
+    void (async () => {
+      const outcome = await downloadManager.requestStart({
+        kind: DOWNLOAD_KIND.MODEL,
+        repoId: pending.id,
+        variant: pending.ggufVariant ?? null,
+        expectedBytes: pending.expectedBytes ?? 0,
+      });
+      if (!active) return;
+      if (outcome === "started") {
+        toast.info("Downloading model", {
+          description: "It'll load automatically once the download finishes.",
+        });
+        return;
+      }
+      if (outcome === "conflict") {
+        toast.info("Resume this download from the Hub", {
+          description:
+            "An earlier partial download used a different transport. Open the Hub tab to resume or restart it.",
+        });
+      }
+      setPendingHubAutoLoad((current) => (current === pending ? null : current));
+    })();
+    return () => {
+      active = false;
+    };
+  }, [pendingHubAutoLoad]);
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
       const label =
