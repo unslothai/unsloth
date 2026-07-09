@@ -1371,18 +1371,15 @@ GEMMA4_SPARSE_LABEL_MAX_VALID_FRAC = 0.15
 
 
 def _gemma4_model_has_active_lora(model) -> bool:
-    """Detect whether `model` has an active PEFT/LoRA adapter attached.
-    Cached on the instance since this is called on every forward pass and
-    walking every submodule each time would add measurable overhead."""
-    cached = getattr(model, "_unsloth_gemma4_has_lora", None)
-    if cached is not None:
-        return cached
-    has_lora = any(hasattr(m, "lora_A") for m in model.modules())
-    try:
-        model._unsloth_gemma4_has_lora = has_lora
-    except Exception:
-        pass
-    return has_lora
+    """Detect whether `model` has an active, non-disabled, non-merged LoRA
+    adapter. Checks the same ``disable_adapters`` / ``merged`` flags that
+    ``fast_lora.py`` uses to skip adapter computation."""
+    return any(
+        hasattr(m, "lora_A")
+        and not getattr(m, "disable_adapters", False)
+        and not getattr(m, "merged", False)
+        for m in model.modules()
+    )
 pass
 
 

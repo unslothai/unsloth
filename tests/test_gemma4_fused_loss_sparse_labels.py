@@ -104,19 +104,40 @@ def _build_namespace() -> dict:
 
 class _FakeLoraModule:
     """Mimics a PEFT `LoraLayer`: presence of `lora_A` is what the guard's
-    LoRA-detection helper checks for."""
-    lora_A = object()
+    LoRA-detection helper checks for. Supports ``disable_adapters`` and
+    ``merged`` to mirror real adapter state flags."""
+    def __init__(self, *, disable_adapters: bool = False, merged: bool = False):
+        self.lora_A = object()
+        self.disable_adapters = disable_adapters
+        self.merged = merged
 
 
 class _FakeModel:
     """Stand-in for `self` inside `_CausalLM_fast_forward`: only needs
     `.config.model_type` and `.modules()` for the guard block / LoRA helper."""
-    def __init__(self, model_type: str, has_lora: bool) -> None:
+    def __init__(
+        self,
+        model_type: str,
+        has_lora: bool,
+        *,
+        lora_disabled: bool = False,
+        lora_merged: bool = False,
+    ) -> None:
         self.config = SimpleNamespace(model_type = model_type)
         self._has_lora = has_lora
+        self._lora_disabled = lora_disabled
+        self._lora_merged = lora_merged
 
     def modules(self):
-        return [self, _FakeLoraModule()] if self._has_lora else [self]
+        if not self._has_lora:
+            return [self]
+        return [
+            self,
+            _FakeLoraModule(
+                disable_adapters = self._lora_disabled,
+                merged = self._lora_merged,
+            ),
+        ]
 
 
 def _sparse_labels(total: int, valid: int) -> torch.LongTensor:
@@ -135,6 +156,8 @@ def _run_guard(
     model_type: str = "gemma4",
     has_mm_token_type_ids: bool = True,
     has_lora: bool = True,
+    lora_disabled: bool = False,
+    lora_merged: bool = False,
     env_override: str | None = None,
 ) -> bool:
     """Extract the guard block from the current source and execute it with
@@ -142,7 +165,11 @@ def _run_guard(
     ns = _build_namespace()
     ns["RETURN_LOGITS"] = False
     ns["labels"] = labels
-    ns["self"] = _FakeModel(model_type, has_lora)
+    ns["self"] = _FakeModel(
+        model_type, has_lora,
+        lora_disabled = lora_disabled,
+        lora_merged = lora_merged,
+    )
     ns["kwargs"] = {"mm_token_type_ids": torch.zeros(1)} if has_mm_token_type_ids else {}
 
     guard_src = _extract_guard_block(_llama_source())
@@ -207,6 +234,8 @@ def test_valid_label_fraction_below_threshold(valid, total, expect_fires):
         ({"model_type": "llama"}, "non-gemma4 model_type"),
         ({"has_mm_token_type_ids": False}, "no mm_token_type_ids"),
         ({"has_lora": False}, "no active LoRA adapter"),
+        ({"lora_disabled": True}, "LoRA adapters disabled"),
+        ({"lora_merged": True}, "LoRA adapters merged"),
     ],
 )
 def test_guard_does_not_fire_for_dense_labels_or_non_gemma4(kwargs_override, reason):
