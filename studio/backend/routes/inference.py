@@ -268,20 +268,13 @@ def _effective_max_tokens(payload):
     )
 
 
-_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV = "UNSLOTH_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS"
-_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV = "UNSLOTH_OPENAI_COMPAT_MAX_TOKENS_CEILING"
 _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV = "UNSLOTH_OPENAI_COMPAT_STREAM_STALL_TIMEOUT"
 
 
-def _positive_int_env(env_name: str, default):
-    value = _positive_int_or_none(os.environ.get(env_name))
-    return default if value is None else value
-
-
 def _positive_float_env(env_name: str, default):
-    """Unlike ``_positive_int_env``, a parseable non-positive value returns
-    ``None`` (0 disables the guarded feature); only unparseable or unset values
-    fall back to ``default``."""
+    """Parse a positive float from an env var. A parseable non-positive value
+    returns ``None`` (0 disables the guarded feature); only unparseable or unset
+    values fall back to ``default``."""
     raw_value = os.environ.get(env_name)
     if raw_value is None or not raw_value.strip():
         return default
@@ -292,35 +285,13 @@ def _positive_float_env(env_name: str, default):
     return value if value > 0 else None
 
 
-def _openai_compat_implicit_max_tokens():
-    """Opt-in output cap for OpenAI-compatible requests that omit their own.
-
-    OpenAI leaves an omitted ``max_tokens`` bounded only by the context window,
-    and Studio matches that by default (returns ``None``). Deployments that
-    want a local guard against runaway generations from cap-omitting clients
-    can set the env var; explicit request caps always win.
-    """
-    return _positive_int_env(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, None)
-
-
-def _openai_compat_max_tokens_ceiling():
-    """Optional service-level output cap for local OpenAI-compatible serving.
-
-    Unlike the implicit default above, this ceiling also applies to explicit
-    client caps when configured. It is disabled by default so strict clients keep
-    their requested value unless a local deployment opts into the guard.
-    """
-    return _positive_int_env(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, None)
-
-
 def _effective_openai_max_tokens_from_values(max_tokens, max_completion_tokens = None):
-    """Resolve the local OpenAI-compatible generation cap from raw request values.
+    """Resolve the OpenAI-compatible generation cap from raw request values.
 
-    Returns ``None`` when the client omitted both fields and no local cap is
-    configured, so callers keep their context-window default (OpenAI treats an
-    omitted cap as bounded only by the context window). Explicit client caps
-    are preserved unless the deployment opts into
-    ``UNSLOTH_OPENAI_COMPAT_MAX_TOKENS_CEILING``.
+    Prefers ``max_completion_tokens`` over the deprecated ``max_tokens``, and
+    returns ``None`` when both are omitted so callers keep their context-window
+    default (OpenAI treats an omitted cap as bounded only by the context
+    window). Explicit client caps pass through unchanged.
     """
 
     def _validate_explicit(value, param: str):
@@ -353,12 +324,7 @@ def _effective_openai_max_tokens_from_values(max_tokens, max_completion_tokens =
 
     max_tokens = _validate_explicit(max_tokens, "max_tokens")
     max_completion_tokens = _validate_explicit(max_completion_tokens, "max_completion_tokens")
-    explicit = max_completion_tokens if max_completion_tokens is not None else max_tokens
-    max_tokens = explicit if explicit is not None else _openai_compat_implicit_max_tokens()
-    ceiling = _openai_compat_max_tokens_ceiling()
-    if ceiling is not None:
-        max_tokens = ceiling if max_tokens is None else min(max_tokens, ceiling)
-    return max_tokens
+    return max_completion_tokens if max_completion_tokens is not None else max_tokens
 
 
 def _effective_openai_max_tokens(payload):

@@ -57,12 +57,8 @@ from routes.inference import (
     _openai_passthrough_stream,
     _openai_stream_error_sse,
     _openai_stream_usage_chunk,
-    _openai_compat_implicit_max_tokens,
-    _openai_compat_max_tokens_ceiling,
     _proxy_to_external_provider,
     _SameTaskStreamingResponse,
-    _OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV,
-    _OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV,
     _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV,
     _set_or_prepend_system_message,
     openai_completions,
@@ -1278,39 +1274,19 @@ class TestOpenAICompatibilityHelpers:
         payload = SimpleNamespace(max_tokens = 128, max_completion_tokens = 64)
         assert _effective_max_tokens(payload) == 64
 
-    def test_openai_compat_max_tokens_returns_none_when_omitted(self, monkeypatch):
-        monkeypatch.delenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, raising = False)
-        monkeypatch.delenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, raising = False)
+    def test_openai_compat_max_tokens_returns_none_when_omitted(self):
         payload = SimpleNamespace(max_tokens = None, max_completion_tokens = None)
         assert _effective_openai_max_tokens(payload) is None
 
-    def test_openai_compat_max_tokens_uses_env_override_when_omitted(self, monkeypatch):
-        monkeypatch.setenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, "512")
-        monkeypatch.delenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, raising = False)
-        payload = SimpleNamespace(max_tokens = None, max_completion_tokens = None)
-        assert _openai_compat_implicit_max_tokens() == 512
-        assert _effective_openai_max_tokens(payload) == 512
-
-    @pytest.mark.parametrize("raw_value", ["", "0", "-3", "not-an-int"])
-    def test_openai_compat_max_tokens_invalid_env_keeps_no_cap(self, monkeypatch, raw_value):
-        monkeypatch.setenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, raw_value)
-        monkeypatch.delenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, raising = False)
-        payload = SimpleNamespace(max_tokens = None, max_completion_tokens = None)
-        assert _effective_openai_max_tokens(payload) is None
-
-    def test_openai_compat_max_tokens_preserves_explicit_value_without_ceiling(self, monkeypatch):
-        monkeypatch.setenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, "512")
-        monkeypatch.delenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, raising = False)
-        payload = SimpleNamespace(max_tokens = 8192, max_completion_tokens = None)
-        assert _effective_openai_max_tokens(payload) == 8192
-
-    def test_openai_compat_max_completion_tokens_preserves_explicit_value_without_ceiling(
-        self, monkeypatch
-    ):
-        monkeypatch.setenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, "512")
-        monkeypatch.delenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, raising = False)
-        payload = SimpleNamespace(max_tokens = 8192, max_completion_tokens = 256)
-        assert _effective_openai_max_tokens(payload) == 256
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            (SimpleNamespace(max_tokens = 8192, max_completion_tokens = None), 8192),
+            (SimpleNamespace(max_tokens = 8192, max_completion_tokens = 256), 256),
+        ],
+    )
+    def test_openai_compat_explicit_values_pass_through(self, payload, expected):
+        assert _effective_openai_max_tokens(payload) == expected
 
     @pytest.mark.parametrize(
         ("payload", "param"),
@@ -1361,36 +1337,6 @@ class TestOpenAICompatibilityHelpers:
 
         assert headers["Authorization"] == "Bearer secret"
         assert headers["Connection"] == "close"
-
-    @pytest.mark.parametrize("raw_value", ["", "0", "-3", "not-an-int"])
-    def test_openai_compat_explicit_ceiling_invalid_env_disables_guard(
-        self, monkeypatch, raw_value
-    ):
-        monkeypatch.setenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, raw_value)
-        payload = SimpleNamespace(max_tokens = 8192, max_completion_tokens = None)
-        assert _openai_compat_max_tokens_ceiling() is None
-        assert _effective_openai_max_tokens(payload) == 8192
-
-    def test_openai_compat_explicit_ceiling_caps_max_tokens(self, monkeypatch):
-        monkeypatch.setenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, "1024")
-        payload = SimpleNamespace(max_tokens = 32000, max_completion_tokens = None)
-        assert _effective_openai_max_tokens(payload) == 1024
-
-    def test_openai_compat_explicit_ceiling_caps_max_completion_tokens(self, monkeypatch):
-        monkeypatch.setenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, "1024")
-        payload = SimpleNamespace(max_tokens = 32000, max_completion_tokens = 4096)
-        assert _effective_openai_max_tokens(payload) == 1024
-
-    def test_openai_compat_explicit_ceiling_preserves_values_below_ceiling(self, monkeypatch):
-        monkeypatch.setenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, "1024")
-        payload = SimpleNamespace(max_tokens = 512, max_completion_tokens = None)
-        assert _effective_openai_max_tokens(payload) == 512
-
-    def test_openai_compat_explicit_ceiling_applies_when_omitted(self, monkeypatch):
-        monkeypatch.delenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, raising = False)
-        monkeypatch.setenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, "256")
-        payload = SimpleNamespace(max_tokens = None, max_completion_tokens = None)
-        assert _effective_openai_max_tokens(payload) == 256
 
     def test_openai_compat_stream_stall_timeout_uses_default(self, monkeypatch):
         monkeypatch.delenv(_OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV, raising = False)
@@ -3788,69 +3734,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
-    def test_completions_applies_configured_max_tokens_ceiling(self, monkeypatch):
-        async def _run():
-            import routes.inference as inf_mod
-
-            class Request:
-                state = SimpleNamespace()
-                url = SimpleNamespace(path = "/v1/completions")
-                method = "POST"
-
-                def __init__(self, body):
-                    self._body = body
-
-                async def json(self):
-                    return dict(self._body)
-
-            captured = []
-
-            class CapturingClient:
-                async def post(self, _url, *, json, **_kwargs):
-                    captured.append(dict(json))
-                    return httpx.Response(
-                        200,
-                        json = {
-                            "id": "cmpl-test",
-                            "choices": [{"text": "ok"}],
-                            "usage": {
-                                "prompt_tokens": 1,
-                                "completion_tokens": 1,
-                                "total_tokens": 2,
-                            },
-                        },
-                    )
-
-            monitor = ApiMonitor(max_entries = 5)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, "256")
-            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: CapturingClient())
-            monkeypatch.setattr(
-                inf_mod,
-                "get_llama_cpp_backend",
-                lambda: SimpleNamespace(
-                    is_loaded = True,
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    model_identifier = "gguf",
-                ),
-            )
-
-            await openai_completions(
-                Request({"prompt": "hi", "stream": False}),
-                current_subject = "test",
-            )
-            await openai_completions(
-                Request({"prompt": "hi", "stream": False, "max_tokens": 9999}),
-                current_subject = "test",
-            )
-
-            assert captured[0]["max_tokens"] == 256
-            assert captured[1]["max_tokens"] == 256
-            assert monitor.active_count() == 0
-
-        asyncio.run(_run())
-
     def test_completions_omitted_max_tokens_falls_back_to_context(self, monkeypatch):
         # With no env knobs set, an omitted max_tokens must forward the
         # backend's context length, exactly as on main.
@@ -3885,8 +3768,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.delenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, raising = False)
-            monkeypatch.delenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, raising = False)
             monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: CapturingClient())
             monkeypatch.setattr(
                 inf_mod,
@@ -3938,8 +3819,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.delenv(_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV, raising = False)
-            monkeypatch.delenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, raising = False)
             monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: CapturingClient())
             monkeypatch.setattr(
                 inf_mod,
@@ -3959,7 +3838,7 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
-    def test_completions_rejects_non_integer_max_tokens_before_ceiling(self, monkeypatch):
+    def test_completions_rejects_non_integer_max_tokens_before_forwarding(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
 
@@ -3977,7 +3856,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setenv(_OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV, "256")
             monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: UnusedClient())
             monkeypatch.setattr(
                 inf_mod,
