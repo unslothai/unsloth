@@ -6998,6 +6998,11 @@ class LlamaCppBackend:
                         self._is_vision = False
                         self._mmproj_has_audio = False
                         self._start_llama_process(cmd, env)
+                        # This retry bypasses _spawn_and_wait, so point the
+                        # post-load fit/context/kv parsing at the stripped
+                        # text-only command that actually started, not the
+                        # failed mmproj argv.
+                        _llama_cmd_used = cmd
                         if not self._wait_for_health(timeout = 600.0):
                             # Read the exit code before _kill_process() clears it, so
                             # an OS-killed text-only retry still gets the OOM message.
@@ -7062,7 +7067,14 @@ class LlamaCppBackend:
                 if extra_args is not None:
                     self._extra_args = list(extra_args)
                     self._extra_args_source = (model_identifier, hf_variant)
-                self._requested_n_ctx = int(n_ctx)
+                # Record the context the server actually launched with: a
+                # last-wins pass-through --ctx-size (e.g. 0 for Auto) overrides
+                # Studio's request, so store the final launched value. Otherwise
+                # launch_context_length would fall back to a stale explicit -c
+                # for an Auto launch and round-trip it on the next reload.
+                self._requested_n_ctx = (
+                    final_ctx_override if final_ctx_override is not None else int(n_ctx)
+                )
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
                 # watch this load for a mid-generation crash.
                 self._last_load_kwargs = _pending_load_kwargs

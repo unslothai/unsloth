@@ -359,3 +359,50 @@ class TestReloadMaxSeqLengthContract:
         assert inst.context_length == 2048
         assert inst.launch_context_length == 8192
         assert inst.requested_context_length is None
+
+
+class TestLaunchedArgvReconciliation:
+    """The recorded launch context/fit must reflect the command that actually
+    started, so a last-wins pass-through override or a text-only retry does not
+    report a stale value that round-trips on the next reload."""
+
+    def test_passthrough_ctx_size_zero_reports_auto_not_stale_explicit(self):
+        from core.inference.llama_server_args import parse_ctx_override
+
+        # Studio launched -c 8192 but the user appended a last-wins --ctx-size 0
+        # (Auto). The load records the final launched context, so the property
+        # reports Auto (None) instead of the stale 8192 request that would
+        # silently convert the Auto load into an explicit context on reload.
+        launched = ["llama-server", "-c", "8192", "--ctx-size", "0"]
+        final_ctx_override = parse_ctx_override(launched)
+        assert final_ctx_override == 0
+        recorded = final_ctx_override if final_ctx_override is not None else 8192
+        assert _backend(requested_n_ctx = recorded).launch_context_length is None
+
+    def test_passthrough_ctx_size_positive_is_recorded(self):
+        from core.inference.llama_server_args import parse_ctx_override
+
+        # A positive last-wins pass-through is the real launch context.
+        launched = ["llama-server", "-c", "8192", "--ctx-size", "4096"]
+        final_ctx_override = parse_ctx_override(launched)
+        assert final_ctx_override == 4096
+        recorded = final_ctx_override if final_ctx_override is not None else 8192
+        assert _backend(requested_n_ctx = recorded).launch_context_length == 4096
+
+    def test_text_only_retry_command_carries_fit_and_context(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        from core.inference.llama_server_args import (
+            parse_ctx_override,
+            parse_fit_override,
+        )
+
+        # The text-only retry starts the stripped command, and post-load parsing
+        # must read that command: --mmproj is gone but --fit off and -c survive,
+        # so the launched fit/context come from the server that is actually live.
+        failed_mmproj = [
+            "llama-server", "-c", "8192", "--mmproj", "m.gguf", "--fit", "off",
+        ]
+        text_only = LlamaCppBackend._strip_mmproj_args(failed_mmproj)
+        assert "--mmproj" not in text_only
+        assert parse_fit_override(text_only) is False
+        assert parse_ctx_override(text_only) == 8192
