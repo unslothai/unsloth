@@ -6,8 +6,8 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
 } from "../api/chat-api";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { useChatArtifactsStore } from "../artifacts/store";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 import {
   deleteStoredChatThreads,
@@ -16,11 +16,12 @@ import {
   listStoredChatThreadsWithMessages,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
-import { clearComposerDraft } from "../utils/composer-draft";
 import {
   markChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "../utils/chat-thread-tombstones";
+import { clearComposerDraft } from "../utils/composer-draft";
+import { requestPromptQueueStop } from "../utils/prompt-queue-boundary";
 
 export interface SidebarItem {
   type: "single" | "compare";
@@ -208,7 +209,11 @@ export async function archiveChatItem(
           })
         ).map((t) => t.id);
 
-  for (const id of threadIds) cancelIfRunning(id);
+  requestPromptQueueStop(threadIds);
+
+  for (const id of threadIds) {
+    cancelIfRunning(id);
+  }
 
   await Promise.all(
     threadIds.map((id) => updateStoredChatThread(id, { archived: true })),
@@ -250,9 +255,12 @@ export async function deleteChatItem(
       ? [item.id]
       : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
 
-  // Stop any in-flight streams before deleting, so the model doesn't keep
-  // generating against a thread that no longer exists.
-  for (const id of threadIds) cancelIfRunning(id);
+  // Stop queued prompts and in-flight streams before deleting.
+  requestPromptQueueStop(threadIds);
+
+  for (const id of threadIds) {
+    cancelIfRunning(id);
+  }
 
   // Drop saved composer drafts so deleted threads leave no orphan keys.
   for (const id of threadIds) clearComposerDraft(id);

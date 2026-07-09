@@ -88,7 +88,10 @@ import {
   type PromptQueueUIState,
 } from "@/features/chat/stores/prompt-queue-ui-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
-import { PROMPT_QUEUE_STOP_EVENT } from "@/features/chat/utils/prompt-queue-boundary";
+import {
+  PROMPT_QUEUE_STOP_EVENT,
+  type PromptQueueStopEventDetail,
+} from "@/features/chat/utils/prompt-queue-boundary";
 import {
   PLUS_MENU_ORDER,
   composerDraftKey,
@@ -775,6 +778,16 @@ function advancePromptQueue(run: PromptQueueRun) {
   requestPromptQueuePump(100);
 }
 
+function getRunningThreadCount(runningByThreadId: Record<string, boolean>) {
+  return Object.values(runningByThreadId).filter(Boolean).length;
+}
+
+function hasReadyPromptQueueRun() {
+  return Array.from(promptQueueRuns.values()).some(
+    isPromptQueueRunReadyToDispatch,
+  );
+}
+
 function handlePromptQueueRunState(
   run: PromptQueueRun,
   runningByThreadId: Record<string, boolean>,
@@ -806,14 +819,24 @@ function ensurePromptQueueSubscription() {
   }
   // runningByThreadId tracks the actual thread (not aui.thread()), so detection
   // survives navigation.
+  let previousRunningCount = getRunningThreadCount(
+    useChatRuntimeStore.getState().runningByThreadId,
+  );
+
   promptQueueStoreUnsub = useChatRuntimeStore.subscribe((state) => {
     if (promptQueueRuns.size === 0) {
       stopPromptQueueSubscription();
       return;
     }
+    const nextRunningCount = getRunningThreadCount(state.runningByThreadId);
     for (const run of Array.from(promptQueueRuns.values())) {
       handlePromptQueueRunState(run, state.runningByThreadId);
     }
+
+    if (nextRunningCount < previousRunningCount && hasReadyPromptQueueRun()) {
+      requestPromptQueuePump();
+    }
+    previousRunningCount = nextRunningCount;
   });
 }
 
@@ -918,7 +941,15 @@ function stopAllPromptQueueRuns() {
 }
 
 if (typeof window !== "undefined") {
-  window.addEventListener(PROMPT_QUEUE_STOP_EVENT, () => stopAllPromptQueueRuns());
+  window.addEventListener(PROMPT_QUEUE_STOP_EVENT, (event) => {
+    const { threadIds } =
+      (event as CustomEvent<PromptQueueStopEventDetail>).detail ?? {};
+    if (threadIds && threadIds.length > 0) {
+      stopPromptQueueRunForThreadIds(threadIds);
+      return;
+    }
+    stopAllPromptQueueRuns();
+  });
 }
 
 interface PromptQueueCallbacks {

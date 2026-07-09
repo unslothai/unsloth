@@ -1144,8 +1144,7 @@ function ActiveThreadSync({
 }
 
 // Exposes the current thread's cancelRun() via the shared store so external
-// surfaces (e.g. the sidebar trash button) can stop an in-flight stream before
-// deleting the thread, mirroring the Stop -> Trash sequence.
+// surfaces can stop an in-flight stream before deleting the thread.
 function CancelRegistrar(): ReactElement | null {
   const aui = useAui();
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
@@ -1155,16 +1154,20 @@ function CancelRegistrar(): ReactElement | null {
 
   useEffect(() => {
     if (!mainThreadId || !isRunning) return;
+    const runtime = aui.threads().__internal_getAssistantRuntime?.();
     const cancel = () => {
       try {
-        aui.thread().cancelRun();
+        runtime?.threads.getById(mainThreadId).cancelRun();
       } catch {
         // Run may have already ended between the caller's read and this call.
       }
     };
     useChatRuntimeStore.getState().registerThreadCancel(mainThreadId, cancel);
     return () => {
-      useChatRuntimeStore.getState().clearThreadCancel(mainThreadId);
+      const store = useChatRuntimeStore.getState();
+      if (!store.runningByThreadId[mainThreadId]) {
+        store.clearThreadCancel(mainThreadId);
+      }
     };
   }, [aui, mainThreadId, isRunning]);
 
