@@ -1055,8 +1055,11 @@ def _llama_streaming_generation_timeout() -> httpx.Timeout:
 
 
 def _set_stream_response_read_timeout(
-    response: httpx.Response, read_timeout_s: float = _DEFAULT_STREAM_STALL_TIMEOUT_S
+    response: httpx.Response, read_timeout_s: Optional[float] = _DEFAULT_STREAM_STALL_TIMEOUT_S
 ) -> None:
+    # ``read_timeout_s = None`` clears httpx's read timeout (wait indefinitely),
+    # used when the stall guard is disabled so a stale first-token deadline
+    # can't keep timing out post-first-chunk gaps.
     try:
         timeout_ext = response.request.extensions.get("timeout")
         if isinstance(timeout_ext, dict):
@@ -1387,9 +1390,11 @@ async def _aiter_llama_stream_items(
                 continue
             raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
         if last_item_at is None and response is not None:
-            timeout_s = _post_first_timeout_s()
-            if timeout_s is not None:
-                _set_stream_response_read_timeout(response, timeout_s)
+            # The first-token read deadline no longer applies once a chunk has
+            # arrived: switch to the stall timeout, or clear the read timeout
+            # entirely when the stall guard is disabled (callable returns None)
+            # so a long gap can't trip the stale first-token deadline.
+            _set_stream_response_read_timeout(response, _post_first_timeout_s())
         last_item_at = time.monotonic()
         yield item
 
