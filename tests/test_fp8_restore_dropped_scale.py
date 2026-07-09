@@ -139,7 +139,7 @@ def test_skips_offloaded_meta_weight():
     model.config = _fp8_config((2, 2))
     model.anchor = _fp8_anchor()
     model.layer = nn.Linear(4, 4, bias = False)
-    # Simulate an offloaded weight: not yet materialized, lives on the meta device.
+    # Simulate an offloaded weight living on the meta device.
     model.layer.weight = nn.Parameter(
         torch.empty(4, 4, dtype = torch.bfloat16, device = "meta"), requires_grad = False
     )

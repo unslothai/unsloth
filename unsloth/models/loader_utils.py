@@ -453,7 +453,7 @@ def _load_fp8_weight_map(
         with open(index_path, "r") as f:
             return json.load(f).get("weight_map", None)
 
-    # Unsharded single-file checkpoint: map every tensor to model.safetensors.
+    # Unsharded single file: map every tensor to it.
     try:
         if is_local and os.path.exists(_local_path(single_file)):
             single_path = _local_path(single_file)
@@ -544,13 +544,11 @@ def _restore_dropped_fp8_scales(
         block = _fp8_block_size_from_config(model)
         if block is None or not _FP8_DTYPES:
             return (0, 0)
-        # A variant load (variant="fp8") reads variant-named files; do not risk applying default
-        # checkpoint scales to variant weights. Skip rather than resolve the wrong files.
+        # A variant load reads variant-named files; skip to avoid applying default scales to them.
         if variant:
             return (0, 0)
-        # A genuine fp8 load leaves most weights fp8. If nothing is fp8 the checkpoint was
-        # dequantized on purpose (e.g. load_in_16bit -> HF quantizer dequantize); re-applying
-        # a scale would corrupt those already-correct 16bit weights, so do nothing.
+        # No fp8 params means the checkpoint was dequantized on purpose (e.g. load_in_16bit);
+        # re-applying a scale would corrupt those already-correct 16bit weights, so do nothing.
         if not any(p.dtype in _FP8_DTYPES for p in model.parameters()):
             return (0, 0)
         weight_map = _load_fp8_weight_map(
@@ -579,13 +577,12 @@ def _restore_dropped_fp8_scales(
             if not isinstance(weight, torch.Tensor) or weight.ndim != 2:
                 continue
             if weight.device.type == "meta":
-                # Disk-offloaded layer: the real weight is not materialized yet (it lives on
-                # meta until the offload hook loads it at forward time), so the scale cannot be
-                # applied in place here. Count and warn instead of silently leaving it unscaled.
+                # Disk-offloaded layer: weight lives on meta until forward, so it cannot be
+                # scaled in place here. Count and warn rather than silently leave it unscaled.
                 offloaded += 1
                 continue
             if weight.dtype in _FP8_DTYPES:
-                # Correctly converted fp8 module: the scale is handled by the fp8 path already.
+                # Correctly converted fp8 module: the fp8 path already handles the scale.
                 skipped += 1
                 continue
 
@@ -619,10 +616,9 @@ def _restore_dropped_fp8_scales(
                 scale = scale.to(weight.device)
                 with torch.no_grad():
                     if out_features % bs0 == 0 and in_features % bs1 == 0:
-                        # Memory-frugal path: multiply block views in place with the small fp32
-                        # scale broadcast, avoiding a full expanded scale and full fp32 copy so a
-                        # near-VRAM-limit load is not pushed into OOM by the repair. The in-place
-                        # multiply promotes to fp32 for the compute, matching the fallback exactly.
+                        # Memory-frugal path: multiply block views in place against the broadcast
+                        # fp32 scale, avoiding a full expanded scale and fp32 copy that could OOM.
+                        # The in-place multiply promotes to fp32, matching the fallback exactly.
                         module.weight.data.view(out_blocks, bs0, in_blocks, bs1).mul_(
                             scale[:, None, :, None]
                         )
