@@ -1486,8 +1486,8 @@ def direct_upstream_release_plan(
                 )
         # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt. Gate
         # on no PHYSICAL NVIDIA (not just no usable one): a host that hid NVIDIA
-        # via CUDA_VISIBLE_DEVICES must not be sent to Vulkan, which ignores that
-        # mask and could enumerate the reserved card. Falls through to CPU below.
+        # via CUDA_VISIBLE_DEVICES must not reach Vulkan, which ignores that mask
+        # and could enumerate the reserved card. Falls through to CPU below.
         elif host.has_intel_gpu and not host.has_physical_nvidia:
             vulkan_asset = f"llama-{release_tag}-bin-win-vulkan-x64.zip"
             vulkan_url = assets.get(vulkan_asset)
@@ -3129,11 +3129,10 @@ def detect_host() -> HostInfo:
         # Note: amdhip64.dll presence alone is NOT treated as GPU evidence
         # since the HIP SDK can be installed without an AMD GPU.
 
-    # Detect an Intel GPU; gates the Vulkan prebuilt. Linux reads the DRM
-    # sysfs vendor id (0x8086); Windows queries the WMI video controller list.
-    # Only probed when there is no usable NVIDIA and no ROCm GPU, since the
-    # Vulkan selection branches are gated the same way -- this keeps the probe
-    # (notably the Windows powershell call) off the NVIDIA/AMD path.
+    # Detect an Intel GPU; gates the Vulkan prebuilt. Linux reads the DRM sysfs
+    # vendor id (0x8086); Windows queries the WMI video controller list. Only
+    # probed with no usable NVIDIA and no ROCm (matching the Vulkan branches),
+    # keeping the probe (notably the Windows powershell call) off that path.
     has_intel_gpu = False
     if not has_usable_nvidia and not has_rocm:
         if is_linux:
@@ -6802,10 +6801,9 @@ def validate_prebuilt_attempts(
 
 def force_vulkan_requested() -> bool:
     """Whether UNSLOTH_FORCE_VULKAN opts this host into the Vulkan llama.cpp
-    prebuilt instead of its detected CUDA/ROCm backend -- e.g. so an AMD user
-    can run the Vulkan build for inference. Scoped to the llama.cpp backend:
-    the torch/training stack is installed separately and still sees the real
-    GPU.
+    prebuilt instead of its detected CUDA/ROCm backend (e.g. so an AMD user can
+    run the Vulkan build for inference). Scoped to the llama.cpp backend; the
+    torch/training stack installs separately and still sees the real GPU.
     """
     return os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower() in (
         "1",
@@ -6817,10 +6815,10 @@ def force_vulkan_requested() -> bool:
 def _vulkan_only_host(host: HostInfo) -> HostInfo:
     """Rewrite ``host`` so the asset selectors take their Vulkan branch.
 
-    That branch fires on ``has_intel_gpu and not nvidia and not rocm``, so the
-    CUDA/ROCm flags are cleared and the integrated-GPU flag is raised. The
-    synthetic integrated-GPU flag never leaves install planning -- it only
-    routes the llama.cpp prebuilt choice, not the torch/training stack.
+    That branch fires on ``has_intel_gpu and not nvidia and not rocm``, so clear
+    the CUDA/ROCm flags and raise the integrated-GPU flag. The synthetic flag
+    never leaves install planning -- it only routes the llama.cpp prebuilt
+    choice, not the torch/training stack.
     """
     return dataclasses_replace(
         host,
@@ -6848,13 +6846,11 @@ def _route_to_vulkan_prebuilt(
     Returns the (possibly rewritten) host, repo, and release tag.
     """
     forced = force_vulkan_requested()
-    # Gate auto-routing on no PHYSICAL NVIDIA, not merely no usable one: a
-    # mixed NVIDIA+Intel host that hides NVIDIA with CUDA_VISIBLE_DEVICES=""/-1
-    # keeps has_physical_nvidia=True while has_usable_nvidia goes False. Vulkan
-    # ignores CUDA_VISIBLE_DEVICES, so auto-routing such a host would let Vulkan
-    # grab the NVIDIA GPU the user reserved. An explicit UNSLOTH_FORCE_VULKAN
-    # still overrides. (Detect_host only opens this gap via CUDA masking; a
-    # genuinely unusable NVIDIA with the mask unset stays has_usable_nvidia.)
+    # Gate auto-routing on no PHYSICAL NVIDIA, not merely no usable one: a mixed
+    # NVIDIA+Intel host that hides NVIDIA with CUDA_VISIBLE_DEVICES=""/-1 keeps
+    # has_physical_nvidia=True while has_usable_nvidia goes False. Vulkan ignores
+    # CUDA_VISIBLE_DEVICES, so auto-routing such a host would let it grab the
+    # reserved NVIDIA GPU. An explicit UNSLOTH_FORCE_VULKAN still overrides.
     auto_intel = host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
     if force_cpu or not (forced or auto_intel):
         return host, published_repo, published_release_tag
@@ -6879,8 +6875,8 @@ def _route_to_vulkan_prebuilt(
     # different tag namespaces (fork b9596-mix-<sha> vs upstream b9596), so a
     # pinned fork tag would make the upstream resolver query a nonexistent
     # release and fall back to source. Drop it and let the upstream resolver
-    # pick by the requested llama tag. A pin set WITH an explicit upstream repo
-    # is already on upstream (repo unchanged here) and is preserved.
+    # pick by the requested llama tag. A pin already on an explicit upstream repo
+    # (repo unchanged here) is preserved.
     if published_repo != UPSTREAM_REPO:
         published_release_tag = ""
     return host, UPSTREAM_REPO, published_release_tag
@@ -6944,8 +6940,8 @@ def install_prebuilt(
                 )
             # Single resolver: every fork host selects from the release manifest;
             # an explicit ggml-org override selects by asset filename instead. A
-            # forced-Vulkan host has already had published_repo pointed at
-            # UPSTREAM_REPO above, so the resolver carries the Vulkan asset branch.
+            # forced-Vulkan host already has published_repo pointed at
+            # UPSTREAM_REPO above, so the resolver takes the Vulkan asset branch.
             requested_tag, release_plans = resolve_simple_install_release_plans(
                 llama_tag,
                 host,

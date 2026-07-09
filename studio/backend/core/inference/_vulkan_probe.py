@@ -7,16 +7,13 @@ Run in a short-lived subprocess (``python _vulkan_probe.py <bindir>``) so the
 Vulkan instance never lives in the long-running backend process. Loads the
 bundled ggml Vulkan backend from ``<bindir>`` and prints one
 ``<idx>\\t<free_bytes>\\t<is_igpu>\\t<total_bytes>`` line per device to stdout.
-The indices are ggml's own Vulkan device ordinals (the space
-GGML_VK_VISIBLE_DEVICES expects), which need not match nvidia-smi order.
-``is_igpu`` is ``1`` for an integrated GPU (shared system RAM) and ``0``
-otherwise, taken from ggml's own device type so the reader needn't guess from
-VRAM-vs-RAM ratios. ``total_bytes`` is the device-local heap size, which the
-reader uses to reserve absolute headroom on a discrete card (parity with the
-CUDA/ROCm fit); it is ignored for an iGPU, whose "VRAM" is shared system RAM.
+Indices are ggml's own Vulkan device ordinals, which need not match nvidia-smi
+order. ``is_igpu`` (from ggml's device type) is ``1`` for an integrated GPU
+sharing system RAM. ``total_bytes`` is the device-local heap; the reader uses
+it to reserve absolute headroom on a discrete card (parity with the CUDA/ROCm
+fit) and ignores it for an iGPU, whose "VRAM" is shared system RAM.
 
-Uses only the standard library so it stays runnable as a bare script without
-importing the backend package.
+Uses only the standard library so it stays runnable as a bare script.
 """
 
 import ctypes
@@ -31,10 +28,9 @@ def _igpu_flags(base, lib, count: int) -> list[bool]:
     """Per-device integrated-GPU flags via ggml's backend registry.
 
     The Vulkan reg enumerates devices in the same order as
-    ``ggml_backend_vk_get_device_memory`` (ggml-vulkan builds each device
-    context with ``ctx->device = i``), so reg index == device ordinal.
-    Returns all-False on any failure so the reader never over-caps a
-    discrete card just because the type couldn't be read.
+    ``ggml_backend_vk_get_device_memory`` (each context uses ``ctx->device =
+    i``), so reg index == device ordinal. Returns all-False on any failure so
+    the reader never over-caps a discrete card.
     """
     flags = [False] * count
     try:
@@ -56,8 +52,7 @@ def _igpu_flags(base, lib, count: int) -> list[bool]:
             if dev:
                 flags[i] = base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
     except Exception:
-        # iGPU detection is best-effort: any failure (missing symbol,
-        # registry call error) degrades to "discrete" so the memory
+        # Best-effort: any failure degrades to "discrete" so the memory
         # readings still get through instead of crashing the probe.
         pass
     return flags
@@ -68,11 +63,9 @@ def main() -> int:
         return 0
     bindir = sys.argv[1]
 
-    # Hold add_dll_directory's handle in a frame local for the rest of main()
-    # (through the CDLL loads below). CPython's os._AddedDllDirectory has no
-    # __del__, so this isn't strictly required, but keeping the reference is the
-    # documented idiom and removes any doubt that bindir stays on the search path
-    # while the sibling ggml DLLs resolve.
+    # Hold add_dll_directory's handle for the rest of main() (the documented
+    # idiom) so bindir stays on the search path while the sibling ggml DLLs
+    # resolve below.
     _dll_dir = None
     if sys.platform == "win32":
         base_name, vk_name = "ggml-base.dll", "ggml-vulkan.dll"
@@ -83,10 +76,8 @@ def main() -> int:
     else:
         base_name, vk_name = "libggml-base.so", "libggml-vulkan.so"
 
-    # RTLD_GLOBAL exposes ggml-base's symbols to ggml-vulkan on POSIX. It is
-    # defined on every platform (0 where the dlopen flag doesn't exist, e.g.
-    # Windows, where CDLL ignores mode and uses LoadLibraryEx); getattr keeps
-    # that explicit and defensive.
+    # RTLD_GLOBAL exposes ggml-base's symbols to ggml-vulkan on POSIX. getattr
+    # falls back to 0 where the flag doesn't exist (Windows CDLL ignores mode).
     _rtld_global = getattr(ctypes, "RTLD_GLOBAL", 0)
     try:
         base = ctypes.CDLL(os.path.join(bindir, base_name), mode = _rtld_global)
