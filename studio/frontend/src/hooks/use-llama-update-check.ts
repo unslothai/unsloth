@@ -22,6 +22,9 @@ export interface LlamaUpdateJob {
   error: string | null;
   // Download fraction while running, 1 on success.
   progress: number | null;
+  // Set once the job leaves "running"; identifies a completed job so a
+  // repeated fetch of the same success can be told apart from the next one.
+  finished_at: string | null;
 }
 
 export interface LlamaUpdateStatus {
@@ -54,6 +57,7 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
         typeof job.reload_required === "boolean" ? job.reload_required : null,
       error: typeof job.error === "string" ? job.error : null,
       progress: typeof job.progress === "number" ? job.progress : null,
+      finished_at: typeof job.finished_at === "string" ? job.finished_at : null,
     },
   };
 }
@@ -111,6 +115,12 @@ export function useLlamaUpdateCheck({
   useEffect(() => {
     onReloadRequiredRef.current = onReloadRequired;
   }, [onReloadRequired]);
+  // Fires the callback once per completed job, whether this tab watched it run
+  // or only saw the persisted "success" after the fact (e.g. another tab
+  // applied it). Keyed by finished_at (not a boolean) so a tab that never
+  // observes the "running" phase of two separate updates -- e.g. it only
+  // checks hourly and misses both running windows -- still tells them apart.
+  const reloadNotifiedForRef = useRef<string | null>(null);
 
   const clearPollTimer = useCallback(() => {
     if (pollTimer.current) {
@@ -138,7 +148,11 @@ export function useLlamaUpdateCheck({
           // consumer drop the selector to "select model" instead of waiting for
           // a page reload. Fires here (not just from apply's onDone) so a
           // cross-tab update mirrored through this poll is covered too.
-          if (s.job.reload_required) {
+          if (
+            s.job.reload_required &&
+            s.job.finished_at !== reloadNotifiedForRef.current
+          ) {
+            reloadNotifiedForRef.current = s.job.finished_at;
             onReloadRequiredRef.current?.();
           }
           onDone?.({
@@ -167,6 +181,19 @@ export function useLlamaUpdateCheck({
         setVisible(true);
         if (!pollTimer.current) startJobPoll();
         return;
+      }
+      // A completed job persists as "success" until the next update starts, so
+      // a tab that missed the running window entirely (mounted, or only checks
+      // hourly and misses both the running and just-finished moments) still
+      // needs to resync here, not just from the poll path above. Keyed by
+      // finished_at so two separate completions are never conflated.
+      if (
+        next.job.state === "success" &&
+        next.job.reload_required &&
+        next.job.finished_at !== reloadNotifiedForRef.current
+      ) {
+        reloadNotifiedForRef.current = next.job.finished_at;
+        onReloadRequiredRef.current?.();
       }
       if (next.update_available) {
         setVisible(true);
