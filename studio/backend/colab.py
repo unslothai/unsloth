@@ -490,7 +490,7 @@ def _public_url_not_ready_html(cloudflare_url: str) -> str:
     """
 
 
-def _bootstrap_login_notice_html() -> "str | None":
+def _bootstrap_login_notice_html(*, include_password: bool = False) -> "str | None":
     """Notebook-local login hint for public tunnels with bootstrap injection off."""
     try:
         from html import escape
@@ -499,16 +499,23 @@ def _bootstrap_login_notice_html() -> "str | None":
         if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
             return None
         bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
-        bootstrap_password = storage.get_bootstrap_password()
-        if not bootstrap_password:
-            try:
-                bootstrap_password = bootstrap_path.read_text().strip()
-            except Exception:
-                bootstrap_password = ""
+        bootstrap_password = ""
+        if include_password:
+            bootstrap_password = storage.get_bootstrap_password()
+            if not bootstrap_password:
+                try:
+                    bootstrap_password = bootstrap_path.read_text().strip()
+                except Exception:
+                    bootstrap_password = ""
         password_line = (
             f"Temporary password: <code>{escape(bootstrap_password)}</code><br>"
             if bootstrap_password
             else ""
+        )
+        message = (
+            "This notebook-only password is intentionally not embedded in the public Cloudflare page."
+            if include_password
+            else "The password is intentionally not embedded in the public Cloudflare page."
         )
         return f"""
     <div style="display: inline-block; padding: 16px 20px; background: #fff7d6; border: 2px solid #b88700;
@@ -518,7 +525,7 @@ def _bootstrap_login_notice_html() -> "str | None":
             Username: <code>{escape(storage.DEFAULT_ADMIN_USERNAME)}</code><br>
             {password_line}
             Password file: <code>{escape(str(bootstrap_path))}</code><br>
-            This notebook-only password is intentionally not embedded in the public Cloudflare page.
+            {message}
         </div>
     </div>
     """
@@ -559,7 +566,7 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
             short_url = url
 
         if cloudflare_url:
-            bootstrap_notice = _bootstrap_login_notice_html()
+            bootstrap_notice = _bootstrap_login_notice_html(include_password=is_kaggle)
             if bootstrap_notice:
                 display(HTML(bootstrap_notice))
             if is_kaggle:
