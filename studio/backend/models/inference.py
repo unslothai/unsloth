@@ -1632,13 +1632,21 @@ class AnthropicMessage(BaseModel):
             return data
         content = data.get("content")
         if data.get("role") == "assistant":
-            return {**data, "content": ""} if content is None else data
+            # Coerce only an explicit null (a resumed tool-only turn serializes
+            # its content as null). A missing content key stays malformed so the
+            # required-field check still 400s instead of silently becoming "".
+            if "content" in data and content is None:
+                return {**data, "content": ""}
+            return data
         if isinstance(content, list):
             for block in content:
                 btype = (
                     block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
                 )
-                if btype not in _KNOWN_ANTHROPIC_BLOCK_TYPES:
+                # Compare as a plain value: a non-string type (list / dict) is
+                # unsupported too, and a membership test on an unhashable value
+                # would raise TypeError and escape as a 500 instead of a clean 400.
+                if not isinstance(btype, str) or btype not in _KNOWN_ANTHROPIC_BLOCK_TYPES:
                     raise ValueError(f"unsupported content block type {btype!r} in a user message")
         return data
 

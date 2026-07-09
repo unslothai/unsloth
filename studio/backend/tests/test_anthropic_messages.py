@@ -1886,3 +1886,77 @@ def test_user_malformed_known_block_still_rejected():
                 {"role": "user", "content": [{"type": "tool_result", "content": "x"}]},
             ],
         )
+
+
+def test_user_content_block_non_string_type_rejected_cleanly():
+    # A malformed user block whose `type` is a non-string (unhashable list / dict,
+    # or a stray int) must fail as a clean validation error -> 400, not raise
+    # TypeError from the frozenset membership test and escape as a 500.
+    from pydantic import ValidationError
+    for bad_type in ([], {}, 5):
+        with pytest.raises(ValidationError):
+            AnthropicMessagesRequest(
+                model = "x",
+                max_tokens = 16,
+                messages = [{"role": "user", "content": [{"type": bad_type}]}],
+            )
+
+
+def test_assistant_missing_content_key_still_rejected():
+    # The null -> "" leniency is only for an EXPLICIT null (a resumed tool-only
+    # turn). An assistant message that omits content entirely stays malformed and
+    # must still fail required-field validation, not be silently coerced to "".
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [{"role": "assistant"}],
+        )
+    # An explicit null is still accepted and coerced (regression guard).
+    req = AnthropicMessagesRequest(
+        model = "x",
+        max_tokens = 16,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None},
+        ],
+    )
+    assert req.messages[1].content == ""
+
+
+def test_resumed_null_assistant_between_users_coalesced_on_messages_route(monkeypatch):
+    # user -> assistant(content: null) -> user is now accepted: the null assistant
+    # turn coerces to "" and is dropped. The /v1/messages route must then coalesce
+    # the two remaining user turns so a strict GGUF chat template does not 400 on
+    # non-alternating roles.
+    backend = _mock_backend(monkeypatch, context_length = 2048)
+
+    class _Req:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/messages")
+        method = "POST"
+
+        async def is_disconnected(self):
+            return False
+
+    payload = AnthropicMessagesRequest(
+        model = "x",
+        max_tokens = 16,
+        messages = [
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": None},
+            {"role": "user", "content": "please continue"},
+        ],
+    )
+
+    response = _drive(anthropic_messages(payload, request = _Req(), current_subject = "t"))
+    assert response.status_code == 200
+
+    [(_path, kwargs)] = backend.calls
+    user_turns = [m for m in kwargs["messages"] if m.get("role") == "user"]
+    assert len(user_turns) == 1  # the two user turns were merged, not left adjacent
+    merged = user_turns[0]["content"]
+    if isinstance(merged, list):
+        merged = " ".join(p.get("text", "") for p in merged if isinstance(p, dict))
+    assert "first question" in merged and "please continue" in merged
