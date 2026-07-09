@@ -1081,7 +1081,6 @@ def fix_dynamo_config_thread_visibility():
         if Version(torch.__version__) < Version("2.12.0"):
             return
         import torch._dynamo.config as _dynamo_config
-        import torch._inductor.config as _inductor_config
         from torch.utils._config_module import ConfigModule
         from contextvars import ContextVar
     except Exception:
@@ -1185,20 +1184,9 @@ def fix_dynamo_config_thread_visibility():
     _patched_setattr.__unsloth_patched__ = True
     ConfigModule.__setattr__ = _patched_setattr
 
-    # Replay overrides set before this patch so worker threads see them too.
-    try:
-        from torch.utils._config_module import _UNSET_SENTINEL
-        for module in (_dynamo_config, _inductor_config):
-            for entry in module.__dict__["_config"].values():
-                try:
-                    if entry.alias is None:
-                        current = entry.user_override.get()
-                        if current is not _UNSET_SENTINEL:
-                            entry.default = current
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    # No replay of existing overrides: unsloth installs this before it sets any
+    # dynamo/inductor config, so the wrapper mirrors every later assignment. Replaying
+    # would also bake a still-active config.patch override into the global default.
     logger.info(
         "Unsloth: Patched torch config modules so dynamo/inductor settings "
         "(e.g. recompile_limit) apply across threads on torch >= 2.12."
