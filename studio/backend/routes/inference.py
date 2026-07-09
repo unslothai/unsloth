@@ -3980,6 +3980,7 @@ def _maybe_unsupported_message(msg: str) -> str:
 # background load fails; surfaced on GET /status so pollers can see why a
 # fire-and-forget load never reached `loaded`. Process-wide like the backend slot.
 _last_async_load_error: Optional[str] = None
+_background_tasks: set = set()
 
 
 @router.post("/load")
@@ -4034,7 +4035,9 @@ async def load_model(
                 logger.warning("inference.async_load_failed: %s", detail)
                 _last_async_load_error = str(detail)
 
-        asyncio.create_task(_background_load())
+        task = asyncio.create_task(_background_load())
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
         return LoadAcceptedResponse(model = request.model_path)
     async with inference_lifecycle_gate():
         if sidecar_swap_in_progress():
