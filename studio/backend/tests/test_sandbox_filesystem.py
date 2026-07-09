@@ -25,7 +25,7 @@ def _ok(code):
 
 
 def _verdict(expr):
-    return _resolve_path(ast.parse(expr, mode="eval").body)
+    return _resolve_path(ast.parse(expr, mode = "eval").body)
 
 
 class TestPathResolver:
@@ -106,7 +106,7 @@ class TestFilesystemAllowed:
             'import numpy as np; np.save("emb.npy", arr)',
             'import pandas as pd; df.to_parquet("out/data.parquet")',
             'import json; json.dump(d, open("r.json", "w"))',
-            'import tempfile; f = tempfile.NamedTemporaryFile()',
+            "import tempfile; f = tempfile.NamedTemporaryFile()",
             'import pandas as pd; pd.read_csv("/data/train.csv")',
             "open(fname).read()",
             'p = "ckpt.pt"\nimport torch\ntorch.save(m, p)',
@@ -120,7 +120,7 @@ class TestFilesystemAllowed:
 
 class TestReadStrictKnob:
     def test_dynamic_read_allowed_by_default(self, monkeypatch):
-        monkeypatch.delenv("FS_READ_STRICT", raising=False)
+        monkeypatch.delenv("FS_READ_STRICT", raising = False)
         _ok("open(fname).read()")
 
     def test_dynamic_read_blocked_when_strict(self, monkeypatch):

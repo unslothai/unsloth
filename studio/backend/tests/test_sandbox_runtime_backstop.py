@@ -44,7 +44,10 @@ def test_sandboxed_symlink_write_escape_denied(tmp_path):
     try:
         out = _python_exec(
             "open('escape_dir/studio_escape_probe.txt', 'w').write('x')",
-            None, 30, session, disable_sandbox = False,
+            None,
+            30,
+            session,
+            disable_sandbox = False,
         )
         assert "sandbox:" in out or "PermissionError" in out
         assert not probe.exists()
@@ -65,7 +68,10 @@ def test_sandboxed_symlink_remove_escape_denied(tmp_path):
     try:
         out = _python_exec(
             "import os; os.remove('escape_dir/keep_me.txt')",
-            None, 30, session, disable_sandbox = False,
+            None,
+            30,
+            session,
+            disable_sandbox = False,
         )
         assert "sandbox:" in out or "PermissionError" in out
         assert victim.exists()  # the guard blocked before the real call
@@ -77,7 +83,10 @@ def test_sandboxed_symlink_remove_escape_denied(tmp_path):
 def test_sandboxed_benign_relative_write_allowed():
     out = _python_exec(
         "f = open('backstop_ok.txt', 'w'); f.write('hi'); f.close(); print('WROTE_OK')",
-        None, 30, "backstop-benign", disable_sandbox = False,
+        None,
+        30,
+        "backstop-benign",
+        disable_sandbox = False,
     )
     assert "WROTE_OK" in out
     assert "sandbox:" not in out
@@ -89,7 +98,10 @@ def test_bypass_open_write_not_guarded(monkeypatch, tmp_path):
     target = tmp_path / "bypass_write.txt"
     out = _python_exec(
         f"open({str(target)!r}, 'w').write('x'); print('BYPASS_OK')",
-        None, 30, "backstop-bypass", disable_sandbox = True,
+        None,
+        30,
+        "backstop-bypass",
+        disable_sandbox = True,
     )
     assert "sandbox:" not in out
     assert "BYPASS_OK" in out
@@ -101,7 +113,10 @@ def test_sandboxed_imports_still_work_under_guard():
     # swallowed by importlib) or benign compute.
     out = _python_exec(
         "import json; print(json.dumps({'a': 1}))",
-        None, 30, "backstop-imports", disable_sandbox = False,
+        None,
+        30,
+        "backstop-imports",
+        disable_sandbox = False,
     )
     assert '{"a": 1}' in out
     assert "sandbox:" not in out

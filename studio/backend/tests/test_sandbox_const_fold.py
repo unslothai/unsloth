@@ -14,8 +14,8 @@ if str(_BACKEND_ROOT) not in sys.path:
 from core.inference.tools import _build_const_prop_env, _const_fold
 
 
-def _fold(expr: str, env=None):
-    return _const_fold(ast.parse(expr, mode="eval").body, env=env)
+def _fold(expr: str, env = None):
+    return _const_fold(ast.parse(expr, mode = "eval").body, env = env)
 
 
 class TestConstFoldLiterals:
@@ -66,7 +66,7 @@ class TestConstFoldJoinFormatFstring:
         assert _fold('f"{2 + 2}"') == "4"
 
     def test_fstring_all_const(self):
-        assert _fold('f"import {\'os\'}"') == "import os"
+        assert _fold("f\"import {'os'}\"") == "import os"
 
 
 class TestConstFoldEncodeDecodeBaseHex:
@@ -136,7 +136,7 @@ class TestConstPropEnv:
         tree = ast.parse('p = "2 + 2"\nx = p')
         env = _build_const_prop_env(tree)
         assert "p" in env
-        assert _const_fold(ast.parse("p", mode="eval").body, env=env) == "2 + 2"
+        assert _const_fold(ast.parse("p", mode = "eval").body, env = env) == "2 + 2"
 
     def test_reassigned_name_excluded(self):
         tree = ast.parse('p = "safe"\np = "os.system"')
@@ -151,5 +151,5 @@ class TestConstPropEnv:
     def test_concat_prop(self):
         tree = ast.parse('p = "os.system(\'rm -rf /\')"\ny = "import os; " + p')
         env = _build_const_prop_env(tree)
-        folded = _const_fold(ast.parse('"import os; " + p', mode="eval").body, env=env)
+        folded = _const_fold(ast.parse('"import os; " + p', mode = "eval").body, env = env)
         assert folded == "import os; os.system('rm -rf /')"

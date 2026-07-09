@@ -1668,20 +1668,45 @@ _FOLD_PURE_BUILTINS = frozenset(
 )
 _FOLD_STR_METHODS = frozenset(
     {
-        "join", "replace", "upper", "lower", "strip", "lstrip", "rstrip", "swapcase",
-        "title", "capitalize", "format", "zfill", "ljust", "rjust", "center",
-        "encode", "decode",
+        "join",
+        "replace",
+        "upper",
+        "lower",
+        "strip",
+        "lstrip",
+        "rstrip",
+        "swapcase",
+        "title",
+        "capitalize",
+        "format",
+        "zfill",
+        "ljust",
+        "rjust",
+        "center",
+        "encode",
+        "decode",
     }
 )
 _FOLD_B64_FUNCS = frozenset(
     {
-        "b64decode", "b64encode", "urlsafe_b64decode", "standard_b64decode",
-        "b32decode", "b16decode", "a85decode", "b85decode",
+        "b64decode",
+        "b64encode",
+        "urlsafe_b64decode",
+        "standard_b64decode",
+        "b32decode",
+        "b16decode",
+        "a85decode",
+        "b85decode",
     }
 )
 
 
-def _const_fold(node, env = None, _state = None, _depth = 0):
+def _const_fold(
+    node,
+    env = None,
+    _state = None,
+    _depth = 0,
+):
     """Fold an AST expression to a concrete str/bytes/int/list value, else None.
 
     Whitelist-only and pure: it never executes user code, never imports, never
@@ -1809,8 +1834,11 @@ def _const_fold(node, env = None, _state = None, _depth = 0):
                 lo = _const_fold(sl.lower, None, _state, _depth + 1) if sl.lower else None
                 hi = _const_fold(sl.upper, None, _state, _depth + 1) if sl.upper else None
                 st = _const_fold(sl.step, None, _state, _depth + 1) if sl.step else None
-                if (sl.lower is not None and lo is None) or (sl.upper is not None and hi is None) \
-                        or (sl.step is not None and st is None):
+                if (
+                    (sl.lower is not None and lo is None)
+                    or (sl.upper is not None and hi is None)
+                    or (sl.step is not None and st is None)
+                ):
                     return None
                 return _fold_cap(base[lo:hi:st])
             idx = _const_fold(sl, None, _state, _depth + 1)
@@ -1846,12 +1874,23 @@ def _fold_call(node, _state, _depth):
                     return chr(args[0])
                 return None
             if name == "ord":
-                if len(args) == 1 and isinstance(args[0], (str, bytes, bytearray)) and len(args[0]) == 1:
+                if (
+                    len(args) == 1
+                    and isinstance(args[0], (str, bytes, bytearray))
+                    and len(args[0]) == 1
+                ):
                     return ord(args[0])
                 return None
             fn = {
-                "str": str, "bytes": bytes, "bytearray": bytearray, "int": int,
-                "hex": hex, "oct": oct, "bin": bin, "bool": bool, "float": float,
+                "str": str,
+                "bytes": bytes,
+                "bytearray": bytearray,
+                "int": int,
+                "hex": hex,
+                "oct": oct,
+                "bin": bin,
+                "bool": bool,
+                "float": float,
                 "len": len,
             }[name]
             return _fold_cap(fn(*args))
@@ -1866,13 +1905,21 @@ def _fold_call(node, _state, _depth):
             try:
                 if mod == "base64" and attr in _FOLD_B64_FUNCS and len(args) >= 1:
                     return _fold_cap(getattr(base64, attr)(args[0]))
-                if mod == "codecs" and attr in ("decode", "encode") and len(args) >= 2 \
-                        and isinstance(args[1], str):
+                if (
+                    mod == "codecs"
+                    and attr in ("decode", "encode")
+                    and len(args) >= 2
+                    and isinstance(args[1], str)
+                ):
                     return _fold_cap(_fold_apply_codec(args[1], args[0]))
                 if mod == "binascii" and attr in ("unhexlify", "a2b_hex") and len(args) >= 1:
                     return _fold_cap(binascii.unhexlify(args[0]))
-                if mod in ("bytes", "bytearray") and attr == "fromhex" and len(args) >= 1 \
-                        and isinstance(args[0], str):
+                if (
+                    mod in ("bytes", "bytearray")
+                    and attr == "fromhex"
+                    and len(args) >= 1
+                    and isinstance(args[0], str)
+                ):
                     return _fold_cap(bytes.fromhex(args[0]))
             except Exception:
                 return None
@@ -1889,7 +1936,9 @@ def _fold_call(node, _state, _depth):
                     kwargs[kw.arg] = kv
                 call_args = []
                 for a in args:
-                    call_args.append(list(a) if attr == "join" and isinstance(a, (list, tuple)) else a)
+                    call_args.append(
+                        list(a) if attr == "join" and isinstance(a, (list, tuple)) else a
+                    )
                 return _fold_cap(getattr(recv, attr)(*call_args, **kwargs))
             except Exception:
                 return None
@@ -1914,8 +1963,11 @@ def _build_const_prop_env(tree):
 
     # Module-level single assignments.
     for stmt in getattr(tree, "body", []):
-        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
-                and isinstance(stmt.targets[0], ast.Name):
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+        ):
             name = stmt.targets[0].id
             if name in assigned_once or name in disqualified:
                 disqualified.add(name)
@@ -1996,36 +2048,110 @@ _EXEC_BUILTINS = frozenset({"eval", "exec", "compile"})
 # Deserialization sinks that reconstruct/execute arbitrary objects from bytes.
 _CODE_DESERIALIZE_SINKS = frozenset(
     {
-        "pickle.loads", "marshal.loads", "dill.loads", "cloudpickle.loads",
-        "_pickle.loads", "jsonpickle.decode",
+        "pickle.loads",
+        "marshal.loads",
+        "dill.loads",
+        "cloudpickle.loads",
+        "_pickle.loads",
+        "jsonpickle.decode",
     }
 )
 # Attribute names of pure decode/decompress primitives used to hide a payload.
 _DECODE_ATTRS = frozenset(
     {
-        "b64decode", "b64encode", "urlsafe_b64decode", "standard_b64decode",
-        "b32decode", "b16decode", "a85decode", "b85decode", "decodebytes",
-        "fromhex", "unhexlify", "a2b_hex", "a2b_base64", "decompress",
+        "b64decode",
+        "b64encode",
+        "urlsafe_b64decode",
+        "standard_b64decode",
+        "b32decode",
+        "b16decode",
+        "a85decode",
+        "b85decode",
+        "decodebytes",
+        "fromhex",
+        "unhexlify",
+        "a2b_hex",
+        "a2b_base64",
+        "decompress",
     }
 )
 _FETCH_FQ_PREFIXES = (
-    "requests.", "urllib.", "httpx.", "socket.", "aiohttp.", "urllib3.", "http.client.",
+    "requests.",
+    "urllib.",
+    "httpx.",
+    "socket.",
+    "aiohttp.",
+    "urllib3.",
+    "http.client.",
 )
 # Constant attribute names that, resolved off a sensitive module via getattr, still
 # reach shell / process / delete / dynamic-import / code-exec capabilities. A benign
 # constant attr (getpid, path, sep, getcwd, ...) is allowed; a dynamic attr blocks.
 _DANGEROUS_ATTR_NAMES = frozenset(
     {
-        "system", "popen", "popen2", "popen3", "popen4",
-        "execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe",
-        "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe",
-        "posix_spawn", "posix_spawnp", "startfile", "fork", "forkpty",
-        "remove", "unlink", "rmdir", "removedirs", "rename", "renames", "replace",
-        "truncate", "chmod", "lchmod", "chown", "lchown", "chflags", "mkdir", "makedirs",
-        "mknod", "symlink", "link", "chdir", "chroot",
-        "import_module", "__import__", "reload", "eval", "exec", "compile",
-        "run", "call", "check_call", "check_output", "Popen", "getoutput", "getstatusoutput",
-        "load_module", "exec_module", "loads", "load",
+        "system",
+        "popen",
+        "popen2",
+        "popen3",
+        "popen4",
+        "execl",
+        "execle",
+        "execlp",
+        "execlpe",
+        "execv",
+        "execve",
+        "execvp",
+        "execvpe",
+        "spawnl",
+        "spawnle",
+        "spawnlp",
+        "spawnlpe",
+        "spawnv",
+        "spawnve",
+        "spawnvp",
+        "spawnvpe",
+        "posix_spawn",
+        "posix_spawnp",
+        "startfile",
+        "fork",
+        "forkpty",
+        "remove",
+        "unlink",
+        "rmdir",
+        "removedirs",
+        "rename",
+        "renames",
+        "replace",
+        "truncate",
+        "chmod",
+        "lchmod",
+        "chown",
+        "lchown",
+        "chflags",
+        "mkdir",
+        "makedirs",
+        "mknod",
+        "symlink",
+        "link",
+        "chdir",
+        "chroot",
+        "import_module",
+        "__import__",
+        "reload",
+        "eval",
+        "exec",
+        "compile",
+        "run",
+        "call",
+        "check_call",
+        "check_output",
+        "Popen",
+        "getoutput",
+        "getstatusoutput",
+        "load_module",
+        "exec_module",
+        "loads",
+        "load",
     }
 )
 
@@ -2102,8 +2228,11 @@ def _build_exec_env(tree, const_env):
     exec_aliases: dict[str, str] = {}
     compiled_env: dict[str, tuple] = {}
     for stmt in getattr(tree, "body", []):
-        if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
-                and isinstance(stmt.targets[0], ast.Name)):
+        if not (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+        ):
             continue
         name = stmt.targets[0].id
         if store_counts.get(name, 0) != 1:
@@ -2111,8 +2240,12 @@ def _build_exec_env(tree, const_env):
         rhs = stmt.value
         if isinstance(rhs, ast.Name) and rhs.id in _EXEC_BUILTINS:
             exec_aliases[name] = rhs.id
-        elif isinstance(rhs, ast.Call) and isinstance(rhs.func, ast.Name) \
-                and rhs.func.id == "compile" and rhs.args:
+        elif (
+            isinstance(rhs, ast.Call)
+            and isinstance(rhs.func, ast.Name)
+            and rhs.func.id == "compile"
+            and rhs.args
+        ):
             v = _const_fold(rhs.args[0], const_env)
             if isinstance(v, (str, bytes, bytearray)):
                 compiled_env[name] = (_to_text(v), _compile_mode(rhs, const_env))
@@ -2129,7 +2262,11 @@ def _payload_has_obfuscation_primitive(node):
         if isinstance(sub, ast.Call):
             fn = sub.func
             fq = _fq_attr_name(fn)
-            attr = fn.attr if isinstance(fn, ast.Attribute) else (fn.id if isinstance(fn, ast.Name) else "")
+            attr = (
+                fn.attr
+                if isinstance(fn, ast.Attribute)
+                else (fn.id if isinstance(fn, ast.Name) else "")
+            )
             if fq in _CODE_DESERIALIZE_SINKS:
                 return True
             # A dynamic exec payload produced by another eval/exec/compile is a
@@ -2144,8 +2281,11 @@ def _payload_has_obfuscation_primitive(node):
                 a0 = sub.args[0]
                 if isinstance(a0, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
                     return True
-                if isinstance(a0, ast.Call) and isinstance(a0.func, ast.Name) \
-                        and a0.func.id in ("map", "filter"):
+                if (
+                    isinstance(a0, ast.Call)
+                    and isinstance(a0.func, ast.Name)
+                    and a0.func.id in ("map", "filter")
+                ):
                     return True
             if isinstance(fn, ast.Name) and fn.id in ("bytes", "bytearray") and sub.args:
                 a0 = sub.args[0]
@@ -2199,8 +2339,15 @@ def _safe_parse_inner(src, mode, depth, budget):
 
 
 def _first_unsafe_reason(info):
-    for key in ("shell_escapes", "dynamic_exec", "network_calls", "sensitive_file_reads",
-                "filesystem_violations", "signal_tampering", "exception_catching"):
+    for key in (
+        "shell_escapes",
+        "dynamic_exec",
+        "network_calls",
+        "sensitive_file_reads",
+        "filesystem_violations",
+        "signal_tampering",
+        "exception_catching",
+    ):
         for item in info.get(key, []) or []:
             desc = item.get("description")
             if desc:
@@ -2219,8 +2366,12 @@ def _recover_exec_payload(node, func_id, const_env, exec_aliases, compiled_env):
     base_mode = "eval" if func_id == "eval" else "exec"
 
     # exec(compile("...", ...)) / eval(compile("...", "<s>", "eval"))
-    if isinstance(arg0, ast.Call) and isinstance(arg0.func, ast.Name) and arg0.func.id == "compile" \
-            and arg0.args:
+    if (
+        isinstance(arg0, ast.Call)
+        and isinstance(arg0.func, ast.Name)
+        and arg0.func.id == "compile"
+        and arg0.args
+    ):
         v = _const_fold(arg0.args[0], const_env)
         if isinstance(v, (str, bytes, bytearray)):
             return ("RECOVERED", _to_text(v), _compile_mode(arg0, const_env))
@@ -2259,11 +2410,23 @@ _SANDBOX_SENSITIVE_EXACT = frozenset(
     {"/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/gshadow", "/etc/master.passwd"}
 )
 _SANDBOX_SENSITIVE_DIR_PARTS = (
-    "/etc/ssh/", "/root/", "/.ssh/", "/.aws/", "/.config/gcloud", "/.kube/", "/.docker/",
+    "/etc/ssh/",
+    "/root/",
+    "/.ssh/",
+    "/.aws/",
+    "/.config/gcloud",
+    "/.kube/",
+    "/.docker/",
 )
 _SANDBOX_SENSITIVE_TOKENS = (
-    "id_rsa", "id_ed25519", ".pem", ".netrc", "credentials", ".git-credentials",
-    "/.huggingface/token", ".kube/config",
+    "id_rsa",
+    "id_ed25519",
+    ".pem",
+    ".netrc",
+    "credentials",
+    ".git-credentials",
+    "/.huggingface/token",
+    ".kube/config",
 )
 _SANDBOX_SENSITIVE_RE = re.compile(
     r"^/proc/(?:self|\d+)/(?:environ|cmdline|maps|mem|task/\d+/environ)$"
@@ -2314,8 +2477,15 @@ def _is_pathlib_expr(node):
         if isinstance(f, ast.Attribute):
             if f.attr in _PATHLIB_CTORS:
                 return True
-            if f.attr in ("joinpath", "with_name", "with_suffix", "absolute", "resolve",
-                          "expanduser", "parent") and _is_pathlib_expr(f.value):
+            if f.attr in (
+                "joinpath",
+                "with_name",
+                "with_suffix",
+                "absolute",
+                "resolve",
+                "expanduser",
+                "parent",
+            ) and _is_pathlib_expr(f.value):
                 return True
         return False
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
@@ -2337,7 +2507,11 @@ def _resolve_join(components, env, depth):
     return result
 
 
-def _resolve_path(node, env = None, depth = 0):
+def _resolve_path(
+    node,
+    env = None,
+    depth = 0,
+):
     """Classify a path expression as LOCAL / ESCAPE / UNKNOWN (see Stage 3)."""
     if node is None or depth > _PATH_DEPTH_CAP:
         return "UNKNOWN"
@@ -2396,8 +2570,18 @@ def _resolve_path_call(node, env, depth):
     if attr == "joinpath" and isinstance(f, ast.Attribute):
         return _resolve_join([f.value, *node.args], env, depth)
     # Host-controlled / absolute anchors are never provably local.
-    if attr in ("expanduser", "expandvars", "abspath", "realpath", "getcwd", "getcwdb",
-                "gettempdir", "mkdtemp", "home", "cwd"):
+    if attr in (
+        "expanduser",
+        "expandvars",
+        "abspath",
+        "realpath",
+        "getcwd",
+        "getcwdb",
+        "gettempdir",
+        "mkdtemp",
+        "home",
+        "cwd",
+    ):
         return "UNKNOWN"
     if attr == "normpath" and node.args:
         v = _const_fold(node.args[0], env)
@@ -2405,8 +2589,9 @@ def _resolve_path_call(node, env, depth):
             return _classify_path_string(os.path.normpath(_to_text(v)))
         return "UNKNOWN"
     # Path(...) / PurePath(...) constructors (bare or pathlib.Path).
-    if (isinstance(f, ast.Name) and f.id in _PATHLIB_CTORS) or \
-            (isinstance(f, ast.Attribute) and f.attr in _PATHLIB_CTORS):
+    if (isinstance(f, ast.Name) and f.id in _PATHLIB_CTORS) or (
+        isinstance(f, ast.Attribute) and f.attr in _PATHLIB_CTORS
+    ):
         if len(node.args) == 1:
             return _resolve_path(node.args[0], env, depth + 1)
         if len(node.args) >= 2:
@@ -2417,44 +2602,78 @@ def _resolve_path_call(node, env, depth):
 
 # Mutating-op inventory (fully-qualified stdlib names).
 _FS_DELETE = frozenset(
-    {"os.remove", "os.unlink", "os.rmdir", "os.removedirs", "shutil.rmtree",
-     "pathlib.Path.unlink", "pathlib.Path.rmdir"}
+    {
+        "os.remove",
+        "os.unlink",
+        "os.rmdir",
+        "os.removedirs",
+        "shutil.rmtree",
+        "pathlib.Path.unlink",
+        "pathlib.Path.rmdir",
+    }
 )
 _FS_META = frozenset(
-    {"os.chmod", "os.lchmod", "os.chown", "os.lchown", "os.chflags", "os.truncate",
-     "shutil.chown"}
+    {"os.chmod", "os.lchmod", "os.chown", "os.lchown", "os.chflags", "os.truncate", "shutil.chown"}
 )
 _FS_MKDIR = frozenset({"os.mkdir", "os.makedirs", "os.mknod"})
 _FS_CHDIR = frozenset({"os.chdir", "os.fchdir"})
 _FS_SINGLE_MUTATE = _FS_DELETE | _FS_META | _FS_MKDIR | _FS_CHDIR
 _FS_RENAME = frozenset({"os.rename", "os.renames", "os.replace", "shutil.move"})
 _FS_COPY = frozenset(
-    {"shutil.copy", "shutil.copy2", "shutil.copyfile", "shutil.copytree",
-     "shutil.copymode", "shutil.copystat"}
+    {
+        "shutil.copy",
+        "shutil.copy2",
+        "shutil.copyfile",
+        "shutil.copytree",
+        "shutil.copymode",
+        "shutil.copystat",
+    }
 )
 _FS_SYMLINK = frozenset({"os.symlink", "os.link"})
 _FS_TEMPFILE = frozenset(
-    {"tempfile.mkstemp", "tempfile.mkdtemp", "tempfile.NamedTemporaryFile",
-     "tempfile.TemporaryFile", "tempfile.TemporaryDirectory",
-     "tempfile.SpooledTemporaryFile"}
+    {
+        "tempfile.mkstemp",
+        "tempfile.mkdtemp",
+        "tempfile.NamedTemporaryFile",
+        "tempfile.TemporaryFile",
+        "tempfile.TemporaryDirectory",
+        "tempfile.SpooledTemporaryFile",
+    }
 )
 _FS_LIBWRITER_FQ = frozenset(
-    {"numpy.save", "numpy.savez", "numpy.savez_compressed", "numpy.savetxt",
-     "np.save", "np.savez", "np.savez_compressed", "np.savetxt",
-     "torch.save", "joblib.dump", "cv2.imwrite"}
+    {
+        "numpy.save",
+        "numpy.savez",
+        "numpy.savez_compressed",
+        "numpy.savetxt",
+        "np.save",
+        "np.savez",
+        "np.savez_compressed",
+        "np.savetxt",
+        "torch.save",
+        "joblib.dump",
+        "cv2.imwrite",
+    }
 )
 # Method-name-keyed library writers (receiver is a df / array / image / figure).
 _FS_LIBWRITER_METHODS = frozenset(
-    {"to_csv", "to_parquet", "to_pickle", "to_json", "to_excel", "to_feather",
-     "savefig", "imwrite"}
+    {"to_csv", "to_parquet", "to_pickle", "to_json", "to_excel", "to_feather", "savefig", "imwrite"}
 )
 # pathlib mutating methods -> (needs_receiver_path, extra_arg_index_or_None, op).
 # unambiguous method names fire on any pathlib-looking receiver; the ambiguous
 # ones (rename/replace/mkdir/chmod) require the receiver to be a pathlib expr.
 _FS_PATHLIB_MUTATE = {
-    "write_text": None, "write_bytes": None, "unlink": None, "rmdir": None,
-    "symlink_to": 0, "hardlink_to": 0, "touch": None, "rename": 0, "replace": 0,
-    "mkdir": None, "chmod": None,
+    "write_text": None,
+    "write_bytes": None,
+    "unlink": None,
+    "rmdir": None,
+    "symlink_to": 0,
+    "hardlink_to": 0,
+    "touch": None,
+    "rename": 0,
+    "replace": 0,
+    "mkdir": None,
+    "chmod": None,
 }
 _FS_PATHLIB_READ = frozenset({"read_text", "read_bytes"})
 
@@ -2468,15 +2687,36 @@ _FS_PATHLIB_READ = frozenset({"read_text", "read_bytes"})
 # --------------------------------------------------------------------------
 _SHELL_SINK_FUNCS = frozenset(
     {
-        "os.system", "os.popen", "os.popen2", "os.popen3", "os.popen4",
-        "os.execl", "os.execle", "os.execlp", "os.execlpe",
-        "os.execv", "os.execve", "os.execvp", "os.execvpe",
-        "os.spawnl", "os.spawnle", "os.spawnlp", "os.spawnlpe",
-        "os.spawnv", "os.spawnve", "os.spawnvp", "os.spawnvpe",
-        "os.posix_spawn", "os.posix_spawnp",
-        "subprocess.run", "subprocess.call", "subprocess.check_call",
-        "subprocess.check_output", "subprocess.Popen",
-        "subprocess.getoutput", "subprocess.getstatusoutput",
+        "os.system",
+        "os.popen",
+        "os.popen2",
+        "os.popen3",
+        "os.popen4",
+        "os.execl",
+        "os.execle",
+        "os.execlp",
+        "os.execlpe",
+        "os.execv",
+        "os.execve",
+        "os.execvp",
+        "os.execvpe",
+        "os.spawnl",
+        "os.spawnle",
+        "os.spawnlp",
+        "os.spawnlpe",
+        "os.spawnv",
+        "os.spawnve",
+        "os.spawnvp",
+        "os.spawnvpe",
+        "os.posix_spawn",
+        "os.posix_spawnp",
+        "subprocess.run",
+        "subprocess.call",
+        "subprocess.check_call",
+        "subprocess.check_output",
+        "subprocess.Popen",
+        "subprocess.getoutput",
+        "subprocess.getstatusoutput",
     }
 )
 
@@ -2520,8 +2760,11 @@ def _build_shell_sink_aliases(tree):
 
     aliases: dict[str, str] = {}
     for stmt in getattr(tree, "body", []):
-        if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
-                and isinstance(stmt.targets[0], ast.Name)):
+        if not (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+        ):
             continue
         name = stmt.targets[0].id
         if store_counts.get(name, 0) != 1:
@@ -2532,7 +2775,11 @@ def _build_shell_sink_aliases(tree):
     return aliases
 
 
-def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
+def _check_signal_escape_patterns(
+    code: str,
+    _depth: int = 0,
+    _budget = None,
+):
     """Check for patterns that could escape signal-based timeouts. Returns
     (safe: bool, details: dict). Vendored from unsloth_zoo.rl_environments to
     avoid importing unsloth_zoo (needs GPU drivers; fails on Apple Silicon)."""
@@ -2584,9 +2831,7 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
             if kind == "RECOVERED":
                 parsed_kind, _ = _safe_parse_inner(src, mode, _depth, _budget)
                 if parsed_kind == "PARSED":
-                    inner_safe, inner_info = _check_signal_escape_patterns(
-                        src, _depth + 1, _budget
-                    )
+                    inner_safe, inner_info = _check_signal_escape_patterns(src, _depth + 1, _budget)
                     if not inner_safe and not inner_info.get("error"):
                         dynamic_exec.append(
                             {
@@ -2825,6 +3070,7 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
 
             Covers ``[os.system][0]``, ``(os.system,)[0]`` and ``{'k': os.system}['k']``.
             """
+
             def _elt(elt):
                 fq = _resolve_static_shell_sink(
                     elt, self.os_aliases, self.subprocess_aliases, self.shell_exec_aliases
@@ -3723,9 +3969,14 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
     def _fs_mutating(node, path_node, label):
         verdict = _resolve_path(path_node, _const_env)
         if verdict != "LOCAL":
-            reason = "escapes the session workdir" if verdict == "ESCAPE" \
+            reason = (
+                "escapes the session workdir"
+                if verdict == "ESCAPE"
                 else "cannot be proven to stay inside the session workdir"
-            _fs_block(node, f"{label}: destination path {reason} (must be a sandbox-local relative path)")
+            )
+            _fs_block(
+                node, f"{label}: destination path {reason} (must be a sandbox-local relative path)"
+            )
 
     def _fs_libwriter(node, path_node, label):
         # Best-effort library writers block only on a PROVABLE escape; a dynamic
@@ -3768,7 +4019,11 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
         def visit_Call(self, node):
             fq = _fq_attr_name(node.func)
             f = node.func
-            method = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+            method = (
+                f.attr
+                if isinstance(f, ast.Attribute)
+                else (f.id if isinstance(f, ast.Name) else "")
+            )
 
             # Callee-independent literal-sensitive-path scan (library loaders that
             # internally open(): pandas.read_csv('/etc/shadow'), np.load('/etc/passwd')).
@@ -3791,10 +4046,16 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
             # os.open(path, flags): write flags -> mutating; else read.
             if fq == "os.open" and node.args:
                 flags = node.args[1] if len(node.args) >= 2 else None
-                flag_names = {n.attr for n in ast.walk(flags) if isinstance(n, ast.Attribute)} if flags else set()
-                is_write = flags is None or bool(
-                    flag_names & {"O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND"}
-                ) or not flag_names
+                flag_names = (
+                    {n.attr for n in ast.walk(flags) if isinstance(n, ast.Attribute)}
+                    if flags
+                    else set()
+                )
+                is_write = (
+                    flags is None
+                    or bool(flag_names & {"O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND"})
+                    or not flag_names
+                )
                 if is_write:
                     _fs_mutating(node, node.args[0], "os.open(write)")
                 else:
@@ -3839,8 +4100,11 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
             # pathlib mutating / reading methods on a Path-looking receiver. A plain
             # variable receiver is left to the Stage 5 runtime realpath backstop so
             # benign `p = Path("out.txt"); p.write_text(...)` is not over-blocked.
-            if isinstance(f, ast.Attribute) and _is_pathlib_expr(f.value) \
-                    and (method in _FS_PATHLIB_MUTATE or method in _FS_PATHLIB_READ):
+            if (
+                isinstance(f, ast.Attribute)
+                and _is_pathlib_expr(f.value)
+                and (method in _FS_PATHLIB_MUTATE or method in _FS_PATHLIB_READ)
+            ):
                 recv = f.value
                 if method in _FS_PATHLIB_READ:
                     _fs_read(node, recv, f"pathlib.Path.{method}")
@@ -3904,9 +4168,7 @@ def _check_code_safety(code: str) -> str | None:
         file_reasons = [
             item.get("description", "") for item in info.get("sensitive_file_reads", [])
         ]
-        fs_reasons = [
-            item.get("description", "") for item in info.get("filesystem_violations", [])
-        ]
+        fs_reasons = [item.get("description", "") for item in info.get("filesystem_violations", [])]
         all_reasons = [
             r
             for r in reasons
@@ -3976,7 +4238,7 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
 # builtins.open). Reads are left unpatched. It is skipped entirely under
 # disable_sandbox (Bypass Permissions).
 # --------------------------------------------------------------------------
-_SANDBOX_GUARD_SRC = r'''
+_SANDBOX_GUARD_SRC = r"""
 import os as _os, builtins as _bi, functools as _ft
 _WD = _os.path.realpath(__WORKDIR__)
 
@@ -4063,7 +4325,7 @@ try:
         _wrapp(_n, True)
 except Exception:
     pass
-'''
+"""
 
 
 def _sandbox_runtime_prelude(workdir: str) -> str:
