@@ -60,7 +60,8 @@ def _probe_texts():
 
 def test_fast_sentence_transformer_matches_stock_st():
     """End-to-end: FastSentenceTransformer embeddings and tokenization must match a
-    stock SentenceTransformer load of the same checkpoint. Opt-in (needs a model)."""
+    stock SentenceTransformer load of the same checkpoint. Opt-in (needs a model) and
+    GPU-only (FastSentenceTransformer requires CUDA), so it skips on CPU-only runners."""
     model_id = os.environ.get("UNSLOTH_EMBEDDING_PARITY_MODEL")
     if not model_id:
         pytest.skip(
@@ -69,13 +70,14 @@ def test_fast_sentence_transformer_matches_stock_st():
         )
 
     torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("FastSentenceTransformer requires CUDA; skipping on CPU-only runner")
     np = pytest.importorskip("numpy")
     pytest.importorskip("sentence_transformers")
     from sentence_transformers import SentenceTransformer
 
-    use_cuda = torch.cuda.is_available()
-    device = "cuda" if use_cuda else "cpu"
-    dtype = torch.float16 if use_cuda else torch.float32
+    device = "cuda"
+    dtype = torch.float16
     texts = _probe_texts()
     max_seq_length = 256
 
@@ -96,7 +98,7 @@ def test_fast_sentence_transformer_matches_stock_st():
         max_seq_length = max_seq_length,
         dtype = dtype,
         load_in_4bit = False,
-        load_in_16bit = use_cuda,
+        load_in_16bit = True,
     )
     fast_ids = fast.tokenize([texts[0]])["input_ids"][0].tolist()
     fast_emb = np.asarray(
