@@ -17,6 +17,7 @@ from fastapi import HTTPException
 
 import core.inference.llama_keepwarm as keepwarm
 import routes.inference as inference_route
+import routes.models as models_route
 from models.inference import LoadAcceptedResponse, LoadRequest, LoadResponse
 
 
@@ -26,6 +27,7 @@ def _reset_async_load_state(monkeypatch):
     monkeypatch.setattr(inference_route, "_async_load_generation", 0)
     monkeypatch.setattr(inference_route, "_accepted_async_load_model", None)
     monkeypatch.setattr(inference_route, "_active_async_load_task", None)
+    monkeypatch.setattr(inference_route, "_sync_load_admission_count", 0)
     inference_route._background_tasks.clear()
     yield
     inference_route._background_tasks.clear()
@@ -174,6 +176,47 @@ def test_sync_load_rejected_while_async_load_pending(monkeypatch):
     assert "unsloth/A-GGUF" in exc.detail
 
 
+def test_async_load_rejected_while_sync_load_admitted(monkeypatch):
+    release = asyncio.Event()
+    sync_admitted = asyncio.Event()
+    calls = []
+
+    class _Gate:
+        async def __aenter__(self):
+            sync_admitted.set()
+            await release.wait()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            pass
+
+    async def _load(request, fastapi_request, current_subject):
+        calls.append(request.model_path)
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+    monkeypatch.setattr(keepwarm, "inference_lifecycle_gate", lambda: _Gate())
+
+    async def _scenario():
+        sync_task = asyncio.create_task(
+            inference_route.load_model(
+                _request("unsloth/Sync-GGUF", async_load = False), object(), "tester"
+            )
+        )
+        await sync_admitted.wait()
+        with pytest.raises(HTTPException) as exc_info:
+            await inference_route.load_model(_request("unsloth/Async-GGUF"), object(), "tester")
+        release.set()
+        response = await sync_task
+        return exc_info.value, response
+
+    exc, response = _run(_scenario())
+    assert exc.status_code == 409
+    assert response.model == "unsloth/Sync-GGUF"
+    assert calls == ["unsloth/Sync-GGUF"]
+
+
 def test_async_load_rejects_when_lifecycle_gate_is_busy(monkeypatch):
     calls = []
 
@@ -228,6 +271,50 @@ def test_async_load_releases_lifecycle_gate_when_cancelled_before_start(monkeypa
     assert releases == ["released"]
     assert inference_route._active_async_load_task is None
     assert inference_route._accepted_async_load_model is None
+
+
+def test_delete_rejects_pending_async_load_before_backend_marker(monkeypatch, tmp_path):
+    export_root = tmp_path / "exports"
+    target = export_root / "model"
+    target.mkdir(parents = True)
+    release = asyncio.Event()
+
+    class _LlamaBackend:
+        is_active = False
+        is_loaded = False
+        model_identifier = None
+        hf_variant = None
+
+    class _InferenceBackend:
+        loading_models = set()
+        active_model_name = None
+
+    async def _load(request, fastapi_request, current_subject):
+        await release.wait()
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+    monkeypatch.setattr(models_route, "exports_root", lambda: export_root)
+    monkeypatch.setattr(models_route, "get_inference_backend", lambda: _InferenceBackend())
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _LlamaBackend())
+
+    async def _scenario():
+        await inference_route.load_model(_request(str(target)), object(), "tester")
+        with pytest.raises(HTTPException) as exc_info:
+            await models_route.delete_finetuned_model(
+                model_path = str(target),
+                source = "exported",
+                current_subject = "tester",
+            )
+        release.set()
+        await inference_route._active_async_load_task
+        return exc_info.value
+
+    exc = _run(_scenario())
+    assert exc.status_code == 409
+    assert target.exists()
 
 
 def test_async_load_status_reports_pending_model_immediately(monkeypatch):
