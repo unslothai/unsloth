@@ -56,7 +56,9 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert "Show response model" in chat_tab_src
     assert "setShowResponseModel" in chat_tab_src
     details_src = DETAILS_TSX.read_text()
-    assert "aui-response-model-badge pointer-events-auto relative inline-flex min-h-5" in details_src
+    assert (
+        "aui-response-model-badge pointer-events-auto relative inline-flex min-h-5" in details_src
+    )
     assert "cursor-text select-text" in details_src
     assert "leading-5" in details_src
     assert "after:top-full after:h-1" in details_src
