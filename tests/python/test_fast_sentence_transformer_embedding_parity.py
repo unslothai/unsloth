@@ -79,23 +79,27 @@ def test_fast_sentence_transformer_matches_stock_st():
 
     # Control FIRST, before importing unsloth, so its global import patches never
     # touch the stock reference (mirrors the issue's "restart runtime" repro).
-    ctrl = SentenceTransformer(model_id, device=device, model_kwargs={"torch_dtype": dtype})
+    ctrl = SentenceTransformer(model_id, device = device, model_kwargs = {"torch_dtype": dtype})
     ctrl.max_seq_length = max_seq_length
     ctrl_ids = ctrl.tokenize([texts[0]])["input_ids"][0].tolist()
-    ctrl_emb = np.asarray(ctrl.encode(texts, normalize_embeddings=True, batch_size=8), dtype=np.float32)
+    ctrl_emb = np.asarray(
+        ctrl.encode(texts, normalize_embeddings = True, batch_size = 8), dtype = np.float32
+    )
 
     import unsloth  # noqa: F401
     from unsloth import FastSentenceTransformer
 
     fast = FastSentenceTransformer.from_pretrained(
         model_id,
-        max_seq_length=max_seq_length,
-        dtype=dtype,
-        load_in_4bit=False,
-        load_in_16bit=use_cuda,
+        max_seq_length = max_seq_length,
+        dtype = dtype,
+        load_in_4bit = False,
+        load_in_16bit = use_cuda,
     )
     fast_ids = fast.tokenize([texts[0]])["input_ids"][0].tolist()
-    fast_emb = np.asarray(fast.encode(texts, normalize_embeddings=True, batch_size=8), dtype=np.float32)
+    fast_emb = np.asarray(
+        fast.encode(texts, normalize_embeddings = True, batch_size = 8), dtype = np.float32
+    )
 
     # Identical tokenization = no chat-template wrapping slipped in (the #6881 defect).
     assert fast_ids == ctrl_ids, (
@@ -104,7 +108,7 @@ def test_fast_sentence_transformer_matches_stock_st():
     )
 
     cos = (ctrl_emb * fast_emb).sum(1) / (
-        np.linalg.norm(ctrl_emb, axis=1) * np.linalg.norm(fast_emb, axis=1)
+        np.linalg.norm(ctrl_emb, axis = 1) * np.linalg.norm(fast_emb, axis = 1)
     )
     assert float(cos.min()) > 0.99, (
         f"embedding parity regressed: min cosine {float(cos.min()):.5f} <= 0.99 "

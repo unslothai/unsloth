@@ -1095,9 +1095,12 @@ class FastSentenceTransformer(FastModel):
                 # still loads. max_seq_length is (re)applied below regardless.
                 transformer_module = None
                 transformer_load = getattr(Transformer, "load", None)
-                has_modules_json = FastSentenceTransformer._module_path(
-                    model_name, token, cache_dir = cache_dir, revision = revision
-                ) is not None
+                has_modules_json = (
+                    FastSentenceTransformer._module_path(
+                        model_name, token, cache_dir = cache_dir, revision = revision
+                    )
+                    is not None
+                )
                 if callable(transformer_load) and has_modules_json:
                     load_params = inspect.signature(transformer_load).parameters
                     accepts_var_kw = any(
