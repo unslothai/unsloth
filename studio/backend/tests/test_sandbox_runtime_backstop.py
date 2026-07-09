@@ -657,3 +657,54 @@ def test_sandboxed_fspath_monkeypatch_write_escape_denied(tmp_path):
     )
     assert "sandbox:" in out or "PermissionError" in out
     assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_bytes_path_in_workdir_write_allowed():
+    # A bytes path resolves to bytes from os.path.realpath; the guard must normalize it
+    # (fsdecode) so a legitimate in-workdir bytes write is not denied by a str/bytes
+    # prefix-compare TypeError.
+    out = _python_exec(
+        "f = open(b'bytes_local.txt', 'w'); f.write('hi'); f.close(); print('BYTES_OK')",
+        None,
+        30,
+        "backstop-bytes-path",
+        disable_sandbox = False,
+    )
+    assert "BYTES_OK" in out
+    assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_bytes_path_out_of_workdir_write_denied(tmp_path):
+    # The bytes-path normalization must not weaken confinement: an outside bytes write
+    # is still denied.
+    target = tmp_path / "bytes_escape.txt"
+    out = _python_exec(
+        f"open({bytes(str(target), 'utf-8')!r}, 'w').write('x'); print('WROTE')",
+        None,
+        30,
+        "backstop-bytes-escape",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_closure_recovery_of_open_blocked():
+    # object.__getattribute__(builtins.open, '__closure__') recovers the original
+    # unguarded open from the wrapper closure. The static gate now blocks the
+    # introspection (gadget dunder via __getattribute__), so it never runs.
+    out = _python_exec(
+        "import builtins\n"
+        "object.__getattribute__(builtins.open, '__closure__')[0].cell_contents"
+        "('/tmp/studio_closure_escape.txt', 'w').write('x')\n"
+        "print('CLOSURE_WROTE')\n",
+        None,
+        30,
+        "backstop-closure",
+        disable_sandbox = False,
+    )
+    assert "unsafe code detected" in out or "sandbox:" in out or "PermissionError" in out
+    assert not os.path.exists("/tmp/studio_closure_escape.txt")

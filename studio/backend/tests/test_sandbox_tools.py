@@ -1219,3 +1219,118 @@ class TestRound6Bypasses:
         _ok("import os\nos.system('echo hello')")
         _ok("import os\nos.system('ls -la')")
         _ok("import subprocess\nsubprocess.run(['echo', 'hi'])")
+
+
+class TestRound7Bypasses:
+    """Seventh-round Codex findings: nested-scope alias counting, non-bare compile
+    aliases, child-process writers, literal **kwargs reads, assigned pathlib reads,
+    wrapper option arguments, object.__getattribute__ obfuscation, runpy sinks, and
+    shutil copy-source traversal reads."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A nested reassignment of an alias name must NOT inflate the outer scope's
+            # single-assignment count and drop the real module-level sink alias.
+            "import os\ns = os.system\ndef f():\n    s = 1\ns('rm -rf /')",
+            "e = exec\ndef f():\n    e = 1\ne(\"__import__('os').system('id')\")",
+            "import os\ns = os.system\nclass C:\n    s = 1\ns('rm -rf /')",
+        ],
+    )
+    def test_nested_reassignment_keeps_outer_alias(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import types, builtins\n"
+            "def f(src):\n    c = builtins.compile(src, '<s>', 'exec')\n"
+            "    types.FunctionType(c, {})()\nf('x')",
+            "import types\nfrom builtins import compile as comp\n"
+            "def f(src):\n    c = comp(src, '<s>', 'exec')\n    types.FunctionType(c, {})()\nf('x')",
+        ],
+    )
+    def test_non_bare_compile_functiontype_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['touch', '/tmp/x'])",
+            "import os\nos.system('tee /tmp/x')",
+            "import os\nos.system('cp a /tmp/x')",
+            "import os\nos.system('mv a /tmp/x')",
+            "import os\nos.system('mkdir /tmp/x')",
+            "import os\nos.system('truncate -s 0 /tmp/x')",
+        ],
+    )
+    def test_child_process_writers_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_open_literal_kwargs_unpack_read_blocked(self):
+        assert _check_code_safety("open(**{'file': '../../../etc/passwd'}).read()") is not None
+        # A benign relative kwargs read stays allowed.
+        _ok("open(**{'file': 'data.csv'}).read()")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path\np = Path('..') / '..' / '..' / 'etc' / 'passwd'\np.read_text()",
+            "from pathlib import Path\nbase = Path('..') / '..'\np = base / 'etc' / 'passwd'\np.read_text()",
+        ],
+    )
+    def test_assigned_pathlib_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_assigned_benign_pathlib_read_allowed(self):
+        _ok("from pathlib import Path\np = Path('data') / 'train.csv'\np.read_text()")
+
+    def test_wrapper_option_argument_interpreter_blocked(self):
+        # `stdbuf -o L python -c ...`: the option argument L must not be mistaken for the
+        # command, so the interpreter that follows is still detected.
+        assert _check_code_safety("import os\nos.system('stdbuf -o L python -c \"x\"')") is not None
+        assert _check_code_safety("import os\nos.system('ionice -c 2 python evil.py')") is not None
+        # env -i rm must still be caught (blocked command is not treated as a flag arg).
+        assert _check_code_safety("import os\nos.system('env -i rm -rf /')") is not None
+        # No false positive: grep's search pattern is not a command.
+        _ok("import os\nos.system('timeout 5 grep -r curl .')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import builtins\nobject.__getattribute__(builtins, 'eval')(\"open('/etc/passwd').read()\")",
+            "import subprocess\ntype.__getattribute__(subprocess, 'call')(['id'])",
+            "import builtins\nobject.__getattribute__(builtins.open, '__closure__')",
+        ],
+    )
+    def test_object_getattribute_obfuscation_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import runpy\nrunpy.run_path('evil.py')",
+            "import runpy\nrunpy.run_module('evil')",
+            "import runpy as r\nr.run_path('evil.py')",
+        ],
+    )
+    def test_runpy_execution_sinks_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_runpy_non_exec_allowed(self):
+        _ok("import runpy\nx = runpy.__doc__")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import shutil\nshutil.copy('../../../etc/passwd', 'p')",
+            "import shutil\nshutil.copyfile('../../../etc/passwd', 'p')",
+            "import shutil\nshutil.copy('/etc/passwd', 'p')",
+            "import shutil\nshutil.move('../../../etc/shadow', 'p')",
+        ],
+    )
+    def test_shutil_copy_source_traversal_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_shutil_copy_benign_allowed(self):
+        _ok("import shutil\nshutil.copy('data.csv', 'backup.csv')")
