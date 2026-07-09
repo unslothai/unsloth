@@ -616,10 +616,12 @@ def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1
                 f"bind {loopback_host} or close firewall access to keep Studio private.",
                 warn,
             )
-    elif not _cloudflare_flag:
+    elif _cloudflare_flag is False or _cloudflare_flag is None:
+        # None = off by default (no flag); False = explicit --no-cloudflare.
+        _reason = "default" if _cloudflare_flag is None else "--no-cloudflare"
         if _public_reachable is True:
             _emit(
-                "  Cloudflare tunnel: OFF (default). The raw port is still "
+                f"  Cloudflare tunnel: OFF ({_reason}). The raw port is still "
                 "reachable from the public internet (see the reachability check above): "
                 "pass --cloudflare to also expose a public Cloudflare HTTPS link, or "
                 f"bind {loopback_host} to keep Studio private.",
@@ -627,13 +629,13 @@ def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1
             )
         elif _public_reachable is False:
             _emit(
-                "  Cloudflare tunnel: OFF (default). Studio is reachable on your "
+                f"  Cloudflare tunnel: OFF ({_reason}). Studio is reachable on your "
                 "local network only. Pass --cloudflare to expose a public "
                 "Cloudflare HTTPS link."
             )
         else:
             _emit(
-                "  Cloudflare tunnel: OFF (default). There is no Cloudflare "
+                f"  Cloudflare tunnel: OFF ({_reason}). There is no Cloudflare "
                 "public link. Raw port reachability was not verified; pass --cloudflare "
                 "to expose a public Cloudflare HTTPS link, or "
                 f"bind {loopback_host} or close firewall access to keep Studio private.",
@@ -877,7 +879,9 @@ _public_reachable = None
 
 _cloudflare_requested = False
 # Cloudflare tunnel is opt-in (off unless --cloudflare / --secure is passed).
-_cloudflare_flag = False
+# Tri-state, mirroring the CLI: None = unset/off by default, True = on,
+# False = explicit --no-cloudflare. run_server overwrites it before the banner.
+_cloudflare_flag = None
 
 
 _DEFAULT_FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -1117,10 +1121,12 @@ def run_server(
 
     initialize_parent_lifetime()
 
-    # Cloudflare tunnel is opt-in (tri-state: None = unset = off). --secure exposes
-    # ONLY the Cloudflare link, so it implies the tunnel: reject the explicit
-    # --secure --no-cloudflare contradiction, then force a loopback bind so the raw
-    # port is never public (even with -H 0.0.0.0). Otherwise resolve None -> off.
+    # Cloudflare tunnel is opt-in (tri-state: None = unset = off, True = on,
+    # False = explicit --no-cloudflare). --secure exposes ONLY the Cloudflare link,
+    # so it implies the tunnel: reject the explicit --secure --no-cloudflare
+    # contradiction, then force a loopback bind so the raw port is never public
+    # (even with -H 0.0.0.0). Otherwise keep the tri-state (None stays None) so the
+    # startup banner can tell "off by default" from an explicit --no-cloudflare.
     if secure:
         if cloudflare is False:
             raise SystemExit(
@@ -1128,8 +1134,6 @@ def run_server(
             )
         cloudflare = True
         host = "127.0.0.1"
-    else:
-        cloudflare = bool(cloudflare)
 
     # `unsloth studio run` installs its own resolved policy and passes None here.
     _apply_cli_tool_policy(enable_tools)

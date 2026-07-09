@@ -868,7 +868,12 @@ def studio_default(
                 args.append("--silent")
             if api_only:
                 args.append("--api-only")
-            # Forward only an explicit polarity; None -> run.py default (tunnel off).
+            # This path runs the in-tree run.py (resolved from this CLI's own package
+            # by _find_run_py, so always the same version), so an unset default (None)
+            # is safe to leave off and the child's default-off applies. Forward only an
+            # explicit polarity. (The `run` subcommand re-execs the studio venv's
+            # console script, which may be an older build, so it forwards the default
+            # explicitly; see there.)
             if cloudflare is True:
                 args.append("--cloudflare")
             elif cloudflare is False:
@@ -1283,10 +1288,13 @@ def run(
         # Typer claims --parallel outside ctx.args; without this the
         # child reverts to its default and silently drops the value.
         args.extend(["--parallel", str(parallel)])
-        # Forward only an explicit polarity; None -> child default (tunnel off).
+        # Always forward an explicit polarity: a mixed-version studio venv whose old
+        # default was --cloudflare-on must not silently re-enable the tunnel. --secure
+        # implies the tunnel, so forward nothing then and let --secure drive it
+        # (--no-cloudflare would contradict --secure).
         if cloudflare is True:
             args.append("--cloudflare")
-        elif cloudflare is False:
+        elif not secure:
             args.append("--no-cloudflare")
         args.append("--secure" if secure else "--no-secure")
         args.append("--tensor-parallel" if tensor_parallel else "--no-tensor-parallel")

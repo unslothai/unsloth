@@ -107,25 +107,24 @@ def _invoke_run(monkeypatch, args):
 
 
 @pytest.mark.parametrize(
-    "user_flag,expected",
+    "extra_flags,expected,unexpected",
     [
-        (None, None),  # default off -> forward neither polarity
-        ("--cloudflare", "--cloudflare"),
-        ("--no-cloudflare", "--no-cloudflare"),
+        # Default (no flag) forwards --no-cloudflare explicitly so a mixed-version
+        # child venv (old default: --cloudflare on) can't re-enable the tunnel.
+        ([], "--no-cloudflare", "--cloudflare"),
+        (["--cloudflare"], "--cloudflare", "--no-cloudflare"),
+        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare"),
+        # --secure implies the tunnel; never forward --no-cloudflare with it.
+        (["--secure"], None, "--no-cloudflare"),
     ],
 )
-def test_run_reexec_forwards_cloudflare_polarity(monkeypatch, user_flag, expected):
-    extras = [user_flag] if user_flag else []
-    captured = _invoke_run(monkeypatch, _BASE + extras)
+def test_run_reexec_forwards_cloudflare_polarity(monkeypatch, extra_flags, expected, unexpected):
+    captured = _invoke_run(monkeypatch, _BASE + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
-    if expected is None:
-        # default (no flag): neither polarity is forwarded; child defaults to off.
-        assert "--cloudflare" not in argv and "--no-cloudflare" not in argv, argv
-    else:
-        unexpected = "--no-cloudflare" if expected == "--cloudflare" else "--cloudflare"
+    if expected is not None:
         assert expected in argv, f"expected {expected} in child argv; got {argv}"
-        assert unexpected not in argv, f"unexpected {unexpected} in child argv; got {argv}"
+    assert unexpected not in argv, f"unexpected {unexpected} in child argv; got {argv}"
 
 
 # ── re-exec forwarding: plain `unsloth studio` ───────────────────────
@@ -163,24 +162,25 @@ def _invoke_studio_default(
 
 
 @pytest.mark.parametrize(
-    "user_flag,expected",
+    "extra_flags,present,absent",
     [
-        (None, None),  # default off -> forward neither polarity
-        ("--cloudflare", "--cloudflare"),
-        ("--no-cloudflare", "--no-cloudflare"),
+        # Plain path runs the same-version in-tree run.py, so an unset default
+        # forwards neither polarity and the child's default-off applies.
+        ([], None, ["--cloudflare", "--no-cloudflare"]),
+        (["--cloudflare"], "--cloudflare", ["--no-cloudflare"]),
+        (["--no-cloudflare"], "--no-cloudflare", ["--cloudflare"]),
+        # --secure implies the tunnel; never forward --no-cloudflare with it.
+        (["--secure"], None, ["--no-cloudflare"]),
     ],
 )
-def test_studio_default_reexec_forwards_cloudflare(monkeypatch, user_flag, expected):
-    extras = [user_flag] if user_flag else []
-    captured = _invoke_studio_default(monkeypatch, ["-H", "0.0.0.0"] + extras)
+def test_studio_default_reexec_forwards_cloudflare(monkeypatch, extra_flags, present, absent):
+    captured = _invoke_studio_default(monkeypatch, ["-H", "0.0.0.0"] + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
-    if expected is None:
-        assert "--cloudflare" not in argv and "--no-cloudflare" not in argv, argv
-    else:
-        unexpected = "--no-cloudflare" if expected == "--cloudflare" else "--cloudflare"
-        assert expected in argv, f"expected {expected}; got {argv}"
-        assert unexpected not in argv, f"unexpected {unexpected}; got {argv}"
+    if present is not None:
+        assert present in argv, f"expected {present}; got {argv}"
+    for flag in absent:
+        assert flag not in argv, f"unexpected {flag}; got {argv}"
 
 
 # ── in-venv path forwards cloudflare into run_server ─────────────────

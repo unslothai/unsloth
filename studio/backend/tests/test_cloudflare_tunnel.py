@@ -833,6 +833,31 @@ def test_cloudflare_line_states_disabled_when_off(monkeypatch):
     assert "local network only" in out
 
 
+def test_cloudflare_line_labels_unset_as_default(monkeypatch):
+    # None = off by default (no flag) -> banner says "(default)", not "(--no-cloudflare)".
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = False,
+        cloudflare_requested = False,
+        cloudflare_flag = None,
+    )
+    assert "Cloudflare tunnel: OFF (default)" in out
+    assert "--no-cloudflare" not in out
+
+
+def test_cloudflare_line_labels_explicit_no_cloudflare(monkeypatch):
+    # False = explicit --no-cloudflare -> banner says "(--no-cloudflare)".
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = False,
+        cloudflare_requested = False,
+        cloudflare_flag = False,
+    )
+    assert "Cloudflare tunnel: OFF (--no-cloudflare)" in out
+
+
 def test_cloudflare_line_states_failed_when_requested_but_no_url(monkeypatch):
     out = _run_print_cloudflare_line(
         monkeypatch,

@@ -33,6 +33,10 @@ from run import _cloudflare_tunnel_should_start as should_start  # noqa: E402
         (False, "0.0.0.0", False, False, False, False),
         (False, "::", False, False, False, False),
         (False, "127.0.0.1", True, False, False, False),
+        # Unset (None, no flag) behaves as off for non-secure binds.
+        (None, "0.0.0.0", False, False, False, False),
+        (None, "::", False, False, False, False),
+        (None, "127.0.0.1", False, False, False, False),
         # Non-secure api-only never tunnels (Tauri).
         (True, "0.0.0.0", False, True, False, False),
         (True, "::", False, True, False, False),
