@@ -216,6 +216,7 @@ unsloth studio --secure -p 8888
 ```bash
 unsloth studio -H 0.0.0.0 -p 8888
 ```
+The Cloudflare tunnel is **off by default**: `-H 0.0.0.0` exposes the raw port only, not a public internet URL. Add `--cloudflare` to also publish a public `https://*.trycloudflare.com` link for a wildcard bind, or prefer `--secure` (above), which keeps the raw port private.
 
 Server-side tools (web search, Python and terminal code execution) run as your user and are on by default. Anyone who can reach the server with the API key can run code on this machine, so keep your API key private and pass `--disable-tools` when exposing Studio.
 

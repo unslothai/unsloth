@@ -691,13 +691,14 @@ def _argparse_default(source, option):
     return None
 
 
-def test_run_server_cloudflare_default_true():
+def test_run_server_cloudflare_default_off():
     defaults = _func_param_defaults(_RUN_PY.read_text(), "run_server")
-    assert defaults.get("cloudflare") is True
+    assert "cloudflare" in defaults
+    assert defaults["cloudflare"] is None
 
 
-def test_argparse_cloudflare_default_true():
-    assert _argparse_default(_RUN_PY.read_text(), "--cloudflare") is True
+def test_argparse_cloudflare_default_off():
+    assert _argparse_default(_RUN_PY.read_text(), "--cloudflare") is None
 
 
 def test_verify_global_reachability_marks_private_address_unreachable():

@@ -619,21 +619,23 @@ def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1
     elif not _cloudflare_flag:
         if _public_reachable is True:
             _emit(
-                "  Cloudflare tunnel: OFF (--no-cloudflare). The raw port is still "
+                "  Cloudflare tunnel: OFF (default). The raw port is still "
                 "reachable from the public internet (see the reachability check above): "
-                "--no-cloudflare disables only the Cloudflare link, not the public bind.",
+                "pass --cloudflare to also expose a public Cloudflare HTTPS link, or "
+                f"bind {loopback_host} to keep Studio private.",
                 warn,
             )
         elif _public_reachable is False:
             _emit(
-                "  Cloudflare tunnel: OFF (--no-cloudflare). Studio is reachable on your "
-                "local network only. Omit --no-cloudflare to expose a public "
+                "  Cloudflare tunnel: OFF (default). Studio is reachable on your "
+                "local network only. Pass --cloudflare to expose a public "
                 "Cloudflare HTTPS link."
             )
         else:
             _emit(
-                "  Cloudflare tunnel: OFF (--no-cloudflare). There is no Cloudflare "
-                "public link. Raw port reachability was not verified; "
+                "  Cloudflare tunnel: OFF (default). There is no Cloudflare "
+                "public link. Raw port reachability was not verified; pass --cloudflare "
+                "to expose a public Cloudflare HTTPS link, or "
                 f"bind {loopback_host} or close firewall access to keep Studio private.",
                 warn,
             )
@@ -874,7 +876,8 @@ _cloudflare_url = None
 _public_reachable = None
 
 _cloudflare_requested = False
-_cloudflare_flag = True
+# Cloudflare tunnel is opt-in (off unless --cloudflare / --secure is passed).
+_cloudflare_flag = False
 
 
 _DEFAULT_FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -1075,7 +1078,7 @@ def run_server(
     silent: bool = False,
     api_only: bool = False,
     llama_parallel_slots: int = 1,
-    cloudflare: bool = True,
+    cloudflare: "Optional[bool]" = None,
     secure: bool = False,
     enable_tools: "Optional[bool]" = None,
     emit_tauri_port: bool = True,
@@ -1090,6 +1093,9 @@ def run_server(
         silent: Suppress startup messages
         api_only: API server only, no frontend (for Tauri desktop app)
         llama_parallel_slots: parallel slots for llama-server
+        cloudflare: opt in to the public Cloudflare HTTPS tunnel for a wildcard
+            bind. Tri-state: None (unset) and False both mean off; True enables it.
+            --secure implies it (True) and rejects an explicit False.
         enable_tools: explicit --enable-tools/--disable-tools policy; None leaves
             the default (tools on, per-request enable_tools honored)
         emit_tauri_port: print the machine-readable TAURI_PORT line the desktop
@@ -1111,14 +1117,19 @@ def run_server(
 
     initialize_parent_lifetime()
 
-    # --secure exposes only the Cloudflare link: force a loopback bind so the raw
-    # port is never public (even with -H 0.0.0.0), and reject the contradictory combo.
-    if secure and not cloudflare:
-        raise SystemExit(
-            "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link"
-        )
+    # Cloudflare tunnel is opt-in (tri-state: None = unset = off). --secure exposes
+    # ONLY the Cloudflare link, so it implies the tunnel: reject the explicit
+    # --secure --no-cloudflare contradiction, then force a loopback bind so the raw
+    # port is never public (even with -H 0.0.0.0). Otherwise resolve None -> off.
     if secure:
+        if cloudflare is False:
+            raise SystemExit(
+                "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare."
+            )
+        cloudflare = True
         host = "127.0.0.1"
+    else:
+        cloudflare = bool(cloudflare)
 
     # `unsloth studio run` installs its own resolved policy and passes None here.
     _apply_cli_tool_policy(enable_tools)
@@ -1476,11 +1487,11 @@ def _build_arg_parser():
     parser.add_argument(
         "--cloudflare",
         action = argparse.BooleanOptionalAction,
-        default = True,
-        help = "Auto-create a free Cloudflare HTTPS tunnel for non-api-only wildcard "
-        "binds (0.0.0.0 or ::), exposing Studio on a PUBLIC internet URL (default on). "
-        "Pass --no-cloudflare to disable that Cloudflare URL; it does not change a "
-        "public wildcard bind. --api-only keeps it off unless paired with --secure.",
+        default = None,
+        help = "Expose Studio on a PUBLIC internet URL via a free Cloudflare HTTPS "
+        "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
+        "pass --cloudflare to enable it (--secure implies it), --no-cloudflare to "
+        "force it off. It does not change a raw wildcard bind.",
     )
     parser.add_argument(
         "--secure",
@@ -1550,7 +1561,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not _PARALLEL_MIN <= args.parallel <= _PARALLEL_MAX:
         parser.error(f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}")
-    if args.secure and not args.cloudflare:
+    if args.secure and args.cloudflare is False:
         parser.error(
             "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare"
         )

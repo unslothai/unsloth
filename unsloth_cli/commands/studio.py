@@ -713,13 +713,13 @@ def studio_default(
             f"defaults to {_PARALLEL_DEFAULT_RUN}."
         ),
     ),
-    cloudflare: bool = typer.Option(
-        True,
+    cloudflare: Optional[bool] = typer.Option(
+        None,
         "--cloudflare/--no-cloudflare",
-        help = "Auto-create a free Cloudflare HTTPS tunnel for non-api-only wildcard "
-        "binds (0.0.0.0 or ::), exposing Studio on a PUBLIC internet URL (default on). "
-        "Pass --no-cloudflare to disable that Cloudflare URL; it does not change a "
-        "public wildcard bind. --api-only keeps it off unless paired with --secure.",
+        help = "Expose Studio on a PUBLIC internet URL via a free Cloudflare HTTPS "
+        "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
+        "pass --cloudflare to enable it (--secure implies it). --no-cloudflare forces "
+        "it off but does not change a raw wildcard bind.",
     ),
     secure: bool = typer.Option(
         False,
@@ -766,13 +766,14 @@ def studio_default(
                 err = True,
             )
             raise typer.Exit(2)
-        # Same for --no-cloudflare: it would not reach the subcommand.
-        if not cloudflare:
+        # Same for --cloudflare/--no-cloudflare: it would not reach the subcommand.
+        if cloudflare is not None:
+            _cf_flag = "--cloudflare" if cloudflare else "--no-cloudflare"
             typer.echo(
-                f"Error: --no-cloudflare on `unsloth studio` applies to the "
+                f"Error: {_cf_flag} on `unsloth studio` applies to the "
                 f"plain-server path only. For `unsloth studio "
                 f"{ctx.invoked_subcommand}`, put it after the subcommand: "
-                f"`unsloth studio {ctx.invoked_subcommand} --no-cloudflare ...`",
+                f"`unsloth studio {ctx.invoked_subcommand} {_cf_flag} ...`",
                 err = True,
             )
             raise typer.Exit(2)
@@ -821,7 +822,7 @@ def studio_default(
 
     # --secure requires the tunnel; force a loopback bind.
     if secure:
-        if not cloudflare:
+        if cloudflare is False:
             typer.echo(
                 "Error: --secure requires the Cloudflare tunnel; do not combine it "
                 "with --no-cloudflare.",
@@ -867,8 +868,11 @@ def studio_default(
                 args.append("--silent")
             if api_only:
                 args.append("--api-only")
-            # Forward the explicit polarity (matches run.py's BooleanOptionalAction).
-            args.append("--cloudflare" if cloudflare else "--no-cloudflare")
+            # Forward only an explicit polarity; None -> run.py default (tunnel off).
+            if cloudflare is True:
+                args.append("--cloudflare")
+            elif cloudflare is False:
+                args.append("--no-cloudflare")
             args.append("--secure" if secure else "--no-secure")
             # Forward an explicit tool policy; None -> run.py leaves it unset (tools on).
             if enable_tools is True:
@@ -1106,13 +1110,13 @@ def run(
             f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value)."
         ),
     ),
-    cloudflare: bool = typer.Option(
-        True,
+    cloudflare: Optional[bool] = typer.Option(
+        None,
         "--cloudflare/--no-cloudflare",
-        help = "Auto-create a free Cloudflare HTTPS tunnel for non-api-only wildcard "
-        "binds (0.0.0.0 or ::), exposing Studio on a PUBLIC internet URL (default on). "
-        "Pass --no-cloudflare to disable that Cloudflare URL; it does not change a "
-        "public wildcard bind. --api-only keeps it off unless paired with --secure.",
+        help = "Expose Studio on a PUBLIC internet URL via a free Cloudflare HTTPS "
+        "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
+        "pass --cloudflare to enable it (--secure implies it). --no-cloudflare forces "
+        "it off but does not change a raw wildcard bind.",
     ),
     secure: bool = typer.Option(
         False,
@@ -1207,7 +1211,7 @@ def run(
 
     # --secure requires the tunnel; force a loopback bind so the raw port is never public.
     if secure:
-        if not cloudflare:
+        if cloudflare is False:
             typer.echo(
                 "Error: --secure requires the Cloudflare tunnel; do not combine it "
                 "with --no-cloudflare.",
@@ -1279,8 +1283,11 @@ def run(
         # Typer claims --parallel outside ctx.args; without this the
         # child reverts to its default and silently drops the value.
         args.extend(["--parallel", str(parallel)])
-        # Forward the explicit polarity (same rationale as --load-in-4bit above).
-        args.append("--cloudflare" if cloudflare else "--no-cloudflare")
+        # Forward only an explicit polarity; None -> child default (tunnel off).
+        if cloudflare is True:
+            args.append("--cloudflare")
+        elif cloudflare is False:
+            args.append("--no-cloudflare")
         args.append("--secure" if secure else "--no-secure")
         args.append("--tensor-parallel" if tensor_parallel else "--no-tensor-parallel")
         if verbose:
