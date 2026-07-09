@@ -1092,9 +1092,8 @@ def matmul_lora(
         else:
             W = W.contiguous()
         # custom_fwd disables autocast, so reconcile the activation dtype to the
-        # weight (compute) dtype the way autocast would for a plain Linear. This
-        # covers fp32 hidden states (e.g. fp32 fast_rms_layernorm output) meeting
-        # fp16/bf16 base weights.
+        # weight (compute) dtype as autocast would (e.g. fp32 fast_rms_layernorm
+        # output meeting fp16/bf16 base weights).
         if X.dtype != W.dtype:
             X = X.to(W.dtype)
             dtype = W.dtype

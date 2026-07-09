@@ -95,12 +95,10 @@ class LoRA_MLP(torch.autograd.Function):
         h = _forward_function(e, g)
         i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
-        # custom_fwd disables autocast, so X may arrive in a different dtype than
-        # the fused-op compute dtype (e.g. fp32 hidden states from
-        # fast_rms_layernorm meeting fp16/bf16 base weights). matmul_lora computes
-        # in the base weight dtype (== e.dtype); keep the saved activation in that
-        # same dtype so the backward pass stays dtype-consistent. The incoming
-        # dtype is remembered in ctx.input_dtype and restored on the returned dX.
+        # custom_fwd disables autocast, so X may mismatch the compute dtype (e.g.
+        # fp32 fast_rms_layernorm output meeting fp16/bf16 base weights). Pin the
+        # saved activation to the compute dtype (== e.dtype) so backward stays
+        # consistent; remember the incoming dtype to restore it on the dX grad.
         ctx.input_dtype = dtype
         X = X.to(e.dtype)
 
