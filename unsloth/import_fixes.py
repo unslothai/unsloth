@@ -173,7 +173,9 @@ if not UNSLOTH_ENABLE_LOGGING:
     warnings.filterwarnings("ignore", message = "`int4_weight_only` is deprecated")
     warnings.filterwarnings("ignore", message = "`int8_weight_only` is deprecated")
     # torch._check_is_size FutureWarning (called by bitsandbytes 4-bit dequant)
-    warnings.filterwarnings("ignore", message = r"_check_is_size will be removed", category = FutureWarning)
+    warnings.filterwarnings(
+        "ignore", message = r"_check_is_size will be removed", category = FutureWarning
+    )
 
     # TorchAO deprecated import paths (https://github.com/pytorch/ao/issues/2752)
     warnings.filterwarnings(
@@ -261,12 +263,20 @@ def fix_torch_check_is_size():
     keeps working. The FutureWarning itself is silenced in suppress_cuda_printf."""
     try:
         import torch
+
         if hasattr(torch, "_check_is_size"):
             return
-        def _check_is_size(i, message = None, *, max = None):
+
+        def _check_is_size(
+            i,
+            message = None,
+            *,
+            max = None,
+        ):
             torch._check(i >= 0, message)
             if max is not None:
                 torch._check(i <= max, message)
+
         torch._check_is_size = _check_is_size
     except Exception:
         return
