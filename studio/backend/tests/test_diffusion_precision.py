@@ -265,9 +265,13 @@ def test_quantize_explicit_torchao_probes_kernel(monkeypatch):
     # encoder yet the kernel is broken, report dense (None) instead of crashing on the first forward.
     _stub_torch(monkeypatch, cc = (10, 0))
     monkeypatch.setattr(dp, "_te_scheme_probe", lambda scheme, device: False)
-    monkeypatch.setattr(dp, "_cast_fp8_dynamic", lambda *a: pytest.fail("must not cast on probe fail"))
+    monkeypatch.setattr(
+        dp, "_cast_fp8_dynamic", lambda *a: pytest.fail("must not cast on probe fail")
+    )
     monkeypatch.setattr(dp, "_cast_nvfp4", lambda *a: pytest.fail("must not cast on probe fail"))
-    monkeypatch.setattr(dp, "_cast_int8_selective", lambda *a: pytest.fail("must not cast on probe fail"))
+    monkeypatch.setattr(
+        dp, "_cast_int8_selective", lambda *a: pytest.fail("must not cast on probe fail")
+    )
     pipe = types.SimpleNamespace(text_encoder = object())
     assert quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic") is None
     assert quantize_text_encoders(pipe, _target(), mode = "nvfp4") is None

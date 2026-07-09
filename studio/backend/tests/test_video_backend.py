@@ -1138,7 +1138,9 @@ def test_video_speed_off_suppresses_auto_companion_quant(fake_runtime, monkeypat
     te_modes: list = []
     vae_modes: list = []
     monkeypatch.setattr(
-        video_mod, "quantize_text_encoders", lambda pipe, target, *, mode, **kw: te_modes.append(mode)
+        video_mod,
+        "quantize_text_encoders",
+        lambda pipe, target, *, mode, **kw: te_modes.append(mode),
     )
     monkeypatch.setattr(
         video_mod, "quantize_vae", lambda pipe, target, *, mode, **kw: vae_modes.append(mode)
