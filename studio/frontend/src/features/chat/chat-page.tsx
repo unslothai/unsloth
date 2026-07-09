@@ -1690,12 +1690,17 @@ export function ChatPage({
         }
         return;
       }
+      const previousConfig = currentRuntimePerModelConfig({
+        includeMaxSeqLength: true,
+      });
       const hasAppliedConfig = applyModelLoadConfigToRuntime(
         selection.config ?? rememberedConfigFor(selection),
       );
-      await selectModel(
-        hasAppliedConfig ? { ...selection, keepSpeculative: true } : selection,
-      );
+      await selectModel({
+        ...selection,
+        ...(hasAppliedConfig ? { keepSpeculative: true } : {}),
+        previousConfig,
+      });
     },
     [selectModel, loadingModel, rememberedConfigFor],
   );

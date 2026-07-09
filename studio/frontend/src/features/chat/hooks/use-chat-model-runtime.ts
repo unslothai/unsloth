@@ -47,6 +47,7 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import { isExternalModelId } from "../external-providers";
+import { applyPerModelConfigToRuntime } from "@/features/model-picker/model-config/apply-per-model-config";
 import type { PerModelConfig } from "@/features/model-picker";
 import type {
   ChatLoraSummary,
@@ -75,6 +76,7 @@ export type SelectedModelInput = {
    *  instead of resetting it to the standing preference. */
   keepSpeculative?: boolean;
   config?: PerModelConfig;
+  previousConfig?: PerModelConfig;
 };
 
 // Approved fingerprints by checkpoint, so a rollback after a failed switch can resend
@@ -1148,6 +1150,9 @@ export function useChatModelRuntime() {
         }
       } catch (error) {
         if (abortCtrl.signal.aborted) return; // User cancelled, nothing to report
+        if (typeof selection !== "string" && selection.previousConfig) {
+          applyPerModelConfigToRuntime(selection.previousConfig);
+        }
         resetLoadingUi();
         const message =
           error instanceof Error ? error.message : "Failed to load model";

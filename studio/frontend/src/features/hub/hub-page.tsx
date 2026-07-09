@@ -3,6 +3,7 @@
 
 import {
   applyModelLoadConfigToRuntime,
+  currentRuntimePerModelConfig,
   resolveInitialConfig,
 } from "@/features/model-picker";
 import { hfModelFitsDevice } from "@/features/model-picker/components/model-selector/recommended-fit";
@@ -1107,6 +1108,9 @@ export function ModelsPage() {
       const rememberedConfig = resolvedConfig.remembered
         ? resolvedConfig.config
         : null;
+      const previousConfig = currentRuntimePerModelConfig({
+        includeMaxSeqLength: true,
+      });
       const hasAppliedConfig = applyModelLoadConfigToRuntime(rememberedConfig);
       void selectModel({
         id: runId,
@@ -1115,6 +1119,7 @@ export function ModelsPage() {
         expectedBytes: opts.expectedBytes,
         keepSpeculative: hasAppliedConfig,
         throwOnError: true,
+        previousConfig,
       })
         .then(() => {
           // Read fresh: the load is async, so the checkpoint may have changed.

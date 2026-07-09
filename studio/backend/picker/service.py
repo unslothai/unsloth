@@ -39,7 +39,11 @@ def validate_chat_template(template: str) -> ValidateChatTemplateResponse:
     if not text:
         return ValidateChatTemplateResponse(valid = True, error = None)
     try:
-        env = ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
+        env = ImmutableSandboxedEnvironment(
+            trim_blocks = True,
+            lstrip_blocks = True,
+            extensions = ["jinja2.ext.loopcontrols"],
+        )
         env.parse(text)
         return ValidateChatTemplateResponse(valid = True, error = None)
     except TemplateError as exc:
@@ -191,6 +195,18 @@ def _chat_template_from_dir(dir_path: Path, gguf_variant: Optional[str] = None) 
     return _chat_template_from_tokenizer_dir(dir_path) or from_gguf()
 
 
+def _snapshots_newest_first(snapshots_dir: Path) -> list[Path]:
+    dirs_with_mtime: list[tuple[float, Path]] = []
+    for entry in snapshots_dir.iterdir():
+        try:
+            if entry.is_dir():
+                dirs_with_mtime.append((entry.stat().st_mtime, entry))
+        except OSError:
+            continue
+    dirs_with_mtime.sort(key = lambda item: item[0], reverse = True)
+    return [entry for _, entry in dirs_with_mtime]
+
+
 def read_default_chat_template(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -216,7 +232,7 @@ def read_default_chat_template(
         if repo_dir is not None and repo_dir.exists():
             snapshots_dir = repo_dir / "snapshots"
             if snapshots_dir.exists():
-                for snapshot in snapshots_dir.iterdir():
+                for snapshot in _snapshots_newest_first(snapshots_dir):
                     template = _chat_template_from_dir(snapshot, gguf_variant)
                     if template:
                         return template
