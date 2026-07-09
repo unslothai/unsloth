@@ -735,7 +735,9 @@ if FP8GroupedLinear is not None:
         def backward(ctx, grad_y):
             weight, scale_inv = ctx.saved_tensors
             ng, out_per, hidden = ctx.n_groups, ctx.out_per, ctx.x_shape[-1]
-            W = _fp8_grouped_dequant(weight, scale_inv, ctx.block_size, ctx.dtype).view(ng, out_per, hidden)
+            W = _fp8_grouped_dequant(weight, scale_inv, ctx.block_size, ctx.dtype).view(
+                ng, out_per, hidden
+            )
             gy = grad_y.reshape(-1, ng, out_per).transpose(0, 1)
             grad_x = torch.bmm(gy, W).transpose(0, 1).reshape(ctx.x_shape)
             grad_bias = gy.sum(1).reshape(-1) if ctx.has_bias else None
@@ -746,8 +748,12 @@ if FP8GroupedLinear is not None:
             return _fp8_grouped_forward_orig(self, x)
         bias = self.bias if self.has_bias else None
         return _FP8GroupedMM.apply(
-            x, self.weight, self.weight_scale_inv, self.n_groups,
-            getattr(self, "block_size", None), bias,
+            x,
+            self.weight,
+            self.weight_scale_inv,
+            self.n_groups,
+            getattr(self, "block_size", None),
+            bias,
         )
 
     FP8GroupedLinear.forward = _fp8_grouped_forward
