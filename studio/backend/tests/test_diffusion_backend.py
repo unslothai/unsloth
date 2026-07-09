@@ -2298,7 +2298,9 @@ def test_speed_off_load_suppresses_auto_companion_quant(fake_runtime, tmp_path, 
     assert te_modes[-1] == "auto" and vae_modes[-1] == "auto"  # promoted when speed is not off
 
 
-def test_speed_off_load_suppresses_explicit_auto_companion_quant(fake_runtime, tmp_path, monkeypatch):
+def test_speed_off_load_suppresses_explicit_auto_companion_quant(
+    fake_runtime, tmp_path, monkeypatch
+):
     # auto is backend-owned, exactly like transformer_quant: an EXPLICIT text_encoder_quant/
     # vae_quant="auto" must also go dense under Speed="off", not just an unset default. Otherwise a
     # caller that sends auto + off would silently fp8/int8 the companions and break the bit-exact
