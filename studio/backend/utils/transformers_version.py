@@ -914,7 +914,9 @@ def _mapping_first_keys(value: ast.AST) -> set[str]:
         if isinstance(node, ast.Dict):
             return list(node.keys)
         if isinstance(node, (ast.List, ast.Tuple)):
-            return [el.elts[0] for el in node.elts if isinstance(el, (ast.Tuple, ast.List)) and el.elts]
+            return [
+                el.elts[0] for el in node.elts if isinstance(el, (ast.Tuple, ast.List)) and el.elts
+            ]
         return []
 
     nodes = keys_of(value)
