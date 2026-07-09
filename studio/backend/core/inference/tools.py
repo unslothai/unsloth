@@ -407,8 +407,13 @@ def _find_blocked_commands(command: str) -> set[str]:
         if rm is None:
             continue
         tgt = rm.group(1)
-        if not tgt and i + 1 < len(tokens):
-            tgt = tokens[i + 1]
+        j = i
+        # POSIX noclobber-override `>|` tokenizes as `>` then `|`, so the pipe is part of
+        # the redirect operator, not a pipeline; skip it and take the real target after.
+        if not tgt and j + 1 < len(tokens) and tokens[j + 1] == "|":
+            j += 1
+        if not tgt and j + 1 < len(tokens):
+            tgt = tokens[j + 1]
         if not tgt:
             continue
         tn = tgt.replace("\\", "/")
@@ -2835,6 +2840,24 @@ def _build_scope_alias_index(tree, const_env):
                     return fq
         return None
 
+    def _unwrap_container_index(rhs):
+        # `s = [os.system][0]` / `e = {'e': exec}['e']` / `l = (pickle.loads,)[0]`: the
+        # unwrapped callable is assigned first, then called. Resolve the inline
+        # literal-container index to the element node so the sink resolvers below see the
+        # real callable instead of an opaque Subscript.
+        if not isinstance(rhs, ast.Subscript):
+            return rhs
+        container = rhs.value
+        ci = _const_fold(rhs.slice, const_env)
+        if isinstance(container, (ast.List, ast.Tuple)) and isinstance(ci, int):
+            if -len(container.elts) <= ci < len(container.elts):
+                return container.elts[ci]
+        if isinstance(container, ast.Dict) and ci is not None:
+            for k, v in zip(container.keys, container.values):
+                if k is not None and _const_fold(k, const_env) == ci:
+                    return v
+        return rhs
+
     scopes = [tree] + [
         n
         for n in ast.walk(tree)
@@ -2881,27 +2904,30 @@ def _build_scope_alias_index(tree, const_env):
             # Single-assignment RHS node, used by the read scanner to resolve a pathlib
             # expression bound to a name (p = Path('..') / 'etc' / 'passwd'; p.read_text()).
             rnmap[name] = rhs
-            fq = _resolve_static_shell_sink(rhs, os_aliases, subprocess_aliases, from_aliases)
+            # An inline-container index RHS (s = [os.system][0]) hides the callable; resolve
+            # it to the element so the sink resolvers below see the real sink.
+            rhs_eff = _unwrap_container_index(rhs)
+            fq = _resolve_static_shell_sink(rhs_eff, os_aliases, subprocess_aliases, from_aliases)
             if fq:
                 smap[name] = fq
-            eb = _rhs_exec_builtin(rhs)
+            eb = _rhs_exec_builtin(rhs_eff)
             if eb is not None:
                 emap[name] = eb
-            elif _rhs_is_compile_call(rhs) and rhs.args:
+            elif _rhs_is_compile_call(rhs_eff) and rhs_eff.args:
                 # Any `c = compile(...)` (bare / builtins.compile / from-import alias)
                 # binds a code object, tracked for the types.FunctionType(c) execution
                 # gadget below (dynamic or foldable payload).
                 camap[name] = True
-                v = _const_fold(rhs.args[0], const_env)
+                v = _const_fold(rhs_eff.args[0], const_env)
                 if isinstance(v, (str, bytes, bytearray)):
                     cmap[name] = (
                         _recovered_source(v),
-                        _compile_mode(rhs, const_env),
+                        _compile_mode(rhs_eff, const_env),
                         isinstance(v, (bytes, bytearray)),
                     )
-            if _rhs_import_func(rhs):
+            if _rhs_import_func(rhs_eff):
                 imap[name] = True
-            dfq = _rhs_deserializer(rhs)
+            dfq = _rhs_deserializer(rhs_eff)
             if dfq is not None:
                 dmap[name] = dfq
             # Single-assignment string/bytes path constant (p = '/etc/passwd'), used by
@@ -2909,6 +2935,33 @@ def _build_scope_alias_index(tree, const_env):
             cv = _const_fold(rhs, const_env)
             if isinstance(cv, (str, bytes, bytearray)):
                 scmap[name] = cv
+        # A parameter DEFAULT that is a dangerous callable acts as an alias inside the body:
+        # def f(e=exec): e(payload) / def f(s=os.system): s('rm -rf /'). Bind it like a
+        # single-assignment alias unless the parameter is reassigned in the body.
+        if _sargs is not None:
+            _pos = list(_sargs.posonlyargs) + list(_sargs.args)
+            _paired = list(zip(_pos[len(_pos) - len(_sargs.defaults) :], _sargs.defaults))
+            _paired += [
+                (a, d) for a, d in zip(_sargs.kwonlyargs, _sargs.kw_defaults) if d is not None
+            ]
+            for _p, _d in _paired:
+                _pn = _p.arg
+                if counts.get(_pn, 0) != 0 or _pn in rebound:
+                    continue
+                _de = _unwrap_container_index(_d)
+                _dfq_sh = _resolve_static_shell_sink(
+                    _de, os_aliases, subprocess_aliases, from_aliases
+                )
+                if _dfq_sh and _pn not in smap:
+                    smap[_pn] = _dfq_sh
+                _deb = _rhs_exec_builtin(_de)
+                if _deb is not None and _pn not in emap:
+                    emap[_pn] = _deb
+                _ddfq = _rhs_deserializer(_de)
+                if _ddfq is not None and _pn not in dmap:
+                    dmap[_pn] = _ddfq
+                if _rhs_import_func(_de) and _pn not in imap:
+                    imap[_pn] = True
         if smap:
             idx.shell[scope] = smap
         if emap:
@@ -3523,6 +3576,11 @@ def _check_signal_escape_patterns(
             self.inspect_aliases = {"inspect"}
             # from inspect import getclosurevars as g -> {"g"}.
             self.getclosurevars_aliases: set[str] = set()
+            # import operator as op -> {"operator", "op"}. operator.attrgetter('name')(obj)
+            # is the same attribute-fetch obfuscation as getattr(obj, 'name').
+            self.operator_aliases = {"operator"}
+            # from operator import attrgetter as ag -> {"ag"}.
+            self.attrgetter_aliases: set[str] = set()
             self.loop_depth = 0
 
         def visit_Import(self, node):
@@ -3547,6 +3605,8 @@ def _check_signal_escape_patterns(
                     self.runpy_aliases.add(alias.asname or "runpy")
                 elif alias.name == "inspect":
                     self.inspect_aliases.add(alias.asname or "inspect")
+                elif alias.name == "operator":
+                    self.operator_aliases.add(alias.asname or "operator")
                 if alias.name in _DESERIALIZE_MODULES:
                     self.deserialize_module_aliases[alias.asname or alias.name] = alias.name
             self.generic_visit(node)
@@ -3605,6 +3665,10 @@ def _check_signal_escape_patterns(
                 for alias in node.names:
                     if alias.name == "getclosurevars":
                         self.getclosurevars_aliases.add(alias.asname or alias.name)
+            elif node.module == "operator":
+                for alias in node.names:
+                    if alias.name == "attrgetter":
+                        self.attrgetter_aliases.add(alias.asname or alias.name)
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -3714,10 +3778,94 @@ def _check_signal_escape_patterns(
                         return _elt(v)
             return None
 
+        def _attrgetter_name(self, n):
+            """Return the single attribute name for an ``operator.attrgetter('name')``
+            call (or a ``from operator import attrgetter`` alias), else None. A dotted or
+            multi-attr getter (attrgetter('a.b'), attrgetter('a', 'b')) returns None."""
+            if not isinstance(n, ast.Call) or len(n.args) != 1 or n.keywords:
+                return None
+            af = n.func
+            is_attrgetter = (
+                isinstance(af, ast.Attribute)
+                and af.attr == "attrgetter"
+                and _ast_name_matches(af.value, self.operator_aliases)
+            ) or (isinstance(af, ast.Name) and af.id in self.attrgetter_aliases)
+            if not is_attrgetter:
+                return None
+            name = _const_fold(n.args[0], _const_env)
+            if isinstance(name, str) and "." not in name:
+                return name
+            return None
+
+        def _sink_ref_desc(self, n):
+            """Describe ``n`` when it is a bare reference to a dangerous callable used as a
+            first-class VALUE (map/reduce/partial argument): a dynamic-exec builtin, a shell
+            sink (os.system / subprocess.*), a dynamic-import function, or a code
+            deserializer. Returns a short description or None. The payloads such a sink runs
+            never reach the recursive analyzer, so passing one by reference is unsafe."""
+            if isinstance(n, ast.Name):
+                if n.id in _DYNAMIC_EXEC_BUILTINS:
+                    return f"{n.id} (dynamic exec)"
+                if n.id in self.exec_from_aliases:
+                    return f"{self.exec_from_aliases[n.id]} (dynamic exec)"
+                if n.id in ("__import__", "import_module") or n.id in self.import_func_aliases:
+                    return "dynamic import"
+                _sh = self.shell_exec_aliases.get(n.id)
+                if _sh in _SHELL_EXEC_FUNCS:
+                    return f"{_sh} (shell)"
+                _ds = self.deserialize_aliases.get(n.id)
+                if _ds is not None:
+                    return f"{_ds} (deserialize)"
+                if _analyzer_on:
+                    _r = _scope_idx.resolve(n.id, n, "shell")
+                    if _r in _SHELL_EXEC_FUNCS:
+                        return f"{_r} (shell)"
+                    if _scope_idx.resolve(n.id, n, "execb") in _DYNAMIC_EXEC_BUILTINS:
+                        return f"{_scope_idx.resolve(n.id, n, 'execb')} (dynamic exec)"
+                    _rd = _scope_idx.resolve(n.id, n, "deser")
+                    if _rd:
+                        return f"{_rd} (deserialize)"
+                return None
+            if isinstance(n, ast.Attribute):
+                if n.attr in _DYNAMIC_EXEC_BUILTINS and _ast_name_matches(
+                    n.value, self.builtins_aliases
+                ):
+                    return f"{n.attr} (dynamic exec)"
+                _sh = _resolve_static_shell_sink(
+                    n, self.os_aliases, self.subprocess_aliases, self.shell_exec_aliases
+                )
+                if _sh in _SHELL_EXEC_FUNCS:
+                    return f"{_sh} (shell)"
+                if isinstance(n.value, ast.Name):
+                    _c = self.deserialize_module_aliases.get(n.value.id)
+                    if _c is not None and f"{_c}.{n.attr}" in _CODE_DESERIALIZE_SINKS:
+                        return f"{_c}.{n.attr} (deserialize)"
+                _fq = _fq_attr_name(n)
+                if _fq in _CODE_DESERIALIZE_SINKS:
+                    return f"{_fq} (deserialize)"
+                if _fq in _SHELL_EXEC_FUNCS:
+                    return f"{_fq} (shell)"
+                return None
+            return None
+
         def _is_compile_result(self, arg):
             """True when ``arg`` is a ``compile(...)`` code object (bare / builtins /
-            single-assignment alias). Used to catch code objects executed through
-            ``types.FunctionType`` instead of eval/exec."""
+            single-assignment alias / inline-container unwrap). Used to catch code objects
+            executed through ``types.FunctionType`` instead of eval/exec."""
+            # (compile(src, ...),)[0] / [compile(...)][0] / {'k': compile(...)}['k']: a
+            # trivial container unwrap hiding the compile() code object from the direct-call
+            # check. Resolve the indexed element and recurse.
+            if isinstance(arg, ast.Subscript):
+                container = arg.value
+                ci = _const_fold(arg.slice, _const_env)
+                if isinstance(container, (ast.List, ast.Tuple)) and isinstance(ci, int):
+                    if -len(container.elts) <= ci < len(container.elts):
+                        return self._is_compile_result(container.elts[ci])
+                if isinstance(container, ast.Dict) and ci is not None:
+                    for k, v in zip(container.keys, container.values):
+                        if k is not None and _const_fold(k, _const_env) == ci:
+                            return self._is_compile_result(v)
+                return False
             if isinstance(arg, ast.Call):
                 af = arg.func
                 if isinstance(af, ast.Name):
@@ -3753,6 +3901,13 @@ def _check_signal_escape_patterns(
 
         def visit_Call(self, node):
             func = node.func
+            # A trailing `.__call__` invokes the underlying callable through its bound
+            # method: os.system.__call__(cmd), __import__.__call__('os'),
+            # pickle.loads.__call__(blob). Strip it so the shell / import / deserializer /
+            # attribute resolvers below see the real sink instead of a plain attribute.
+            _ecf = func
+            while isinstance(_ecf, ast.Attribute) and _ecf.attr == "__call__":
+                _ecf = _ecf.value
             func_name = None
             if isinstance(func, ast.Attribute):
                 if isinstance(func.value, ast.Name):
@@ -3801,24 +3956,25 @@ def _check_signal_escape_patterns(
                     )
 
             # --- Shell escape detection ---
-            # Resolve the FQ function name for os.*/subprocess.*
+            # Resolve the FQ function name for os.*/subprocess.* (via the __call__-stripped
+            # effective callee so os.system.__call__(cmd) resolves to os.system).
             shell_func = None
-            if isinstance(func, ast.Attribute):
-                if isinstance(func.value, ast.Name):
-                    if func.value.id in self.os_aliases:
-                        shell_func = f"os.{func.attr}"
-                    elif func.value.id in self.subprocess_aliases:
-                        shell_func = f"subprocess.{func.attr}"
-            elif isinstance(func, ast.Name):
+            if isinstance(_ecf, ast.Attribute):
+                if isinstance(_ecf.value, ast.Name):
+                    if _ecf.value.id in self.os_aliases:
+                        shell_func = f"os.{_ecf.attr}"
+                    elif _ecf.value.id in self.subprocess_aliases:
+                        shell_func = f"subprocess.{_ecf.attr}"
+            elif isinstance(_ecf, ast.Name):
                 # from-import aliases: from os import system; system(...)
-                shell_func = self.shell_exec_aliases.get(func.id)
+                shell_func = self.shell_exec_aliases.get(_ecf.id)
                 # Stage 4: single-assignment alias `s = os.system; s('rm -rf /')`,
                 # resolved in the call's own scope (per-function).
                 if shell_func is None and _analyzer_on:
-                    shell_func = _scope_idx.resolve(func.id, func, "shell")
-            elif _analyzer_on and isinstance(func, ast.Subscript):
+                    shell_func = _scope_idx.resolve(_ecf.id, _ecf, "shell")
+            elif _analyzer_on and isinstance(_ecf, ast.Subscript):
                 # Stage 4: inline literal container index `[os.system][0](...)`.
-                shell_func = self._resolve_container_sink(func)
+                shell_func = self._resolve_container_sink(_ecf)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
                 # Expand **kwargs dicts to inspect their keys.
@@ -3960,12 +4116,13 @@ def _check_signal_escape_patterns(
                     )
             else:
                 dynamic_desc = None
-                # eval / exec / compile passed as a first-class VALUE (not called here)
-                # runs its payloads through a higher-order applier the recursive analyzer
-                # never sees: list(map(eval, ["..."])), functools.reduce(exec, ...),
-                # functools.partial(eval, ...). Flag any bare reference to a dynamic-exec
-                # builtin appearing as a call argument, unpacking a literal *[...] / *(...)
-                # starred arg so map(*[eval, [...]]) is covered too.
+                # A dangerous sink passed as a first-class VALUE (not called here) runs its
+                # payloads through a higher-order applier the recursive analyzer never sees:
+                # list(map(eval, ["..."])), functools.reduce(exec, ...),
+                # list(map(os.system, ['rm -rf /'])), functools.partial(subprocess.getoutput,
+                # 'wget ...')(), list(map(pickle.loads, [blob])). Flag any bare reference to a
+                # dynamic-exec / shell / import / deserializer sink appearing as a call
+                # argument, unpacking a literal *[...] / *(...) starred arg too.
                 _cand_args = []
                 for _a in list(node.args) + [k.value for k in node.keywords]:
                     if isinstance(_a, ast.Starred) and isinstance(_a.value, (ast.List, ast.Tuple)):
@@ -3974,29 +4131,19 @@ def _check_signal_escape_patterns(
                         _cand_args.append(_a.value)
                     else:
                         _cand_args.append(_a)
-                _indirect_exec = None
+                _indirect_sink = None
                 for _t in _cand_args:
-                    if isinstance(_t, ast.Name):
-                        if _t.id in _DYNAMIC_EXEC_BUILTINS:
-                            _indirect_exec = _t.id
-                        elif _t.id in self.exec_from_aliases:
-                            _indirect_exec = self.exec_from_aliases[_t.id]
-                    elif (
-                        isinstance(_t, ast.Attribute)
-                        and _t.attr in _DYNAMIC_EXEC_BUILTINS
-                        and _ast_name_matches(_t.value, self.builtins_aliases)
-                    ):
-                        _indirect_exec = _t.attr
-                    if _indirect_exec is not None:
+                    _indirect_sink = self._sink_ref_desc(_t)
+                    if _indirect_sink is not None:
                         break
-                if _indirect_exec is not None:
+                if _indirect_sink is not None:
                     dynamic_exec.append(
                         {
                             "type": "dynamic_exec",
                             "line": getattr(node, "lineno", -1),
                             "description": (
-                                f"{_indirect_exec} passed as a value to a higher-order "
-                                "call (indirect eval/exec of an un-analyzed payload)"
+                                f"{_indirect_sink} passed as a value to a higher-order call "
+                                "(indirect execution of an un-analyzed payload)"
                             ),
                         }
                     )
@@ -4007,6 +4154,7 @@ def _check_signal_escape_patterns(
                 # bare getattr name. Normalized here so the gadget + sensitive-module
                 # checks below cover all of them.
                 _attr_call = None
+                _attr_dunder = False  # True when reached via __getattribute__/__getattr__
                 if (
                     isinstance(func, ast.Name)
                     and func.id in ("getattr", "setattr")
@@ -4020,59 +4168,68 @@ def _check_signal_escape_patterns(
                     # Unbound form object.__getattribute__(obj, 'name') carries the receiver
                     # as arg0; the BOUND form obj.__getattribute__('name') carries it as the
                     # attribute's own value (builtins.open.__getattribute__('__closure__')).
+                    _attr_dunder = True
                     if len(node.args) >= 2:
                         _attr_call = (node.args[0], node.args[1])
                     elif len(node.args) == 1:
                         _attr_call = (func.value, node.args[0])
+                elif isinstance(_ecf, ast.Call):
+                    # operator.attrgetter('system')(os)(...) / attrgetter('eval')(builtins):
+                    # attrgetter is the same attribute-fetch obfuscation as getattr, so map
+                    # attrgetter('name')(obj) to the (obj, 'name') pair.
+                    _ag_name = self._attrgetter_name(_ecf.func)
+                    if _ag_name is not None and len(_ecf.args) == 1:
+                        _attr_call = (_ecf.args[0], ast.Constant(value = _ag_name))
                 is_dynamic_import = (
-                    _ast_name_matches(func, _DYNAMIC_IMPORT_FUNCS)
+                    _ast_name_matches(_ecf, _DYNAMIC_IMPORT_FUNCS)
                     or (
-                        isinstance(func, ast.Name)
+                        isinstance(_ecf, ast.Name)
                         and (
-                            func.id in ("__import__", "import_module")
-                            or func.id in self.import_func_aliases
+                            _ecf.id in ("__import__", "import_module")
+                            or _ecf.id in self.import_func_aliases
                         )
                     )
                     or (
-                        isinstance(func, ast.Attribute)
-                        and func.attr in ("import_module", "reload", "__import__")
-                        and _ast_name_matches(func.value, self.importlib_aliases)
+                        isinstance(_ecf, ast.Attribute)
+                        and _ecf.attr in ("import_module", "reload", "__import__")
+                        and _ast_name_matches(_ecf.value, self.importlib_aliases)
                     )
                     or (
                         # builtins.__import__('os') / __builtins__.__import__(...)
-                        isinstance(func, ast.Attribute)
-                        and func.attr == "__import__"
-                        and _ast_name_matches(func.value, self.builtins_aliases)
+                        isinstance(_ecf, ast.Attribute)
+                        and _ecf.attr == "__import__"
+                        and _ast_name_matches(_ecf.value, self.builtins_aliases)
                     )
                     or (
                         # single-assignment `im = importlib.import_module` in scope.
                         _analyzer_on
-                        and isinstance(func, ast.Name)
-                        and bool(_scope_idx.resolve(func.id, func, "impf"))
+                        and isinstance(_ecf, ast.Name)
+                        and bool(_scope_idx.resolve(_ecf.id, _ecf, "impf"))
                     )
                 )
                 # Deserialization sinks reconstruct arbitrary objects/code from bytes.
                 # Resolve aliased imports (from pickle import loads as l), module aliases
                 # (import pickle as p; p.loads) and the file-based *.load variants -- not
-                # just the exact pickle.loads name.
+                # just the exact pickle.loads name. Uses the __call__-stripped effective
+                # callee so pickle.loads.__call__(blob) resolves like pickle.loads(blob).
                 _deser_fq = None
-                if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-                    _canon = self.deserialize_module_aliases.get(func.value.id)
+                if isinstance(_ecf, ast.Attribute) and isinstance(_ecf.value, ast.Name):
+                    _canon = self.deserialize_module_aliases.get(_ecf.value.id)
                     if _canon is not None:
-                        _cand = f"{_canon}.{func.attr}"
+                        _cand = f"{_canon}.{_ecf.attr}"
                         if _cand in _CODE_DESERIALIZE_SINKS:
                             _deser_fq = _cand
-                elif isinstance(func, ast.Name):
-                    _deser_fq = self.deserialize_aliases.get(func.id)
+                elif isinstance(_ecf, ast.Name):
+                    _deser_fq = self.deserialize_aliases.get(_ecf.id)
                     if _deser_fq is None and _analyzer_on:
                         # single-assignment `l = pickle.loads` in the call's scope.
-                        _deser_fq = _scope_idx.resolve(func.id, func, "deser")
-                elif _analyzer_on and isinstance(func, ast.Subscript):
+                        _deser_fq = _scope_idx.resolve(_ecf.id, _ecf, "deser")
+                elif _analyzer_on and isinstance(_ecf, ast.Subscript):
                     # ([pickle.loads][0])(payload) / {'k': pickle.loads}['k'](payload):
                     # an inline container hides the sink from the attribute / name checks.
-                    _deser_fq = self._resolve_container_deser(func)
+                    _deser_fq = self._resolve_container_deser(_ecf)
                 if _deser_fq is None:
-                    _fq_func = _fq_attr_name(func)
+                    _fq_func = _fq_attr_name(_ecf)
                     if _fq_func in _CODE_DESERIALIZE_SINKS:
                         _deser_fq = _fq_func
                 if _analyzer_on and _deser_fq is not None:
@@ -4100,10 +4257,20 @@ def _check_signal_escape_patterns(
                         # targets too: __import__('pickle').loads(blob) executes a reduce
                         # payload even though a plain `import pickle` is benign.
                         dynamic_desc = "dynamic import of a computed or sensitive module name"
-                elif (
-                    _attr_call is not None
-                    and isinstance(_const_fold(_attr_call[1], _const_env), str)
-                    and _const_fold(_attr_call[1], _const_env) in _GADGET_DUNDERS
+                elif _attr_call is not None and (
+                    (
+                        isinstance(_const_fold(_attr_call[1], _const_env), str)
+                        and _const_fold(_attr_call[1], _const_env) in _GADGET_DUNDERS
+                    )
+                    or (
+                        # A __getattribute__/__getattr__ dunder call whose attribute name is
+                        # not constant-foldable hides a gadget dunder behind a runtime
+                        # expression (open.__getattribute__(''.join(map(chr, ...)))), which
+                        # recovers a guarded wrapper's __closure__/cell_contents. No program
+                        # legitimately spells __getattribute__ with a computed name, so fail
+                        # closed on the dynamic form.
+                        _attr_dunder and not isinstance(_const_fold(_attr_call[1], _const_env), str)
+                    )
                 ):
                     # getattr(anything, '__globals__' / '__subclasses__' / ...) or the
                     # object.__getattribute__ equivalent reaches an introspection gadget
@@ -4111,10 +4278,16 @@ def _check_signal_escape_patterns(
                     # x.__globals__ is already flagged for ANY receiver, so flag the
                     # dynamic-attr-name form regardless of receiver too. (Also closes the
                     # __closure__ recovery of a guarded wrapper's original callable.)
-                    dynamic_desc = (
-                        "dynamic attribute access of an introspection gadget dunder "
-                        f"({_const_fold(_attr_call[1], _const_env)})"
-                    )
+                    _gv = _const_fold(_attr_call[1], _const_env)
+                    if isinstance(_gv, str):
+                        dynamic_desc = (
+                            f"dynamic attribute access of an introspection gadget dunder ({_gv})"
+                        )
+                    else:
+                        dynamic_desc = (
+                            "computed attribute name via __getattribute__/__getattr__ "
+                            "(obfuscated introspection gadget)"
+                        )
                 elif (
                     isinstance(func, ast.Name)
                     and func.id == "vars"
@@ -4254,6 +4427,26 @@ def _check_signal_escape_patterns(
                     or (isinstance(func, ast.Name) and func.id in self.getclosurevars_aliases)
                 ):
                     dynamic_desc = "inspect.getclosurevars() recovers a guarded wrapper's closure"
+                elif (
+                    # cls.mro().__getitem__(1) / cls.__mro__.__getitem__(1): the method-call
+                    # twin of the subscripted-mro base extraction (visit_Subscript). Same
+                    # gadget shape (io.FileIO.mro().__getitem__(1) recovers the original
+                    # FileIO base), so flag a non-slice integer index via __getitem__.
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "__getitem__"
+                    and len(node.args) == 1
+                    and isinstance(_const_fold(node.args[0], _const_env), int)
+                    and (
+                        (
+                            isinstance(func.value, ast.Call)
+                            and isinstance(func.value.func, ast.Attribute)
+                            and func.value.func.attr == "mro"
+                            and not func.value.args
+                        )
+                        or (isinstance(func.value, ast.Attribute) and func.value.attr == "__mro__")
+                    )
+                ):
+                    dynamic_desc = "mro().__getitem__(i) extracts a base class (gadget)"
                 elif isinstance(func, ast.Attribute) and func.attr in (
                     "runcode",
                     "runsource",
@@ -5056,10 +5249,20 @@ def _check_signal_escape_patterns(
     #   import shutil as sh            -> sh.copy('../../etc/passwd', 'x')
     _pathlib_ctor_aliases = set(_PATHLIB_CTORS)
     _shutil_aliases = {"shutil"}
+    # from shutil import copy as c / copyfile / move -> bare-name aliases whose SOURCE (first
+    # arg) is a host read, e.g. c('../../../etc/passwd', 'x'). Tracked so the traversal check
+    # treats them as read callees like the attribute form shutil.copy(...).
+    _shutil_copy_from_aliases: set[str] = set()
     # from os import open as oo / from io import open as X / from builtins import open as X:
     # the read-only os.open is deliberately allowed OUTSIDE the workdir by the runtime
     # guard, so a traversal read via such an alias must be caught statically.
     _open_from_aliases: set[str] = set()
+    # os/subprocess module aliases + from-import shell-name aliases, so a shell command
+    # string that reads a host secret (os.system('cat /etc/passwd')) is scanned even when
+    # os/subprocess is renamed.
+    _os_mod_aliases = {"os"}
+    _subprocess_mod_aliases = {"subprocess"}
+    _shell_name_aliases: dict[str, str] = {}
     for _imp in ast.walk(tree):
         if isinstance(_imp, ast.ImportFrom) and _imp.module == "pathlib":
             for _a in _imp.names:
@@ -5069,10 +5272,23 @@ def _check_signal_escape_patterns(
             for _a in _imp.names:
                 if _a.name == "open":
                     _open_from_aliases.add(_a.asname or "open")
+        elif isinstance(_imp, ast.ImportFrom) and _imp.module == "shutil":
+            for _a in _imp.names:
+                if _a.name in _SHUTIL_COPY_METHODS:
+                    _shutil_copy_from_aliases.add(_a.asname or _a.name)
+        elif isinstance(_imp, ast.ImportFrom) and _imp.module in ("os", "subprocess"):
+            for _a in _imp.names:
+                _fq = f"{_imp.module}.{_a.name}"
+                if _fq in _SHELL_EXEC_FUNCS:
+                    _shell_name_aliases[_a.asname or _a.name] = _fq
         elif isinstance(_imp, ast.Import):
             for _a in _imp.names:
                 if _a.name == "shutil":
                     _shutil_aliases.add(_a.asname or "shutil")
+                elif _a.name == "os":
+                    _os_mod_aliases.add(_a.asname or "os")
+                elif _a.name == "subprocess":
+                    _subprocess_mod_aliases.add(_a.asname or "subprocess")
 
     def _resolves_to_open(fn):
         # A callee that is `open`, a `from os/io/builtins import open as X` alias, a
@@ -5142,6 +5358,12 @@ def _check_signal_escape_patterns(
         if not isinstance(recv, ast.Call):
             return None
         rf = recv.func
+        # No-op path-identity methods (resolve/absolute/expanduser) return the same file, so
+        # look through them: Path('/etc').joinpath('passwd').resolve().read_text() still
+        # reads /etc/passwd. expanduser() only makes a leading ~ concrete, which the
+        # sensitive check already handles on the pre-expansion form.
+        if isinstance(rf, ast.Attribute) and rf.attr in ("resolve", "absolute", "expanduser"):
+            return _pathlib_receiver_path(rf.value, _seen)
         if isinstance(rf, ast.Attribute) and rf.attr == "joinpath":
             base = _pathlib_receiver_path(rf.value, _seen)
             if base is None:
@@ -5191,6 +5413,74 @@ def _check_signal_escape_patterns(
             return True
         return False
 
+    # Shell sinks whose first argument is always interpreted as a shell command STRING
+    # (os.system('cat /etc/passwd') runs an unguarded child that leaks the file in stdout).
+    _STRING_SHELL_SINKS = frozenset(
+        {
+            "os.system",
+            "os.popen",
+            "os.popen2",
+            "os.popen3",
+            "os.popen4",
+            "subprocess.getoutput",
+            "subprocess.getstatusoutput",
+        }
+    )
+
+    def _shell_string_sink_fq(f):
+        # Resolve a callee to its fq shell-sink name honoring os/subprocess module aliases
+        # and from-import name aliases (from subprocess import getoutput as g), else None.
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+            if f.value.id in _os_mod_aliases:
+                cand = f"os.{f.attr}"
+            elif f.value.id in _subprocess_mod_aliases:
+                cand = f"subprocess.{f.attr}"
+            else:
+                cand = None
+            if cand in _SHELL_EXEC_FUNCS:
+                return cand
+        elif isinstance(f, ast.Name):
+            return _shell_name_aliases.get(f.id)
+        return None
+
+    def _scan_shell_string_reads(node, f):
+        # os.system('cat /etc/passwd') / subprocess.run('cat /etc/passwd', shell=True): the
+        # read scanner otherwise treats the whole command as one opaque path candidate, and
+        # _is_sensitive_abs_path ignores strings with whitespace. Tokenize the command and
+        # check each token as a read path so an embedded host-secret read is caught.
+        _fq = _shell_string_sink_fq(f)
+        _is_str = _fq in _STRING_SHELL_SINKS
+        if not _is_str:
+            # subprocess.run/call/Popen/check_output/check_call(cmd, shell=True): a string
+            # command with shell=True runs through /bin/sh (these are in _SHELL_EXEC_FUNCS
+            # but not in _STRING_SHELL_SINKS, so check the shell= kwarg explicitly).
+            if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+                if f.value.id in _subprocess_mod_aliases and f.attr in (
+                    "run",
+                    "call",
+                    "check_call",
+                    "check_output",
+                    "Popen",
+                ):
+                    for kw in node.keywords or []:
+                        if kw.arg == "shell" and not (
+                            isinstance(kw.value, ast.Constant) and kw.value.value is False
+                        ):
+                            _is_str = True
+        if not _is_str or not node.args:
+            return False
+        cmd = _fold_read_arg(node.args[0])
+        if cmd is None:
+            return False
+        try:
+            toks = shlex.split(cmd, posix = True)
+        except ValueError:
+            toks = cmd.split()
+        for t in toks:
+            if t and not t.startswith("-") and _flag_read_path(node, t, True):
+                return True
+        return False
+
     class _SensitiveReadVisitor(ast.NodeVisitor):
         def visit_Call(self, node):
             f = node.func
@@ -5200,11 +5490,15 @@ def _check_signal_escape_patterns(
                 if isinstance(f, ast.Attribute)
                 else (f.id if isinstance(f, ast.Name) else "")
             )
+            # A shell-command STRING sink: scan the command for embedded sensitive reads.
+            if _scan_shell_string_reads(node, f):
+                return
             is_read_callee = (
                 _resolves_to_open(f)
                 or fq in ("io.open", "os.open")
                 or fq in _SHUTIL_COPY_SINKS
                 or _is_shutil_copy_callee(f)
+                or (isinstance(f, ast.Name) and f.id in _shutil_copy_from_aliases)
                 or method in _READ_METHODS
             )
             # Pathlib read on a Path(...) / join receiver: check the resolved path.

