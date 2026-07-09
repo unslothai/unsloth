@@ -239,6 +239,11 @@ def get_model_name(
         and new_model_name.lower() in BAD_MAPPINGS
     ):
         new_model_name = BAD_MAPPINGS[new_model_name.lower()]
+    elif new_model_name is None and model_name.lower() in BAD_MAPPINGS:
+        # Some bad names (e.g. the `-unsloth-bnb-4bit` dynamic quants) are keys
+        # of the mappers, not values, so the resolver returns None for them and
+        # the remap above is skipped; remap the input name directly instead.
+        new_model_name = BAD_MAPPINGS[model_name.lower()]
 
     if (
         new_model_name is None

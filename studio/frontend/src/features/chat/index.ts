@@ -36,6 +36,7 @@ export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
+export { listStoredChatThreads } from "./utils/chat-history-storage";
 export { ArtifactCard } from "./artifacts/artifact-card";
 export {
   useChatArtifactsStore,
