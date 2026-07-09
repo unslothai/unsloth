@@ -1719,22 +1719,36 @@ def get_chat_message(thread_id: str, message_id: str) -> Optional[dict]:
         conn.close()
 
 
+def _blob_part_base64_len(part: dict) -> int:
+    """Base64 payload length of an image or audio content part, or 0."""
+    image = part.get("image")
+    if isinstance(image, str) and image:
+        return len(image.rsplit(",", 1)[-1])
+    audio = part.get("audio")
+    if isinstance(audio, str) and audio:
+        return len(audio.rsplit(",", 1)[-1])
+    if isinstance(audio, dict):
+        data = audio.get("data")
+        if isinstance(data, str) and data:
+            return len(data)
+    return 0
+
+
 def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
     """Approximate stored size of one attachment's content parts.
 
-    Image parts hold a base64 data URL (decoded bytes ~= 3/4 of the encoded
-    length); text parts count their character length. None when there is no
-    sizable content (e.g. a stripped/legacy attachment).
+    Image and audio parts hold base64 payloads (decoded bytes ~= 3/4 of the
+    encoded length); text parts count their character length. None when there
+    is no sizable content (e.g. a stripped/legacy attachment).
     """
     total = 0
     found = False
     for part in attachment.get("content") or []:
         if not isinstance(part, dict):
             continue
-        image = part.get("image")
-        if isinstance(image, str) and image:
-            payload = image.rsplit(",", 1)[-1]
-            total += (len(payload) * 3) // 4
+        blob_len = _blob_part_base64_len(part)
+        if blob_len > 0:
+            total += (blob_len * 3) // 4
             found = True
             continue
         text = part.get("text")
@@ -1744,19 +1758,66 @@ def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
     return total if found else None
 
 
+# Compare chats persist uploaded images/audio as message content parts, not
+# attachments_json. The Data tab still lists those blobs, addressed by a
+# synthetic per-part id so the same get/delete routes work on them.
+_CONTENT_PART_ID_PREFIX = "content-part-"
+
+
+def _content_part_attachments(content_json: Optional[str]) -> list[dict]:
+    """Synthesized attachment records for blob parts stored in content_json."""
+    content = _json_loads(content_json, None)
+    if not isinstance(content, list):
+        return []
+    out: list[dict] = []
+    for idx, part in enumerate(content):
+        if not isinstance(part, dict):
+            continue
+        image = part.get("image")
+        if isinstance(image, str) and image:
+            content_type = None
+            if image.startswith("data:"):
+                content_type = image[5:].split(";", 1)[0].split(",", 1)[0] or None
+            out.append(
+                {
+                    "id": f"{_CONTENT_PART_ID_PREFIX}{idx}",
+                    "type": "image",
+                    "name": "Chat image",
+                    "contentType": content_type,
+                    "content": [part],
+                }
+            )
+            continue
+        audio = part.get("audio")
+        if (isinstance(audio, str) and audio) or isinstance(audio, dict):
+            out.append(
+                {
+                    "id": f"{_CONTENT_PART_ID_PREFIX}{idx}",
+                    "type": "audio",
+                    "name": "Chat audio",
+                    "contentType": None,
+                    "content": [part],
+                }
+            )
+    return out
+
+
 def list_chat_attachments() -> list[dict]:
-    """Every attachment across chat messages (settings Data tab uploads list)."""
+    """Every stored upload across chat messages (settings Data tab list):
+    attachments_json entries plus image/audio blobs saved as content parts."""
     conn = get_connection()
     try:
         rows = conn.execute(
             """
-            SELECT m.id AS message_id, m.thread_id, m.attachments_json, m.created_at,
-                   t.title AS thread_title
+            SELECT m.id AS message_id, m.thread_id, m.attachments_json,
+                   m.content_json, m.created_at, t.title AS thread_title
             FROM chat_messages m
             LEFT JOIN chat_threads t ON t.id = m.thread_id
-            WHERE m.attachments_json IS NOT NULL
-              AND m.attachments_json != '[]'
-              AND m.attachments_json != 'null'
+            WHERE (m.attachments_json IS NOT NULL
+                   AND m.attachments_json != '[]'
+                   AND m.attachments_json != 'null')
+               OR m.content_json LIKE '%"image"%'
+               OR m.content_json LIKE '%"audio"%'
             ORDER BY m.created_at DESC
             """
         ).fetchall()
@@ -1767,10 +1828,12 @@ def list_chat_attachments() -> list[dict]:
     for row in rows:
         attachments = _json_loads(row["attachments_json"], None)
         if not isinstance(attachments, list):
-            continue
+            attachments = []
+        attachments = [
+            a for a in attachments if isinstance(a, dict) and a.get("id")
+        ]
+        attachments.extend(_content_part_attachments(row["content_json"]))
         for attachment in attachments:
-            if not isinstance(attachment, dict) or not attachment.get("id"):
-                continue
             out.append(
                 {
                     "id": attachment["id"],
@@ -1792,12 +1855,17 @@ def get_chat_attachment(message_id: str, attachment_id: str) -> Optional[dict]:
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT attachments_json FROM chat_messages WHERE id = ?",
+            "SELECT attachments_json, content_json FROM chat_messages WHERE id = ?",
             (message_id,),
         ).fetchone()
     finally:
         conn.close()
     if row is None:
+        return None
+    if attachment_id.startswith(_CONTENT_PART_ID_PREFIX):
+        for attachment in _content_part_attachments(row["content_json"]):
+            if attachment["id"] == attachment_id:
+                return attachment
         return None
     attachments = _json_loads(row["attachments_json"], None)
     if not isinstance(attachments, list):
@@ -1808,20 +1876,48 @@ def get_chat_attachment(message_id: str, attachment_id: str) -> Optional[dict]:
     return None
 
 
-def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
-    """Remove one attachment from a message's attachments list.
+def _delete_content_part(conn, message_id: str, attachment_id: str, content_json) -> bool:
+    """Remove one blob content part addressed by its synthetic id."""
+    try:
+        idx = int(attachment_id[len(_CONTENT_PART_ID_PREFIX):])
+    except ValueError:
+        return False
+    content = _json_loads(content_json, None)
+    if not isinstance(content, list) or not (0 <= idx < len(content)):
+        return False
+    part = content[idx]
+    if not isinstance(part, dict) or not ("image" in part or "audio" in part):
+        return False
+    del content[idx]
+    conn.execute(
+        "UPDATE chat_messages SET content_json = ? WHERE id = ?",
+        (json.dumps(content), message_id),
+    )
+    conn.commit()
+    return True
 
-    Returns False when the message or attachment does not exist. An emptied
-    list is stored as NULL so the message no longer matches attachment scans.
+
+def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
+    """Remove one stored upload from a message.
+
+    Handles attachments_json entries and synthetic content-part ids. Returns
+    False when the message or attachment does not exist. An emptied attachment
+    list is stored as '[]' (never NULL): a NULL would read back as a missing
+    field and trigger the legacy IndexedDB backfill, resurrecting the deleted
+    attachment on the next chat load.
     """
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT attachments_json FROM chat_messages WHERE id = ?",
+            "SELECT attachments_json, content_json FROM chat_messages WHERE id = ?",
             (message_id,),
         ).fetchone()
         if row is None:
             return False
+        if attachment_id.startswith(_CONTENT_PART_ID_PREFIX):
+            return _delete_content_part(
+                conn, message_id, attachment_id, row["content_json"]
+            )
         attachments = _json_loads(row["attachments_json"], None)
         if not isinstance(attachments, list):
             return False
@@ -1832,7 +1928,7 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
             return False
         conn.execute(
             "UPDATE chat_messages SET attachments_json = ? WHERE id = ?",
-            (json.dumps(remaining) if remaining else None, message_id),
+            (json.dumps(remaining), message_id),
         )
         conn.commit()
         return True

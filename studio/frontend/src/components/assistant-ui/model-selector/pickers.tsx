@@ -1076,7 +1076,14 @@ function GgufVariantExpander({
                 buttonClassName="p-1"
                 iconClassName="size-3"
                 disabled={deleteDisabled}
-                onConfirm={() => onDeleteVariant(v.quant)}
+                onConfirm={async () => {
+                  await onDeleteVariant(v.quant);
+                  // Drop the pin too: a pinned row for a deleted file
+                  // would try to load something that no longer exists.
+                  if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
+                    togglePinnedQuant(repoId, v.quant);
+                  }
+                }}
               />
             )}
           </div>

@@ -33,7 +33,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 function formatUploadedAt(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === "") return "-";
@@ -84,7 +84,9 @@ function fileTypeLabel(
   return subtype && subtype.length <= 10 ? subtype.toUpperCase() : null;
 }
 
-/** Lazy image thumbnail for a chat attachment; a file icon until it loads. */
+/** Lazy image thumbnail for a chat attachment; a file icon until it loads.
+ *  The stored blob only downloads once the row scrolls into view, so a long
+ *  history of screenshots does not fetch every image on open. */
 function ChatImageThumb({
   messageId,
   attachmentId,
@@ -93,8 +95,28 @@ function ChatImageThumb({
   attachmentId: string;
 }) {
   const [src, setSrc] = useState<string | null>(null);
+  const [visible, setVisible] = useState(false);
+  const holderRef = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
+    const el = holderRef.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setVisible(true);
+        observer.disconnect();
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!visible) return;
     let cancelled = false;
     let url: string | null = null;
     fetchChatAttachmentBlob(messageId, attachmentId)
@@ -110,9 +132,18 @@ function ChatImageThumb({
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [messageId, attachmentId]);
+  }, [visible, messageId, attachmentId]);
 
-  if (!src) return <FileIconThumb />;
+  if (!src) {
+    return (
+      <span
+        ref={holderRef}
+        className="flex h-full w-full items-center justify-center"
+      >
+        <FileIconThumb />
+      </span>
+    );
+  }
   return <img src={src} alt="" className="h-full w-full object-cover" />;
 }
 

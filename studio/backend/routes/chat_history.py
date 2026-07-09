@@ -288,14 +288,42 @@ async def list_attachments(current_subject: str = Depends(get_current_subject)) 
     return {"attachments": list_chat_attachments()}
 
 
+def _decode_attachment_base64(payload: str) -> bytes:
+    """Strict base64 decode of a stored payload.
+
+    Normalizes first: strips whitespace, fixes padding, accepts the URL-safe
+    alphabet. validate=False would silently drop bad characters and serve
+    corrupted bytes instead of failing, so raise 422 on anything else.
+    """
+    import base64
+
+    normalized = "".join(payload.split())
+    altchars = b"-_" if ("-" in normalized or "_" in normalized) else None
+    normalized += "=" * (-len(normalized) % 4)
+    try:
+        return base64.b64decode(normalized, altchars = altchars, validate = True)
+    except Exception as exc:  # noqa: BLE001 - corrupt stored payload
+        raise HTTPException(
+            status_code = 422, detail = "Attachment data is corrupt"
+        ) from exc
+
+
+_AUDIO_FORMAT_MEDIA_TYPES = {
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "ogg": "audio/ogg",
+    "flac": "audio/flac",
+}
+
+
 @router.get("/attachments/{message_id}/{attachment_id}/file")
 async def get_attachment_file(
     message_id: str,
     attachment_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Serve one attachment's stored content (image bytes or extracted text)."""
-    import base64
+    """Serve one attachment's stored content: image or audio bytes, or
+    extracted text."""
     import urllib.parse
 
     from fastapi.responses import Response
@@ -304,6 +332,7 @@ async def get_attachment_file(
     if attachment is None:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
 
+    attachment_content_type = attachment.get("contentType")
     texts: list[str] = []
     for part in attachment.get("content") or []:
         if not isinstance(part, dict):
@@ -316,19 +345,29 @@ async def get_attachment_file(
                 # RFC 2397 non-base64 form stores percent-encoded bytes.
                 data = urllib.parse.unquote_to_bytes(payload)
                 return Response(content = data, media_type = media_type)
-            # Normalize before a strict decode: strip whitespace, fix padding,
-            # accept the URL-safe alphabet. validate=False would silently drop
-            # bad characters and serve corrupted bytes instead of failing.
-            normalized = "".join(payload.split())
-            altchars = b"-_" if ("-" in normalized or "_" in normalized) else None
-            normalized += "=" * (-len(normalized) % 4)
-            try:
-                data = base64.b64decode(normalized, altchars = altchars, validate = True)
-            except Exception as exc:  # noqa: BLE001 - corrupt stored payload
-                raise HTTPException(
-                    status_code = 422, detail = "Attachment image data is corrupt"
-                ) from exc
+            data = _decode_attachment_base64(payload)
             return Response(content = data, media_type = media_type)
+        # Audio parts: the attachment adapter stores {data, format} with raw
+        # base64; compare chats store a bare base64 string.
+        audio = part.get("audio")
+        if isinstance(audio, dict) or (isinstance(audio, str) and audio):
+            if isinstance(audio, dict):
+                payload = audio.get("data")
+                audio_format = audio.get("format")
+            else:
+                payload = audio.rsplit(",", 1)[-1]
+                audio_format = None
+            if isinstance(payload, str) and payload:
+                data = _decode_attachment_base64(payload)
+                media_type = (
+                    attachment_content_type
+                    if isinstance(attachment_content_type, str)
+                    and attachment_content_type.startswith("audio/")
+                    else _AUDIO_FORMAT_MEDIA_TYPES.get(
+                        str(audio_format or "").lower(), "application/octet-stream"
+                    )
+                )
+                return Response(content = data, media_type = media_type)
         text = part.get("text")
         if isinstance(text, str) and text:
             texts.append(text)

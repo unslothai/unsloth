@@ -241,15 +241,19 @@ def test_delete_chat_attachment_keeps_others(tmp_path, monkeypatch):
     assert [r["id"] for r in studio_db.list_chat_attachments()] == ["att-2"]
 
 
-def test_delete_last_chat_attachment_stores_null(tmp_path, monkeypatch):
+def test_delete_last_chat_attachment_stores_empty_list(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, [_image_attachment()])
     assert studio_db.delete_chat_attachment("msg-1", "att-1") is True
-    assert _raw_attachments_json("msg-1") is None
+    # '[]' rather than NULL: a NULL attachments field reads back as missing
+    # and triggers the legacy IndexedDB backfill, resurrecting the deleted
+    # attachment on the next chat load.
+    assert _raw_attachments_json("msg-1") == "[]"
     assert studio_db.list_chat_attachments() == []
     # The message itself must survive with its content intact.
     message = studio_db.get_chat_message("thread-1", "msg-1")
     assert message is not None
     assert message["content"] == [{"type": "text", "text": "hello"}]
+    assert message["attachments"] == []
 
 
 def test_delete_chat_attachment_missing_targets(tmp_path, monkeypatch):
@@ -413,3 +417,139 @@ def test_delete_attachment_route_then_404(tmp_path, monkeypatch):
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(chat_history.delete_attachment("msg-1", "att-1", current_subject = "unsloth"))
     assert excinfo.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Audio attachments (adapter {data, format} and compare-chat bare base64)
+# ---------------------------------------------------------------------------
+
+WAV_BYTES = b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00"
+WAV_B64 = base64.b64encode(WAV_BYTES).decode("ascii")
+
+
+def _audio_attachment(attachment_id: str = "att-audio") -> dict:
+    return {
+        "id": attachment_id,
+        "type": "file",
+        "name": "clip.wav",
+        "contentType": "audio/wav",
+        "content": [{"type": "audio", "audio": {"data": WAV_B64, "format": "wav"}}],
+        "status": {"type": "complete"},
+    }
+
+
+def test_audio_attachment_lists_with_size(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch, [_audio_attachment()])
+    records = studio_db.list_chat_attachments()
+    assert len(records) == 1
+    assert records[0]["id"] == "att-audio"
+    assert abs(records[0]["sizeBytes"] - len(WAV_BYTES)) <= 2
+
+
+def test_audio_attachment_file_serves_bytes(tmp_path, monkeypatch):
+    _seed(tmp_path, monkeypatch, [_audio_attachment()])
+    response = asyncio.run(
+        chat_history.get_attachment_file("msg-1", "att-audio", current_subject = "unsloth")
+    )
+    assert response.body == WAV_BYTES
+    assert response.media_type == "audio/wav"
+
+
+def test_audio_attachment_media_type_from_format(tmp_path, monkeypatch):
+    attachment = _audio_attachment()
+    attachment["contentType"] = None
+    attachment["content"] = [{"type": "audio", "audio": {"data": WAV_B64, "format": "mp3"}}]
+    _seed(tmp_path, monkeypatch, [attachment])
+    response = asyncio.run(
+        chat_history.get_attachment_file("msg-1", "att-audio", current_subject = "unsloth")
+    )
+    assert response.media_type == "audio/mpeg"
+
+
+def test_audio_attachment_corrupt_payload_is_422(tmp_path, monkeypatch):
+    attachment = _audio_attachment()
+    attachment["content"] = [{"type": "audio", "audio": {"data": "%%%", "format": "wav"}}]
+    _seed(tmp_path, monkeypatch, [attachment])
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            chat_history.get_attachment_file("msg-1", "att-audio", current_subject = "unsloth")
+        )
+    assert excinfo.value.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Compare-chat uploads stored as message content parts
+# ---------------------------------------------------------------------------
+
+
+def _compare_message(message_id: str = "msg-cmp") -> dict:
+    return {
+        "id": message_id,
+        "threadId": "thread-1",
+        "parentId": None,
+        "role": "user",
+        "content": [
+            {"type": "image", "image": PNG_DATA_URL},
+            {"type": "audio", "audio": WAV_B64},
+            {"type": "text", "text": "compare these"},
+        ],
+        "createdAt": 1_700_000_000_000,
+    }
+
+
+def _seed_compare(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    studio_db.upsert_chat_message(_compare_message())
+
+
+def test_content_part_uploads_are_listed(tmp_path, monkeypatch):
+    _seed_compare(tmp_path, monkeypatch)
+    records = studio_db.list_chat_attachments()
+    ids = sorted(r["id"] for r in records)
+    assert ids == ["content-part-0", "content-part-1"]
+    image = next(r for r in records if r["id"] == "content-part-0")
+    assert image["type"] == "image"
+    assert image["contentType"] == "image/png"
+    assert abs(image["sizeBytes"] - len(PNG_BYTES)) <= 2
+    audio = next(r for r in records if r["id"] == "content-part-1")
+    assert audio["type"] == "audio"
+
+
+def test_content_part_file_serves_image_bytes(tmp_path, monkeypatch):
+    _seed_compare(tmp_path, monkeypatch)
+    response = asyncio.run(
+        chat_history.get_attachment_file("msg-cmp", "content-part-0", current_subject = "unsloth")
+    )
+    assert response.body == PNG_BYTES
+    assert response.media_type == "image/png"
+
+
+def test_content_part_delete_keeps_text(tmp_path, monkeypatch):
+    _seed_compare(tmp_path, monkeypatch)
+    assert studio_db.delete_chat_attachment("msg-cmp", "content-part-0") is True
+    message = studio_db.get_chat_message("thread-1", "msg-cmp")
+    types = [p["type"] for p in message["content"]]
+    assert types == ["audio", "text"]
+    # Remaining blob re-lists under its new index.
+    assert [r["id"] for r in studio_db.list_chat_attachments()] == ["content-part-0"]
+
+
+def test_content_part_delete_rejects_non_blob(tmp_path, monkeypatch):
+    _seed_compare(tmp_path, monkeypatch)
+    # Index 2 is the text part: not a stored upload, must not be deletable.
+    assert studio_db.delete_chat_attachment("msg-cmp", "content-part-2") is False
+    assert studio_db.delete_chat_attachment("msg-cmp", "content-part-99") is False
+    assert studio_db.delete_chat_attachment("msg-cmp", "content-part-x") is False
+
+
+def test_text_only_messages_not_listed_as_uploads(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    # The word "image" inside text must not create phantom upload rows.
+    message = _message("msg-txt")
+    message["content"] = [
+        {"type": "text", "text": 'discussing an "image" and "audio" here'}
+    ]
+    studio_db.upsert_chat_message(message)
+    assert studio_db.list_chat_attachments() == []
