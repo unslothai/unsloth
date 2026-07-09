@@ -106,7 +106,13 @@ class _FakeLoraModule:
     """Mimics a PEFT `LoraLayer`: presence of `lora_A` is what the guard's
     LoRA-detection helper checks for. Supports ``disable_adapters`` and
     ``merged`` to mirror real adapter state flags."""
-    def __init__(self, *, disable_adapters: bool = False, merged: bool = False):
+
+    def __init__(
+        self,
+        *,
+        disable_adapters: bool = False,
+        merged: bool = False,
+    ):
         self.lora_A = object()
         self.disable_adapters = disable_adapters
         self.merged = merged
@@ -115,6 +121,7 @@ class _FakeLoraModule:
 class _FakeModel:
     """Stand-in for `self` inside `_CausalLM_fast_forward`: only needs
     `.config.model_type` and `.modules()` for the guard block / LoRA helper."""
+
     def __init__(
         self,
         model_type: str,
@@ -166,7 +173,8 @@ def _run_guard(
     ns["RETURN_LOGITS"] = False
     ns["labels"] = labels
     ns["self"] = _FakeModel(
-        model_type, has_lora,
+        model_type,
+        has_lora,
         lora_disabled = lora_disabled,
         lora_merged = lora_merged,
     )
@@ -194,6 +202,7 @@ def _run_guard(
 # Reproduction / behavioral: base-fails, head-passes.
 # ---------------------------------------------------------------------------
 
+
 def test_gemma4_sparse_label_guard_fires():
     """1 valid label out of 19 shifted positions (~5%) on a gemma4 model with
     an active LoRA adapter and `mm_token_type_ids` must force RETURN_LOGITS
@@ -209,12 +218,13 @@ def test_gemma4_sparse_label_guard_fires():
 # Behavioral: threshold boundary.
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     ("valid", "total", "expect_fires"),
     [
-        (1, 20, True),    # ~5% valid, well under the 15% threshold
-        (2, 20, True),    # ~10.5% valid (2/19), still under threshold
-        (3, 20, False),   # ~15.8% valid (3/19), at/above threshold
+        (1, 20, True),  # ~5% valid, well under the 15% threshold
+        (2, 20, True),  # ~10.5% valid (2/19), still under threshold
+        (3, 20, False),  # ~15.8% valid (3/19), at/above threshold
         (10, 20, False),  # ~52.6% valid, well above threshold
     ],
 )
@@ -226,6 +236,7 @@ def test_valid_label_fraction_below_threshold(valid, total, expect_fires):
 # ---------------------------------------------------------------------------
 # Behavioral: guard must not fire outside its exact trigger conditions.
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize(
     ("kwargs_override", "reason"),
@@ -248,6 +259,7 @@ def test_guard_does_not_fire_for_dense_labels_or_non_gemma4(kwargs_override, rea
 # Behavioral: opt-out env var.
 # ---------------------------------------------------------------------------
 
+
 def test_env_var_disables_guard():
     labels = _sparse_labels(total = 20, valid = 1)
     # Default / explicit "1": guard fires.
@@ -260,6 +272,7 @@ def test_env_var_disables_guard():
 # Static: the fallback path the guard routes into actually masks -100 labels.
 # ---------------------------------------------------------------------------
 
+
 def test_cross_entropy_masks_ignored_labels():
     """When the guard fires, RETURN_LOGITS=True routes the forward pass past
     the fused-CE branch into the standard `fast_cross_entropy_loss` path
@@ -269,14 +282,14 @@ def test_cross_entropy_masks_ignored_labels():
     in llama.py, and (2) `fast_cross_entropy_loss` counts only non -100
     labels for its denominator in cross_entropy_loss.py."""
     llama_source = _llama_source()
-    assert "shift_labels[..., -1] = -100" in llama_source, (
-        "llama.py must mask the final shifted-label position with -100"
-    )
-    assert "mask_packed_sequence_boundaries(" in llama_source, (
-        "llama.py must mask packed-sequence boundaries in shift_labels"
-    )
+    assert (
+        "shift_labels[..., -1] = -100" in llama_source
+    ), "llama.py must mask the final shifted-label position with -100"
+    assert (
+        "mask_packed_sequence_boundaries(" in llama_source
+    ), "llama.py must mask packed-sequence boundaries in shift_labels"
 
     ce_source = _CE_KERNEL_PATH.read_text(encoding = "utf-8")
-    assert "n_items = torch.count_nonzero(labels != -100)" in ce_source, (
-        "fast_cross_entropy_loss must exclude -100 labels from its loss denominator"
-    )
+    assert (
+        "n_items = torch.count_nonzero(labels != -100)" in ce_source
+    ), "fast_cross_entropy_loss must exclude -100 labels from its loss denominator"

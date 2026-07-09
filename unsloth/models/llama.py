@@ -1380,7 +1380,8 @@ def _gemma4_model_has_active_lora(model) -> bool:
         and not getattr(m, "merged", False)
         for m in model.modules()
     )
-pass
+
+
 
 
 def CausalLM_fast_forward(fast_forward_inference):
@@ -1496,8 +1497,11 @@ def CausalLM_fast_forward(fast_forward_inference):
                 and kwargs.get("mm_token_type_ids", None) is not None
                 and _gemma4_model_has_active_lora(self)
             ):
-                _valid = (labels[..., 1:] != -100)
-                if _valid.numel() > 0 and _valid.float().mean().item() < GEMMA4_SPARSE_LABEL_MAX_VALID_FRAC:
+                _valid = labels[..., 1:] != -100
+                if (
+                    _valid.numel() > 0
+                    and _valid.float().mean().item() < GEMMA4_SPARSE_LABEL_MAX_VALID_FRAC
+                ):
                     RETURN_LOGITS = True
 
             if not RETURN_LOGITS and labels is not None:
