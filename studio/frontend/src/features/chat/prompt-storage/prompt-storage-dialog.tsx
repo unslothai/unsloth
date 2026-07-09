@@ -539,6 +539,121 @@ export async function exportProjectConversations(
   );
 }
 
+// ── Fine-tuning export ─────────────────────────────────────────────────────
+// One JSONL line per conversation: {"messages": [{"role", "content"}]} with
+// string-only content in system/user/assistant turns. Unsloth's training tab
+// detects this as ChatML natively (no column mapping, no standardization) and
+// it works with train-on-completions masking, which only trains on assistant
+// turns. Reasoning, tool calls, and images are dropped: clean SFT targets.
+
+export type FineTuneMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+const FINE_TUNE_ROLES = new Set(["system", "user", "assistant"]);
+
+/** Plain text of a message: text blocks plus text-type attachment parts. */
+function messageToPlainText(msg: {
+  content: unknown;
+  attachments?: unknown;
+}): string {
+  const parts: string[] = [];
+  const collect = (blocks: unknown) => {
+    if (!Array.isArray(blocks)) return;
+    for (const b of blocks) {
+      const block = b as Record<string, unknown>;
+      if (block.type === "text" && typeof block.text === "string" && block.text) {
+        parts.push(block.text);
+      }
+    }
+  };
+  collect(msg.content);
+  if (Array.isArray(msg.attachments)) {
+    for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
+      collect(attachment?.content);
+    }
+  }
+  return parts.join("\n\n").trim();
+}
+
+/** Conversation turns for fine-tuning, or null when the thread has no
+ *  usable user + assistant exchange. Consecutive same-role turns merge and
+ *  trailing non-assistant turns drop so chat templates format cleanly. */
+function messagesToFineTuneTurns(
+  messages: Array<{ role: unknown; content: unknown; attachments?: unknown }>,
+): FineTuneMessage[] | null {
+  const turns: FineTuneMessage[] = [];
+  for (const msg of messages) {
+    const role = msg.role as FineTuneMessage["role"];
+    if (!FINE_TUNE_ROLES.has(role)) continue;
+    const content = messageToPlainText(msg);
+    if (!content) continue;
+    const last = turns[turns.length - 1];
+    if (last && last.role === role) {
+      last.content += `\n\n${content}`;
+    } else {
+      turns.push({ role, content });
+    }
+  }
+  while (turns.length > 0 && turns[turns.length - 1].role !== "assistant") {
+    turns.pop();
+  }
+  const hasUser = turns.some((t) => t.role === "user");
+  const hasAssistant = turns.some((t) => t.role === "assistant");
+  return hasUser && hasAssistant ? turns : null;
+}
+
+export type FineTuneExportResult = {
+  lines: string[];
+  conversations: number;
+  skipped: number;
+};
+
+/** Every non-archived chat (Recents and Projects) as training-ready JSONL. */
+export async function buildFineTuneJsonl(): Promise<FineTuneExportResult> {
+  const threads = await listStoredChatThreads({ includeArchived: false });
+  const ids = [...new Set(threads.map((t) => t.id))];
+  const lines: string[] = [];
+  let skipped = 0;
+  for (const id of ids) {
+    const raw = await listStoredChatMessages(id);
+    const hasParentIds = raw.some(
+      (m) => (m as { parentId?: unknown }).parentId != null,
+    );
+    const ordered = hasParentIds
+      ? (orderByParentChain(raw) as typeof raw)
+      : raw;
+    const turns = messagesToFineTuneTurns(ordered);
+    if (!turns) {
+      skipped += 1;
+      continue;
+    }
+    lines.push(JSON.stringify({ messages: turns }));
+  }
+  return { lines, conversations: lines.length, skipped };
+}
+
+/** Download the fine-tuning JSONL; returns the conversation count. */
+export async function exportFineTuneJsonl(): Promise<number> {
+  const { lines, conversations, skipped } = await buildFineTuneJsonl();
+  if (conversations === 0) {
+    toast.info("No chats with a user and assistant exchange to export.");
+    return 0;
+  }
+  downloadBlob(
+    lines.join("\n"),
+    `chat-finetune-${exportTs()}.jsonl`,
+    "application/x-ndjson",
+  );
+  if (skipped > 0) {
+    toast.success(
+      `Exported ${conversations} conversation${conversations === 1 ? "" : "s"} (${skipped} without a full exchange skipped).`,
+    );
+  }
+  return conversations;
+}
+
 // role:"tool" results are absorbed into the preceding assistant tool-call
 // part's `result` field rather than becoming separate records.
 function oaiMessagesToRecords(

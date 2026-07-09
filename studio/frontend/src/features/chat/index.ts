@@ -51,7 +51,9 @@ export {
 } from "./utils/composer-draft";
 export {
   EXPORT_FORMATS_LIST,
+  buildFineTuneJsonl,
   bulkExportConversationsByScope,
+  exportFineTuneJsonl,
   importConversationsFromFile,
 } from "./prompt-storage/prompt-storage-dialog";
 export {

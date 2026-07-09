@@ -429,6 +429,16 @@ export const en = {
       uploadedFiles: "Uploaded files",
       uploadedFilesDescription:
         "View and manage files uploaded to chats, projects, and knowledge bases.",
+      fineTuningSection: "Fine-tuning",
+      fineTuneExport: "Use chats as training data",
+      fineTuneExportDescription:
+        "Convert your chats into a JSONL dataset in the OpenAI messages format ({role, content} turns). The Train tab reads it directly and it works with train-on-completions, or refine it first in Data Recipes.",
+      fineTuneExportAction: "Export JSONL",
+      fineTuneExportingAction: "Exporting...",
+      fineTuneOpenRecipesAction: "Open in Recipes",
+      fineTuneOpeningRecipesAction: "Opening...",
+      fineTuneExportFailed: "Failed to export training data",
+      fineTuneRecipeFailed: "Failed to open chats in Recipes",
     },
     connections: {
       title: "Connections",

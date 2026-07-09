@@ -28,6 +28,7 @@ import {
   clearAllChats,
   countAllChats,
   downloadChatExport,
+  exportFineTuneJsonl,
   importConversationsFromFile,
   useChatPreferencesStore,
   useChatRuntimeStore,
@@ -45,6 +46,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ArchivedChatsDialog } from "../components/archived-chats-dialog";
+import { createFineTuneRecipeFromChats } from "../components/finetune-recipe";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { UploadedFilesView } from "../components/uploaded-files-dialog";
@@ -62,6 +64,8 @@ export function DataTab() {
   const [exporting, setExporting] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const [fineTuneExporting, setFineTuneExporting] = useState(false);
+  const [openingRecipe, setOpeningRecipe] = useState(false);
   const archivedChatsRequested = useSettingsDialogStore(
     (s) => s.archivedChatsRequested,
   );
@@ -146,6 +150,35 @@ export function DataTab() {
       });
     } finally {
       setArchiving(false);
+    }
+  };
+
+  const handleFineTuneExport = async () => {
+    setFineTuneExporting(true);
+    try {
+      await exportFineTuneJsonl();
+    } catch (error) {
+      toast.error(t("settings.data.fineTuneExportFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setFineTuneExporting(false);
+    }
+  };
+
+  const handleOpenInRecipes = async () => {
+    setOpeningRecipe(true);
+    try {
+      const recipeId = await createFineTuneRecipeFromChats();
+      if (!recipeId) return;
+      useSettingsDialogStore.getState().closeDialog();
+      void navigate({ to: "/data-recipes/$recipeId", params: { recipeId } });
+    } catch (error) {
+      toast.error(t("settings.data.fineTuneRecipeFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setOpeningRecipe(false);
     }
   };
 
@@ -424,6 +457,40 @@ export function DataTab() {
           >
             {t("settings.data.manageAction")}
           </Button>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.data.fineTuningSection")}>
+        <SettingsRow
+          label={t("settings.data.fineTuneExport")}
+          description={t("settings.data.fineTuneExportDescription")}
+        >
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleFineTuneExport()}
+              disabled={fineTuneExporting || count === 0}
+            >
+              <HugeiconsIcon
+                icon={Download01Icon}
+                className="size-3.5 mr-1.5"
+              />
+              {fineTuneExporting
+                ? t("settings.data.fineTuneExportingAction")
+                : t("settings.data.fineTuneExportAction")}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleOpenInRecipes()}
+              disabled={openingRecipe || count === 0}
+            >
+              {openingRecipe
+                ? t("settings.data.fineTuneOpeningRecipesAction")
+                : t("settings.data.fineTuneOpenRecipesAction")}
+            </Button>
+          </div>
         </SettingsRow>
       </SettingsSection>
 
