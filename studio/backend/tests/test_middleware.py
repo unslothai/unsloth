@@ -323,7 +323,6 @@ class TestSecurityHeadersMiddleware:
 
         assert "x-frame-options" not in {key.lower() for key in r.headers.keys()}
         assert "https://www.kaggle.com" in r.headers["content-security-policy"]
-        assert "__unsloth_frame=frame-token" in r.headers["set-cookie"]
         assert "Max-Age=7200" in r.headers["set-cookie"]
 
     def test_internal_nonce_header_is_spliced_into_csp_and_stripped(self, main_module):

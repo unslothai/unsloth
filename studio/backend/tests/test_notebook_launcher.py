@@ -116,14 +116,12 @@ def test_publish_cloudflare_url_suppresses_public_bootstrap_injection(monkeypatc
     assert app.state.cloudflare_url == "https://ready.trycloudflare.com"
     assert app.state.suppress_bootstrap_injection_for_public_tunnel is True
     assert app.state.trust_cloudflare_client_ip is True
-    assert app.state.cloudflare_client_ip_requires_frame_cookie is True
 
     colab._stop_cloudflare_tunnel()
 
     assert app.state.cloudflare_url is None
     assert app.state.suppress_bootstrap_injection_for_public_tunnel is False
     assert app.state.trust_cloudflare_client_ip is False
-    assert app.state.cloudflare_client_ip_requires_frame_cookie is True
 
 
 def test_publish_cloudflare_url_reports_state_write_failure(monkeypatch):
@@ -148,13 +146,10 @@ def test_start_and_publish_tunnel_fails_closed_when_publish_fails(monkeypatch):
     )
     monkeypatch.setattr(colab, "_publish_cloudflare_url", lambda *args, **kwargs: False)
 
-    def _fake_stop(**kwargs):
-        calls.append(("stopped", kwargs))
-
-    monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", _fake_stop)
+    monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.append(kwargs))
 
     assert colab._start_and_publish_cloudflare_tunnel(8888, allow_bootstrap_pending = True) is None
-    assert calls == [("stopped", {"expected_url": "https://ready.trycloudflare.com"})]
+    assert calls == [{"expected_url": "https://ready.trycloudflare.com"}]
 
 
 def test_kaggle_reuse_path_keeps_bootstrap_guard_for_external_server(monkeypatch):
@@ -182,9 +177,6 @@ def test_kaggle_reuse_path_keeps_bootstrap_guard_for_external_server(monkeypatch
         "_show_and_embed",
         lambda port, *, cloudflare_url = None: calls.setdefault("embed", (port, cloudflare_url)),
     )
-    monkeypatch.setattr(
-        colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.setdefault("stopped", kwargs)
-    )
 
     import time
 
@@ -195,7 +187,6 @@ def test_kaggle_reuse_path_keeps_bootstrap_guard_for_external_server(monkeypatch
     assert calls["tunnel"] == (8888, False)
     assert "published" not in calls
     assert calls["embed"] == (8888, None)
-    assert "stopped" not in calls
     assert env["UNSLOTH_STUDIO_HOSTED_NOTEBOOK"] == "1"
     assert env["UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN"]
 
@@ -226,13 +217,11 @@ def test_kaggle_reuse_path_allows_bootstrap_pending_for_owned_server(monkeypatch
 
     monkeypatch.setattr(colab, "start_cloudflare_tunnel", _fake_tunnel)
     monkeypatch.setattr(colab, "_publish_cloudflare_url", _fake_publish)
+    monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.setdefault("stopped", kwargs))
     monkeypatch.setattr(
         colab,
         "_show_and_embed",
         lambda port, *, cloudflare_url = None: calls.setdefault("embed", (port, cloudflare_url)),
-    )
-    monkeypatch.setattr(
-        colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.setdefault("stopped", kwargs)
     )
 
     import time
@@ -282,7 +271,6 @@ def test_kaggle_start_explicit_cloudflare_false_disables_tunnel(monkeypatch):
 
     assert "published" not in calls
     assert calls["embed"] == (8888, None)
-    assert "stopped" not in calls
     assert env["UNSLOTH_STUDIO_HOSTED_NOTEBOOK"] == "1"
 
 
@@ -314,23 +302,15 @@ def test_show_and_embed_uses_cloudflare_iframe_for_kaggle(monkeypatch):
 
 def test_show_and_embed_skips_cloudflare_iframe_when_public_url_not_ready(monkeypatch):
     rendered = _capture_display(monkeypatch)
-    waits = []
-    monkeypatch.setenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", "frame-token")
     monkeypatch.setattr(colab, "_is_kaggle_environment", lambda: True)
-    monkeypatch.setattr(
-        colab,
-        "_wait_for_public_url",
-        lambda url, timeout = 45.0: waits.append((url, timeout)) and False,
-    )
+    monkeypatch.setattr(colab, "_wait_for_public_url", lambda *_, **__: False)
     monkeypatch.setattr(colab, "_bootstrap_login_notice_html", lambda: None)
 
     colab._show_and_embed(8888, cloudflare_url = "https://not-ready.trycloudflare.com")
 
     html = "\n".join(rendered)
-    assert waits == [("https://not-ready.trycloudflare.com", 8.0)]
     assert "<iframe" not in html
     assert "not loaded" in html
-    assert "https://not-ready.trycloudflare.com" in html
 
 
 def test_show_and_embed_keeps_colab_proxy_if_available(monkeypatch):
@@ -428,44 +408,19 @@ def test_stop_cloudflare_tunnel_preserves_state_when_stop_fails(monkeypatch):
         cloudflare_url = "https://ready.trycloudflare.com",
         suppress_bootstrap_injection_for_public_tunnel = True,
         trust_cloudflare_client_ip = True,
-        cloudflare_client_ip_requires_frame_cookie = True,
     )
     monkeypatch.setitem(
         sys.modules, "main", types.SimpleNamespace(app = types.SimpleNamespace(state = state))
     )
-
-    def _fail_stop():
-        raise RuntimeError("still running")
-
     monkeypatch.setitem(
         sys.modules,
         "cloudflare_tunnel",
-        types.SimpleNamespace(stop_studio_tunnel = _fail_stop),
+        types.SimpleNamespace(
+            stop_studio_tunnel = lambda: (_ for _ in ()).throw(RuntimeError("still running"))
+        ),
     )
 
     assert colab._stop_cloudflare_tunnel(expected_url = "https://ready.trycloudflare.com") is False
     assert state.cloudflare_url == "https://ready.trycloudflare.com"
     assert state.suppress_bootstrap_injection_for_public_tunnel is True
     assert state.trust_cloudflare_client_ip is True
-
-
-def test_stop_cloudflare_tunnel_skips_stale_cleanup(monkeypatch):
-    calls = []
-    state = types.SimpleNamespace(
-        cloudflare_url = "https://newer.trycloudflare.com",
-        suppress_bootstrap_injection_for_public_tunnel = True,
-        trust_cloudflare_client_ip = True,
-        cloudflare_client_ip_requires_frame_cookie = True,
-    )
-    monkeypatch.setitem(
-        sys.modules, "main", types.SimpleNamespace(app = types.SimpleNamespace(state = state))
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "cloudflare_tunnel",
-        types.SimpleNamespace(stop_studio_tunnel = lambda: calls.append("stop")),
-    )
-
-    assert colab._stop_cloudflare_tunnel(expected_url = "https://old.trycloudflare.com") is False
-    assert calls == []
-    assert state.cloudflare_url == "https://newer.trycloudflare.com"

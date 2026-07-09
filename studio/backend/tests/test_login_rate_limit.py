@@ -59,7 +59,6 @@ class _FakeRequest:
         headers = None,
         *,
         trust_cloudflare_client_ip = False,
-        cloudflare_client_ip_requires_frame_cookie = True,
     ):
         from starlette.datastructures import Headers
 
@@ -72,12 +71,7 @@ class _FakeRequest:
                 "state": type(
                     "State",
                     (),
-                    {
-                        "trust_cloudflare_client_ip": trust_cloudflare_client_ip,
-                        "cloudflare_client_ip_requires_frame_cookie": (
-                            cloudflare_client_ip_requires_frame_cookie
-                        ),
-                    },
+                    {"trust_cloudflare_client_ip": trust_cloudflare_client_ip},
                 )()
             },
         )()
@@ -185,8 +179,8 @@ class TestClientIp:
             "127.0.0.1",
             {"cf-connecting-ip": "198.51.100.7"},
             trust_cloudflare_client_ip = True,
-            cloudflare_client_ip_requires_frame_cookie = False,
         )
+        req.app.state.cloudflare_client_ip_requires_frame_cookie = False
         assert _bucket_key(req, "admin") == ("198.51.100.7", "admin")
 
     def test_cf_connecting_ip_used_from_managed_tunnel_frame_cookie(

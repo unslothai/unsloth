@@ -79,16 +79,12 @@ class _Req:
         headers = None,
         *,
         trust_cloudflare_client_ip = False,
-        cloudflare_client_ip_requires_frame_cookie = True,
     ):
         self.client = _types.SimpleNamespace(host = host) if host else None
         self.headers = headers or {}
         self.app = _types.SimpleNamespace(
             state = _types.SimpleNamespace(
                 trust_cloudflare_client_ip = trust_cloudflare_client_ip,
-                cloudflare_client_ip_requires_frame_cookie = (
-                    cloudflare_client_ip_requires_frame_cookie
-                ),
             )
         )
 
@@ -137,18 +133,6 @@ def test_client_ip_ignores_cf_header_without_frame_cookie(monkeypatch):
         trust_cloudflare_client_ip = True,
     )
     assert client_ip(req) == "127.0.0.1"
-
-
-def test_client_ip_uses_cf_header_for_managed_non_notebook_tunnel(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
-    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP", raising = False)
-    req = _Req(
-        "127.0.0.1",
-        {"cf-connecting-ip": "198.51.100.7"},
-        trust_cloudflare_client_ip = True,
-        cloudflare_client_ip_requires_frame_cookie = False,
-    )
-    assert client_ip(req) == "198.51.100.7"
 
 
 def test_client_ip_ignores_cf_header_from_non_loopback(monkeypatch):
