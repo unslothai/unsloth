@@ -4,7 +4,7 @@
 // Settings Data tab glue: turn chat history into a fine-tuning JSONL, stage
 // it as a Data Recipe seed upload, and open a new recipe on that file.
 
-import { buildFineTuneJsonl } from "@/features/chat";
+import { type FineTuneFormat, buildFineTuneJsonl } from "@/features/chat";
 import { saveRecipe } from "@/features/data-recipes/data/recipes-db";
 import { createEmptyRecipePayload } from "@/features/recipe-studio";
 import { inspectSeedUpload } from "@/features/recipe-studio/api";
@@ -26,15 +26,18 @@ function base64FromString(value: string): string {
 /** Builds the JSONL, uploads it as a local recipe seed, and saves a new
  *  recipe whose seed block points at the file. Returns the recipe id, or
  *  null when there is nothing to export. */
-export async function createFineTuneRecipeFromChats(): Promise<string | null> {
-  const { lines, conversations } = await buildFineTuneJsonl();
+export async function createFineTuneRecipeFromChats(
+  format: FineTuneFormat = "openai",
+): Promise<string | null> {
+  const { lines, conversations } = await buildFineTuneJsonl(format);
   if (conversations === 0) {
     toast.info("No chats with a user and assistant exchange to export.");
     return null;
   }
 
   const dateLabel = new Date().toISOString().slice(0, 10);
-  const filename = `chat-finetune-${dateLabel}.jsonl`;
+  const suffix = format === "openai" ? "" : `-${format}`;
+  const filename = `chat-finetune${suffix}-${dateLabel}.jsonl`;
   const inspected = await inspectSeedUpload({
     filename,
     // biome-ignore lint/style/useNamingConvention: api schema
@@ -71,22 +74,25 @@ export async function createFineTuneRecipeFromChats(): Promise<string | null> {
 /** Builds the JSONL, uploads it as a training dataset, and selects it in the
  *  Train tab's config store so the Train page opens with it loaded. Returns
  *  false when there is nothing to export. */
-export async function loadFineTuneDatasetInTrainTab(): Promise<boolean> {
-  const { lines, conversations } = await buildFineTuneJsonl();
+export async function loadFineTuneDatasetInTrainTab(
+  format: FineTuneFormat = "openai",
+): Promise<boolean> {
+  const { lines, conversations } = await buildFineTuneJsonl(format);
   if (conversations === 0) {
     toast.info("No chats with a user and assistant exchange to export.");
     return false;
   }
 
   const dateLabel = new Date().toISOString().slice(0, 10);
+  const suffix = format === "openai" ? "" : `-${format}`;
   const file = new File(
     [lines.join("\n")],
-    `chat-finetune-${dateLabel}.jsonl`,
+    `chat-finetune${suffix}-${dateLabel}.jsonl`,
     { type: "application/x-ndjson" },
   );
   const uploaded = await uploadTrainingDataset(file);
   // Selecting also kicks off the dataset format check, so the Train tab
-  // shows the detected chatml format as soon as it mounts.
+  // shows the detected format as soon as it mounts.
   useTrainingConfigStore.getState().selectLocalDataset(uploaded.stored_path);
   return true;
 }

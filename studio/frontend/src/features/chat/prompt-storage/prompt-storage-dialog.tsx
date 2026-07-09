@@ -610,11 +610,73 @@ export type FineTuneExportResult = {
   skipped: number;
 };
 
+/** Dataset shapes the Train tab detects without column mapping. */
+export type FineTuneFormat = "openai" | "sharegpt" | "alpaca";
+
+const SHAREGPT_FROM: Record<FineTuneMessage["role"], string> = {
+  system: "system",
+  user: "human",
+  assistant: "gpt",
+};
+
+/** JSONL lines for one conversation in the chosen format. Alpaca is
+ *  single-turn, so each user to assistant pair becomes its own record with
+ *  the system prompt and earlier exchange carried in the input field. */
+function turnsToFineTuneLines(
+  turns: FineTuneMessage[],
+  format: FineTuneFormat,
+): string[] {
+  if (format === "sharegpt") {
+    return [
+      JSON.stringify({
+        conversations: turns.map((t) => ({
+          from: SHAREGPT_FROM[t.role],
+          value: t.content,
+        })),
+      }),
+    ];
+  }
+  if (format === "alpaca") {
+    const lines: string[] = [];
+    const context: string[] = [];
+    let system = "";
+    let pendingUser: string | null = null;
+    for (const t of turns) {
+      if (t.role === "system") {
+        system = system ? `${system}\n\n${t.content}` : t.content;
+        continue;
+      }
+      if (t.role === "user") {
+        pendingUser = t.content;
+        continue;
+      }
+      if (pendingUser === null) continue;
+      const inputParts = [];
+      if (system) inputParts.push(system);
+      if (context.length > 0) inputParts.push(context.join("\n"));
+      lines.push(
+        JSON.stringify({
+          instruction: pendingUser,
+          input: inputParts.join("\n\n"),
+          output: t.content,
+        }),
+      );
+      context.push(`User: ${pendingUser}`, `Assistant: ${t.content}`);
+      pendingUser = null;
+    }
+    return lines;
+  }
+  return [JSON.stringify({ messages: turns })];
+}
+
 /** Every non-archived chat (Recents and Projects) as training-ready JSONL. */
-export async function buildFineTuneJsonl(): Promise<FineTuneExportResult> {
+export async function buildFineTuneJsonl(
+  format: FineTuneFormat = "openai",
+): Promise<FineTuneExportResult> {
   const threads = await listStoredChatThreads({ includeArchived: false });
   const ids = [...new Set(threads.map((t) => t.id))];
   const lines: string[] = [];
+  let conversations = 0;
   let skipped = 0;
   for (const id of ids) {
     const raw = await listStoredChatMessages(id);
@@ -625,25 +687,30 @@ export async function buildFineTuneJsonl(): Promise<FineTuneExportResult> {
       ? (orderByParentChain(raw) as typeof raw)
       : raw;
     const turns = messagesToFineTuneTurns(ordered);
-    if (!turns) {
+    const converted = turns ? turnsToFineTuneLines(turns, format) : [];
+    if (converted.length === 0) {
       skipped += 1;
       continue;
     }
-    lines.push(JSON.stringify({ messages: turns }));
+    conversations += 1;
+    lines.push(...converted);
   }
-  return { lines, conversations: lines.length, skipped };
+  return { lines, conversations, skipped };
 }
 
 /** Download the fine-tuning JSONL; returns the conversation count. */
-export async function exportFineTuneJsonl(): Promise<number> {
-  const { lines, conversations, skipped } = await buildFineTuneJsonl();
+export async function exportFineTuneJsonl(
+  format: FineTuneFormat = "openai",
+): Promise<number> {
+  const { lines, conversations, skipped } = await buildFineTuneJsonl(format);
   if (conversations === 0) {
     toast.info("No chats with a user and assistant exchange to export.");
     return 0;
   }
+  const suffix = format === "openai" ? "" : `-${format}`;
   downloadBlob(
     lines.join("\n"),
-    `chat-finetune-${exportTs()}.jsonl`,
+    `chat-finetune${suffix}-${exportTs()}.jsonl`,
     "application/x-ndjson",
   );
   if (skipped > 0) {

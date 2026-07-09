@@ -345,7 +345,6 @@ export function UploadedFilesView() {
           <div className="flex items-center gap-3 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
             <span className="flex-1">Name</span>
             <span className="w-36 shrink-0">Location</span>
-            <span className="w-16 shrink-0">Size</span>
             <span className="w-24 shrink-0">Uploaded</span>
             <span className="w-16 shrink-0" />
           </div>
@@ -370,21 +369,28 @@ export function UploadedFilesView() {
                 <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-[7px] border border-border/50 bg-muted/40">
                   {row.thumb}
                 </span>
-                {/* Floor keeps the name visible when the chip and fixed
-                  columns squeeze the cell at narrow widths. */}
-                <span className="min-w-[3.5rem] truncate underline-offset-2 group-hover/name:underline">
-                  {row.name}
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="flex min-w-0 items-center gap-2">
+                    {/* Floor keeps the name visible when the chip and fixed
+                      columns squeeze the cell at narrow widths. */}
+                    <span className="min-w-[3.5rem] truncate underline-offset-2 group-hover/name:underline">
+                      {row.name}
+                    </span>
+                    {row.typeLabel ? (
+                      <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground dark:bg-white/[0.1]">
+                        {row.typeLabel}
+                      </span>
+                    ) : null}
+                    {row.failed ? (
+                      <span className="shrink-0 text-xs text-destructive">
+                        failed
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {formatSize(row.sizeBytes)}
+                  </span>
                 </span>
-                {row.typeLabel ? (
-                  <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground dark:bg-white/[0.1]">
-                    {row.typeLabel}
-                  </span>
-                ) : null}
-                {row.failed ? (
-                  <span className="shrink-0 text-xs text-destructive">
-                    failed
-                  </span>
-                ) : null}
               </button>
               {row.threadId ? (
                 <button
@@ -403,9 +409,6 @@ export function UploadedFilesView() {
                   {row.location}
                 </span>
               )}
-              <span className="w-16 shrink-0 text-muted-foreground tabular-nums">
-                {formatSize(row.sizeBytes)}
-              </span>
               <span className="w-24 shrink-0 text-muted-foreground tabular-nums">
                 {formatUploadedAt(row.createdAt)}
               </span>

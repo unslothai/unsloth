@@ -55,6 +55,7 @@ export {
   bulkExportConversationsByScope,
   exportFineTuneJsonl,
   importConversationsFromFile,
+  type FineTuneFormat,
 } from "./prompt-storage/prompt-storage-dialog";
 export {
   archiveAllChatItems,

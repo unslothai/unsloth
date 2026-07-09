@@ -14,15 +14,18 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
   EXPORT_FORMATS_LIST,
+  type FineTuneFormat,
   archiveAllChatItems,
   bulkExportConversationsByScope,
   clearAllChats,
@@ -37,9 +40,12 @@ import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
+  ArrowDown01Icon,
   ArrowLeft01Icon,
+  ArrowRight01Icon,
   Delete02Icon,
   Download01Icon,
+  Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -70,6 +76,11 @@ export function DataTab() {
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
+  const [fineTuneAction, setFineTuneAction] = useState<
+    "train" | "recipes" | "export"
+  >("train");
+  const [fineTuneFormat, setFineTuneFormat] =
+    useState<FineTuneFormat>("openai");
   const archivedChatsRequested = useSettingsDialogStore(
     (s) => s.archivedChatsRequested,
   );
@@ -160,7 +171,7 @@ export function DataTab() {
   const handleFineTuneExport = async () => {
     setFineTuneExporting(true);
     try {
-      await exportFineTuneJsonl();
+      await exportFineTuneJsonl(fineTuneFormat);
     } catch (error) {
       toast.error(t("settings.data.fineTuneExportFailed"), {
         description: error instanceof Error ? error.message : undefined,
@@ -173,7 +184,7 @@ export function DataTab() {
   const handleOpenInRecipes = async () => {
     setOpeningRecipe(true);
     try {
-      const recipeId = await createFineTuneRecipeFromChats();
+      const recipeId = await createFineTuneRecipeFromChats(fineTuneFormat);
       if (!recipeId) return;
       useSettingsDialogStore.getState().closeDialog();
       void navigate({ to: "/data-recipes/$recipeId", params: { recipeId } });
@@ -189,7 +200,7 @@ export function DataTab() {
   const handleUseInTraining = async () => {
     setLoadingTraining(true);
     try {
-      const loaded = await loadFineTuneDatasetInTrainTab();
+      const loaded = await loadFineTuneDatasetInTrainTab(fineTuneFormat);
       if (!loaded) return;
       useSettingsDialogStore.getState().closeDialog();
       void navigate({ to: "/studio" });
@@ -200,6 +211,18 @@ export function DataTab() {
     } finally {
       setLoadingTraining(false);
     }
+  };
+
+  const fineTuneActionLabels = {
+    train: t("settings.data.fineTuneTrainAction"),
+    recipes: t("settings.data.fineTuneOpenRecipesAction"),
+    export: t("settings.data.fineTuneExportAction"),
+  } as const;
+  const fineTuneBusy = loadingTraining || openingRecipe || fineTuneExporting;
+  const runFineTuneAction = () => {
+    if (fineTuneAction === "train") void handleUseInTraining();
+    else if (fineTuneAction === "recipes") void handleOpenInRecipes();
+    else void handleFineTuneExport();
   };
 
   const handleClear = async () => {
@@ -305,40 +328,74 @@ export function DataTab() {
           label={t("settings.data.fineTuneExport")}
           description={t("settings.data.fineTuneExportDescription")}
         >
-          <div className="flex max-w-56 flex-wrap items-center justify-end gap-2">
+          <div className="flex items-center gap-2">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <Button variant="outline" size="sm" disabled={count === 0}>
+                  {fineTuneActionLabels[fineTuneAction]}
+                  <HugeiconsIcon
+                    icon={ArrowDown01Icon}
+                    className="size-3.5 ml-1.5"
+                  />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-60">
+                {(["train", "recipes", "export"] as const).map((action) => (
+                  <DropdownMenuItem
+                    key={action}
+                    onSelect={() => setFineTuneAction(action)}
+                  >
+                    <span className="flex-1">
+                      {fineTuneActionLabels[action]}
+                    </span>
+                    {fineTuneAction === action ? (
+                      <HugeiconsIcon icon={Tick02Icon} className="size-3.5" />
+                    ) : null}
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+                  {t("settings.data.fineTuneFormatLabel")}
+                </DropdownMenuLabel>
+                {/* Format ticks keep the menu open so picking a format and
+                  an action does not need two openings. */}
+                {(
+                  [
+                    { value: "openai", label: "fineTuneFormatOpenAi" },
+                    { value: "sharegpt", label: "fineTuneFormatShareGpt" },
+                    { value: "alpaca", label: "fineTuneFormatAlpaca" },
+                  ] as const
+                ).map(({ value, label }) => (
+                  <DropdownMenuItem
+                    key={value}
+                    onSelect={(e) => {
+                      e.preventDefault();
+                      setFineTuneFormat(value);
+                    }}
+                  >
+                    <span className="flex-1">
+                      {t(`settings.data.${label}`)}
+                    </span>
+                    {fineTuneFormat === value ? (
+                      <HugeiconsIcon icon={Tick02Icon} className="size-3.5" />
+                    ) : null}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
-              variant="outline"
               size="sm"
-              onClick={() => void handleUseInTraining()}
-              disabled={loadingTraining || count === 0}
+              onClick={runFineTuneAction}
+              disabled={fineTuneBusy || count === 0}
+              aria-label={t("settings.data.fineTuneRunAction")}
+              title={`${t("settings.data.fineTuneRunAction")}: ${fineTuneActionLabels[fineTuneAction]}`}
+              className="px-2.5"
             >
-              {loadingTraining
-                ? t("settings.data.fineTuneTrainingAction")
-                : t("settings.data.fineTuneTrainAction")}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void handleOpenInRecipes()}
-              disabled={openingRecipe || count === 0}
-            >
-              {openingRecipe
-                ? t("settings.data.fineTuneOpeningRecipesAction")
-                : t("settings.data.fineTuneOpenRecipesAction")}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void handleFineTuneExport()}
-              disabled={fineTuneExporting || count === 0}
-            >
-              <HugeiconsIcon
-                icon={Download01Icon}
-                className="size-3.5 mr-1.5"
-              />
-              {fineTuneExporting
-                ? t("settings.data.fineTuneExportingAction")
-                : t("settings.data.fineTuneExportAction")}
+              {fineTuneBusy ? (
+                <Spinner className="size-4" />
+              ) : (
+                <HugeiconsIcon icon={ArrowRight01Icon} className="size-4" />
+              )}
             </Button>
           </div>
         </SettingsRow>
