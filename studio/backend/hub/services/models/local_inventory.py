@@ -541,7 +541,7 @@ def iter_recursive_scan_dirs(
 ):
     """Yield sub-directories of *folder_path* that should themselves be scanned.
 
-    Directories with an immediate model signal are not yielded (they are picked
+    Directories holding immediate model weights are not yielded (they are picked
     up as children of their parent's scan) and are never descended into.
     Symlinks are never followed; depth and visited-entry caps bound the walk."""
     base_depth = len(folder_path.parts)
@@ -561,7 +561,7 @@ def iter_recursive_scan_dirs(
                 continue
             child = current / name
             try:
-                if child.is_symlink() or _has_immediate_model_signal(child):
+                if child.is_symlink() or _has_immediate_model_weight(child):
                     continue
             except OSError:
                 continue
@@ -604,7 +604,7 @@ def _scan_custom_folder(folder_path: Path, recursive: bool = False) -> List[Loca
                 )
             ):
                 key = (m.path, m.model_format, m.format_variant)
-                if key in seen:
+                if key in seen or not path_is_same_or_child(Path(m.path), folder_path):
                     continue
                 seen.add(key)
                 generic.append(m)

@@ -831,7 +831,11 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
             custom_models = _generic
             if folder.get("recursive"):
                 from hub.services.models.local_inventory import iter_recursive_scan_dirs
-                seen = {(m.path, m.model_format, m.format_variant) for m in custom_models}
+                from hub.utils.paths import path_is_same_or_child
+                seen = {
+                    (m.path, m.model_format, getattr(m, "format_variant", None))
+                    for m in custom_models
+                }
                 for subdir in iter_recursive_scan_dirs(folder_path):
                     if len(custom_models) >= _MAX_MODELS_PER_FOLDER:
                         break
@@ -839,9 +843,14 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
                         subdir,
                         limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
                     ):
-                        key = (m.path, m.model_format, m.format_variant)
-                        if key in seen or any(
-                            p in (".studio_links", "ollama_links") for p in Path(m.path).parts
+                        key = (m.path, m.model_format, getattr(m, "format_variant", None))
+                        if (
+                            key in seen
+                            or not path_is_same_or_child(Path(m.path), folder_path)
+                            or any(
+                                p in (".studio_links", "ollama_links")
+                                for p in Path(m.path).parts
+                            )
                         ):
                             continue
                         seen.add(key)

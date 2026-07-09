@@ -83,6 +83,27 @@ def test_scan_custom_folder_finds_nested_models_only_when_recursive(tmp_path):
     assert any("model-deep" in p for p in recursive_paths)
 
 
+def test_recursive_scan_descends_through_config_only_dirs(tmp_path):
+    (tmp_path / "family").mkdir()
+    (tmp_path / "family" / "config.json").write_text("{}")
+    _make_model_dir(tmp_path / "family" / "variant" / "model-nested")
+
+    recursive = local_inventory._scan_custom_folder(tmp_path, recursive = True)
+
+    assert any("model-nested" in m.path for m in recursive)
+
+
+def test_recursive_scan_ignores_symlinked_models_outside_folder(tmp_path):
+    root = tmp_path / "root"
+    (root / "a" / "b").mkdir(parents = True)
+    _make_model_dir(tmp_path / "outside" / "model-o")
+    os.symlink(tmp_path / "outside" / "model-o", root / "a" / "b" / "link")
+
+    recursive = local_inventory._scan_custom_folder(root, recursive = True)
+
+    assert not any("model-o" in m.path or "link" in m.path for m in recursive)
+
+
 def test_scan_custom_folder_recursive_does_not_duplicate(tmp_path):
     _make_model_dir(tmp_path / "sub" / "model-a")
 

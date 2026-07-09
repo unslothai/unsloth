@@ -211,6 +211,7 @@ class AddScanFolderRequest(BaseModel):
     """Request body for adding a custom scan folder."""
 
     path: str = Field(..., description = "Absolute or relative directory path to scan for models")
+    recursive: bool = Field(False, description = "Also scan sub-folders (bounded depth) for models")
 
 
 class ScanFolderInfo(BaseModel):
@@ -218,6 +219,7 @@ class ScanFolderInfo(BaseModel):
 
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
+    recursive: int = Field(0, description = "1 when sub-folders are also scanned")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
 
 
