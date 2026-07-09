@@ -4036,19 +4036,20 @@ async def load_model(
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
-    if request.async_load:
-        global _active_async_load_task, _accepted_async_load_model, _async_load_generation
-        global _last_async_load_error
-        if _active_async_load_task is not None and not _active_async_load_task.done():
-            raise HTTPException(
-                status_code = status.HTTP_409_CONFLICT,
-                detail = f"Model load already in progress: {_accepted_async_load_model}",
-            )
+    global _active_async_load_task, _accepted_async_load_model, _async_load_generation
+    global _last_async_load_error
+    if _active_async_load_task is not None and not _active_async_load_task.done():
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = f"Model load already in progress: {_accepted_async_load_model}",
+        )
 
+    if request.async_load:
         _async_load_generation += 1
         generation = _async_load_generation
         _accepted_async_load_model = request.model_path
         _last_async_load_error = None
+        gate_acquired = asyncio.get_running_loop().create_future()
 
         async def _background_load() -> None:
             global _last_async_load_error
@@ -4056,12 +4057,16 @@ async def load_model(
                 async with inference_lifecycle_gate():
                     if sidecar_swap_in_progress():
                         raise _swap_409
+                    if not gate_acquired.done():
+                        gate_acquired.set_result(None)
                     await _load_model_impl(request, fastapi_request, current_subject)
                 if generation == _async_load_generation:
                     _last_async_load_error = None
             except Exception as exc:
                 detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
                 logger.warning("inference.async_load_failed: %s", detail)
+                if not gate_acquired.done():
+                    gate_acquired.set_exception(exc)
                 if generation == _async_load_generation:
                     _last_async_load_error = str(detail)
 
@@ -4071,11 +4076,14 @@ async def load_model(
         task.add_done_callback(
             lambda done_task: _clear_async_load_if_current(done_task, generation)
         )
+        await gate_acquired
         return LoadAcceptedResponse(model = request.model_path)
     async with inference_lifecycle_gate():
         if sidecar_swap_in_progress():
             raise _swap_409
-        return await _load_model_impl(request, fastapi_request, current_subject)
+        response = await _load_model_impl(request, fastapi_request, current_subject)
+    _last_async_load_error = None
+    return response
 
 
 async def _load_model_impl(request: LoadRequest, fastapi_request: Request, current_subject: str):

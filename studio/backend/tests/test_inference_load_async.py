@@ -14,6 +14,7 @@ import asyncio
 import pytest
 from fastapi import HTTPException
 
+import core.inference.llama_keepwarm as keepwarm
 import routes.inference as inference_route
 from models.inference import LoadAcceptedResponse, LoadRequest, LoadResponse
 
@@ -40,6 +41,15 @@ def _run(coro):
 def test_async_load_returns_immediately(monkeypatch):
     """The route must return as soon as the background task is scheduled."""
 
+    gate_entered = asyncio.Event()
+
+    class _Gate:
+        async def __aenter__(self):
+            gate_entered.set()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            pass
+
     async def _slow_load(request, fastapi_request, current_subject):
         await asyncio.sleep(0.2)
         return LoadResponse(
@@ -47,6 +57,7 @@ def test_async_load_returns_immediately(monkeypatch):
         )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
+    monkeypatch.setattr(keepwarm, "inference_lifecycle_gate", lambda: _Gate())
 
     async def _scenario():
         start = asyncio.get_event_loop().time()
@@ -58,6 +69,7 @@ def test_async_load_returns_immediately(monkeypatch):
     assert isinstance(result, LoadAcceptedResponse)
     assert result.status == "loading"
     assert result.model == "unsloth/A-GGUF"
+    assert gate_entered.is_set()
     assert elapsed < 0.1
 
 
@@ -136,6 +148,28 @@ def test_async_load_rejects_second_load_while_pending(monkeypatch):
     assert exc.status_code == 409
     assert "unsloth/A-GGUF" in exc.detail
     assert calls == ["unsloth/A-GGUF"]
+
+
+def test_sync_load_rejected_while_async_load_pending(monkeypatch):
+    release = asyncio.Event()
+
+    async def _slow_load(request, fastapi_request, current_subject):
+        await release.wait()
+        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
+
+    async def _scenario():
+        await inference_route.load_model(_request("unsloth/A-GGUF"), object(), "tester")
+        with pytest.raises(HTTPException) as exc_info:
+            await inference_route.load_model(_request("unsloth/B-GGUF", async_load = False), object(), "tester")
+        release.set()
+        await inference_route._active_async_load_task
+        return exc_info.value
+
+    exc = _run(_scenario())
+    assert exc.status_code == 409
+    assert "unsloth/A-GGUF" in exc.detail
 
 
 def test_async_load_status_reports_pending_model_immediately(monkeypatch):
@@ -274,6 +308,18 @@ def test_overlapping_loads_success_clears_stale_error(monkeypatch):
         await asyncio.sleep(0.1)
 
     _run(_scenario())
+    assert inference_route._last_async_load_error is None
+
+
+def test_sync_load_success_clears_stale_async_error(monkeypatch):
+    async def _load(request, fastapi_request, current_subject):
+        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+    monkeypatch.setattr(inference_route, "_last_async_load_error", "stale async failure")
+
+    result = _run(inference_route.load_model(_request(async_load = False), object(), "tester"))
+    assert isinstance(result, LoadResponse)
     assert inference_route._last_async_load_error is None
 
 
