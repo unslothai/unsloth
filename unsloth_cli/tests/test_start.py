@@ -128,6 +128,32 @@ def test_install_agent_uses_powershell_on_windows(monkeypatch):
     assert ran == [["powershell", "-NoProfile", "-Command", install_hint]]
 
 
+def test_install_agent_warns_and_names_remote_source(monkeypatch, capsys):
+    # Before the confirm, a remote installer must name the URL it fetches so the
+    # user consents to a specific source rather than blindly accepting.
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: False)  # decline: nothing runs
+    hint = "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -SkipSetup"
+    assert start._install_agent("hermes", hint) is None
+    err = capsys.readouterr().err
+    assert "https://hermes-agent.nousresearch.com/install.ps1" in err
+    assert "download and RUN" in err
+    assert "signature or hash" in err
+
+
+def test_install_agent_warns_for_package_installer(monkeypatch, capsys):
+    # An npm-style installer has no URL to fetch, but still runs with the user's
+    # privileges, so the warning names the command instead.
+    monkeypatch.setattr(start.os, "name", "posix")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: False)
+    assert start._install_agent("codex", "npm install -g @openai/codex") is None
+    err = capsys.readouterr().err
+    assert "npm install -g @openai/codex" in err
+    assert "with your privileges" in err
+
+
 def test_hermes_install_hint_is_windows_native_on_windows(monkeypatch):
     monkeypatch.setattr(start.os, "name", "nt")
 

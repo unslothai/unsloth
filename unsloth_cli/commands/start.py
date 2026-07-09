@@ -1004,6 +1004,12 @@ def _refresh_windows_path() -> None:
         os.environ["PATH"] = os.pathsep.join(entries)
 
 
+def _install_source(install_hint: str) -> Optional[str]:
+    """The first http(s) URL an install hint fetches, or None (e.g. an npm install)."""
+    match = re.search(r"https?://[^\s'\")]+", install_hint)
+    return match.group(0) if match else None
+
+
 def _install_agent(name: str, install_hint: str) -> Optional[str]:
     # Missing agent under --launch: offer to run its documented install command, then
     # re-resolve it on PATH. Consent-based (we never auto-run a remote install script
@@ -1012,7 +1018,18 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
     if not sys.stdin.isatty():
         return None
     typer.echo(f"`{name}` is not installed.")
-    if not typer.confirm(f"Install it now with `{install_hint}`?", default = False):
+    # Make the supply-chain risk explicit before the prompt: these are the vendors'
+    # own installers (curl | bash, irm | iex, npm), run with the user's privileges,
+    # and nothing checks a signature or hash on the fetched content. Naming the source
+    # turns a blind "yes" into informed consent.
+    source = _install_source(install_hint)
+    warning = (
+        f"This will download and RUN a script from {source} with your privileges"
+        if source
+        else f"This will RUN `{install_hint}` with your privileges"
+    )
+    typer.secho(f"{warning}; there is no signature or hash check.", fg = "yellow", err = True)
+    if not typer.confirm(f"Install `{name}` now with `{install_hint}`?", default = False):
         return None
     # Run each hint through the shell it is written for: PowerShell (irm | iex, or npm)
     # on Windows, /bin/sh (curl | bash, or npm) everywhere else.
