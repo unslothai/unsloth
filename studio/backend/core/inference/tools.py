@@ -2489,6 +2489,79 @@ _FS_PATHLIB_MUTATE = {
 _FS_PATHLIB_READ = frozenset({"read_text", "read_bytes"})
 
 
+# --------------------------------------------------------------------------
+# Stage 4: pragmatic aliasing (single-assignment alias + inline literal container).
+# Catches `s = os.system; s('rm -rf /')` and `[os.system][0](...)` feeding the
+# existing shell-command denylist. Deliberately low-FP: only unambiguous single
+# assignments (a name stored exactly once) and inline literal containers, never a
+# flow-insensitive union (so `s = os.system; s = print; s('hi')` is NOT aliased).
+# --------------------------------------------------------------------------
+_SHELL_SINK_FUNCS = frozenset(
+    {
+        "os.system", "os.popen", "os.popen2", "os.popen3", "os.popen4",
+        "os.execl", "os.execle", "os.execlp", "os.execlpe",
+        "os.execv", "os.execve", "os.execvp", "os.execvpe",
+        "os.spawnl", "os.spawnle", "os.spawnlp", "os.spawnlpe",
+        "os.spawnv", "os.spawnve", "os.spawnvp", "os.spawnvpe",
+        "os.posix_spawn", "os.posix_spawnp",
+        "subprocess.run", "subprocess.call", "subprocess.check_call",
+        "subprocess.check_output", "subprocess.Popen",
+        "subprocess.getoutput", "subprocess.getstatusoutput",
+    }
+)
+
+
+def _resolve_static_shell_sink(node, os_aliases, subprocess_aliases, from_aliases):
+    """Resolve an expression to a shell-sink fully-qualified name, else None."""
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        if node.value.id in os_aliases:
+            fq = f"os.{node.attr}"
+            if fq in _SHELL_SINK_FUNCS:
+                return fq
+        if node.value.id in subprocess_aliases:
+            fq = f"subprocess.{node.attr}"
+            if fq in _SHELL_SINK_FUNCS:
+                return fq
+    if isinstance(node, ast.Name):
+        return from_aliases.get(node.id)
+    return None
+
+
+def _build_shell_sink_aliases(tree):
+    """Single-assignment names (stored exactly once) bound to a resolved shell sink."""
+    os_aliases = {"os"}
+    subprocess_aliases = {"subprocess"}
+    from_aliases: dict[str, str] = {}
+    store_counts: dict[str, int] = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            store_counts[n.id] = store_counts.get(n.id, 0) + 1
+        elif isinstance(n, ast.Import):
+            for a in n.names:
+                if a.name == "os":
+                    os_aliases.add(a.asname or "os")
+                elif a.name == "subprocess":
+                    subprocess_aliases.add(a.asname or "subprocess")
+        elif isinstance(n, ast.ImportFrom) and n.module in ("os", "subprocess"):
+            for a in n.names:
+                fq = f"{n.module}.{a.name}"
+                if fq in _SHELL_SINK_FUNCS:
+                    from_aliases[a.asname or a.name] = fq
+
+    aliases: dict[str, str] = {}
+    for stmt in getattr(tree, "body", []):
+        if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)):
+            continue
+        name = stmt.targets[0].id
+        if store_counts.get(name, 0) != 1:
+            continue  # ambiguous reassignment -> do not alias (avoids FPs)
+        fq = _resolve_static_shell_sink(stmt.value, os_aliases, subprocess_aliases, from_aliases)
+        if fq:
+            aliases[name] = fq
+    return aliases
+
+
 def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
     """Check for patterns that could escape signal-based timeouts. Returns
     (safe: bool, details: dict). Vendored from unsloth_zoo.rl_environments to
@@ -2521,12 +2594,15 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
             _const_env = _build_const_prop_env(tree)
             _exec_aliases, _compiled_env = _build_exec_env(tree, _const_env)
             _rce_in_scope = bool(_scope_imported_roots(tree) & _RCE_CORE_MODULES)
+            _sink_aliases = _build_shell_sink_aliases(tree)
         except Exception:  # pragma: no cover - defensive: never crashier than legacy
             logger.warning("sandbox analyzer context build failed; legacy fallback", exc_info = True)
             _analyzer_on = False
             _const_env, _exec_aliases, _compiled_env, _rce_in_scope = {}, {}, {}, False
+            _sink_aliases = {}
     else:
         _const_env, _exec_aliases, _compiled_env, _rce_in_scope = {}, {}, {}, False
+        _sink_aliases = {}
 
     def _analyze_exec_call(node, func_id):
         """Stage 2 driver: recover + recurse a foldable payload, else dynamic policy."""
@@ -2613,41 +2689,10 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
             return full_name in names
         return False
 
-    # Dangerous os/subprocess functions that can execute shell commands.
-    _SHELL_EXEC_FUNCS = frozenset(
-        {
-            "os.system",
-            "os.popen",
-            "os.popen2",
-            "os.popen3",
-            "os.popen4",
-            "os.execl",
-            "os.execle",
-            "os.execlp",
-            "os.execlpe",
-            "os.execv",
-            "os.execve",
-            "os.execvp",
-            "os.execvpe",
-            "os.spawnl",
-            "os.spawnle",
-            "os.spawnlp",
-            "os.spawnlpe",
-            "os.spawnv",
-            "os.spawnve",
-            "os.spawnvp",
-            "os.spawnvpe",
-            "os.posix_spawn",
-            "os.posix_spawnp",
-            "subprocess.run",
-            "subprocess.call",
-            "subprocess.check_call",
-            "subprocess.check_output",
-            "subprocess.Popen",
-            "subprocess.getoutput",
-            "subprocess.getstatusoutput",
-        }
-    )
+    # Dangerous os/subprocess functions that can execute shell commands
+    # (defined at module scope as _SHELL_SINK_FUNCS so Stage 4 alias resolution
+    # can share it).
+    _SHELL_EXEC_FUNCS = _SHELL_SINK_FUNCS
 
     # Dynamic-execution / obfuscation primitives that defeat the static (name-based) checks
     # above: they build or reach a dangerous callable at runtime, so a bare name match cannot
@@ -2796,6 +2841,32 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
             self.generic_visit(node)
             self.loop_depth -= 1
 
+        def _resolve_container_sink(self, sub):
+            """Resolve an inline literal-container index callee to a shell sink fq.
+
+            Covers ``[os.system][0]``, ``(os.system,)[0]`` and ``{'k': os.system}['k']``.
+            """
+            def _elt(elt):
+                fq = _resolve_static_shell_sink(
+                    elt, self.os_aliases, self.subprocess_aliases, self.shell_exec_aliases
+                )
+                if fq:
+                    return fq
+                if isinstance(elt, ast.Name):
+                    return _sink_aliases.get(elt.id)
+                return None
+
+            container = sub.value
+            ci = _const_fold(sub.slice, _const_env)
+            if isinstance(container, (ast.List, ast.Tuple)) and isinstance(ci, int):
+                if -len(container.elts) <= ci < len(container.elts):
+                    return _elt(container.elts[ci])
+            if isinstance(container, ast.Dict) and ci is not None:
+                for k, v in zip(container.keys, container.values):
+                    if k is not None and _const_fold(k, _const_env) == ci:
+                        return _elt(v)
+            return None
+
         def visit_Call(self, node):
             func = node.func
             func_name = None
@@ -2857,6 +2928,12 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
             elif isinstance(func, ast.Name):
                 # from-import aliases: from os import system; system(...)
                 shell_func = self.shell_exec_aliases.get(func.id)
+                # Stage 4: single-assignment alias `s = os.system; s('rm -rf /')`.
+                if shell_func is None and _analyzer_on:
+                    shell_func = _sink_aliases.get(func.id)
+            elif _analyzer_on and isinstance(func, ast.Subscript):
+                # Stage 4: inline literal container index `[os.system][0](...)`.
+                shell_func = self._resolve_container_sink(func)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
                 # Expand **kwargs dicts to inspect their keys.
