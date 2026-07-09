@@ -1334,3 +1334,115 @@ class TestRound7Bypasses:
 
     def test_shutil_copy_benign_allowed(self):
         _ok("import shutil\nshutil.copy('data.csv', 'backup.csv')")
+
+
+class TestRound8Bypasses:
+    """Eighth-round Codex findings: dynamic closure recovery, class-body exec aliases,
+    shell redirection escapes, pathlib/read-callee/shutil aliases, FileIO base via
+    __mro__, and env -S split strings."""
+
+    def test_dynamic_closure_name_lookup_blocked(self):
+        # __closure__ built at runtime then .cell_contents to recover the guarded open.
+        name = "''.join(map(chr,[95,95,99,108,111,115,117,114,101,95,95]))"
+        assert (
+            _check_code_safety(f"getattr(open, {name})[0].cell_contents('/tmp/x','w')") is not None
+        )
+        # cell_contents is flagged directly and via getattr, regardless of how __closure__
+        # was reached.
+        assert _check_code_safety("open.__closure__[0].cell_contents('/tmp/x','w')") is not None
+        assert _check_code_safety("getattr(f, 'cell_contents')") is not None
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "class C:\n    e = eval\n    e(\"__import__('os').system('rm -rf /')\")",
+            "class C:\n    r = exec\n    r(\"__import__('os').system('id')\")",
+            "import os\n\n\nclass C:\n    s = os.system\n    s('rm -rf /')",
+        ],
+    )
+    def test_class_body_exec_alias_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_method_still_resolves_module_alias(self):
+        # A method skips the class scope (Python semantics), so a same-named class attr
+        # must NOT shadow the module-level sink alias the method actually reaches.
+        assert (
+            _check_code_safety(
+                "import os\ns = os.system\n"
+                "class C:\n    s = 1\n    def m(self):\n        s('rm -rf /')\n"
+                "C().m()"
+            )
+            is not None
+        )
+
+    def test_class_body_benign_alias_allowed(self):
+        _ok("class C:\n    f = sorted\n    y = f([3, 1, 2])")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('echo x > /tmp/p')",
+            "import os\nos.system('echo x >> /etc/passwd')",
+            "import os\nos.system('echo x > ~/p')",
+            "import os\nos.system('echo x > ../escape')",
+            "exec(\"import os\\nos.system('printf x > /tmp/p')\")",
+        ],
+    )
+    def test_shell_redirect_escape_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_benign_relative_redirect_allowed(self):
+        # A relative redirect stays in the workdir cwd.
+        _ok("import os\nos.system('echo hi > out.txt')")
+        _ok("import os\nos.system('ls 2>&1')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path as P\nP('../../../etc/passwd').read_text()",
+            "from pathlib import PurePath as PP\nPP('../../../etc/passwd').read_text()",
+        ],
+    )
+    def test_pathlib_ctor_alias_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import io\nio.FileIO.__mro__[1]('/tmp/x', 'w')",
+            "import _io\n_io.FileIO.__mro__[1]('/tmp/x', 'w')",
+        ],
+    )
+    def test_fileio_base_via_mro_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_mro_iteration_and_slice_allowed(self):
+        _ok("cls = int\nfor c in cls.__mro__:\n    pass")
+        _ok("for c in int.__mro__[1:]:\n    pass")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "o = open\no('../../../etc/passwd').read()",
+            "import shutil as sh\nsh.copy('../../../etc/passwd', 'x')",
+            "import shutil as sh\nsh.copyfile('../../../etc/passwd', 'x')",
+        ],
+    )
+    def test_aliased_read_callee_traversal_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system(\"env -S 'python3 -c print(1)'\")",
+            "import os\nos.system('env -Spython3 evil.py')",
+            "import os\nos.system(\"env -S 'rm -rf /'\")",
+        ],
+    )
+    def test_env_split_string_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_benign_env_and_getattr_allowed(self):
+        # No false positive on a benign env invocation or a benign dynamic getattr.
+        _ok("import os\nos.system('env PYTHONPATH=. echo hi')")
+        _ok("obj = {}\nname = 'keys'\ngetattr(obj, name)()")

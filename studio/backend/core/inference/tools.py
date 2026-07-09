@@ -374,6 +374,45 @@ def _find_blocked_commands(command: str) -> set[str]:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             break  # stop at first non-flag token
 
+    # `env -S 'cmd ...'` / `env --split-string='cmd'` splits the string and runs it as a
+    # fresh command, so a bare `env -S` operand is NOT just a flag value -- recurse into
+    # it (it can invoke an unguarded interpreter or another blocked command).
+    for i, token in enumerate(tokens):
+        tl = token.lower()
+        payload = None
+        if tl in ("-s", "--split-string") and i + 1 < len(tokens):
+            payload = tokens[i + 1]
+        elif tl.startswith("-s") and tl != "-s" and not tl.startswith("--"):
+            payload = token[2:]  # glued short form: env -S'cmd' / -Scmd
+        elif tl.startswith("--split-string="):
+            payload = token[len("--split-string=") :]
+        if not payload:
+            continue
+        for j in range(i - 1, -1, -1):
+            prev = tokens[j]
+            if prev.startswith("-"):
+                continue
+            if os.path.basename(prev).lower() == "env":
+                blocked |= _find_blocked_commands(payload)
+            break
+
+    # Output redirection (> / >> / &> / N>) to a path OUTSIDE the workdir: a child shell
+    # runs unguarded, so `echo x > /tmp/p` / `>> ../p` / `> ~/p` writes past the session
+    # workdir. A relative target (> out.txt) stays in the workdir cwd and is allowed.
+    # Scanning tokens (not the raw string) avoids matching a `>` inside a quoted argument.
+    for i, tok in enumerate(tokens):
+        rm = re.search(r">{1,2}([^\s>]*)$", tok)
+        if rm is None:
+            continue
+        tgt = rm.group(1)
+        if not tgt and i + 1 < len(tokens):
+            tgt = tokens[i + 1]
+        if not tgt:
+            continue
+        tn = tgt.replace("\\", "/")
+        if tgt.startswith("~") or tn.startswith("/") or ".." in tn.split("/"):
+            blocked.add("redirect:" + tgt)
+
     return blocked
 
 
@@ -2638,16 +2677,27 @@ class _ScopeAliasIndex:
 def _build_scope_alias_index(tree, const_env):
     idx = _ScopeAliasIndex(tree)
 
-    def _rec(node, scope):
+    def _rec(node, scope, func_enclose):
+        # scope: namespace the direct children belong to (for node_scope + counting).
+        # func_enclose: the scope a nested FUNCTION / class body encloses to. Python skips
+        # class scope for nested functions, so inside a class body this stays the class's
+        # own lexical function/module parent rather than the class.
         for child in ast.iter_child_nodes(node):
             idx.node_scope[child] = scope
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                idx.enclosing[child] = scope
-                _rec(child, child)
+                idx.enclosing[child] = func_enclose
+                _rec(child, child, child)
+            elif isinstance(child, ast.ClassDef):
+                # A class body executes immediately with its OWN namespace, so it is a
+                # real alias scope (class C: e = eval; e(...) runs eval), but its names
+                # are not visible to methods defined inside it -- those enclose to
+                # func_enclose, skipping the class.
+                idx.enclosing[child] = func_enclose
+                _rec(child, child, func_enclose)
             else:
-                _rec(child, scope)
+                _rec(child, scope, func_enclose)
 
-    _rec(tree, tree)
+    _rec(tree, tree, tree)
 
     # os / subprocess import + from-import aliases are collected tree-wide (imports
     # are lexically visible module-wide in practice) and shared across scopes.
@@ -2737,7 +2787,9 @@ def _build_scope_alias_index(tree, const_env):
         return None
 
     scopes = [tree] + [
-        n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     ]
     for scope in scopes:
         counts: dict[str, int] = {}
@@ -3299,11 +3351,16 @@ def _check_signal_escape_patterns(
     # Introspection "gadget" dunders used to walk from a harmless object to os/builtins
     # (``().__class__.__bases__[0].__subclasses__()``). ``__class__`` / ``__dict__`` are
     # intentionally excluded (too common); the chain still trips on the others.
-    # __mro__ and __code__ are deliberately EXCLUDED: on their own they do not reach
+    # __mro__ and __code__ are deliberately EXCLUDED here: on their own they do not reach
     # an execution primitive, and they are read by ordinary ML/debugging code
     # (trainer_class.__mro__, fn.__code__), so flagging them over-blocks legitimate
     # snippets. The terminal escape primitives below still trip on the real gadget
-    # chains (().__class__.__bases__[0].__subclasses__(), f.__globals__['os']).
+    # chains (().__class__.__bases__[0].__subclasses__(), f.__globals__['os']). A
+    # SUBSCRIPTED __mro__ (cls.__mro__[1], the base-class extraction shape) is flagged
+    # separately in visit_Subscript so plain iteration stays allowed.
+    # cell_contents is the ONLY way to read a closure cell's value, so it is the terminal
+    # step of recovering a guarded wrapper's original callable via __closure__; flagging
+    # it closes that recovery even when the __closure__ name was built dynamically.
     _GADGET_DUNDERS = frozenset(
         {
             "__subclasses__",
@@ -3312,6 +3369,7 @@ def _check_signal_escape_patterns(
             "__globals__",
             "__builtins__",
             "__closure__",
+            "cell_contents",
         }
     )
 
@@ -3955,6 +4013,24 @@ def _check_signal_escape_patterns(
             self.generic_visit(node)
 
         def visit_Subscript(self, node):
+            # An INTEGER-indexed __mro__ (cls.__mro__[1]) extracts a specific base class the
+            # way __bases__[0] does -- the shape used to reach the original FileIO C base
+            # class (io.FileIO.__mro__[1]) or walk to object/subclasses. Plain iteration
+            # (for c in cls.__mro__) and slicing (cls.__mro__[1:]) yield the tuple/list for
+            # legitimate introspection, so only a non-slice index is flagged.
+            if (
+                isinstance(node.ctx, ast.Load)
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "__mro__"
+                and not isinstance(node.slice, ast.Slice)
+            ):
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(node, "lineno", -1),
+                        "description": "subscripted __mro__ extracts a base class (gadget)",
+                    }
+                )
             # sys.modules['os'] pulls an already-loaded dangerous module out of the
             # loader table (os/subprocess are loaded by the host). Scope to a Load of a
             # dangerous LITERAL key so legit uses ("x" in sys.modules, sys.modules.get(
@@ -4661,6 +4737,47 @@ def _check_signal_escape_patterns(
         "shutil.copytree",
         "shutil.move",
     )
+    _SHUTIL_COPY_METHODS = ("copy", "copy2", "copyfile", "copytree", "move")
+    # Import aliases so the traversal check still recognizes a renamed callee:
+    #   from pathlib import Path as P  -> P('../../etc/passwd').read_text()
+    #   import shutil as sh            -> sh.copy('../../etc/passwd', 'x')
+    _pathlib_ctor_aliases = set(_PATHLIB_CTORS)
+    _shutil_aliases = {"shutil"}
+    for _imp in ast.walk(tree):
+        if isinstance(_imp, ast.ImportFrom) and _imp.module == "pathlib":
+            for _a in _imp.names:
+                if _a.name in _PATHLIB_CTORS:
+                    _pathlib_ctor_aliases.add(_a.asname or _a.name)
+        elif isinstance(_imp, ast.Import):
+            for _a in _imp.names:
+                if _a.name == "shutil":
+                    _shutil_aliases.add(_a.asname or "shutil")
+
+    def _resolves_to_open(fn):
+        # A callee that is `open`, or a single-assignment alias of it (o = open;
+        # o('../../etc/passwd').read()), or builtins.open / io.open / os.open.
+        if isinstance(fn, ast.Name):
+            if fn.id == "open":
+                return True
+            rhs = _scope_idx.resolve(fn.id, fn, "rhsnode")
+            if isinstance(rhs, ast.Name) and rhs.id == "open":
+                return True
+            if (
+                isinstance(rhs, ast.Attribute)
+                and rhs.attr == "open"
+                and isinstance(rhs.value, ast.Name)
+                and rhs.value.id in ("builtins", "__builtins__", "io", "os")
+            ):
+                return True
+        return False
+
+    def _is_shutil_copy_callee(fn):
+        return (
+            isinstance(fn, ast.Attribute)
+            and fn.attr in _SHUTIL_COPY_METHODS
+            and isinstance(fn.value, ast.Name)
+            and fn.value.id in _shutil_aliases
+        )
 
     def _fold_read_arg(arg):
         # Fold a read-path argument to a concrete string, resolving a module-level
@@ -4717,7 +4834,7 @@ def _check_signal_escape_patterns(
                 return os.path.join(*parts)
             except Exception:
                 return None
-        ctor = (isinstance(rf, ast.Name) and rf.id in _PATHLIB_CTORS) or (
+        ctor = (isinstance(rf, ast.Name) and rf.id in _pathlib_ctor_aliases) or (
             isinstance(rf, ast.Attribute) and rf.attr in _PATHLIB_CTORS
         )
         if not ctor or not recv.args:
@@ -4762,9 +4879,10 @@ def _check_signal_escape_patterns(
                 else (f.id if isinstance(f, ast.Name) else "")
             )
             is_read_callee = (
-                (isinstance(f, ast.Name) and f.id == "open")
+                _resolves_to_open(f)
                 or fq in ("io.open", "os.open")
                 or fq in _SHUTIL_COPY_SINKS
+                or _is_shutil_copy_callee(f)
                 or method in _READ_METHODS
             )
             # Pathlib read on a Path(...) / join receiver: check the resolved path.

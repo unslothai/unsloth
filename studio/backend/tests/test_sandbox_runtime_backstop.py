@@ -708,3 +708,37 @@ def test_sandboxed_closure_recovery_of_open_blocked():
     )
     assert "unsafe code detected" in out or "sandbox:" in out or "PermissionError" in out
     assert not os.path.exists("/tmp/studio_closure_escape.txt")
+
+
+@_POSIX_ONLY
+def test_sandboxed_dynamic_closure_name_recovery_blocked():
+    # __closure__ built at runtime via chr(): the static gate must block the
+    # .cell_contents recovery step so the original open is never reached.
+    name = "''.join(map(chr,[95,95,99,108,111,115,117,114,101,95,95]))"
+    out = _python_exec(
+        f"getattr(open, {name})[0].cell_contents('/tmp/studio_dyn_closure.txt', 'w').write('x')\n"
+        "print('DYN_CLOSURE_WROTE')\n",
+        None,
+        30,
+        "backstop-dyn-closure",
+        disable_sandbox = False,
+    )
+    assert "unsafe code detected" in out or "sandbox:" in out or "PermissionError" in out
+    assert not os.path.exists("/tmp/studio_dyn_closure.txt")
+
+
+@_POSIX_ONLY
+def test_sandboxed_fileio_base_via_mro_blocked():
+    # The guarded io.FileIO subclass exposes the unguarded C base at __mro__[1]; the
+    # static gate now blocks the integer-indexed __mro__ base extraction.
+    out = _python_exec(
+        "import io\n"
+        "io.FileIO.__mro__[1]('/tmp/studio_mro_escape.txt', 'w').write(b'x')\n"
+        "print('MRO_WROTE')\n",
+        None,
+        30,
+        "backstop-mro",
+        disable_sandbox = False,
+    )
+    assert "unsafe code detected" in out or "sandbox:" in out or "PermissionError" in out
+    assert not os.path.exists("/tmp/studio_mro_escape.txt")
