@@ -327,8 +327,10 @@ export function useChatModelRuntime() {
   const refresh = useCallback(async (options?: {
     pollUntilActiveModel?: boolean;
     signal?: AbortSignal;
+    includeLoras?: boolean;
   }) => {
     const signal = options?.signal;
+    const includeLoras = options?.includeLoras ?? true;
     setModelsError(null);
     try {
       const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
@@ -339,11 +341,17 @@ export function useChatModelRuntime() {
         !isExternalSelectionActive;
 
       // Populate the model/lora lists immediately so the selector is not
-      // blocked by the CLI-load poll below.
-      const [listRes, lorasRes] = await Promise.all([listModels(), listLoras()]);
+      // blocked by the CLI-load poll below. Loras are skipped on the fast
+      // initial mount refresh (includeLoras: false) and fetched deferred.
+      const [listRes, lorasRes] = await Promise.all([
+        listModels(),
+        includeLoras ? listLoras() : Promise.resolve(null),
+      ]);
       if (signal?.aborted) return;
       setModels(listRes.models.map(toChatModelSummary));
-      setLoras(lorasRes.loras.map(toLoraSummary));
+      if (lorasRes) {
+        setLoras(lorasRes.loras.map(toLoraSummary));
+      }
 
       let polledStatus: InferenceStatusResponse | null = shouldPollForCliLoad
         ? await getInferenceStatus().catch(() => null)

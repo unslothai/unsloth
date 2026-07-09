@@ -35,7 +35,6 @@ import {
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
-import { ProjectSourcesPanel } from "@/features/rag/components/project-sources-panel";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
@@ -51,7 +50,9 @@ import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type CSSProperties,
   type ReactElement,
+  lazy,
   memo,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -133,6 +134,13 @@ import {
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
+
+
+const ProjectSourcesPanel = lazy(() =>
+  import("@/features/rag/components/project-sources-panel").then((module) => ({
+    default: module.ProjectSourcesPanel,
+  })),
+);
 
 type LoraCandidate = {
   id: string;
@@ -1018,7 +1026,15 @@ function ProjectLanding({
             </div>
 
             {projectTab === "sources" ? (
-              <ProjectSourcesPanel projectId={projectId} />
+              <Suspense
+                fallback={
+                  <div className="mt-8 rounded-[26px] bg-muted/30 px-6 py-10 text-center text-sm text-muted-foreground">
+                    Loading sources…
+                  </div>
+                }
+              >
+                <ProjectSourcesPanel projectId={projectId} />
+              </Suspense>
             ) : (
               <div className="mt-8 flex flex-col gap-1">
                 {items.map((item) => {
@@ -2246,12 +2262,34 @@ export function ChatPage({
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
 
-  useEffect(() => {
-    if (getTrainingCompareHandoff()) return;
-    const pollUntilActiveModel = !useChatRuntimeStore.getState().params.checkpoint;
-    void refresh(pollUntilActiveModel ? { pollUntilActiveModel: true } : undefined);
+  const inventoryRefreshStartedRef = useRef(false);
+  const refreshDeferredModelInventories = useCallback(() => {
+    inventoryRefreshStartedRef.current = true;
+    void refresh({ includeLoras: true });
     refreshLocalModels();
   }, [refresh, refreshLocalModels]);
+
+  useEffect(() => {
+    if (getTrainingCompareHandoff()) return;
+    // On a fresh mount with no checkpoint, poll for a CLI-loaded model
+    // (studio run -m) so the UI adopts it instead of auto-loading another.
+    const pollUntilActiveModel = !useChatRuntimeStore.getState().params.checkpoint;
+    void refresh({
+      includeLoras: false,
+      ...(pollUntilActiveModel ? { pollUntilActiveModel: true } : {}),
+    });
+    const timeoutId = window.setTimeout(() => {
+      if (!inventoryRefreshStartedRef.current) {
+        refreshDeferredModelInventories();
+      }
+    }, 1200);
+    return () => window.clearTimeout(timeoutId);
+  }, [refresh, refreshDeferredModelInventories]);
+
+  useEffect(() => {
+    if (!active || !modelSelectorOpen) return;
+    refreshDeferredModelInventories();
+  }, [active, modelSelectorOpen, refreshDeferredModelInventories]);
 
   useEffect(() => {
     // ChatPage no longer remounts on navigation, so re-check the handoff whenever
