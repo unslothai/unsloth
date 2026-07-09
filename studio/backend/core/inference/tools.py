@@ -3749,7 +3749,9 @@ def _check_signal_escape_patterns(
             f = node.func
             fq = _fq_attr_name(f)
             method = (
-                f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+                f.attr
+                if isinstance(f, ast.Attribute)
+                else (f.id if isinstance(f, ast.Name) else "")
             )
             is_read_callee = (
                 (isinstance(f, ast.Name) and f.id == "open")
