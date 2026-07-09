@@ -3770,6 +3770,9 @@ class FastLlamaModel:
             restore_use_cache(model)
         except ImportError:
             pass
+        # Flag that a compiled generation ran, so the next trainer.train() drops the
+        # torch.compile cache it specialized before it hard-fails the training recompile.
+        _unsloth_flag_pretrain_generation(model)
         return model
 
     @staticmethod

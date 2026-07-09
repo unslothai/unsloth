@@ -2113,6 +2113,9 @@ class FastBaseModel:
         # Turn off skip guards and set stance to default
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
+        # Flag that a compiled generation ran, so the next trainer.train() drops the
+        # torch.compile cache it specialized before it hard-fails the training recompile.
+        _unsloth_flag_pretrain_generation(model)
         return model
 
     @staticmethod
