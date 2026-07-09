@@ -171,7 +171,7 @@ def test_multi_backend_build_is_not_vulkan_only(tmp_path):
     assert LlamaCppBackend._is_vulkan_backend(binary) is False
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="shell wrapper fallback is POSIX")
+@pytest.mark.skipif(sys.platform == "win32", reason = "shell wrapper fallback is POSIX")
 def test_shell_wrapper_entrypoint_resolves_to_real_lib_dir(tmp_path):
     # create_exec_entrypoint falls back to a #!/bin/sh wrapper at the install root
     # when it cannot symlink; _find_llama_server_binary returns that root entrypoint,
