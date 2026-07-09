@@ -398,8 +398,10 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # Output redirection (> / >> / &> / N>) to a path OUTSIDE the workdir: a child shell
     # runs unguarded, so `echo x > /tmp/p` / `>> ../p` / `> ~/p` writes past the session
-    # workdir. A relative target (> out.txt) stays in the workdir cwd and is allowed.
-    # Scanning tokens (not the raw string) avoids matching a `>` inside a quoted argument.
+    # workdir. A relative literal target (> out.txt) stays in the workdir cwd and is
+    # allowed; a NON-LITERAL target (variable / command substitution) cannot be verified,
+    # so it fails closed (`echo x > "$p"` could expand anywhere). Scanning tokens (not the
+    # raw string) avoids matching a `>` inside a quoted argument.
     for i, tok in enumerate(tokens):
         rm = re.search(r">{1,2}([^\s>]*)$", tok)
         if rm is None:
@@ -410,8 +412,42 @@ def _find_blocked_commands(command: str) -> set[str]:
         if not tgt:
             continue
         tn = tgt.replace("\\", "/")
-        if tgt.startswith("~") or tn.startswith("/") or ".." in tn.split("/"):
+        if (
+            tgt.startswith("~")
+            or tn.startswith("/")
+            or ".." in tn.split("/")
+            or "$" in tgt
+            or "`" in tgt
+        ):
             blocked.add("redirect:" + tgt)
+
+    # `cd` to a dir OUTSIDE the workdir moves the child shell's cwd so a later relative
+    # redirect / write escapes (`cd /tmp; echo x > p`). Block a command-position cd to an
+    # absolute / .. / ~ / variable target; a relative in-workdir `cd data` stays allowed.
+    _at_cmd = True
+    for i, tok in enumerate(tokens):
+        if tok in _SHELL_SEPARATORS or tok in _SHELL_KEYWORDS_AS_SEP:
+            _at_cmd = True
+            continue
+        if _at_cmd and _token_basename(tok) == "cd":
+            for k in range(i + 1, len(tokens)):
+                t = tokens[k]
+                if t.startswith("-"):
+                    continue  # cd flags: -P, -L, -e, -@
+                tnn = t.replace("\\", "/")
+                if (
+                    t.startswith("~")
+                    or tnn.startswith("/")
+                    or ".." in tnn.split("/")
+                    or "$" in t
+                    or "`" in t
+                ):
+                    blocked.add("cd:" + t)
+                break
+            _at_cmd = False
+            continue
+        if not tok.startswith("-"):
+            _at_cmd = False
 
     return blocked
 
@@ -3479,6 +3515,14 @@ def _check_signal_escape_patterns(
             # file/module in the guarded interpreter without the recursive source
             # analysis exec/eval receive, so treat those calls as execution sinks.
             self.runpy_aliases = {"runpy"}
+            # from runpy import run_path as X / run_module as Y -> {"X", "Y"}.
+            self.runpy_func_aliases: set[str] = set()
+            # import inspect as i -> {"inspect", "i"}. inspect.getclosurevars(fn) hands back
+            # the cells a guard wrapper closes over (the original unguarded callable), so
+            # treat it as a closure-recovery gadget like __closure__ / cell_contents.
+            self.inspect_aliases = {"inspect"}
+            # from inspect import getclosurevars as g -> {"g"}.
+            self.getclosurevars_aliases: set[str] = set()
             self.loop_depth = 0
 
         def visit_Import(self, node):
@@ -3501,6 +3545,8 @@ def _check_signal_escape_patterns(
                     self.types_aliases.add(alias.asname or "types")
                 elif alias.name == "runpy":
                     self.runpy_aliases.add(alias.asname or "runpy")
+                elif alias.name == "inspect":
+                    self.inspect_aliases.add(alias.asname or "inspect")
                 if alias.name in _DESERIALIZE_MODULES:
                     self.deserialize_module_aliases[alias.asname or alias.name] = alias.name
             self.generic_visit(node)
@@ -3551,6 +3597,14 @@ def _check_signal_escape_patterns(
                 for alias in node.names:
                     if alias.name == "FunctionType":
                         self.functiontype_aliases.add(alias.asname or alias.name)
+            elif node.module == "runpy":
+                for alias in node.names:
+                    if alias.name in ("run_path", "run_module"):
+                        self.runpy_func_aliases.add(alias.asname or alias.name)
+            elif node.module == "inspect":
+                for alias in node.names:
+                    if alias.name == "getclosurevars":
+                        self.getclosurevars_aliases.add(alias.asname or alias.name)
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -3610,6 +3664,43 @@ def _check_signal_escape_patterns(
                     and _ast_name_matches(elt.value, self.builtins_aliases)
                 ):
                     return elt.attr
+                return None
+
+            container = sub.value
+            ci = _const_fold(sub.slice, _const_env)
+            if isinstance(container, (ast.List, ast.Tuple)) and isinstance(ci, int):
+                if -len(container.elts) <= ci < len(container.elts):
+                    return _elt(container.elts[ci])
+            if isinstance(container, ast.Dict) and ci is not None:
+                for k, v in zip(container.keys, container.values):
+                    if k is not None and _const_fold(k, _const_env) == ci:
+                        return _elt(v)
+            return None
+
+        def _resolve_container_deser(self, sub):
+            """Resolve an inline literal-container index callee to a deserializer sink fq.
+
+            Covers ([pickle.loads][0])(payload), (pickle.loads,)[0](...) and
+            {'k': pickle.loads}['k'](...): an inline container hiding a pickle/marshal
+            reduce sink from the attribute/name deserializer checks."""
+
+            def _elt(elt):
+                if isinstance(elt, ast.Attribute):
+                    if isinstance(elt.value, ast.Name):
+                        canon = self.deserialize_module_aliases.get(elt.value.id)
+                        if canon is not None:
+                            cand = f"{canon}.{elt.attr}"
+                            if cand in _CODE_DESERIALIZE_SINKS:
+                                return cand
+                    fq = _fq_attr_name(elt)
+                    if fq in _CODE_DESERIALIZE_SINKS:
+                        return fq
+                elif isinstance(elt, ast.Name):
+                    fq = self.deserialize_aliases.get(elt.id)
+                    if fq is not None:
+                        return fq
+                    if _analyzer_on:
+                        return _scope_idx.resolve(elt.id, elt, "deser")
                 return None
 
             container = sub.value
@@ -3831,6 +3922,24 @@ def _check_signal_escape_patterns(
                 and _ast_name_matches(func.value, self.builtins_aliases)
             ):
                 exec_func_id = func.attr  # builtins.eval(...) / __builtins__.exec(...)
+            elif isinstance(func, ast.Attribute) and func.attr == "__call__":
+                # eval.__call__("...") / exec.__call__(...) / builtins.eval.__call__(...)
+                # invoke the builtin indirectly through its bound method; the payload is
+                # still node.args[0], so recover + recurse it exactly like a direct call.
+                _base = func.value
+                if isinstance(_base, ast.Name):
+                    if _base.id in _DYNAMIC_EXEC_BUILTINS:
+                        exec_func_id = _base.id
+                    elif _base.id in self.exec_from_aliases:
+                        exec_func_id = self.exec_from_aliases[_base.id]
+                    elif _analyzer_on:
+                        exec_func_id = _scope_idx.resolve(_base.id, _base, "execb")
+                elif (
+                    isinstance(_base, ast.Attribute)
+                    and _base.attr in _DYNAMIC_EXEC_BUILTINS
+                    and _ast_name_matches(_base.value, self.builtins_aliases)
+                ):
+                    exec_func_id = _base.attr
             elif isinstance(func, ast.Subscript):
                 # ({'e': exec}['e'])(...) / [exec][0](...): an inline container hides the
                 # sink from the bare-name / attribute checks above.
@@ -3851,6 +3960,46 @@ def _check_signal_escape_patterns(
                     )
             else:
                 dynamic_desc = None
+                # eval / exec / compile passed as a first-class VALUE (not called here)
+                # runs its payloads through a higher-order applier the recursive analyzer
+                # never sees: list(map(eval, ["..."])), functools.reduce(exec, ...),
+                # functools.partial(eval, ...). Flag any bare reference to a dynamic-exec
+                # builtin appearing as a call argument, unpacking a literal *[...] / *(...)
+                # starred arg so map(*[eval, [...]]) is covered too.
+                _cand_args = []
+                for _a in list(node.args) + [k.value for k in node.keywords]:
+                    if isinstance(_a, ast.Starred) and isinstance(_a.value, (ast.List, ast.Tuple)):
+                        _cand_args.extend(_a.value.elts)
+                    elif isinstance(_a, ast.Starred):
+                        _cand_args.append(_a.value)
+                    else:
+                        _cand_args.append(_a)
+                _indirect_exec = None
+                for _t in _cand_args:
+                    if isinstance(_t, ast.Name):
+                        if _t.id in _DYNAMIC_EXEC_BUILTINS:
+                            _indirect_exec = _t.id
+                        elif _t.id in self.exec_from_aliases:
+                            _indirect_exec = self.exec_from_aliases[_t.id]
+                    elif (
+                        isinstance(_t, ast.Attribute)
+                        and _t.attr in _DYNAMIC_EXEC_BUILTINS
+                        and _ast_name_matches(_t.value, self.builtins_aliases)
+                    ):
+                        _indirect_exec = _t.attr
+                    if _indirect_exec is not None:
+                        break
+                if _indirect_exec is not None:
+                    dynamic_exec.append(
+                        {
+                            "type": "dynamic_exec",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                f"{_indirect_exec} passed as a value to a higher-order "
+                                "call (indirect eval/exec of an un-analyzed payload)"
+                            ),
+                        }
+                    )
                 # An attribute-access call whose (receiver, attr-name) pair is the same
                 # obfuscation as getattr(): the builtin getattr/setattr, or the dunder
                 # forms object.__getattribute__(obj, 'name') / type.__getattribute__(...)
@@ -3918,6 +4067,10 @@ def _check_signal_escape_patterns(
                     if _deser_fq is None and _analyzer_on:
                         # single-assignment `l = pickle.loads` in the call's scope.
                         _deser_fq = _scope_idx.resolve(func.id, func, "deser")
+                elif _analyzer_on and isinstance(func, ast.Subscript):
+                    # ([pickle.loads][0])(payload) / {'k': pickle.loads}['k'](payload):
+                    # an inline container hides the sink from the attribute / name checks.
+                    _deser_fq = self._resolve_container_deser(func)
                 if _deser_fq is None:
                     _fq_func = _fq_attr_name(func)
                     if _fq_func in _CODE_DESERIALIZE_SINKS:
@@ -4010,6 +4163,31 @@ def _check_signal_escape_patterns(
                     if isinstance(_key, str) and _key.split(".")[0] in _DANGEROUS_IMPORT_NAMES:
                         dynamic_desc = "sys.modules.get(...) access to a sensitive module"
                 elif (
+                    # sys.modules.pop('_io', None) / .clear() / .update(...) / .setdefault(...)
+                    # mutate the loader table just like `del sys.modules[...]`: dropping a
+                    # guarded module entry lets `import _io` / `import posix` reload a fresh,
+                    # UNWRAPPED C module (the prelude patched only the old object), bypassing
+                    # filesystem confinement. The subscript-Store/Del check misses method calls.
+                    isinstance(func, ast.Attribute)
+                    and func.attr
+                    in (
+                        "pop",
+                        "popitem",
+                        "clear",
+                        "setdefault",
+                        "update",
+                        "__setitem__",
+                        "__delitem__",
+                    )
+                    and isinstance(func.value, ast.Attribute)
+                    and func.value.attr == "modules"
+                    and _ast_name_matches(func.value.value, self.sys_aliases)
+                ):
+                    dynamic_desc = (
+                        f"sys.modules.{func.attr}(...) mutates the loader table "
+                        "(can drop a guarded module for reimport)"
+                    )
+                elif (
                     # globals().get('__builtins__') / locals().get(...) / vars().get(...)
                     # -- the .get() twin of the globals()['__builtins__'] subscript form.
                     isinstance(func, ast.Attribute)
@@ -4052,14 +4230,30 @@ def _check_signal_escape_patterns(
                     # runpy.run_path('evil.py') / runpy.run_module('evil') execute a
                     # file/module in the guarded interpreter WITHOUT the recursive source
                     # analysis exec/eval receive, so a sandboxed snippet can write a local
-                    # evil.py and run it. Treat these as direct execution sinks.
-                    isinstance(func, ast.Attribute)
-                    and func.attr in ("run_path", "run_module")
-                    and _ast_name_matches(func.value, self.runpy_aliases)
-                ):
-                    dynamic_desc = (
-                        f"runpy.{func.attr}() executes a file/module without static analysis"
+                    # evil.py and run it. Treat these as direct execution sinks. Covers the
+                    # attribute form and a `from runpy import run_path` bare-name alias.
+                    (
+                        isinstance(func, ast.Attribute)
+                        and func.attr in ("run_path", "run_module")
+                        and _ast_name_matches(func.value, self.runpy_aliases)
                     )
+                    or (isinstance(func, ast.Name) and func.id in self.runpy_func_aliases)
+                ):
+                    _rn = func.attr if isinstance(func, ast.Attribute) else func.id
+                    dynamic_desc = f"runpy.{_rn}() executes a file/module without static analysis"
+                elif (
+                    # inspect.getclosurevars(open).nonlocals['real'] recovers the original
+                    # unguarded callable a guard wrapper closes over, without spelling
+                    # __closure__ / cell_contents. Block the introspection primitive
+                    # (attribute form plus a `from inspect import getclosurevars` alias).
+                    (
+                        isinstance(func, ast.Attribute)
+                        and func.attr == "getclosurevars"
+                        and _ast_name_matches(func.value, self.inspect_aliases)
+                    )
+                    or (isinstance(func, ast.Name) and func.id in self.getclosurevars_aliases)
+                ):
+                    dynamic_desc = "inspect.getclosurevars() recovers a guarded wrapper's closure"
                 elif isinstance(func, ast.Attribute) and func.attr in (
                     "runcode",
                     "runsource",
@@ -4111,22 +4305,31 @@ def _check_signal_escape_patterns(
             self.generic_visit(node)
 
         def visit_Subscript(self, node):
-            # An INTEGER-indexed __mro__ (cls.__mro__[1]) extracts a specific base class the
-            # way __bases__[0] does -- the shape used to reach the original FileIO C base
-            # class (io.FileIO.__mro__[1]) or walk to object/subclasses. Plain iteration
-            # (for c in cls.__mro__) and slicing (cls.__mro__[1:]) yield the tuple/list for
-            # legitimate introspection, so only a non-slice index is flagged.
+            # An INTEGER-indexed __mro__ (cls.__mro__[1]) or the equivalent method call
+            # (cls.mro()[1]) extracts a specific base class the way __bases__[0] does -- the
+            # shape used to reach the original FileIO C base class (io.FileIO.mro()[1]) or
+            # walk to object/subclasses. Plain iteration (for c in cls.__mro__ / cls.mro())
+            # and slicing (cls.__mro__[1:]) yield the whole tuple/list for legitimate
+            # introspection, so only a non-slice index is flagged.
             if (
                 isinstance(node.ctx, ast.Load)
-                and isinstance(node.value, ast.Attribute)
-                and node.value.attr == "__mro__"
                 and not isinstance(node.slice, ast.Slice)
+                and (
+                    (isinstance(node.value, ast.Attribute) and node.value.attr == "__mro__")
+                    or (
+                        isinstance(node.value, ast.Call)
+                        and isinstance(node.value.func, ast.Attribute)
+                        and node.value.func.attr == "mro"
+                        and not node.value.args
+                    )
+                )
             ):
+                _mro_shape = "__mro__" if isinstance(node.value, ast.Attribute) else "mro()"
                 dynamic_exec.append(
                     {
                         "type": "dynamic_exec",
                         "line": getattr(node, "lineno", -1),
-                        "description": "subscripted __mro__ extracts a base class (gadget)",
+                        "description": f"subscripted {_mro_shape} extracts a base class (gadget)",
                     }
                 )
             # sys.modules['os'] pulls an already-loaded dangerous module out of the
@@ -5021,12 +5224,16 @@ def _check_signal_escape_patterns(
             # Descend into a literal list/tuple argv so a sensitive path element is
             # scanned: subprocess.run(['cat', '/etc/passwd']) reads the host file in an
             # unguarded child even though the top-level arg is a list, not a string.
+            # A literal *[...] / *(...) starred arg is unpacked positionally, so scan its
+            # elements too: open(*['/etc/passwd']) reads the same file open('/etc/passwd')
+            # would, and os.open(*['/etc/shadow', os.O_RDONLY]) is otherwise opaque.
             _expanded = []
             for a in scan_args:
-                if isinstance(a, (ast.List, ast.Tuple)):
-                    _expanded.extend(a.elts)
+                inner = a.value if isinstance(a, ast.Starred) else a
+                if isinstance(inner, (ast.List, ast.Tuple)):
+                    _expanded.extend(inner.elts)
                 else:
-                    _expanded.append(a)
+                    _expanded.append(inner)
             scan_args = _expanded
             for arg in scan_args:
                 s = _fold_read_arg(arg)
@@ -5427,6 +5634,28 @@ def _make_fd_denier(_name, _orig):
 for _n in ("fchmod", "fchown"):
     try:
         setattr(_os, _n, _make_fd_denier(_n, getattr(_os, _n)))
+    except Exception:
+        pass
+
+# The low-level posix / nt modules re-export chdir / fchdir / fchmod / fchown with the
+# ORIGINALS, so patching os.* leaves posix.chdir (cwd escape -> unconfined relative
+# reads) and posix.fchmod / posix.fchown (host-metadata mutation on a read-only outside
+# fd) reachable. Apply the same confinement / deniers to those module objects too.
+for _lowosname in ("posix", "nt"):
+    try:
+        _lowos = __import__(_lowosname)
+    except Exception:
+        _lowos = None
+    if _lowos is None:
+        continue
+    try:
+        if hasattr(_lowos, "chdir"):
+            _wrap1(_lowos, "chdir", _lowosname + ".chdir")
+        if hasattr(_lowos, "fchdir"):
+            _lowos.fchdir = _make_fd_denier(_lowosname + ".fchdir", _lowos.fchdir)
+        for _n in ("fchmod", "fchown"):
+            if hasattr(_lowos, _n):
+                setattr(_lowos, _n, _make_fd_denier(_lowosname + "." + _n, getattr(_lowos, _n)))
     except Exception:
         pass
 

@@ -777,3 +777,40 @@ def test_sandboxed_lstat_monkeypatch_symlink_escape_denied(tmp_path):
         assert not target.exists()
     finally:
         os.remove(link)
+
+
+@_POSIX_ONLY
+def test_sandboxed_posix_chdir_escape_denied():
+    # os re-exports chdir from the low-level C module posix; patching os.chdir leaves
+    # posix.chdir importable with the original, so posix.chdir('/etc') would move cwd
+    # outside the workdir and let a later relative read escape. The low-level module
+    # must be guarded too.
+    out = _python_exec(
+        "import posix\nposix.chdir('/etc')\nimport os\nprint('CWD', os.getcwd())",
+        None,
+        30,
+        "backstop-posix-chdir",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out and "chdir" in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_posix_fd_metadata_mutator_denied(tmp_path):
+    # posix.fchmod / posix.fchown are the low-level twins of os.fchmod/fchown; after a
+    # read-only outside fd is allowed, they must still be denied so host metadata cannot
+    # be mutated through the unwrapped C module.
+    victim = tmp_path / "posix_victim.txt"
+    victim.write_text("x")
+    os.chmod(victim, 0o600)
+    out = _python_exec(
+        "import posix, os\n"
+        f"fd = posix.open({str(victim)!r}, os.O_RDONLY)\n"
+        "posix.fchmod(fd, 0o777); print('CHMODDED')",
+        None,
+        30,
+        "backstop-posix-fchmod",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out and "fchmod" in out
+    assert oct(os.stat(victim).st_mode & 0o777) == "0o600"

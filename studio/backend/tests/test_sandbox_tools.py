@@ -1550,3 +1550,118 @@ class TestRound9Bypasses:
         assert "node budget" in msg
         # A normal-sized program is unaffected.
         _ok("x = 1 + 2\ny = [i for i in range(10)]")
+
+
+class TestRound10Bypasses:
+    """Tenth-round Codex findings: FileIO base via mro()[i], non-literal shell
+    redirect / cd targets, sys.modules mutating methods, indirect eval/exec, inspect
+    closure recovery, runpy from-import aliases, starred path args, and container-hidden
+    deserializers."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import io\nio.FileIO.mro()[1]('/tmp/escape', 'w')",
+            "import io\nio.FileIO.mro()[-1]",
+            "open.__class__.mro()[1]('/tmp/x', 'w')",
+        ],
+    )
+    def test_fileio_base_via_mro_method_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_mro_method_iteration_allowed(self):
+        # Iteration / whole-list use of mro() is legitimate introspection.
+        _ok("for c in int.mro():\n    pass")
+        _ok("bases = list(type('X', (), {}).mro())")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('cd /tmp; echo x > p')",
+            "import os\nos.system('echo x > $HOME/p')",
+            "import os\np = '/tmp/p'\nos.system('echo x > \"$p\"')",
+        ],
+    )
+    def test_non_literal_redirect_target_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_benign_relative_redirect_and_cd_allowed(self):
+        _ok("import os\nos.system('cd data && echo x > out.txt')")
+        _ok("import os\nos.system('echo hi > local.txt')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import sys\nsys.modules.pop('_io', None)\nimport _io\n_io.open('/tmp/p', 'w')",
+            "import sys\nsys.modules.clear()",
+            "import sys\nsys.modules.update({'posix': None})",
+            "import sys\nsys.modules.setdefault('os', None)",
+        ],
+    )
+    def test_sys_modules_mutating_methods_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_sys_modules_benign_read_allowed(self):
+        _ok("import sys\nprint('os' in sys.modules)")
+        _ok("import sys\nmods = len(sys.modules)")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "eval.__call__(\"__import__('os').system('id')\")",
+            "exec.__call__(\"import os; os.system('rm -rf /')\")",
+            "import builtins\nbuiltins.eval.__call__(\"__import__('os').system('id')\")",
+            "list(map(eval, [\"__import__('os').system('id')\"]))",
+            'import functools\nfunctools.reduce(exec, ["import os"], None)',
+            "list(map(*[eval, [\"__import__('os').system('id')\"]]))",
+        ],
+    )
+    def test_indirect_eval_exec_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import inspect\ninspect.getclosurevars(open).nonlocals['real']('/tmp/p', 'w')",
+            "from inspect import getclosurevars\ngetclosurevars(open).nonlocals['real']",
+            "import inspect as _i\n_i.getclosurevars(open)",
+        ],
+    )
+    def test_inspect_getclosurevars_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from runpy import run_path\nrun_path('evil.py')",
+            "from runpy import run_module as rm\nrm('evil')",
+        ],
+    )
+    def test_runpy_from_import_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "open(*['/etc/passwd']).read()",
+            "import os\nos.open(*['/etc/shadow', os.O_RDONLY])",
+            "open(*('../../../etc/passwd',)).read()",
+        ],
+    )
+    def test_starred_path_args_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_starred_benign_path_allowed(self):
+        _ok("open(*['data/train.csv']).read()")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import pickle\n([pickle.loads][0])(b'x')",
+            "import pickle\n({'k': pickle.loads}['k'])(b'x')",
+            "from pickle import loads\n((loads,)[0])(b'x')",
+            "import marshal\n([marshal.loads][0])(b'x')",
+        ],
+    )
+    def test_container_hidden_deserializer_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
