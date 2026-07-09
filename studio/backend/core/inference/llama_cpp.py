@@ -6736,9 +6736,8 @@ class LlamaCppBackend:
                         env.setdefault("OMP_NUM_THREADS", "2")
 
                 # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
-                # shared system RAM. setdefault so a user value wins. Skip on Vulkan
-                # (as with DC tuning below): gpu_indices are ggml ordinals, not
-                # CUDA/ROCm physical ids, and the Vulkan backend ignores GGML_CUDA_*.
+                # shared system RAM. setdefault so a user value wins. Not on Vulkan
+                # (nor DC below): gpu_indices are ggml ordinals, not CUDA/ROCm ids.
                 if not is_vulkan_backend and self._amd_apu_wants_unified_memory(gpu_indices):
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
                     logger.info("AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
