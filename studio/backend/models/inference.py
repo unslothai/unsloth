@@ -1635,11 +1635,11 @@ class AnthropicMessage(BaseModel):
             return {**data, "content": ""} if content is None else data
         if isinstance(content, list):
             for block in content:
-                btype = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+                btype = (
+                    block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+                )
                 if btype not in _KNOWN_ANTHROPIC_BLOCK_TYPES:
-                    raise ValueError(
-                        f"unsupported content block type {btype!r} in a user message"
-                    )
+                    raise ValueError(f"unsupported content block type {btype!r} in a user message")
         return data
 
 

@@ -1818,7 +1818,6 @@ def test_user_null_content_rejected():
     # content must be rejected at the boundary, not coerced into an empty prompt
     # and forwarded to the model.
     from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
             model = "x",
@@ -1833,7 +1832,6 @@ def test_user_unknown_block_rejected_not_silently_dropped():
     # user content at all. Reject it at the boundary instead of that silent
     # data loss (the assistant fallback is unaffected).
     from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
             model = "x",
@@ -1880,7 +1878,6 @@ def test_user_malformed_known_block_still_rejected():
     # still validates its shape, so a known-but-malformed user block (tool_result
     # without tool_use_id) still fails strict validation.
     from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
             model = "x",
