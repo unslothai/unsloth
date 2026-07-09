@@ -2596,10 +2596,25 @@ class LlamaCppBackend:
 
     @staticmethod
     def _nvidia_available() -> bool:
-        """True if a GPU is reachable via ``_get_gpu_memory`` (nvidia-smi or the
-        torch fallback). Used to prefer a ``build-cuda`` binary layout over a
-        CPU-only ``build`` one when both exist."""
-        return bool(LlamaCppBackend._get_gpu_memory())
+        """True if an NVIDIA GPU (not ROCm) is reachable via ``_get_gpu_memory``.
+        Used to prefer a ``build-cuda`` binary layout over a CPU-only ``build``
+        one when both exist.
+
+        ``_get_gpu_memory``'s torch fallback covers AMD ROCm too (HIP reuses
+        the ``torch.cuda`` namespace), so a non-empty result alone does not
+        guarantee an NVIDIA GPU. We apply the same ROCm exclusion as
+        ``export.py``'s ``_has_nvidia_gpu``: ``torch.version.hip`` is set only
+        under the HIP runtime.
+        """
+        if not LlamaCppBackend._get_gpu_memory():
+            return False
+        try:
+            import torch
+            if getattr(torch.version, "hip", None) is not None:
+                return False
+        except Exception:
+            pass
+        return True
 
     @staticmethod
     def _available_system_memory_mib() -> Optional[int]:

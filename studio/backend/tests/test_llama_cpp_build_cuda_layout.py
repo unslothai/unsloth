@@ -193,3 +193,16 @@ class TestBuildCudaLayoutPreference:
 
         monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda: []))
         assert LlamaCppBackend._nvidia_available() is False
+
+    def test_nvidia_available_excludes_rocm(self, monkeypatch):
+        # _get_gpu_memory returns results on AMD ROCm hosts (HIP reuses
+        # torch.cuda), but _nvidia_available must still return False so
+        # we don't incorrectly prefer build-cuda/ on an AMD system.
+        monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda: [(0, 4096, 8192)]))
+
+        # Simulate a ROCm environment: torch.version.hip is set to the
+        # HIP runtime version string instead of None.
+        import torch
+        monkeypatch.setattr(torch.version, "hip", "6.0.32830")
+
+        assert LlamaCppBackend._nvidia_available() is False
