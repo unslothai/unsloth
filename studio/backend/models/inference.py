@@ -109,6 +109,14 @@ class LoadRequest(BaseModel):
             "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
+    async_load: bool = Field(
+        False,
+        description = (
+            "When true, return immediately with a 'loading' acknowledgement instead "
+            "of blocking on the full load; poll GET /status (loading/loaded/load_error) "
+            "for completion."
+        ),
+    )
 
 
 class UnloadRequest(BaseModel):
@@ -335,6 +343,17 @@ class LoadResponse(BaseModel):
     )
 
 
+class LoadAcceptedResponse(BaseModel):
+    """Immediate acknowledgement for an async ("fire and forget") /load request.
+
+    The actual load continues in the background; poll GET /status for
+    ``loading`` / ``loaded`` / ``load_error`` to observe completion.
+    """
+
+    status: str = Field("loading", description = "Always 'loading' for an accepted async load")
+    model: str = Field(..., description = "Model identifier being loaded")
+
+
 class UnloadResponse(BaseModel):
     """Response after unloading a model"""
 
@@ -498,6 +517,12 @@ class InferenceStatusResponse(BaseModel):
     llama_cpp_latest_tag: Optional[str] = Field(
         None,
         description = "Latest published llama.cpp tag, or None if GitHub unreachable.",
+    )
+    load_error: Optional[str] = Field(
+        None,
+        description = "Error message from the most recent async (async_load=true) "
+        "/load call that failed in the background, or None if the last async load "
+        "succeeded (or none has run yet). Cleared at the start of the next async load.",
     )
 
 

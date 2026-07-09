@@ -1,0 +1,127 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Async model load: POST /load with async_load=true returns immediately and
+finishes the real load in a background task, surfacing failures via
+GET /status's load_error field.
+
+No GPU or llama-server: _load_model_impl is mocked to a bare asyncio.sleep,
+mirroring tests/test_openai_auto_switch.py.
+"""
+
+import asyncio
+
+import pytest
+from fastapi import HTTPException
+
+import routes.inference as inference_route
+from models.inference import LoadAcceptedResponse, LoadRequest, LoadResponse
+
+
+def _request(model_path = "unsloth/A-GGUF", async_load = True) -> LoadRequest:
+    return LoadRequest(model_path = model_path, async_load = async_load)
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+def test_async_load_returns_immediately(monkeypatch):
+    """The route must not block on the slow load: it returns as soon as the
+    background task is scheduled, well before the mocked load finishes."""
+
+    async def _slow_load(request, fastapi_request, current_subject):
+        await asyncio.sleep(0.2)
+        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
+    monkeypatch.setattr(inference_route, "_last_async_load_error", None)
+
+    async def _scenario():
+        start = asyncio.get_event_loop().time()
+        result = await inference_route.load_model(_request(), object(), "tester")
+        elapsed = asyncio.get_event_loop().time() - start
+        return result, elapsed
+
+    result, elapsed = _run(_scenario())
+    assert isinstance(result, LoadAcceptedResponse)
+    assert result.status == "loading"
+    assert result.model == "unsloth/A-GGUF"
+    assert elapsed < 0.1
+
+
+def test_async_load_success_leaves_error_none(monkeypatch):
+    """A background load that succeeds must not populate load_error."""
+
+    async def _quick_load(request, fastapi_request, current_subject):
+        await asyncio.sleep(0.02)
+        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _quick_load)
+    monkeypatch.setattr(inference_route, "_last_async_load_error", None)
+
+    async def _scenario():
+        await inference_route.load_model(_request(), object(), "tester")
+        await asyncio.sleep(0.1)
+
+    _run(_scenario())
+    assert inference_route._last_async_load_error is None
+
+
+def test_async_load_failure_surfaces_via_last_async_load_error(monkeypatch):
+    """A background load that raises must record its message so GET /status can
+    surface it via load_error."""
+
+    async def _failing_load(request, fastapi_request, current_subject):
+        await asyncio.sleep(0.02)
+        raise HTTPException(status_code = 400, detail = "boom: unsupported model")
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _failing_load)
+    monkeypatch.setattr(inference_route, "_last_async_load_error", None)
+
+    async def _scenario():
+        await inference_route.load_model(_request(), object(), "tester")
+        await asyncio.sleep(0.1)
+
+    _run(_scenario())
+    assert inference_route._last_async_load_error == "boom: unsupported model"
+
+
+def test_async_load_clears_previous_error_before_scheduling(monkeypatch):
+    """Starting a new async load must clear a stale error synchronously, before
+    the background task even runs -- otherwise a poller could read a load_error
+    left over from an unrelated, earlier failed load."""
+
+    async def _quick_load(request, fastapi_request, current_subject):
+        await asyncio.sleep(0.2)
+        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _quick_load)
+    monkeypatch.setattr(inference_route, "_last_async_load_error", "stale error from a prior load")
+
+    async def _scenario():
+        result = await inference_route.load_model(_request(), object(), "tester")
+        # Checked immediately after the route returns, before the background
+        # task (sleeping 0.2s) has had a chance to run.
+        return result
+
+    _run(_scenario())
+    assert inference_route._last_async_load_error is None
+
+
+def test_sync_load_unaffected_returns_load_response_directly(monkeypatch):
+    """async_load=false (the default) must keep behaving synchronously: no
+    background task, and the caller gets the real LoadResponse directly."""
+
+    calls = []
+
+    async def _load(request, fastapi_request, current_subject):
+        calls.append(request)
+        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+
+    result = _run(inference_route.load_model(_request(async_load = False), object(), "tester"))
+    assert isinstance(result, LoadResponse)
+    assert result.model == "unsloth/A-GGUF"
+    assert len(calls) == 1

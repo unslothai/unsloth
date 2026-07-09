@@ -1694,6 +1694,7 @@ from models.inference import (
     UnloadRequest,
     GenerateRequest,
     LoadResponse,
+    LoadAcceptedResponse,
     LoadProgressResponse,
     UnloadResponse,
     InferenceStatusResponse,
@@ -3975,12 +3976,18 @@ def _maybe_unsupported_message(msg: str) -> str:
     return msg
 
 
-@router.post("/load", response_model = LoadResponse)
+# Set at the start of each async (async_load=true) /load call and updated if the
+# background load fails; surfaced on GET /status so pollers can see why a
+# fire-and-forget load never reached `loaded`. Process-wide like the backend slot.
+_last_async_load_error: Optional[str] = None
+
+
+@router.post("/load")
 async def load_model(
     request: LoadRequest,
     fastapi_request: Request,
     current_subject: str = Depends(get_current_subject),
-):
+) -> Union[LoadResponse, LoadAcceptedResponse]:
     """
     Load a model for inference.
 
@@ -3989,6 +3996,10 @@ async def load_model(
     back to default.yaml for missing values.
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
+
+    When ``async_load=true``, returns immediately with a ``LoadAcceptedResponse``
+    and continues the load in the background; poll GET /status for completion
+    (``loading`` / ``loaded`` / ``load_error``).
     """
     # A sidecar install that has reserved the swap must not lose to a load that
     # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
@@ -4006,6 +4017,24 @@ async def load_model(
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
+    if request.async_load:
+        global _last_async_load_error
+        _last_async_load_error = None
+
+        async def _background_load() -> None:
+            global _last_async_load_error
+            try:
+                async with inference_lifecycle_gate():
+                    if sidecar_swap_in_progress():
+                        raise _swap_409
+                    await _load_model_impl(request, fastapi_request, current_subject)
+            except Exception as exc:
+                detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+                logger.warning("inference.async_load_failed: %s", detail)
+                _last_async_load_error = str(detail)
+
+        asyncio.create_task(_background_load())
+        return LoadAcceptedResponse(model = request.model_path)
     async with inference_lifecycle_gate():
         if sidecar_swap_in_progress():
             raise _swap_409
@@ -5598,6 +5627,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,
+                load_error = _last_async_load_error,
             )
 
         # Otherwise, report Unsloth backend status
@@ -5651,6 +5681,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             llama_cpp_prebuilt_stale = _stale,
             llama_cpp_installed_tag = _installed_tag,
             llama_cpp_latest_tag = _latest_tag,
+            load_error = _last_async_load_error,
         )
 
     except Exception as e:
