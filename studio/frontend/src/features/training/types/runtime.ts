@@ -26,6 +26,7 @@ export interface TrainingStatusResponse {
     total_steps?: number;
     loss?: number;
     learning_rate?: number;
+    output_dir?: string;
   } | null;
   metric_history?: {
     steps?: number[];
@@ -80,19 +81,25 @@ export interface TrainingRuntimeState {
   hasHydrated: boolean;
   isStarting: boolean;
   startError: string | null;
+  startModelName: string | null;
+  startDatasetName: string | null;
+  startProjectName: string | null;
+  startFromResume: boolean;
   sseConnected: boolean;
   firstStepReceived: boolean;
   lastEventId: number | null;
   currentStep: number;
   totalSteps: number;
   currentEpoch: number;
-  currentLoss: number;
+  // null while the latest reported loss is non-finite
+  currentLoss: number | null;
   currentLearningRate: number;
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;
   currentGradNorm: number | null;
   currentNumTokens: number | null;
+  outputDir: string | null;
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];
@@ -100,6 +107,9 @@ export interface TrainingRuntimeState {
   resetGeneration: number;
   stopRequested: boolean;
   selectedHistoryRunId: string | null;
+  // True while the studio "Current Run" tab is the active view, so the sidebar
+  // can highlight which run row the current run refers to (the active job).
+  currentRunViewActive: boolean;
 }
 
 export interface TrainingRuntimeActions {
@@ -108,6 +118,12 @@ export interface TrainingRuntimeActions {
   setHasHydrated: (value: boolean) => void;
   setStarting: (value: boolean) => void;
   setStartError: (value: string | null) => void;
+  setStartResources: (
+    modelName: string | null,
+    datasetName: string | null,
+    fromResume?: boolean,
+    projectName?: string | null,
+  ) => void;
   setSseConnected: (value: boolean) => void;
   setLastEventId: (value: number | null) => void;
   resetRuntime: () => void;
@@ -117,6 +133,7 @@ export interface TrainingRuntimeActions {
   setStartQueued: (jobId: string, message: string) => void;
   setRuntimeError: (message: string) => void;
   setSelectedHistoryRunId: (id: string | null) => void;
+  setCurrentRunViewActive: (value: boolean) => void;
 }
 
 export type TrainingRuntimeStore = TrainingRuntimeState & TrainingRuntimeActions;
@@ -131,6 +148,10 @@ export interface TrainingViewData {
   currentGradNorm: number | null;
   currentEpoch: number | null;
   currentNumTokens: number | null;
+  outputDir: string | null;
+  // True when a newer run reused this run's output_dir (resume), so its
+  // on-disk contents no longer match this (older) run's metrics.
+  resumedLater?: boolean;
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;
@@ -141,6 +162,7 @@ export interface TrainingViewData {
 
   // Config summary
   modelName: string;
+  projectName: string | null;
   trainingMethod: string;
 
   // Time-series (for ChartsSection)

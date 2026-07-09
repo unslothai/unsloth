@@ -23,7 +23,7 @@ def hash_password(password: str, salt: str | None = None) -> Tuple[str, str]:
         "sha256",
         password.encode("utf-8"),
         salt.encode("utf-8"),
-        100_000,  # 100k iterations
+        100_000,
     )
     return salt, dk.hex()
 

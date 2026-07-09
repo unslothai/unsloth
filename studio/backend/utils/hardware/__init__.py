@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Hardware detection and GPU utilities
-"""
+"""Hardware detection and GPU utilities."""
 
 from . import hardware as _hardware
 from .hardware import (
@@ -47,6 +45,12 @@ from .vram_estimation import (
     estimate_training_vram,
 )
 
+
+def export_capability() -> dict:
+    """Return live export capability from the hardware module."""
+    return _hardware.export_capability()
+
+
 __all__ = [
     "DeviceType",
     "DEVICE",
@@ -54,6 +58,7 @@ __all__ = [
     "IS_ROCM",
     "detect_hardware",
     "get_device",
+    "export_capability",
     "is_apple_silicon",
     "clear_gpu_cache",
     "get_gpu_memory_info",
@@ -88,8 +93,8 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Resolve IS_ROCM at access time so callers always see the live value
-    after detect_hardware() runs (it flips the flag in hardware.py)."""
+    """Resolve IS_ROCM lazily so callers see the live value detect_hardware()
+    sets in hardware.py."""
     if name == "IS_ROCM":
         return getattr(_hardware, "IS_ROCM")
     raise AttributeError(name)

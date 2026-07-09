@@ -27,20 +27,25 @@ __all__ = [
     "test_construct_chat_template",
 ]
 
-from transformers import StoppingCriteria, StoppingCriteriaList
-from torch import LongTensor, FloatTensor
-from transformers.models.llama.modeling_llama import logger
-from .save import patch_saving_functions
+from transformers.utils import logging
+try:
+    from torch import LongTensor, FloatTensor
+except ImportError:
+    LongTensor = FloatTensor = None
+logger = logging.get_logger(__name__)
 import os
 import shutil
-from .tokenizer_utils import *
-from .models._utils import patch_tokenizer
 import re
 from .ollama_template_mappers import OLLAMA_TEMPLATES
-from unsloth_zoo.dataset_utils import (
-    train_on_responses_only,
-    standardize_data_formats,
-)
+try:
+    from unsloth_zoo.dataset_utils import (
+        train_on_responses_only,
+        standardize_data_formats,
+    )
+except ImportError:
+    # dataset_utils pulls torch; keep chat_templates importable on torch-free
+    # (MLX) hosts, which expose these via the backend-specific wrappers instead.
+    train_on_responses_only = standardize_data_formats = None
 standardize_sharegpt = standardize_data_formats
 CHAT_TEMPLATES = {}
 DEFAULT_SYSTEM_MESSAGE = {}
@@ -213,7 +218,7 @@ vicuna_ollama = _ollama_template("vicuna")
 
 vicuna_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False, vicuna_ollama,)
-DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions."
+DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user\\'s questions."
 
 # =========================================== Vicuna Old
 # https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
@@ -1806,10 +1811,17 @@ CHAT_TEMPLATES["yi-chat"] = (yi_chat_template, yi_chat_template_eos_token, False
 DEFAULT_SYSTEM_MESSAGE["yi-chat"] = None
 
 def _change_system_message(template: str, type_chat_template: str, system_message: str = None):
-    system_message_pattern = r"\{system_message\}"
-
     # For predefined templates, check if default system message exists
     default_system_message = DEFAULT_SYSTEM_MESSAGE.get(f"{type_chat_template}", None)
+
+    # Custom templates have no default but may carry a {system_message} placeholder;
+    # fill it before the no-default return below. A missing message here is an error.
+    if default_system_message is None and "{system_message}" in template:
+        if system_message is None:
+            raise ValueError("Unsloth: You need to provide a system message for custom templates.")
+        new_template = template.replace("{system_message}", system_message)
+        return new_template, system_message
+
     if default_system_message is None:
         if system_message is not None:
             logger.warning_once(
@@ -1819,21 +1831,9 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
             )
         return template, system_message
 
-    # For custom templates
-    if type_chat_template is None:
-        has_placeholder = re.search(system_message_pattern, template) is not None
-
-        if has_placeholder:
-            if system_message is None:
-                raise ValueError("Unsloth: You need to provide a system message for custom templates.")
-            new_template = re.sub(system_message_pattern, system_message, template)
-            return new_template, system_message
-
-        return template, system_message
-
     # For predefined templates with default system message
     message_to_use = system_message if system_message is not None else default_system_message
-    new_template = re.sub(system_message_pattern, message_to_use, template)
+    new_template = template.replace("{system_message}", message_to_use)
 
     return new_template, message_to_use
 
@@ -1844,9 +1844,24 @@ def get_chat_template(
     mapping = {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"},
     map_eos_token = True,
     system_message = None,
+    patch_saving = True,
+    use_zoo_tokenizer_patch = None,
 ):
     assert(type(map_eos_token) is bool)
+    import sys
+    is_mlx_backend = getattr(sys.modules.get("unsloth"), "DEVICE_TYPE", None) == "mlx"
+    if use_zoo_tokenizer_patch is None:
+        use_zoo_tokenizer_patch = is_mlx_backend
     old_tokenizer = tokenizer
+
+    # mlx-lm's TokenizerWrapper._tokenizer is the HF tokenizer, not the Rust
+    # backend the vocab-edit paths below need; unwrap here, re-wrap before return.
+    _mlx_tokenizer_wrapper = None
+    if is_mlx_backend and tokenizer.__class__.__name__ == "TokenizerWrapper":
+        _inner_tokenizer = getattr(tokenizer, "_tokenizer", None)
+        if _inner_tokenizer is not None and hasattr(_inner_tokenizer, "is_fast"):
+            _mlx_tokenizer_wrapper = tokenizer
+            tokenizer = _inner_tokenizer
 
     IS_GEMMA = False
     if tokenizer.__class__.__name__.startswith("Gemma"):
@@ -1957,6 +1972,7 @@ def get_chat_template(
                 pass
 
                 # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
+                from .tokenizer_utils import fix_sentencepiece_tokenizer
                 tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, token_mapping,)
             else:
                 pass
@@ -1964,11 +1980,8 @@ def get_chat_template(
         elif map_eos_token and (stop_word != "eos_token"):
             logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
 
-            # Replaces the old EOS token with a new one.
-            # Useful for ChatML <|im_end|> for example.
-            # Usually we train 2 more tokens <|im_start|> and <|im_end|>
-            # But training the lm_head and embeddings are slow!
-            # This is a HACK!
+            # HACK: replace old EOS with a new one (e.g. ChatML <|im_end|>) to
+            # avoid the slow lm_head/embedding retraining of new tokens.
             # Idea from https://huggingface.co/cognitivecomputations/dolphin-2.6-mistral-7b-dpo-laser
 
             old_bos_token = getattr(tokenizer, "bos_token", None)
@@ -2005,6 +2018,7 @@ def get_chat_template(
 
             # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
             token_mapping = { old_eos_token : stop_word, }
+            from .tokenizer_utils import fix_sentencepiece_tokenizer
             tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, token_mapping,)
         pass
 
@@ -2026,6 +2040,12 @@ def get_chat_template(
         .replace("'user'",      "'" + mapping["user"]      + "'")\
         .replace("'assistant'", "'" + mapping["assistant"] + "'")
 
+    if use_zoo_tokenizer_patch:
+        # Studio MLX avoids the model-utils tokenizer wrapper because that
+        # import path pulls in Torch/GPU-specific modules before MLX training.
+        from unsloth_zoo.tokenizer_utils import patch_tokenizer
+    else:
+        from .models._utils import patch_tokenizer
     _, tokenizer = patch_tokenizer(model = None, tokenizer = tokenizer)
     tokenizer.padding_side = old_padding_side
 
@@ -2059,11 +2079,25 @@ def get_chat_template(
     # stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
 
     # Patch saving functions
-    tokenizer = patch_saving_functions(tokenizer)
+    if patch_saving and not is_mlx_backend:
+        from .save import patch_saving_functions
+        tokenizer = patch_saving_functions(tokenizer)
 
     # Add Ollama
     tokenizer._ollama_modelfile = ollama_modelfile
     tokenizer._system_message   = system_message
+
+    # Re-wrap so the trainer gets the same TokenizerWrapper type back.
+    if _mlx_tokenizer_wrapper is not None:
+        _mlx_tokenizer_wrapper._tokenizer = tokenizer
+        eos_token_id = getattr(tokenizer, "eos_token_id", None)
+        if eos_token_id is not None:
+            _mlx_tokenizer_wrapper._eos_token_ids = {eos_token_id}
+        _mlx_tokenizer_wrapper._chat_template = None
+        _mlx_tokenizer_wrapper.has_chat_template = (
+            getattr(tokenizer, "chat_template", None) is not None
+        )
+        tokenizer = _mlx_tokenizer_wrapper
     return tokenizer#, stopping_criteria
 
 
@@ -2151,7 +2185,16 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
 
         texts = []
         for row_idx in range(n_rows):
-            row_values = {column: examples[column][row_idx] for column in columns}
+            # Coerce missing (None) columns to "" so they do not render as the
+            # literal string "None" in the emitted text. In a [[...]] block only
+            # the first column gates the block, so a later column can still be
+            # None here; required columns can be None too. Coercing at the source
+            # covers both; since None is now "", the gate below only needs to
+            # test for "" (an empty first column still drops the block).
+            row_values = {
+                column: ("" if (value := examples[column][row_idx]) is None else value)
+                for column in columns
+            }
             formatter_values = {}
 
             for formatter_template in formatter_templates:
@@ -2162,7 +2205,7 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
                     continue
 
                 _, optional_name, prompt, needed_columns = formatter_template
-                if row_values[needed_columns[0]] not in (None, ""):
+                if row_values[needed_columns[0]] != "":
                     prompt_values = {column: row_values[column] for column in needed_columns}
                     formatter_values[optional_name] = prompt.format(**prompt_values)
                 else:
@@ -2185,18 +2228,14 @@ def to_sharegpt(
     random_state = 3407,
 ):
     """
-    Converts a dataset to ShareGPT style.
-    ShareGPT requires only 1 input and 1 output field.
-    This means one has to merge multiple columns into 1 for 1 input field.
-    Use `conversation_extension` to increase the length of each conversation by randomnly
-    selecting a few and packing them into 1.
+    Converts a dataset to ShareGPT style (1 input + 1 output field).
+    Merge multiple columns into 1 input via `merged_prompt`; use
+    `conversation_extension` to pack several convos into one.
 
     merged_prompt = "",                 Prompt to merge columns into 1 input
     merged_column_name = "instruction", Final column name for the input  field
     output_column_name = "output",      Final column name for the output field
-    remove_unused_columns = True,
-    conversation_extension = 1,         Automatically combines `conversation_extension` convos into 1
-    random_state = 3407,
+    conversation_extension = 1,         Combines this many convos into 1
     """
     if "conversations" in dataset.column_names:
         convo = dataset[0]["conversations"]
@@ -2278,28 +2317,28 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
     if getattr(tokenizer, "bos_token", None) is not None:
         added_tokens_decoder = [x for x in added_tokens_decoder if x != tokenizer.bos_token]
 
-    repeatted_tokens = []
+    repeated_tokens = []
     # Join all vocab
     joined_text = "\x01\x00".join(added_tokens_decoder)
     for token in added_tokens_decoder:
         n = len(token)
-        repeatted_counts = joined_text.count(token[:n//2])
+        repeated_counts = joined_text.count(token[:n//2])
         # Try finding longer than 1/2 of the token in the rest
         # For eg <|reserved_special_token_0|>, <|reserved_special_token_1|>
-        if repeatted_counts > 2:
+        if repeated_counts > 2:
             for j in range(n//2+1, n):
-                if joined_text.count(token[:j]) < repeatted_counts:
+                if joined_text.count(token[:j]) < repeated_counts:
                     j -= 1
-                    # Remove repeatted tokens to reduce search space
+                    # Remove repeated tokens to reduce search space
                     joined_text = joined_text.replace(token[:j], "")
-                    repeatted_tokens.append(token[:j])
+                    repeated_tokens.append(token[:j])
                     break
 
     # Remove duplicates
-    splitted = joined_text.split("\x01\x00")
-    final_eos_tokens = [old for old, new in zip(added_tokens_decoder, splitted) if old == new]
+    split = joined_text.split("\x01\x00")
+    final_eos_tokens = [old for old, new in zip(added_tokens_decoder, split) if old == new]
     final_eos_tokens += extra_eos_tokens
-    final_eos_tokens += repeatted_tokens
+    final_eos_tokens += repeated_tokens
 
     # Remove new lines, spaces and HTML tags
     filtered_eos_tokens = []
@@ -2340,13 +2379,15 @@ extra_eos_tokens = None,
 
     You must use {INPUT}, {OUTPUT} twice, and {SYSTEM} is optional.
     """
-    # Strip only the left
+    # Strip only the left: trailing whitespace can be part of the repeated example
+    # (e.g. "{OUTPUT}\n"). Accidental trailing whitespace (#992) is retried on failure.
     chat_template = chat_template.lstrip()
 
     assert(tokenizer is not None)
 
     if extra_eos_tokens is None: extra_eos_tokens = []
     elif type(extra_eos_tokens) is str: extra_eos_tokens = [extra_eos_tokens,]
+    original_extra_eos_tokens = list(extra_eos_tokens)
 
     vocab = tokenizer.get_vocab()
     for extra_eos in extra_eos_tokens:
@@ -2453,17 +2494,54 @@ extra_eos_tokens = None,
                 f"{left_changed}"
             )
     except:
-        ending = chat_template[chat_template.find("{OUTPUT}") + len("{OUTPUT}"):]
+        # Accidental trailing whitespace (#992) desyncs the two-example detection,
+        # so retry once without it. Templates that parse as-is are never altered.
+        rstripped_chat_template = chat_template.rstrip()
+        if rstripped_chat_template != chat_template:
+            try:
+                return construct_chat_template(
+                    tokenizer = tokenizer,
+                    chat_template = rstripped_chat_template,
+                    default_system_message = default_system_message,
+                    extra_eos_tokens = original_extra_eos_tokens,
+                )
+            except Exception:
+                pass
+
+        output_pos = chat_template.find("{OUTPUT}")
+        input_pos  = chat_template.find("{INPUT}")
+        if output_pos == -1 or input_pos == -1:
+            missing = []
+            if input_pos  == -1: missing.append("{INPUT}")
+            if output_pos == -1: missing.append("{OUTPUT}")
+            raise RuntimeError(
+                f"Unsloth: chat_template must contain {' and '.join(missing)} "
+                f"placeholder(s). Got: {chat_template[:200]!r}"
+            )
+        ending = chat_template[output_pos + len("{OUTPUT}"):]
 
         ending = re.escape(ending)
         find_text = "{INPUT}" + ending + "(.+?{OUTPUT}" + ending + ")"
         response_part = re.findall(find_text, chat_template, flags = re.DOTALL | re.MULTILINE)
+        if len(response_part) == 0:
+            raise RuntimeError(
+                "Unsloth: Could not recover a two-example structure from chat_template. "
+                "Provide exactly two {INPUT}/{OUTPUT} pairs (and optionally {SYSTEM}). "
+                f"Got: {chat_template[:200]!r}"
+            )
         response_part = response_part[0]
 
+        found = None
         for j in range(1, len(response_part)):
             try_find = re.escape(response_part[:j])
             try: found = next(re.finditer("(" + try_find + ").+?\\{INPUT\\}", chat_template, flags = re.DOTALL | re.MULTILINE))
             except: break
+        if found is None:
+            raise RuntimeError(
+                "Unsloth: Could not locate a separator between examples in chat_template. "
+                "Provide exactly two {INPUT}/{OUTPUT} pairs (and optionally {SYSTEM}). "
+                f"Got: {chat_template[:200]!r}"
+            )
         separator = found.group(1)
 
         response_start = chat_template.find(response_part)
@@ -2519,7 +2597,7 @@ extra_eos_tokens = None,
         if part.endswith(which):
             part = "'" + part[:part.find(which)] + f"' + {content}"
         elif part.startswith(which):
-            part = f"{content} + '" + part[part.find(which):] + "'"
+            part = f"{content} + '" + part[len(which):] + "'"
         else:
             part = "'" + part.replace(which, f"' + {content} + '") + "'"
         if part.startswith("'' + "): part = part[5:]
@@ -2599,8 +2677,20 @@ extra_eos_tokens = None,
             jinja_template = "{{ bos_token }}" + jinja_template
 
     # Get instruction and output parts for train_on_inputs = False
-    input_part  = input_part [:input_part .find("{INPUT}")]
-    output_part = output_part[:output_part.find("{OUTPUT}")]
+    input_idx  = input_part .find("{INPUT}")
+    output_idx = output_part.find("{OUTPUT}")
+    if input_idx == -1:
+        raise RuntimeError(
+            f"Unsloth: The instruction section of the template must contain the "
+            f"'{{INPUT}}' placeholder. Section: {input_part[:200]!r}"
+        )
+    if output_idx == -1:
+        raise RuntimeError(
+            f"Unsloth: The response section of the template must contain the "
+            f"'{{OUTPUT}}' placeholder. Section: {output_part[:200]!r}"
+        )
+    input_part  = input_part [:input_idx ]
+    output_part = output_part[:output_idx]
     return modelfile, jinja_template, input_part, output_part
 
 
@@ -2702,6 +2792,15 @@ extra_eos_tokens = None,
 
 
 def create_stopping_criteria(tokenizer, stop_word = "eos_token"):
+    try:
+        import torch
+        from transformers import StoppingCriteria, StoppingCriteriaList
+    except ImportError as exc:
+        raise ImportError(
+            "Unsloth: create_stopping_criteria requires PyTorch and is only "
+            "supported on Torch backends."
+        ) from exc
+
     class StoppingCriteriaSub(StoppingCriteria):
         __slots__ = "stop_token", "single_match", "length",
 
@@ -2781,10 +2880,10 @@ def test_chat_templates():
     for j in range(len(messages)-1):
         correct_prompt.append_message(correct_prompt.roles[j%2==1], messages[j+1]["content"])
     correct_prompt.append_message(correct_prompt.roles[1], "")
-    correct_prompt = tokenizer.bos_token + correct_prompt.get_prompt()
 
     template = vicuna_template
     correct_tokenizer = AutoTokenizer.from_pretrained("lmsys/vicuna-7b-v1.5")
+    correct_prompt = correct_tokenizer.bos_token + correct_prompt.get_prompt()
     correct_tokenizer.chat_template = template
     our_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
     assert(correct_prompt == our_prompt)
@@ -2798,10 +2897,10 @@ def test_chat_templates():
     for j in range(len(messages)-1):
         correct_prompt.append_message(correct_prompt.roles[j%2==1], messages[j+1]["content"])
     correct_prompt.append_message(correct_prompt.roles[1], "")
-    correct_prompt = tokenizer.bos_token + correct_prompt.get_prompt()
 
     template = vicuna_old_template
     correct_tokenizer = AutoTokenizer.from_pretrained("lmsys/vicuna-7b-v1.5")
+    correct_prompt = correct_tokenizer.bos_token + correct_prompt.get_prompt()
     correct_tokenizer.chat_template = template
     our_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
     # We add </s> ourselves

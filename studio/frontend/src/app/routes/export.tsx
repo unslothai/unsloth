@@ -12,9 +12,19 @@ const ExportPage = lazy(() =>
   })),
 );
 
+export type ExportSearch = {
+  // Preselect a training run on the Export page (its output-dir basename, which
+  // equals the checkpoint scan's model name). Set when arriving from a run view.
+  run?: string;
+};
+
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/export",
+  staticData: { title: "Export" },
   beforeLoad: () => requireAuth(),
+  validateSearch: (search: Record<string, unknown>): ExportSearch => ({
+    run: typeof search.run === "string" ? search.run : undefined,
+  }),
   component: ExportPage,
 });

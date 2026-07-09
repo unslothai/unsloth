@@ -24,8 +24,10 @@ import { TrainingSection } from "./sections/training-section";
 import { LiveTrainingView } from "./live-training-view";
 import { HistoricalTrainingView } from "./historical-training-view";
 import { HistoryCardGrid } from "./history-card-grid";
+import { useT } from "@/i18n";
 
 export function StudioPage(): ReactElement {
+  const t = useT();
   useTrainingRuntimeLifecycle();
   const showTrainingView = useTrainingRuntimeStore(shouldShowTrainingView);
   const isTrainingRunning = useTrainingRuntimeStore((state) => state.isTrainingRunning);
@@ -51,19 +53,30 @@ export function StudioPage(): ReactElement {
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
 
+  const setCurrentRunViewActive = useTrainingRuntimeStore(
+    (s) => s.setCurrentRunViewActive,
+  );
+
   useEffect(() => {
     return () => setSelectedHistoryRunId(null);
   }, [setSelectedHistoryRunId]);
 
-  // Derive activeTab: auto-switch to "current-run" only while training is
-  // genuinely running.  Once training ends, honour whatever tab the user clicks.
-  // If requestedTab is "current-run" but there's nothing to show, fall back to "configure".
+  // Auto-switch to "current-run" only while training runs; afterward honour
+  // the user's clicked tab. If "current-run" has nothing to show, use
+  // "configure".
   const activeTab =
     isTrainingRunning && requestedTab !== "history"
       ? "current-run"
       : requestedTab === "current-run" && !showTrainingView
         ? "configure"
         : requestedTab;
+
+  // Mirror "Current Run" tab state into the store so the sidebar can highlight
+  // the run this view refers to. Cleared on unmount (leaving the studio page).
+  useEffect(() => {
+    setCurrentRunViewActive(activeTab === "current-run");
+    return () => setCurrentRunViewActive(false);
+  }, [activeTab, setCurrentRunViewActive]);
 
   const { setPinned } = useSidebar();
   const pinSidebar = useCallback(() => setPinned(true), [setPinned]);
@@ -120,15 +133,18 @@ export function StudioPage(): ReactElement {
   }
 
   const subtitle = (() => {
-    if (activeTab === "current-run") return runtimeMessage || "Training in progress";
+    if (activeTab === "current-run")
+      return runtimeMessage || t("studio.subtitles.trainingInProgress");
     if (activeTab === "history")
-      return selectedHistoryRunId ? "Viewing past run" : "View past training runs";
-    return "Configure and start training";
+      return selectedHistoryRunId
+        ? t("studio.subtitles.viewingPastRun")
+        : t("studio.subtitles.viewPastRuns");
+    return t("studio.subtitles.configure");
   })();
 
   return (
-    <div className="relative min-h-screen bg-background">
-      <main className="relative z-10 mx-auto max-w-7xl px-4 py-4 sm:px-6">
+    <div className="relative min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
+      <main className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6">
         <GuidedTour {...tour.tourProps} celebrate={isConfigTour} />
 
         <DatasetPreviewDialog
@@ -149,38 +165,38 @@ export function StudioPage(): ReactElement {
         />
 
         <div className="mb-6 flex flex-col gap-0.5 sm:mb-8">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Fine-tuning Studio
+          <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
+            {t("studio.title")}
           </h1>
           <p className="text-sm text-muted-foreground">{subtitle}</p>
         </div>
 
         {!hasHydratedRuntime && isHydratingRuntime ? (
           <div className="rounded-xl border bg-card p-8 text-sm text-muted-foreground">
-            Loading training runtime...
+            {t("studio.loadingRuntime")}
           </div>
         ) : (
           <Tabs value={activeTab} onValueChange={handleTabChange}>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 pb-3">
               {selectedHistoryRunId && activeTab === "history" && (
                 <Button
                   variant="ghost"
                   size="icon-sm"
                   className="rounded-full text-muted-foreground"
                   onClick={() => setSelectedHistoryRunId(null)}
-                  aria-label="Back to history"
+                  aria-label={t("studio.backToHistory")}
                 >
                   <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
                 </Button>
               )}
               <TabsList variant="line">
                 <TabsTrigger value="configure" disabled={isTrainingRunning}>
-                  Configure
+                  {t("studio.tabs.configure")}
                 </TabsTrigger>
                 <TabsTrigger value="current-run" disabled={!showTrainingView}>
-                  Current Run
+                  {t("studio.tabs.currentRun")}
                 </TabsTrigger>
-                <TabsTrigger value="history">History</TabsTrigger>
+                <TabsTrigger value="history">{t("studio.tabs.history")}</TabsTrigger>
               </TabsList>
             </div>
 
@@ -209,6 +225,9 @@ export function StudioPage(): ReactElement {
                   } else {
                     setSelectedHistoryRunId(runId);
                   }
+                }} onResumeStarted={() => {
+                  setSelectedHistoryRunId(null);
+                  handleTabChange("current-run");
                 }} />
               )}
             </TabsContent>

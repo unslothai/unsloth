@@ -21,9 +21,9 @@ import {
   DocumentAttachmentIcon,
   PlusSignIcon,
   Search01Icon,
-  Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   useCallback,

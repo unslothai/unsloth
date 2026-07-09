@@ -32,7 +32,11 @@ function resolveTheme(theme: Theme): ResolvedTheme {
 
 function applyToDocument(resolved: ResolvedTheme) {
   if (typeof document === "undefined") return;
-  document.documentElement.classList.toggle("dark", resolved === "dark");
+  // Keep "dark"/"light" mutually exclusive: next-themes (via Sonner) adds
+  // "light" on first mount, so without this toggle we'd get "light dark".
+  const cl = document.documentElement.classList;
+  cl.toggle("dark", resolved === "dark");
+  cl.toggle("light", resolved === "light");
 }
 
 const listeners = new Set<() => void>();
@@ -46,6 +50,12 @@ function subscribe(cb: () => void) {
     applyToDocument(resolveTheme(readStoredTheme()));
     cb();
   };
+  // Apply on mount so this store is the single source of truth for the DOM
+  // class. Without this, initial paint depends solely on next-themes, which on
+  // a fresh origin (e.g. a new Cloudflare --secure link with empty
+  // localStorage) falls back to its own default and shows light while the
+  // control still reads "system".
+  applyToDocument(resolveTheme(readStoredTheme()));
   const onStorage = (e: StorageEvent) => {
     if (e.key === STORAGE_KEY || e.key === null) syncTheme();
   };
@@ -67,15 +77,14 @@ function getServerSnapshot(): Theme {
 }
 
 /**
- * Single source of truth for setting the theme. All writers (the Settings
- * dialog's segmented control AND the sidebar dropdown's animated toggler)
- * must route through this so the DOM class, localStorage, and React
- * subscribers stay in sync.
+ * Single source of truth for setting the theme. All writers (Settings dialog
+ * control, sidebar dropdown toggler) route through this so the DOM class,
+ * localStorage, and React subscribers stay in sync.
  */
 export function setTheme(next: Theme): void {
   if (typeof window === "undefined") return;
-  // Persist "system" explicitly so next-themes (mounted with
-  // defaultTheme="light") doesn't clobber the choice on reload.
+  // Persist "system" explicitly so next-themes doesn't clobber the choice on
+  // reload.
   try {
     window.localStorage.setItem(STORAGE_KEY, next);
   } catch {

@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Model and template mappings for dataset processing.
+"""Model and template mappings for dataset processing.
 
-This module contains the mapping dictionaries that associate model names
-with their corresponding chat templates and response markers.
+Maps model names to their chat templates and response markers.
 """
 
 TEMPLATE_TO_MODEL_MAPPER = {
@@ -364,6 +362,10 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Qwen3-4B-Thinking-2507-bnb-4bit",
         "unsloth/Qwen3-30B-A3B-Thinking-2507",
         "Qwen/Qwen3-30B-A3B-Thinking-2507",
+        "Qwen/Qwen3.6-35B-A3B",
+        "unsloth/Qwen3.6-35B-A3B",
+        "Qwen/Qwen3.6-27B",
+        "unsloth/Qwen3.6-27B",
     ),
     "qwen3.5": (
         "unsloth/Qwen3.5-0.8B",
@@ -432,10 +434,30 @@ for key, values in TEMPLATE_TO_MODEL_MAPPER.items():
     for value in values:
         MODEL_TO_TEMPLATE_MAPPER[value] = key
 
-    # Get lowercased
+    # Also map lowercased names.
     lowered_key = key.lower()
     for value in values:
         MODEL_TO_TEMPLATE_MAPPER[value.lower()] = lowered_key
+
+
+def is_gpt_oss_model_name(name: str) -> bool:
+    """Name-based check for gpt-oss / harmony models.
+
+    Used by the in-process backend and the parent orchestrator to detect
+    harmony models without an IPC round-trip.
+    """
+    name = (name or "").lower()
+    if not name:
+        return False
+    try:
+        if MODEL_TO_TEMPLATE_MAPPER.get(name) == "gpt-oss":
+            return True
+        for key, tmpl in MODEL_TO_TEMPLATE_MAPPER.items():
+            if tmpl == "gpt-oss" and (key in name or name in key):
+                return True
+    except Exception:
+        pass
+    return "gpt-oss" in name
 
 
 TEMPLATE_TO_RESPONSES_MAPPER = {
@@ -465,7 +487,7 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
     },
     "qwen3-thinking": {
         "instruction": "<|im_start|>user\n",
-        "response": "<|im_start|>assistant\n<think>\n",
+        "response": "<|im_start|>assistant\n<think>",
     },
     "qwen3": {
         "instruction": "<|im_start|>user\n",

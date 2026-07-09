@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Regression tests for unsloth_cli.commands.export.
-
-Context: the studio export dialog live-logs work changed
-ExportOrchestrator.export_{merged_model,base_model,gguf,lora_adapter}
-to return (success, message, output_path) instead of (success, message)
-so the frontend can show the on-disk realpath on the success screen.
-The CLI at unsloth_cli/commands/export.py still unpacks two values,
-so every `unsloth export --format ...` crashes with:
-
-    ValueError: too many values to unpack (expected 2)
-
-These tests pin the CLI to the 3-tuple contract by invoking it against
-a fake ExportBackend and asserting exit_code == 0 for each --format.
-No real ML imports; the fake is installed via sys.modules injection so
-the CLI's deferred `from studio.backend.core.export import ExportBackend`
-binds to it.
-"""
+"""Regression tests for unsloth_cli.commands.export: pin the CLI to the export_* 3-tuple contract (was unpacking 2, crashing every `unsloth export`) via a fake ExportBackend in sys.modules."""
 
 from __future__ import annotations
 
@@ -31,17 +14,8 @@ import typer
 from typer.testing import CliRunner
 
 
-# ---------------------------------------------------------------------------
-# Fake ExportBackend
-# ---------------------------------------------------------------------------
-
-
 class _FakeExportBackend:
-    """Stand-in for studio.backend.core.export.ExportBackend.
-
-    All export_* methods return the new 3-tuple contract. load_checkpoint
-    keeps its 2-tuple shape (unchanged by the live-logs work).
-    """
+    """Stand-in for ExportBackend: export_* return the 3-tuple, load_checkpoint stays a 2-tuple."""
 
     def __init__(self) -> None:
         self.loaded: str | None = None
@@ -67,15 +41,7 @@ class _FakeExportBackend:
 
 
 def _install_fake_studio_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Inject fake studio.backend.core.export into sys.modules.
-
-    The CLI imports ExportBackend lazily inside the command function, so
-    patching sys.modules before invoking the command is sufficient to
-    steer the `from studio.backend.core.export import ExportBackend`
-    statement at the fake. Parent packages (studio, studio.backend,
-    studio.backend.core) are stubbed too so Python's import machinery
-    doesn't try to resolve the real (structlog-dependent) tree.
-    """
+    """Inject a fake studio.backend.core.export into sys.modules so the CLI's lazy import binds to it; parent packages stubbed to skip the structlog-dependent tree."""
     for name in ("studio", "studio.backend", "studio.backend.core"):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
 
@@ -83,9 +49,7 @@ def _install_fake_studio_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_mod.ExportBackend = _FakeExportBackend
     monkeypatch.setitem(sys.modules, "studio.backend.core.export", fake_mod)
 
-    # Drop any cached import of the CLI module so the deferred import
-    # inside export() re-resolves against our fake module rather than a
-    # previously cached real one.
+    # Drop the cached CLI module so its deferred import re-resolves the fake.
     monkeypatch.delitem(sys.modules, "unsloth_cli.commands.export", raising = False)
 
 
@@ -98,11 +62,8 @@ def cli_app(monkeypatch: pytest.MonkeyPatch) -> typer.Typer:
     app = typer.Typer()
     app.command("export")(export_cmd.export)
 
-    # Typer flattens a single-command app into that command, which would
-    # make argv[0] ("export") look like an extra positional argument to
-    # the test invocation. Register a harmless second command so Typer
-    # keeps "export" as a real subcommand and the tests drive the
-    # intended code path.
+    # Typer flattens a single-command app, making "export" look like a stray positional;
+    # a harmless second command keeps "export" a real subcommand.
     @app.command("noop")
     def _noop() -> None:  # pragma: no cover - only exists to pin routing
         pass
@@ -113,11 +74,6 @@ def cli_app(monkeypatch: pytest.MonkeyPatch) -> typer.Typer:
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()
-
-
-# ---------------------------------------------------------------------------
-# The actual regression tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -136,10 +92,7 @@ def test_cli_export_unpacks_three_tuple(
     format_flag: str,
     quant_flag: str | None,
 ) -> None:
-    """Each --format path must unpack (success, message, output_path)
-    without raising ValueError. Pre-fix, every parametrized case fails
-    with 'too many values to unpack (expected 2)'.
-    """
+    """Each --format path unpacks the 3-tuple without ValueError (pre-fix: 'too many values to unpack (expected 2)')."""
     ckpt = tmp_path / "ckpt"
     ckpt.mkdir()
     out = tmp_path / "out"
@@ -155,6 +108,6 @@ def test_cli_export_unpacks_three_tuple(
         f"Output:\n{result.output}\n"
         f"Exception: {result.exception!r}"
     )
-    # Sanity: the success message from the fake backend should reach stdout.
+    # Fake backend's success message should reach stdout.
     expected_prefix = format_flag.split("-")[0]
     assert f"{expected_prefix} ok" in result.output

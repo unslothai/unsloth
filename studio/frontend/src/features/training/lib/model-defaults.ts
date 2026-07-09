@@ -3,6 +3,7 @@
 
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState } from "../types/config";
+import { usePlatformStore } from "@/config/env";
 
 type ModelDefaultsPatch = Partial<
   Pick<
@@ -27,6 +28,7 @@ type ModelDefaultsPatch = Partial<
     | "trainOnCompletions"
     | "gradientCheckpointing"
     | "randomSeed"
+    | "visionImageSize"
     | "enableWandb"
     | "wandbProject"
     | "enableTensorboard"
@@ -69,7 +71,13 @@ function toStringArray(value: unknown): string[] | undefined {
 function toGradientCheckpointing(
   value: unknown,
 ): TrainingConfigState["gradientCheckpointing"] | undefined {
-  if (value === "none" || value === "true" || value === "unsloth") return value;
+  if (value === "none" || value === "true" || value === "unsloth" || value === "mlx") {
+    // On Mac, map "unsloth" → "mlx" since Unsloth GC is GPU-only
+    if (usePlatformStore.getState().deviceType === "mac" && value === "unsloth") {
+      return "mlx";
+    }
+    return value;
+  }
   return undefined;
 }
 
@@ -121,6 +129,25 @@ export function mapBackendModelConfigToTrainingPatch(
 
   const randomSeed = toNumber(training?.random_seed);
   if (randomSeed !== undefined) patch.randomSeed = randomSeed;
+
+  // Only patch when the config carries the key; model-switch reset lives in
+  // setSelectedModel so same-model reloads don't wipe a user's choice.
+  if (Object.hasOwn(training ?? {}, "vision_image_size")) {
+    const raw = training?.vision_image_size;
+    if (raw == null) {
+      patch.visionImageSize = null;
+    } else {
+      // Mirror studio/backend/models/training.py:_check_vision_image_size:
+      // drop anything outside [_MIN_VISION_IMAGE_SIZE, _MAX_VISION_IMAGE_SIZE]
+      // so the store/UI never show a value the backend would reject.
+      const n = toNumber(raw);
+      if (n !== undefined && Number.isInteger(n) && n >= 256 && n <= 2048) {
+        patch.visionImageSize = n;
+      } else {
+        patch.visionImageSize = null;
+      }
+    }
+  }
 
   const packing = toBoolean(training?.packing);
   if (packing !== undefined) patch.packing = packing;

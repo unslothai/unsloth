@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>__TITLE__ - Unsloth</title>
+    <style>
+      @font-face {
+        font-family: "Hellix";
+        src: url("/p/_assets/fonts/Hellix-Medium.woff") format("woff");
+        font-weight: 500;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Hellix";
+        src: url("/p/_assets/fonts/Hellix-SemiBold.woff2") format("woff2");
+        font-weight: 600;
+        font-display: swap;
+      }
+      :root {
+        color-scheme: light dark;
+        --bg: #fefefd;
+        --fg: #0d0d0d;
+        --muted: #858279;
+        --border: #ececec;
+        --user-bubble: #f5f5f5;
+        --primary: #17b88b;
+        --composer-bg: #ffffff;
+        --composer-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1a1b1e;
+          --fg: #ececee;
+          --muted: #96979b;
+          --border: #3a3d42;
+          --user-bubble: #2d2e32;
+          --composer-bg: #2d2e32;
+          --composer-shadow: none;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        display: flex;
+        flex-direction: column;
+        font:
+          15.5px/1.6 "Inter",
+          "Inter Variable",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          system-ui,
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      .heading {
+        font-family: "Hellix", "Space Grotesk", system-ui, sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 14px 20px;
+      }
+      header img {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+      }
+      .brand {
+        font-family: "Hellix", "Space Grotesk", system-ui, sans-serif;
+        font-weight: 600;
+        font-size: 15px;
+      }
+      .model {
+        margin-left: auto;
+        max-width: 55%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12.5px;
+        color: var(--muted);
+      }
+      #log {
+        flex: 1;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        padding: 8px 16px 24px;
+      }
+      #thread {
+        width: 100%;
+        max-width: 46.5rem;
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+      }
+      .welcome {
+        margin: auto;
+        text-align: center;
+        padding: 0 16px;
+        animation: fade 0.25s ease-out;
+      }
+      .welcome h1 {
+        margin: 0;
+        font-weight: 500;
+        font-size: 30px;
+        letter-spacing: -0.02em;
+      }
+      .welcome p {
+        margin: 0.55rem 0 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .msg {
+        font-size: 15.5px;
+        font-weight: 450;
+        letter-spacing: 0.01em;
+        word-wrap: break-word;
+        white-space: pre-wrap;
+        animation: fade 0.15s ease-out;
+      }
+      .user {
+        align-self: flex-end;
+        max-width: 80%;
+        margin-top: 24px;
+        padding: 10px 16px;
+        border-radius: 24px;
+        background: var(--user-bubble);
+      }
+      .assistant {
+        align-self: stretch;
+        margin-top: 16px;
+        line-height: 1.75;
+      }
+      .dots {
+        display: inline-flex;
+        gap: 5px;
+        align-items: center;
+        height: 1.6em;
+      }
+      .dots i {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--muted);
+        animation: blink 1.2s infinite;
+      }
+      .dots i:nth-child(2) {
+        animation-delay: 0.18s;
+      }
+      .dots i:nth-child(3) {
+        animation-delay: 0.36s;
+      }
+      .composer-wrap {
+        padding: 6px 16px 16px;
+      }
+      form {
+        width: 100%;
+        max-width: 46.5rem;
+        margin: 0 auto;
+      }
+      .composer {
+        display: flex;
+        align-items: flex-end;
+        gap: 8px;
+        padding: 8px 8px 8px 18px;
+        border-radius: 28px;
+        background: var(--composer-bg);
+        box-shadow: var(--composer-shadow);
+      }
+      textarea {
+        flex: 1;
+        border: 0;
+        outline: 0;
+        resize: none;
+        background: transparent;
+        color: var(--fg);
+        font: inherit;
+        line-height: 1.5;
+        max-height: 200px;
+        padding: 8px 0;
+      }
+      textarea::placeholder {
+        color: var(--muted);
+      }
+      .send {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        border: 0;
+        border-radius: 50%;
+        background: var(--primary);
+        color: #fff;
+        cursor: pointer;
+      }
+      .send:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      .foot {
+        margin: 9px auto 0;
+        max-width: 46.5rem;
+        text-align: center;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      @keyframes blink {
+        0%,
+        80%,
+        100% {
+          opacity: 0.25;
+        }
+        40% {
+          opacity: 1;
+        }
+      }
+      @keyframes fade {
+        from {
+          opacity: 0;
+          transform: translateY(2px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <img src="/p/_assets/circle-logo-small.png" alt="" /><span class="brand"
+        >Unsloth</span
+      ><span class="model">__TITLE__</span>
+    </header>
+    <main id="log">
+      <div id="welcome" class="welcome">
+        <h1 class="heading">Chat with your model</h1>
+        <p>Fine-tuned with Unsloth</p>
+      </div>
+      <div id="thread"></div>
+    </main>
+    <div class="composer-wrap">
+      <form id="f">
+        <div class="composer">
+          <textarea
+            id="i"
+            rows="1"
+            autocomplete="off"
+            placeholder="Message this model..."
+          ></textarea>
+          <button id="b" class="send" aria-label="Send">
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M12 19V5" />
+              <path d="M5 12l7-7 7 7" />
+            </svg>
+          </button>
+        </div>
+        <div class="foot">Served by Unsloth Studio</div>
+      </form>
+    </div>
+    <script>
+      const base = location.pathname.replace(/\/+$/, "");
+      // The capability token rides in ?k=; location.pathname drops it, so carry it
+      // onto the chat request explicitly. Not stored or logged.
+      const k = new URLSearchParams(location.search).get("k");
+      const chatUrl =
+        base + "/v1/chat/completions" + (k ? "?k=" + encodeURIComponent(k) : "");
+      const log = document.getElementById("log"),
+        thread = document.getElementById("thread"),
+        welcome = document.getElementById("welcome");
+      const form = document.getElementById("f"),
+        input = document.getElementById("i"),
+        btn = document.getElementById("b");
+      const msgs = [];
+      const down = () => {
+        log.scrollTop = log.scrollHeight;
+      };
+      function autosize() {
+        input.style.height = "auto";
+        input.style.height = Math.min(input.scrollHeight, 200) + "px";
+      }
+      input.addEventListener("input", autosize);
+      input.addEventListener("keydown", (e) => {
+        if (e.isComposing || e.keyCode === 229) return;
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          // send() (not form.requestSubmit, unsupported on Safari < 16) guards the btn.
+          send();
+        }
+      });
+      function add(role) {
+        const d = document.createElement("div");
+        d.className = "msg " + role;
+        thread.appendChild(d);
+        down();
+        return d;
+      }
+      async function send() {
+        // One path for button + Enter; ignore while a request is in flight.
+        if (btn.disabled) return;
+        const content = input.value.trim();
+        if (!content) return;
+        if (welcome) welcome.style.display = "none";
+        input.value = "";
+        autosize();
+        btn.disabled = true;
+        msgs.push({ role: "user", content });
+        add("user").textContent = content;
+        const out = add("assistant");
+        out.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
+        let acc = "";
+        try {
+          const r = await fetch(chatUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: "preview",
+              messages: msgs,
+              stream: true,
+            }),
+          });
+          if (!r.ok) {
+            out.textContent =
+              "Error " + r.status + ": " + (await r.text()).slice(0, 300);
+            msgs.pop();
+            input.value = content; // restore the prompt so the user can retry
+            autosize();
+            btn.disabled = false;
+            return;
+          }
+          const reader = r.body.getReader(),
+            dec = new TextDecoder();
+          let buf = "";
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let i;
+            while ((i = buf.indexOf("\n")) >= 0) {
+              const line = buf.slice(0, i).trim();
+              buf = buf.slice(i + 1);
+              if (!line.startsWith("data:")) continue;
+              const data = line.slice(5).trim();
+              if (data === "[DONE]") continue;
+              try {
+                const j = JSON.parse(data);
+                const d =
+                  j.choices &&
+                  j.choices[0] &&
+                  j.choices[0].delta &&
+                  j.choices[0].delta.content;
+                if (d) {
+                  acc += d;
+                  out.textContent = acc;
+                  down();
+                }
+              } catch (_) {}
+            }
+          }
+          if (!acc) out.textContent = "";
+          msgs.push({ role: "assistant", content: acc });
+        } catch (err) {
+          // Keep any streamed text, flag the break, restore the prompt for retry.
+          out.textContent = acc ? acc + "\n\n[connection lost]" : "Network error, please retry.";
+          msgs.pop();
+          input.value = content;
+          autosize();
+        }
+        btn.disabled = false;
+        input.focus();
+      }
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        send();
+      });
+      autosize();
+      input.focus();
+    </script>
+  </body>
+</html>

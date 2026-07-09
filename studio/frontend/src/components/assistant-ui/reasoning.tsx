@@ -6,6 +6,7 @@
 /* eslint-disable react-refresh/only-export-components */
 
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import { MessageResponseModelBadge } from "@/components/assistant-ui/message-response-details-sheet";
 import {
   Collapsible,
   CollapsibleContent,
@@ -19,10 +20,11 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { Idea01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { type VariantProps, cva } from "class-variance-authority";
-import { ChevronDownIcon, CopyIcon, CheckIcon } from "lucide-react";
+import { ChevronDownIcon, CopyIcon } from "lucide-react";
+import { BulbIcon } from "@/lib/bulb-icon";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -35,7 +37,7 @@ import {
 const ANIMATION_DURATION = 200;
 const AUTO_SCROLL_THRESHOLD_PX = 24;
 
-export const reasoningVariants = cva("aui-reasoning-root mb-4 w-full", {
+export const reasoningVariants = cva("aui-reasoning-root mt-3 mb-4 w-full", {
   variants: {
     variant: {
       outline: "rounded-lg border px-3 py-2",
@@ -123,15 +125,12 @@ function ReasoningTrigger({
     <CollapsibleTrigger
       data-slot="reasoning-trigger"
       className={cn(
-        "aui-reasoning-trigger group/trigger flex min-w-0 flex-1 items-center gap-2 py-1 text-muted-foreground text-sm transition-colors hover:text-foreground",
+        "aui-reasoning-trigger group/trigger flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-1 text-muted-foreground text-sm transition-colors hover:text-foreground",
         className,
       )}
       {...props}
     >
-      <HugeiconsIcon
-        icon={Idea01Icon}
-        className="aui-reasoning-trigger-icon size-4 shrink-0"
-      />
+      <BulbIcon className="aui-reasoning-trigger-icon size-4 shrink-0" />
       <span
         data-slot="reasoning-trigger-label"
         className="aui-reasoning-trigger-label-wrapper relative inline-block leading-none"
@@ -139,13 +138,13 @@ function ReasoningTrigger({
         {active ? (
           <span className="text-sm">Thinking...</span>
         ) : (
-          <span>Thought for {duration ?? 0} seconds</span>
+          <span>Thought for {duration ?? 0} {duration === 1 ? "second" : "seconds"}</span>
         )}
       </span>
       <ChevronDownIcon
         data-slot="reasoning-trigger-chevron"
         className={cn(
-          "aui-reasoning-trigger-chevron mt-0.5 size-4 shrink-0",
+          "aui-reasoning-trigger-chevron mt-0.5 size-3.5 shrink-0",
           "transition-transform duration-(--animation-duration) ease-out",
           "group-data-[state=closed]/trigger:-rotate-90",
           "group-data-[state=open]/trigger:rotate-0",
@@ -246,8 +245,8 @@ function ReasoningText({
       ref={scrollRef}
       data-slot="reasoning-text"
       className={cn(
-        "aui-reasoning-text relative z-0 overflow-y-auto pt-2 pb-2 pl-0 leading-relaxed",
-        streaming ? "max-h-32" : "max-h-64",
+        "aui-reasoning-text relative z-0 overflow-y-auto pt-2 pb-0 pl-0 leading-relaxed",
+        streaming ? "max-h-64" : "",
         "transform-gpu transition-[transform,opacity]",
         "group-data-[state=open]/collapsible-content:animate-in",
         "group-data-[state=closed]/collapsible-content:animate-out",
@@ -298,7 +297,7 @@ function ReasoningCopyButton({ startIndex, endIndex }: { startIndex: number; end
       aria-label="Copy reasoning"
     >
       {copied ? (
-        <CheckIcon className="size-3" />
+        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
         <CopyIcon className="size-3" />
       )}
@@ -316,15 +315,28 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     if (message.status?.type !== "running") {
       return false;
     }
-    const lastIndex = message.parts.length - 1;
-    if (lastIndex < 0) {
+    const parts = message.parts;
+    const len = parts.length;
+    if (len === 0) {
       return false;
     }
-    const lastType = message.parts[lastIndex]?.type;
-    if (lastType !== "reasoning") {
+
+    let groupHasReasoning = false;
+    for (let i = startIndex; i <= endIndex && i < len; i += 1) {
+      if (parts[i]?.type === "reasoning") {
+        groupHasReasoning = true;
+        break;
+      }
+    }
+    if (!groupHasReasoning) {
       return false;
     }
-    return lastIndex >= startIndex && lastIndex <= endIndex;
+    for (let i = endIndex + 1; i < len; i += 1) {
+      if (parts[i]?.type !== "tool-call") {
+        return false;
+      }
+    }
+    return true;
   });
 
   const persistedDuration = useAuiState(({ message }) => {
@@ -350,18 +362,18 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     }
   }, [isReasoningStreaming]);
 
-  // Reset dismissed flag when a new stream starts
+  // Reset dismissed flag on new stream.
   useEffect(() => {
     if (isReasoningStreaming) {
       setDismissedWhileStreaming(false);
     }
   }, [isReasoningStreaming]);
 
-  // Derived: open during streaming (unless dismissed), or if user manually opened after
+  // Open while streaming (unless dismissed), or once manually opened.
   const isOpen = (isReasoningStreaming && !dismissedWhileStreaming) || manualOpen;
   const variant = isOpen ? "outline" : "ghost";
 
-  // Allow closing during streaming (matches ChatGPT)
+  // Allow closing during streaming (matches ChatGPT).
   const handleOpenChange = useCallback(
     (open: boolean) => {
       if (isReasoningStreaming) {
@@ -379,13 +391,17 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       onOpenChange={handleOpenChange}
       variant={variant}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <ReasoningTrigger
-          className="min-w-0 flex-1"
+          className="min-w-0 flex-none"
           active={isReasoningStreaming}
-          duration={duration || persistedDuration}
+          // Prefer server timing when available.
+          duration={persistedDuration || duration}
         />
-        <div className="flex w-16 shrink-0 justify-end">
+        <span className="hidden min-w-0 max-w-[12rem] group-hover/assistant-message:inline-flex group-focus-within/assistant-message:inline-flex sm:max-w-[16rem]">
+          <MessageResponseModelBadge className="min-w-0" />
+        </span>
+        <div className="ml-auto flex w-16 shrink-0 justify-end">
           {isOpen && !isReasoningStreaming && (
             <ReasoningCopyButton startIndex={startIndex} endIndex={endIndex} />
           )}

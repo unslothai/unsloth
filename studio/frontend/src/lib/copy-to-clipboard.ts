@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Copy text to clipboard in a way that works on Mac/Safari.
- * Uses a synchronous textarea + execCommand fallback so the copy runs in the
- * same user gesture as the click (required by Safari's clipboard security).
+ * Synchronous textarea + execCommand copy so it runs in the same user gesture
+ * as the click (required by Safari's clipboard security).
  */
 function copyWithExecCommand(text: string): boolean {
   if (typeof document === "undefined" || !document.body) return false;
@@ -44,8 +43,7 @@ export async function copyToClipboard(text: string): Promise<boolean> {
       return true;
     } catch (error) {
       console.warn("Async clipboard API failed, falling back to execCommand", error);
-      // Clipboard API rejected (NotAllowedError, insecure context, etc.)
-      // Fall through to execCommand fallback.
+      // Rejected (NotAllowedError, insecure context, etc.); fall through.
     }
   }
 

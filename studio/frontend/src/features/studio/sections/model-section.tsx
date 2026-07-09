@@ -41,10 +41,11 @@ import {
 import {
   useDebouncedValue,
   useGpuInfo,
-  useHfModelSearch,
   useHfTokenValidation,
-  useInfiniteScroll,
 } from "@/hooks";
+import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
+import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
+import { extractParamLabel } from "@/lib/model-size";
 import { formatCompact } from "@/lib/utils";
 import {
   type VramFitStatus,
@@ -62,11 +63,13 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { translate, useT } from "@/i18n";
 
 const METHOD_DOTS: Record<string, string> = {
   qlora: "bg-emerald-400",
   lora: "bg-blue-400",
   full: "bg-amber-400",
+  cpt: "bg-purple-400",
 };
 
 const DARK_TRIGGER =
@@ -76,14 +79,8 @@ const DARK_CONTENT =
 const DARK_COMBOBOX_CONTENT =
   "bg-foreground text-background shadow-xl border-background/10 dark:[--accent:rgba(2,6,23,0.08)] dark:[--accent-foreground:rgb(2,6,23)] dark:[&_[data-slot=combobox-item]]:text-slate-900 dark:[&_.text-muted-foreground]:text-slate-500";
 
-/** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
-function extractParamLabel(id: string): string | null {
-  const name = id.split("/").pop() ?? id;
-  const match = name.match(/(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/);
-  return match ? `${match[1]}B` : null;
-}
-
 export function ModelSection() {
+  const t = useT();
   const gpu = useGpuInfo();
 
   const {
@@ -156,7 +153,7 @@ export function ModelSection() {
         setLocalModelsError(
           error instanceof Error
             ? error.message
-            : "Failed to load local models",
+            : translate("studio.model.failedToLoadLocalModels"),
         );
       })
       .finally(() => {
@@ -171,12 +168,16 @@ export function ModelSection() {
     isLoading,
     isLoadingMore,
     fetchMore,
+    scannedCount,
     error: hfSearchError,
-  } = useHfModelSearch(debouncedQuery, {
+  } = useHubModelSearch(debouncedQuery, {
     task,
     accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
     priorityIds: PRIORITY_TRAINING_MODELS,
+    // Curated unsloth listing by default, but a typed query searches the whole
+    // Hub (unsloth floated first) so non-unsloth base models stay selectable.
+    ownerScope: debouncedQuery.trim() ? "all" : "unsloth",
   });
 
   const { error: tokenValidationError, isChecking: isCheckingToken } =
@@ -230,12 +231,8 @@ export function ModelSection() {
     });
   }, [localMetaById, localModelInput, localResultIds]);
 
-  // Pre-compute VRAM fit status for every model in the current result set.
-  // Keyed by model id so the render callback is a simple O(1) lookup.
-  //
-  // Pre-compute VRAM fit status for every model in the current result set.
-  // Keyed by model id so the render callback is a simple O(1) lookup.
-  // Re-computes when the training method changes (QLoRA=4-bit vs LoRA/Full=fp16).
+  // VRAM fit status per model, keyed by id for O(1) render lookups.
+  // Recomputes on training-method change (QLoRA=4-bit vs LoRA/Full=fp16).
   const vramMap = useMemo(() => {
     const fitMap = buildModelVramMap(
       hfResults,
@@ -262,20 +259,21 @@ export function ModelSection() {
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const localComboboxAnchorRef = useRef<HTMLDivElement>(null);
-  const { scrollRef, sentinelRef } = useInfiniteScroll(
-    fetchMore,
-    hfResults.length,
-  );
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(fetchMore, scannedCount, {
+    isFetching: isLoading || isLoadingMore,
+    resultCount: hfResults.length,
+    resetKey: debouncedQuery,
+  });
 
   return (
     <div data-tour="studio-model" className="w-full min-w-0">
       <SectionCard
         icon={<HugeiconsIcon icon={ChipIcon} className="size-5" />}
-        title="Model"
-        description="Select base model and training method"
+        title={t("studio.model.title")}
+        description={t("studio.model.description")}
         accent="emerald"
         featured={true}
-        badge="2x Faster Training"
+        badge={t("studio.model.fasterTrainingBadge")}
         className="shadow-border ring-border"
       >
         <div className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -284,7 +282,7 @@ export function ModelSection() {
             className="flex min-w-0 flex-col gap-2"
           >
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              Local Model
+              {t("studio.model.localModel")}
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -298,7 +296,7 @@ export function ModelSection() {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Path to a locally downloaded model or a custom HF repo.
+                  {t("studio.model.localModelTooltip")}
                 </TooltipContent>
               </Tooltip>
             </span>
@@ -320,7 +318,7 @@ export function ModelSection() {
                 <ComboboxInput
                   placeholder={
                     isLoadingLocalModels
-                      ? "Scanning local and cached models..."
+                      ? t("studio.model.scanningLocalAndCachedModels")
                       : "./models/my-model"
                   }
                   className="w-full bg-foreground text-background [&_input]:text-background [&_input]:placeholder:text-background/40 [&_svg]:text-background/50 hover:bg-foreground/90"
@@ -341,26 +339,26 @@ export function ModelSection() {
                 >
                   {isLoadingLocalModels ? (
                     <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
-                      <Spinner className="size-4" /> Scanning...
+                      <Spinner className="size-4" /> {t("studio.model.scanning")}
                     </div>
                   ) : localModelsError ? (
                     <div className="px-3 py-2 text-xs text-red-500">
                       {localModelsError}
                     </div>
                   ) : (
-                    <ComboboxEmpty>No local models found</ComboboxEmpty>
+                    <ComboboxEmpty>{t("studio.model.noLocalModelsFound")}</ComboboxEmpty>
                   )}
                   <ComboboxList className="p-1">
                     {(id: string) => {
                       const model = localMetaById.get(id);
                       const source =
                         model?.source === "hf_cache"
-                          ? "HF cache"
+                          ? t("studio.model.hfCache")
                           : model?.source === "lmstudio"
                             ? "LM Studio"
                             : model?.source === "custom"
-                              ? "Custom Folders"
-                              : "Local dir";
+                              ? t("studio.model.customFolders")
+                              : t("studio.model.localDir");
                       return (
                         <ComboboxItem key={id} value={id} className="gap-2">
                           <Tooltip>
@@ -388,15 +386,17 @@ export function ModelSection() {
             </div>
             {isLoadingLocalModels ? (
               <p className="text-[10px] text-muted-foreground">
-                Scanning local models...
+                {t("studio.model.scanningLocalModels")}
               </p>
             ) : localModelsError ? (
               <p className="text-[10px] text-red-500">{localModelsError}</p>
             ) : (
               <p className="text-[10px] text-muted-foreground">
                 {trainableLocalModels.length > 0
-                  ? `${trainableLocalModels.length} local/cached models found`
-                  : "No local models found. Enter path manually."}
+                  ? t("studio.model.localModelsFound", {
+                      count: trainableLocalModels.length,
+                    })
+                  : t("studio.model.noLocalModelsFoundManual")}
               </p>
             )}
           </div>
@@ -406,7 +406,7 @@ export function ModelSection() {
             className="flex min-w-0 flex-col gap-2"
           >
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              Hugging Face Model
+              {t("studio.model.huggingFaceModel")}
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -420,14 +420,14 @@ export function ModelSection() {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Search Hugging Face models or pick from our recommended list.{" "}
+                  {t("studio.model.huggingFaceModelTooltip")}{" "}
                   <a
                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/what-model-should-i-use"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-primary underline"
                   >
-                    Read more
+                    {t("studio.model.readMore")}
                   </a>
                 </TooltipContent>
               </Tooltip>
@@ -458,7 +458,7 @@ export function ModelSection() {
                 autoHighlight={true}
               >
                 <ComboboxInput
-                  placeholder="Search models..."
+                  placeholder={t("studio.model.searchModels")}
                   className="w-full leading-5"
                 >
                   <InputGroupAddon>
@@ -468,14 +468,14 @@ export function ModelSection() {
                 <ComboboxContent anchor={comboboxAnchorRef}>
                   {isLoading ? (
                     <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                      <Spinner className="size-4" /> Searching…
+                      <Spinner className="size-4" /> {t("studio.model.searching")}
                     </div>
                   ) : (
-                    <ComboboxEmpty>No models found</ComboboxEmpty>
+                    <ComboboxEmpty>{t("studio.model.noModelsFound")}</ComboboxEmpty>
                   )}
                   <div
                     ref={scrollRef}
-                    className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
+                    className="hover-scrollbar max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
                   >
                     <ComboboxList className="p-1 !max-h-none !overflow-visible">
                       {(id: string) => {
@@ -509,10 +509,18 @@ export function ModelSection() {
                                   gpu.available && (
                                     <span className="block text-[10px] mt-1">
                                       {exceeds
-                                        ? `Needs ~${vramEst}GB VRAM (GPU: ${gpu.memoryTotalGb}GB)`
+                                        ? t("studio.model.needsVram", {
+                                            vram: vramEst,
+                                            gpu: gpu.memoryTotalGb,
+                                          })
                                         : fitStatus === "tight"
-                                          ? `~${vramEst}GB VRAM (tight fit on ${gpu.memoryTotalGb}GB)`
-                                          : `~${vramEst}GB VRAM`}
+                                          ? t("studio.model.tightVram", {
+                                              vram: vramEst,
+                                              gpu: gpu.memoryTotalGb,
+                                            })
+                                          : t("studio.model.vramEstimate", {
+                                              vram: vramEst,
+                                            })}
                                     </span>
                                   )}
                               </TooltipContent>
@@ -555,7 +563,7 @@ export function ModelSection() {
             className="flex min-w-0 flex-col gap-2"
           >
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              Method
+              {t("studio.model.method")}
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -569,15 +577,14 @@ export function ModelSection() {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs">
-                  QLoRA uses 4-bit quantization for lowest VRAM. LoRA uses
-                  16-bit. Full updates all weights.{" "}
+                  {t("studio.model.methodTooltip")}{" "}
                   <a
                     href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-primary underline"
                   >
-                    Read more
+                    {t("studio.model.readMore")}
                   </a>
                 </TooltipContent>
               </Tooltip>
@@ -614,7 +621,15 @@ export function ModelSection() {
                     <span
                       className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.full}`}
                     />
-                    Full Fine-tune
+                    {t("studio.model.fullFineTune")}
+                  </span>
+                </SelectItem>
+                <SelectItem value="cpt">
+                  <span className="flex items-center gap-2">
+                    <span
+                      className={`size-2 shrink-0 rounded-full ${METHOD_DOTS.cpt}`}
+                    />
+                    {t("studio.model.continuedPretraining")}
                   </span>
                 </SelectItem>
               </SelectContent>
@@ -623,7 +638,7 @@ export function ModelSection() {
 
           <div className="flex min-w-0 flex-col gap-2">
             <span className="text-xs font-medium text-muted-foreground">
-              Hugging Face Token (Optional)
+              {t("studio.model.huggingFaceTokenOptional")}
             </span>
             <InputGroup>
               <InputGroupAddon>
@@ -648,12 +663,14 @@ export function ModelSection() {
                   rel="noopener noreferrer"
                   className="underline"
                 >
-                  Get or update token
+                  {t("studio.model.getOrUpdateToken")}
                 </a>
               </p>
             )}
             {isCheckingToken && (
-              <p className="text-xs text-muted-foreground">Checking token…</p>
+              <p className="text-xs text-muted-foreground">
+                {t("studio.model.checkingToken")}
+              </p>
             )}
           </div>
         </div>

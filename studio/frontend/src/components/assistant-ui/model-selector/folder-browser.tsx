@@ -3,6 +3,8 @@
 
 "use client";
 
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogClose,
@@ -32,13 +34,11 @@ export interface FolderBrowserProps {
 
 function splitBreadcrumb(path: string): { label: string; value: string }[] {
   if (!path) return [];
-  // Distinguish path styles BEFORE normalizing separators. On POSIX
-  // backslashes are valid filename characters, so we cannot blindly
-  // rewrite ``\`` -> ``/`` -- doing so would mangle directory names
-  // like ``my\backup`` into ``my/backup`` and produce breadcrumb
-  // values that 404 on the server. Only Windows-style absolute paths
-  // (drive letter, or UNC ``\\server\share``) get the conversion.
-  const isWindowsDrive = /^[A-Za-z]:[\\/]/.test(path) || /^[A-Za-z]:$/.test(path);
+  // Detect path style BEFORE normalizing: on POSIX, `\` is a valid filename
+  // char, so blindly rewriting `\` -> `/` mangles names like `my\backup` into
+  // 404ing breadcrumbs. Only Windows-style paths (drive letter, or UNC) convert.
+  const isWindowsDrive =
+    /^[A-Za-z]:[\\/]/.test(path) || /^[A-Za-z]:$/.test(path);
   const isUnc = /^\\\\/.test(path);
   const isWindows = isWindowsDrive || isUnc;
   const normalized = isWindows ? path.replace(/\\/g, "/") : path;
@@ -57,11 +57,9 @@ function splitBreadcrumb(path: string): { label: string; value: string }[] {
     return parts;
   }
 
-  // Windows-ish drive path (C:, D:): first segment is the drive. Use
-  // ``C:/`` (drive-absolute) as the crumb value so clicking the drive
-  // root navigates to the root of the drive rather than the
-  // drive-relative current working directory on that drive (``C:``
-  // alone resolves to ``CWD-on-C``, not ``C:\``).
+  // Windows drive path (C:, D:): first segment is the drive. Use `C:/` as the
+  // crumb value so clicking the drive root navigates to the drive root, not the
+  // drive-relative CWD (`C:` alone resolves to CWD-on-C, not `C:\`).
   if (/^[A-Za-z]:$/.test(segments[0])) {
     const driveRoot = `${segments[0]}/`;
     let cur = driveRoot;
@@ -102,8 +100,8 @@ export function FolderBrowser({
       abortRef.current = ctrl;
       setLoading(true);
       setError(null);
-      // Forward the signal so cancelled navigation actually cancels the
-      // backend enumeration instead of just discarding the response.
+      // Forward the signal so cancelled navigation aborts the backend
+      // enumeration, not just the response.
       browseFolders(target, hidden, ctrl.signal)
         .then((res) => {
           if (ctrl.signal.aborted) return;
@@ -112,17 +110,13 @@ export function FolderBrowser({
         })
         .catch((err) => {
           if (ctrl.signal.aborted) return;
-          // Surface the error, but if the very first request (typically
-          // a typo'd or denylisted ``initialPath``) fails AND the
-          // browser is empty (no ``data`` to render against), fall
-          // back to the user's HOME so the modal is navigable instead
-          // of an irrecoverable dead end.
+          // Surface the error; if the first request (e.g. a bad initialPath)
+          // fails, fall back to HOME so the modal stays navigable.
           const message = err instanceof Error ? err.message : String(err);
           setError(message);
           if (opts?.fallbackOnError && target !== undefined) {
             // Re-issue without a target -> backend defaults to HOME.
-            // Don't recurse if HOME itself fails (paranoia: shouldn't
-            // happen since the sandbox allowlist always includes HOME).
+            // Don't recurse if HOME itself fails (allowlist always has HOME).
             queueMicrotask(() => navigate(undefined, hidden));
           }
         })
@@ -133,15 +127,13 @@ export function FolderBrowser({
     [],
   );
 
-  // Fetch when the dialog opens.  Only re-run when the dialog transitions
-  // closed -> open; subsequent navigation is driven by `navigate()` so we
-  // don't want `path` in the dependency list here.
+  // Fetch only on closed -> open; later navigation is driven by `navigate()`,
+  // so `path` is deliberately kept out of the dependency list.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!open) return;
-    // ``fallbackOnError``: if the user-supplied ``initialPath`` is bad
-    // (typo, denylisted, deleted) we recover into HOME instead of
-    // showing an empty modal with no breadcrumbs/entries.
+    // fallbackOnError: recover into HOME if initialPath is bad, rather than
+    // showing an empty modal.
     navigate(initialPath, showHidden, { fallbackOnError: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -160,18 +152,16 @@ export function FolderBrowser({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-w-md p-0 gap-0"
+        className="corner-squircle dialog-soft-surface sm:max-w-md p-0 gap-0 [&_[data-slot=dialog-close]]:top-4"
         overlayClassName="bg-black/20 backdrop-blur-none"
         data-testid="folder-browser-dialog"
       >
-        <DialogHeader className="px-4 pt-4 pb-2">
-          <DialogTitle className="text-sm font-medium">
-            Browse for folder
-          </DialogTitle>
+        <DialogHeader className="px-6 pt-6 pb-2">
+          <DialogTitle>Select folder to detect models</DialogTitle>
         </DialogHeader>
 
         {/* Breadcrumb */}
-        <div className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-4 py-2 font-mono text-[11px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-6 py-2 font-mono text-[11px] text-muted-foreground">
           {crumbs.length === 0 ? (
             <span className="text-muted-foreground/60">(loading…)</span>
           ) : (
@@ -179,7 +169,7 @@ export function FolderBrowser({
               <span key={c.value} className="flex items-center gap-0.5">
                 <button
                   type="button"
-                  className="rounded px-1 py-0.5 hover:bg-accent hover:text-foreground"
+                  className="rounded px-1 py-0.5 hover:bg-muted hover:text-foreground"
                   onClick={() => navigate(c.value, showHidden)}
                   disabled={loading}
                 >
@@ -195,14 +185,14 @@ export function FolderBrowser({
 
         {/* Suggestions (quick-pick chips) */}
         {data?.suggestions && data.suggestions.length > 0 && (
-          <div className="flex flex-wrap gap-1 border-t border-border/50 px-4 py-2">
+          <div className="flex flex-wrap gap-1 border-t border-border/50 px-6 py-2">
             {data.suggestions.map((s) => (
               <button
                 key={s}
                 type="button"
                 onClick={() => navigate(s, showHidden)}
                 disabled={loading}
-                className="rounded-full border border-border/50 px-2 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                className="rounded-full border border-border/50 px-2 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
                 title={s}
               >
                 {s.length > 36 ? `…${s.slice(-33)}` : s}
@@ -211,25 +201,33 @@ export function FolderBrowser({
           </div>
         )}
 
-        {/* Entry list */}
+        {/* Entry list. Keep the list mounted while a refetch is in flight (e.g.
+        toggling Show hidden) and just dim it, so the dialog doesn't collapse and
+        flash. The full-height spinner only shows on the first load, when there
+        is no data yet. */}
         <div className="max-h-64 min-h-24 overflow-y-auto border-t border-border/50">
           {error && (
-            <div className="px-4 py-3 text-xs text-destructive">{error}</div>
+            <div className="px-6 py-3 text-xs text-destructive">{error}</div>
           )}
-          {!error && loading && (
-            <div className="flex items-center gap-2 px-4 py-3">
+          {!error && !data && loading && (
+            <div className="flex items-center gap-2 px-6 py-3">
               <Spinner className="size-3 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">Loading…</span>
             </div>
           )}
-          {!error && !loading && data && (
-            <>
+          {!error && data && (
+            <div
+              className={cn(
+                "transition-opacity duration-150",
+                loading && "pointer-events-none opacity-50",
+              )}
+            >
               {/* Up row */}
               {data.parent !== null && (
                 <button
                   type="button"
                   onClick={() => navigate(data.parent ?? undefined, showHidden)}
-                  className="flex w-full items-center gap-2 px-4 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  className="flex w-full items-center gap-2 px-6 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
                   <HugeiconsIcon
                     icon={ArrowUp02Icon}
@@ -238,18 +236,22 @@ export function FolderBrowser({
                   <span className="font-mono">..</span>
                 </button>
               )}
-              {data.entries.length === 0 && !(data.model_files_here && data.model_files_here > 0) && (
-                <div className="px-4 py-3 text-xs text-muted-foreground/60">
-                  (empty directory)
-                </div>
-              )}
-              {data.model_files_here !== undefined && data.model_files_here > 0 && (
-                <div className="border-t border-border/30 px-4 py-1.5 text-[10px] text-foreground/70">
-                  {data.model_files_here} model file{data.model_files_here === 1 ? "" : "s"} in this folder. Click "Use this folder" to scan it.
-                </div>
-              )}
+              {data.entries.length === 0 &&
+                !(data.model_files_here && data.model_files_here > 0) && (
+                  <div className="px-6 py-3 text-xs text-muted-foreground/60">
+                    (empty directory)
+                  </div>
+                )}
+              {data.model_files_here !== undefined &&
+                data.model_files_here > 0 && (
+                  <div className="border-t border-border/30 px-6 py-1.5 text-[10px] text-foreground/70">
+                    {data.model_files_here} model file
+                    {data.model_files_here === 1 ? "" : "s"} in this folder.
+                    Click "Use this folder" to scan it.
+                  </div>
+                )}
               {data.truncated === true && (
-                <div className="border-t border-border/30 px-4 py-1.5 text-[10px] text-muted-foreground/70">
+                <div className="border-t border-border/30 px-6 py-1.5 text-[10px] text-muted-foreground/70">
                   Showing first {data.entries.length} entries. Narrow the path
                   to see more.
                 </div>
@@ -263,7 +265,7 @@ export function FolderBrowser({
                     navigate(`${data.current}${sep}${e.name}`, showHidden);
                   }}
                   className={cn(
-                    "flex w-full items-center gap-2 px-4 py-1.5 text-left text-xs transition-colors hover:bg-accent hover:text-foreground",
+                    "flex w-full items-center gap-2 px-6 py-1.5 text-left text-xs transition-colors hover:bg-muted hover:text-foreground",
                     e.hidden && "text-muted-foreground/60",
                   )}
                 >
@@ -284,42 +286,41 @@ export function FolderBrowser({
                   )}
                 </button>
               ))}
-            </>
+            </div>
           )}
         </div>
 
         {/* Footer */}
-        <DialogFooter className="flex items-center justify-between gap-2 border-t border-border/50 px-4 py-2">
-          <label className="flex cursor-pointer items-center gap-1.5 text-[10px] text-muted-foreground">
-            <input
-              type="checkbox"
+        <DialogFooter className="flex items-center justify-between gap-2 border-t border-border/50 px-6 py-3">
+          <label
+            htmlFor="folder-browser-show-hidden"
+            className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground"
+          >
+            <Checkbox
+              id="folder-browser-show-hidden"
+              className="rounded-full"
               checked={showHidden}
-              onChange={(e) => {
-                const next = e.target.checked;
+              onCheckedChange={(checked) => {
+                const next = checked === true;
                 setShowHidden(next);
                 navigate(path, next);
               }}
-              className="size-3"
             />
             Show hidden
           </label>
           <div className="flex gap-2">
             <DialogClose asChild={true}>
-              <button
-                type="button"
-                className="h-7 rounded border border-border/50 px-2.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
+              <Button type="button" variant="ghost">
                 Cancel
-              </button>
+              </Button>
             </DialogClose>
-            <button
+            <Button
               type="button"
               onClick={handleConfirm}
               disabled={!path || loading || !!error}
-              className="h-7 rounded bg-foreground px-2.5 text-[11px] font-medium text-background transition-colors hover:bg-foreground/90 disabled:opacity-40"
             >
               Use this folder
-            </button>
+            </Button>
           </div>
         </DialogFooter>
       </DialogContent>

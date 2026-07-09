@@ -10,15 +10,19 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
+import { ApiMonitorConsole } from "../components/api-monitor-console";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
+import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
 import { UsageExamples } from "../components/usage-examples";
 
 export function ApiKeysTab() {
+  const t = useT();
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -26,25 +30,46 @@ export function ApiKeysTab() {
   const [revoking, setRevoking] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
   const reduced = useReducedMotion();
-  const t = reduced
+  const transition = reduced
     ? { duration: 0 }
     : { duration: 0.18, ease: [0.165, 0.84, 0.44, 1] as const };
 
+  // ../api/api-keys.ts throws generic English errors; use the translated
+  // message so zh-CN users don't see English strings bleed through.
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       setKeys(await fetchApiKeys());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't load API keys.");
+    } catch {
+      setError(translate("settings.apiKeys.loadError"));
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    let cancelled = false;
+
+    async function loadInitialApiKeys() {
+      try {
+        const apiKeys = await fetchApiKeys();
+        if (cancelled) return;
+        setKeys(apiKeys);
+        setError(null);
+      } catch {
+        if (cancelled) return;
+        setError(translate("settings.apiKeys.loadError"));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void loadInitialApiKeys();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const confirmRevoke = async () => {
     if (!revokeTarget) return;
@@ -53,19 +78,30 @@ export function ApiKeysTab() {
       await revokeApiKey(revokeTarget.id);
       await load();
       setRevokeTarget(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't revoke key.");
+    } catch {
+      setError(translate("settings.apiKeys.revokeError"));
     } finally {
       setRevoking(false);
     }
   };
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">API Keys</h1>
+    <div className="flex min-w-0 max-w-full flex-col gap-6">
+      <header className="flex min-w-0 flex-col gap-1">
+        <h1 className="text-xl font-semibold font-heading">
+          {t("settings.apiKeys.title")}
+        </h1>
         <p className="text-xs text-muted-foreground">
-          Access Unsloth Studio programmatically via the OpenAI-compatible API.
+          {t("settings.apiKeys.description")}{" "}
+          <a
+            href="https://unsloth.ai/docs/basics/api"
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground"
+          >
+            {t("settings.apiKeys.readDocs")}
+          </a>
+          .
         </p>
       </header>
 
@@ -76,7 +112,7 @@ export function ApiKeysTab() {
             initial={{ opacity: 0, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
-            transition={t}
+            transition={transition}
           >
             <KeyRevealCard
               rawKey={revealed}
@@ -89,7 +125,7 @@ export function ApiKeysTab() {
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 4 }}
-            transition={t}
+            transition={transition}
           >
             <CreateKeyForm
               onCreated={(raw) => {
@@ -102,8 +138,10 @@ export function ApiKeysTab() {
         )}
       </AnimatePresence>
 
-      <section className="flex flex-col">
-        <h2 className="mb-2 text-sm font-semibold text-foreground">Your keys</h2>
+      <section className="flex min-w-0 flex-col">
+        <h2 className="mb-2 text-sm font-semibold text-foreground">
+          {t("settings.apiKeys.accessTokens")}
+        </h2>
         {error ? (
           <div className="rounded-md border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
             {error}
@@ -119,10 +157,10 @@ export function ApiKeysTab() {
           </div>
         ) : keys.length === 0 ? (
           <p className="py-6 text-center text-xs text-muted-foreground">
-            No API keys yet.
+            {t("settings.apiKeys.noAccess")}
           </p>
         ) : (
-          <div className="flex flex-col">
+          <div className="flex min-w-0 flex-col">
             {keys.map((k) => (
               <ApiKeyRow key={k.id} apiKey={k} onRevoke={setRevokeTarget} />
             ))}
@@ -130,26 +168,38 @@ export function ApiKeysTab() {
         )}
       </section>
 
-      <UsageExamples />
+      <ApiMonitorConsole />
+
+      <UsageExamples apiKey={revealed} />
+
+      <ModelAutoSwitchSection />
 
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Revoke key “{revokeTarget?.name}”?</DialogTitle>
+            <DialogTitle>
+              {t("settings.apiKeys.revokeTitle", {
+                name: revokeTarget?.name ?? "",
+              })}
+            </DialogTitle>
             <DialogDescription>
-              Applications using this key will immediately lose access. This cannot be undone.
+              {t("settings.apiKeys.revokeDescription")}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setRevokeTarget(null)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button
               onClick={confirmRevoke}
               disabled={revoking}
               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
-              {revoking ? "Revoking…" : `Revoke “${revokeTarget?.name}”`}
+              {revoking
+                ? t("settings.apiKeys.revoking")
+                : t("settings.apiKeys.revokeAction", {
+                    name: revokeTarget?.name ?? "",
+                  })}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -5,7 +5,10 @@
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
-import { CheckIcon, CopyIcon, LoaderIcon, TerminalIcon } from "lucide-react";
+import { CopyIcon, TerminalIcon } from "lucide-react";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Spinner } from "@/components/ui/spinner";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   ToolFallbackContent,
@@ -52,7 +55,7 @@ function CopyBtn({ text }: { text: string }) {
       aria-label="Copy to clipboard"
     >
       {copied ? (
-        <CheckIcon className="size-3" />
+        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
         <CopyIcon className="size-3" />
       )}
@@ -86,7 +89,7 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         <div className="border-l-2 border-muted-foreground/20 pl-2">
           {isRunning ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <LoaderIcon className="size-3.5 animate-spin" />
+              <Spinner className="size-3.5" />
               <span>Running&hellip;</span>
             </div>
           ) : output ? (

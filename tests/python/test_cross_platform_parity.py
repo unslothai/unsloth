@@ -13,32 +13,21 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 
 class TestNoTorchBackendAutoInInstallSh:
-    """install.sh primary install paths must not use --torch-backend=auto.
-
-    The fallback else-branch (when TORCH_INDEX_URL is empty) is allowed to
-    use --torch-backend=auto since that is the last-resort recovery path.
-    """
+    """install.sh primary paths must not use --torch-backend=auto (only the fallback else-branch may)."""
 
     def test_no_torch_backend_auto_outside_fallback(self):
-        lines = INSTALL_SH.read_text().splitlines()
-        # Find the fallback block: starts with the "else" after the
-        # TORCH_INDEX_URL check and ends at the next "fi".
+        lines = INSTALL_SH.read_text(encoding = "utf-8").splitlines()
+        # Fallback block: from "GPU detection failed" to the next "fi".
         fallback_start = None
         fallback_end = None
         for i, line in enumerate(lines):
             if fallback_start is None and "GPU detection failed" in line:
                 fallback_start = i
-            elif (
-                fallback_start is not None
-                and fallback_end is None
-                and line.strip() == "fi"
-            ):
+            elif fallback_start is not None and fallback_end is None and line.strip() == "fi":
                 fallback_end = i
                 break
         fallback_range = (
-            range(fallback_start or 0, (fallback_end or 0) + 1)
-            if fallback_start
-            else range(0)
+            range(fallback_start or 0, (fallback_end or 0) + 1) if fallback_start else range(0)
         )
 
         matches = [
@@ -55,7 +44,7 @@ class TestNoTorchBackendAutoInInstallSh:
 
     def test_fallback_uses_torch_backend_auto(self):
         """The fallback branch should use --torch-backend=auto as recovery."""
-        text = INSTALL_SH.read_text()
+        text = INSTALL_SH.read_text(encoding = "utf-8")
         assert (
             "GPU detection failed" in text
         ), "install.sh should have a fallback branch for when GPU detection fails"
@@ -65,13 +54,13 @@ class TestInstallShHasGpuDetection:
     """install.sh must contain the get_torch_index_url function."""
 
     def test_function_exists(self):
-        text = INSTALL_SH.read_text()
+        text = INSTALL_SH.read_text(encoding = "utf-8")
         assert (
             "get_torch_index_url()" in text
         ), "install.sh is missing the get_torch_index_url() function"
 
     def test_torch_index_url_assigned(self):
-        text = INSTALL_SH.read_text()
+        text = INSTALL_SH.read_text(encoding = "utf-8")
         assert (
             "TORCH_INDEX_URL=$(get_torch_index_url)" in text
         ), "install.sh should assign TORCH_INDEX_URL from get_torch_index_url()"
@@ -122,8 +111,8 @@ class TestCudaMappingParity:
 
     def test_same_cuda_suffixes(self):
         """Both scripts should produce the same ordered list of CUDA index suffixes."""
-        sh_text = INSTALL_SH.read_text()
-        ps1_text = INSTALL_PS1.read_text()
+        sh_text = INSTALL_SH.read_text(encoding = "utf-8")
+        ps1_text = INSTALL_PS1.read_text(encoding = "utf-8")
 
         sh_thresholds = self._extract_cuda_thresholds_sh(sh_text)
         ps1_thresholds = self._extract_cuda_thresholds_ps1(ps1_text)
@@ -141,13 +130,53 @@ class TestPyTorchMirrorEnvVar:
     """Both install scripts must support the UNSLOTH_PYTORCH_MIRROR env var."""
 
     def test_install_sh_has_mirror_var(self):
-        text = INSTALL_SH.read_text()
+        text = INSTALL_SH.read_text(encoding = "utf-8")
         assert (
             "UNSLOTH_PYTORCH_MIRROR" in text
         ), "install.sh should reference UNSLOTH_PYTORCH_MIRROR"
 
     def test_install_ps1_has_mirror_var(self):
-        text = INSTALL_PS1.read_text()
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert (
             "UNSLOTH_PYTORCH_MIRROR" in text
         ), "install.ps1 should reference UNSLOTH_PYTORCH_MIRROR"
+
+
+class TestUvBytecodeCompileTimeout:
+    """Installers should relax uv bytecode compilation timeout by default."""
+
+    @staticmethod
+    def _version_tuple(version: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in version.split("."))
+
+    def test_install_sh_uses_uv_version_with_timeout_env(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        match = re.search(r'^UV_MIN_VERSION="([^"]+)"$', text, re.MULTILINE)
+        assert match, "install.sh should declare UV_MIN_VERSION"
+        assert self._version_tuple(match.group(1)) >= self._version_tuple("0.7.22")
+
+    def test_install_ps1_uses_uv_version_with_timeout_env(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        match = re.search(r'^\s*\$UvMinVersion = "([^"]+)"$', text, re.MULTILINE)
+        assert match, "install.ps1 should declare $UvMinVersion"
+        assert self._version_tuple(match.group(1)) >= self._version_tuple("0.7.22")
+        assert "function Test-UvVersionOk" in text
+        assert "if (-not (Test-UvVersionOk))" in text
+
+    def test_install_sh_preserves_timeout_override(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        assert (
+            ': "${UV_COMPILE_BYTECODE_TIMEOUT:=180}"' in text
+        ), "install.sh should default UV_COMPILE_BYTECODE_TIMEOUT without overwriting callers"
+        assert (
+            "export UV_COMPILE_BYTECODE_TIMEOUT" in text
+        ), "install.sh should export UV_COMPILE_BYTECODE_TIMEOUT for uv subprocesses"
+
+    def test_install_ps1_preserves_timeout_override(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert (
+            "if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT)" in text
+        ), "install.ps1 should preserve caller UV_COMPILE_BYTECODE_TIMEOUT overrides"
+        assert (
+            '$env:UV_COMPILE_BYTECODE_TIMEOUT = "180"' in text
+        ), "install.ps1 should default UV_COMPILE_BYTECODE_TIMEOUT"

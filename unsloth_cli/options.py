@@ -6,7 +6,7 @@
 import functools
 import inspect
 from pathlib import Path
-from typing import Any, Callable, Optional, get_args, get_origin
+from typing import Any, Callable, List, Optional, get_args, get_origin
 
 import typer
 from pydantic import BaseModel
@@ -35,8 +35,16 @@ def _is_bool_field(annotation: Any) -> bool:
 
 
 def _is_list_type(annotation: Any) -> bool:
-    """Check if type is a List."""
-    return get_origin(annotation) is list
+    """Check if type is a List (including Optional[List[...]] and bare list)."""
+    unwrapped = _unwrap_optional(annotation)
+    return unwrapped is list or get_origin(unwrapped) is list
+
+
+def _list_element_type(annotation: Any) -> type:
+    """Element type for a List field; falls back to str for complex inners."""
+    args = get_args(_unwrap_optional(annotation))
+    elem = args[0] if args else str
+    return elem if elem in (str, int, float, Path) else str
 
 
 def _get_python_type(annotation: Any) -> type:
@@ -49,7 +57,7 @@ def _get_python_type(annotation: Any) -> type:
 
 def _collect_config_fields(config_class: type[BaseModel]) -> list[tuple[str, Any]]:
     """
-    Collect all fields from a config class, flattening nested models. Returns list of
+    Flatten config class fields (recursing into nested models) into a list of
     (name, field_info) tuples. Raises ValueError on duplicate field names.
     """
     fields = []
@@ -57,7 +65,7 @@ def _collect_config_fields(config_class: type[BaseModel]) -> list[tuple[str, Any
 
     for name, field_info in config_class.model_fields.items():
         annotation = field_info.annotation
-        # Skip nested models - recurse into them
+        # Recurse into nested models
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
             for nested_name, nested_field in annotation.model_fields.items():
                 if nested_name in seen_names:
@@ -80,9 +88,7 @@ def add_options_from_config(config_class: type[BaseModel]) -> Callable:
     which will receive a dict of all CLI-provided config values.
     """
     fields = _collect_config_fields(config_class)
-    field_names = {
-        name for name, field_info in fields if not _is_list_type(field_info.annotation)
-    }
+    field_names = {name for name, _field_info in fields}
 
     def decorator(func: Callable) -> Callable:
         sig = inspect.signature(func)
@@ -97,11 +103,20 @@ def add_options_from_config(config_class: type[BaseModel]) -> Callable:
             if field_name in original_param_names:
                 continue
             annotation = field_info.annotation
-            if _is_list_type(annotation):
-                continue
-
             flag_name = _python_name_to_cli_flag(field_name)
             help_text = field_info.description or ""
+
+            if _is_list_type(annotation):
+                # Repeatable option: --flag a --flag b -> ["a", "b"]
+                default = typer.Option(None, flag_name, help = help_text)
+                param = inspect.Parameter(
+                    field_name,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    default = default,
+                    annotation = Optional[List[_list_element_type(annotation)]],
+                )
+                new_params.append(param)
+                continue
 
             if _is_bool_field(annotation):
                 default = typer.Option(

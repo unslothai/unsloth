@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 import { createApiKey } from "../api/api-keys";
@@ -21,6 +22,7 @@ export function CreateKeyForm({
   onCreated: (rawKey: string) => void;
   onError: (message: string) => void;
 }) {
+  const t = useT();
   const [name, setName] = useState("");
   const [expiry, setExpiry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -33,27 +35,26 @@ export function CreateKeyForm({
       const result = await createApiKey(name.trim(), expiry);
       onCreated(result.key);
       setName("");
-    } catch (err) {
-      onError(err instanceof Error ? err.message : "Couldn't create key.");
+    } catch {
+      // api-keys.ts throws English Error messages; use the translated one so
+      // zh-CN users don't see English bleed through from internal exceptions.
+      onError(t("settings.apiKeys.createError"));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="flex flex-col gap-2 rounded-lg border border-border bg-muted/20 p-3"
-    >
+    <form onSubmit={handleSubmit} className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="Key name (e.g. production)"
-          className="h-8 min-w-[180px] flex-1 text-sm"
-          aria-label="New key name"
+          placeholder={t("settings.apiKeys.tokenNamePlaceholder")}
+          className="h-9 min-w-[200px] flex-1 text-sm"
+          aria-label={t("settings.apiKeys.newAccessTokenName")}
         />
-        <div className="inline-flex items-center rounded-md border border-border bg-background p-0.5">
+        <div className="hub-tab-toggle inline-flex h-8 items-center rounded-full">
           {EXPIRY_PRESETS.map((p) => {
             const active = expiry === p.value;
             return (
@@ -63,19 +64,21 @@ export function CreateKeyForm({
                 onClick={() => setExpiry(p.value)}
                 aria-pressed={active}
                 className={cn(
-                  "rounded px-2 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "inline-flex h-8 items-center rounded-full px-3.5 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   active
-                    ? "bg-accent text-foreground"
+                    ? "hub-tab-toggle-pill text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {p.label}
+                {p.value === null ? t("settings.apiKeys.never") : p.label}
               </button>
             );
           })}
         </div>
         <Button type="submit" size="sm" disabled={loading || !name.trim()}>
-          {loading ? "Creating…" : "Create key"}
+          {loading
+            ? t("settings.apiKeys.creating")
+            : t("settings.apiKeys.createToken")}
         </Button>
       </div>
     </form>

@@ -5,14 +5,15 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import "./index.css";
-import { fetchDeviceType } from "./config/env";
 import { App } from "./app/app";
+import { fetchDeviceType } from "./config/env";
+import { initializeLocale } from "./i18n";
 
 const globalCrypto = globalThis.crypto as Crypto | undefined;
 
 if (globalCrypto && typeof globalCrypto.randomUUID !== "function") {
-  // Some envs ship `crypto` but no `randomUUID()` (or a non-function stub).
-  // Provide a best-effort v4 UUID using `getRandomValues` when available.
+  // Some envs ship `crypto` without `randomUUID()`. Provide a best-effort v4
+  // UUID using `getRandomValues` when available.
   const cryptoRef = globalCrypto;
 
   function getRandomByte(): number {
@@ -33,10 +34,12 @@ if (!rootElement) {
   throw new Error("Root element not found");
 }
 
-fetchDeviceType().then(() => {
-  createRoot(rootElement).render(
-    <StrictMode>
-      <App />
-    </StrictMode>,
-  );
-});
+initializeLocale();
+
+createRoot(rootElement).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);
+
+fetchDeviceType().catch(() => undefined);

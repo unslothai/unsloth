@@ -3,8 +3,9 @@
 
 export { LoginPage } from "./login-page";
 export { ChangePasswordPage } from "./change-password-page";
-export { authFetch, refreshSession } from "./api";
+export { authFetch, logout, refreshSession } from "./api";
 export {
+  clearAuthTokens,
   getAuthToken,
   getPostAuthRoute,
   hasAuthToken,
@@ -14,4 +15,10 @@ export {
   mustChangePassword,
   resetOnboardingDone,
   setMustChangePassword,
+  storeAuthTokens,
 } from "./session";
+export {
+  clearTauriAuthFailure,
+  getTauriAuthFailure,
+  tauriAutoAuth,
+} from "./tauri-auto-auth";

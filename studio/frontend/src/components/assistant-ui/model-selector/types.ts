@@ -18,10 +18,27 @@ export interface LoraModelOption extends ModelOption {
   exportType?: "lora" | "merged" | "gguf";
 }
 
+export interface ExternalModelOption extends ModelOption {
+  providerId: string;
+  providerName: string;
+  /** Registry key (e.g. openai, gemini) for provider branding. */
+  providerType: string;
+}
+
 export interface ModelSelectorChangeMeta {
-  source: "hub" | "lora" | "exported" | "local";
+  source: "hub" | "lora" | "exported" | "local" | "external";
   isLora: boolean;
   ggufVariant?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
+  /** Native GGUF context, threaded so a staged pick can seed the slider. */
+  contextLength?: number | null;
+  /** Direct local .gguf file picked without a variant (custom folder / LM
+   *  Studio). Marks it as a GGUF source for the deferred-load staging flow. */
+  isGguf?: boolean;
+}
+
+export interface DeletedModelRef {
+  id: string;
+  ggufVariant?: string;
 }

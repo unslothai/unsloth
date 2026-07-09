@@ -137,9 +137,7 @@ class TestGetModelName(unittest.TestCase):
             else:
                 model_name, load_in_4bit, expected, should_change = case
                 with self.subTest(model_name = model_name, load_in_4bit = load_in_4bit):
-                    self._assert_mapping(
-                        model_name, load_in_4bit, expected, should_change
-                    )
+                    self._assert_mapping(model_name, load_in_4bit, expected, should_change)
 
     def test_static_mapper_contract(self):
         contracts = [
@@ -158,9 +156,7 @@ class TestGetModelName(unittest.TestCase):
         for src, expected in contracts:
             with self.subTest(src = src):
                 self.assertEqual(FLOAT_TO_INT_MAPPER[src], expected)
-        self.assertEqual(
-            MAP_TO_UNSLOTH_16bit["qwen/qwen3-8b-fp8"], "unsloth/Qwen3-8B-FP8"
-        )
+        self.assertEqual(MAP_TO_UNSLOTH_16bit["qwen/qwen3-8b-fp8"], "unsloth/Qwen3-8B-FP8")
 
 
 if __name__ == "__main__":

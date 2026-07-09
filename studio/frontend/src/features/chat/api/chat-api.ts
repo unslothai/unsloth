@@ -2,7 +2,18 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
+import { consumeNativePathToken } from "@/features/native-intents/api";
+import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
+  MessageRecord,
+  ModelType,
+  ProjectRecord,
+  ThreadRecord,
+} from "../types";
+import type {
+  ApiMonitorEntry,
+  ApiMonitorResponse,
   AudioGenerationResponse,
   GgufVariantsResponse,
   InferenceStatusResponse,
@@ -16,22 +27,21 @@ import type {
   ValidateModelResponse,
 } from "../types/api";
 
-function parseErrorText(status: number, body: unknown): string {
-  if (
-    body &&
-    typeof body === "object" &&
-    "detail" in body &&
-    typeof body.detail === "string"
-  ) {
-    return body.detail;
+export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
+
+export function notifyChatHistoryUpdated(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
   }
-  if (
-    body &&
-    typeof body === "object" &&
-    "message" in body &&
-    typeof body.message === "string"
-  ) {
-    return body.message;
+}
+
+function parseErrorText(status: number, body: unknown): string {
+  if (body && typeof body === "object") {
+    const detail = (body as { detail?: unknown }).detail;
+    const formatted = formatFastApiDetail(detail);
+    if (formatted) return formatted;
+    const message = (body as { message?: unknown }).message;
+    if (typeof message === "string" && message) return message;
   }
   return `Request failed (${status})`;
 }
@@ -49,7 +59,9 @@ export async function listModels(): Promise<ListModelsResponse> {
   return parseJsonOrThrow<ListModelsResponse>(response);
 }
 
-export async function listLoras(outputsDir?: string): Promise<ListLorasResponse> {
+export async function listLoras(
+  outputsDir?: string,
+): Promise<ListLorasResponse> {
   const query = outputsDir
     ? `?${new URLSearchParams({ outputs_dir: outputsDir }).toString()}`
     : "";
@@ -62,13 +74,29 @@ export async function getInferenceStatus(): Promise<InferenceStatusResponse> {
   return parseJsonOrThrow<InferenceStatusResponse>(response);
 }
 
+export async function getApiMonitor(): Promise<ApiMonitorResponse> {
+  const response = await authFetch("/api/inference/monitor");
+  return parseJsonOrThrow<ApiMonitorResponse>(response);
+}
+
+export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
+  const response = await authFetch(
+    `/api/inference/monitor/${encodeURIComponent(id)}`,
+  );
+  return parseJsonOrThrow<ApiMonitorEntry>(response);
+}
+
 export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      ...payload,
+      native_path_lease: payload.nativePathLease ?? null,
+      nativePathLease: undefined,
+    }),
   });
   return parseJsonOrThrow<LoadModelResponse>(response);
 }
@@ -81,11 +109,55 @@ export async function validateModel(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model_path: payload.model_path,
+      native_path_lease: payload.nativePathLease ?? null,
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
+      // Send the intended load settings so validate's VRAM check matches the
+      // follow-up /load and doesn't unload for a load /load would then reject.
+      max_seq_length: payload.max_seq_length,
+      load_in_4bit: payload.load_in_4bit,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
+}
+
+/**
+ * Read a GGUF's native context length from its local header (no GPU load, no
+ * download). Returns null when the file isn't downloaded yet, the model isn't a
+ * GGUF, or it's gated. For a native (drag-drop / picked) file, pass
+ * `nativePathToken` so the backend reads the granted local path. Used by the
+ * deferred-load staging flow to fill the context slider before the single load.
+ */
+export async function fetchGgufContextLength(payload: {
+  model_path: string;
+  gguf_variant?: string | null;
+  hf_token?: string | null;
+  nativePathToken?: string | null;
+}): Promise<number | null> {
+  let nativePathLease: string | null = null;
+  if (payload.nativePathToken) {
+    try {
+      nativePathLease = (
+        await consumeNativePathToken(payload.nativePathToken, "validate-model")
+      ).nativePathLease;
+    } catch {
+      // Lease expired / revoked: degrade to no context (the load can re-mint).
+      return null;
+    }
+  }
+  const response = await authFetch("/api/inference/validate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model_path: payload.model_path,
+      gguf_variant: payload.gguf_variant ?? null,
+      hf_token: payload.hf_token ?? null,
+      native_path_lease: nativePathLease,
+      include_context_length: true,
+    }),
+  });
+  const res = await parseJsonOrThrow<ValidateModelResponse>(response);
+  return res.context_length ?? null;
 }
 
 export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
@@ -97,23 +169,60 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
   await parseJsonOrThrow<unknown>(response);
 }
 
+/**
+ * Allow or deny a tool call that is paused awaiting user confirmation
+ * (when the "Confirm tool calls" toggle is on). The call is identified by
+ * the backend ``approvalId`` echoed in the tool_start event; ``sessionId``
+ * is a scope check. Resolves to ``true`` only when the backend matched a
+ * pending call, so the caller can surface a retry on a stale/failed post.
+ */
+export async function resolveToolConfirmation(
+  sessionId: string,
+  approvalId: string,
+  decision: "allow" | "deny",
+): Promise<boolean> {
+  const response = await authFetch("/api/inference/tool-confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: sessionId,
+      approval_id: approvalId,
+      decision,
+    }),
+  });
+  const parsed = await parseJsonOrThrow<{ resolved?: boolean }>(response);
+  return parsed.resolved === true;
+}
+
 export interface CachedGgufRepo {
   repo_id: string;
   size_bytes: number;
   cache_path: string;
+  /** Epoch seconds of the newest downloaded quant; sorts Downloaded
+   * newest-first. Optional for older-backend compatibility. */
+  last_modified?: number;
+  /** True when the repo ships an mmproj adapter (image inputs). Optional for
+   * older-backend compatibility. */
+  has_vision?: boolean;
 }
 
 export async function getGgufDownloadProgress(
   repoId: string,
   variant: string,
   expectedBytes: number,
-): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
+): Promise<{
+  downloaded_bytes: number;
+  expected_bytes: number;
+  progress: number;
+}> {
   const params = new URLSearchParams({
     repo_id: repoId,
     variant,
     expected_bytes: String(expectedBytes),
   });
-  const response = await authFetch(`/api/models/gguf-download-progress?${params}`);
+  const response = await authFetch(
+    `/api/models/gguf-download-progress?${params}`,
+  );
   return parseJsonOrThrow(response);
 }
 
@@ -122,9 +231,8 @@ export interface DownloadProgressResponse {
   expected_bytes: number;
   progress: number;
   /**
-   * Resolved on-disk path of the snapshot dir (or cache repo root if no
-   * snapshot exists yet). Null when nothing has been written to the
-   * cache for this repo.
+   * On-disk path of the snapshot dir (or cache repo root if no snapshot yet).
+   * Null when nothing has been written to the cache for this repo.
    */
   cache_path: string | null;
 }
@@ -149,9 +257,8 @@ export type ModelLoadPhase = "mmap" | "ready" | null;
 
 export interface LoadProgressResponse {
   /**
-   * Load phase: ``"mmap"`` while the llama-server subprocess is paging
-   * weight shards into RAM, ``"ready"`` once it has reported healthy,
-   * or ``null`` when no load is in flight.
+   * Load phase: "mmap" while llama-server pages weight shards into RAM,
+   * "ready" once healthy, or null when no load is in flight.
    */
   phase: ModelLoadPhase;
   bytes_loaded: number;
@@ -160,10 +267,9 @@ export interface LoadProgressResponse {
 }
 
 /**
- * Fetch the active GGUF load's mmap/upload progress. Complements
- * ``getDownloadProgress`` / ``getGgufDownloadProgress`` for the window
- * between "download complete" and "chat ready", which for large MoE
- * models can be several minutes of otherwise-opaque spinning.
+ * Fetch the active GGUF load's mmap/upload progress. Complements the download
+ * progress endpoints for the "download complete" -> "chat ready" window, which
+ * for large MoE models can be several minutes of otherwise-opaque spinning.
  */
 export async function getLoadProgress(): Promise<LoadProgressResponse> {
   const response = await authFetch(`/api/inference/load-progress`);
@@ -176,6 +282,9 @@ export interface LocalModelInfo {
   path: string;
   source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
   model_id?: string | null;
+  // Backend-detected weights format ("gguf" when known), so the UI can
+  // classify scanned folders whose name lacks a -GGUF suffix.
+  model_format?: string | null;
   updated_at?: number | null;
 }
 
@@ -200,21 +309,50 @@ export async function listCachedGguf(): Promise<CachedGgufRepo[]> {
 export interface CachedModelRepo {
   repo_id: string;
   size_bytes: number;
+  /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
+   * newest-first. Optional for older-backend compatibility. */
+  last_modified?: number;
 }
 
-export async function listCachedModels(): Promise<CachedModelRepo[]> {
-  const response = await authFetch("/api/models/cached-models");
+export async function listCachedModels(
+  hfToken?: string | null,
+): Promise<CachedModelRepo[]> {
+  const response = await authFetch("/api/models/cached-models", {
+    headers: hubTokenHeader(hfToken),
+  });
   const data = await parseJsonOrThrow<{ cached: CachedModelRepo[] }>(response);
   return data.cached;
 }
 
-export async function deleteCachedModel(repoId: string, variant?: string): Promise<void> {
+export async function deleteCachedModel(
+  repoId: string,
+  variant?: string,
+): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) payload.variant = variant;
   const response = await authFetch("/api/models/delete-cached", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
+export async function deleteFineTunedModel(args: {
+  modelPath: string;
+  source: "training" | "exported";
+  exportType?: "lora" | "merged" | "gguf";
+  ggufVariant?: string;
+}): Promise<void> {
+  const response = await authFetch("/api/models/delete-finetuned", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model_path: args.modelPath,
+      source: args.source,
+      export_type: args.exportType ?? null,
+      gguf_variant: args.ggufVariant ?? null,
+    }),
   });
   await parseJsonOrThrow<unknown>(response);
 }
@@ -247,6 +385,358 @@ export async function removeScanFolder(id: number): Promise<void> {
   await parseJsonOrThrow<unknown>(response);
 }
 
+export async function listChatThreads(
+  args: {
+    modelType?: ModelType;
+    pairId?: string;
+    projectId?: string | null;
+    includeArchived?: boolean;
+  } = {},
+): Promise<ThreadRecord[]> {
+  const params = new URLSearchParams();
+  if (args.modelType) params.set("model_type", args.modelType);
+  if (args.pairId) params.set("pair_id", args.pairId);
+  if (args.projectId) params.set("project_id", args.projectId);
+  if (args.includeArchived !== undefined) {
+    params.set("include_archived", String(args.includeArchived));
+  }
+  const qs = params.toString();
+  const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
+  const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
+  // Always hand back an array: an older or misbehaving backend may omit the
+  // field or send a non-array, which would crash list consumers.
+  return Array.isArray(data.threads) ? data.threads : [];
+}
+
+export async function getChatThread(
+  threadId: string,
+): Promise<ThreadRecord | null> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}`,
+  );
+  if (response.status === 404) return null;
+  return parseJsonOrThrow<ThreadRecord>(response);
+}
+
+export async function saveChatThread(
+  thread: ThreadRecord,
+): Promise<ThreadRecord> {
+  const response = await authFetch("/api/chat/threads", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(thread),
+  });
+  const savedThread = await parseJsonOrThrow<ThreadRecord>(response);
+  notifyChatHistoryUpdated();
+  return savedThread;
+}
+
+export async function updateChatThread(
+  threadId: string,
+  patch: Partial<ThreadRecord>,
+): Promise<ThreadRecord> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
+  const thread = await parseJsonOrThrow<ThreadRecord>(response);
+  notifyChatHistoryUpdated();
+  return thread;
+}
+
+export interface ForkChatThreadResult {
+  thread: ThreadRecord;
+  messages: MessageRecord[];
+  containerSnapshotWarning: string | null;
+}
+
+export async function forkChatThread(
+  threadId: string,
+  args: { messageId: string; newThreadId: string; createdAt: number },
+): Promise<ForkChatThreadResult> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/fork`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    },
+  );
+  const data = await parseJsonOrThrow<{
+    thread: ThreadRecord;
+    messages: MessageRecord[];
+    containerSnapshotWarning: string | null;
+  }>(response);
+  notifyChatHistoryUpdated();
+  return data;
+}
+
+export async function getForkCount(
+  threadId: string,
+  messageId: string,
+): Promise<number> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/forks`,
+  );
+  if (response.status === 404) return 0;
+  const data = await parseJsonOrThrow<{ count: number }>(response);
+  return data.count;
+}
+
+export async function deleteChatThreads(threadIds: string[]): Promise<void> {
+  if (threadIds.length === 0) return;
+  const response = await authFetch("/api/chat/threads", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: threadIds }),
+  });
+  await parseJsonOrThrow<unknown>(response);
+  notifyChatHistoryUpdated();
+}
+
+export async function listChatProjects(
+  args: { includeArchived?: boolean } = {},
+): Promise<ProjectRecord[]> {
+  const params = new URLSearchParams();
+  if (args.includeArchived !== undefined) {
+    params.set("include_archived", String(args.includeArchived));
+  }
+  const qs = params.toString();
+  const response = await authFetch(`/api/chat/projects${qs ? `?${qs}` : ""}`);
+  const data = await parseJsonOrThrow<{ projects: ProjectRecord[] }>(response);
+  // Always hand back an array: an older or misbehaving backend may omit the
+  // field or send a non-array, which would crash list consumers.
+  return Array.isArray(data.projects) ? data.projects : [];
+}
+
+export async function getChatProject(
+  projectId: string,
+): Promise<ProjectRecord | null> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}`,
+  );
+  if (response.status === 404) return null;
+  return parseJsonOrThrow<ProjectRecord>(response);
+}
+
+export async function saveChatProject(
+  project: ProjectRecord,
+): Promise<ProjectRecord> {
+  const response = await authFetch("/api/chat/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(project),
+  });
+  const saved = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatHistoryUpdated();
+  return saved;
+}
+
+export async function updateChatProject(
+  projectId: string,
+  patch: Partial<ProjectRecord>,
+): Promise<ProjectRecord> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
+  const project = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatHistoryUpdated();
+  return project;
+}
+
+export async function deleteChatProject(
+  projectId: string,
+  args: { deleteFiles?: boolean } = {},
+): Promise<void> {
+  const params = new URLSearchParams();
+  if (args.deleteFiles) params.set("delete_files", "true");
+  const qs = params.toString();
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,
+    { method: "DELETE" },
+  );
+  await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatHistoryUpdated();
+}
+
+export async function listChatMessages(
+  threadId: string,
+): Promise<MessageRecord[]> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
+  );
+  if (response.status === 404) return [];
+  const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
+  return data.messages;
+}
+
+/**
+ * Fetch messages for many threads in one HTTP call. Falls back to
+ * per-thread listChatMessages on 404/405 (older servers without the
+ * batch route).
+ */
+export async function batchListChatMessages(
+  threadIds: string[],
+): Promise<Map<string, MessageRecord[]>> {
+  const out = new Map<string, MessageRecord[]>();
+  if (threadIds.length === 0) return out;
+  const response = await authFetch("/api/chat/messages:batch", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ threadIds }),
+  });
+  if (response.status === 404 || response.status === 405) {
+    // Older server: fall back to per-thread fetches.
+    const per = await Promise.all(
+      threadIds.map(async (id) => [id, await listChatMessages(id)] as const),
+    );
+    for (const [id, msgs] of per) out.set(id, msgs);
+    return out;
+  }
+  const data = await parseJsonOrThrow<{
+    messagesByThreadId: Record<string, MessageRecord[]>;
+  }>(response);
+  for (const id of threadIds) {
+    out.set(id, data.messagesByThreadId[id] ?? []);
+  }
+  return out;
+}
+
+export async function getChatMessage(
+  threadId: string,
+  messageId: string,
+): Promise<MessageRecord | null> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}`,
+  );
+  if (response.status === 404) return null;
+  return parseJsonOrThrow<MessageRecord>(response);
+}
+
+export async function saveChatMessage(
+  message: MessageRecord,
+): Promise<MessageRecord> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(message),
+    },
+  );
+  const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
+  notifyChatHistoryUpdated();
+  return savedMessage;
+}
+
+export async function syncChatMessages(
+  threadId: string,
+  messages: MessageRecord[],
+  options: { pruneMissing?: boolean } = {},
+): Promise<MessageRecord[]> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages,
+        pruneMissing: options.pruneMissing ?? false,
+      }),
+    },
+  );
+  const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
+  notifyChatHistoryUpdated();
+  return data.messages;
+}
+
+export async function countBackendChats(): Promise<number> {
+  const response = await authFetch("/api/chat/count");
+  const data = await parseJsonOrThrow<{ count: number }>(response);
+  return data.count;
+}
+
+export async function clearBackendChats(
+  options: { notify?: boolean } = {},
+): Promise<void> {
+  const response = await authFetch("/api/chat", { method: "DELETE" });
+  await parseJsonOrThrow<unknown>(response);
+  if (options.notify !== false) {
+    notifyChatHistoryUpdated();
+  }
+}
+
+export async function buildBackendChatExport(): Promise<{
+  exportedAt: string;
+  version: number;
+  threadCount: number;
+  projects?: ProjectRecord[];
+  threads: ThreadRecord[];
+  messages: MessageRecord[];
+}> {
+  const response = await authFetch("/api/chat/export");
+  return parseJsonOrThrow(response);
+}
+
+// Legacy-Dexie import ledger: server-side source of truth replacing the
+// boolean localStorage sentinel, so a studio.db wipe keeps the import
+// recoverable.
+export async function listChatImportLedger(): Promise<Set<string>> {
+  const response = await authFetch("/api/chat/import-ledger");
+  // Backends without this endpoint behave like an empty ledger -- caller
+  // re-imports every legacy thread. syncChatMessages UPSERTs prevent
+  // duplicates, so this fallback is safe.
+  if (response.status === 404 || response.status === 405) return new Set();
+  const data = await parseJsonOrThrow<{ threadIds: string[] }>(response);
+  return new Set(data.threadIds);
+}
+
+export interface RecordChatImportLedgerResult {
+  accepted: number;
+  inserted: number;
+  // false when the backend predates /api/chat/import-ledger (404/405/501) so
+  // the caller avoids poisoning the localStorage perf hint; next launch
+  // retries the (idempotent) import.
+  supported: boolean;
+}
+
+export async function recordChatImportLedger(
+  threadIds: string[],
+): Promise<RecordChatImportLedgerResult> {
+  if (threadIds.length === 0) {
+    return { accepted: 0, inserted: 0, supported: true };
+  }
+  const response = await authFetch("/api/chat/import-ledger", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ threadIds }),
+  });
+  if (
+    response.status === 404 ||
+    response.status === 405 ||
+    response.status === 501
+  ) {
+    return { accepted: 0, inserted: 0, supported: false };
+  }
+  const data = await parseJsonOrThrow<{ accepted: number; inserted: number }>(
+    response,
+  );
+  return {
+    accepted: data.accepted,
+    inserted: data.inserted,
+    supported: true,
+  };
+}
+
 export interface BrowseEntry {
   name: string;
   has_models: boolean;
@@ -277,11 +767,10 @@ export async function browseFolders(
   if (path !== undefined && path !== null) params.set("path", path);
   if (showHidden) params.set("show_hidden", "true");
   const qs = params.toString();
-  // Forward the AbortSignal through authFetch -> fetch so that a
-  // navigation cancelled in the FolderBrowser (rapid breadcrumb / row /
-  // hidden-toggle clicks) actually cancels the in-flight HTTP request
-  // server-side, instead of merely dropping the response client-side
-  // while the backend keeps walking large directory trees.
+  // Forward the AbortSignal through authFetch -> fetch so a cancelled
+  // FolderBrowser navigation actually cancels the in-flight request
+  // server-side, instead of just dropping the response while the backend
+  // keeps walking large directory trees.
   const response = await authFetch(
     `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
     signal ? { signal } : undefined,
@@ -294,9 +783,38 @@ export async function listGgufVariants(
   hfToken?: string,
 ): Promise<GgufVariantsResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  if (hfToken) params.set("hf_token", hfToken);
-  const response = await authFetch(`/api/models/gguf-variants?${params}`);
+  const response = await authFetch(`/api/models/gguf-variants?${params}`, {
+    headers: hubTokenHeader(hfToken),
+  });
   return parseJsonOrThrow<GgufVariantsResponse>(response);
+}
+
+export interface KvCacheEstimate {
+  kv_bytes: number | null;
+  weights_bytes: number | null;
+  native_context: number | null;
+}
+
+/** Estimate KV cache + weight bytes for a downloaded quant at a context length,
+ * for the load dialog's memory warning. */
+export async function estimateKvCache(
+  repoId: string,
+  quant: string,
+  nCtx: number,
+  cacheTypeKv?: string | null,
+  signal?: AbortSignal,
+): Promise<KvCacheEstimate> {
+  const params = new URLSearchParams({
+    repo_id: repoId,
+    quant,
+    n_ctx: String(nCtx),
+  });
+  if (cacheTypeKv) params.set("cache_type_kv", cacheTypeKv);
+  const response = await authFetch(
+    `/api/models/kv-cache-estimate?${params}`,
+    signal ? { signal } : undefined,
+  );
+  return parseJsonOrThrow<KvCacheEstimate>(response);
 }
 
 function parseSseEvent(rawEvent: string): string[] {
@@ -332,52 +850,96 @@ export async function* streamChatCompletions(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let completed = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        completed = true;
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+
+      let separatorIndex = buffer.search(/\r?\n\r?\n/);
+      while (separatorIndex >= 0) {
+        const rawEvent = buffer.slice(0, separatorIndex);
+        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
+        buffer = buffer.slice(separatorIndex + separatorLength);
+
+        const dataLines = parseSseEvent(rawEvent);
+        if (dataLines.length === 0) {
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+
+        const dataText = dataLines.join("\n");
+        if (dataText === "[DONE]") {
+          completed = true;
+          return;
+        }
+
+        const parsed = JSON.parse(dataText) as
+          | OpenAIChatChunk
+          | { type?: string; content?: string; error?: { message?: string } };
+        if ("error" in parsed && parsed.error) {
+          throw new Error(parsed.error.message || "Stream error");
+        }
+        // Tool status events are custom SSE payloads, not OpenAI chunks
+        if ("type" in parsed && parsed.type === "tool_status") {
+          yield {
+            _toolStatus: parsed.content ?? "",
+          } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+        // Diffusion frame: a per-step canvas snapshot. Custom SSE payload (not an OpenAI chunk) with
+        // no assistant text, surfaced as a transient marker for the in-place renderer, never the transcript.
+        if ("type" in parsed && parsed.type === "diffusion_frame") {
+          yield {
+            _diffusionFrame: parsed,
+          } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+        // Tool start/end events carry full input/output for the tool outputs panel
+        if (
+          "type" in parsed &&
+          (parsed.type === "tool_start" || parsed.type === "tool_end")
+        ) {
+          yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+        // Relay server-side reasoning duration.
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          "type" in parsed &&
+          parsed.type === "reasoning_summary"
+        ) {
+          yield {
+            _reasoningDurationMs: (parsed as { duration_ms?: number }).duration_ms,
+          } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+        yield parsed as OpenAIChatChunk;
+        separatorIndex = buffer.search(/\r?\n\r?\n/);
+      }
     }
-
-    buffer += decoder.decode(value, { stream: true });
-
-    let separatorIndex = buffer.search(/\r?\n\r?\n/);
-    while (separatorIndex >= 0) {
-      const rawEvent = buffer.slice(0, separatorIndex);
-      const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-      buffer = buffer.slice(separatorIndex + separatorLength);
-
-      const dataLines = parseSseEvent(rawEvent);
-      if (dataLines.length === 0) {
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
-        continue;
+  } finally {
+    // Only abort on an early/abnormal exit. After a natural [DONE] (or server
+    // EOF) the request is logically complete and the backend finalizes its
+    // api-monitor entry right after the sentinel; cancelling here can be seen as
+    // a disconnect and mark a successful request as cancelled.
+    if (!completed) {
+      try {
+        await reader.cancel();
+      } catch {
+        // already closed
       }
-
-      const dataText = dataLines.join("\n");
-      if (dataText === "[DONE]") {
-        return;
-      }
-
-      const parsed = JSON.parse(dataText) as
-        | OpenAIChatChunk
-        | { type?: string; content?: string; error?: { message?: string } };
-      if ("error" in parsed && parsed.error) {
-        throw new Error(parsed.error.message || "Stream error");
-      }
-      // Tool status events are custom SSE payloads, not OpenAI chunks
-      if ("type" in parsed && parsed.type === "tool_status") {
-        yield { _toolStatus: parsed.content ?? "" } as unknown as OpenAIChatChunk;
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
-        continue;
-      }
-      // Tool start/end events carry full input/output for the tool outputs panel
-      if ("type" in parsed && (parsed.type === "tool_start" || parsed.type === "tool_end")) {
-        yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
-        continue;
-      }
-      yield parsed as OpenAIChatChunk;
-      separatorIndex = buffer.search(/\r?\n\r?\n/);
     }
   }
 }

@@ -1,5 +1,3 @@
-## Import required libraries
-
 from unsloth import FastVisionModel, is_bf16_supported
 from unsloth.trainer import UnslothVisionDataCollator
 
@@ -18,14 +16,10 @@ sys.path.insert(0, str(REPO_ROOT))
 from tests.utils.cleanup_utils import safe_remove_directory
 
 
-## Dataset Preparation"""
-
 print("\n📊 Loading and preparing dataset...")
 dataset = load_dataset("lbourdois/OCR-liboaccn-OPUS-MIT-5M-clean", "en", split = "train")
-# To select the first 2000 examples
 train_dataset = dataset.select(range(2000))
 
-# To select the next 200 examples for evaluation
 eval_dataset = dataset.select(range(2000, 2200))
 
 print(f"✅ Dataset loaded successfully!")
@@ -33,7 +27,7 @@ print(f"   📈 Training samples: {len(train_dataset)}")
 print(f"   📊 Evaluation samples: {len(eval_dataset)}")
 
 
-# Convert dataset to OAI messages
+# Convert dataset to OAI messages.
 def format_data(sample):
     return {
         "messages": [
@@ -64,8 +58,7 @@ def format_data(sample):
 
 print("\n🔄 Formatting dataset for vision training...")
 system_message = "You are an expert french ocr system."
-# Convert dataset to OAI messages
-# need to use list comprehension to keep Pil.Image type, .mape convert image to bytes
+# List comprehension (not .map) keeps PIL.Image type; .map would convert images to bytes.
 train_dataset = [format_data(sample) for sample in train_dataset]
 eval_dataset = [format_data(sample) for sample in eval_dataset]
 print("✅ Dataset formatting completed!")
@@ -76,11 +69,9 @@ print("✅ Dataset formatting completed!")
 print("\n" + "=" * 80)
 print("=== MODEL LOADING AND SETUP ===".center(80))
 print("=" * 80 + "\n")
-# Load Base Model
 print("🤖 Loading base vision model...")
 try:
     model, tokenizer = FastVisionModel.from_pretrained(
-        # model_name = "unsloth/Qwen2-VL-7B-Instruct",
         model_name = "unsloth/Qwen2-VL-7B-Instruct",
         max_seq_length = 2048,  # Choose any for long context!
         load_in_4bit = True,  # 4 bit quantization to reduce memory
@@ -92,14 +83,13 @@ except Exception as e:
     raise
 
 print("\n🔧 Setting up LoRA configuration...")
-## Lora Finetuning
 try:
     model = FastVisionModel.get_peft_model(
         model,
         finetune_vision_layers = True,  # Turn off for just text!
         finetune_language_layers = True,  # Should leave on!
         finetune_attention_modules = True,  # Attention good for GRPO
-        finetune_mlp_modules = True,  # SHould leave on always!
+        finetune_mlp_modules = True,  # Should leave on always!
         r = 16,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
         lora_alpha = 32,
         lora_dropout = 0,  # Supports any, but = 0 is optimized
@@ -138,9 +128,7 @@ try:
             per_device_train_batch_size = 2,
             gradient_accumulation_steps = 4,
             gradient_checkpointing = True,
-            gradient_checkpointing_kwargs = {
-                "use_reentrant": False
-            },  # use reentrant checkpointing
+            gradient_checkpointing_kwargs = {"use_reentrant": False},
             max_grad_norm = 0.3,  # max gradient norm based on QLoRA paper
             warmup_ratio = 0.03,
             # num_train_epochs = 2, # Set this instead of max_steps for full training runs
@@ -177,7 +165,6 @@ except Exception as e:
 print("\n" + "=" * 80)
 print("=== STARTING TRAINING ===".center(80))
 print("=" * 80 + "\n")
-# run training
 try:
     print("🚀 Starting training process...")
     trainer_stats = trainer.train()
@@ -215,7 +202,7 @@ success = {
     "safetensors_check": False,
     "download": False,
 }
-# Stage 1: Upload model to Hub
+# Stage 1: upload model to Hub
 try:
     print("\n" + "=" * 80)
     print("=== UPLOADING MODEL TO HUB ===".center(80))
@@ -228,7 +215,7 @@ except Exception as e:
     print(f"❌ Failed to upload model: {e}")
     raise Exception("Model upload failed.")
 
-# Stage 2: Verify safetensors.index.json exists
+# Stage 2: verify safetensors.index.json exists
 try:
     print("\n" + "=" * 80)
     print("=== VERIFYING REPO CONTENTS ===".center(80))
@@ -247,7 +234,7 @@ except Exception as e:
     print(f"❌ Verification failed: {e}")
     raise Exception("Repo verification failed.")
 
-# test downloading model even if cached
+# Stage 3: test download even if cached
 safe_remove_directory(f"./{hf_username}")
 
 try:
@@ -255,19 +242,16 @@ try:
     print("=== TESTING MODEL DOWNLOAD ===".center(80))
     print("=" * 80 + "\n")
     print("📥 Testing model download...")
-    # Force download even if cached
     test_model, test_tokenizer = FastVisionModel.from_pretrained(repo_name)
     success["download"] = True
     print("✅ Model downloaded successfully!")
 
-    # Clean up test model
     del test_model, test_tokenizer
     torch.cuda.empty_cache()
 except Exception as e:
     print(f"❌ Download failed: {e}")
     raise Exception("Model download failed.")
 
-# Final report
 print("\n" + "=" * 80)
 print("=== VALIDATION REPORT ===".center(80))
 print("=" * 80 + "\n")
@@ -283,7 +267,6 @@ else:
     raise Exception("Validation failed for one or more stages.")
 
 
-# Final cleanup
 print("\n🧹 Cleaning up temporary files...")
 safe_remove_directory("./checkpoints")
 safe_remove_directory("./unsloth_compiled_cache")
