@@ -320,7 +320,14 @@ def test_download_mtp_prefers_root_over_new_scheme_copies():
 
     captured = {}
 
-    def _fake_companion(*, hf_repo, hf_token, pick, label, cancel_event = None):
+    def _fake_companion(
+        *,
+        hf_repo,
+        hf_token,
+        pick,
+        label,
+        cancel_event = None,
+    ):
         captured["pick"] = pick
         return None
 

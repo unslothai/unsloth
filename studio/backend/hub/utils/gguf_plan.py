@@ -112,9 +112,7 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
         (
             s
             for s in siblings
-            if (name := _gguf_rfilename(s))
-            and "/" not in name
-            and name.lower().startswith("mtp-")
+            if (name := _gguf_rfilename(s)) and "/" not in name and name.lower().startswith("mtp-")
         ),
         key = lambda s: getattr(s, "rfilename"),
     )

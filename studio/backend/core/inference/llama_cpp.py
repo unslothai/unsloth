@@ -4680,7 +4680,6 @@ class LlamaCppBackend:
         so an older on-disk file is not re-fetched. None if none is cached."""
         try:
             from utils.models.model_config import _iter_hf_cache_snapshots
-
             for snap in _iter_hf_cache_snapshots(hf_repo):
                 drafters = [
                     f
