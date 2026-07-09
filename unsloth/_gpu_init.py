@@ -26,6 +26,7 @@ already_imported = [mod for mod in critical_modules if mod in sys.modules]
 # Fix some issues before importing other packages
 from .import_fixes import (
     fix_message_factory_issue,
+    fix_torch_check_is_size,
     check_fbgemm_gpu_version,
     disable_broken_causal_conv1d,
     disable_broken_vllm,
@@ -72,6 +73,7 @@ fix_bitsandbytes_rocm_arch_detection()
 disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
+fix_torch_check_is_size()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 fix_diffusers_warnings()
@@ -81,6 +83,7 @@ del fix_bitsandbytes_rocm_arch_detection
 del disable_broken_causal_conv1d
 del disable_broken_vllm
 del fix_message_factory_issue
+del fix_torch_check_is_size
 del check_fbgemm_gpu_version
 del torchvision_compatibility_check
 del fix_diffusers_warnings
