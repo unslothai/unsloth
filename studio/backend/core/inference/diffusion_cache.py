@@ -125,7 +125,9 @@ def apply_step_cache(
     # reuse the CacheMixin FluxTransformer2DModel yet their __call__ opens no cache_context,
     # so engaging FBCache there would crash every default generation -- run uncached instead.
     if not _pipeline_opens_cache_context(pipe):
-        _warn(logger, mode, RuntimeError("pipeline __call__ opens no cache_context; running uncached"))
+        _warn(
+            logger, mode, RuntimeError("pipeline __call__ opens no cache_context; running uncached")
+        )
         return None
     try:
         try:

@@ -189,6 +189,7 @@ def resolve_dense_quant_candidate(
     prequant_available = False
     try:
         from .diffusion_prequant import local_prequant_path_ready, resolve_prequant_source
+
         src = resolve_prequant_source(fam, scheme, path_override = prequant_path)
         # A request-supplied local path override is only usable if the loader will accept it
         # (allowlisted AND present); otherwise load_prequantized_transformer refuses it and
