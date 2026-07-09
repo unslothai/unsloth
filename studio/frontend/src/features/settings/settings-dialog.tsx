@@ -13,7 +13,7 @@ import {
   Cancel01Icon,
   CloudIcon,
   CpuIcon,
-  Database01Icon,
+  DatabaseSettingIcon,
   Globe02Icon,
   HelpCircleIcon,
   Message01Icon,
@@ -79,7 +79,7 @@ const TABS: TabDef[] = [
   {
     id: "data",
     labelKey: "settings.tabs.data",
-    icon: Database01Icon,
+    icon: DatabaseSettingIcon,
     badgeKey: "common.new",
   },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },

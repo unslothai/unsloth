@@ -341,13 +341,27 @@ export function UploadedFilesDialog({
                 key={row.key}
                 className="group flex items-center gap-4 border-b border-border/40 px-1 py-2.5 text-sm last:border-0"
               >
-                <span className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden">
-                  <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/50 bg-muted/40">
+                {/* Clicking the file jumps to its chat; files without one
+                open directly. The theme scales rounded-md up to a near
+                circle at this size, so the thumb pins a small radius. */}
+                <button
+                  type="button"
+                  onClick={() =>
+                    row.threadId
+                      ? goToThread(row.threadId)
+                      : void handleOpen(row)
+                  }
+                  title={
+                    row.threadId ? `Go to ${row.location}` : `Open ${row.name}`
+                  }
+                  className="group/name flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden text-left"
+                >
+                  <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-[7px] border border-border/50 bg-muted/40">
                     {row.thumb}
                   </span>
                   {/* Floor keeps the name visible when the chip and fixed
                   columns squeeze the cell at narrow widths. */}
-                  <span className="min-w-[3.5rem] truncate" title={row.name}>
+                  <span className="min-w-[3.5rem] truncate underline-offset-2 group-hover/name:underline">
                     {row.name}
                   </span>
                   {row.typeLabel ? (
@@ -360,7 +374,7 @@ export function UploadedFilesDialog({
                       failed
                     </span>
                   ) : null}
-                </span>
+                </button>
                 {row.threadId ? (
                   <button
                     type="button"
