@@ -88,7 +88,10 @@ def _can_suppress_reused_server_bootstrap(port: int) -> bool:
 
 
 def _wait_for_public_url(
-    url: str, timeout: float = 45.0, *, iframe_url: "str | None" = None
+    url: str,
+    timeout: float = 45.0,
+    *,
+    iframe_url: "str | None" = None,
 ) -> bool:
     """Wait for a public tunnel URL before embedding it.
 
@@ -130,9 +133,7 @@ def _wait_for_public_url(
                     iframe_url,
                     headers = {"User-Agent": "unsloth-studio-notebook/1"},
                 )
-                with urllib.request.urlopen(
-                    req, timeout = min(5.0, max(0.1, remaining))
-                ) as resp:
+                with urllib.request.urlopen(req, timeout = min(5.0, max(0.1, remaining))) as resp:
                     status = getattr(resp, "status", 200)
                     x_frame_options = resp.headers.get("X-Frame-Options", "").strip()
                     csp = resp.headers.get("Content-Security-Policy", "")
