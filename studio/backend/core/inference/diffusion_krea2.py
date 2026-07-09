@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Krea 2 pipeline loader: assembles ``Krea2Pipeline`` from per-component loads.
 
 Why not ``Krea2Pipeline.from_pretrained``: the ``krea/Krea-2-Turbo`` repo was exported
