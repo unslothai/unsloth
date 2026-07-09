@@ -8079,7 +8079,13 @@ class LlamaCppBackend:
 
         slots_url = f"http://127.0.0.1:{self._port}/slots"
         try:
-            resp = httpx.get(slots_url, timeout = 2.0)
+            # trust_env=False mirrors the health check / _query_server_n_ctx so
+            # an ambient HTTP(S)_PROXY can't hijack the loopback probe; the auth
+            # header matches _probe_mtp_decode so --api-key direct-stream launches
+            # don't 401 (/slots and /props are not public llama.cpp endpoints).
+            resp = httpx.get(
+                slots_url, timeout = 2.0, headers = self._auth_headers, trust_env = False
+            )
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, list) and data:
@@ -8093,7 +8099,9 @@ class LlamaCppBackend:
 
         props_url = f"http://127.0.0.1:{self._port}/props"
         try:
-            resp = httpx.get(props_url, timeout = 2.0)
+            resp = httpx.get(
+                props_url, timeout = 2.0, headers = self._auth_headers, trust_env = False
+            )
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, dict):

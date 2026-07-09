@@ -91,6 +91,7 @@ def _backend(**kwargs):
     inst._launch_n_parallel = kwargs.get("launch_n_parallel")
     inst._launch_kv_unified = kwargs.get("launch_kv_unified", False)
     inst._requested_n_ctx = kwargs.get("requested_n_ctx", 0)
+    inst._api_key = kwargs.get("api_key")
     return inst
 
 
@@ -226,14 +227,14 @@ class TestProbeRuntimeContextLength:
 
         monkeypatch.setattr(
             "core.inference.llama_cpp.httpx.get",
-            lambda url, timeout: _Resp(),
+            lambda url, timeout, **kwargs: _Resp(),
         )
         assert inst._probe_runtime_context_length() == 2048
 
     def test_falls_back_to_props(self, monkeypatch):
         inst = _backend()
 
-        def fake_get(url, timeout):
+        def fake_get(url, timeout, **kwargs):
             if url.endswith("/slots"):
                 raise RuntimeError("slots unavailable")
 
@@ -259,14 +260,14 @@ class TestProbeRuntimeContextLength:
 
         monkeypatch.setattr(
             "core.inference.llama_cpp.httpx.get",
-            lambda url, timeout: _Resp(),
+            lambda url, timeout, **kwargs: _Resp(),
         )
         assert inst._probe_runtime_context_length() is None
 
     def test_falls_back_to_stdout(self, monkeypatch):
         inst = _backend(stdout_lines = ["new slot, n_ctx = 1024"])
 
-        def fake_get(url, timeout):
+        def fake_get(url, timeout, **kwargs):
             raise RuntimeError("offline")
 
         monkeypatch.setattr("core.inference.llama_cpp.httpx.get", fake_get)
@@ -275,6 +276,47 @@ class TestProbeRuntimeContextLength:
     def test_returns_none_without_port(self):
         inst = _backend(port = None)
         assert inst._probe_runtime_context_length() is None
+
+    def test_probe_authenticates_and_bypasses_proxy(self, monkeypatch):
+        # Direct-stream launches start llama-server with --api-key, and /slots
+        # and /props are not public llama.cpp endpoints, so the probe must send
+        # the Bearer header or it 401s. It must also set trust_env=False so an
+        # ambient HTTP(S)_PROXY can't hijack the 127.0.0.1 probe (like the health
+        # check and _query_server_n_ctx do).
+        inst = _backend(api_key = "secret-key")
+        captured = []
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return [{"n_ctx": 2048}]
+
+        def fake_get(url, timeout, **kwargs):
+            captured.append(kwargs)
+            return _Resp()
+
+        monkeypatch.setattr("core.inference.llama_cpp.httpx.get", fake_get)
+        assert inst._probe_runtime_context_length() == 2048
+        assert captured, "probe did not call httpx.get"
+        assert captured[0].get("trust_env") is False
+        assert captured[0].get("headers") == {"Authorization": "Bearer secret-key"}
+
+    def test_probe_sends_no_auth_header_when_unauthenticated(self, monkeypatch):
+        # Proxied (non direct-stream) launches have no api key; headers stays None
+        # so httpx sends the request with no Authorization header, and trust_env
+        # is still disabled for the loopback probe.
+        inst = _backend()
+        captured = []
+
+        def fake_get(url, timeout, **kwargs):
+            captured.append(kwargs)
+            raise RuntimeError("slots unavailable")
+
+        monkeypatch.setattr("core.inference.llama_cpp.httpx.get", fake_get)
+        assert inst._probe_runtime_context_length() is None
+        assert captured[0].get("headers") is None
+        assert captured[0].get("trust_env") is False
 
 
 class TestLaunchContextLength:
