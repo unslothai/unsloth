@@ -1658,12 +1658,15 @@ def _extended_rope_scaling(config, factor):
     None keeps the native scaling. The linear dict carries rope_theta so transformers v5
     (which stores it under rope_parameters) keeps the real base instead of defaulting to 10000."""
     existing = _rope_scaling_as_dict(
-        getattr(config, "rope_scaling", None)
-        or getattr(config, "rope_parameters", None) or {}
+        getattr(config, "rope_scaling", None) or getattr(config, "rope_parameters", None) or {}
     )
     existing_type = existing.get("rope_type") or existing.get("type")
     if existing_type in (None, "default", "linear"):
-        return {"type": "linear", "factor": factor, "rope_theta": _get_rope_theta(config)}, existing_type
+        return {
+            "type": "linear",
+            "factor": factor,
+            "rope_theta": _get_rope_theta(config),
+        }, existing_type
     return None, existing_type
 
 
