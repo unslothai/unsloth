@@ -92,7 +92,6 @@ class _Req:
 def test_client_ip_uses_socket_peer_by_default(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP", raising = False)
-    monkeypatch.delenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", raising = False)
     # Forwarded header is ignored unless the operator opts in.
     req = _Req("203.0.113.9", {"x-forwarded-for": "198.51.100.7"})
     assert client_ip(req) == "203.0.113.9"
@@ -107,31 +106,21 @@ def test_client_ip_uses_rightmost_forwarded_when_trusted(monkeypatch):
     assert client_ip(req) == "198.51.100.7"
 
 
-def test_client_ip_uses_cf_connecting_ip_on_managed_frame_request(monkeypatch):
-    # Managed notebook Cloudflare iframe traffic carries the frame cookie; key by the real visitor.
+def test_client_ip_uses_cf_connecting_ip_for_managed_tunnel(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP", raising = False)
-    monkeypatch.setenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", "frame-token")
-    req = _Req(
-        "127.0.0.1",
-        {
-            "cf-connecting-ip": "198.51.100.7",
-            "cookie": "__unsloth_frame=frame-token",
-        },
-        trust_cloudflare_client_ip = True,
-    )
-    assert client_ip(req) == "198.51.100.7"
-
-
-def test_client_ip_ignores_cf_header_without_frame_cookie(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
-    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP", raising = False)
-    monkeypatch.setenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", "frame-token")
     req = _Req(
         "127.0.0.1",
         {"cf-connecting-ip": "198.51.100.7"},
         trust_cloudflare_client_ip = True,
     )
+    assert client_ip(req) == "198.51.100.7"
+
+
+def test_client_ip_ignores_cf_header_without_managed_tunnel(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP", raising = False)
+    req = _Req("127.0.0.1", {"cf-connecting-ip": "198.51.100.7"})
     assert client_ip(req) == "127.0.0.1"
 
 

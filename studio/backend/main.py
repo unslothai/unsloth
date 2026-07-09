@@ -619,60 +619,20 @@ _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
 
 from utils.notebook_env import (  # noqa: E402
     is_colab_environment as _is_colab_environment,
-    is_hosted_notebook_environment as _is_hosted_notebook_environment,
     is_kaggle_environment as _is_kaggle_environment,
-)
-from utils.notebook_frame_auth import (  # noqa: E402
-    expected_notebook_frame_token as _expected_notebook_frame_token,
-    notebook_frame_cookie_header as _notebook_frame_cookie_header,
-    notebook_frame_cookie_matches as _notebook_frame_cookie_matches,
-    notebook_frame_query_matches as _notebook_frame_query_matches,
 )
 
 _IS_COLAB = _is_colab_environment()
 _IS_KAGGLE = _is_kaggle_environment()
-_IS_HOSTED_NOTEBOOK = _is_hosted_notebook_environment()
-_HOSTED_FRAME_ANCESTORS = (
-    "https://colab.research.google.com "
-    "https://*.googleusercontent.com "
-    "https://*.prod.colab.dev "
-    "https://www.kaggle.com "
-    "https://*.kaggle.com "
-    "https://*.kaggleusercontent.com"
-)
 
 
-def _notebook_frame_request_state(scope) -> tuple[bool, str | None]:
-    if _IS_COLAB and not _IS_KAGGLE:
-        return True, None
-    if not _IS_HOSTED_NOTEBOOK:
-        return False, None
-    expected = _expected_notebook_frame_token()
-    if not expected:
-        return (not _IS_KAGGLE), None
-    if _notebook_frame_query_matches(scope, expected):
-        return True, _notebook_frame_cookie_header(expected)
-    if _notebook_frame_cookie_matches(scope.get("headers", ()), expected):
-        return True, _notebook_frame_cookie_header(expected)
-    return False, None
-
-
-def _notebook_frame_request_allowed(scope) -> bool:
-    return _notebook_frame_request_state(scope)[0]
-
-
-def _build_csp(script_nonce: "str | None" = None, *, allow_hosted_frame: bool = True) -> str:
+def _build_csp(script_nonce: "str | None" = None) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
-    if not allow_hosted_frame:
-        frame_ancestors = "'none'"
-    elif _IS_COLAB or _IS_KAGGLE:
-        frame_ancestors = "*"
-    elif _IS_HOSTED_NOTEBOOK and allow_hosted_frame:
-        frame_ancestors = _HOSTED_FRAME_ANCESTORS
-    else:
-        frame_ancestors = "'none'"
+    # Normal Colab embeds Studio through its private proxy. Kaggle uses a public
+    # link instead, so it keeps the standalone frame policy.
+    frame_ancestors = "*" if _IS_COLAB and not _IS_KAGGLE else "'none'"
 
     # In Colab, the kernel/output scaffolding injects scripts and fetch/WS from
     # *.prod.colab.dev and *.googleusercontent.com, so widen script-src and
@@ -719,7 +679,6 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
-        allow_hosted_frame, frame_cookie = _notebook_frame_request_state(scope)
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
@@ -734,16 +693,9 @@ class SecurityHeadersMiddleware:
                 nonce = headers.get(_CSP_SCRIPT_NONCE_HEADER)
                 if nonce is not None:
                     del headers[_CSP_SCRIPT_NONCE_HEADER]
-                headers.setdefault(
-                    "Content-Security-Policy",
-                    _build_csp(nonce, allow_hosted_frame = allow_hosted_frame),
-                )
-                if frame_cookie:
-                    headers.append("Set-Cookie", frame_cookie)
-                # Omit X-Frame-Options in hosted notebooks: CSP frame-ancestors
-                # handles it, and DENY would block inline Colab/Kaggle/tunnel
-                # iframes regardless of CSP.
-                if path != _ARTIFACT_PREVIEW_FRAME_PATH and not allow_hosted_frame:
+                headers.setdefault("Content-Security-Policy", _build_csp(nonce))
+                # Colab's proxy renders Studio in an iframe; Kaggle is link-only.
+                if not (_IS_COLAB and not _IS_KAGGLE) and path != _ARTIFACT_PREVIEW_FRAME_PATH:
                     headers.setdefault("X-Frame-Options", "DENY")
                 headers.setdefault("X-Content-Type-Options", "nosniff")
                 headers.setdefault("Referrer-Policy", "no-referrer")
@@ -1354,11 +1306,6 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     return html.encode("utf-8"), nonce
 
 
-def _bootstrap_injection_suppressed(app: FastAPI) -> bool:
-    """True when a public notebook tunnel must not receive bootstrap credentials."""
-    return bool(getattr(app.state, "suppress_bootstrap_injection_for_public_tunnel", False))
-
-
 _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
 
@@ -1454,7 +1401,9 @@ def setup_frontend(app: FastAPI, build_path: Path):
         # Bootstrap pw is same-origin only; Vary: Origin keeps caches honest.
         # Public notebook tunnels disable injection and show the password-file
         # path in notebook output instead.
-        if _is_same_origin_request(request) and not _bootstrap_injection_suppressed(app):
+        if _is_same_origin_request(request) and not getattr(
+            app.state, "suppress_bootstrap_injection_for_public_tunnel", False
+        ):
             content, nonce = _inject_bootstrap(content, app)
         else:
             nonce = None

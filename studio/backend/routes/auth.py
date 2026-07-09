@@ -35,7 +35,7 @@ from auth.authentication import (
     get_current_subject_allow_password_change,
     refresh_access_token,
 )
-from utils.notebook_frame_auth import cloudflare_client_ip_trusted
+from utils.client_ip import _trusted_cloudflare_client_ip
 
 router = APIRouter()
 
@@ -167,16 +167,6 @@ def _trust_forwarded_for() -> bool:
     )
 
 
-def _trust_cf_connecting_ip(request: Request | None) -> bool:
-    try:
-        return cloudflare_client_ip_trusted(
-            request.headers,
-            getattr(getattr(request, "app", None), "state", None),
-        )
-    except Exception:
-        return False
-
-
 def _normalize_forwarded_addr(value: str) -> str:
     """Parse an XFF / Forwarded `for=` value into a bare IP (port-stripped)."""
     value = (value or "").strip().strip('"')
@@ -209,13 +199,6 @@ def _forwarded_for_from_element(element: str) -> str:
     return ""
 
 
-def _is_loopback_addr(value: str | None) -> bool:
-    try:
-        return bool(value) and ipaddress.ip_address(value).is_loopback
-    except ValueError:
-        return False
-
-
 def _client_ip(request: Request | None) -> str:
     if request is None:
         return "_unknown"
@@ -233,27 +216,11 @@ def _client_ip(request: Request | None) -> str:
             normalized = _forwarded_for_from_element(fwd.split(",", 1)[0])
             if normalized:
                 return normalized
-    if _is_loopback_addr(client_host) and _trust_cf_connecting_ip(request):
-        cf = _normalize_forwarded_addr(request.headers.get("cf-connecting-ip", ""))
-        if cf:
-            return cf
-    return client_host
-
-
-def _bucket_key_for_ip(client_ip: str, username: str) -> tuple[str, str]:
-    return (client_ip, (username or "").casefold())
-
-
-def _unknown_user_key_for_ip(client_ip: str) -> tuple[str, str]:
-    return (client_ip, _UNKNOWN_LOGIN_USER)
+    return _trusted_cloudflare_client_ip(request, _normalize_forwarded_addr) or client_host
 
 
 def _bucket_key(request: Request | None, username: str) -> tuple[str, str]:
-    return _bucket_key_for_ip(_client_ip(request), username)
-
-
-def _unknown_user_key(request: Request | None) -> tuple[str, str]:
-    return _unknown_user_key_for_ip(_client_ip(request))
+    return (_client_ip(request), (username or "").casefold())
 
 
 def _prune_bucket(bucket: deque, now: float) -> None:
@@ -408,16 +375,15 @@ async def auth_status() -> AuthStatusResponse:
 @router.post("/login", response_model = Token)
 async def login(payload: AuthLoginRequest, request: Request) -> Token:
     """Login with username/password. Per-account + per-IP rate-limited."""
-    client_ip = _client_ip(request)
-    key = _bucket_key_for_ip(client_ip, payload.username)
-    unknown_key = _unknown_user_key_for_ip(client_ip)
+    key = _bucket_key(request, payload.username)
+    unknown_key = (key[0], _UNKNOWN_LOGIN_USER)
     blocked_for = max(_login_blocked(key), _login_blocked(unknown_key))
     if blocked_for > 0:
         raise HTTPException(
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
             # IP not interpolated into the body; behind a proxy/NAT it's
             # misleading or an info leak.
-            detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
+            detail = (f"Too many failed login attempts. Try again in {blocked_for} seconds."),
             headers = {"Retry-After": str(blocked_for)},
         )
 

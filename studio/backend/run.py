@@ -1061,11 +1061,9 @@ def _server_config_kwargs(
     host: str,
     port: int,
     *,
-    is_hosted_notebook: bool,
     is_colab: bool = False,
     is_kaggle: bool = False,
 ) -> dict:
-    # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
     config_kwargs = dict(
         host = host,
         port = port,
@@ -1073,14 +1071,10 @@ def _server_config_kwargs(
         access_log = False,
         server_header = False,
     )
-    if is_colab and not is_kaggle:
-        config_kwargs["proxy_headers"] = True
-        config_kwargs["forwarded_allow_ips"] = "*"
-    # Other hosted notebooks keep app-level client-IP trust authoritative.
-    # Uvicorn's proxy middleware rewrites scope["client"] before routes.auth can
-    # apply managed CF-Connecting-IP handling.
-    elif is_hosted_notebook:
+    if is_kaggle:
         config_kwargs["proxy_headers"] = False
+    elif is_colab:
+        config_kwargs.update(proxy_headers = True, forwarded_allow_ips = "*")
     return config_kwargs
 
 
@@ -1185,7 +1179,7 @@ def run_server(
 
     import_started = time.perf_counter()
 
-    from main import app, setup_frontend, _IS_COLAB, _IS_HOSTED_NOTEBOOK, _IS_KAGGLE
+    from main import app, setup_frontend, _IS_COLAB, _IS_KAGGLE
 
     logger.info(
         "Imported FastAPI app in %.1fms",
@@ -1218,7 +1212,7 @@ def run_server(
             print("=" * 50)
             if blocker:
                 pid, name = blocker
-                print(f"Port {original_port} is already in use by " f"{name} (PID {pid}).")
+                print(f"Port {original_port} is already in use by {name} (PID {pid}).")
             else:
                 print(f"Port {original_port} is already in use.")
             print(f"Unsloth Studio will use port {port} instead.")
@@ -1293,7 +1287,6 @@ def run_server(
     config_kwargs = _server_config_kwargs(
         host,
         port,
-        is_hosted_notebook = _IS_HOSTED_NOTEBOOK,
         is_colab = _IS_COLAB,
         is_kaggle = _IS_KAGGLE,
     )
@@ -1384,7 +1377,6 @@ def run_server(
     _cloudflare_url = None
     _cloudflare_flag = cloudflare
     app.state.cloudflare_url = None
-    app.state.cloudflare_client_ip_requires_frame_cookie = True
     _cloudflare_enabled = _cloudflare_tunnel_should_start(
         cloudflare = cloudflare,
         host = host,
@@ -1401,7 +1393,6 @@ def run_server(
             _cloudflare_url = start_studio_tunnel(port)
             app.state.cloudflare_url = _cloudflare_url
             app.state.trust_cloudflare_client_ip = bool(_cloudflare_url)
-            app.state.cloudflare_client_ip_requires_frame_cookie = False
             # Backstop: tear the tunnel down even on an abnormal exit that bypasses
             # _graceful_shutdown (e.g. an exception after startup -> sys.exit). Idempotent.
             atexit.register(stop_studio_tunnel)

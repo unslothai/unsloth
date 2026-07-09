@@ -259,71 +259,18 @@ class TestSecurityHeadersMiddleware:
         assert "geolocation=()" in permissions_policy
         assert r.headers["server"] == "unsloth-studio"
 
-    def test_hosted_notebook_omits_x_frame_options(self, main_module, monkeypatch):
-        monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
-        monkeypatch.delenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", raising = False)
-        app = _make_csp_app(main_module)
-        c = TestClient(app)
-        r = c.get("/plain")
-        assert "x-frame-options" not in {key.lower() for key in r.headers.keys()}
-
-    def test_hosted_notebook_public_root_keeps_frame_deny_when_token_configured(
-        self, main_module, monkeypatch
+    @pytest.mark.parametrize(
+        ("is_kaggle", "frame_ancestors"),
+        [(False, "*"), (True, "'none'")],
+    )
+    def test_colab_and_kaggle_frame_policy(
+        self, main_module, monkeypatch, is_kaggle, frame_ancestors
     ):
-        monkeypatch.setattr(main_module, "_IS_COLAB", False)
-        monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
-        monkeypatch.setenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", "frame-token")
-        app = _make_csp_app(main_module)
-        c = TestClient(app)
-
-        r = c.get("/plain")
-
-        assert r.headers["x-frame-options"] == "DENY"
-        assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
-
-    def test_kaggle_backed_colab_requires_frame_token(self, main_module, monkeypatch):
         monkeypatch.setattr(main_module, "_IS_COLAB", True)
-        monkeypatch.setattr(main_module, "_IS_KAGGLE", True)
-        monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
-        monkeypatch.setenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", "frame-token")
-        app = _make_csp_app(main_module)
-        c = TestClient(app)
-
-        r = c.get("/plain")
-
-        assert r.headers["x-frame-options"] == "DENY"
-        assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
-
-    def test_hosted_notebook_valid_frame_token_omits_x_frame_options(
-        self, main_module, monkeypatch
-    ):
-        monkeypatch.setattr(main_module, "_IS_COLAB", False)
-        monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
-        monkeypatch.setenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", "frame-token")
-        app = _make_csp_app(main_module)
-        c = TestClient(app)
-
-        r = c.get("/plain?__unsloth_frame=frame-token")
-
-        assert "x-frame-options" not in {key.lower() for key in r.headers.keys()}
-        assert "https://www.kaggle.com" in r.headers["content-security-policy"]
-        assert "__unsloth_frame=frame-token" in r.headers["set-cookie"]
-        assert "SameSite=None" in r.headers["set-cookie"]
-        assert "Secure" in r.headers["set-cookie"]
-        assert "Partitioned" in r.headers["set-cookie"]
-
-    def test_hosted_notebook_frame_cookie_survives_route_navigation(self, main_module, monkeypatch):
-        monkeypatch.setattr(main_module, "_IS_COLAB", False)
-        monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
-        monkeypatch.setenv("UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN", "frame-token")
-        app = _make_csp_app(main_module)
-        c = TestClient(app)
-
-        r = c.get("/plain", headers = {"cookie": "__unsloth_frame=frame-token"})
-
-        assert "x-frame-options" not in {key.lower() for key in r.headers.keys()}
-        assert "https://www.kaggle.com" in r.headers["content-security-policy"]
-        assert "Max-Age=7200" in r.headers["set-cookie"]
+        monkeypatch.setattr(main_module, "_IS_KAGGLE", is_kaggle)
+        response = TestClient(_make_csp_app(main_module)).get("/plain")
+        assert f"frame-ancestors {frame_ancestors}" in response.headers["content-security-policy"]
+        assert ("x-frame-options" in response.headers) is is_kaggle
 
     def test_internal_nonce_header_is_spliced_into_csp_and_stripped(self, main_module):
         nonce = "test-nonce-abc"
@@ -342,20 +289,6 @@ class TestSecurityHeadersMiddleware:
         nonced = main_module._build_csp("XYZ")
         assert "script-src 'self' 'nonce-XYZ';" in nonced
 
-    def test_colab_csp_keeps_broad_frame_ancestors(self, main_module, monkeypatch):
-        monkeypatch.setattr(main_module, "_IS_COLAB", True)
-        monkeypatch.setattr(main_module, "_IS_KAGGLE", False)
-        monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
-        csp = main_module._build_csp()
-        assert "frame-ancestors *" in csp
-
-    def test_kaggle_csp_uses_broad_frame_ancestors(self, main_module, monkeypatch):
-        monkeypatch.setattr(main_module, "_IS_COLAB", False)
-        monkeypatch.setattr(main_module, "_IS_KAGGLE", True)
-        monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
-        csp = main_module._build_csp()
-        assert "frame-ancestors *" in csp
-
     @pytest.mark.parametrize(
         ("is_kaggle", "expected_proxy_headers"),
         [(False, True), (True, False)],
@@ -368,12 +301,33 @@ class TestSecurityHeadersMiddleware:
         kwargs = run._server_config_kwargs(
             "0.0.0.0",
             8888,
-            is_hosted_notebook = True,
             is_colab = True,
             is_kaggle = is_kaggle,
         )
         assert kwargs["proxy_headers"] is expected_proxy_headers
         assert ("forwarded_allow_ips" in kwargs) is expected_proxy_headers
+
+    def test_kaggle_launcher_is_link_only(self, monkeypatch):
+        import IPython.display as ipython_display
+        import colab
+
+        rendered = []
+        url = "https://studio.trycloudflare.com"
+        monkeypatch.setattr(colab, "_is_kaggle_environment", lambda: True)
+        monkeypatch.setattr(
+            colab,
+            "get_colab_url",
+            lambda port: pytest.fail("Kaggle queried the Colab proxy"),
+        )
+        monkeypatch.setattr(colab, "_kaggle_bootstrap_notice_html", lambda: "notice")
+        monkeypatch.setattr(ipython_display, "HTML", lambda html: html)
+        monkeypatch.setattr(ipython_display, "display", rendered.append)
+
+        colab._show_and_embed(8888, cloudflare_url = url)
+
+        assert rendered[0] == "notice"
+        assert url in rendered[1]
+        assert all("<iframe" not in html for html in rendered)
 
     def test_img_and_media_allow_https_sources(self, main_module):
         # Model-card READMEs and citation favicons pull images/media from many
