@@ -172,6 +172,10 @@ if not UNSLOTH_ENABLE_LOGGING:
     # Deprecation warnings from torchao
     warnings.filterwarnings("ignore", message = "`int4_weight_only` is deprecated")
     warnings.filterwarnings("ignore", message = "`int8_weight_only` is deprecated")
+    # torch._check_is_size FutureWarning (called by bitsandbytes 4-bit dequant)
+    warnings.filterwarnings(
+        "ignore", message = r"_check_is_size will be removed", category = FutureWarning
+    )
 
     # TorchAO deprecated import paths (https://github.com/pytorch/ao/issues/2752)
     warnings.filterwarnings(
@@ -251,6 +255,30 @@ if not UNSLOTH_ENABLE_LOGGING:
         category = UserWarning,
         module = r"^apex\.transformer\.functional\.fused_rope$",
     )
+
+
+def fix_torch_check_is_size():
+    """Shim torch._check_is_size if a future torch removes it (bitsandbytes 4-bit
+    dequant calls it). The FutureWarning is silenced in suppress_cuda_printf."""
+    try:
+        import torch
+
+        if hasattr(torch, "_check_is_size"):
+            return
+
+        def _check_is_size(
+            i,
+            message = None,
+            *,
+            max = None,
+        ):
+            torch._check(i >= 0, message)
+            if max is not None:
+                torch._check(i <= max, message)
+
+        torch._check_is_size = _check_is_size
+    except Exception:
+        return
 
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
@@ -1064,6 +1092,135 @@ def fix_triton_compiled_kernel_missing_attrs():
     )
 
 
+def fix_dynamo_config_thread_visibility():
+    """torch 2.12 made torch._dynamo/_inductor config overrides thread-local
+    (ContextVars), so `config.recompile_limit = 1024` set on the main thread is
+    invisible to the autograd worker threads that run backward. Gradient
+    checkpointing recompiles fullgraph gpt-oss kernels there against the default
+    limit of 8, raising FailOnRecompileLimitHit at step 0. Mirror direct config
+    assignments into the process-global entry default (torch <= 2.11 semantics).
+    config.patch(...) and config.load_config(...) also assign via __setattr__ but
+    are thread-local by design, so skip mirroring while inside one (tracked per
+    thread). No-op below torch 2.12 and on any torch without this internal layout.
+    """
+    try:
+        import torch
+
+        if Version(torch.__version__) < Version("2.12.0"):
+            return
+        import torch._dynamo.config as _dynamo_config
+        from torch.utils._config_module import ConfigModule
+        from contextvars import ContextVar
+    except Exception:
+        return
+
+    try:
+        probe = getattr(_dynamo_config, "_config", {}).get("recompile_limit", None)
+        if probe is None or not isinstance(getattr(probe, "user_override", None), ContextVar):
+            # Overrides are not context-local on this torch; nothing to fix.
+            return
+        original_setattr = ConfigModule.__setattr__
+        if getattr(original_setattr, "__unsloth_patched__", False):
+            return
+    except Exception:
+        return
+
+    mirrored_modules = ("torch._dynamo.config", "torch._inductor.config")
+
+    # config.patch(...) and config.load_config(...) also assign via __setattr__, but
+    # their writes are thread-local by design; a per-thread depth counter marks them
+    # so they are not mirrored into the process-global default.
+    import threading
+
+    _scoped_depth = threading.local()
+
+    def _in_scoped_write():
+        return getattr(_scoped_depth, "n", 0) > 0
+
+    def _bump(delta):
+        _scoped_depth.n = getattr(_scoped_depth, "n", 0) + delta
+
+    original_patch = ConfigModule.patch
+    if not getattr(original_patch, "__unsloth_patched__", False):
+
+        @functools.wraps(original_patch)
+        def _patched_patch(self, *args, **kwargs):
+            ctx = original_patch(self, *args, **kwargs)
+            try:
+                cls = type(ctx)  # patch() builds a fresh ConfigPatch class each call
+                if not getattr(cls, "__unsloth_patch_wrapped__", False):
+                    _enter0, _exit0 = cls.__enter__, cls.__exit__
+
+                    def _enter(s, _e = _enter0):
+                        _bump(1)
+                        try:
+                            return _e(s)
+                        finally:
+                            _bump(-1)
+
+                    def _exit(
+                        s,
+                        *a,
+                        _x = _exit0,
+                    ):
+                        _bump(1)
+                        try:
+                            return _x(s, *a)
+                        finally:
+                            _bump(-1)
+
+                    cls.__enter__, cls.__exit__ = _enter, _exit
+                    cls.__unsloth_patch_wrapped__ = True
+            except Exception:
+                pass
+            return ctx
+
+        _patched_patch.__unsloth_patched__ = True
+        ConfigModule.patch = _patched_patch
+
+    # load_config restores a saved config by calling setattr per key (thread-local).
+    original_load_config = getattr(ConfigModule, "load_config", None)
+    if callable(original_load_config) and not getattr(
+        original_load_config, "__unsloth_patched__", False
+    ):
+
+        @functools.wraps(original_load_config)
+        def _patched_load_config(self, *args, **kwargs):
+            _bump(1)
+            try:
+                return original_load_config(self, *args, **kwargs)
+            finally:
+                _bump(-1)
+
+        _patched_load_config.__unsloth_patched__ = True
+        ConfigModule.load_config = _patched_load_config
+
+    @functools.wraps(original_setattr)
+    def _patched_setattr(self, name, value):
+        original_setattr(self, name, value)
+        if _in_scoped_write():
+            return  # transient patch / load_config write: keep it thread-local
+        # Aliases (cache_size_limit -> recompile_limit) re-enter with the real name.
+        if self.__dict__.get("__name__", None) in mirrored_modules:
+            try:
+                entry = self.__dict__["_config"].get(name, None)
+                if entry is not None and entry.alias is None:
+                    entry.default = value
+            except Exception:
+                pass
+
+    _patched_setattr.__unsloth_patched__ = True
+    ConfigModule.__setattr__ = _patched_setattr
+
+    # No replay of existing overrides: unsloth installs this before it sets any
+    # dynamo/inductor config, so the wrapper mirrors every later assignment. Replaying
+    # would also bake a still-active config.patch override into the global default.
+    logger.info(
+        "Unsloth: Patched torch config modules so dynamo/inductor settings "
+        "(e.g. recompile_limit) apply across threads on torch >= 2.12."
+    )
+
+
 def patch_trunc_normal_precision_issue():
     """
     Patch torch.nn.init.trunc_normal_ for low precision tensors to run init in fp32.
@@ -1323,8 +1480,7 @@ def fix_vllm_pdl_blackwell():
 
     if patched:
         logger.info(
-            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - "
-            f"patched: {', '.join(patched)}"
+            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - patched: {', '.join(patched)}"
         )
     else:
         # Just set the env var - vLLM might be an older version without supports_pdl
