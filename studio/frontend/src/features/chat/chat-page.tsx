@@ -1172,7 +1172,7 @@ function ProjectLanding({
                             </div>
                           ) : null}
                         </div>
-                        <span className="shrink-0 text-[14px] text-muted-foreground transition-opacity group-hover:opacity-0 group-has-[[data-state=open]]:opacity-0">
+                        <span className="shrink-0 text-[14px] text-muted-foreground transition-opacity max-md:opacity-0 group-hover:opacity-0 group-has-[[data-state=open]]:opacity-0">
                           {preview?.date ??
                             formatProjectChatDate(item.createdAt)}
                         </span>
