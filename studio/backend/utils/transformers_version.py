@@ -898,8 +898,13 @@ def _mapping_first_keys(value: ast.AST) -> set[str]:
     if isinstance(value, ast.Dict):
         nodes = value.keys
     elif isinstance(value, ast.Call):
-        nodes = [el.elts[0] for a in value.args if isinstance(a, (ast.List, ast.Tuple))
-                 for el in a.elts if isinstance(el, (ast.Tuple, ast.List)) and el.elts]
+        nodes = [
+            el.elts[0]
+            for a in value.args
+            if isinstance(a, (ast.List, ast.Tuple))
+            for el in a.elts
+            if isinstance(el, (ast.Tuple, ast.List)) and el.elts
+        ]
     else:
         nodes = []
     return {n.value for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str)}
@@ -918,7 +923,7 @@ def _config_model_types(tier: str) -> frozenset[str]:
             if not _safe_is_file(path):
                 continue
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
+                tree = ast.parse(path.read_text(encoding = "utf-8"))
             except Exception:
                 continue
             for node in ast.walk(tree):
