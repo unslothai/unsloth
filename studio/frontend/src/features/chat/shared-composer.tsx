@@ -68,10 +68,18 @@ import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { loadModel, validateModel } from "./api/chat-api";
+import { clampLocalReasoningEffort } from "./lib/apply-inference-status-to-store";
 import {
+  mergeBackendRecommendedInference,
+  resolveLoadMaxSeqLength,
+} from "./presets/preset-policy";
+import {
+  getExternalProviderApiKey,
+  isCustomProviderType,
   parseExternalModelId,
   providerTypeSupportsVision,
 } from "./external-providers";
+import { isGeminiCustomOpenAICompatBase } from "./provider-capabilities";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
   PLUS_MENU_ORDER,
@@ -79,9 +87,15 @@ import {
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
 import {
+  CHAT_CODE_TOOLS_ENABLED_KEY,
+  CHAT_IMAGE_TOOLS_ENABLED_KEY,
+  CHAT_TOOLS_ENABLED_KEY,
+  CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   type ReasoningEffort,
+  loadOptionalBool,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
+  resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
@@ -90,6 +104,7 @@ import {
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
+  providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
 import {
   type CompositionEvent,
@@ -933,7 +948,148 @@ export function SharedComposer({
       async function ensureModelLoaded(
         sel: CompareModelSelection,
       ): Promise<string> {
+        const external = parseExternalModelId(sel.id);
+        if (external) {
+          const externalStore = useExternalProvidersStore.getState();
+          if (!externalStore.connectionsEnabled) {
+            throw new Error(
+              "Connections are disabled. Turn on Enable connections in Settings -> Connections to use hosted models.",
+            );
+          }
+          const provider = externalStore.providers.find(
+            (p) => p.id === external.providerId,
+          );
+          if (!provider) {
+            throw new Error(
+              "Connection not found. Open Settings -> Connections and add it again.",
+            );
+          }
+
+          const apiKey = getExternalProviderApiKey(provider.id).trim();
+          const providerIsCustom = isCustomProviderType(provider.providerType);
+          const providerIsGeminiCustomBase =
+            provider.providerType === "gemini" &&
+            isGeminiCustomOpenAICompatBase(provider.baseUrl);
+          if (!apiKey && !providerIsCustom && !providerIsGeminiCustomBase) {
+            throw new Error(
+              "Missing API key for selected connection. Open Settings → Connections and set the API key again.",
+            );
+          }
+
+          const reasoningCaps = getExternalReasoningCapabilities(
+            provider.providerType,
+            external.modelId,
+            {
+              isReasoningProvider: provider.isReasoningModel === true,
+              baseUrl: provider.baseUrl ?? null,
+            },
+          );
+          const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
+            provider.providerType,
+            external.modelId,
+            provider.baseUrl,
+          );
+          const supportsBuiltinCodeExecution =
+            providerSupportsBuiltinCodeExecution(
+              provider.providerType,
+              external.modelId,
+              provider.baseUrl,
+            );
+          const supportsBuiltinImageGeneration =
+            providerSupportsBuiltinImageGeneration(
+              provider.providerType,
+              external.modelId,
+              provider.baseUrl,
+            );
+          const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
+            provider.providerType,
+          );
+          const isKimi = provider.providerType === "kimi";
+          const searchOnByDefault =
+            supportsBuiltinWebSearch &&
+            (provider.providerType === "anthropic" ||
+              provider.providerType === "openai");
+          const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
+          const storedCodeToolsEnabled = loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY);
+          const storedImageToolsEnabled = loadOptionalBool(CHAT_IMAGE_TOOLS_ENABLED_KEY);
+          const storedWebFetchToolsEnabled = loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
+          const nextToolsEnabled = supportsBuiltinWebSearch
+            ? isKimi
+              ? false
+              : (storedToolsEnabled ?? searchOnByDefault)
+            : false;
+          const currentStore = useChatRuntimeStore.getState();
+          currentStore.setCheckpoint(sel.id, null);
+          useChatRuntimeStore.setState({
+            activeGgufVariant: null,
+            ggufContextLength: null,
+            ggufMaxContextLength: null,
+            ggufNativeContextLength: null,
+            ggufRequestedContextLength: null,
+            ggufLaunchContextLength: null,
+            activeNativePathToken: null,
+            loadedIsDiffusion: false,
+            supportsReasoning: reasoningCaps.supportsReasoning,
+            reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
+            reasoningStyle: reasoningCaps.reasoningStyle,
+            supportsReasoningOff: reasoningCaps.supportsReasoningOff,
+            reasoningEffortLevels: reasoningCaps.reasoningEffortLevels,
+            reasoningEffort: reasoningCaps.supportsReasoning
+              ? reasoningCaps.reasoningEffortLevels.includes("high")
+                ? "high"
+                : reasoningCaps.reasoningEffortLevels[
+                    reasoningCaps.reasoningEffortLevels.length - 1
+                  ]
+              : currentStore.reasoningEffort,
+            reasoningEnabled: reasoningCaps.supportsReasoning
+              ? reasoningCaps.supportsReasoningOff
+                ? isKimi
+                  ? true
+                  : currentStore.reasoningEnabled
+                : true
+              : currentStore.reasoningEnabled,
+            supportsPreserveThinking: false,
+            supportsTools: false,
+            supportsBuiltinWebSearch,
+            supportsBuiltinCodeExecution,
+            supportsBuiltinImageGeneration,
+            supportsBuiltinWebFetch,
+            toolsEnabled: nextToolsEnabled,
+            codeToolsEnabled: supportsBuiltinCodeExecution
+              ? (storedCodeToolsEnabled ?? false)
+              : false,
+            imageToolsEnabled: supportsBuiltinImageGeneration
+              ? (storedImageToolsEnabled ?? false)
+              : false,
+            webFetchToolsEnabled: supportsBuiltinWebFetch
+              ? (storedWebFetchToolsEnabled ?? false)
+              : false,
+            loadedIsMultimodal:
+              providerTypeSupportsVision(provider.providerType) === true,
+          });
+          return "external";
+        }
+
         const currentStore = useChatRuntimeStore.getState();
+        const {
+          customContextLength,
+          ggufContextLength,
+          ggufLaunchContextLength,
+          activePresetSource,
+          activeGgufVariant,
+          kvCacheDtype,
+        } = currentStore;
+        const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
+          modelId: sel.id,
+          ggufVariant: sel.ggufVariant,
+          customContextLength,
+          ggufContextLength,
+          ggufLaunchContextLength,
+          currentCheckpoint: currentStore.params.checkpoint,
+          activeGgufVariant,
+          maxSeqLength,
+          presetSource: activePresetSource,
+        });
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
         const isAlreadyActive =
@@ -948,7 +1104,7 @@ export function SharedComposer({
         const validation = await validateModel({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
-          max_seq_length: maxSeqLength,
+          max_seq_length: effectiveMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
@@ -977,13 +1133,14 @@ export function SharedComposer({
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: maxSeqLength,
+          max_seq_length: effectiveMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
+          cache_type_kv: kvCacheDtype,
           speculative_type: specSettings.speculativeType,
           spec_draft_n_max: specSettings.specDraftNMax,
           // Honor the Tensor Parallelism toggle on compare loads too.
@@ -998,15 +1155,53 @@ export function SharedComposer({
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
+        store.setParams(
+          mergeBackendRecommendedInference({
+            current: store.params,
+            response: resp,
+            modelId: sel.id,
+            presetSource: activePresetSource,
+          }),
+        );
+        let reasoningDefault = resp.supports_reasoning ?? false;
+        if (reasoningDefault) {
+          const mid = sel.id.toLowerCase();
+          if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
+            const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
+            if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
+              reasoningDefault = false;
+            }
+          }
+        }
+        const reasoningAlwaysOn = resp.reasoning_always_on ?? false;
+        const reasoningCaps = reasoningCapsFromLoad(resp);
         useChatRuntimeStore.setState({
+          ggufContextLength: resp.context_length ?? null,
+          ggufMaxContextLength:
+            resp.max_context_length ?? resp.context_length ?? null,
+          ggufNativeContextLength: resp.native_context_length ?? null,
+          ggufRequestedContextLength: resp.requested_context_length ?? null,
+          ggufLaunchContextLength: resp.launch_context_length ?? null,
           supportsReasoning: resp.supports_reasoning ?? false,
-          reasoningAlwaysOn: resp.reasoning_always_on ?? false,
-          ...reasoningCapsFromLoad(resp),
+          reasoningAlwaysOn,
+          ...reasoningCaps,
+          reasoningEffort: clampLocalReasoningEffort(store.reasoningEffort),
+          reasoningEnabled: reasoningAlwaysOn
+            ? true
+            : reasoningCaps.reasoningStyle === "reasoning_effort"
+              ? true
+              : reasoningDefault,
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
+          supportsBuiltinWebSearch: false,
+          supportsBuiltinCodeExecution: false,
+          supportsBuiltinImageGeneration: false,
+          supportsBuiltinWebFetch: false,
+          ...resolveToolsEnabledOnLoad(resp.supports_tools ?? false),
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
+          loadedIsDiffusion: resp.is_diffusion ?? false,
           ...resolveLoadedSpeculativeSettings(resp),
         });
         // Sync the models[] entry with the load response so attach/send gates

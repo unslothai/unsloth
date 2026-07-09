@@ -168,6 +168,12 @@ export function applyActiveModelStatusToStore(
   const ggufNativeContextLength = status.is_gguf
     ? (status.native_context_length ?? null)
     : null;
+  const ggufRequestedContextLength = status.is_gguf
+    ? (status.requested_context_length ?? null)
+    : null;
+  const ggufLaunchContextLength = status.is_gguf
+    ? (status.launch_context_length ?? null)
+    : null;
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const prevState = useChatRuntimeStore.getState();
   const clampedReasoningEffort =
@@ -203,6 +209,8 @@ export function applyActiveModelStatusToStore(
     ggufContextLength: currentGgufContextLength,
     ggufMaxContextLength,
     ggufNativeContextLength,
+    ggufRequestedContextLength,
+    ggufLaunchContextLength,
     // A non-GGUF status must also drop a stale native-path token: without this the
     // isGguf OR (activeGgufVariant || activeNativePathToken || ggufContextLength)
     // stays true after switching from a native GGUF to a transformers model, so a

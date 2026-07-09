@@ -26,6 +26,8 @@ is_managed_flag = _lsa.is_managed_flag
 parse_cache_override = _lsa.parse_cache_override
 parse_cache_override_per_axis = _lsa.parse_cache_override_per_axis
 parse_ctx_override = _lsa.parse_ctx_override
+parse_fit_override = _lsa.parse_fit_override
+parse_kv_unified = _lsa.parse_kv_unified
 parse_split_mode_override = _lsa.parse_split_mode_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 resolve_tensor_parallel = _lsa.resolve_tensor_parallel
@@ -410,6 +412,7 @@ def test_is_managed_flag_false_for_mtp_pass_through():
         (["-c", "128000"], 128000),
         (["-c=128000"], 128000),
         (["-c", "4096", "--ctx-size", "128000"], 128000),
+        (["-c", "8192", "--ctx-size", "0"], 0),
     ],
 )
 def test_parse_ctx_override(args, expected):
@@ -531,6 +534,52 @@ def test_strip_shadowing_flags_defaults_strip_everything():
         ["-c", "4096", "--cache-type-k", "q8_0", "--spec-default", "--jinja"]
     )
     assert out == []
+
+
+def test_parse_fit_override_absent():
+    assert parse_fit_override(None) is None
+    assert parse_fit_override(["--threads", "12"]) is None
+
+
+def test_parse_fit_override_last_wins():
+    assert parse_fit_override(["--fit", "on"]) is True
+    assert parse_fit_override(["-fit", "off"]) is False
+    assert parse_fit_override(["--fit=off"]) is False
+    assert parse_fit_override(["--fit", "on", "--fit", "off"]) is False
+    assert parse_fit_override(["--fit", "off", "-fit", "on"]) is True
+
+
+def test_parse_fit_override_ignores_bare_and_unknown():
+    assert parse_fit_override(["--fit"]) is None
+    assert parse_fit_override(["--fit", "--threads"]) is None
+    assert parse_fit_override(["--fit", "maybe"]) is None
+
+
+def test_parse_fit_override_no_fit_is_false():
+    assert parse_fit_override(["--no-fit"]) is False
+    assert parse_fit_override(["--fit", "on", "--no-fit"]) is False
+
+
+# ── --kv-unified (parallel KV pool mode) ────────────────────────────
+
+
+def test_parse_kv_unified_absent():
+    assert parse_kv_unified(None) is None
+    assert parse_kv_unified(["--threads", "12"]) is None
+
+
+def test_parse_kv_unified_last_wins():
+    assert parse_kv_unified(["--kv-unified"]) is True
+    assert parse_kv_unified(["--no-kv-unified"]) is False
+    assert parse_kv_unified(["--kv-unified", "--no-kv-unified"]) is False
+    assert parse_kv_unified(["--no-kv-unified", "--kv-unified"]) is True
+
+
+def test_parse_kv_unified_short_aliases():
+    assert parse_kv_unified(["-kvu"]) is True
+    assert parse_kv_unified(["-no-kvu"]) is False
+    assert parse_kv_unified(["-kvu", "-no-kvu"]) is False
+    assert parse_kv_unified(["--kv-unified", "-no-kvu"]) is False
 
 
 # ── --split-mode (Tensor Parallelism toggle) ─────────────────────────

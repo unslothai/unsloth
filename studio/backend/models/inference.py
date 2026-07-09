@@ -207,7 +207,11 @@ class LoadResponse(BaseModel):
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
     )
     context_length: Optional[int] = Field(
-        None, description = "Runtime context length in tokens for the loaded model"
+        None,
+        description = (
+            "Effective per-slot context length llama-server is running at "
+            "(after --fit), or the active context for non-GGUF models"
+        ),
     )
     max_context_length: Optional[int] = Field(
         None, description = "Maximum context length currently available on this hardware"
@@ -215,6 +219,20 @@ class LoadResponse(BaseModel):
     native_context_length: Optional[int] = Field(
         None,
         description = "Model's native context length from GGUF metadata (not capped by VRAM)",
+    )
+    requested_context_length: Optional[int] = Field(
+        None,
+        description = (
+            "Expected per-slot context before ``--fit`` shrank runtime ``n_ctx`` "
+            "(``-c / --parallel``); omitted when effective matches that expectation"
+        ),
+    )
+    launch_context_length: Optional[int] = Field(
+        None,
+        description = (
+            "Total ``-c`` passed to llama-server on the last load; use for reload "
+            "round-trip while ``context_length`` reports effective per-slot ``n_ctx``"
+        ),
     )
     supports_reasoning: bool = Field(
         False,
@@ -358,7 +376,13 @@ class InferenceStatusResponse(BaseModel):
     supports_tools: bool = Field(
         False, description = "Whether the active model supports tool calling"
     )
-    context_length: Optional[int] = Field(None, description = "Context length of the active model")
+    context_length: Optional[int] = Field(
+        None,
+        description = (
+            "Effective per-slot context length of the active model "
+            "(runtime ``n_ctx`` for GGUF after --fit)"
+        ),
+    )
     max_context_length: Optional[int] = Field(
         None,
         description = "Maximum context length currently available for the active model",
@@ -366,6 +390,20 @@ class InferenceStatusResponse(BaseModel):
     native_context_length: Optional[int] = Field(
         None,
         description = "Model's native context length from GGUF metadata (not capped by VRAM)",
+    )
+    requested_context_length: Optional[int] = Field(
+        None,
+        description = (
+            "Expected per-slot context before ``--fit`` shrank runtime ``n_ctx`` "
+            "(``-c / --parallel``); omitted when effective matches that expectation"
+        ),
+    )
+    launch_context_length: Optional[int] = Field(
+        None,
+        description = (
+            "Total ``-c`` passed to llama-server on the last load; use for reload "
+            "round-trip while ``context_length`` reports effective per-slot ``n_ctx``"
+        ),
     )
     cache_type_kv: Optional[str] = Field(
         None,

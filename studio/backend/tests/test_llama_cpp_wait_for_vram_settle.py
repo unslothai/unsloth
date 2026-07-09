@@ -285,6 +285,7 @@ def test_kill_process_records_timestamp_on_actual_kill():
     backend._stdout_thread = None
     backend._llama_log_fh = None
     backend._last_kill_monotonic = 0.0
+    backend._stats_logger = None
 
     backend._kill_process()
     assert backend._last_kill_monotonic == 0.0

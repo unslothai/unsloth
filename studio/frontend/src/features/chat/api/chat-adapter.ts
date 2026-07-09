@@ -1462,6 +1462,10 @@ async function autoLoadSmallestModel(): Promise<{
                 loadResp.max_context_length ??
                 loadResp.context_length ??
                 131072,
+              ggufRequestedContextLength:
+                loadResp.requested_context_length ?? null,
+              ggufLaunchContextLength:
+                loadResp.launch_context_length ?? null,
               supportsReasoning: loadResp.supports_reasoning ?? false,
               reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
               reasoningEnabled: loadResp.supports_reasoning ?? false,
@@ -1634,6 +1638,8 @@ async function autoLoadSmallestModel(): Promise<{
         ggufContextLength: loadResp.context_length ?? 131072,
         ggufMaxContextLength:
           loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+        ggufRequestedContextLength: loadResp.requested_context_length ?? null,
+        ggufLaunchContextLength: loadResp.launch_context_length ?? null,
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
         reasoningEnabled: loadResp.supports_reasoning ?? false,

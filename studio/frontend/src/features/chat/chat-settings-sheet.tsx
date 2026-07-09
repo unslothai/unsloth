@@ -594,6 +594,9 @@ export function ChatSettingsPanel({
   );
   const currentCheckpoint = params.checkpoint;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const ggufLaunchContextLength = useChatRuntimeStore(
+    (s) => s.ggufLaunchContextLength,
+  );
   const ggufMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
@@ -651,10 +654,20 @@ export function ChatSettingsPanel({
   }, [pendingKey, applyRememberedLoadSettings]);
   // While staging, the sheet reflects the STAGED model, so its header context
   // takes precedence over the loaded model's (which may differ or be larger).
-  const baseContext = pendingIsGguf ? stagedContextLength : ggufContextLength;
+  const baseContext = pendingIsGguf
+    ? stagedContextLength
+    : (ggufLaunchContextLength ?? ggufContextLength);
   const baseNativeContext = pendingIsGguf
     ? stagedContextLength
     : ggufNativeContextLength;
+  // Max Tokens is a per-request generation cap, so bound it by the EFFECTIVE
+  // per-slot runtime context (ggufContextLength), not the total launch -c
+  // (baseContext). With --parallel / --fit the per-slot context can be well
+  // below the launch total, and llama-server runs with --no-context-shift, so
+  // an over-cap turns into a hard context error mid-generation.
+  const maxTokensContext = pendingIsGguf
+    ? stagedContextLength
+    : (ggufContextLength ?? baseContext);
   // Context controls render once we actually have a ceiling: for a staged GGUF,
   // once its header metadata arrives (post-download); otherwise post-load.
   const showContextControl = pendingIsGguf
@@ -1712,14 +1725,14 @@ export function ChatSettingsPanel({
                       externalProviderType,
                       externalSelection?.modelId,
                     )
-                  : isGguf && baseContext
-                    ? baseContext
+                  : isGguf && maxTokensContext
+                    ? maxTokensContext
                     : 32768
               }
               step={64}
               onChange={set("maxTokens")}
               displayValue={
-                isGguf && baseContext && params.maxTokens >= baseContext
+                isGguf && maxTokensContext && params.maxTokens >= maxTokensContext
                   ? "Max"
                   : undefined
               }
