@@ -162,25 +162,25 @@ def _invoke_studio_default(
 
 
 @pytest.mark.parametrize(
-    "extra_flags,present,absent",
+    "extra_flags,expected,unexpected",
     [
-        # Plain path runs the same-version in-tree run.py, so an unset default
-        # forwards neither polarity and the child's default-off applies.
-        ([], None, ["--cloudflare", "--no-cloudflare"]),
-        (["--cloudflare"], "--cloudflare", ["--no-cloudflare"]),
-        (["--no-cloudflare"], "--no-cloudflare", ["--cloudflare"]),
+        # Default (no flag) forwards --no-cloudflare explicitly: _find_run_py can fall
+        # back to an older studio-venv run.py (default on), so a mixed install must
+        # not re-enable the tunnel.
+        ([], "--no-cloudflare", "--cloudflare"),
+        (["--cloudflare"], "--cloudflare", "--no-cloudflare"),
+        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare"),
         # --secure implies the tunnel; never forward --no-cloudflare with it.
-        (["--secure"], None, ["--no-cloudflare"]),
+        (["--secure"], None, "--no-cloudflare"),
     ],
 )
-def test_studio_default_reexec_forwards_cloudflare(monkeypatch, extra_flags, present, absent):
+def test_studio_default_reexec_forwards_cloudflare(monkeypatch, extra_flags, expected, unexpected):
     captured = _invoke_studio_default(monkeypatch, ["-H", "0.0.0.0"] + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
-    if present is not None:
-        assert present in argv, f"expected {present}; got {argv}"
-    for flag in absent:
-        assert flag not in argv, f"unexpected {flag}; got {argv}"
+    if expected is not None:
+        assert expected in argv, f"expected {expected}; got {argv}"
+    assert unexpected not in argv, f"unexpected {unexpected}; got {argv}"
 
 
 # ── in-venv path forwards cloudflare into run_server ─────────────────

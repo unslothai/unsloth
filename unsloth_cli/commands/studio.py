@@ -868,15 +868,15 @@ def studio_default(
                 args.append("--silent")
             if api_only:
                 args.append("--api-only")
-            # This path runs the in-tree run.py (resolved from this CLI's own package
-            # by _find_run_py, so always the same version), so an unset default (None)
-            # is safe to leave off and the child's default-off applies. Forward only an
-            # explicit polarity. (The `run` subcommand re-execs the studio venv's
-            # console script, which may be an older build, so it forwards the default
-            # explicitly; see there.)
+            # Forward the default polarity explicitly: _find_run_py can fall back to
+            # an older run.py under the studio venv (whose --cloudflare defaulted on),
+            # so an unset default must not let a mixed install silently re-enable the
+            # tunnel. --secure implies the tunnel, so forward nothing then
+            # (--no-cloudflare would contradict --secure). The common in-venv launch
+            # skips this re-exec and keeps the tri-state None -> "(default)" banner.
             if cloudflare is True:
                 args.append("--cloudflare")
-            elif cloudflare is False:
+            elif not secure:
                 args.append("--no-cloudflare")
             args.append("--secure" if secure else "--no-secure")
             # Forward an explicit tool policy; None -> run.py leaves it unset (tools on).
