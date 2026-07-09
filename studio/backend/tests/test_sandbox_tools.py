@@ -419,6 +419,12 @@ class TestBashBlocklistPosition:
             ("nice rm -rf /tmp/x", "rm"),
             ("nohup wget https://bad", "wget"),
             ("timeout 1 rm -rf /tmp/x", "rm"),
+            # GNU timeout duration suffixes / floats must not drop out of command
+            # position -- the arg after the duration is still the real command.
+            ("timeout 5m rm -rf /tmp/x", "rm"),
+            ("timeout 0.5 rm -rf /tmp/x", "rm"),
+            ("timeout 2h wget https://bad", "wget"),
+            ("timeout -k 5s 10s rm -rf /tmp/x", "rm"),
             ("setsid rm -rf /tmp/x", "rm"),
             ("stdbuf -oL rm -rf /tmp/x", "rm"),
             ("sudo rm -rf /tmp/x", "rm"),
@@ -440,6 +446,15 @@ class TestBashBlocklistPosition:
         assert "rm" in self._find()("find . -type f -exec rm -f {} +")
         assert "rm" in self._find()("find . -type f -exec rm -f {} ';'")
         assert "rm" in self._find()("find . -execdir rm -f {} ';'")
+
+    def test_find_exec_wrapped_command_blocked(self):
+        # The -exec target may itself be a wrapper (env/timeout/nice) or a nested
+        # shell; the whole slice up to ; / + is rescanned at command position.
+        assert "rm" in self._find()("find . -exec env rm -rf {} ';'")
+        assert "rm" in self._find()("find . -exec timeout 5 rm -rf {} ';'")
+        assert "rm" in self._find()("find . -execdir nice rm -rf {} ';'")
+        assert "rm" in self._find()("find . -exec sh -c 'rm -rf /tmp/x' ';'")
+        assert "curl" in self._find()("find . -exec env FOO=1 curl https://x ';'")
 
     def test_xargs_command_blocked(self):
         assert "rm" in self._find()("printf /tmp/x | xargs rm")
@@ -801,7 +816,6 @@ class TestDynamicExecObfuscation:
             ("getattr(os, 'system')('id')", "attribute-name obfuscation"),
             ("import os as o; getattr(o, 'sys' + 'tem')('id')", "attribute-name obfuscation"),
             ("().__class__.__bases__[0].__subclasses__()", "introspection gadget"),
-            ("[].__class__.__mro__", "introspection gadget"),
             ("f.__globals__['os']", "introspection gadget"),
         ],
     )
@@ -820,10 +834,44 @@ class TestDynamicExecObfuscation:
             "hf = __import__('huggingface_hub'); hf.HfApi()",
             "import importlib; importlib.import_module('numpy')",
             "__import__('json')",
+            # __mro__ / __code__ on their own are ordinary ML/debug introspection,
+            # not an execution gadget -- must stay allowed.
+            "for c in trainer_class.__mro__[1:]:\n    pass",
+            "code = getattr(fn, '__code__', None)",
+            # legitimate sys.modules membership / lookup (not a dangerous subscript).
+            "import sys\nif 'torch' in sys.modules:\n    pass",
+            "import sys\nm = sys.modules.get('numpy')",
+            "class A: pass\nprint(A().__dict__)",
         ],
     )
     def test_benign_dynamic_code_allowed(self, code):
         _ok(code)
+
+
+class TestAliasIntrospectionBypasses:
+    """Alias / introspection obfuscations of the exec / import / attr gate must block
+    even when the sensitive module or the exec builtin is reached indirectly."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import builtins\nbuiltins.eval(\"__import__('os').system('rm -rf /')\")",
+            "__builtins__.exec(\"import os; os.system('rm -rf /')\")",
+            "getattr(__builtins__, 'eval')('x')",
+            "from builtins import exec as e\ne(\"import os; os.system('rm -rf /')\")",
+            "import importlib as ip\nip.import_module('subprocess')",
+            "from importlib import import_module as im\nim('os')",
+            "__import__('posix').system('id')",
+            "import sys\nsys.modules['os'].system('id')",
+            "import sys as s\ngetattr(s, 'modules')['subprocess'].run(['id'])",
+            "import os\nos.__dict__['system']('id')",
+            "import pickle\npickle.load(open('p', 'rb'))",
+            "from pickle import loads as l\nl(payload)",
+            "import pickle as p\np.loads(data)",
+        ],
+    )
+    def test_alias_bypass_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
 
 
 class TestEvalExecRecursion:
@@ -897,3 +945,28 @@ class TestEvalExecRecursion:
 
     def test_import_concat_benign_module_allowed(self):
         _ok('__import__("hugging" + "face_hub")')
+
+    def test_exec_utf7_bytes_coding_cookie_blocked(self):
+        # exec()/eval()/compile() honor PEP 263 coding cookies on *bytes*: a UTF-7
+        # payload behind "# coding: utf-7" decodes to real Python that the UTF-8
+        # static view (which is SYNTAX_BAD) never sees. An unparseable *bytes*
+        # payload for an executing sink must block.
+        payload = (
+            b"# coding: utf-7\n"
+            b"+AGkAbQBwAG8AcgB0ACAAbwBz-\n"
+            b"+AG8AcwAuAHMAeQBzAHQAZQBtACgAJwBpAGQAJwAp-"
+        )
+        # self-check: the cookie-decoded payload really is os.system ACE.
+        assert "os.system" in payload.decode("utf-7")
+        for sink in ("exec(%r)", "eval(%r)", "exec(compile(%r, '<s>', 'exec'))"):
+            code = sink % payload
+            assert _check_code_safety(code) is not None, code
+        # bare compile() does not run, so it stays allowed (the exec of its result
+        # is where the block lands).
+        assert _check_code_safety("compile(%r, '<s>', 'exec')" % payload) is None
+
+    def test_exec_plain_bytes_payload_allowed(self):
+        # Legitimate exec/eval of ASCII/UTF-8 bytes that parse cleanly stay allowed.
+        _ok('exec(b"x = 1")')
+        _ok('exec(b"print(1)")')
+        _ok('eval(b"2 + 2")')

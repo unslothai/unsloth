@@ -54,6 +54,22 @@ class TestConstFoldArithAndConcat:
     def test_pow_refused(self):
         assert _fold("2 ** 4") is None
 
+    def test_small_bytes_count_folds(self):
+        from core.inference.tools import _FOLD_MAXLEN
+
+        assert _fold("bytes(10)") == b"\x00" * 10
+        assert _fold("bytes(b'abc')") == b"abc"
+        assert _fold(f"bytes({_FOLD_MAXLEN})") == b"\x00" * _FOLD_MAXLEN
+
+    def test_huge_bytes_count_refused(self):
+        # bytes(N) / bytearray(N) allocate N zero bytes; an oversized count is a
+        # memory-DoS during folding, so it must refuse rather than materialize it.
+        from core.inference.tools import _FOLD_MAXLEN
+
+        assert _fold(f"bytes({_FOLD_MAXLEN + 1})") is None
+        assert _fold(f"bytearray({_FOLD_MAXLEN + 1})") is None
+        assert _fold("bytes(10 ** 9)") is None
+
 
 class TestConstFoldJoinFormatFstring:
     def test_sep_join(self):

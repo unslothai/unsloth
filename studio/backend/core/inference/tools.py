@@ -156,6 +156,30 @@ _COMMAND_PREFIXES = frozenset(
 )
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+# find's -exec / -ok command runs up to a `;` or `+` terminator; everything between
+# is a full command line (may itself begin with a wrapper like env/timeout or sh -c).
+_FIND_EXEC_TERMINATORS = frozenset({";", "+"})
+
+
+def _is_wrapper_numeric_arg(token: str) -> bool:
+    """A wrapper's numeric argument (`nice -n 5`, `timeout 5m`, `timeout 0.5`).
+
+    Accepts a plain int/float, optionally with a single trailing GNU ``timeout``
+    duration unit (s/m/h/d). Used only to decide whether to skip a token while a
+    command-prefix wrapper is still awaiting its real command, so being permissive
+    keeps the scan on the following command rather than dropping out of command
+    position.
+    """
+    t = token.lstrip("-")
+    if not t:
+        return False
+    if len(t) > 1 and t[-1] in "smhd":
+        t = t[:-1]
+    try:
+        float(t)
+        return True
+    except ValueError:
+        return False
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -210,8 +234,12 @@ def _find_blocked_commands(command: str) -> set[str]:
         # FOO=bar assignment prefix; next non-assignment token is the command.
         if _ASSIGNMENT_RE.match(token):
             continue
-        # Numeric wrapper arg: `timeout 1 cmd` / `nice -n 5 cmd`.
-        if prefix_pending and token.lstrip("-").isdigit():
+        # Numeric wrapper arg: `timeout 1 cmd` / `nice -n 5 cmd`, plus GNU `timeout`
+        # duration forms (`5m`, `0.5`, `2h`). Skipping it keeps prefix_pending so the
+        # real command that follows is still analysed at command position; over-
+        # accepting a numeric-looking token is safe (we only skip, never stop scanning),
+        # whereas the old int-only check let `timeout 5m rm -rf /` slip through.
+        if prefix_pending and _is_wrapper_numeric_arg(token):
             continue
         base = _token_basename(token)
         if base in _BLOCKED_COMMANDS:
@@ -224,12 +252,19 @@ def _find_blocked_commands(command: str) -> set[str]:
         expect_command = False
         prefix_pending = False
 
-    # `find ... -exec CMD ... ;` and `-execdir CMD ... ;` invoke CMD directly.
+    # `find ... -exec CMD ... ;` / `-execdir CMD ... +` invoke CMD directly. CMD may
+    # itself be a wrapper (`env rm`, `timeout 5 rm`) or a nested shell (`sh -c '...'`),
+    # so rescan the whole slice up to the `;`/`+` terminator through the full command-
+    # position analyzer instead of only basename-matching the immediate next token.
     for i, tok in enumerate(tokens):
-        if tok in _FIND_EXEC_FLAGS and i + 1 < len(tokens):
-            base = _token_basename(tokens[i + 1])
-            if base in _BLOCKED_COMMANDS:
-                blocked.add(base)
+        if tok in _FIND_EXEC_FLAGS:
+            seg = []
+            j = i + 1
+            while j < len(tokens) and tokens[j] not in _FIND_EXEC_TERMINATORS:
+                seg.append(tokens[j])
+                j += 1
+            if seg:
+                blocked |= _find_blocked_commands(" ".join(seg))
 
     # Regex catches blocked words at command boundaries shlex misses: inside
     # $(rm -rf), <(rm), backtick chains, or "foo;rm". Anchored to command-position
@@ -1893,6 +1928,13 @@ def _fold_call(node, _state, _depth):
                 "float": float,
                 "len": len,
             }[name]
+            if name in ("bytes", "bytearray") and len(args) == 1:
+                # bytes(n) / bytearray(n) allocate n zero bytes; refuse an oversized
+                # integer size before constructing it so static analysis of e.g.
+                # bytes(2_000_000_000) cannot OOM the Studio process (the child
+                # sandbox rlimits never get a chance to help during analysis).
+                if isinstance(args[0], int) and not isinstance(args[0], bool) and args[0] > _FOLD_MAXLEN:
+                    return None
             return _fold_cap(fn(*args))
         except Exception:
             return None
@@ -2049,13 +2091,21 @@ _EXEC_BUILTINS = frozenset({"eval", "exec", "compile"})
 _CODE_DESERIALIZE_SINKS = frozenset(
     {
         "pickle.loads",
+        "pickle.load",
         "marshal.loads",
+        "marshal.load",
         "dill.loads",
+        "dill.load",
         "cloudpickle.loads",
+        "cloudpickle.load",
         "_pickle.loads",
+        "_pickle.load",
         "jsonpickle.decode",
     }
 )
+# Modules whose load/loads/decode entry points run a pickle reduce payload; used to
+# resolve `import pickle as p; p.loads(x)` and `from pickle import loads as l`.
+_DESERIALIZE_MODULES = frozenset({"pickle", "marshal", "dill", "cloudpickle", "_pickle", "jsonpickle"})
 # Attribute names of pure decode/decompress primitives used to hide a payload.
 _DECODE_ATTRS = frozenset(
     {
@@ -2248,7 +2298,11 @@ def _build_exec_env(tree, const_env):
         ):
             v = _const_fold(rhs.args[0], const_env)
             if isinstance(v, (str, bytes, bytearray)):
-                compiled_env[name] = (_to_text(v), _compile_mode(rhs, const_env))
+                compiled_env[name] = (
+                    _to_text(v),
+                    _compile_mode(rhs, const_env),
+                    isinstance(v, (bytes, bytearray)),
+                )
     return exec_aliases, compiled_env
 
 
@@ -2358,10 +2412,14 @@ def _first_unsafe_reason(info):
 def _recover_exec_payload(node, func_id, const_env, exec_aliases, compiled_env):
     """Recover a statically foldable source string for eval/exec/compile.
 
-    Returns ("RECOVERED", src, mode) / ("DYNAMIC", None, None) / ("NO_PAYLOAD", None, None).
+    Returns ("RECOVERED", src, mode, is_bytes) / ("DYNAMIC", None, None, False) /
+    ("NO_PAYLOAD", None, None, False). ``is_bytes`` records that the payload folded to
+    a bytes/bytearray literal -- ``exec``/``compile`` honor PEP 263 coding cookies on
+    bytes, so a bytes payload that fails to parse as UTF-8 Python is treated as an
+    obfuscation vector by the caller rather than a harmless SyntaxError.
     """
     if not node.args:
-        return ("NO_PAYLOAD", None, None)
+        return ("NO_PAYLOAD", None, None, False)
     arg0 = node.args[0]
     base_mode = "eval" if func_id == "eval" else "exec"
 
@@ -2374,19 +2432,24 @@ def _recover_exec_payload(node, func_id, const_env, exec_aliases, compiled_env):
     ):
         v = _const_fold(arg0.args[0], const_env)
         if isinstance(v, (str, bytes, bytearray)):
-            return ("RECOVERED", _to_text(v), _compile_mode(arg0, const_env))
-        return ("DYNAMIC", None, None)
+            return (
+                "RECOVERED",
+                _to_text(v),
+                _compile_mode(arg0, const_env),
+                isinstance(v, (bytes, bytearray)),
+            )
+        return ("DYNAMIC", None, None, False)
 
     # c = compile("..."); exec(c)
     if isinstance(arg0, ast.Name) and arg0.id in compiled_env:
-        csrc, cmode = compiled_env[arg0.id]
-        return ("RECOVERED", csrc, cmode)
+        csrc, cmode, cbytes = compiled_env[arg0.id]
+        return ("RECOVERED", csrc, cmode, cbytes)
 
     v = _const_fold(arg0, const_env)
     if isinstance(v, (str, bytes, bytearray)):
         mode = _compile_mode(node, const_env) if func_id == "compile" else base_mode
-        return ("RECOVERED", _to_text(v), mode)
-    return ("DYNAMIC", None, None)
+        return ("RECOVERED", _to_text(v), mode, isinstance(v, (bytes, bytearray)))
+    return ("DYNAMIC", None, None, False)
 
 
 # --------------------------------------------------------------------------
@@ -2529,7 +2592,11 @@ def _build_shell_sink_aliases(tree):
                     from_aliases[a.asname or a.name] = fq
 
     aliases: dict[str, str] = {}
-    for stmt in getattr(tree, "body", []):
+    # Walk every Assign, not just the module body: a single-assignment alias created
+    # inside a function -- `def f(): s = os.system; s('rm -rf /')` -- is the common
+    # wrapper shape. store_counts is computed over the whole tree, so the "stored
+    # exactly once" guard still excludes any ambiguous re-binding (keeps it low-FP).
+    for stmt in ast.walk(tree):
         if not (
             isinstance(stmt, ast.Assign)
             and len(stmt.targets) == 1
@@ -2593,7 +2660,7 @@ def _check_signal_escape_patterns(
     def _analyze_exec_call(node, func_id):
         """Stage 2 driver: recover + recurse a foldable payload, else dynamic policy."""
         try:
-            kind, src, mode = _recover_exec_payload(
+            kind, src, mode, is_bytes = _recover_exec_payload(
                 node, func_id, _const_env, _exec_aliases, _compiled_env
             )
             if kind == "NO_PAYLOAD":
@@ -2631,6 +2698,26 @@ def _check_signal_escape_patterns(
                 # so it raises SyntaxError at runtime (same mode as the static
                 # parse) -- harmless, not an ACE vector. Allow it; only truly
                 # opaque (non-recoverable) payloads fall to the dynamic policy.
+                #
+                # Exception: a *bytes* payload for an executing sink. exec()/eval()/
+                # compile() honor PEP 263 coding cookies (e.g. "# coding: utf-7") on
+                # bytes, decoding them through a codec this static pass does not
+                # replicate -- the UTF-8 view we parsed is SYNTAX_BAD precisely
+                # because the real (cookie-decoded) source is hidden. A legitimate
+                # exec(b"...") uses plain ASCII/UTF-8 that parses cleanly, so blocking
+                # the unparseable-bytes case closes the codec-smuggling vector with
+                # negligible false positives.
+                if is_bytes and func_id != "compile":
+                    dynamic_exec.append(
+                        {
+                            "type": "dynamic_exec",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                f"{func_id}() of a bytes payload that is not valid UTF-8 "
+                                "Python (may smuggle code via a PEP 263 coding cookie)"
+                            ),
+                        }
+                    )
                 return
             payload = node.args[0] if node.args else None
             if _payload_has_obfuscation_primitive(payload):
@@ -2704,6 +2791,8 @@ def _check_signal_escape_patterns(
     _DANGEROUS_IMPORT_NAMES = frozenset(
         {
             "os",
+            "posix",  # the C module os wraps; __import__('posix').system(...) == os.system
+            "nt",  # Windows analogue of posix
             "subprocess",
             "sys",
             "builtins",
@@ -2729,15 +2818,18 @@ def _check_signal_escape_patterns(
     # Introspection "gadget" dunders used to walk from a harmless object to os/builtins
     # (``().__class__.__bases__[0].__subclasses__()``). ``__class__`` / ``__dict__`` are
     # intentionally excluded (too common); the chain still trips on the others.
+    # __mro__ and __code__ are deliberately EXCLUDED: on their own they do not reach
+    # an execution primitive, and they are read by ordinary ML/debugging code
+    # (trainer_class.__mro__, fn.__code__), so flagging them over-blocks legitimate
+    # snippets. The terminal escape primitives below still trip on the real gadget
+    # chains (().__class__.__bases__[0].__subclasses__(), f.__globals__['os']).
     _GADGET_DUNDERS = frozenset(
         {
             "__subclasses__",
             "__bases__",
             "__base__",
-            "__mro__",
             "__globals__",
             "__builtins__",
-            "__code__",
             "__closure__",
         }
     )
@@ -2781,9 +2873,21 @@ def _check_signal_escape_patterns(
             self.signal_aliases = {"signal"}
             self.os_aliases = {"os"}
             self.subprocess_aliases = {"subprocess"}
+            self.importlib_aliases = {"importlib"}
+            self.sys_aliases = {"sys"}
+            # __builtins__ is the builtins *module* in __main__ (how the sandbox runs
+            # user code as `python <file>.py`), so builtins.eval / __builtins__.eval work.
+            self.builtins_aliases = {"builtins", "__builtins__"}
             # Bare name -> fully-qualified form for from-import tracking
             # (e.g. "system" -> "os.system").
             self.shell_exec_aliases: dict[str, str] = {}
+            # from importlib import import_module as im  ->  {"im"}
+            self.import_func_aliases: set[str] = set()
+            # from builtins import exec as e  ->  {"e": "exec"}
+            self.exec_from_aliases: dict[str, str] = {}
+            # import pickle as p  ->  {"p": "pickle"}; from pickle import loads as l -> {"l": "pickle.loads"}
+            self.deserialize_module_aliases: dict[str, str] = {}
+            self.deserialize_aliases: dict[str, str] = {}
             self.loop_depth = 0
 
         def visit_Import(self, node):
@@ -2796,6 +2900,14 @@ def _check_signal_escape_patterns(
                     self.os_aliases.add(alias.asname or "os")
                 elif alias.name == "subprocess":
                     self.subprocess_aliases.add(alias.asname or "subprocess")
+                elif alias.name == "importlib":
+                    self.importlib_aliases.add(alias.asname or "importlib")
+                elif alias.name == "sys":
+                    self.sys_aliases.add(alias.asname or "sys")
+                elif alias.name == "builtins":
+                    self.builtins_aliases.add(alias.asname or "builtins")
+                if alias.name in _DESERIALIZE_MODULES:
+                    self.deserialize_module_aliases[alias.asname or alias.name] = alias.name
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -2823,6 +2935,19 @@ def _check_signal_escape_patterns(
                     fq = f"{node.module}.{alias.name}"
                     if fq in _SHELL_EXEC_FUNCS:
                         self.shell_exec_aliases[alias.asname or alias.name] = fq
+            elif node.module == "importlib":
+                for alias in node.names:
+                    if alias.name in ("import_module", "reload", "__import__"):
+                        self.import_func_aliases.add(alias.asname or alias.name)
+            elif node.module == "builtins":
+                for alias in node.names:
+                    if alias.name in _DYNAMIC_EXEC_BUILTINS:
+                        self.exec_from_aliases[alias.asname or alias.name] = alias.name
+            elif node.module in _DESERIALIZE_MODULES:
+                for alias in node.names:
+                    fq = f"{node.module}.{alias.name}"
+                    if fq in _CODE_DESERIALIZE_SINKS:
+                        self.deserialize_aliases[alias.asname or alias.name] = fq
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -3021,8 +3146,16 @@ def _check_signal_escape_patterns(
             if isinstance(func, ast.Name):
                 if func.id in _DYNAMIC_EXEC_BUILTINS:
                     exec_func_id = func.id
+                elif func.id in self.exec_from_aliases:
+                    exec_func_id = self.exec_from_aliases[func.id]  # from builtins import exec as e
                 elif _analyzer_on and func.id in _exec_aliases:
                     exec_func_id = _exec_aliases[func.id]
+            elif (
+                isinstance(func, ast.Attribute)
+                and func.attr in _DYNAMIC_EXEC_BUILTINS
+                and _ast_name_matches(func.value, self.builtins_aliases)
+            ):
+                exec_func_id = func.attr  # builtins.eval(...) / __builtins__.exec(...)
 
             if exec_func_id is not None:
                 if _analyzer_on:
@@ -3039,14 +3172,40 @@ def _check_signal_escape_patterns(
                     )
             else:
                 dynamic_desc = None
-                is_dynamic_import = _ast_name_matches(func, _DYNAMIC_IMPORT_FUNCS) or (
-                    isinstance(func, ast.Name) and func.id in ("__import__", "import_module")
+                is_dynamic_import = (
+                    _ast_name_matches(func, _DYNAMIC_IMPORT_FUNCS)
+                    or (
+                        isinstance(func, ast.Name)
+                        and (
+                            func.id in ("__import__", "import_module")
+                            or func.id in self.import_func_aliases
+                        )
+                    )
+                    or (
+                        isinstance(func, ast.Attribute)
+                        and func.attr in ("import_module", "reload", "__import__")
+                        and _ast_name_matches(func.value, self.importlib_aliases)
+                    )
                 )
                 # Deserialization sinks reconstruct arbitrary objects/code from bytes.
-                if _analyzer_on and _fq_attr_name(func) in _CODE_DESERIALIZE_SINKS:
-                    dynamic_desc = (
-                        f"{_fq_attr_name(func)}() deserializes an unverifiable code payload"
-                    )
+                # Resolve aliased imports (from pickle import loads as l), module aliases
+                # (import pickle as p; p.loads) and the file-based *.load variants -- not
+                # just the exact pickle.loads name.
+                _deser_fq = None
+                if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                    _canon = self.deserialize_module_aliases.get(func.value.id)
+                    if _canon is not None:
+                        _cand = f"{_canon}.{func.attr}"
+                        if _cand in _CODE_DESERIALIZE_SINKS:
+                            _deser_fq = _cand
+                elif isinstance(func, ast.Name):
+                    _deser_fq = self.deserialize_aliases.get(func.id)
+                if _deser_fq is None:
+                    _fq_func = _fq_attr_name(func)
+                    if _fq_func in _CODE_DESERIALIZE_SINKS:
+                        _deser_fq = _fq_func
+                if _analyzer_on and _deser_fq is not None:
+                    dynamic_desc = f"{_deser_fq}() deserializes an unverifiable code payload"
                 elif is_dynamic_import:
                     # Computed module name (obfuscation) or a dangerous target is unsafe; a
                     # benign literal import (huggingface_hub, json, ...) passes. With the
@@ -3068,7 +3227,12 @@ def _check_signal_escape_patterns(
                     and node.args
                     and _ast_name_matches(
                         node.args[0],
-                        _DYNAMIC_ATTR_TARGETS | self.os_aliases | self.subprocess_aliases,
+                        _DYNAMIC_ATTR_TARGETS
+                        | self.os_aliases
+                        | self.subprocess_aliases
+                        | self.importlib_aliases
+                        | self.sys_aliases
+                        | self.builtins_aliases,
                     )
                 ):
                     # Stage 2 refinement: a benign constant attr (getattr(os, "getpid"))
@@ -3112,6 +3276,56 @@ def _check_signal_escape_patterns(
                         "description": f"introspection gadget attribute {node.attr}",
                     }
                 )
+            elif node.attr == "__dict__" and _ast_name_matches(
+                node.value,
+                _DYNAMIC_ATTR_TARGETS
+                | self.os_aliases
+                | self.subprocess_aliases
+                | self.importlib_aliases
+                | self.sys_aliases
+                | self.builtins_aliases,
+            ):
+                # os.__dict__['system']('id') reaches the sink with no getattr call for
+                # the name-based checks to see. __dict__ on ordinary objects stays allowed.
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(node, "lineno", -1),
+                        "description": "__dict__ access on a sensitive module",
+                    }
+                )
+            self.generic_visit(node)
+
+        def visit_Subscript(self, node):
+            # sys.modules['os'] pulls an already-loaded dangerous module out of the
+            # loader table (os/subprocess are loaded by the host). Scope to a Load of a
+            # dangerous LITERAL key so legit uses ("x" in sys.modules, sys.modules.get(
+            # name), sys.modules[name] = ...) stay allowed.
+            v = node.value
+            # sys.modules[...] (attribute form) or getattr(sys, 'modules')[...] (the
+            # getattr-obfuscated form) both index the loader table.
+            is_sys_modules = (
+                isinstance(v, ast.Attribute)
+                and v.attr == "modules"
+                and _ast_name_matches(v.value, self.sys_aliases)
+            ) or (
+                isinstance(v, ast.Call)
+                and isinstance(v.func, ast.Name)
+                and v.func.id == "getattr"
+                and len(v.args) >= 2
+                and _ast_name_matches(v.args[0], self.sys_aliases)
+                and _extract_string_from_node(v.args[1]) == "modules"
+            )
+            if isinstance(node.ctx, ast.Load) and is_sys_modules:
+                key = _extract_string_from_node(node.slice)
+                if key is not None and key.split(".")[0] in _DANGEROUS_IMPORT_NAMES:
+                    dynamic_exec.append(
+                        {
+                            "type": "dynamic_exec",
+                            "line": getattr(node, "lineno", -1),
+                            "description": "sys.modules[...] access to a sensitive module",
+                        }
+                    )
             self.generic_visit(node)
 
         def visit_ExceptHandler(self, node):
@@ -3960,6 +4174,8 @@ def _wrap1(mod, name, what):
         return
     @_ft.wraps(orig)
     def w(path, *a, **k):
+        if any(k.get(_f) is not None for _f in ("dir_fd", "src_dir_fd", "dst_dir_fd")):
+            _deny(path, what + " (dir_fd)")  # fd-relative target: a realpath check is meaningless
         if not _within(path):
             _deny(path, what)
         return orig(path, *a, **k)
@@ -3976,6 +4192,8 @@ def _wrap2(mod, name, both):
         return
     @_ft.wraps(orig)
     def w(src, dst, *a, **k):
+        if any(k.get(_f) is not None for _f in ("dir_fd", "src_dir_fd", "dst_dir_fd")):
+            _deny(dst, name + " (dir_fd)")  # fd-relative target: a realpath check is meaningless
         if both and not _within(src):
             _deny(src, name + " source")
         if not _within(dst):
@@ -4024,8 +4242,14 @@ try:
         def w(self, *a, **k):
             if not _within(self):
                 _deny(str(self), "Path." + name)
-            if targ and a and not _within(a[0]):
-                _deny(str(a[0]), "Path." + name + " target")
+            if targ:
+                # rename/replace/symlink_to/hardlink_to accept the target as the
+                # `target=` keyword too; on Python <= 3.10 pathlib routes through the
+                # accessor's ORIGINAL os.rename, so this wrapper is the only
+                # confinement -- check the keyword as well as the positional arg.
+                _t = a[0] if a else k.get("target")
+                if _t is not None and not _within(_t):
+                    _deny(str(_t), "Path." + name + " target")
             return orig(self, *a, **k)
         setattr(_pl.Path, name, w)
     for _n in ("write_text", "write_bytes", "unlink", "mkdir", "rmdir", "chmod", "touch"):
@@ -4049,6 +4273,52 @@ def _sandbox_runtime_prelude(workdir: str) -> str:
         "exec(compile(%r, '<studio-sandbox-guard>', 'exec'), {'__builtins__': __builtins__})\n"
         % src
     )
+
+
+def _inject_sandbox_guard(code: str, prelude: str) -> str:
+    """Splice the runtime guard into ``code`` without displacing leading directives.
+
+    ``from __future__`` imports must be the first statement of a module (only a
+    docstring and comments may precede them), so blindly prepending the guard line
+    turns any user program that opens with a future import into a SyntaxError. Parse
+    the code, keep a leading module docstring and any ``from __future__`` imports on
+    top, and insert the (inert compile-time) guard immediately after them -- it still
+    runs before the first real user statement, so the sandbox is established before
+    any file operation. Everything else (including unparsable code, where we want the
+    natural SyntaxError traceback) falls back to a plain prepend.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return prelude + code
+    body = getattr(tree, "body", [])
+    idx = 0
+    split = 0
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(getattr(body[0], "value", None), ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        idx = 1
+        split = body[0].end_lineno or 0
+    has_future = False
+    while (
+        idx < len(body)
+        and isinstance(body[idx], ast.ImportFrom)
+        and body[idx].module == "__future__"
+    ):
+        has_future = True
+        split = body[idx].end_lineno or split
+        idx += 1
+    if not has_future or split <= 0:
+        return prelude + code
+    lines = code.splitlines(keepends = True)
+    head = "".join(lines[:split])
+    tail = "".join(lines[split:])
+    if head and not head.endswith(("\n", "\r")):
+        head += "\n"
+    return head + prelude + tail
 
 
 def _python_exec(
@@ -4098,7 +4368,11 @@ def _python_exec(
         # (Windows cp1252 would otherwise raise UnicodeEncodeError).
         # Sandboxed runs get the realpath backstop prepended (Stage 5); bypass
         # runs execute the code verbatim.
-        file_body = code if disable_sandbox else (_sandbox_runtime_prelude(workdir) + code)
+        file_body = (
+            code
+            if disable_sandbox
+            else _inject_sandbox_guard(code, _sandbox_runtime_prelude(workdir))
+        )
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(file_body)
 
