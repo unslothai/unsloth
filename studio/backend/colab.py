@@ -458,6 +458,22 @@ def _shareable_link_html(cloudflare_url: str) -> str:
     """
 
 
+def _kaggle_link_html(cloudflare_url: str) -> str:
+    return f"""
+    <div style="display:inline-block;padding:16px 20px;background:#ffffff;border:2px solid #000000;
+                border-radius:10px;margin:10px 0;font-family:system-ui,-apple-system,sans-serif;">
+        <a href="{cloudflare_url}" target="_blank" rel="noopener noreferrer"
+           style="display:inline-flex;align-items:center;padding:12px 22px;background:#000000;color:#ffffff;
+                  text-decoration:none;border-radius:8px;font-weight:800;font-size:15px;">
+            Open Unsloth Studio
+        </a>
+        <div style="color:#333333;margin-top:12px;font-size:13px;font-family:monospace;font-weight:bold;">
+            {cloudflare_url}
+        </div>
+    </div>
+    """
+
+
 def _public_url_not_ready_html(cloudflare_url: str) -> str:
     return f"""
     <div style="display: inline-block; padding: 16px 20px; background: #fff7d6; border: 2px solid #b88700;
@@ -533,6 +549,9 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
             bootstrap_notice = _bootstrap_login_notice_html()
             if bootstrap_notice:
                 display(HTML(bootstrap_notice))
+            if is_kaggle:
+                display(HTML(_kaggle_link_html(cloudflare_url)))
+                return
             display(HTML(_shareable_link_html(cloudflare_url)))
 
         if use_cloudflare_iframe:
