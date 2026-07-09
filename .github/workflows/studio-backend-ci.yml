@@ -232,7 +232,8 @@ jobs:
               tests/sh/test_torch_constraint.sh \
               tests/sh/test_torch_flavor.sh \
               tests/sh/test_with_llama_cpp_dir_flag.sh \
-              tests/sh/test_with_llama_cpp_dir_link_behavior.sh; do
+              tests/sh/test_with_llama_cpp_dir_link_behavior.sh \
+              tests/sh/test_launcher_no_browser.sh; do
               echo "::group::$s"
               bash "$s"
               echo "::endgroup::"
