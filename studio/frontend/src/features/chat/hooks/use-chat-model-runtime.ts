@@ -434,6 +434,9 @@ export function useChatModelRuntime() {
       // every entry point is covered, not just the staged Load button.
       const inFlightLoad = loadingModelRef.current;
       if (inFlightLoad) {
+        if (typeof selection !== "string" && selection.previousConfig) {
+          applyPerModelConfigToRuntime(selection.previousConfig);
+        }
         const loadingSamePick =
           inFlightLoad.id === modelId &&
           (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&

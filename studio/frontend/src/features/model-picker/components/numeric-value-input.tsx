@@ -4,7 +4,7 @@
 import { cn } from "@/lib/utils";
 import { useRef, useState } from "react";
 
-function snapToStep(
+export function snapToStep(
   value: number,
   step: number,
   min?: number,

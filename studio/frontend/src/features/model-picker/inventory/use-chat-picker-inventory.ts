@@ -29,6 +29,7 @@ function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
     repo_id: row.repoId,
     size_bytes: row.bytes,
     cache_path: row.cachePath ?? "",
+    last_modified: row.lastModified ?? undefined,
     has_vision: row.capabilities.supportsVision,
   };
 }
@@ -37,6 +38,7 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
   return {
     repo_id: row.repoId,
     size_bytes: row.bytes,
+    last_modified: row.lastModified ?? undefined,
   };
 }
 

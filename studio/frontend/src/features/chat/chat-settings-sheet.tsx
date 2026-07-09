@@ -92,6 +92,10 @@ import {
   providerSupportsFastMode,
 } from "./provider-capabilities";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import {
+  NumericValueInput,
+  snapToStep,
+} from "@/features/model-picker/components/numeric-value-input";
 import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
 import type { InferenceParams } from "./types/runtime";
 
@@ -122,111 +126,6 @@ function getPromptVariablesError(raw: string): string | null {
 
 function hasPromptVariableSyntax(prompt: string): boolean {
   return PROMPT_VARIABLE_PATTERN.test(prompt);
-}
-
-/**
- * Editable numeric value display, shared by every slider value and the Context
- * Length input. An <input> that looks like text (shows `displayValue ?? value`,
- * so "Off"/"Max" labels render) until focus, when it swaps to the raw number,
- * selects it, and accepts free text. Commits on blur/Enter, reverts on Escape.
- * Clamping happens on commit so typing intermediate values isn't fought.
- */
-function snapToStep(
-  value: number,
-  step: number,
-  min?: number,
-  max?: number,
-): number {
-  const lo = min ?? Number.NEGATIVE_INFINITY;
-  const hi = max ?? Number.POSITIVE_INFINITY;
-  const clamped = Math.min(Math.max(value, lo), hi);
-  const stepStr = String(step);
-  const decimals = stepStr.includes(".") ? stepStr.split(".")[1].length : 0;
-  const base = Number.isFinite(lo) ? lo : 0;
-  const snapped = base + Math.round((clamped - base) / step) * step;
-  const reclamped = Math.min(Math.max(snapped, lo), hi);
-  return Number(reclamped.toFixed(decimals));
-}
-
-function NumericValueInput({
-  value,
-  min,
-  max,
-  step,
-  onChange,
-  displayValue,
-  className,
-  ariaLabel,
-  size: sizeAttr,
-  disabled = false,
-}: {
-  value: number;
-  min?: number;
-  max?: number;
-  step: number;
-  onChange: (v: number) => void;
-  displayValue?: string;
-  className?: string;
-  ariaLabel?: string;
-  size?: number;
-  disabled?: boolean;
-}) {
-  const [focused, setFocused] = useState(false);
-  const [draft, setDraft] = useState("");
-  const cancelBlurCommitRef = useRef(false);
-
-  const commit = (raw: string) => {
-    const parsed = Number.parseFloat(raw);
-    if (!Number.isFinite(parsed)) {
-      return;
-    }
-    const final = snapToStep(parsed, step, min, max);
-    if (final !== value) {
-      onChange(final);
-    }
-  };
-
-  const displayed = focused ? draft : (displayValue ?? String(value));
-
-  return (
-    <input
-      type="text"
-      inputMode="decimal"
-      disabled={disabled}
-      size={sizeAttr}
-      /* Fixed 4ch pill; grows only when a longer value would clip. */
-      style={{ width: `calc(${Math.max(displayed.length, 4)}ch + 18px)` }}
-      value={displayed}
-      aria-label={ariaLabel}
-      onFocus={(e) => {
-        cancelBlurCommitRef.current = false;
-        setDraft(String(value));
-        setFocused(true);
-        // Defer select() so it runs after the value swap above.
-        const target = e.currentTarget;
-        requestAnimationFrame(() => target.select());
-      }}
-      onBlur={() => {
-        if (cancelBlurCommitRef.current) {
-          cancelBlurCommitRef.current = false;
-        } else {
-          commit(draft);
-        }
-        setFocused(false);
-      }}
-      onChange={(e) => setDraft(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.currentTarget.blur();
-        } else if (e.key === "Escape") {
-          cancelBlurCommitRef.current = true;
-          setDraft(String(value));
-          e.currentTarget.blur();
-        }
-      }}
-      className={cn("panel-number-input", className)}
-    />
-  );
 }
 
 function ParamSlider({
@@ -268,6 +167,7 @@ function ParamSlider({
           displayValue={displayValue}
           ariaLabel={label}
           size={valueSize ?? 4}
+          className="panel-number-input"
         />
       </div>
       <Slider

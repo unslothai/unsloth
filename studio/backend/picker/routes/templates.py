@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 from typing import Optional
-from urllib.parse import unquote
 
 from fastapi import APIRouter, Body, Depends, Query
 
@@ -37,8 +36,7 @@ async def get_default_chat_template_route(
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> ModelTemplateResponse:
-    name = unquote(model_name)
     template = await asyncio.to_thread(
-        read_default_chat_template, name, hf_token, gguf_variant
+        read_default_chat_template, model_name, hf_token, gguf_variant
     )
-    return ModelTemplateResponse(model_name = name, chat_template = template)
+    return ModelTemplateResponse(model_name = model_name, chat_template = template)

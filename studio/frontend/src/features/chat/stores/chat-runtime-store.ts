@@ -726,9 +726,6 @@ type ChatRuntimeStore = {
   setNudgeToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
-  /** Revert the editable load knobs to the loaded model's baseline, or defaults
-   *  when nothing is loaded. */
-  resetModelSettingsToLoaded: () => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
   setFitOnDeviceOnly: (value: boolean) => void;
@@ -931,23 +928,6 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
   }
   scalarSettingMutationVersions[key] += 1;
   saveSettingsPatch({ [key]: value });
-}
-
-/** The "revert to the loaded model" baseline for the editable load knobs.
- *  Shared by resetModelSettingsToLoaded (full revert) and stageModel (which
- *  overrides speculative to start a fresh pick from the standing default). */
-function loadedBaselineSettings(s: ChatRuntimeStore) {
-  const hasLoadedModel = Boolean(s.params.checkpoint);
-  return {
-    customContextLength: null,
-    kvCacheDtype: s.loadedKvCacheDtype,
-    tensorParallel: s.loadedTensorParallel ?? false,
-    speculativeType: hasLoadedModel
-      ? s.loadedSpeculativeType
-      : readPersistedSpeculativeType(),
-    specDraftNMax: hasLoadedModel ? s.loadedSpecDraftNMax : null,
-    chatTemplateOverride: s.loadedChatTemplateOverride,
-  };
 }
 
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
@@ -1476,7 +1456,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return { toolCallTimeout };
     }),
-  resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
   setExpandQuantizations: (expandQuantizations) => {
     saveBool(CHAT_EXPAND_QUANTIZATIONS_KEY, expandQuantizations);
     set({ expandQuantizations });

@@ -47,6 +47,7 @@ export interface CachedInventoryRow {
   capabilities: ModelInventoryCapabilities;
   bytes: number;
   cachePath?: string | null;
+  lastModified?: number | null;
   partial?: boolean;
   partialTransport?: string | null;
   pipelineTag?: string | null;
