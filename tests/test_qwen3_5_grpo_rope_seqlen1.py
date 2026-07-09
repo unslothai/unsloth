@@ -82,7 +82,13 @@ def _rotate_half(x):
     return torch.cat((-x2, x1), dim = -1)
 
 
-def _naive_apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim = 1):
+def _naive_apply_rotary_pos_emb(
+    q,
+    k,
+    cos,
+    sin,
+    unsqueeze_dim = 1,
+):
     # Mirrors transformers.models.qwen3_5.modeling_qwen3_5.apply_rotary_pos_emb:
     # the naive torch.cat-based recombination this guard exists to work around.
     cos = cos.unsqueeze(unsqueeze_dim)
@@ -241,7 +247,13 @@ def test_wrapped_rope_falls_back_only_on_seq_len_1_shape_error():
     assert torch.allclose(q_out, naive_q)
     assert torch.allclose(k_out, naive_k)
 
-    def _broken_apply(q, k, cos, sin, unsqueeze_dim = 1):
+    def _broken_apply(
+        q,
+        k,
+        cos,
+        sin,
+        unsqueeze_dim = 1,
+    ):
         raise RuntimeError("Sizes of tensors must match except in dimension 3")
 
     wrapped_broken = _wrap_qwen3_5_rope(_broken_apply)
@@ -250,7 +262,13 @@ def test_wrapped_rope_falls_back_only_on_seq_len_1_shape_error():
     assert q_out.shape == q1.shape
     assert k_out.shape == k1.shape
 
-    def _broken_apply_other_error(q, k, cos, sin, unsqueeze_dim = 1):
+    def _broken_apply_other_error(
+        q,
+        k,
+        cos,
+        sin,
+        unsqueeze_dim = 1,
+    ):
         raise RuntimeError("out of memory")
 
     wrapped_oom = _wrap_qwen3_5_rope(_broken_apply_other_error)
@@ -269,9 +287,7 @@ def test_upstream_source_canary():
         pytest.skip("transformers has no qwen3_5 module (too old)")
 
     try:
-        mod = importlib.import_module(
-            "transformers.models.qwen3_5.modeling_qwen3_5"
-        )
+        mod = importlib.import_module("transformers.models.qwen3_5.modeling_qwen3_5")
     except Exception as exc:
         pytest.skip(f"could not import qwen3_5 modeling module: {exc!r}")
 
@@ -288,12 +304,7 @@ def test_upstream_source_canary():
     # with the passthrough slice.  When upstream removes this concat in favor
     # of a shape-safe alternative, our temporary _wrap_qwen3_5_rope guard can
     # be retired.
-    has_vulnerable_concat = (
-        "torch.cat" in src
-        and "embed" in src
-        and "pass" in src
-        and "dim" in src
-    )
+    has_vulnerable_concat = "torch.cat" in src and "embed" in src and "pass" in src and "dim" in src
 
     if not has_vulnerable_concat:
         pytest.fail(

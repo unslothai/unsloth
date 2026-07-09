@@ -3182,7 +3182,13 @@ def _forward_is_unsloth_compiled(model):
     return False
 
 
-def _rope_seq_len_1_fallback(q, k, cos, sin, unsqueeze_dim = 1):
+def _rope_seq_len_1_fallback(
+    q,
+    k,
+    cos,
+    sin,
+    unsqueeze_dim = 1,
+):
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
     if cos.shape[-2] == 0:
@@ -3215,7 +3221,15 @@ def _wrap_qwen3_5_rope(original_fn):
     # seq_len == 1 (single-token GRPO scoring step) falls back to the shape-safe
     # implementation above instead of crashing the eval step.
     @functools.wraps(original_fn)
-    def _unsloth_wrapped_apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim = 1, *args, **kwargs):
+    def _unsloth_wrapped_apply_rotary_pos_emb(
+        q,
+        k,
+        cos,
+        sin,
+        unsqueeze_dim = 1,
+        *args,
+        **kwargs,
+    ):
         try:
             return original_fn(q, k, cos, sin, unsqueeze_dim, *args, **kwargs)
         except RuntimeError as e:
