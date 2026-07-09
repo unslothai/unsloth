@@ -169,7 +169,6 @@ def test_update_handler_rejects_remote_client(monkeypatch):
 
 def _depends_on_host_session(handler) -> bool:
     from fastapi import params
-
     for param in inspect.signature(handler).parameters.values():
         default = param.default
         if isinstance(default, params.Depends) and default.dependency is rl.is_host_session:

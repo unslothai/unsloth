@@ -33,7 +33,11 @@ class _Headers:
     def __init__(self, values = None):
         self._values = {k.lower(): v for k, v in (values or {}).items()}
 
-    def get(self, key, default = None):
+    def get(
+        self,
+        key,
+        default = None,
+    ):
         return self._values.get(key.lower(), default)
 
 
@@ -43,7 +47,12 @@ class _Client:
 
 
 class _Request:
-    def __init__(self, *, headers = None, client_host = None):
+    def __init__(
+        self,
+        *,
+        headers = None,
+        client_host = None,
+    ):
         self.headers = _Headers(headers)
         self.client = _Client(client_host) if client_host is not None else None
 

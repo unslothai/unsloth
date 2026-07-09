@@ -122,11 +122,7 @@ def is_host_session(request: Request) -> bool:
     auth_header = request.headers.get("authorization")
     if auth_header:
         parts = auth_header.split(None, 1)
-        if (
-            len(parts) == 2
-            and parts[0].lower() == "bearer"
-            and is_desktop_access_token(parts[1])
-        ):
+        if len(parts) == 2 and parts[0].lower() == "bearer" and is_desktop_access_token(parts[1]):
             return True
 
     client = request.client
