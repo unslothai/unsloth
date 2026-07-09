@@ -400,7 +400,13 @@ class TestLaunchedArgvReconciliation:
         # must read that command: --mmproj is gone but --fit off and -c survive,
         # so the launched fit/context come from the server that is actually live.
         failed_mmproj = [
-            "llama-server", "-c", "8192", "--mmproj", "m.gguf", "--fit", "off",
+            "llama-server",
+            "-c",
+            "8192",
+            "--mmproj",
+            "m.gguf",
+            "--fit",
+            "off",
         ]
         text_only = LlamaCppBackend._strip_mmproj_args(failed_mmproj)
         assert "--mmproj" not in text_only
