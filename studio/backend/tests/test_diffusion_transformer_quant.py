@@ -608,7 +608,10 @@ def test_family_deny_auto_skips_fp8_for_hunyuan(monkeypatch):
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto", family = "hunyuanvideo-1.5") == TQ_INT8
-    assert select_transformer_quant_scheme(_target(), "auto", family = "hunyuanvideo-1.5-720p") == TQ_INT8
+    assert (
+        select_transformer_quant_scheme(_target(), "auto", family = "hunyuanvideo-1.5-720p")
+        == TQ_INT8
+    )
     # ltx-2 keeps the ladder head (fp8) -- it is not a black-frame family.
     assert select_transformer_quant_scheme(_target(), "auto", family = "ltx-2") == TQ_FP8
 
@@ -690,7 +693,12 @@ def test_quantize_transformer_fp8_wan_excludes_condition_embedder(monkeypatch):
     torch.bfloat16 = "bfloat16"
 
     class _Linear:
-        def __init__(self, inf, outf, dtype = "bfloat16"):
+        def __init__(
+            self,
+            inf,
+            outf,
+            dtype = "bfloat16",
+        ):
             self.in_features, self.out_features = inf, outf
             self.weight = types.SimpleNamespace(dtype = dtype)
 
@@ -711,4 +719,6 @@ def test_quantize_transformer_fp8_wan_excludes_condition_embedder(monkeypatch):
     assert filt(big, "condition_embedder.time_embedder.linear_1") is False
     assert filt(big, "blocks.0.attn1.to_q") is True
     assert filt(big, "blocks.0.ffn.net.0.proj") is True
-    assert filt(big, "blocks.0.attn2.to_k") is True  # cross-attn K/V stay fp8 (embedder bias rescues rows)
+    assert (
+        filt(big, "blocks.0.attn2.to_k") is True
+    )  # cross-attn K/V stay fp8 (embedder bias rescues rows)

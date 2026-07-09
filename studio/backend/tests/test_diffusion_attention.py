@@ -462,7 +462,7 @@ def test_trim_stream_layout_agnostic_drops_only_global_padding():
 
 def test_trim_stream_full_mask_is_noop():
     states = torch.ones(1, 4, 2)
-    mask = torch.ones(1, 4, dtype=torch.long)
+    mask = torch.ones(1, 4, dtype = torch.long)
     out_s, out_m, all_valid = att._trim_stream(states, mask)
     assert out_s.shape == (1, 4, 2) and all_valid is True
 
@@ -483,9 +483,9 @@ def test_trim_stream_mixed_batch_not_all_valid():
     assert all_valid is False
 
 
-def _fake_dit(n_blocks=2):
-    blocks = [types.SimpleNamespace(attn=types.SimpleNamespace()) for _ in range(n_blocks)]
-    return types.SimpleNamespace(transformer_blocks=blocks)
+def _fake_dit(n_blocks = 2):
+    blocks = [types.SimpleNamespace(attn = types.SimpleNamespace()) for _ in range(n_blocks)]
+    return types.SimpleNamespace(transformer_blocks = blocks)
 
 
 def test_trim_pre_hook_empties_t2v_image_and_trims_and_flags():
@@ -508,7 +508,7 @@ def test_trim_stream_all_invalid_yields_empty_but_valid():
     # A fully-padded secondary stream (e.g. unused byt5 in t2v) trims to 0 length and reports
     # all_valid True (vacuous) so it does NOT drop the fast path -- it just contributes no tokens.
     states = torch.ones(1, 5, 2)
-    mask = torch.zeros(1, 5, dtype=torch.long)
+    mask = torch.zeros(1, 5, dtype = torch.long)
     out_s, out_m, all_valid = att._trim_stream(states, mask)
     assert out_s.shape == (1, 0, 2) and all_valid is True
 
@@ -522,7 +522,7 @@ def test_trim_pre_hook_byt5_all_invalid_keeps_fast_path():
         "encoder_hidden_states": torch.arange(4.0).reshape(1, 4, 1),
         "encoder_attention_mask": torch.tensor([[1, 1, 1, 0]]),
         "encoder_hidden_states_2": torch.ones(1, 6, 1),
-        "encoder_attention_mask_2": torch.zeros(1, 6, dtype=torch.long),  # all padding
+        "encoder_attention_mask_2": torch.zeros(1, 6, dtype = torch.long),  # all padding
     }
     _, out = att._hunyuan_trim_pre_hook(dit, (), kwargs)
     assert out["encoder_hidden_states"].shape == (1, 3, 1)
@@ -538,7 +538,7 @@ def test_trim_pre_hook_empty_primary_reverts_and_disables():
     kwargs = {
         "image_embeds": torch.zeros(1, 5, 3),
         "encoder_hidden_states": mllm,
-        "encoder_attention_mask": torch.zeros(1, 4, dtype=torch.long),  # 0 valid
+        "encoder_attention_mask": torch.zeros(1, 4, dtype = torch.long),  # 0 valid
     }
     _, out = att._hunyuan_trim_pre_hook(dit, (), kwargs)
     assert out["encoder_hidden_states"] is mllm  # reverted (not emptied)
@@ -590,14 +590,14 @@ def test_trim_pre_hook_absent_stream_not_written_back():
 
 
 def test_install_trim_noop_for_non_hunyuan_family():
-    fam = types.SimpleNamespace(transformer_class="WanTransformer3DModel")
-    pipe = types.SimpleNamespace(transformer=types.SimpleNamespace())
+    fam = types.SimpleNamespace(transformer_class = "WanTransformer3DModel")
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
     assert att.install_hunyuan_attention_trim(pipe, fam) is False
 
 
 def test_install_trim_noop_when_transformer_class_mismatch():
     # Family claims Hunyuan but the loaded module isn't -> no processors touched, no diffusers
     # import; returns False rather than swapping an unknown attention processor.
-    fam = types.SimpleNamespace(transformer_class="HunyuanVideo15Transformer3DModel")
-    pipe = types.SimpleNamespace(transformer=types.SimpleNamespace())  # class name mismatch
+    fam = types.SimpleNamespace(transformer_class = "HunyuanVideo15Transformer3DModel")
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())  # class name mismatch
     assert att.install_hunyuan_attention_trim(pipe, fam) is False

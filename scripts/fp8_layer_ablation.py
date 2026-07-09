@@ -67,7 +67,6 @@ from core.inference.diffusion_transformer_quant import (  # noqa: E402
 # ── cuda helpers ────────────────────────────────────────────────────────────────
 def _empty() -> None:
     import torch
-
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -121,8 +120,9 @@ class _Stop(Exception):
     pass
 
 
-def _capture_forward_tuple(pipe, *, steps, width, height, num_frames, guidance, seed,
-                           capture_call, gvg):
+def _capture_forward_tuple(
+    pipe, *, steps, width, height, num_frames, guidance, seed, capture_call, gvg
+):
     """Run a bf16 generation and grab the ``capture_call``-th transformer forward's
     (args, kwargs) to CPU, then abort. This is a REAL mid-schedule DiT input."""
     import torch
@@ -138,11 +138,15 @@ def _capture_forward_tuple(pipe, *, steps, width, height, num_frames, guidance, 
             raise _Stop()
         return None
 
-    handle = pipe.transformer.register_forward_pre_hook(_pre, with_kwargs=True)
-    g = torch.Generator(device="cuda").manual_seed(seed)
+    handle = pipe.transformer.register_forward_pre_hook(_pre, with_kwargs = True)
+    g = torch.Generator(device = "cuda").manual_seed(seed)
     kwargs = dict(
-        prompt=PROMPT, width=width, height=height, num_frames=num_frames,
-        num_inference_steps=steps, generator=g,
+        prompt = PROMPT,
+        width = width,
+        height = height,
+        num_frames = num_frames,
+        num_inference_steps = steps,
+        generator = g,
     )
     if gvg:
         guider = getattr(pipe, "guider", None)
@@ -192,8 +196,12 @@ def _score(ref, cand) -> dict:
         a = canf[mask]
         b = reff[mask]
         cos = float(torch.nn.functional.cosine_similarity(a.unsqueeze(0), b.unsqueeze(0)).item())
-        rel = float((torch.linalg.vector_norm(a - b) / (torch.linalg.vector_norm(b) + 1e-12)).item())
-        norm_ratio = float((torch.linalg.vector_norm(a) / (torch.linalg.vector_norm(b) + 1e-12)).item())
+        rel = float(
+            (torch.linalg.vector_norm(a - b) / (torch.linalg.vector_norm(b) + 1e-12)).item()
+        )
+        norm_ratio = float(
+            (torch.linalg.vector_norm(a) / (torch.linalg.vector_norm(b) + 1e-12)).item()
+        )
     else:
         cos, rel, norm_ratio = 0.0, float("inf"), 0.0
     return {
@@ -201,7 +209,9 @@ def _score(ref, cand) -> dict:
         "relL2": round(rel, 5),
         "frac_nonfinite": round(frac_nonfinite, 6),
         "norm_ratio": round(norm_ratio, 5),
-        "cand_amax": round(float(canf[fin_c].abs().max().item()) if fin_c.any() else float("inf"), 3),
+        "cand_amax": round(
+            float(canf[fin_c].abs().max().item()) if fin_c.any() else float("inf"), 3
+        ),
     }
 
 
@@ -217,12 +227,19 @@ def _verdict(sc: dict) -> str:
 
 
 # ── quant helpers ──────────────────────────────────────────────────────────────
-def _fp8_filter(min_features: int, exclude_tokens=(), only_tokens=()):
+def _fp8_filter(
+    min_features: int,
+    exclude_tokens = (),
+    only_tokens = (),
+):
     """A production fp8 filter (require_bf16) optionally narrowed:
     - exclude_tokens: skip linears whose fqn contains any token (keep them bf16)
     - only_tokens   : quantise ONLY linears whose fqn contains any token."""
-    base = make_filter_fn(min_features, exclude_name_tokens=exclude_tokens,
-                          require_bf16=(TQ_FP8 in _REQUIRE_BF16_SCHEMES))
+    base = make_filter_fn(
+        min_features,
+        exclude_name_tokens = exclude_tokens,
+        require_bf16 = (TQ_FP8 in _REQUIRE_BF16_SCHEMES),
+    )
 
     def filt(module, fqn: str = "") -> bool:
         if not base(module, fqn):
@@ -237,16 +254,24 @@ def _fp8_filter(min_features: int, exclude_tokens=(), only_tokens=()):
     return filt
 
 
-def _ablate(dense_cpu, tup, *, min_features, fast_accum=None, exclude_tokens=(), only_tokens=(),
-            instrument=False):
+def _ablate(
+    dense_cpu,
+    tup,
+    *,
+    min_features,
+    fast_accum = None,
+    exclude_tokens = (),
+    only_tokens = (),
+    instrument = False,
+):
     """Deepcopy the dense DiT -> GPU -> fp8-quantise the selected subset -> one forward.
     Returns (cpu_output_tensor, finiteness_records|None)."""
     import torch
     from torchao.quantization import quantize_
 
     m = copy.deepcopy(dense_cpu).to("cuda")
-    filt = _fp8_filter(min_features, exclude_tokens=exclude_tokens, only_tokens=only_tokens)
-    quantize_(m, _make_quant_config(TQ_FP8, fast_accum=fast_accum), filter_fn=filt)
+    filt = _fp8_filter(min_features, exclude_tokens = exclude_tokens, only_tokens = only_tokens)
+    quantize_(m, _make_quant_config(TQ_FP8, fast_accum = fast_accum), filter_fn = filt)
 
     records = None
     hooks = []
@@ -255,7 +280,11 @@ def _ablate(dense_cpu, tup, *, min_features, fast_accum=None, exclude_tokens=(),
 
         def mk(nm):
             def hook(mod, inp, out):
-                o = out if torch.is_tensor(out) else (out[0] if isinstance(out, (list, tuple)) and out else None)
+                o = (
+                    out
+                    if torch.is_tensor(out)
+                    else (out[0] if isinstance(out, (list, tuple)) and out else None)
+                )
                 if o is None:
                     return
                 of = o.detach().float()
@@ -265,15 +294,20 @@ def _ablate(dense_cpu, tup, *, min_features, fast_accum=None, exclude_tokens=(),
                     xin = inp[0].detach().float()
                     in_amax = float(xin.abs().max().item())
                     if xin.dim() >= 2:
-                        ra = xin.reshape(-1, xin.shape[-1]).abs().amax(dim=-1)
+                        ra = xin.reshape(-1, xin.shape[-1]).abs().amax(dim = -1)
                         in_frac_zero_rows = round(float((ra < 1e-6).float().mean().item()), 4)
-                records.append({
-                    "name": nm,
-                    "out_finite": bool(torch.isfinite(of).all().item()),
-                    "out_amax": float(of.abs().max().item()) if torch.isfinite(of).any() else float("inf"),
-                    "in_amax": in_amax,
-                    "in_frac_zero_rows": in_frac_zero_rows,
-                })
+                records.append(
+                    {
+                        "name": nm,
+                        "out_finite": bool(torch.isfinite(of).all().item()),
+                        "out_amax": float(of.abs().max().item())
+                        if torch.isfinite(of).any()
+                        else float("inf"),
+                        "in_amax": in_amax,
+                        "in_frac_zero_rows": in_frac_zero_rows,
+                    }
+                )
+
             return hook
 
         for nm, mod in m.named_modules():
@@ -332,7 +366,7 @@ def _zero_row_diag(tup: dict) -> dict:
     for key, val in tup.get("kwargs", {}).items():
         if torch.is_tensor(val) and val.dim() >= 2 and val.is_floating_point():
             x = val.float().reshape(-1, val.shape[-1])
-            row_amax = x.abs().amax(dim=-1)
+            row_amax = x.abs().amax(dim = -1)
             n = int(row_amax.numel())
             n_zero = int((row_amax < 1e-6).sum().item())
             diag[key] = {
@@ -360,16 +394,19 @@ def _bf16_reference_and_stats(dense_gpu, tup, *, min_features):
                 return
             x = inp[0].detach().float()
             x2 = x.reshape(-1, x.shape[-1]).abs()  # [tokens, channels]
-            amax_tok = x2.amax(dim=-1)
-            med_tok = x2.median(dim=-1).values
+            amax_tok = x2.amax(dim = -1)
+            med_tok = x2.median(dim = -1).values
             spread = float((amax_tok / (med_tok + 1e-9)).mean().item())
-            stats.append({
-                "name": nm,
-                "in_amax": float(x2.max().item()),
-                "spread": round(spread, 2),
-                "in_features": int(mod.in_features),
-                "out_features": int(mod.out_features),
-            })
+            stats.append(
+                {
+                    "name": nm,
+                    "in_amax": float(x2.max().item()),
+                    "spread": round(spread, 2),
+                    "in_features": int(mod.in_features),
+                    "out_features": int(mod.out_features),
+                }
+            )
+
         return hook
 
     for nm, mod in dense_gpu.named_modules():
@@ -380,31 +417,35 @@ def _bf16_reference_and_stats(dense_gpu, tup, *, min_features):
     ref = ref.detach().to("cpu")
     for h in hooks:
         h.remove()
-    stats.sort(key=lambda s: s["spread"], reverse=True)
+    stats.sort(key = lambda s: s["spread"], reverse = True)
     return ref, stats
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--family", default="wan2.2-ti2v-5b", choices=sorted(_FAMILIES))
-    ap.add_argument("--phase", type=int, default=0, choices=[0, 1, 2])
-    ap.add_argument("--only", default="", help="phase 2: comma tokens -- fp8 ONLY these linears")
-    ap.add_argument("--exclude", default="", help="phase 2: comma tokens -- fp8 all EXCEPT these")
-    ap.add_argument("--steps", type=int, default=20)
-    ap.add_argument("--num-frames", type=int, default=25)
-    ap.add_argument("--width", type=int, default=512)
-    ap.add_argument("--height", type=int, default=320)
-    ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--capture-call", type=int, default=8,
-                    help="which transformer forward call to capture (~mid schedule)")
-    ap.add_argument("--min-features", type=int, default=DEFAULT_MIN_LINEAR_FEATURES)
-    ap.add_argument("--out", default="outputs/fp8_ablation")
+def main(argv = None) -> int:
+    ap = argparse.ArgumentParser(description = __doc__)
+    ap.add_argument("--family", default = "wan2.2-ti2v-5b", choices = sorted(_FAMILIES))
+    ap.add_argument("--phase", type = int, default = 0, choices = [0, 1, 2])
+    ap.add_argument("--only", default = "", help = "phase 2: comma tokens -- fp8 ONLY these linears")
+    ap.add_argument("--exclude", default = "", help = "phase 2: comma tokens -- fp8 all EXCEPT these")
+    ap.add_argument("--steps", type = int, default = 20)
+    ap.add_argument("--num-frames", type = int, default = 25)
+    ap.add_argument("--width", type = int, default = 512)
+    ap.add_argument("--height", type = int, default = 320)
+    ap.add_argument("--seed", type = int, default = 42)
+    ap.add_argument(
+        "--capture-call",
+        type = int,
+        default = 8,
+        help = "which transformer forward call to capture (~mid schedule)",
+    )
+    ap.add_argument("--min-features", type = int, default = DEFAULT_MIN_LINEAR_FEATURES)
+    ap.add_argument("--out", default = "outputs/fp8_ablation")
     args = ap.parse_args(argv)
 
     import torch
 
     out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents = True, exist_ok = True)
 
     spec = _FAMILIES[args.family]
     repo = spec["repo"]
@@ -416,79 +457,111 @@ def main(argv=None) -> int:
     fam_obj = detect_video_family(repo)
     gvg = bool(getattr(fam_obj, "guidance_via_guider", False))
 
-    print(f"== fp8 layer ablation: family={args.family} repo={repo} phase={args.phase} ==", flush=True)
+    print(
+        f"== fp8 layer ablation: family={args.family} repo={repo} phase={args.phase} ==", flush = True
+    )
     t0 = time.perf_counter()
     pipe = _build_pipe(repo, force_fp32)
-    print(f"[load] pipe built in {time.perf_counter()-t0:.1f}s", flush=True)
+    print(f"[load] pipe built in {time.perf_counter()-t0:.1f}s", flush = True)
 
     tup = _capture_forward_tuple(
-        pipe, steps=args.steps, width=args.width, height=args.height,
-        num_frames=args.num_frames, guidance=guidance, seed=args.seed,
-        capture_call=args.capture_call, gvg=gvg,
+        pipe,
+        steps = args.steps,
+        width = args.width,
+        height = args.height,
+        num_frames = args.num_frames,
+        guidance = guidance,
+        seed = args.seed,
+        capture_call = args.capture_call,
+        gvg = gvg,
     )
-    ks = {k: (tuple(v.shape) if torch.is_tensor(v) else type(v).__name__)
-          for k, v in tup.get("kwargs", {}).items()}
-    print(f"[capture] call #{args.capture_call} kwargs={ks}", flush=True)
+    ks = {
+        k: (tuple(v.shape) if torch.is_tensor(v) else type(v).__name__)
+        for k, v in tup.get("kwargs", {}).items()
+    }
+    print(f"[capture] call #{args.capture_call} kwargs={ks}", flush = True)
 
     # Keep the dense bf16 DiT (still on GPU) as reference source; copy to CPU as the ablation seed.
     dense_gpu = pipe.transformer
-    ref, stats = _bf16_reference_and_stats(dense_gpu, tup, min_features=args.min_features)
-    print(f"[bf16 ref] out shape={tuple(ref.shape)} amax={float(ref.float().abs().max()):.3f} "
-          f"n_quantized_linears={len(stats)}", flush=True)
+    ref, stats = _bf16_reference_and_stats(dense_gpu, tup, min_features = args.min_features)
+    print(
+        f"[bf16 ref] out shape={tuple(ref.shape)} amax={float(ref.float().abs().max()):.3f} "
+        f"n_quantized_linears={len(stats)}",
+        flush = True,
+    )
 
     dense_cpu = copy.deepcopy(dense_gpu).to("cpu")
     # Free the pipeline (VAE/text encoders) to leave the GPU for one transformer at a time.
     del pipe, dense_gpu
     _empty()
 
-    report: dict[str, Any] = {"family": args.family, "repo": repo, "capture_call": args.capture_call,
-                              "input_shapes": ks, "ref_amax": round(float(ref.float().abs().max()), 3),
-                              "zero_row_diag": _zero_row_diag(tup)}
-    print(f"[zero-row diag] {report['zero_row_diag']}", flush=True)
+    report: dict[str, Any] = {
+        "family": args.family,
+        "repo": repo,
+        "capture_call": args.capture_call,
+        "input_shapes": ks,
+        "ref_amax": round(float(ref.float().abs().max()), 3),
+        "zero_row_diag": _zero_row_diag(tup),
+    }
+    print(f"[zero-row diag] {report['zero_row_diag']}", flush = True)
 
     if args.phase == 0:
         # ── Phase 0a: proxy validity -- fp8-ALL (production accum = None auto-detect) ──
-        out_all, _ = _ablate(dense_cpu, tup, min_features=args.min_features, fast_accum=None)
+        out_all, _ = _ablate(dense_cpu, tup, min_features = args.min_features, fast_accum = None)
         sc_all = _score(ref, out_all)
         report["fp8_all_autoaccum"] = {**sc_all, "verdict": _verdict(sc_all)}
-        print(f"[0a fp8-ALL auto-accum] {sc_all} -> {_verdict(sc_all)}", flush=True)
+        print(f"[0a fp8-ALL auto-accum] {sc_all} -> {_verdict(sc_all)}", flush = True)
 
         # ── Phase 0b-ii: accumulate flip ──
         for fa in (False, True):
-            o, _ = _ablate(dense_cpu, tup, min_features=args.min_features, fast_accum=fa)
+            o, _ = _ablate(dense_cpu, tup, min_features = args.min_features, fast_accum = fa)
             sc = _score(ref, o)
             report[f"fp8_all_fast_accum_{fa}"] = {**sc, "verdict": _verdict(sc)}
-            print(f"[0b accum={fa}] {sc} -> {_verdict(sc)}", flush=True)
+            print(f"[0b accum={fa}] {sc} -> {_verdict(sc)}", flush = True)
 
         # ── Phase 0b-i: per-Linear finiteness (instrumented fp8-ALL forward) ──
-        _, records = _ablate(dense_cpu, tup, min_features=args.min_features, fast_accum=None,
-                             instrument=True)
+        _, records = _ablate(
+            dense_cpu, tup, min_features = args.min_features, fast_accum = None, instrument = True
+        )
         if records:
             nonfinite = [r for r in records if not r["out_finite"]]
             report["first_nonfinite_linears"] = nonfinite[:10]
             report["n_nonfinite_linears"] = len(nonfinite)
-            finite_sorted = sorted([r for r in records if r["out_finite"]],
-                                   key=lambda r: r["out_amax"], reverse=True)
+            finite_sorted = sorted(
+                [r for r in records if r["out_finite"]], key = lambda r: r["out_amax"], reverse = True
+            )
             report["top_out_amax_linears"] = finite_sorted[:10]
-            print(f"[0b finiteness] {len(nonfinite)}/{len(records)} linears non-finite; "
-                  f"first={[r['name'] for r in nonfinite[:5]]}", flush=True)
-            print(f"[0b top out_amax] {[(r['name'], round(r['out_amax'],1)) for r in finite_sorted[:5]]}",
-                  flush=True)
+            print(
+                f"[0b finiteness] {len(nonfinite)}/{len(records)} linears non-finite; "
+                f"first={[r['name'] for r in nonfinite[:5]]}",
+                flush = True,
+            )
+            print(
+                f"[0b top out_amax] {[(r['name'], round(r['out_amax'],1)) for r in finite_sorted[:5]]}",
+                flush = True,
+            )
 
         report["top_spread_linears"] = stats[:20]
-        print(f"[stats] top-spread linears: "
-              f"{[(s['name'], s['spread']) for s in stats[:8]]}", flush=True)
+        print(
+            f"[stats] top-spread linears: " f"{[(s['name'], s['spread']) for s in stats[:8]]}",
+            flush = True,
+        )
 
         va = report["fp8_all_autoaccum"]["verdict"]
         if va.startswith("BROKEN"):
-            print("\n[GATE] fp8-ALL reproduces the black signal in one forward -> proxy VALID; "
-                  "proceed to Phase 1 bucket ablation.", flush=True)
+            print(
+                "\n[GATE] fp8-ALL reproduces the black signal in one forward -> proxy VALID; "
+                "proceed to Phase 1 bucket ablation.",
+                flush = True,
+            )
         elif va == "CLEAN":
-            print("\n[GATE] fp8-ALL is CLEAN in one forward but full gen is black -> failure is "
-                  "multi-step/cache; single-forward bisection cannot localise -> STOP, keep int8.",
-                  flush=True)
+            print(
+                "\n[GATE] fp8-ALL is CLEAN in one forward but full gen is black -> failure is "
+                "multi-step/cache; single-forward bisection cannot localise -> STOP, keep int8.",
+                flush = True,
+            )
         else:
-            print(f"\n[GATE] fp8-ALL verdict={va}: borderline; inspect scores.", flush=True)
+            print(f"\n[GATE] fp8-ALL verdict={va}: borderline; inspect scores.", flush = True)
 
     elif args.phase == 1:  # ── Phase 1: bucket ablation (necessity + sufficiency) ──
         kind = _dit_kind(args.family)
@@ -496,53 +569,68 @@ def main(argv=None) -> int:
         results: dict[str, Any] = {}
 
         # baseline: fp8-ALL (should be BROKEN, matching Phase 0)
-        o, _ = _ablate(dense_cpu, tup, min_features=args.min_features)
+        o, _ = _ablate(dense_cpu, tup, min_features = args.min_features)
         results["fp8_all"] = {**_score(ref, o)}
         results["fp8_all"]["verdict"] = _verdict(results["fp8_all"])
-        print(f"[1 baseline fp8-ALL] {results['fp8_all']['verdict']} {results['fp8_all']}", flush=True)
+        print(
+            f"[1 baseline fp8-ALL] {results['fp8_all']['verdict']} {results['fp8_all']}", flush = True
+        )
 
         for bname, toks in buckets.items():
             # NECESSITY: fp8 everything EXCEPT this bucket -- if CLEAN, this bucket is the culprit.
-            o, _ = _ablate(dense_cpu, tup, min_features=args.min_features, exclude_tokens=toks)
+            o, _ = _ablate(dense_cpu, tup, min_features = args.min_features, exclude_tokens = toks)
             sc_ex = _score(ref, o)
             # SUFFICIENCY: fp8 ONLY this bucket -- if BROKEN, this bucket alone reproduces damage.
-            o2, _ = _ablate(dense_cpu, tup, min_features=args.min_features, only_tokens=toks)
+            o2, _ = _ablate(dense_cpu, tup, min_features = args.min_features, only_tokens = toks)
             sc_only = _score(ref, o2)
             results[bname] = {
                 "exclude": {**sc_ex, "verdict": _verdict(sc_ex)},
                 "only": {**sc_only, "verdict": _verdict(sc_only)},
             }
-            print(f"[1 {bname}] EXCLUDE->{_verdict(sc_ex)} (cos {sc_ex['cosine']}, "
-                  f"nf {sc_ex['frac_nonfinite']}) | ONLY->{_verdict(sc_only)} "
-                  f"(cos {sc_only['cosine']}, nf {sc_only['frac_nonfinite']})", flush=True)
+            print(
+                f"[1 {bname}] EXCLUDE->{_verdict(sc_ex)} (cos {sc_ex['cosine']}, "
+                f"nf {sc_ex['frac_nonfinite']}) | ONLY->{_verdict(sc_only)} "
+                f"(cos {sc_only['cosine']}, nf {sc_only['frac_nonfinite']})",
+                flush = True,
+            )
 
         report["phase1"] = results
 
     else:  # ── Phase 2: instrument a specific only/exclude set, find first overflow ──
         only = tuple(t.strip() for t in args.only.split(",") if t.strip())
         exclude = tuple(t.strip() for t in args.exclude.split(",") if t.strip())
-        o, records = _ablate(dense_cpu, tup, min_features=args.min_features,
-                             only_tokens=only, exclude_tokens=exclude, instrument=True)
+        o, records = _ablate(
+            dense_cpu,
+            tup,
+            min_features = args.min_features,
+            only_tokens = only,
+            exclude_tokens = exclude,
+            instrument = True,
+        )
         sc = _score(ref, o)
         report["phase2"] = {"only": only, "exclude": exclude, **sc, "verdict": _verdict(sc)}
-        print(f"[2 only={only} exclude={exclude}] {sc} -> {_verdict(sc)}", flush=True)
+        print(f"[2 only={only} exclude={exclude}] {sc} -> {_verdict(sc)}", flush = True)
         if records:
             # first non-finite linears in execution order, with their input amax: an in_amax of
             # ~0 at the first-broken layer confirms a zero-amax (padding) input row -> scale 0 -> inf.
             nonfinite = [r for r in records if not r["out_finite"]]
             report["phase2_first_nonfinite"] = nonfinite[:15]
             report["phase2_n_nonfinite"] = len(nonfinite)
-            print(f"[2 finiteness] {len(nonfinite)}/{len(records)} quantised-path linears non-finite",
-                  flush=True)
+            print(
+                f"[2 finiteness] {len(nonfinite)}/{len(records)} quantised-path linears non-finite",
+                flush = True,
+            )
             for r in nonfinite[:8]:
-                print(f"    first-inf {r['name']}  in_amax={r['in_amax']}  "
-                      f"in_frac_zero_rows={r['in_frac_zero_rows']}  out_amax={r['out_amax']}",
-                      flush=True)
+                print(
+                    f"    first-inf {r['name']}  in_amax={r['in_amax']}  "
+                    f"in_frac_zero_rows={r['in_frac_zero_rows']}  out_amax={r['out_amax']}",
+                    flush = True,
+                )
 
     dest = out / f"phase{args.phase}_{args.family}.json"
-    with open(dest, "w", encoding="utf-8") as fh:
-        json.dump(report, fh, indent=2)
-    print(f"wrote {dest}", flush=True)
+    with open(dest, "w", encoding = "utf-8") as fh:
+        json.dump(report, fh, indent = 2)
+    print(f"wrote {dest}", flush = True)
     return 0
 
 

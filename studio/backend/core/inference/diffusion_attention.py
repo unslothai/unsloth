@@ -437,9 +437,9 @@ def _null_mask_processor_cls():
             self,
             attn,
             hidden_states,
-            encoder_hidden_states=None,
-            attention_mask=None,
-            image_rotary_emb=None,
+            encoder_hidden_states = None,
+            attention_mask = None,
+            image_rotary_emb = None,
         ):
             # Fast path only when the pre-hook removed all padding (attn_mask redundant); a
             # constant python bool so torch.compile const-folds the branch (no graph break).
@@ -447,9 +447,9 @@ def _null_mask_processor_cls():
                 return super().__call__(
                     attn,
                     hidden_states,
-                    encoder_hidden_states=encoder_hidden_states,
-                    attention_mask=attention_mask,
-                    image_rotary_emb=image_rotary_emb,
+                    encoder_hidden_states = encoder_hidden_states,
+                    attention_mask = attention_mask,
+                    image_rotary_emb = image_rotary_emb,
                 )
 
             # Null path = the stock body with the mask block removed and attn_mask=None.
@@ -466,9 +466,8 @@ def _null_mask_processor_cls():
 
             if image_rotary_emb is not None:
                 from diffusers.models.embeddings import apply_rotary_emb
-
-                query = apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
-                key = apply_rotary_emb(key, image_rotary_emb, sequence_dim=1)
+                query = apply_rotary_emb(query, image_rotary_emb, sequence_dim = 1)
+                key = apply_rotary_emb(key, image_rotary_emb, sequence_dim = 1)
 
             if encoder_hidden_states is not None:
                 encoder_query = attn.add_q_proj(encoder_hidden_states)
@@ -484,19 +483,19 @@ def _null_mask_processor_cls():
                 if attn.norm_added_k is not None:
                     encoder_key = attn.norm_added_k(encoder_key)
 
-                query = torch.cat([query, encoder_query], dim=1)
-                key = torch.cat([key, encoder_key], dim=1)
-                value = torch.cat([value, encoder_value], dim=1)
+                query = torch.cat([query, encoder_query], dim = 1)
+                key = torch.cat([key, encoder_key], dim = 1)
+                value = torch.cat([value, encoder_value], dim = 1)
 
             hidden_states = dispatch_attention_fn(
                 query,
                 key,
                 value,
-                attn_mask=None,
-                dropout_p=0.0,
-                is_causal=False,
-                backend=self._attention_backend,
-                parallel_config=self._parallel_config,
+                attn_mask = None,
+                dropout_p = 0.0,
+                is_causal = False,
+                backend = self._attention_backend,
+                parallel_config = self._parallel_config,
             )
 
             hidden_states = hidden_states.flatten(2, 3)
@@ -530,7 +529,7 @@ def _trim_stream(states, mask):
     if states is None or mask is None or mask.dim() != 2:
         return states, mask, True  # nothing to mask -> treat as no-padding
     mb = mask.bool()
-    keep = mb.any(dim=0)  # column valid for at least one batch element
+    keep = mb.any(dim = 0)  # column valid for at least one batch element
     if not bool(keep.all()):
         states = states[:, keep]
         mask = mask[:, keep]
@@ -642,7 +641,12 @@ def _install_null_processors(dit: Any, logger: Any) -> bool:
     return installed > 0
 
 
-def install_hunyuan_attention_trim(pipe: Any, family: Any, *, logger: Any = None) -> bool:
+def install_hunyuan_attention_trim(
+    pipe: Any,
+    family: Any,
+    *,
+    logger: Any = None,
+) -> bool:
     """HunyuanVideo-1.5 only: make the joint attention skip padded text tokens (see module note).
 
     Installs a null-mask processor on every denoiser DiT block plus an eager pre-hook that trims
@@ -662,7 +666,7 @@ def install_hunyuan_attention_trim(pipe: Any, family: Any, *, logger: Any = None
             continue
         if getattr(dit, "_unsloth_trim_hook", None) is None:
             try:
-                handle = dit.register_forward_pre_hook(_hunyuan_trim_pre_hook, with_kwargs=True)
+                handle = dit.register_forward_pre_hook(_hunyuan_trim_pre_hook, with_kwargs = True)
                 dit._unsloth_trim_hook = handle
             except Exception as exc:  # noqa: BLE001 — optimisation only
                 _warn(logger, "hunyuan_attn_trim", exc)

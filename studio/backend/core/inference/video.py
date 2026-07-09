@@ -1353,7 +1353,7 @@ class VideoBackend:
             # attention so it runs the fused (cuDNN/flash) SDPA kernel instead of the dense-mask
             # fallback (~18x/DiT-forward at 121 frames, cosine ~1.0). Must precede the backend set
             # so the requested kernel pins onto the new processors. No-op for every other family.
-            trim = install_hunyuan_attention_trim(view, fam, logger=logger)
+            trim = install_hunyuan_attention_trim(view, fam, logger = logger)
             engaged = apply_attention_backend(
                 view,
                 select_attention_backend(

@@ -73,12 +73,12 @@ _VAE_AUTO_LADDER = (VAE_QUANT_FP8,)
 #     ltx-2  SSIM 0.942. FLUX.2 (klein/dev) and Hunyuan-1.5 pass fp8_dynamic, so they are not denied.
 # The vae_force_fp32 video families (Wan) are gated separately at the loader (never quantise).
 _VAE_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
-    "sdxl":             frozenset({VAE_QUANT_FP8, VAE_QUANT_FP8_DYNAMIC}),
-    "flux.1":           frozenset({VAE_QUANT_FP8_DYNAMIC}),
-    "flux.1-kontext":   frozenset({VAE_QUANT_FP8_DYNAMIC}),
-    "qwen-image":       frozenset({VAE_QUANT_FP8_DYNAMIC}),
-    "qwen-image-edit":  frozenset({VAE_QUANT_FP8_DYNAMIC}),
-    "ltx-2":            frozenset({VAE_QUANT_FP8_DYNAMIC}),
+    "sdxl": frozenset({VAE_QUANT_FP8, VAE_QUANT_FP8_DYNAMIC}),
+    "flux.1": frozenset({VAE_QUANT_FP8_DYNAMIC}),
+    "flux.1-kontext": frozenset({VAE_QUANT_FP8_DYNAMIC}),
+    "qwen-image": frozenset({VAE_QUANT_FP8_DYNAMIC}),
+    "qwen-image-edit": frozenset({VAE_QUANT_FP8_DYNAMIC}),
+    "ltx-2": frozenset({VAE_QUANT_FP8_DYNAMIC}),
 }
 
 # Cache of device -> bool for the fp8_dynamic conv smoke probe (run once per device).
@@ -255,7 +255,10 @@ def quantize_vae(
         # leaves it dense; the big video Conv3d VAEs clear the floor and quantise. Explicit
         # requests below skip this gate (the user asked for it directly).
         if _vae_param_bytes(vae) < _VAE_AUTO_MIN_BYTES:
-            _note(logger, "vae auto: VAE under the ~1GB size floor; staying dense (quant saves ~nothing)")
+            _note(
+                logger,
+                "vae auto: VAE under the ~1GB size floor; staying dense (quant saves ~nothing)",
+            )
             return None
         mode = select_vae_quant_scheme(
             target,

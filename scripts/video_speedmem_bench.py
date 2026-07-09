@@ -84,33 +84,28 @@ _FAMILIES: dict[str, dict[str, Any]] = {
 # ── cuda memory / timing helpers ───────────────────────────────────────────────
 def _sync() -> None:
     import torch
-
     if torch.cuda.is_available():
         torch.cuda.synchronize()
 
 
 def _reset_peak() -> None:
     import torch
-
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
 
 def _alloc_gb() -> float:
     import torch
-
     return torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
 
 
 def _peak_gb() -> float:
     import torch
-
     return torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
 
 
 def _empty() -> None:
     import torch
-
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -131,12 +126,11 @@ def _lpips_alex(ref_arr, arr):
 
         fn = _LP.get("fn")
         if fn is None:
-            fn = lpips.LPIPS(net="alex", verbose=False).eval()
+            fn = lpips.LPIPS(net = "alex", verbose = False).eval()
             _LP["fn"] = fn
 
         def _t(a):
             import torch as _torch
-
             return _torch.from_numpy(a).float().permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0
 
         with torch.no_grad():
@@ -210,11 +204,10 @@ def _target():
     """The object the real casters/optimisers read: a stand-in for DiffusionDeviceTarget.
     supports_default_torch_compile must be True or compile_eligible() bails."""
     import torch
-
     return types.SimpleNamespace(
-        device="cuda",
-        dtype=torch.bfloat16,
-        supports_default_torch_compile=True,
+        device = "cuda",
+        dtype = torch.bfloat16,
+        supports_default_torch_compile = True,
     )
 
 
@@ -224,33 +217,59 @@ def _target():
 # `shipped` is the current default; `speedmax`/`flash4` probe untapped headroom.
 _CONFIGS: dict[str, dict[str, Any]] = {
     #                te      vae     dit     speed      attn      cache
-    "reference": dict(te="none", vae="none", dit="none", speed="off", attn="native", cache="off"),
-    "compile": dict(te="none", vae="none", dit="none", speed="default", attn="native", cache="off"),
-    "cudnn": dict(te="none", vae="none", dit="none", speed="default", attn="auto", cache="off"),
-    "fbcache": dict(te="none", vae="none", dit="none", speed="default", attn="auto", cache="auto"),
-    "ditquant": dict(te="none", vae="none", dit="auto", speed="default", attn="auto", cache="auto"),
-    "shipped": dict(te="auto", vae="auto", dit="auto", speed="default", attn="auto", cache="auto"),
-    "speedmax": dict(te="auto", vae="auto", dit="auto", speed="max", attn="auto", cache="auto"),
-    "flash4": dict(te="auto", vae="auto", dit="auto", speed="default", attn="flash4", cache="auto"),
+    "reference": dict(te = "none", vae = "none", dit = "none", speed = "off", attn = "native", cache = "off"),
+    "compile": dict(te = "none", vae = "none", dit = "none", speed = "default", attn = "native", cache = "off"),
+    "cudnn": dict(te = "none", vae = "none", dit = "none", speed = "default", attn = "auto", cache = "off"),
+    "fbcache": dict(te = "none", vae = "none", dit = "none", speed = "default", attn = "auto", cache = "auto"),
+    "ditquant": dict(te = "none", vae = "none", dit = "auto", speed = "default", attn = "auto", cache = "auto"),
+    "shipped": dict(te = "auto", vae = "auto", dit = "auto", speed = "default", attn = "auto", cache = "auto"),
+    "speedmax": dict(te = "auto", vae = "auto", dit = "auto", speed = "max", attn = "auto", cache = "auto"),
+    "flash4": dict(te = "auto", vae = "auto", dit = "auto", speed = "default", attn = "flash4", cache = "auto"),
     # diagnostics: isolate whether the DiT-quant + compile crash needs FBCache.
-    "diag_ditq_default_nocache": dict(te="none", vae="none", dit="auto", speed="default", attn="native", cache="off"),
-    "diag_ditq_max_nocache": dict(te="none", vae="none", dit="auto", speed="max", attn="native", cache="off"),
-    "diag_ditq_nocompile": dict(te="none", vae="none", dit="auto", speed="eager", attn="native", cache="off"),
+    "diag_ditq_default_nocache": dict(
+        te = "none", vae = "none", dit = "auto", speed = "default", attn = "native", cache = "off"
+    ),
+    "diag_ditq_max_nocache": dict(
+        te = "none", vae = "none", dit = "auto", speed = "max", attn = "native", cache = "off"
+    ),
+    "diag_ditq_nocompile": dict(
+        te = "none", vae = "none", dit = "auto", speed = "eager", attn = "native", cache = "off"
+    ),
     # which quant scheme survives torch.compile? (fp8/mslk fails "fake tensors"; test int8/mxfp8)
-    "diag_ditint8_compile": dict(te="none", vae="none", dit="int8", speed="default", attn="native", cache="off"),
-    "diag_ditmxfp8_compile": dict(te="none", vae="none", dit="mxfp8", speed="default", attn="native", cache="off"),
-    "diag_ditint8_fbcache": dict(te="none", vae="none", dit="int8", speed="default", attn="native", cache="auto"),
+    "diag_ditint8_compile": dict(
+        te = "none", vae = "none", dit = "int8", speed = "default", attn = "native", cache = "off"
+    ),
+    "diag_ditmxfp8_compile": dict(
+        te = "none", vae = "none", dit = "mxfp8", speed = "default", attn = "native", cache = "off"
+    ),
+    "diag_ditint8_fbcache": dict(
+        te = "none", vae = "none", dit = "int8", speed = "default", attn = "native", cache = "auto"
+    ),
     # isolate the quant x FBCache over-caching interaction at production size:
-    "ditfp8_nocache": dict(te="none", vae="none", dit="auto", speed="default", attn="auto", cache="off"),
-    "te_fbcache": dict(te="auto", vae="none", dit="none", speed="default", attn="auto", cache="auto"),
-    "ditfp8_fbcache": dict(te="none", vae="none", dit="auto", speed="default", attn="auto", cache="auto"),
-    "ditint8_fbcache_prod": dict(te="none", vae="none", dit="int8", speed="default", attn="auto", cache="auto"),
+    "ditfp8_nocache": dict(
+        te = "none", vae = "none", dit = "auto", speed = "default", attn = "auto", cache = "off"
+    ),
+    "te_fbcache": dict(
+        te = "auto", vae = "none", dit = "none", speed = "default", attn = "auto", cache = "auto"
+    ),
+    "ditfp8_fbcache": dict(
+        te = "none", vae = "none", dit = "auto", speed = "default", attn = "auto", cache = "auto"
+    ),
+    "ditint8_fbcache_prod": dict(
+        te = "none", vae = "none", dit = "int8", speed = "default", attn = "auto", cache = "auto"
+    ),
     # mixed-fp8 vs int8 head-to-head (Phase 3): the DiT-quant accuracy comparison on Wan/Hunyuan.
     # fp8 here goes through the production quantize_transformer family exclude (input embedders
     # kept bf16), so it is only non-black if the mixed-fp8 wiring is live. cache on AND off.
-    "ditfp8mixed_nocache": dict(te="none", vae="none", dit="fp8", speed="default", attn="native", cache="off"),
-    "ditfp8mixed_fbcache": dict(te="none", vae="none", dit="fp8", speed="default", attn="auto", cache="auto"),
-    "ditint8_nocache": dict(te="none", vae="none", dit="int8", speed="default", attn="native", cache="off"),
+    "ditfp8mixed_nocache": dict(
+        te = "none", vae = "none", dit = "fp8", speed = "default", attn = "native", cache = "off"
+    ),
+    "ditfp8mixed_fbcache": dict(
+        te = "none", vae = "none", dit = "fp8", speed = "default", attn = "auto", cache = "auto"
+    ),
+    "ditint8_nocache": dict(
+        te = "none", vae = "none", dit = "int8", speed = "default", attn = "native", cache = "off"
+    ),
 }
 
 
@@ -258,7 +277,7 @@ def _build_pipe(repo: str, force_fp32_vae: bool):
     import torch
 
     diffusers = _import_diffusers()
-    pipe = diffusers.DiffusionPipeline.from_pretrained(repo, torch_dtype=torch.bfloat16)
+    pipe = diffusers.DiffusionPipeline.from_pretrained(repo, torch_dtype = torch.bfloat16)
     pipe = pipe.to("cuda")
     # Wan-style VAEs decode in fp32 for numerical stability (the loader pins this via
     # vae_force_fp32); loading bf16 bands every clip, so mirror the loader.
@@ -287,8 +306,16 @@ class _SecondExpertView:
         setattr(self._pipe, "transformer_2" if name == "transformer" else name, value)
 
 
-def _apply_levers(pipe, cfg: dict, *, fam_name: str, fam_obj, force_fp32_vae: bool, default_steps: int,
-                  logger=None) -> dict:
+def _apply_levers(
+    pipe,
+    cfg: dict,
+    *,
+    fam_name: str,
+    fam_obj,
+    force_fp32_vae: bool,
+    default_steps: int,
+    logger = None,
+) -> dict:
     """Apply the configured levers with the loader's own argument values, in the loader's order:
     quant (dit -> te -> vae) THEN optimisation layers (cache -> attention -> speed). For a
     dual-expert MoE (pipe.transformer_2 present) every DiT-touching lever is applied to BOTH experts
@@ -305,7 +332,14 @@ def _apply_levers(pipe, cfg: dict, *, fam_name: str, fam_obj, force_fp32_vae: bo
     )
 
     tgt = _target()
-    engaged = {"dit": None, "te": None, "vae": None, "attn": None, "cache": None, "speed_optims": {}}
+    engaged = {
+        "dit": None,
+        "te": None,
+        "vae": None,
+        "attn": None,
+        "cache": None,
+        "speed_optims": {},
+    }
 
     # DiT-touching levers run per expert: [pipe] for a single-DiT family, plus a second-expert view
     # for a dual-expert MoE. Each view exposes the expert as ``.transformer``.
@@ -316,7 +350,7 @@ def _apply_levers(pipe, cfg: dict, *, fam_name: str, fam_obj, force_fp32_vae: bo
     # DiT quant (pipeline kind, resident): mutates each expert's transformer in place.
     if cfg["dit"] not in ("none", "off"):
         schemes = [
-            quantize_transformer(v, tgt, mode=cfg["dit"], family=fam_name, logger=logger)
+            quantize_transformer(v, tgt, mode = cfg["dit"], family = fam_name, logger = logger)
             for v in views
         ]
         engaged["dit"] = schemes[0]
@@ -327,15 +361,20 @@ def _apply_levers(pipe, cfg: dict, *, fam_name: str, fam_obj, force_fp32_vae: bo
     # TE quant (once; text encoders are shared, not per-expert).
     if cfg["te"] not in ("none", "off"):
         engaged["te"] = quantize_text_encoders(
-            pipe, tgt, mode=cfg["te"], family=fam_name, offload_active=False, logger=logger
+            pipe, tgt, mode = cfg["te"], family = fam_name, offload_active = False, logger = logger
         )
         _empty()
 
     # VAE quant (once; Wan force_fp32 pins dense inside quantize_vae regardless).
     if cfg["vae"] not in ("none", "off"):
         engaged["vae"] = quantize_vae(
-            pipe, tgt, mode=cfg["vae"], family=fam_name, offload_active=False,
-            force_fp32=force_fp32_vae, logger=logger,
+            pipe,
+            tgt,
+            mode = cfg["vae"],
+            family = fam_name,
+            offload_active = False,
+            force_fp32 = force_fp32_vae,
+            logger = logger,
         )
         _empty()
 
@@ -356,29 +395,51 @@ def _apply_levers(pipe, cfg: dict, *, fam_name: str, fam_obj, force_fp32_vae: bo
         if cache_request is not None:
             for v in views:
                 engaged["cache"] = apply_step_cache(
-                    v, mode=cache_request, threshold=None,
-                    quant_active=dit_quant_active, logger=logger,
+                    v,
+                    mode = cache_request,
+                    threshold = None,
+                    quant_active = dit_quant_active,
+                    logger = logger,
                 )
             cache_active = engaged["cache"] not in (None, "off")
 
     # Attention (per expert).
-    backend = select_attention_backend(tgt, cfg["attn"], speed_active=speed_active)
+    backend = select_attention_backend(tgt, cfg["attn"], speed_active = speed_active)
     for v in views:
-        engaged["attn"] = apply_attention_backend(v, backend, logger=logger)
+        engaged["attn"] = apply_attention_backend(v, backend, logger = logger)
 
     # Speed profile (per expert; compiles each denoiser).
     if speed != "off":
         for v in views:
             engaged["speed_optims"] = apply_speed_optims(
-                v, tgt, is_gguf=False, family=fam_obj, speed_mode=speed,
-                cache_active=cache_active, offload_active=False, logger=logger,
+                v,
+                tgt,
+                is_gguf = False,
+                family = fam_obj,
+                speed_mode = speed,
+                cache_active = cache_active,
+                offload_active = False,
+                logger = logger,
             )
     engaged["_effective_speed"] = speed
     return engaged
 
 
-def _timed_video(pipe, *, steps, width, height, num_frames, guidance, seed, cache_mode,
-                 dit_quant_active, default_steps, guidance_via_guider=False, logger=None):
+def _timed_video(
+    pipe,
+    *,
+    steps,
+    width,
+    height,
+    num_frames,
+    guidance,
+    seed,
+    cache_mode,
+    dit_quant_active,
+    default_steps,
+    guidance_via_guider = False,
+    logger = None,
+):
     """One clip generation. Re-checks FBCache per generation (maybe_toggle_step_cache) exactly
     like the loader, then times total + per-step. Returns (output, total_s, [per_step_ms])."""
     import torch
@@ -388,12 +449,12 @@ def _timed_video(pipe, *, steps, width, height, num_frames, guidance, seed, cach
     if cache_mode == "auto":
         try:
             maybe_toggle_step_cache(
-                pipe, steps=steps, quant_active=dit_quant_active, threshold=None, logger=logger
+                pipe, steps = steps, quant_active = dit_quant_active, threshold = None, logger = logger
             )
         except Exception:
             pass
 
-    g = torch.Generator(device="cuda").manual_seed(seed)
+    g = torch.Generator(device = "cuda").manual_seed(seed)
     step_ts: list[float] = []
     last = [0.0]
 
@@ -406,8 +467,12 @@ def _timed_video(pipe, *, steps, width, height, num_frames, guidance, seed, cach
         return kw
 
     kwargs = dict(
-        prompt=PROMPT, width=width, height=height, num_frames=num_frames,
-        num_inference_steps=steps, generator=g,
+        prompt = PROMPT,
+        width = width,
+        height = height,
+        num_frames = num_frames,
+        num_inference_steps = steps,
+        generator = g,
     )
     if guidance_via_guider:
         # HunyuanVideo-1.5: CFG lives on a guider component and __call__ takes no
@@ -429,8 +494,20 @@ def _timed_video(pipe, *, steps, width, height, num_frames, guidance, seed, cach
     return out, (time.perf_counter() - t0), step_ts
 
 
-def _run_config(name: str, cfg: dict, *, family: str, steps: int, width: int, height: int,
-                num_frames: int, seed: int, iters: int, out: Path, logger=None):
+def _run_config(
+    name: str,
+    cfg: dict,
+    *,
+    family: str,
+    steps: int,
+    width: int,
+    height: int,
+    num_frames: int,
+    seed: int,
+    iters: int,
+    out: Path,
+    logger = None,
+):
     import numpy as np
 
     from core.inference.video_families import detect_video_family
@@ -443,21 +520,26 @@ def _run_config(name: str, cfg: dict, *, family: str, steps: int, width: int, he
     default_steps = getattr(fam_obj, "default_steps", 50)
     gvg = bool(getattr(fam_obj, "guidance_via_guider", False))
 
-    _empty(); _reset_peak()
+    _empty()
+    _reset_peak()
     # Fresh dynamo state per config so a prior config's compiled graphs cannot leak into this one
     # (each config builds a fresh pipe; without this, later configs in a multi-config run can be
     # measured against a dirty compile cache).
     try:
         import torch
-
         torch._dynamo.reset()
     except Exception:
         pass
     pipe = _build_pipe(repo, force_fp32)
     load_peak = _peak_gb()
     engaged = _apply_levers(
-        pipe, cfg, fam_name=family, fam_obj=fam_obj, force_fp32_vae=force_fp32,
-        default_steps=default_steps, logger=logger,
+        pipe,
+        cfg,
+        fam_name = family,
+        fam_obj = fam_obj,
+        force_fp32_vae = force_fp32,
+        default_steps = default_steps,
+        logger = logger,
     )
     _empty()
     weights_gb = _alloc_gb()
@@ -466,18 +548,36 @@ def _run_config(name: str, cfg: dict, *, family: str, steps: int, width: int, he
 
     # warmup (pays the one-time compile / autotune)
     _timed_video(
-        pipe, steps=steps, width=width, height=height, num_frames=num_frames, guidance=guidance,
-        seed=seed, cache_mode=cache_mode, dit_quant_active=dit_active, default_steps=default_steps,
-        guidance_via_guider=gvg, logger=logger,
+        pipe,
+        steps = steps,
+        width = width,
+        height = height,
+        num_frames = num_frames,
+        guidance = guidance,
+        seed = seed,
+        cache_mode = cache_mode,
+        dit_quant_active = dit_active,
+        default_steps = default_steps,
+        guidance_via_guider = gvg,
+        logger = logger,
     )
     _reset_peak()
     dts, steps_ms = [], []
     last_out = None
     for _ in range(iters):
         last_out, dt, st = _timed_video(
-            pipe, steps=steps, width=width, height=height, num_frames=num_frames, guidance=guidance,
-            seed=seed, cache_mode=cache_mode, dit_quant_active=dit_active, default_steps=default_steps,
-            guidance_via_guider=gvg, logger=logger,
+            pipe,
+            steps = steps,
+            width = width,
+            height = height,
+            num_frames = num_frames,
+            guidance = guidance,
+            seed = seed,
+            cache_mode = cache_mode,
+            dit_quant_active = dit_active,
+            default_steps = default_steps,
+            guidance_via_guider = gvg,
+            logger = logger,
         )
         dts.append(dt)
         steps_ms.append(_median(st) if st else 0.0)
@@ -487,7 +587,6 @@ def _run_config(name: str, cfg: dict, *, family: str, steps: int, width: int, he
     try:
         if arrs:
             from PIL import Image
-
             Image.fromarray(arrs[len(arrs) // 2]).save(out / f"vid_{family}_{name}.png")
     except Exception:
         pass
@@ -496,7 +595,6 @@ def _run_config(name: str, cfg: dict, *, family: str, steps: int, width: int, he
     if name == "reference" and arrs:
         try:
             import numpy as _np
-
             _np.savez_compressed(out / "ref_frames.npz", *arrs)
         except Exception:
             pass
@@ -526,35 +624,39 @@ def _run_config(name: str, cfg: dict, *, family: str, steps: int, width: int, he
     return row, arrs
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--family", default="wan2.2-ti2v-5b", choices=sorted(_FAMILIES))
-    ap.add_argument("--configs", default=",".join(_CONFIGS),
-                    help="comma list from: " + ",".join(_CONFIGS))
-    ap.add_argument("--steps", type=int, default=30)
-    ap.add_argument("--num-frames", type=int, default=25)
-    ap.add_argument("--width", type=int, default=512)
-    ap.add_argument("--height", type=int, default=320)
-    ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--iters", type=int, default=3)
-    ap.add_argument("--out", default="outputs/video_speedmem")
+def main(argv = None) -> int:
+    ap = argparse.ArgumentParser(description = __doc__)
+    ap.add_argument("--family", default = "wan2.2-ti2v-5b", choices = sorted(_FAMILIES))
+    ap.add_argument(
+        "--configs", default = ",".join(_CONFIGS), help = "comma list from: " + ",".join(_CONFIGS)
+    )
+    ap.add_argument("--steps", type = int, default = 30)
+    ap.add_argument("--num-frames", type = int, default = 25)
+    ap.add_argument("--width", type = int, default = 512)
+    ap.add_argument("--height", type = int, default = 320)
+    ap.add_argument("--seed", type = int, default = 42)
+    ap.add_argument("--iters", type = int, default = 3)
+    ap.add_argument("--out", default = "outputs/video_speedmem")
     args = ap.parse_args(argv)
 
     import logging
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.basicConfig(level = logging.INFO, format = "%(message)s")
     logger = logging.getLogger("videobench")
 
     out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents = True, exist_ok = True)
 
     names = [c.strip() for c in args.configs.split(",") if c.strip()]
     for n in names:
         if n not in _CONFIGS:
             raise SystemExit(f"unknown config '{n}'; choose from {list(_CONFIGS)}")
 
-    print(f"== video speed+mem bench: family={args.family} configs={names} "
-          f"steps={args.steps} frames={args.num_frames} {args.width}x{args.height} ==", flush=True)
+    print(
+        f"== video speed+mem bench: family={args.family} configs={names} "
+        f"steps={args.steps} frames={args.num_frames} {args.width}x{args.height} ==",
+        flush = True,
+    )
 
     rows = []
     ref_arrs = None
@@ -564,22 +666,32 @@ def main(argv=None) -> int:
         if ref_npz.exists():
             try:
                 import numpy as _np
-
                 with _np.load(ref_npz) as z:
                     ref_arrs = [z[k] for k in z.files]
             except Exception:
                 ref_arrs = None
     for n in names:
         row, arrs = _run_config(
-            n, _CONFIGS[n], family=args.family, steps=args.steps, width=args.width,
-            height=args.height, num_frames=args.num_frames, seed=args.seed, iters=args.iters,
-            out=out, logger=logger,
+            n,
+            _CONFIGS[n],
+            family = args.family,
+            steps = args.steps,
+            width = args.width,
+            height = args.height,
+            num_frames = args.num_frames,
+            seed = args.seed,
+            iters = args.iters,
+            out = out,
+            logger = logger,
         )
         if n == "reference":
             ref_arrs = arrs
         row["lpips_vs_reference"] = _mean_lpips(ref_arrs, arrs) if ref_arrs is not None else None
         rows.append(row)
-        print(f"  [{n}] {json.dumps({k: row[k] for k in ('dit_scheme','te_scheme','attn','cache','effective_speed','weights_gb','gen_peak_gb','gen_latency_s','per_step_ms','lpips_vs_reference')})}", flush=True)
+        print(
+            f"  [{n}] {json.dumps({k: row[k] for k in ('dit_scheme','te_scheme','attn','cache','effective_speed','weights_gb','gen_peak_gb','gen_latency_s','per_step_ms','lpips_vs_reference')})}",
+            flush = True,
+        )
 
     # speedups relative to reference (if present)
     ref_lat = next((r["gen_latency_s"] for r in rows if r["config"] == "reference"), None)
@@ -589,9 +701,9 @@ def main(argv=None) -> int:
         )
 
     dest = out / f"video_{args.family}_{'-'.join(names)}.json"
-    with open(dest, "w", encoding="utf-8") as fh:
-        json.dump(rows, fh, indent=2)
-    print(f"wrote {dest}", flush=True)
+    with open(dest, "w", encoding = "utf-8") as fh:
+        json.dump(rows, fh, indent = 2)
+    print(f"wrote {dest}", flush = True)
     return 0
 
 
