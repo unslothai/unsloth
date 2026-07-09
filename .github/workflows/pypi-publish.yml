@@ -100,13 +100,12 @@ jobs:
           # would abort the step. We want a missing/odd pin to skip, not fail.
           # Require BOTH installers to be on the new floor, so we never publish
           # while install.ps1 (Windows) still pins the previous version.
-          # Capture the whole PEP 440 version after `unsloth>=` (digits, dots and
-          # any a/b/rc/.post/.dev/+local suffix), not just x.y.z, so a suffixed
-          # release (e.g. 2026.5.3.post1) compares equal to __version__ instead
-          # of truncating to 2026.5.3 and silently skipping the publish. The
-          # `unsloth>=` anchor still excludes the `unsloth-zoo>=` pin.
-          pin_sh=$(grep -oP 'unsloth>=\K[0-9][0-9A-Za-z.+!-]*' install.sh  | sort -u || true)
-          pin_ps=$(grep -oP 'unsloth>=\K[0-9][0-9A-Za-z.+!-]*' install.ps1 | sort -u || true)
+          # Capture the full PEP 440 version after the quoted `"unsloth>=` pin
+          # (digits/dots + any a/b/rc/.post/.dev/+local suffix) so a suffixed
+          # release like 2026.5.3.post1 compares equal to __version__. The leading
+          # quote matches only real pins, excluding `unsloth-zoo>=` and comments.
+          pin_sh=$(grep -oP '"unsloth>=\K[0-9][0-9A-Za-z.+!-]*' install.sh  | sort -u || true)
+          pin_ps=$(grep -oP '"unsloth>=\K[0-9][0-9A-Za-z.+!-]*' install.ps1 | sort -u || true)
           ver=$(grep -m1 -oP '__version__ = "\K[^"]+' unsloth/models/_utils.py || true)
           echo "install.sh: ${pin_sh:-<none>} / install.ps1: ${pin_ps:-<none>} / __version__: $ver"
           one() { [ "$(printf '%s\n' "$1" | grep -c .)" = "1" ]; }
