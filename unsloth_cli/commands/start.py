@@ -137,12 +137,15 @@ _PERSIST_OPTION = typer.Option(
     False,
     "--persist/--no-persist",
     help = (
-        "Keep this agent's session so you can resume it later. Without --persist a "
-        "launched agent's home is a throwaway temp dir wiped on exit (nothing "
-        "persists); with it, the session lives under the Unsloth agents dir (never "
-        "your own ~/.<agent>). A bare `--persist` also reopens the last conversation. "
-        "An agent's own resume flag (e.g. `claude --resume <id>`) still passes through "
-        "unchanged."
+        "Keep this agent's Unsloth-managed session dir so you can resume it later. "
+        "codex/openclaw/hermes/pi have their whole home relocated into an Unsloth dir "
+        "that is a throwaway temp dir (wiped on exit) by default; with --persist it "
+        "lives under the Unsloth agents dir and survives, so their own resume can reopen "
+        "it. claude and opencode keep sessions in your own stores (~/.claude, "
+        "~/.local/share/opencode), so they already resume regardless. To reopen a "
+        "session, pass the agent's own resume command through, e.g. "
+        "`unsloth start codex --persist resume` or `claude --resume <id>`; those flow to "
+        "the agent unchanged."
     ),
 )
 
@@ -161,33 +164,6 @@ _YOLO_COMMAND_FLAGS = {
 def _yolo_command_flags(agent: str, yolo: bool) -> list:
     # .get so a config-based agent (or a typo) yields no flag instead of a KeyError.
     return _YOLO_COMMAND_FLAGS.get(agent, []) if yolo else []
-
-
-# Native "reopen the previous session" tokens appended to a BARE `--persist` launch
-# (no passthrough args) so `unsloth start <agent> --persist` resumes the last chat
-# instead of opening a blank one. openclaw and hermes are omitted on purpose: their
-# resume is an in-app picker with no stable non-interactive selector, and --persist
-# already persists their session dir, so their own resume finds the prior sessions.
-_RESUME_LAUNCH_FLAGS = {
-    "claude": ["--continue"],
-    "codex": ["resume", "--last"],
-    "opencode": ["--continue"],
-    "pi": ["--continue"],
-}
-
-
-def _resume_launch_args(agent: str, persist: bool, launch: bool, passthrough) -> list:
-    """Tokens that make a bare `--persist` launch reopen the agent's last session.
-
-    Only a bare interactive launch (``--persist`` set, no passthrough args) gets them:
-    when the caller passes their own subcommand they drive resume themselves, and the
-    --no-launch printout is consumed by drivers that append their own subcommand, so a
-    resume token there would break it. An agent without a mapping returns nothing;
-    --persist still persists its session dir so its own resume works.
-    """
-    if persist and launch and not passthrough:
-        return list(_RESUME_LAUNCH_FLAGS.get(agent, []))
-    return []
 
 
 def _hermes_install_hint() -> str:
@@ -1526,7 +1502,8 @@ def claude(
     # IS_SANDBOX is left unset on purpose: Claude refuses bypass mode as root unless a
     # sandbox is detected, and we don't want to falsely claim one on the user's host.
     # claude keeps its history in ~/.claude/projects, which --settings/env never
-    # relocate, so a session already survives exit; --persist only needs to reopen it.
+    # relocate, so a session already survives exit; resume it with `claude --continue`
+    # or `--resume <id>` passed through.
     command = [
         "claude",
         "--model",
@@ -1534,7 +1511,6 @@ def claude(
         *_claude_flags(),
         *_yolo_command_flags("claude", yolo),
         *ctx.args,
-        *_resume_launch_args("claude", persist, launch, ctx.args),
     ]
     install_hint = (
         "irm https://claude.ai/install.ps1 | iex"
@@ -1589,7 +1565,6 @@ def codex(
         _CODEX_PROFILE,
         *_yolo_command_flags("codex", yolo),
         *ctx.args,
-        *_resume_launch_args("codex", persist, launch, ctx.args),
     ]
     with _session_config("codex", launch, persist = persist) as home:
         write_codex_config(base, entry, home)
@@ -1681,8 +1656,7 @@ def opencode(
     else:
         command = ["opencode"]
     # opencode keeps sessions in ~/.local/share/opencode (never relocated), so resume
-    # already survives exit; a bare --persist just reopens the last one with --continue.
-    command += _resume_launch_args("opencode", persist, launch, ctx.args)
+    # already survives exit; reopen the last one by passing `opencode --continue` through.
     with _session_config("opencode", launch, persist = persist) as cfg:
         config_path = cfg / "opencode.json"
         # OPENCODE_CONFIG is an overlay (loaded between the user's global and project
@@ -1788,7 +1762,6 @@ def pi(
         entry["id"],
         *_yolo_command_flags("pi", yolo),
         *ctx.args,
-        *_resume_launch_args("pi", persist, launch, ctx.args),
     ]
     # --ignore-scripts matches Pi's documented install recipe (its README notes Pi needs
     # no install scripts), so accepting the prompt skips dependency lifecycle scripts.

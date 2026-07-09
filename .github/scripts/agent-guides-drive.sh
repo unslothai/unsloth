@@ -531,18 +531,18 @@ case "$MODE" in
   # Unlike the other modes, this drives the real LAUNCH path (`unsloth start
   # <agent> ...`, the interactive default), not the --no-launch recipe. That
   # path relocates each agent's home to a throwaway temp dir wiped on exit, so
-  # a session cannot be resumed -- unless --resume routes it to the stable
+  # a session cannot be resumed -- unless --persist routes it to the stable
   # Unsloth agents dir instead. We run one headless turn per pass and check
   # whether the turn left a session in a persistent store (deterministic, no
   # reliance on the model recalling anything), for a baseline pass and a
-  # --resume pass, and assert the expected split for this agent.
+  # --persist pass, and assert the expected split for this agent.
   resume)
     CODEWORD="PLATYPUS7"
     T1="Remember this codeword for later: ${CODEWORD}. Reply with just the word OK."
     T2="What codeword did I ask you to remember? Reply with just that word."
     WORK="$WORKDIR_BASE/${AGENT}-resume"
 
-    # STABLE_HOME: the stable dir that --no-launch (and --resume) relocate to.
+    # STABLE_HOME: the stable dir that --no-launch (and --persist) relocate to.
     # Read it from a --no-launch probe (which also writes the agent's config
     # there). codex/pi relocate their whole home/HOME here; opencode/claude keep
     # their session data in a fixed user dir, so STABLE_HOME stays empty for them.
@@ -618,7 +618,12 @@ case "$MODE" in
       popd >/dev/null || true
       after="$(count_session_files)"
       echo "[$AGENT] ${label}: session files ${before} -> ${after} (rc=${rc})"
-      [ "$rc" -eq 0 ] || { echo "[$AGENT] ${label} transcript (tail):"; tail -30 "$out" 2>/dev/null || true; }
+      # The turn must succeed for the delta to mean anything: an agent that writes a
+      # session file then errors would otherwise be misread as PERSISTED. Mirror the
+      # file-edit mode and fail the pass on a non-zero launch (the flagship codex recall
+      # below stays WARN-only, driven by its own launch_turn calls).
+      [ "$rc" -eq 0 ] || { echo "[$AGENT] ${label} transcript (tail):"; tail -30 "$out" 2>/dev/null || true; \
+        guide_fail "resume ${label} turn for ${AGENT} exited non-zero (rc=${rc})"; }
       if [ "$after" -gt "$before" ]; then RESULT="PERSISTED"; else RESULT="WIPED"; fi
     }
 

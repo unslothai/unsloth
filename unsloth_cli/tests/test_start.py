@@ -2602,23 +2602,30 @@ def test_resume_opencode_config_in_stable_dir(fake_studio, tmp_path, monkeypatch
     assert stable.exists()
 
 
-def test_resume_bare_codex_launch_appends_native_resume(fake_studio, monkeypatch):
+def test_persist_bare_codex_launch_has_no_resume_token(fake_studio, monkeypatch):
+    # A bare `--persist` only persists the session dir; it must NOT auto-append a native
+    # resume token, or the very first launch (no session yet) would send codex down its
+    # no-session error path. The user resumes explicitly: `unsloth start codex --persist resume`.
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
     captured = _capture_launch(monkeypatch, ["codex", "--persist"])
-    assert captured["command"][-2:] == ["resume", "--last"]
+    assert "resume" not in captured["command"]
+    # command[0] is the resolved executable path; assert the argv after it.
+    assert captured["command"][1:] == ["--oss", "--profile", start._CODEX_PROFILE]
 
 
-def test_resume_bare_opencode_launch_appends_continue(fake_studio, monkeypatch):
+def test_persist_bare_opencode_launch_has_no_resume_token(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
     captured = _capture_launch(monkeypatch, ["opencode", "--persist"])
-    assert captured["command"][-1] == "--continue"
+    assert "--continue" not in captured["command"]
+    assert captured["command"][1:] == ["--model", f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"]
 
 
-def test_resume_bare_claude_launch_appends_continue(fake_studio, monkeypatch):
+def test_persist_bare_claude_launch_has_no_resume_token(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(start, "_claude_flags", lambda: [])
     captured = _capture_launch(monkeypatch, ["claude", "--persist"])
-    assert "--continue" in captured["command"]
+    assert "--continue" not in captured["command"]
+    assert captured["command"][1:] == ["--model", MODEL["id"]]
 
 
 def test_resume_with_passthrough_does_not_auto_append(fake_studio, monkeypatch):
