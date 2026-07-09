@@ -4675,23 +4675,23 @@ class LlamaCppBackend:
 
     def _cached_repo_mtp_drafter(self, hf_repo: str) -> Optional[str]:
         """A drafter already in this repo's local HF cache, reused offline when a
-        fresh copy can't be fetched. Prefers the repo-root ``mtp-*.gguf``; else an
-        existing ``MTP/`` copy (any precision -- the target verifies every drafted
-        token). None if none is cached."""
+        fresh copy can't be fetched. Prefers a repo-root ``mtp-*.gguf`` across all
+        cached snapshots; else an existing ``MTP/`` copy (any precision -- the
+        target verifies every drafted token). None if none is cached."""
         try:
             from utils.models.model_config import _iter_hf_cache_snapshots
+
+            roots: list[Path] = []
+            subdirs: list[Path] = []
             for snap in _iter_hf_cache_snapshots(hf_repo):
-                drafters = [
-                    f
-                    for f in _gguf_snapshot_files(snap)
-                    if _is_companion_gguf_path(f) and "mmproj" not in f.lower()
-                ]
-                if not drafters:
-                    continue
-                root = sorted(f for f in drafters if "/" not in f)
-                chosen = snap / (root[0] if root else sorted(drafters)[0])
-                if chosen.is_file():
-                    return str(chosen)
+                for f in _gguf_snapshot_files(snap):
+                    if _is_companion_gguf_path(f) and "mmproj" not in f.lower():
+                        (roots if "/" not in f else subdirs).append(snap / f)
+            # Root before any MTP/ copy, across every snapshot, so a partial newer
+            # snapshot can't shadow the small root drafter in an older one.
+            for cand in sorted(roots) + sorted(subdirs):
+                if cand.is_file():
+                    return str(cand)
         except Exception as e:
             logger.debug("Cached MTP drafter lookup failed for %s: %s", hf_repo, e)
         return None

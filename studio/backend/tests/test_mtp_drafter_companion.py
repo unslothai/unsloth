@@ -398,6 +398,21 @@ def test_download_mtp_reuses_cached_subdir_copy_when_no_root_offline(tmp_path, m
     assert got is not None and Path(got).name == "mtp-gemma-4-E4B-it-BF16.gguf"
 
 
+def test_download_mtp_prefers_root_across_snapshots_offline(tmp_path, monkeypatch):
+    # A newer partial snapshot holds only the MTP/ copy; an older one has the
+    # root. Must still return the small root, not the large subdir copy.
+    import utils.models.model_config as mc
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    snap_partial = _seed_snapshot(tmp_path / "new", ["MTP/mtp-gemma-4-E4B-it-BF16.gguf"])
+    snap_full = _seed_snapshot(tmp_path / "old", ["mtp-gemma-4-E4B-it.gguf"])
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [snap_partial, snap_full])
+
+    got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    assert got is not None and Path(got).name == "mtp-gemma-4-E4B-it.gguf"
+
+
 def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
     # Online, do not reuse a cached copy: go to the download path so a changed
     # drafter is refetched (hf_hub_download checks the current revision).
