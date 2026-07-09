@@ -28,9 +28,7 @@ import urllib.request
 
 import pytest
 
-RELEASES_URL = (
-    "https://api.github.com/repos/Dao-AILab/flash-attention/releases?per_page=100"
-)
+RELEASES_URL = "https://api.github.com/repos/Dao-AILab/flash-attention/releases?per_page=100"
 
 # flash-attn wheels embed their build target as e.g. "cu13torch2.10" in the name.
 _TORCH_TAG_RE = re.compile(r"cu(\d+)torch(\d+)\.(\d+)")
@@ -92,8 +90,7 @@ _ACTION = (
 
 @pytest.mark.skipif(
     not _RUN_LIVE,
-    reason = "live canary runs only in the scheduled job "
-    "(set UNSLOTH_RUN_FLASH_ATTN_CANARY=1)",
+    reason = "live canary runs only in the scheduled job (set UNSLOTH_RUN_FLASH_ATTN_CANARY=1)",
 )
 def test_no_flash_attn_torch212_wheel_yet():
     """Live canary: fails when flash-attn publishes a torch >= 2.12 wheel."""
