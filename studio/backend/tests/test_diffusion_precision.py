@@ -88,6 +88,8 @@ def _stub_casters(monkeypatch, recorder):
     # by default so these caster tests exercise the cast, not a broken-kernel fallback.
     dtq._smoke_probe = lambda tq, device: True
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", dtq)
+    # nvfp4 TE probes its own weight-only kernel (not the dynamic _smoke_probe); pass it too.
+    monkeypatch.setattr(dp, "_te_nvfp4_weightonly_probe", lambda device: True)
 
 
 # ── normalisation ─────────────────────────────────────────────────────────────
@@ -286,6 +288,23 @@ def test_te_scheme_probe_bypasses_layerwise_fp8():
     assert TE_QUANT_FP8 not in dp._TE_SMOKE_SCHEME
     for scheme in (TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_NVFP4):
         assert scheme in dp._TE_SMOKE_SCHEME
+
+
+def test_te_scheme_probe_nvfp4_uses_weightonly_kernel(monkeypatch):
+    # nvfp4 TE casts weight-only (_cast_nvfp4 -> NVFP4WeightOnlyConfig), a different torchao kernel
+    # from the transformer's dynamic-activation NVFP4 probe. On a build where the dynamic FP4 GEMM
+    # is unavailable but weight-only FP4 works, the nvfp4 TE probe must consult its own weight-only
+    # probe, not the transformer dynamic one, or an explicit request would falsely stay dense.
+    dp._TE_NVFP4_PROBE_CACHE.clear()
+    dtq = types.ModuleType("core.inference.diffusion_transformer_quant")
+    dtq._smoke_probe = lambda scheme, device: False  # every dynamic-activation GEMM "unavailable"
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", dtq)
+    monkeypatch.setattr(dp, "_te_nvfp4_weightonly_probe", lambda device: True)
+    # nvfp4 follows its own weight-only probe (True), not the transformer dynamic probe (False).
+    assert dp._te_scheme_probe(TE_QUANT_NVFP4, "cuda") is True
+    # int8 / fp8_dynamic still follow the (dynamic) transformer probe -> False here.
+    assert dp._te_scheme_probe(TE_QUANT_INT8, "cuda") is False
+    assert dp._te_scheme_probe(TE_QUANT_FP8_DYNAMIC, "cuda") is False
 
 
 def test_quantize_int8_unsupported_hw_is_noop(monkeypatch):

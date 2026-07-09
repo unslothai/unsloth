@@ -140,12 +140,51 @@ def _te_family_denied(family: Optional[str], scheme: str) -> bool:
     return scheme in _TE_FAMILY_SCHEME_DENY.get((family or "").strip().lower(), frozenset())
 
 
+# nvfp4 TE casts WEIGHT-ONLY (see _cast_nvfp4), a different torchao kernel from the transformer's
+# dynamic-activation NVFP4 GEMM, so it gets its own cached smoke probe.
+_TE_NVFP4_PROBE_CACHE: dict[str, bool] = {}
+
+
+def _te_nvfp4_weightonly_probe(device: str) -> bool:
+    """True iff weight-only NVFP4 (the config ``_cast_nvfp4`` applies) runs one forward on this
+    build. The transformer ``_smoke_probe`` tests the DYNAMIC-activation NVFP4 GEMM instead, a
+    different kernel: a Blackwell build can carry the weight-only FP4 path without the dynamic
+    one, so an explicit TE ``nvfp4`` request needs this dedicated probe to avoid falsely staying
+    dense when the caster would in fact run. Cached per device."""
+    if device in _TE_NVFP4_PROBE_CACHE:
+        return _TE_NVFP4_PROBE_CACHE[device]
+    ok = False
+    try:
+        import torch
+        from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
+        from torchao.quantization import quantize_
+
+        from .diffusion_transformer_quant import make_filter_fn
+
+        lin = torch.nn.Linear(512, 512, bias = False).to(device = device, dtype = torch.bfloat16)
+        quantize_(lin, NVFP4WeightOnlyConfig(), filter_fn = make_filter_fn(0))
+        x = torch.randn(32, 512, device = device, dtype = torch.bfloat16)
+        with torch.no_grad():
+            lin(x)
+        torch.cuda.synchronize()
+        ok = True
+    except Exception:  # noqa: BLE001 -- an unavailable kernel just means stay dense
+        ok = False
+    _TE_NVFP4_PROBE_CACHE[device] = ok
+    return ok
+
+
 def _te_scheme_probe(scheme: str, device: str) -> bool:
     """True iff ``scheme`` actually runs on this build. Layerwise fp8 (no torchao GEMM) always
-    passes; the torchao TE modes reuse the transformer module's cached quantise+matmul smoke test."""
+    passes; nvfp4 probes its weight-only kernel (``_cast_nvfp4``); the other torchao TE modes
+    reuse the transformer module's cached quantise+matmul smoke test (same dynamic config)."""
     tq = _TE_SMOKE_SCHEME.get(scheme)
     if tq is None:
         return True
+    # nvfp4 TE casts weight-only, whereas the transformer smoke probe tests the dynamic-activation
+    # NVFP4 GEMM: probe the kernel that will actually run so a weight-only-only build is not skipped.
+    if scheme == TE_QUANT_NVFP4:
+        return _te_nvfp4_weightonly_probe(device)
     try:
         from .diffusion_transformer_quant import _smoke_probe
         return _smoke_probe(tq, device)
