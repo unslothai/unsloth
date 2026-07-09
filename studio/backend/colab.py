@@ -506,7 +506,7 @@ def _bootstrap_login_notice_html() -> "str | None":
             except Exception:
                 bootstrap_password = ""
         password_line = (
-            f'Temporary password: <code>{escape(bootstrap_password)}</code><br>'
+            f"Temporary password: <code>{escape(bootstrap_password)}</code><br>"
             if bootstrap_password
             else ""
         )
