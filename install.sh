@@ -3262,7 +3262,7 @@ if [ -t 1 ]; then
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
             substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
-            substep "(add --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
+            substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
             echo ""
             ;;
     esac
@@ -3284,6 +3284,6 @@ else
         substep "unsloth studio -p 8888"
     fi
     substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
-    substep "(add --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
+    substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
     echo ""
 fi
