@@ -1086,31 +1086,34 @@ class FastSentenceTransformer(FastModel):
                 elif "tokenizer_args" in transformer_init_params:
                     transformer_kwargs["tokenizer_args"] = trust_remote_code_kwargs.copy()
 
-                # Saved ST models: load via Transformer.load to keep the saved module
-                # config. Plain Transformer(...) lets ST 5.x add a "message" modality for
-                # chat-template models (e.g. Qwen3-Embedding), wrapping inputs in the chat
-                # template and silently degrading embeddings (#6881).
-                transformer_load_params = inspect.signature(Transformer.load).parameters
-                can_load_from_hub = all(
-                    key in transformer_load_params
-                    for key in ("token", "cache_folder", "revision", "trust_remote_code")
-                )
-                if (
-                    can_load_from_hub
-                    and FastSentenceTransformer._module_path(
-                        model_name, token, cache_dir = cache_dir, revision = revision
+                # Saved ST models: build via Transformer.load so the saved module config
+                # (incl. ST 5.x modality_config) is honored; plain Transformer(...) lets ST
+                # 5.x add a "message" modality for chat-template models (e.g. Qwen3-Embedding)
+                # that chat-wraps inputs and silently degrades embeddings (#6881). Prefer
+                # .load whenever present, passing only kwargs its signature accepts, so a
+                # renamed kwarg can't silently disable the fix and older ST without .load
+                # still loads. max_seq_length is (re)applied below regardless.
+                transformer_module = None
+                transformer_load = getattr(Transformer, "load", None)
+                has_modules_json = FastSentenceTransformer._module_path(
+                    model_name, token, cache_dir = cache_dir, revision = revision
+                ) is not None
+                if callable(transformer_load) and has_modules_json:
+                    load_params = inspect.signature(transformer_load).parameters
+                    accepts_var_kw = any(
+                        p.kind is inspect.Parameter.VAR_KEYWORD for p in load_params.values()
                     )
-                    is not None
-                ):
-                    transformer_module = Transformer.load(
-                        model_name,
-                        token = token,
-                        cache_folder = cache_dir,
-                        revision = revision,
-                        trust_remote_code = trust_remote_code,
+                    load_kwargs = {
+                        "token": token,
+                        "cache_folder": cache_dir,
+                        "revision": revision,
+                        "trust_remote_code": trust_remote_code,
                         **transformer_kwargs,
-                    )
-                else:
+                    }
+                    if not accepts_var_kw:
+                        load_kwargs = {k: v for k, v in load_kwargs.items() if k in load_params}
+                    transformer_module = Transformer.load(model_name, **load_kwargs)
+                if transformer_module is None:
                     transformer_module = Transformer(model_name, **transformer_kwargs)
             finally:
                 # Restore original Auto* loading immediately
