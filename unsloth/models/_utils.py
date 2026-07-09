@@ -3186,7 +3186,11 @@ def _rope_seq_len_1_fallback(q, k, cos, sin, unsqueeze_dim = 1):
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
     if cos.shape[-2] == 0:
-        return q, k
+        raise RuntimeError(
+            "RoPE fallback received empty cos/sin (seq_dim=0) for a seq_len=1 "
+            "query; position_ids are likely desynced from the token count in the "
+            "compiled forward. Cannot apply rotation without valid embeddings."
+        )
     rotary_dim = cos.shape[-1]
 
     def _apply(x):

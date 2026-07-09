@@ -157,6 +157,17 @@ def test_naive_concat_raises_at_seq_len_1():
 # --------------------------------------------------------------------------
 
 
+def test_fallback_raises_on_empty_cos_sin():
+    batch, heads, head_dim, rotary_dim = 2, 4, 8, 4
+    q = torch.randn(batch, heads, 1, head_dim)
+    k = torch.randn(batch, heads, 1, head_dim)
+    cos = torch.randn(batch, 0, rotary_dim)
+    sin = torch.randn(batch, 0, rotary_dim)
+
+    with pytest.raises(RuntimeError, match = "empty cos/sin"):
+        _rope_seq_len_1_fallback(q, k, cos, sin, unsqueeze_dim = 1)
+
+
 def test_guarded_rope_handles_seq_len_1():
     batch, heads, head_dim, rotary_dim = 2, 4, 8, 4
     q, k, cos, sin = _make_qkv(batch, heads, 1, head_dim, rotary_dim)
