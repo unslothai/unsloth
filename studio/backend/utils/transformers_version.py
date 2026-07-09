@@ -173,6 +173,7 @@ _TRANSFORMERS_530_ARCHITECTURES: set[str] = {
     "Qwen3MoeForCausalLM",
     "Qwen3NextForCausalLM",
     "Glm4MoeLiteForCausalLM",
+    "Lfm2MoeForCausalLM",
     "Lfm2VlForConditionalGeneration",
 }
 _TRANSFORMERS_530_MODEL_TYPES: set[str] = {
@@ -183,6 +184,7 @@ _TRANSFORMERS_530_MODEL_TYPES: set[str] = {
     "qwen3_moe",
     "qwen3_next",
     "glm4_moe_lite",
+    "lfm2_moe",
     "lfm2_vl",
 }
 
