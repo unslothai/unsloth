@@ -292,6 +292,113 @@ def _is_wrapper_numeric_arg(token: str) -> bool:
         return False
 
 
+_ANSI_C_ESCAPES = {
+    "a": "\a",
+    "b": "\b",
+    "e": "\x1b",
+    "E": "\x1b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+    "?": "?",
+}
+
+
+def _decode_ansi_c(body: str) -> str:
+    """Decode the escape sequences bash resolves inside a $'...' word (\\n, \\t, \\xHH,
+    octal \\NNN, \\uHHHH, ...) so the resulting command word matches what actually runs."""
+    out = []
+    i, n = 0, len(body)
+    while i < n:
+        c = body[i]
+        if c != "\\" or i + 1 >= n:
+            out.append(c)
+            i += 1
+            continue
+        d = body[i + 1]
+        if d in _ANSI_C_ESCAPES:
+            out.append(_ANSI_C_ESCAPES[d])
+            i += 2
+        elif d == "x":
+            j, h = i + 2, ""
+            while j < n and len(h) < 2 and body[j] in "0123456789abcdefABCDEF":
+                h += body[j]
+                j += 1
+            if h:
+                out.append(chr(int(h, 16)))
+                i = j
+            else:
+                out.append(c)
+                out.append(d)
+                i += 2
+        elif d in "01234567":
+            j, o = i + 1, ""
+            while j < n and len(o) < 3 and body[j] in "01234567":
+                o += body[j]
+                j += 1
+            out.append(chr(int(o, 8) & 0xFF))
+            i = j
+        elif d in ("u", "U"):
+            width = 4 if d == "u" else 8
+            j, h = i + 2, ""
+            while j < n and len(h) < width and body[j] in "0123456789abcdefABCDEF":
+                h += body[j]
+                j += 1
+            if h:
+                out.append(chr(int(h, 16)))
+                i = j
+            else:
+                out.append(c)
+                out.append(d)
+                i += 2
+        else:
+            out.append(c)
+            out.append(d)
+            i += 2
+    return "".join(out)
+
+
+def _normalize_ansi_c_quotes(command: str) -> str:
+    """Rewrite bash ANSI-C ($'...') and locale ($"...") quoted words to plain quoted words
+    so shlex sees the token bash actually executes. shlex leaves `$'touch'` as the literal
+    `$touch`, so a writer/interpreter hidden behind ANSI-C quoting (`$'touch' x`,
+    `$'\\x74ouch' x`) never matches the command blocklist otherwise."""
+    if "$'" not in command and '$"' not in command:
+        return command
+    res = []
+    i, n = 0, len(command)
+    while i < n:
+        if command[i] == "$" and i + 1 < n and command[i + 1] == '"':
+            res.append('"')  # locale translation: bash just strips the leading $
+            i += 2
+            continue
+        if command[i] == "$" and i + 1 < n and command[i + 1] == "'":
+            j, buf = i + 2, []
+            while j < n:
+                if command[j] == "\\" and j + 1 < n:
+                    buf.append(command[j])
+                    buf.append(command[j + 1])
+                    j += 2
+                    continue
+                if command[j] == "'":
+                    break
+                buf.append(command[j])
+                j += 1
+            decoded = _decode_ansi_c("".join(buf))
+            # Re-emit as a single-quoted shlex token (escaping embedded single quotes).
+            res.append("'" + decoded.replace("'", "'\\''") + "'")
+            i = j + 1  # skip the closing quote
+            continue
+        res.append(command[i])
+        i += 1
+    return "".join(res)
+
+
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
@@ -303,6 +410,11 @@ def _find_blocked_commands(command: str) -> set[str]:
     `find ... -exec CMD` and recurses into bash -c / cmd /c.
     """
     blocked: set[str] = set()
+
+    # Normalize bash ANSI-C ($'...') / locale ($"...") quoting first: shlex leaves
+    # `$'touch'` as `$touch`, so a writer/interpreter hidden behind ANSI-C quoting would
+    # never match the blocklist even though bash decodes and runs it.
+    command = _normalize_ansi_c_quotes(command)
 
     # punctuation_chars splits separators into their own tokens, so command
     # position is detected even in `echo done; rm -rf x` (no whitespace) or
@@ -5549,6 +5661,10 @@ def _check_signal_escape_patterns(
     _os_mod_aliases = {"os"}
     _subprocess_mod_aliases = {"subprocess"}
     _shell_name_aliases: dict[str, str] = {}
+    # from subprocess import run as r / call / check_call / check_output / Popen -> bare-name
+    # aliases that run an unguarded child, so r(['cat', '../../etc/shadow']) reads a host
+    # secret. Tracked so the read-callee traversal check recognizes them like subprocess.run.
+    _subprocess_exec_from_aliases: set[str] = set()
     # from os.path import join as j / normpath / abspath -> {alias: 'join'} so a path builder
     # folder recognizes the bare-name form open(join('/etc', 'passwd')).
     _pathfunc_from_aliases: dict[str, str] = {}
@@ -5570,6 +5686,14 @@ def _check_signal_escape_patterns(
                 _fq = f"{_imp.module}.{_a.name}"
                 if _fq in _SHELL_EXEC_FUNCS:
                     _shell_name_aliases[_a.asname or _a.name] = _fq
+                if _imp.module == "subprocess" and _a.name in (
+                    "run",
+                    "call",
+                    "check_call",
+                    "check_output",
+                    "Popen",
+                ):
+                    _subprocess_exec_from_aliases.add(_a.asname or _a.name)
         elif isinstance(_imp, ast.ImportFrom) and _imp.module in (
             "os.path",
             "posixpath",
@@ -5695,9 +5819,12 @@ def _check_signal_escape_patterns(
         # their argv path elements (absolute-sensitive elements already block regardless).
         while isinstance(fn, ast.Attribute) and fn.attr == "__call__":
             fn = fn.value
-        # r = subprocess.run; r(['cat', '../../root/.ssh/id_rsa']) hides the exec attribute
-        # form behind a single-assignment alias, so resolve the RHS before matching.
+        # A from-import (from subprocess import run as r -> r([...])) or a single-assignment
+        # alias (r = subprocess.run) both hide the exec attribute form behind a bare Name;
+        # resolve/recognize them before matching the attribute form.
         if isinstance(fn, ast.Name):
+            if fn.id in _subprocess_exec_from_aliases:
+                return True
             fn = _unwrap_container_node(_scope_idx.resolve(fn.id, fn, "rhsnode"))
         return (
             isinstance(fn, ast.Attribute)
@@ -5869,6 +5996,103 @@ def _check_signal_escape_patterns(
         # read scanner otherwise treats the whole command as one opaque path candidate, and
         # _is_sensitive_abs_path ignores strings with whitespace. Tokenize the command and
         # check each token as a read path so an embedded host-secret read is caught.
+        def _escaping_glob(tok):
+            # A shell glob that can expand OUTSIDE the workdir (absolute or ~ rooted) can
+            # name a host secret the static scanner cannot see (head /etc/shad* -> /etc/shadow);
+            # bash expands it before the reader runs. A relative glob (*.txt) stays in the
+            # workdir cwd and is allowed.
+            if not any(g in tok for g in "*?["):
+                return False
+            tn = tok.replace("\\", "/")
+            return tok[:1] == "~" or tn.startswith("/")
+
+        def _scan_one_command(cmd):
+            # Scan a shell command STRING (folded to a literal) for embedded host-secret
+            # reads: literal sensitive / traversal paths, input redirects, and $ / backtick /
+            # escaping-glob expansions on file-reading commands. Reads from a shell child are
+            # not runtime-confined, so these must be blocked statically.
+            if cmd is None:
+                return False
+            # Normalize ANSI-C ($'...') quoting so an obfuscated reader / path is seen.
+            cmd = _normalize_ansi_c_quotes(cmd)
+            # Literal-path scan (absolute-sensitive + traversal) on plain whitespace tokens.
+            try:
+                toks = shlex.split(cmd, posix = True)
+            except ValueError:
+                toks = cmd.split()
+            for t in toks:
+                if t and not t.startswith("-") and _flag_read_path(node, t, True):
+                    return True
+            # Re-tokenize keeping redirects / separators for the expansion scan.
+            try:
+                _lx = shlex.shlex(cmd, posix = True, punctuation_chars = ";&|()`<>")
+                _lx.whitespace_split = True
+                ptoks = list(_lx)
+            except ValueError:
+                ptoks = cmd.split()
+
+            def _risky_read_target(tgt):
+                if not tgt:
+                    return False
+                if "$" in tgt or "`" in tgt or _escaping_glob(tgt):
+                    return True
+                tn = tgt.replace("\\", "/")
+                return _is_sensitive_abs_path(tgt) or ".." in tn.split("/")
+
+            _at_cmd = True
+            _cur_reader = False
+            for _pi, _pt in enumerate(ptoks):
+                if _pt in (";", "&&", "||", "|", "&", "(", ")", "`", "{", "}", "\n"):
+                    _at_cmd = True
+                    _cur_reader = False
+                    continue
+                if _pt.startswith("<"):
+                    _rt = _pt.lstrip("<") or (ptoks[_pi + 1] if _pi + 1 < len(ptoks) else "")
+                    if _risky_read_target(_rt):
+                        _fs_block(
+                            node,
+                            f"shell input redirect from a non-literal / sensitive path {_rt!r}",
+                        )
+                        return True
+                    continue
+                if _pt.startswith(">"):
+                    continue  # output redirects are handled by _find_blocked_commands
+                if _at_cmd:
+                    _cur_reader = os.path.basename(_pt).lower() in _SHELL_READ_COMMANDS
+                    _at_cmd = False
+                    continue
+                if (
+                    _cur_reader
+                    and not _pt.startswith("-")
+                    and ("$" in _pt or "`" in _pt or _escaping_glob(_pt))
+                ):
+                    _fs_block(node, f"shell read command reads an expanded path {_pt!r}")
+                    return True
+            return False
+
+        # A subprocess argv that invokes a shell with -c runs the payload in an unguarded
+        # child (subprocess.run(['sh', '-c', 'head -1 /etc/passwd'])). The blocked-command
+        # scanner finds no blocked command (head is benign), so scan the -c payload for
+        # sensitive reads here the same way a string shell sink is scanned.
+        if _is_subprocess_exec_callee(f) and node.args:
+            argv = node.args[0]
+            if isinstance(argv, (ast.List, ast.Tuple)) and argv.elts:
+                _first = _fold_read_arg(argv.elts[0])
+                if _first is not None and os.path.basename(_first).lower() in _SHELL_BINARIES:
+                    _elts = [_fold_read_arg(_e) for _e in argv.elts]
+                    for _k, _ev in enumerate(_elts):
+                        if _ev is not None and (
+                            _ev == "-c"
+                            or (
+                                _ev.startswith("-")
+                                and not _ev.startswith("--")
+                                and _ev.endswith("c")
+                            )
+                        ):
+                            if _k + 1 < len(_elts) and _scan_one_command(_elts[_k + 1]):
+                                return True
+                            break
+
         _fq = _shell_string_sink_fq(f)
         _is_str = _fq in _STRING_SHELL_SINKS
         if not _is_str:
@@ -5890,62 +6114,7 @@ def _check_signal_escape_patterns(
                             _is_str = True
         if not _is_str or not node.args:
             return False
-        cmd = _fold_read_arg(node.args[0])
-        if cmd is None:
-            return False
-        # Literal-path scan (absolute-sensitive + traversal) on plain whitespace tokens.
-        try:
-            toks = shlex.split(cmd, posix = True)
-        except ValueError:
-            toks = cmd.split()
-        for t in toks:
-            if t and not t.startswith("-") and _flag_read_path(node, t, True):
-                return True
-        # Shell EXPANSION can hide a sensitive read path from the literal scan
-        # (head -1 < $P, cat $P). Re-tokenize keeping redirects / separators and fail
-        # closed on: an input redirect (< / << / <<<) whose target is non-literal /
-        # sensitive / traversal, and a $ / backtick expansion passed to a file-reading
-        # command. Reads are not runtime-confined, so these must be blocked statically.
-        try:
-            _lx = shlex.shlex(cmd, posix = True, punctuation_chars = ";&|()`<>")
-            _lx.whitespace_split = True
-            ptoks = list(_lx)
-        except ValueError:
-            ptoks = cmd.split()
-
-        def _risky_read_target(tgt):
-            if not tgt:
-                return False
-            if "$" in tgt or "`" in tgt:
-                return True
-            tn = tgt.replace("\\", "/")
-            return _is_sensitive_abs_path(tgt) or ".." in tn.split("/")
-
-        _at_cmd = True
-        _cur_reader = False
-        for _pi, _pt in enumerate(ptoks):
-            if _pt in (";", "&&", "||", "|", "&", "(", ")", "`", "{", "}", "\n"):
-                _at_cmd = True
-                _cur_reader = False
-                continue
-            if _pt.startswith("<"):
-                _rt = _pt.lstrip("<") or (ptoks[_pi + 1] if _pi + 1 < len(ptoks) else "")
-                if _risky_read_target(_rt):
-                    _fs_block(
-                        node, f"shell input redirect from a non-literal / sensitive path {_rt!r}"
-                    )
-                    return True
-                continue
-            if _pt.startswith(">"):
-                continue  # output redirects are handled by _find_blocked_commands
-            if _at_cmd:
-                _cur_reader = os.path.basename(_pt).lower() in _SHELL_READ_COMMANDS
-                _at_cmd = False
-                continue
-            if _cur_reader and not _pt.startswith("-") and ("$" in _pt or "`" in _pt):
-                _fs_block(node, f"shell read command reads an expanded path {_pt!r}")
-                return True
-        return False
+        return _scan_one_command(_fold_read_arg(node.args[0]))
 
     class _SensitiveReadVisitor(ast.NodeVisitor):
         def visit_Call(self, node):
@@ -6519,8 +6688,16 @@ try:
     @_gwraps(_real_path_open)
     def _guarded_path_open(self, mode="r", *a, **k):
         # Coerce mode through the base str (a str-subclass __contains__ must not lie).
-        if _mode_is_write(mode) and not _within(self):
-            _deny(str(self), "Path.open")
+        if _mode_is_write(mode):
+            if not _within(self):
+                _deny(str(self), "Path.open")
+        else:
+            # A dynamically assembled Path (Path(globals()['P']).read_text()) has no literal
+            # receiver for the static scanner. On Python <= 3.11 pathlib holds the ORIGINAL
+            # io.open, so the io.open sensitive-read backstop would not fire for pathlib
+            # reads; apply it here so Path reads are confined version-robustly. read_text /
+            # read_bytes route through this same self.open(), so they are covered too.
+            _deny_sensitive_read(self)
         return _real_path_open(self, mode, *a, **k)
     _pl.Path.open = _guarded_path_open
 

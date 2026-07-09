@@ -918,3 +918,55 @@ def test_sandboxed_benign_outside_read_allowed():
     )
     assert "IMPORTS_OK" in out
     assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_opaque_pathlib_read_of_secret_denied():
+    # A dynamically assembled pathlib receiver (Path(globals()['P']).read_text()) has no
+    # literal for the static scanner. Path.open must apply the runtime sensitive-read
+    # backstop so pathlib reads cannot exfiltrate a host secret.
+    out = _python_exec(
+        "from pathlib import Path\n"
+        "P = " + repr(_SECRET_ABS) + "\n"
+        "print('LEN', len(Path(globals()['P']).read_text()))\n",
+        None,
+        30,
+        "backstop-pathlib-read",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert "reading a sensitive host path" in out
+    assert "LEN " not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_pathlib_open_read_of_secret_denied():
+    # The same via Path(...).open().read() rather than read_text().
+    out = _python_exec(
+        "from pathlib import Path\n"
+        "P = " + repr(_SECRET_ABS) + "\n"
+        "print('LEN', len(Path(globals()['P']).open().read()))\n",
+        None,
+        30,
+        "backstop-pathlib-open-read",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert "reading a sensitive host path" in out
+    assert "LEN " not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_pathlib_local_read_allowed():
+    # A workdir-local pathlib read stays allowed.
+    out = _python_exec(
+        "from pathlib import Path\n"
+        "Path('note.txt').write_text('hi')\n"
+        "print('GOT', Path('note.txt').read_text())\n",
+        None,
+        30,
+        "backstop-pathlib-local",
+        disable_sandbox = False,
+    )
+    assert "GOT hi" in out
+    assert "sandbox:" not in out

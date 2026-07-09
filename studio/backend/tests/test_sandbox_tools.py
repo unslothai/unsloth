@@ -2184,3 +2184,77 @@ class TestRound15Bypasses:
         # A bare single-component relative redirect target stays in the workdir cwd.
         _ok("import os\nos.system('echo x > out.txt')")
         _ok("import os\nos.system('echo x > ./out.txt')")
+
+
+class TestRound16Bypasses:
+    """Sixteenth-round Codex findings: a dynamic Path read, sensitive reads inside a
+    subprocess shell -c argv payload, ANSI-C ($'...') quoted command words, from-imported
+    subprocess read sinks, and shell globs that expand to a host secret."""
+
+    def test_path_literal_sensitive_read_blocked(self):
+        # The runtime Path.open backstop is exercised in the runtime test module; the static
+        # scanner still flags a literal pathlib receiver.
+        _blocked(
+            "from pathlib import Path\nPath('/etc/passwd').read_text()",
+            expect_phrase = "sensitive host identity",
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['sh', '-c', 'head -1 /etc/passwd'])",
+            "import subprocess\nsubprocess.run(['bash', '-c', 'cat /etc/shadow'])",
+            "import subprocess\nsubprocess.run(['bash', '-lc', 'cat ../../../etc/shadow'])",
+        ],
+    )
+    def test_shell_argv_c_payload_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_shell_argv_c_payload_benign_allowed(self):
+        _ok("import subprocess\nsubprocess.run(['bash', '-c', 'echo hi'])")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system(\"$'touch' /tmp/x\")",
+            "import os\nos.system(\"$'\\\\x74ouch' /tmp/x\")",
+            "import os\nos.system(\"$'rm' -rf /\")",
+        ],
+    )
+    def test_ansi_c_quoted_command_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_ansi_c_quoted_benign_allowed(self):
+        # A benign ANSI-C quoted echo argument must not trip the writer/interpreter blocklist.
+        _ok("import os\nos.system(\"echo $'hi\\\\tthere'\")")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from subprocess import run\nrun(['cat', '../../../etc/shadow'])",
+            "from subprocess import run as r\nr(['cat', '../../../root/.ssh/id_rsa'])",
+            "from subprocess import check_output\ncheck_output(['cat', '/etc/passwd'])",
+        ],
+    )
+    def test_from_imported_subprocess_read_sink_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_from_imported_subprocess_benign_allowed(self):
+        _ok("from subprocess import run\nrun(['echo', 'hi'])")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('head -1 /etc/shad*')",
+            "import os\nos.system('cat /etc/pass*')",
+            "import os\nos.system('head < /etc/shad*')",
+            "import os\nos.system('cat ~/.ssh/*')",
+        ],
+    )
+    def test_escaping_glob_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_relative_glob_read_allowed(self):
+        # A relative glob expands only within the workdir cwd, so it stays allowed.
+        _ok("import os\nos.system('grep foo *.txt')")
+        _ok("import os\nos.system('echo *.py')")
