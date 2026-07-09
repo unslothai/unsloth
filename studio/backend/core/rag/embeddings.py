@@ -158,9 +158,7 @@ def _get(model_name: str | None = None):
             device = _device()
             logger.info("loading embedding model %s on %s", name, device)
             _guard_model_security(name)
-            _model = SentenceTransformer(
-                name, device = device, model_kwargs = dtype_kwargs("float16")
-            )
+            _model = SentenceTransformer(name, device = device, model_kwargs = dtype_kwargs("float16"))
             _name = name
         return _model
 
