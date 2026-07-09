@@ -18,6 +18,17 @@ import routes.inference as inference_route
 from models.inference import LoadAcceptedResponse, LoadRequest, LoadResponse
 
 
+@pytest.fixture(autouse = True)
+def _reset_async_load_state(monkeypatch):
+    monkeypatch.setattr(inference_route, "_last_async_load_error", None)
+    monkeypatch.setattr(inference_route, "_async_load_generation", 0)
+    monkeypatch.setattr(inference_route, "_accepted_async_load_model", None)
+    monkeypatch.setattr(inference_route, "_active_async_load_task", None)
+    inference_route._background_tasks.clear()
+    yield
+    inference_route._background_tasks.clear()
+
+
 def _request(model_path = "unsloth/A-GGUF", async_load = True) -> LoadRequest:
     return LoadRequest(model_path = model_path, async_load = async_load)
 
@@ -37,8 +48,6 @@ def test_async_load_returns_immediately(monkeypatch):
         )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
-    monkeypatch.setattr(inference_route, "_last_async_load_error", None)
-
     async def _scenario():
         start = asyncio.get_event_loop().time()
         result = await inference_route.load_model(_request(), object(), "tester")
@@ -62,8 +71,6 @@ def test_async_load_success_leaves_error_none(monkeypatch):
         )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _quick_load)
-    monkeypatch.setattr(inference_route, "_last_async_load_error", None)
-
     async def _scenario():
         await inference_route.load_model(_request(), object(), "tester")
         await asyncio.sleep(0.1)
@@ -81,8 +88,6 @@ def test_async_load_failure_surfaces_via_last_async_load_error(monkeypatch):
         raise HTTPException(status_code = 400, detail = "boom: unsupported model")
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _failing_load)
-    monkeypatch.setattr(inference_route, "_last_async_load_error", None)
-
     async def _scenario():
         await inference_route.load_model(_request(), object(), "tester")
         await asyncio.sleep(0.1)
@@ -113,6 +118,89 @@ def test_async_load_clears_previous_error_before_scheduling(monkeypatch):
 
     _run(_scenario())
     assert inference_route._last_async_load_error is None
+
+
+def test_async_load_status_tracks_accepted_model_before_backend_loading(monkeypatch):
+    """The accepted model should appear as loading immediately, before the
+    backend-specific loading set is populated."""
+
+    entered_load = asyncio.Event()
+    release_load = asyncio.Event()
+
+    async def _slow_load(request, fastapi_request, current_subject):
+        entered_load.set()
+        await release_load.wait()
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
+
+    async def _scenario():
+        result = await inference_route.load_model(_request("unsloth/Pending-GGUF"), object(), "tester")
+        assert isinstance(result, LoadAcceptedResponse)
+        assert "unsloth/Pending-GGUF" in inference_route._async_loading_models()
+        release_load.set()
+        await asyncio.wait_for(entered_load.wait(), timeout = 1)
+        await asyncio.sleep(0.05)
+
+    _run(_scenario())
+
+
+def test_async_load_rejects_second_accepted_load_while_one_is_active(monkeypatch):
+    """Only one async load is accepted at a time, so double-clicks/retries do
+    not build an unbounded queue behind the lifecycle gate."""
+
+    entered_load = asyncio.Event()
+    release_load = asyncio.Event()
+
+    async def _slow_load(request, fastapi_request, current_subject):
+        entered_load.set()
+        await release_load.wait()
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
+
+    async def _scenario():
+        first = await inference_route.load_model(_request("unsloth/A-GGUF"), object(), "tester")
+        assert isinstance(first, LoadAcceptedResponse)
+        await asyncio.wait_for(entered_load.wait(), timeout = 1)
+        with pytest.raises(HTTPException) as exc:
+            await inference_route.load_model(_request("unsloth/B-GGUF"), object(), "tester")
+        assert exc.value.status_code == 409
+        assert len(inference_route._background_tasks) == 1
+        release_load.set()
+        await asyncio.sleep(0.05)
+
+    _run(_scenario())
+
+
+def test_older_async_failure_cannot_overwrite_newer_accepted_load(monkeypatch):
+    """A newer async load cannot be accepted while an older one is active, so
+    the older task cannot later write a failure against that newer accepted load."""
+
+    entered_load = asyncio.Event()
+
+    async def _failing_load(request, fastapi_request, current_subject):
+        entered_load.set()
+        await asyncio.sleep(0.05)
+        raise HTTPException(status_code = 400, detail = "A failed after B attempted")
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _failing_load)
+
+    async def _scenario():
+        first = await inference_route.load_model(_request("unsloth/A-GGUF"), object(), "tester")
+        assert isinstance(first, LoadAcceptedResponse)
+        await asyncio.wait_for(entered_load.wait(), timeout = 1)
+        with pytest.raises(HTTPException) as exc:
+            await inference_route.load_model(_request("unsloth/B-GGUF"), object(), "tester")
+        assert exc.value.status_code == 409
+        await asyncio.sleep(0.1)
+
+    _run(_scenario())
+    assert inference_route._last_async_load_error == "A failed after B attempted"
 
 
 def test_overlapping_loads_success_clears_stale_error(monkeypatch):
