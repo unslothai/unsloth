@@ -2615,11 +2615,27 @@ exit 0
     # Ask once (interactive installs only) whether the launcher should open
     # the browser after the server is up. Skipped when --no-browser/--browser
     # was passed or input is redirected; then an existing choice is kept.
+    # Enter keeps the choice baked into the existing launcher so a reinstall
+    # that accepts the defaults never flips a saved no-browser preference.
     $_browserPromptOk = [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
     if (-not $OpenBrowserPref -and $_browserPromptOk) {
+        $_existingPref = ""
+        $_promptLauncher = if ($StudioDataDir) { Join-Path $StudioDataDir "launch-studio.ps1" } else { $null }
+        if ($_promptLauncher -and (Test-Path -LiteralPath $_promptLauncher)) {
+            try {
+                $_prevText = [System.IO.File]::ReadAllText($_promptLauncher)
+                if ($_prevText -match "(?m)^\`$openBrowserDefault = '([01])'") {
+                    $_existingPref = $Matches[1]
+                }
+            } catch {}
+        }
+        $_browserHint = if ($_existingPref -eq '0') { '[y/N]' } else { '[Y/n]' }
         Write-Host ""
-        $_browserReply = Read-Host "  Open Unsloth Studio in your default browser after launch? [Y/n]"
-        $OpenBrowserPref = if ($_browserReply -match '^[Nn]') { '0' } else { '1' }
+        $_browserReply = Read-Host "  Open Unsloth Studio in your default browser after launch? $_browserHint"
+        $OpenBrowserPref = if ($_browserReply -match '^[Nn]') { '0' }
+            elseif ($_browserReply -match '^[Yy]') { '1' }
+            elseif ($_existingPref) { $_existingPref }
+            else { '1' }
     }
 
     # New-StudioShortcuts gates the .lnk shortcuts on env-mode internally.

@@ -3198,13 +3198,26 @@ if [ "$TAURI_MODE" != true ]; then
     # Ask once (interactive installs only) whether the launcher should open
     # the browser after the server is up. Skipped when --no-browser/--browser
     # was passed or no TTY; then an existing choice is kept, defaulting to on.
+    # Enter keeps the choice persisted in studio.conf so a reinstall that
+    # accepts the defaults never flips a saved no-browser preference.
     if [ -z "$_STUDIO_OPEN_BROWSER" ] && [ -t 1 ] && [ -r /dev/tty ]; then
+        _existing_open_browser=""
+        if [ -f "$DATA_DIR/studio.conf" ]; then
+            _existing_open_browser=$(sed -n "s/^STUDIO_OPEN_BROWSER='\([01]\)'\$/\1/p" \
+                "$DATA_DIR/studio.conf" 2>/dev/null | head -n 1)
+        fi
+        if [ "$_existing_open_browser" = "0" ]; then
+            _browser_hint="[y/N]"
+        else
+            _browser_hint="[Y/n]"
+        fi
         echo ""
-        printf "  Open Unsloth Studio in your default browser after launch? [Y/n] "
-        read -r _browser_reply </dev/tty || _browser_reply="y"
+        printf "  Open Unsloth Studio in your default browser after launch? %s " "$_browser_hint"
+        read -r _browser_reply </dev/tty || _browser_reply=""
         case "$_browser_reply" in
             [nN]*) _STUDIO_OPEN_BROWSER=0 ;;
-            *) _STUDIO_OPEN_BROWSER=1 ;;
+            [yY]*) _STUDIO_OPEN_BROWSER=1 ;;
+            *) _STUDIO_OPEN_BROWSER="${_existing_open_browser:-1}" ;;
         esac
     fi
     create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"

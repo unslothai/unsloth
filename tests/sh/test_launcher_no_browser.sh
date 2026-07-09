@@ -81,6 +81,10 @@ assert_contains \
 assert_contains \
     "install.sh: interactive prompt asks about browser auto-open" \
     "$_installer" "Open Unsloth Studio in your default browser after launch?"
+# A reinstall that accepts the prompt default must keep the saved choice.
+assert_contains \
+    "install.sh: prompt Enter keeps the persisted preference" \
+    "$_installer" '*) _STUDIO_OPEN_BROWSER="${_existing_open_browser:-1}"'
 
 echo ""
 echo "=== install.sh _open_browser gating (functional) ==="
@@ -158,6 +162,9 @@ assert_file_contains \
 assert_file_contains \
     "install.ps1: interactive prompt asks about browser auto-open" \
     "$INSTALL_PS1" "Open Unsloth Studio in your default browser after launch?"
+assert_file_contains \
+    "install.ps1: prompt Enter keeps the baked preference" \
+    "$INSTALL_PS1" 'elseif ($_existingPref) { $_existingPref }'
 # All launcher URL opens must route through the gated helper.
 _ps1_direct_open=$(grep -cF 'Start-Process "http://localhost:' "$INSTALL_PS1" || true)
 if [ "$_ps1_direct_open" -eq 0 ]; then
