@@ -100,6 +100,10 @@ class LlamaServerNotFoundError(RuntimeError):
     Subclasses RuntimeError so existing handlers still catch it."""
 
 
+class _LlamaStreamCancelled(Exception):
+    """Internal signal for an expected client/request cancellation."""
+
+
 # Shared so the from_identifier preflight and the load-time raise stay in sync.
 LLAMA_SERVER_NOT_FOUND_DETAIL = (
     "This is a GGUF model, but the llama.cpp runtime (llama-server) is not "
@@ -8616,7 +8620,7 @@ class LlamaCppBackend:
     ):
         """Open one streaming POST and let cancel interrupt prefill or reads."""
         if cancel_event is not None and cancel_event.is_set():
-            raise GeneratorExit
+            raise _LlamaStreamCancelled
 
         _cancel_closed = threading.Event()
         _response_ref: list = [None]
@@ -8661,13 +8665,13 @@ class LlamaCppBackend:
             ) as response:
                 _response_ref[0] = response
                 if cancel_event is not None and cancel_event.is_set():
-                    raise GeneratorExit
+                    raise _LlamaStreamCancelled
                 yield response
                 return
         except (httpx.RequestError, RuntimeError):
             # Response was closed by the cancel watcher
             if cancel_event is not None and cancel_event.is_set():
-                raise GeneratorExit
+                raise _LlamaStreamCancelled
             raise
         finally:
             _cancel_closed.set()
@@ -8870,6 +8874,8 @@ class LlamaCppBackend:
                         "finish_reason": _metadata_finish_reason,
                     }
 
+        except _LlamaStreamCancelled:
+            return
         except httpx.ConnectError as e:
             # Server already down. If this was an MTP+tensor crash, recover by
             # reloading without MTP (scheduled in the background) and fail this
@@ -9994,6 +10000,8 @@ class LlamaCppBackend:
                         break
                 continue
 
+            except _LlamaStreamCancelled:
+                return
             except httpx.ConnectError:
                 # Mark unresolved provisional cards as failed before raising.
                 for _pid, _pname in provisional_started_tool_calls.items():
@@ -10176,6 +10184,8 @@ class LlamaCppBackend:
                 if _meta is not None:
                     yield _meta
 
+        except _LlamaStreamCancelled:
+            return
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")
         except Exception as e:
