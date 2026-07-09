@@ -37,10 +37,10 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useT } from "@/i18n";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
-  ArrowDown01Icon,
   ArrowLeft01Icon,
   ArrowRight01Icon,
   Delete02Icon,
@@ -331,11 +331,19 @@ export function DataTab() {
           <div className="flex items-center gap-2">
             <DropdownMenu>
               <DropdownMenuTrigger asChild={true}>
-                <Button variant="outline" size="sm" disabled={count === 0}>
-                  {fineTuneActionLabels[fineTuneAction]}
+                {/* Fixed width so switching actions never resizes the row. */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={count === 0}
+                  className="w-44 justify-between"
+                >
+                  <span className="truncate">
+                    {fineTuneActionLabels[fineTuneAction]}
+                  </span>
                   <HugeiconsIcon
-                    icon={ArrowDown01Icon}
-                    className="size-3.5 ml-1.5"
+                    icon={ChevronDownStandardIcon}
+                    className="size-3.5 shrink-0"
                   />
                 </Button>
               </DropdownMenuTrigger>
@@ -384,17 +392,21 @@ export function DataTab() {
               </DropdownMenuContent>
             </DropdownMenu>
             <Button
-              size="sm"
+              size="icon-sm"
               onClick={runFineTuneAction}
               disabled={fineTuneBusy || count === 0}
               aria-label={t("settings.data.fineTuneRunAction")}
               title={`${t("settings.data.fineTuneRunAction")}: ${fineTuneActionLabels[fineTuneAction]}`}
-              className="px-2.5"
+              className="shrink-0 rounded-full"
             >
               {fineTuneBusy ? (
                 <Spinner className="size-4" />
               ) : (
-                <HugeiconsIcon icon={ArrowRight01Icon} className="size-4" />
+                <HugeiconsIcon
+                  icon={ArrowRight01Icon}
+                  strokeWidth={2.5}
+                  className="size-4"
+                />
               )}
             </Button>
           </div>
