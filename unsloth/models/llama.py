@@ -3105,6 +3105,11 @@ class FastLlamaModel:
             new_target_modules = list(target_modules) + list(
                 modules_to_save if modules_to_save is not None else []
             )
+            # Per-expert Linear MoE experts (e.g. gpt-oss bnb-4bit) were auto-added to the
+            # saved target_modules when the adapter was first created. Recompute them so a
+            # repeat get_peft_model call with the same args stays idempotent instead of
+            # tripping the mismatch below. No-op for non per-expert-Linear models.
+            new_target_modules += get_moe_target_modules(model, target_modules)
 
             # Now check!
             new_target_modules = set(new_target_modules)
@@ -3330,6 +3335,19 @@ class FastLlamaModel:
         # Auto-detect MoE models and populate target_parameters for expert layers
         if target_parameters is None:
             target_parameters = get_moe_target_parameters(model, target_modules)
+
+        # Per-expert Linear expert layouts (e.g. gpt-oss bnb-4bit) are Linear modules,
+        # not fused Parameters, so target them via target_modules. No-op otherwise.
+        _moe_module_targets = get_moe_target_modules(model, target_modules)
+        if _moe_module_targets:
+            _added = [t for t in _moe_module_targets if t not in final_modules]
+            final_modules.extend(_added)
+            if _added:
+                print(
+                    f"Unsloth: Detected MoE model with per-expert Linear experts. "
+                    f"Enabling LoRA on {len(_added)} expert projection modules."
+                )
+                warn_if_zoo_cannot_merge_moe_experts()
 
         if finetune_last_n_layers is not None and layers_to_transform is None:
             from .vision import _get_total_transformer_layers

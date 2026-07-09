@@ -313,14 +313,18 @@ export function useChatModelRuntime() {
     [],
   );
 
-  const refresh = useCallback(async (options?: { signal?: AbortSignal }) => {
+  const refresh = useCallback(async (options?: {
+    signal?: AbortSignal;
+    includeLoras?: boolean;
+  }) => {
     const signal = options?.signal;
+    const includeLoras = options?.includeLoras ?? true;
     setModelsError(null);
     try {
       const [listRes, statusRes, lorasRes] = await Promise.all([
         listModels(),
         getInferenceStatus(),
-        listLoras(),
+        includeLoras ? listLoras() : Promise.resolve(null),
       ]);
 
       // Cancellation can land while the requests above are in flight. Bail
@@ -328,7 +332,9 @@ export function useChatModelRuntime() {
       if (signal?.aborted) return;
 
       setModels(listRes.models.map(toChatModelSummary));
-      setLoras(lorasRes.loras.map(toLoraSummary));
+      if (lorasRes) {
+        setLoras(lorasRes.loras.map(toLoraSummary));
+      }
 
       const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
       const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
