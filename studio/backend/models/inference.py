@@ -1613,13 +1613,34 @@ class AnthropicMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: Union[str, list[AnthropicContentBlock]]
 
-    @field_validator("content", mode = "before")
+    @model_validator(mode = "before")
     @classmethod
-    def _coerce_null_content(cls, v):
-        # An assistant tool-only turn a resumed session replays can carry null
-        # content; the str|list union would 400 on it. An empty string is the
-        # neutral equivalent and keeps the converter's `for block in content` safe.
-        return "" if v is None else v
+    def _normalize_content(cls, data):
+        # Leniency is role-aware so it never silently drops real user input:
+        #  - assistant: a resumed tool-only turn can carry null content -> "" (the
+        #    str|list union would 400 on null; "" is the neutral equivalent and
+        #    keeps the converter's `for block in content` safe). Unknown blocks
+        #    (thinking / redacted_thinking / future types) validate via
+        #    AnthropicUnknownBlock and are dropped by the converter.
+        #  - user: keep the boundary strict. A null user content is malformed, so
+        #    leave it None for the str|list field to reject (400) instead of
+        #    forwarding an empty prompt; and reject any block type the converter
+        #    cannot translate. anthropic_messages_to_openai silently skips unknown
+        #    user blocks, so a user turn made only of them would otherwise validate
+        #    yet send the model no user content at all (silent data loss).
+        if not isinstance(data, dict):
+            return data
+        content = data.get("content")
+        if data.get("role") == "assistant":
+            return {**data, "content": ""} if content is None else data
+        if isinstance(content, list):
+            for block in content:
+                btype = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+                if btype not in _KNOWN_ANTHROPIC_BLOCK_TYPES:
+                    raise ValueError(
+                        f"unsupported content block type {btype!r} in a user message"
+                    )
+        return data
 
 
 class AnthropicTool(BaseModel):

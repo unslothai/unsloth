@@ -1811,3 +1811,81 @@ def test_resumed_session_thinking_and_null_content_do_not_400():
             max_tokens = 16,
             messages = [{"role": "assistant", "content": [{"type": "tool_use", "name": "f"}]}],
         )
+
+
+def test_user_null_content_rejected():
+    # The null->"" leniency is assistant-only. A malformed user turn with null
+    # content must be rejected at the boundary, not coerced into an empty prompt
+    # and forwarded to the model.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [{"role": "user", "content": None}],
+        )
+
+
+def test_user_unknown_block_rejected_not_silently_dropped():
+    # anthropic_messages_to_openai skips user blocks it cannot translate, so a
+    # user turn whose only block is unknown/future would validate yet forward no
+    # user content at all. Reject it at the boundary instead of that silent
+    # data loss (the assistant fallback is unaffected).
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [
+                {"role": "user", "content": [{"type": "document", "source": {}}]},
+            ],
+        )
+
+
+def test_user_translatable_blocks_still_accepted():
+    # text / image / tool_result are the block types the converter translates for
+    # a user turn, so a real user message built from them must still pass; the
+    # unknown-block guard only trips on other types.
+    req = AnthropicMessagesRequest(
+        model = "x",
+        max_tokens = 16,
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is this?"},
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": "AA"},
+                    },
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+                ],
+            }
+        ],
+    )
+    assert [type(b).__name__ for b in req.messages[0].content] == [
+        "AnthropicTextBlock",
+        "AnthropicImageBlock",
+        "AnthropicToolResultBlock",
+    ]
+
+    openai = anthropic_messages_to_openai([m.model_dump() for m in req.messages])
+    assert any(m["role"] == "tool" and m["tool_call_id"] == "t1" for m in openai)
+
+
+def test_user_malformed_known_block_still_rejected():
+    # The role-aware guard only allow-lists a user block's *type*; the union
+    # still validates its shape, so a known-but-malformed user block (tool_result
+    # without tool_use_id) still fails strict validation.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [
+                {"role": "user", "content": [{"type": "tool_result", "content": "x"}]},
+            ],
+        )
