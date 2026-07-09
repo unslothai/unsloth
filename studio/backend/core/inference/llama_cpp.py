@@ -100,6 +100,10 @@ class LlamaServerNotFoundError(RuntimeError):
     Subclasses RuntimeError so existing handlers still catch it."""
 
 
+class _LlamaStreamCancelled(Exception):
+    """Internal signal for an expected client/request cancellation."""
+
+
 # Shared so the from_identifier preflight and the load-time raise stay in sync.
 LLAMA_SERVER_NOT_FOUND_DETAIL = (
     "This is a GGUF model, but the llama.cpp runtime (llama-server) is not "
@@ -4673,6 +4677,29 @@ class LlamaCppBackend:
             cancel_event = cancel_event,
         )
 
+    def _cached_repo_mtp_drafter(self, hf_repo: str) -> Optional[str]:
+        """A drafter already in this repo's local HF cache, reused offline when a
+        fresh copy can't be fetched. Prefers a repo-root ``mtp-*.gguf`` across all
+        cached snapshots; else an existing ``MTP/`` copy (any precision -- the
+        target verifies every drafted token). None if none is cached."""
+        try:
+            from utils.models.model_config import _iter_hf_cache_snapshots
+
+            roots: list[Path] = []
+            subdirs: list[Path] = []
+            for snap in _iter_hf_cache_snapshots(hf_repo):  # newest first
+                for f in sorted(_gguf_snapshot_files(snap)):
+                    if _is_companion_gguf_path(f) and "mmproj" not in f.lower():
+                        (roots if "/" not in f else subdirs).append(snap / f)
+            # Keep snapshot order (newest first), root before any MTP/ copy, so a
+            # newer main GGUF pairs with the newest cached drafter, not a stale one.
+            for cand in roots + subdirs:
+                if cand.is_file():
+                    return str(cand)
+        except Exception as e:
+            logger.debug("Cached MTP drafter lookup failed for %s: %s", hf_repo, e)
+        return None
+
     def _download_mtp(
         self,
         *,
@@ -4689,11 +4716,25 @@ class LlamaCppBackend:
         are intentionally skipped. Returns the local path, or None.
         """
 
+        # Offline, reuse any drafter already on disk (a fresh copy can't be
+        # fetched). Online, _download_companion_gguf/hf_hub_download reuse the
+        # current cached file and refetch a changed one, so skip the probe here
+        # rather than pair new weights with a stale draft.
+        if _hf_env_offline():
+            cached = self._cached_repo_mtp_drafter(hf_repo)
+            if cached:
+                logger.info(f"Reusing cached MTP drafter (offline): {cached}")
+                return cached
+
         def _pick_mtp(candidates: list[str]) -> Optional[str]:
+            # Root-level only: MTP/ subdir copies now share the mtp- prefix but
+            # are explicit-selection, not auto-fetch (they'd sort ahead of root).
             mtp_files = sorted(
                 f
                 for f in candidates
-                if f.lower().endswith(".gguf") and Path(f).name.lower().startswith("mtp-")
+                if f.lower().endswith(".gguf")
+                and "/" not in f
+                and Path(f).name.lower().startswith("mtp-")
             )
             return mtp_files[0] if mtp_files else None
 
@@ -8579,7 +8620,7 @@ class LlamaCppBackend:
     ):
         """Open one streaming POST and let cancel interrupt prefill or reads."""
         if cancel_event is not None and cancel_event.is_set():
-            raise GeneratorExit
+            raise _LlamaStreamCancelled
 
         _cancel_closed = threading.Event()
         _response_ref: list = [None]
@@ -8624,13 +8665,13 @@ class LlamaCppBackend:
             ) as response:
                 _response_ref[0] = response
                 if cancel_event is not None and cancel_event.is_set():
-                    raise GeneratorExit
+                    raise _LlamaStreamCancelled
                 yield response
                 return
         except (httpx.RequestError, RuntimeError):
             # Response was closed by the cancel watcher
             if cancel_event is not None and cancel_event.is_set():
-                raise GeneratorExit
+                raise _LlamaStreamCancelled
             raise
         finally:
             _cancel_closed.set()
@@ -8833,6 +8874,8 @@ class LlamaCppBackend:
                         "finish_reason": _metadata_finish_reason,
                     }
 
+        except _LlamaStreamCancelled:
+            return
         except httpx.ConnectError as e:
             # Server already down. If this was an MTP+tensor crash, recover by
             # reloading without MTP (scheduled in the background) and fail this
@@ -9957,6 +10000,8 @@ class LlamaCppBackend:
                         break
                 continue
 
+            except _LlamaStreamCancelled:
+                return
             except httpx.ConnectError:
                 # Mark unresolved provisional cards as failed before raising.
                 for _pid, _pname in provisional_started_tool_calls.items():
@@ -10139,6 +10184,8 @@ class LlamaCppBackend:
                 if _meta is not None:
                     yield _meta
 
+        except _LlamaStreamCancelled:
+            return
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")
         except Exception as e:
