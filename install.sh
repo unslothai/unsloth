@@ -2468,14 +2468,16 @@ case "$_torch_index_leaf" in
     *)          export UNSLOTH_TORCH_BACKEND="cuda" ;;
 esac
 
-# rocm7.2 ships torch 2.11.0 -- adjust the constraint to allow it. CUDA 13
-# (cu130, i.e. Blackwell sm_100+) also gets torch 2.11: there torchao 0.17's cpp
-# kernels load cleanly, where they can't against a CUDA-13 torch on 2.10. flash-attn
-# / causal-conv1d / mamba reuse their torch2.10 wheels on 2.11 (see wheel_utils).
-# All other ROCm tags and CUDA (cu126/cu128/...) stay within <2.11.0.
+# rocm7.2 and the CUDA 12.6+/13 indexes (cu126/cu128/cu130) ship torch 2.11.0 --
+# allow it there: torchao 0.17's cpp kernels load on 2.11, and flash-attn /
+# causal-conv1d / mamba reuse their torch2.10 wheels on 2.11 (see wheel_utils
+# prebuilt_wheel_torch_mm). Older CUDA (cu124/cu118), other ROCm tags, CPU and
+# macOS stay within <2.11.0 -- torch 2.11 publishes no wheels for those.
 case "$TORCH_INDEX_URL" in
     */rocm7.2) TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
     */cu130)   TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+    */cu128)   TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+    */cu126)   TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
 esac
 
 # Auto-detect GPU for AMD ROCm based
