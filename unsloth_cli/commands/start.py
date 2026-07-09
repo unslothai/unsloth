@@ -133,6 +133,21 @@ _YOLO_OPTION = typer.Option(
         "flag/config. Any of the three spellings works for any agent."
     ),
 )
+_PERSIST_OPTION = typer.Option(
+    False,
+    "--persist/--no-persist",
+    help = (
+        "Keep this agent's Unsloth-managed session dir so you can resume it later. "
+        "codex/openclaw/hermes/pi have their whole home relocated into an Unsloth dir "
+        "that is a throwaway temp dir (wiped on exit) by default; with --persist it "
+        "lives under the Unsloth agents dir and survives, so their own resume can reopen "
+        "it. claude and opencode keep sessions in your own stores (~/.claude, "
+        "~/.local/share/opencode), so they already resume regardless. To reopen a "
+        "session, pass the agent's own resume command through, e.g. "
+        "`unsloth start codex --persist resume` or `claude --resume <id>`; those flow to "
+        "the agent unchanged."
+    ),
+)
 
 # Per-agent CLI flag for "run tools without prompting". opencode and openclaw have no
 # such flag (config only) and are handled in their config writers, so they are absent.
@@ -989,6 +1004,12 @@ def _refresh_windows_path() -> None:
         os.environ["PATH"] = os.pathsep.join(entries)
 
 
+def _install_source(install_hint: str) -> Optional[str]:
+    """The first http(s) URL an install hint fetches, or None (e.g. an npm install)."""
+    match = re.search(r"https?://[^\s'\")]+", install_hint)
+    return match.group(0) if match else None
+
+
 def _install_agent(name: str, install_hint: str) -> Optional[str]:
     # Missing agent under --launch: offer to run its documented install command, then
     # re-resolve it on PATH. Consent-based (we never auto-run a remote install script
@@ -997,7 +1018,18 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
     if not sys.stdin.isatty():
         return None
     typer.echo(f"`{name}` is not installed.")
-    if not typer.confirm(f"Install it now with `{install_hint}`?", default = False):
+    # Make the supply-chain risk explicit before the prompt: these are the vendors'
+    # own installers (curl | bash, irm | iex, npm), run with the user's privileges,
+    # and nothing checks a signature or hash on the fetched content. Naming the source
+    # turns a blind "yes" into informed consent.
+    source = _install_source(install_hint)
+    warning = (
+        f"This will download and RUN a script from {source} with your privileges"
+        if source
+        else f"This will RUN `{install_hint}` with your privileges"
+    )
+    typer.secho(f"{warning}; there is no signature or hash check.", fg = "yellow", err = True)
+    if not typer.confirm(f"Install `{name}` now with `{install_hint}`?", default = False):
         return None
     # Run each hint through the shell it is written for: PowerShell (irm | iex, or npm)
     # on Windows, /bin/sh (curl | bash, or npm) everywhere else.
@@ -1116,15 +1148,20 @@ def _agents_config_root() -> Path:
 
 
 @contextlib.contextmanager
-def _session_config(agent: str, launch: bool):
+def _session_config(
+    agent: str,
+    launch: bool,
+    persist: bool = False,
+):
     """Yield a private directory for an agent's session config (never the user's own).
 
-    launch: an ephemeral temp dir removed after the agent process exits, so nothing
-    persists. no-launch: a stable Unsloth-owned dir (the printed recipe is run later
-    on this machine), reused across runs. Either way the user's real ~/.<agent>
-    config is left untouched.
+    launch (default): an ephemeral temp dir removed after the agent process exits, so
+    nothing persists. no-launch: a stable Unsloth-owned dir (the printed recipe is run
+    later on this machine), reused across runs. persist (from --persist): use that same
+    stable dir even for a launch, so the agent's session survives the exit and can be
+    resumed next time. Either way the user's real ~/.<agent> config is left untouched.
     """
-    if launch:
+    if launch and not persist:
         path = Path(tempfile.mkdtemp(prefix = f"unsloth-{agent}-"))
         try:
             yield path
@@ -1436,6 +1473,7 @@ def claude(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
 ):
     """Point Claude Code at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1480,6 +1518,9 @@ def claude(
     # --yolo (or its aliases) maps to Claude's own --dangerously-skip-permissions.
     # IS_SANDBOX is left unset on purpose: Claude refuses bypass mode as root unless a
     # sandbox is detected, and we don't want to falsely claim one on the user's host.
+    # claude keeps its history in ~/.claude/projects, which --settings/env never
+    # relocate, so a session already survives exit; resume it with `claude --continue`
+    # or `--resume <id>` passed through.
     command = [
         "claude",
         "--model",
@@ -1516,6 +1557,7 @@ def codex(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
 ):
     """Point OpenAI Codex at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1541,7 +1583,7 @@ def codex(
         *_yolo_command_flags("codex", yolo),
         *ctx.args,
     ]
-    with _session_config("codex", launch) as home:
+    with _session_config("codex", launch, persist = persist) as home:
         write_codex_config(base, entry, home)
         env = {_CODEX_ENV_KEY: key, "CODEX_HOME": str(home)}
         _run(base, entry, env, command, launch = launch, install_hint = "npm install -g @openai/codex")
@@ -1559,6 +1601,7 @@ def openclaw(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
 ):
     """Point OpenClaw at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1568,13 +1611,23 @@ def openclaw(
         serve = serve,
         launch = launch,
     )
-    command = ["openclaw", *ctx.args]
+    openclaw_args = list(ctx.args)
+    # Default a bare `unsloth start openclaw` to the local TUI. Anything the caller
+    # passes through is forwarded verbatim so OpenClaw parses it under its own grammar
+    # (openclaw [global-flags] <command> [options]): an explicit subcommand, a global
+    # flag that must precede the command such as --profile/--dev, or a tui option. We
+    # cannot reinterpret those safely because a leading "--flag value" is ambiguous
+    # between a global (`--profile test`) and a tui option (`--message hi`); prepending
+    # `tui --local` would break the global form, so only the empty case is defaulted.
+    if not openclaw_args:
+        openclaw_args = ["tui", "--local"]
+    command = ["openclaw", *openclaw_args]
     install_hint = (
         "iwr -useb https://openclaw.ai/install.ps1 | iex"
         if os.name == "nt"
         else "curl -fsSL https://openclaw.ai/install.sh | bash"
     )
-    with _session_config("openclaw", launch) as cfg:
+    with _session_config("openclaw", launch, persist = persist) as cfg:
         config_path = cfg / "openclaw.json"
         # key lives in the config, not the env; --yolo writes the exec policy here too.
         write_openclaw_config(base, key, entry, config_path, yolo = yolo)
@@ -1595,6 +1648,7 @@ def opencode(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
 ):
     """Point OpenCode at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1618,7 +1672,9 @@ def opencode(
         command = ["opencode", "--model", opencode_model]
     else:
         command = ["opencode"]
-    with _session_config("opencode", launch) as cfg:
+    # opencode keeps sessions in ~/.local/share/opencode (never relocated), so resume
+    # already survives exit; reopen the last one by passing `opencode --continue` through.
+    with _session_config("opencode", launch, persist = persist) as cfg:
         config_path = cfg / "opencode.json"
         # OPENCODE_CONFIG is an overlay (loaded between the user's global and project
         # configs), so this adds the Unsloth provider/model for the session without
@@ -1670,6 +1726,7 @@ def hermes(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
 ):
     """Point Hermes (Nous Research) at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1681,7 +1738,7 @@ def hermes(
     )
     command = ["hermes", *_yolo_command_flags("hermes", yolo), *ctx.args]
     install_hint = _hermes_install_hint()
-    with _session_config("hermes", launch) as home:
+    with _session_config("hermes", launch, persist = persist) as home:
         # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state)
         # like CODEX_HOME, so the user's ~/.hermes is left untouched for the session.
         write_hermes_config(base, entry, home / "config.yaml")
@@ -1701,6 +1758,7 @@ def pi(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
 ):
     """Point Pi (coding agent) at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1725,7 +1783,7 @@ def pi(
     # --ignore-scripts matches Pi's documented install recipe (its README notes Pi needs
     # no install scripts), so accepting the prompt skips dependency lifecycle scripts.
     install_hint = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
-    with _session_config("pi", launch) as home:
+    with _session_config("pi", launch, persist = persist) as home:
         # Pi resolves its config dir from PI_CODING_AGENT_DIR first (getAgentDir() prefers
         # it over $HOME/.pi/agent), so pin it at the session dir: an inherited
         # PI_CODING_AGENT_DIR in the user's shell would otherwise send Pi to their real
