@@ -1214,6 +1214,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 kwargs.get("image_sizes", None),
             )
             num_images = kwargs.get("num_images", None)
+            # TRL >= 1.7 tiled/dynamic-resolution VLM kwargs (e.g. LightOnOCR, InternVL tiling)
+            spatial_shapes = kwargs.get("spatial_shapes", None)
+            num_tiles = kwargs.get("num_tiles", None)
+            image_position_ids = kwargs.get("image_position_ids", None)
             # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
             token_type_ids = kwargs.get("token_type_ids", None)
             mm_token_type_ids = kwargs.get("mm_token_type_ids", None)
@@ -1273,6 +1277,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             batch_size = math.ceil(total_samples / B)
             if isinstance(num_images, torch.Tensor):
                 num_images = num_images.detach().cpu().reshape(-1).tolist()
+            if isinstance(num_tiles, torch.Tensor):
+                num_tiles = num_tiles.detach().cpu().reshape(-1).tolist()
             if image_grid_thw is not None and pixel_values is not None and num_images is not None:
                 rows_per_image = image_grid_thw.prod(dim = -1)
                 rows_per_sample = torch.split(rows_per_image, num_images)
@@ -1289,6 +1295,20 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             else:
                 cum_rows = None
                 cum_imgs = None
+
+            if (
+                num_tiles is not None
+                and image_grid_thw is not None
+                and pixel_values is not None
+                and num_images is not None
+            ):
+                # why: cum_tiles is indexed via list indexing inside the per-chunk loop;
+                # a plain Python list (built once here) avoids per-iteration GPU->CPU sync.
+                cum_tiles = [0]
+                for _n_tiles in num_tiles:
+                    cum_tiles.append(cum_tiles[-1] + int(_n_tiles))
+            else:
+                cum_tiles = None
 
             def _first_dim_len(value):
                 if value is None:
@@ -1311,6 +1331,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             image_sizes_chunks = []
             token_type_ids_chunks = []
             mm_token_type_ids_chunks = []
+            spatial_shapes_chunks = []
+            num_tiles_chunks = []
+            image_position_ids_chunks = []
 
             current_pixel_idx = 0
             # TRL 0.23.0 batching logic
@@ -1369,11 +1392,31 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     else:
                         pixel_attention_mask_chunks.append(pixel_attention_mask[start:end])
 
+                    if num_tiles is None or img_start is None:
+                        num_tiles_chunks.append(None)
+                    else:
+                        num_tiles_chunks.append(num_tiles[img_start:img_end])
+
+                    if image_position_ids is None or img_start is None:
+                        image_position_ids_chunks.append(None)
+                    else:
+                        image_position_ids_chunks.append(image_position_ids[img_start:img_end])
+
+                    if spatial_shapes is None or cum_tiles is None or img_start is None:
+                        spatial_shapes_chunks.append(None)
+                    else:
+                        tile_start = cum_tiles[img_start]
+                        tile_end = cum_tiles[img_end]
+                        spatial_shapes_chunks.append(spatial_shapes[tile_start:tile_end])
+
                 else:
                     pixel_values_chunks.append(None)
                     image_grid_thw_chunks.append(None)
                     pixel_attention_mask_chunks.append(None)
                     image_sizes_chunks.append(slice_sample_axis(image_sizes, start, end))
+                    num_tiles_chunks.append(None)
+                    image_position_ids_chunks.append(None)
+                    spatial_shapes_chunks.append(None)
 
             temperature = self.temperature
             model_config = _unsloth_get_model_config(model)
@@ -1394,6 +1437,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 image_sizes_chunks,
                 token_type_ids_chunks,
                 mm_token_type_ids_chunks,
+                spatial_shapes_chunks,
+                num_tiles_chunks,
+                image_position_ids_chunks,
             )
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
@@ -1840,12 +1886,21 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     image_sizes_chunk,
                     token_type_ids_chunk,
                     mm_token_type_ids_chunk,
+                    spatial_shapes_chunk,
+                    num_tiles_chunk,
+                    image_position_ids_chunk,
                 ) in zipped_inputs:
                     _extra_vision_kwargs = {}
                     if token_type_ids_chunk is not None:
                         _extra_vision_kwargs["token_type_ids"] = token_type_ids_chunk
                     if mm_token_type_ids_chunk is not None:
                         _extra_vision_kwargs["mm_token_type_ids"] = mm_token_type_ids_chunk
+                    if spatial_shapes_chunk is not None:
+                        _extra_vision_kwargs["spatial_shapes"] = spatial_shapes_chunk
+                    if num_tiles_chunk is not None:
+                        _extra_vision_kwargs["num_tiles"] = num_tiles_chunk
+                    if image_position_ids_chunk is not None:
+                        _extra_vision_kwargs["image_position_ids"] = image_position_ids_chunk
                     with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
                         if pixel_values is None:
                             outputs = unwrapped_model(
