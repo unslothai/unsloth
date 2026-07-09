@@ -2473,12 +2473,16 @@ esac
 # causal-conv1d / mamba reuse their torch2.10 wheels on 2.11 (see wheel_utils
 # prebuilt_wheel_torch_mm). Older CUDA (cu124/cu118), other ROCm tags, CPU and
 # macOS stay within <2.11.0 -- torch 2.11 publishes no wheels for those.
-case "$TORCH_INDEX_URL" in
-    */rocm7.2) TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
-    */cu130)   TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
-    */cu128)   TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
-    */cu126)   TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
-esac
+# torch 2.11 wheels are cp310+, so gate on Python >= 3.10; 3.9 keeps the default
+# range, where those indexes still ship cp39 wheels.
+if version_ge "$PYTHON_VERSION" "3.10"; then
+    case "$TORCH_INDEX_URL" in
+        */rocm7.2) TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+        */cu130)   TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+        */cu128)   TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+        */cu126)   TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+    esac
+fi
 
 # Auto-detect GPU for AMD ROCm based
 # get_torch_index_url must have chosen */rocm*

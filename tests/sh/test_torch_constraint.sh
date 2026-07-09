@@ -114,6 +114,11 @@ for _tag in cu126 cu128 cu130; do
     assert_eq "${_tag} torch 2.11 override present" "1" "$_count"
 done
 
+# torch 2.11 is cp310+, so the overrides must be gated on Python >= 3.10
+# (py3.9 falls back to the default range, which still has cp39 wheels).
+_count=$(grep -cE 'version_ge "\$PYTHON_VERSION" "3\.10"' "$INSTALL_SH" || true)
+assert_eq "torch 2.11 overrides gated on Python >= 3.10" "1" "$_count"
+
 echo ""
 echo "=== Structural: tokenizers in no-torch-runtime.txt ==="
 
