@@ -299,7 +299,7 @@ interface ModelConfigPageProps {
   loadedConfig?: PerModelConfig | null;
   loadedContextLength?: number | null;
   initialConfig?: PerModelConfig | null;
-  showHeader?: boolean;
+  variant?: "page" | "sidebar";
 }
 
 export function ModelConfigPage({
@@ -309,7 +309,7 @@ export function ModelConfigPage({
   loadedConfig = null,
   loadedContextLength = null,
   initialConfig = null,
-  showHeader = true,
+  variant = "page",
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
@@ -433,6 +433,7 @@ export function ModelConfigPage({
     });
   const baseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const atBaseline = perModelConfigsEqual(config, baseline);
+  const atDefault = perModelConfigsEqual(config, DEFAULT_PER_MODEL_CONFIG);
   const maxSeqLengthMax =
     normalizeMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
     MAX_SEQ_LENGTH_MAX;
@@ -496,7 +497,7 @@ export function ModelConfigPage({
 
   return (
     <div className="flex flex-col">
-      {showHeader && (
+      {variant === "page" && (
         <div className="flex items-center gap-2.5 pb-4">
           {onBack && (
             <button
@@ -610,7 +611,13 @@ export function ModelConfigPage({
         )}
       </div>
 
-      <div className="mt-4 flex items-center justify-between gap-3 border-t border-border/60 pt-4">
+      <div
+        className={
+          variant === "sidebar"
+            ? "mt-4 flex flex-col gap-3 border-t border-border/60 pt-4"
+            : "mt-4 flex items-center justify-between gap-3 border-t border-border/60 pt-4"
+        }
+      >
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}
@@ -624,14 +631,20 @@ export function ModelConfigPage({
             Remember for this model
           </label>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div
+          className={
+            variant === "sidebar"
+              ? "flex items-center justify-end gap-2"
+              : "flex shrink-0 items-center gap-2"
+          }
+        >
           <Button
             type="button"
             variant="ghost"
             size="sm"
             className="h-8"
-            disabled={atBaseline}
-            onClick={() => setConfig({ ...baseline })}
+            disabled={atDefault}
+            onClick={() => setConfig({ ...DEFAULT_PER_MODEL_CONFIG })}
           >
             Reset
           </Button>

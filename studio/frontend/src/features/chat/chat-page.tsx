@@ -2651,7 +2651,7 @@ export function ChatPage({
               modelId={inferenceParams.checkpoint}
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
-              nativeContextLength={ggufContextLength}
+              loadedContextLength={ggufContextLength}
               loadedConfig={activeModelConfig}
               onReload={handleReloadActiveModel}
             />

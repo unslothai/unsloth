@@ -10,7 +10,7 @@ interface SidebarModelConfigProps {
   modelId: string;
   ggufVariant: string | null;
   isGguf: boolean;
-  nativeContextLength: number | null;
+  loadedContextLength: number | null;
   loadedConfig: PerModelConfig;
   onReload: (config: PerModelConfig) => void;
 }
@@ -42,7 +42,7 @@ export function SidebarModelConfig({
   modelId,
   ggufVariant,
   isGguf,
-  nativeContextLength,
+  loadedContextLength,
   loadedConfig,
   onReload,
 }: SidebarModelConfigProps) {
@@ -59,10 +59,10 @@ export function SidebarModelConfig({
         ggufVariant: ggufVariant ?? undefined,
         isGguf,
         isDownloaded: true,
-        contextLength: nativeContextLength,
+        contextLength: null,
       },
     };
-  }, [modelId, ggufVariant, isGguf, nativeContextLength]);
+  }, [modelId, ggufVariant, isGguf]);
 
   return (
     <ModelConfigPage
@@ -70,8 +70,8 @@ export function SidebarModelConfig({
       target={target}
       onRun={onReload}
       loadedConfig={loadedConfig}
-      loadedContextLength={nativeContextLength}
-      showHeader={false}
+      loadedContextLength={loadedContextLength}
+      variant="sidebar"
     />
   );
 }
