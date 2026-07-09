@@ -602,6 +602,11 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
 
         return args, kwargs
     except Exception:  # noqa: BLE001 — optimisation only; never break the forward
+        # We may have trimmed some kwargs (image_embeds / a text stream) before failing. Restore the
+        # caller's untrimmed inputs so the stock dense-mask path (flag False below) runs on exactly
+        # what it expects -- the same restore the empty-prompt guard above does.
+        kwargs.clear()
+        kwargs.update(original)
         for blk in getattr(module, "transformer_blocks", []):
             attn = getattr(blk, "attn", None)
             if attn is not None:

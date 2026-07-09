@@ -1129,6 +1129,56 @@ def test_video_speed_off_suppresses_auto_dtype_quant(fake_runtime, monkeypatch):
     assert calls == [True]
 
 
+def test_video_speed_off_suppresses_auto_companion_quant(fake_runtime, monkeypatch):
+    # Mirror the DiT suppression above for the companions: an explicit Speed="off" (bit-exact) load
+    # with TE/VAE left at auto must NOT promote them to auto-quant -- that would fp8/int8 the text
+    # encoder + VAE and silently break the bit-exact request. Unset speed still auto-quantises.
+    import core.inference.video as video_mod
+
+    te_modes: list = []
+    vae_modes: list = []
+    monkeypatch.setattr(
+        video_mod, "quantize_text_encoders", lambda pipe, target, *, mode, **kw: te_modes.append(mode)
+    )
+    monkeypatch.setattr(
+        video_mod, "quantize_vae", lambda pipe, target, *, mode, **kw: vae_modes.append(mode)
+    )
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "off"
+    )
+    assert te_modes == ["off"] and vae_modes == ["off"]  # dense, not auto
+    backend.unload()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert te_modes[-1] == "auto" and vae_modes[-1] == "auto"  # promoted when speed is not off
+
+
+def test_video_speed_off_skips_hunyuan_trim(fake_runtime, monkeypatch):
+    # The HunyuanVideo joint-attention trim is a speed lever (swaps to the fused SDPA kernel), so an
+    # explicit Speed="off" (bit-exact reference) keeps the stock dense-mask attention -- like the
+    # attention backend below it, which also honors speed=off. Unset/active speed installs it.
+    import core.inference.video as video_mod
+
+    trim_calls: list = []
+    monkeypatch.setattr(
+        video_mod,
+        "install_hunyuan_attention_trim",
+        lambda view, family, **kw: trim_calls.append(True) or False,
+    )
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        model_kind = "pipeline",
+        speed_mode = "off",
+    )
+    assert trim_calls == []  # not installed on the bit-exact path
+    backend.unload()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    assert trim_calls == [True]  # installed once (single DiT) when speed is active
+
+
 def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
     # Unset step cache is AUTO, decided from the model's default schedule: Wan's
     # 50-step default engages FBCache at load; the LTX distilled 8-step default

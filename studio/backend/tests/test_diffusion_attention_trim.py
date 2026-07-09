@@ -154,6 +154,31 @@ def test_trim_pre_hook_never_raises_sets_flag_false():
     assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is False for b in dit.transformer_blocks)
 
 
+def test_trim_pre_hook_restores_inputs_on_midtrim_failure():
+    # A later stream trips the trim AFTER earlier inputs were already mutated (image emptied, mllm
+    # trimmed). The fallback must restore the caller's ORIGINAL kwargs so the stock dense-mask path
+    # (flag False) runs on exactly what it expects -- never a half-trimmed mix.
+    dit = _fake_dit()
+    img = torch.zeros(1, 5, 3)
+    mllm = torch.arange(4.0).reshape(1, 4, 1)
+    mllm_mask = torch.tensor([[1, 1, 0, 0]])
+    byt5 = torch.ones(1, 3, 1)
+    kwargs = {
+        "image_embeds": img,
+        "encoder_hidden_states": mllm,
+        "encoder_attention_mask": mllm_mask,
+        "encoder_hidden_states_2": byt5,
+        "encoder_attention_mask_2": "oops",  # malformed -> _trim_stream raises after mllm is trimmed
+    }
+    _, out = att._hunyuan_trim_pre_hook(dit, (), kwargs)
+    assert out["image_embeds"] is img  # emptied then restored
+    assert out["encoder_hidden_states"] is mllm  # trimmed then restored
+    assert out["encoder_attention_mask"] is mllm_mask
+    assert out["encoder_hidden_states_2"] is byt5
+    assert out["encoder_attention_mask_2"] == "oops"
+    assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is False for b in dit.transformer_blocks)
+
+
 def test_trim_pre_hook_absent_stream_not_written_back():
     # If encoder_hidden_states is absent from kwargs (a caller passing it positionally), the hook
     # must NOT write it back as None (that would collide: "got multiple values for argument") and

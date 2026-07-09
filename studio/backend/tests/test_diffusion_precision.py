@@ -84,6 +84,9 @@ def _stub_casters(monkeypatch, recorder):
     dtq.make_filter_fn = lambda min_features, exclude = (), *, require_bf16 = False: (
         lambda module, fqn = "": True
     )
+    # The explicit-torchao path now runs the same kernel smoke test the auto ladder uses; pass it
+    # by default so these caster tests exercise the cast, not a broken-kernel fallback.
+    dtq._smoke_probe = lambda tq, device: True
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", dtq)
 
 
@@ -215,6 +218,7 @@ def test_quantize_int8_uses_family_keep_bf16_schedule(monkeypatch):
     # int8 for a family with a measured schedule routes to the selective caster with
     # that family's (skip_first, skip_last); qwen-image keeps first+last 6 blocks bf16.
     _stub_torch(monkeypatch, cc = (10, 0))
+    monkeypatch.setattr(dp, "_te_scheme_probe", lambda scheme, device: True)
     calls: list = []
     monkeypatch.setattr(
         dp, "_cast_int8_selective", lambda enc, tgt, first, last: calls.append((enc, first, last))
@@ -245,6 +249,7 @@ def test_quantize_fp8_dynamic_uses_compute_caster(monkeypatch):
     # fp8_dynamic routes to the torchao per-row compute caster (not the layerwise one)
     # and needs no per-family schedule.
     _stub_torch(monkeypatch, cc = (9, 0))
+    monkeypatch.setattr(dp, "_te_scheme_probe", lambda scheme, device: True)
     calls: list = []
     monkeypatch.setattr(dp, "_cast_fp8_dynamic", lambda enc, tgt: calls.append(enc))
     te = object()
@@ -252,6 +257,31 @@ def test_quantize_fp8_dynamic_uses_compute_caster(monkeypatch):
     mode = quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic")
     assert mode == TE_QUANT_FP8_DYNAMIC
     assert calls == [te]
+
+
+def test_quantize_explicit_torchao_probes_kernel(monkeypatch):
+    # An EXPLICIT torchao TE mode (int8 / fp8_dynamic / nvfp4) clears the capability gate but must
+    # still run the real GEMM smoke test the auto ladder uses: on a build where quantize_ wraps the
+    # encoder yet the kernel is broken, report dense (None) instead of crashing on the first forward.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    monkeypatch.setattr(dp, "_te_scheme_probe", lambda scheme, device: False)
+    monkeypatch.setattr(dp, "_cast_fp8_dynamic", lambda *a: pytest.fail("must not cast on probe fail"))
+    monkeypatch.setattr(dp, "_cast_nvfp4", lambda *a: pytest.fail("must not cast on probe fail"))
+    monkeypatch.setattr(dp, "_cast_int8_selective", lambda *a: pytest.fail("must not cast on probe fail"))
+    pipe = types.SimpleNamespace(text_encoder = object())
+    assert quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic") is None
+    assert quantize_text_encoders(pipe, _target(), mode = "nvfp4") is None
+    assert quantize_text_encoders(pipe, _target(), mode = "int8", family = "qwen-image") is None
+
+
+def test_te_scheme_probe_bypasses_layerwise_fp8():
+    # Layerwise fp8 has no torchao GEMM (not in _TE_SMOKE_SCHEME), so the probe is a no-op (True)
+    # for it and never vetoes it -- this is why the explicit-torchao veto above leaves plain fp8
+    # casting untouched. The torchao schemes DO carry a smoke scheme.
+    assert dp._te_scheme_probe(TE_QUANT_FP8, "cuda") is True
+    assert TE_QUANT_FP8 not in dp._TE_SMOKE_SCHEME
+    for scheme in (TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_NVFP4):
+        assert scheme in dp._TE_SMOKE_SCHEME
 
 
 def test_quantize_int8_unsupported_hw_is_noop(monkeypatch):

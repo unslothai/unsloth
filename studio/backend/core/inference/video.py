@@ -921,15 +921,21 @@ class VideoBackend:
             vae_quant = vae_quant,
         )
         kind = resolve_video_model_kind(gguf_filename, model_kind)
+        # An explicit Speed="off" (bit-exact reference) load pins the companions dense too, mirroring
+        # the transformer_quant default below: promoting an UNSET TE/VAE to auto-quant would silently
+        # fp8/int8 the text encoder + VAE and break the bit-exact request (an auto DEFAULT overriding
+        # the EXPLICIT off control). Only an EXPLICIT off suppresses; an unset speed still auto
+        # -quantises, and an explicit companion scheme still forces it.
+        speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
         # text_encoder_quant tri-state (mirrors the image backend + transformer_quant): UNSET
         # (None / "") -> auto (pick the best accurate TE scheme for this GPU + family); an explicit
         # "none"/"off" pins the encoder dense; a scheme forces it. So the shipped default is auto.
         if text_encoder_quant is None or str(text_encoder_quant).strip() == "":
-            text_encoder_quant = TE_QUANT_AUTO
+            text_encoder_quant = "off" if speed_off else TE_QUANT_AUTO
         # vae_quant tri-state, same contract. The vae_force_fp32 families (Wan) keep the VAE dense
         # regardless (quantize_vae's force_fp32 gate), so auto is safe as the shipped default.
         if vae_quant is None or str(vae_quant).strip() == "":
-            vae_quant = VAE_QUANT_AUTO
+            vae_quant = "off" if speed_off else VAE_QUANT_AUTO
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
 
         with self._lock:
@@ -985,10 +991,9 @@ class VideoBackend:
             # precision to auto-quant here would engage int8/fp8 + regional compile and silently
             # break the user's bit-exact request (an auto DEFAULT overriding an EXPLICIT control),
             # and the quant path below would then also force effective_speed back to default.
-            # Suppress the auto default when speed was explicitly pinned off, mirroring the image
-            # backend (diffusion.py); otherwise auto (the dense-capable default) applies. "off"
-            # normalizes to None (no dense quant), keeping the dense bf16 path.
-            speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
+            # Suppress the auto default when speed was explicitly pinned off (speed_off, computed
+            # above with the companions), mirroring the image backend (diffusion.py); otherwise auto
+            # (the dense-capable default) applies. "off" normalizes to None (no dense quant).
             transformer_quant = "off" if speed_off else TQ_AUTO
 
         # ── memory plan: family-table resident estimate + frames-aware headroom.
@@ -1353,7 +1358,13 @@ class VideoBackend:
             # attention so it runs the fused (cuDNN/flash) SDPA kernel instead of the dense-mask
             # fallback (~18x/DiT-forward at 121 frames, cosine ~1.0). Must precede the backend set
             # so the requested kernel pins onto the new processors. No-op for every other family.
-            trim = install_hunyuan_attention_trim(view, fam, logger = logger)
+            # A speed lever like the attention backend below, so honor an explicit Speed="off" (the
+            # bit-exact reference path keeps the stock dense-mask attention).
+            trim = (
+                install_hunyuan_attention_trim(view, fam, logger = logger)
+                if effective_speed != SPEED_OFF
+                else False
+            )
             engaged = apply_attention_backend(
                 view,
                 select_attention_backend(

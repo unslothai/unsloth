@@ -2273,6 +2273,31 @@ def test_speed_off_load_suppresses_auto_dtype_quant(fake_runtime, tmp_path, monk
     assert _FakeTransformer.last["path"]  # GGUF from_single_file was used, not a dense build
 
 
+def test_speed_off_load_suppresses_auto_companion_quant(fake_runtime, tmp_path, monkeypatch):
+    # Mirror the DiT suppression for the companions: an explicit Speed="off" load with TE/VAE left at
+    # auto must keep them dense (mode "off"), not promote them to auto-quant and silently fp8/int8 the
+    # text encoder + VAE, which would break the bit-exact request. Unset speed still auto-quantises.
+    from core.inference import diffusion as dmod
+
+    te_modes: list = []
+    vae_modes: list = []
+    monkeypatch.setattr(
+        dmod, "quantize_text_encoders", lambda pipe, target, *, mode, **kw: te_modes.append(mode)
+    )
+    monkeypatch.setattr(
+        dmod, "quantize_vae", lambda pipe, target, *, mode, **kw: vae_modes.append(mode)
+    )
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", speed_mode = "off"
+    )
+    assert te_modes == ["off"] and vae_modes == ["off"]  # dense, not auto
+    backend.unload()
+    backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    assert te_modes[-1] == "auto" and vae_modes[-1] == "auto"  # promoted when speed is not off
+
+
 def test_transformer_quant_dense_path_engaged(fake_runtime, tmp_path, monkeypatch):
     # transformer_quant + a CUDA resident plan -> load the DENSE transformer from the
     # base repo, place it on the device, quantise it, and report the engaged scheme.

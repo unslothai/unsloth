@@ -1217,17 +1217,23 @@ class DiffusionBackend:
         normalize_transformer_cache(transformer_cache)
         normalize_te_quant(text_encoder_quant)
         normalize_vae_quant(vae_quant)
+        # An explicit Speed="off" (bit-exact reference) load pins the companions dense too, mirroring
+        # the transformer_quant default below (load_pipeline): promoting an UNSET TE/VAE to auto-quant
+        # here would silently fp8/int8 the text encoder + VAE and break the bit-exact request -- an
+        # auto DEFAULT overriding the EXPLICIT off control. Only an EXPLICIT off suppresses; an unset
+        # speed still auto-quantises, and an explicit companion scheme still forces it.
+        speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
         # text_encoder_quant tri-state, mirroring transformer_quant: UNSET (None / "") -> auto,
         # which picks the best accurate TE scheme for this GPU + family (fp8_dynamic / int8 /
         # layerwise fp8) or stays dense when none qualifies. An explicit "none"/"off" pins the
-        # encoder dense; an explicit scheme forces it. So the shipped default is auto.
+        # encoder dense; an explicit scheme forces it. So the shipped default is auto (dense under off).
         if text_encoder_quant is None or str(text_encoder_quant).strip() == "":
-            text_encoder_quant = TE_QUANT_AUTO
+            text_encoder_quant = "off" if speed_off else TE_QUANT_AUTO
         # vae_quant tri-state, same contract: UNSET -> auto (fp8_dynamic conv compute on resident
         # fp8-GEMM silicon that passes the conv probe, else layerwise fp8, else dense); none/off ->
-        # dense; an explicit scheme forces it.
+        # dense; an explicit scheme forces it. Also pinned dense under an explicit Speed="off".
         if vae_quant is None or str(vae_quant).strip() == "":
-            vae_quant = VAE_QUANT_AUTO
+            vae_quant = "off" if speed_off else VAE_QUANT_AUTO
         # For a full pipeline the repo itself supplies every component, so it is its
         # own base; the single-file kinds resolve the companion base diffusers repo.
         base = (

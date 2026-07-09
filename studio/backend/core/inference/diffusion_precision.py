@@ -253,6 +253,16 @@ def quantize_text_encoders(
         return None
     if not te_quant_supported(target, mode):
         return None
+    # Mirror select_te_quant_scheme's auto path: an EXPLICIT torchao TE mode (int8 / fp8_dynamic /
+    # nvfp4) can clear the capability gate above yet fail the real GEMM on a torchao/torch build
+    # where quantize_ wraps the encoder but the kernel is broken -- and the caster's try/except only
+    # catches the cast, not the first prompt-encoder forward. Run the same kernel smoke test the auto
+    # ladder uses so a failing kernel falls back to dense here instead of crashing at generation.
+    # Layerwise fp8 (no torchao GEMM) has no smoke scheme, so the probe is a no-op (True) for it.
+    device = str(getattr(target, "device", "cuda"))
+    if not _te_scheme_probe(mode, device):
+        _note(logger, f"text-encoder '{mode}' failed the kernel smoke test; staying dense")
+        return None
     if mode == TE_QUANT_INT8:
         first, last = skip  # type: ignore[misc]
 

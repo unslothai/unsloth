@@ -342,9 +342,16 @@ def _apply_levers(
     via _SecondExpertView, exactly like the loader, so A14B latency + accuracy are real."""
     from core.inference.diffusion_precision import quantize_text_encoders
     from core.inference.diffusion_vae_quant import quantize_vae
-    from core.inference.diffusion_transformer_quant import quantize_transformer
+    from core.inference.diffusion_transformer_quant import (
+        quantize_transformer,
+        is_int8_memory_fallback,
+    )
     from core.inference.diffusion_speed import apply_speed_optims, snapshot_backend_flags
-    from core.inference.diffusion_attention import select_attention_backend, apply_attention_backend
+    from core.inference.diffusion_attention import (
+        select_attention_backend,
+        apply_attention_backend,
+        install_hunyuan_attention_trim,
+    )
     from core.inference.diffusion_cache import (
         apply_step_cache,
         TC_FBCACHE,
@@ -367,8 +374,15 @@ def _apply_levers(
     if getattr(pipe, "transformer_2", None) is not None:
         views.append(_SecondExpertView(pipe))
 
-    # DiT quant (pipeline kind, resident): mutates each expert's transformer in place.
-    if cfg["dit"] not in ("none", "off"):
+    # DiT quant (pipeline kind, resident): mutates each expert's transformer in place. Mirror the
+    # loader's dense-fit skip: for an AUTO request on an int8-fallback family (HunyuanVideo-1.5, where
+    # fp8 is black-framed so auto lands on int8, a memory-only lever ~7% slower AND less accurate than
+    # dense+compile), run the dense DiT instead when it fits resident -- and the benchmark always
+    # loads resident (no offload). Explicit int8/fp8 configs are honored (the whole point of the
+    # sweep). Without this the "shipped"/"ditquant" auto rows would measure int8 where the loader runs
+    # dense, overstating the shipped cost on Hunyuan.
+    dense_fit_skip = cfg["dit"] == "auto" and is_int8_memory_fallback(tgt, fam_name)
+    if cfg["dit"] not in ("none", "off") and not dense_fit_skip:
         schemes = [
             quantize_transformer(v, tgt, mode = cfg["dit"], family = fam_name, logger = logger)
             for v in views
@@ -422,6 +436,16 @@ def _apply_levers(
                     logger = logger,
                 )
             cache_active = engaged["cache"] not in (None, "off")
+
+    # HunyuanVideo-1.5 joint-attention trim (per expert), BEFORE the backend set so the requested
+    # kernel pins onto the new processors -- exactly the loader's order. Drops the ~99% zero-padded
+    # text tokens so the fused SDPA kernel runs (~18x/DiT-forward, cosine ~1.0). A speed lever, so
+    # gated on an active tier like the loader; no-op for every non-Hunyuan family.
+    trim_engaged = False
+    if speed_active:
+        for v in views:
+            trim_engaged = install_hunyuan_attention_trim(v, fam_obj, logger = logger) or trim_engaged
+    engaged["attn_trim"] = trim_engaged
 
     # Attention (per expert).
     backend = select_attention_backend(tgt, cfg["attn"], speed_active = speed_active)
