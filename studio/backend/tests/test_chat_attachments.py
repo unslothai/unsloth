@@ -72,7 +72,12 @@ def _image_attachment(attachment_id: str = "att-1", name: str = "photo.png") -> 
     }
 
 
-def _seed(tmp_path, monkeypatch, attachments, message_id: str = "msg-1"):
+def _seed(
+    tmp_path,
+    monkeypatch,
+    attachments,
+    message_id: str = "msg-1",
+):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
     studio_db.upsert_chat_message(_message(message_id, attachments = attachments))
@@ -292,9 +297,7 @@ def test_attachment_file_corrupt_base64_is_422(tmp_path, monkeypatch):
     attachment["content"] = [{"type": "image", "image": "data:image/png;base64,%%%"}]
     _seed(tmp_path, monkeypatch, [attachment])
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(
-            chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
-        )
+        asyncio.run(chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth"))
     assert excinfo.value.status_code == 422
 
 
@@ -324,9 +327,7 @@ def test_attachment_file_accepts_missing_padding(tmp_path, monkeypatch):
 
 def test_attachment_file_serves_percent_encoded_data_url(tmp_path, monkeypatch):
     attachment = _image_attachment()
-    attachment["content"] = [
-        {"type": "image", "image": "data:text/plain,hello%20world"}
-    ]
+    attachment["content"] = [{"type": "image", "image": "data:text/plain,hello%20world"}]
     _seed(tmp_path, monkeypatch, [attachment])
     response = asyncio.run(
         chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
@@ -365,9 +366,7 @@ def test_attachment_file_no_content_is_404(tmp_path, monkeypatch):
 def test_attachment_file_missing_message_is_404(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(
-            chat_history.get_attachment_file("nope", "att-1", current_subject = "unsloth")
-        )
+        asyncio.run(chat_history.get_attachment_file("nope", "att-1", current_subject = "unsloth"))
     assert excinfo.value.status_code == 404
 
 
@@ -376,9 +375,7 @@ def test_attachment_file_non_data_url_image_is_404(tmp_path, monkeypatch):
     attachment["content"] = [{"type": "image", "image": "https://example.com/a.png"}]
     _seed(tmp_path, monkeypatch, [attachment])
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(
-            chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
-        )
+        asyncio.run(chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth"))
     assert excinfo.value.status_code == 404
 
 
@@ -398,9 +395,7 @@ def test_attachment_file_svg_media_type(tmp_path, monkeypatch):
     svg = b"<svg xmlns='http://www.w3.org/2000/svg'/>"
     payload = base64.b64encode(svg).decode("ascii")
     attachment = _image_attachment()
-    attachment["content"] = [
-        {"type": "image", "image": "data:image/svg+xml;base64," + payload}
-    ]
+    attachment["content"] = [{"type": "image", "image": "data:image/svg+xml;base64," + payload}]
     _seed(tmp_path, monkeypatch, [attachment])
     response = asyncio.run(
         chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
@@ -416,7 +411,5 @@ def test_delete_attachment_route_then_404(tmp_path, monkeypatch):
     )
     assert result == {"ok": True}
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(
-            chat_history.delete_attachment("msg-1", "att-1", current_subject = "unsloth")
-        )
+        asyncio.run(chat_history.delete_attachment("msg-1", "att-1", current_subject = "unsloth"))
     assert excinfo.value.status_code == 404
