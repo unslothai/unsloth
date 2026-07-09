@@ -548,8 +548,6 @@ def test_text_only_messages_not_listed_as_uploads(tmp_path, monkeypatch):
     studio_db.upsert_chat_thread(_thread())
     # The word "image" inside text must not create phantom upload rows.
     message = _message("msg-txt")
-    message["content"] = [
-        {"type": "text", "text": 'discussing an "image" and "audio" here'}
-    ]
+    message["content"] = [{"type": "text", "text": 'discussing an "image" and "audio" here'}]
     studio_db.upsert_chat_message(message)
     assert studio_db.list_chat_attachments() == []

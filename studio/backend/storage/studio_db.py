@@ -1829,9 +1829,7 @@ def list_chat_attachments() -> list[dict]:
         attachments = _json_loads(row["attachments_json"], None)
         if not isinstance(attachments, list):
             attachments = []
-        attachments = [
-            a for a in attachments if isinstance(a, dict) and a.get("id")
-        ]
+        attachments = [a for a in attachments if isinstance(a, dict) and a.get("id")]
         attachments.extend(_content_part_attachments(row["content_json"]))
         for attachment in attachments:
             out.append(
@@ -1879,7 +1877,7 @@ def get_chat_attachment(message_id: str, attachment_id: str) -> Optional[dict]:
 def _delete_content_part(conn, message_id: str, attachment_id: str, content_json) -> bool:
     """Remove one blob content part addressed by its synthetic id."""
     try:
-        idx = int(attachment_id[len(_CONTENT_PART_ID_PREFIX):])
+        idx = int(attachment_id[len(_CONTENT_PART_ID_PREFIX) :])
     except ValueError:
         return False
     content = _json_loads(content_json, None)
@@ -1915,9 +1913,7 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         if row is None:
             return False
         if attachment_id.startswith(_CONTENT_PART_ID_PREFIX):
-            return _delete_content_part(
-                conn, message_id, attachment_id, row["content_json"]
-            )
+            return _delete_content_part(conn, message_id, attachment_id, row["content_json"])
         attachments = _json_loads(row["attachments_json"], None)
         if not isinstance(attachments, list):
             return False

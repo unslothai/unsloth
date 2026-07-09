@@ -303,9 +303,7 @@ def _decode_attachment_base64(payload: str) -> bytes:
     try:
         return base64.b64decode(normalized, altchars = altchars, validate = True)
     except Exception as exc:  # noqa: BLE001 - corrupt stored payload
-        raise HTTPException(
-            status_code = 422, detail = "Attachment data is corrupt"
-        ) from exc
+        raise HTTPException(status_code = 422, detail = "Attachment data is corrupt") from exc
 
 
 _AUDIO_FORMAT_MEDIA_TYPES = {
