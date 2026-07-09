@@ -110,6 +110,7 @@ _BLOCKED_COMMANDS_COMMON = frozenset(
         "rsync",
         "eval",
         "source",
+        "ln",
     }
 )
 _BLOCKED_COMMANDS_WIN = frozenset(
@@ -3987,6 +3988,120 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
     return text
 
 
+# --------------------------------------------------------------------------
+# Stage 5: runtime realpath backstop injected into sandboxed Python.
+#
+# The static gate is prove-or-block; this child-side guard resolves the true
+# realpath (following symlinks) of every MUTATING file op and refuses it unless it
+# lands inside the session workdir. It covers what static analysis cannot prove
+# (dynamic paths, pre-existing symlinks, library writers that funnel through
+# builtins.open). Reads are left unpatched. It is skipped entirely under
+# disable_sandbox (Bypass Permissions).
+# --------------------------------------------------------------------------
+_SANDBOX_GUARD_SRC = r'''
+import os as _os, builtins as _bi, functools as _ft
+_WD = _os.path.realpath(__WORKDIR__)
+
+def _within(p):
+    try:
+        if isinstance(p, int):
+            return True
+        rp = _os.path.realpath(_os.fspath(p))
+    except Exception:
+        return False
+    return rp == _WD or rp.startswith(_WD + _os.sep)
+
+def _deny(p, what):
+    raise PermissionError(
+        "sandbox: %s outside the session workdir is not permitted: %r" % (what, p)
+    )
+
+_real_open = _bi.open
+@_ft.wraps(_real_open)
+def _guarded_open(file, mode="r", *a, **k):
+    m = mode if isinstance(mode, str) else "r"
+    if any(c in m for c in "wax+") and not _within(file):
+        _deny(file, "write")
+    return _real_open(file, mode, *a, **k)
+_bi.open = _guarded_open
+
+def _wrap1(mod, name, what):
+    orig = getattr(mod, name, None)
+    if orig is None:
+        return
+    @_ft.wraps(orig)
+    def w(path, *a, **k):
+        if not _within(path):
+            _deny(path, what)
+        return orig(path, *a, **k)
+    setattr(mod, name, w)
+
+for _n in ("remove", "unlink", "rmdir", "removedirs", "truncate", "chmod",
+           "chown", "mkdir", "makedirs"):
+    _wrap1(_os, _n, _n)
+
+def _wrap2(mod, name, both):
+    orig = getattr(mod, name, None)
+    if orig is None:
+        return
+    @_ft.wraps(orig)
+    def w(src, dst, *a, **k):
+        if both and not _within(src):
+            _deny(src, name + " source")
+        if not _within(dst):
+            _deny(dst, name + " destination")
+        return orig(src, dst, *a, **k)
+    setattr(mod, name, w)
+
+for _n in ("rename", "renames", "replace", "link", "symlink"):
+    _wrap2(_os, _n, True)
+
+try:
+    import shutil as _sh
+    _wrap1(_sh, "rmtree", "rmtree")
+    _wrap2(_sh, "move", True)
+    for _n in ("copy", "copy2", "copyfile", "copytree"):
+        _wrap2(_sh, _n, False)
+except Exception:
+    pass
+
+try:
+    import pathlib as _pl
+    def _wrapp(name, targ):
+        orig = getattr(_pl.Path, name, None)
+        if orig is None:
+            return
+        @_ft.wraps(orig)
+        def w(self, *a, **k):
+            if not _within(self):
+                _deny(str(self), "Path." + name)
+            if targ and a and not _within(a[0]):
+                _deny(str(a[0]), "Path." + name + " target")
+            return orig(self, *a, **k)
+        setattr(_pl.Path, name, w)
+    for _n in ("write_text", "write_bytes", "unlink", "mkdir", "rmdir", "chmod", "touch"):
+        _wrapp(_n, False)
+    for _n in ("rename", "replace", "symlink_to", "hardlink_to"):
+        _wrapp(_n, True)
+except Exception:
+    pass
+'''
+
+
+def _sandbox_runtime_prelude(workdir: str) -> str:
+    """One physical line that runs the realpath backstop before the user code.
+
+    The guard executes in its own namespace (helper names never leak into user
+    globals) while its monkeypatches persist on the os/shutil/pathlib/builtins
+    module objects. Emitting it on a single line keeps user traceback line numbers
+    shifted by exactly one."""
+    src = _SANDBOX_GUARD_SRC.replace("__WORKDIR__", repr(workdir))
+    return (
+        "exec(compile(%r, '<studio-sandbox-guard>', 'exec'), {'__builtins__': __builtins__})\n"
+        % src
+    )
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
@@ -4032,8 +4147,11 @@ def _python_exec(
         fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
         # utf-8 so non-ASCII in model-written code survives the OS default codec
         # (Windows cp1252 would otherwise raise UnicodeEncodeError).
+        # Sandboxed runs get the realpath backstop prepended (Stage 5); bypass
+        # runs execute the code verbatim.
+        file_body = code if disable_sandbox else (_sandbox_runtime_prelude(workdir) + code)
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
-            f.write(code)
+            f.write(file_body)
 
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
         if disable_sandbox:
