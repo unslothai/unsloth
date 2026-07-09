@@ -77,7 +77,9 @@ def test_fast_sentence_transformer_matches_stock_st():
     from sentence_transformers import SentenceTransformer
 
     device = "cuda"
-    dtype = torch.float16
+    # Prefer bf16 when the GPU supports it: fp16 overflows to NaN on bf16-native
+    # embedders such as EmbeddingGemma (Gemma3), which would mask real parity.
+    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     texts = _probe_texts()
     max_seq_length = 256
 
