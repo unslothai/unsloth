@@ -37,12 +37,14 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useT } from "@/i18n";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import {
+  ChevronDownStandardIcon,
+  ChevronRightStandardIcon,
+} from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
   ArrowLeft01Icon,
-  ArrowRight01Icon,
   Delete02Icon,
   Download01Icon,
   Tick02Icon,
@@ -357,7 +359,7 @@ export function DataTab() {
                       {fineTuneActionLabels[action]}
                     </span>
                     {fineTuneAction === action ? (
-                      <HugeiconsIcon icon={Tick02Icon} className="size-3.5" />
+                      <HugeiconsIcon icon={Tick02Icon} className="size-4" />
                     ) : null}
                   </DropdownMenuItem>
                 ))}
@@ -385,7 +387,7 @@ export function DataTab() {
                       {t(`settings.data.${label}`)}
                     </span>
                     {fineTuneFormat === value ? (
-                      <HugeiconsIcon icon={Tick02Icon} className="size-3.5" />
+                      <HugeiconsIcon icon={Tick02Icon} className="size-4" />
                     ) : null}
                   </DropdownMenuItem>
                 ))}
@@ -403,7 +405,7 @@ export function DataTab() {
                 <Spinner className="size-4" />
               ) : (
                 <HugeiconsIcon
-                  icon={ArrowRight01Icon}
+                  icon={ChevronRightStandardIcon}
                   strokeWidth={2.5}
                   className="size-4"
                 />
