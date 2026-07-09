@@ -1071,9 +1071,9 @@ def fix_dynamo_config_thread_visibility():
     checkpointing recompiles fullgraph gpt-oss kernels there against the default
     limit of 8, raising FailOnRecompileLimitHit at step 0. Mirror direct config
     assignments into the process-global entry default (torch <= 2.11 semantics).
-    config.patch(...) also assigns via __setattr__, but is thread-local by design,
-    so skip mirroring while inside a patch enter/exit (tracked per thread). No-op
-    below torch 2.12 and on any torch without this internal layout.
+    config.patch(...) and config.load_config(...) also assign via __setattr__ but
+    are thread-local by design, so skip mirroring while inside one (tracked per
+    thread). No-op below torch 2.12 and on any torch without this internal layout.
     """
     try:
         import torch
@@ -1100,14 +1100,18 @@ def fix_dynamo_config_thread_visibility():
 
     mirrored_modules = ("torch._dynamo.config", "torch._inductor.config")
 
-    # config.patch(...) assigns via __setattr__ too, but its writes are thread-local
-    # by design; a per-thread depth counter marks them so they are not mirrored.
+    # config.patch(...) and config.load_config(...) also assign via __setattr__, but
+    # their writes are thread-local by design; a per-thread depth counter marks them
+    # so they are not mirrored into the process-global default.
     import threading
 
-    _patch_depth = threading.local()
+    _scoped_depth = threading.local()
 
-    def _in_patch():
-        return getattr(_patch_depth, "n", 0) > 0
+    def _in_scoped_write():
+        return getattr(_scoped_depth, "n", 0) > 0
+
+    def _bump(delta):
+        _scoped_depth.n = getattr(_scoped_depth, "n", 0) + delta
 
     original_patch = ConfigModule.patch
     if not getattr(original_patch, "__unsloth_patched__", False):
@@ -1121,22 +1125,22 @@ def fix_dynamo_config_thread_visibility():
                     _enter0, _exit0 = cls.__enter__, cls.__exit__
 
                     def _enter(s, _e = _enter0):
-                        _patch_depth.n = getattr(_patch_depth, "n", 0) + 1
+                        _bump(1)
                         try:
                             return _e(s)
                         finally:
-                            _patch_depth.n -= 1
+                            _bump(-1)
 
                     def _exit(
                         s,
                         *a,
                         _x = _exit0,
                     ):
-                        _patch_depth.n = getattr(_patch_depth, "n", 0) + 1
+                        _bump(1)
                         try:
                             return _x(s, *a)
                         finally:
-                            _patch_depth.n -= 1
+                            _bump(-1)
 
                     cls.__enter__, cls.__exit__ = _enter, _exit
                     cls.__unsloth_patch_wrapped__ = True
@@ -1147,11 +1151,28 @@ def fix_dynamo_config_thread_visibility():
         _patched_patch.__unsloth_patched__ = True
         ConfigModule.patch = _patched_patch
 
+    # load_config restores a saved config by calling setattr per key (thread-local).
+    original_load_config = getattr(ConfigModule, "load_config", None)
+    if callable(original_load_config) and not getattr(
+        original_load_config, "__unsloth_patched__", False
+    ):
+
+        @functools.wraps(original_load_config)
+        def _patched_load_config(self, *args, **kwargs):
+            _bump(1)
+            try:
+                return original_load_config(self, *args, **kwargs)
+            finally:
+                _bump(-1)
+
+        _patched_load_config.__unsloth_patched__ = True
+        ConfigModule.load_config = _patched_load_config
+
     @functools.wraps(original_setattr)
     def _patched_setattr(self, name, value):
         original_setattr(self, name, value)
-        if _in_patch():
-            return  # transient config.patch write: keep it thread-local
+        if _in_scoped_write():
+            return  # transient patch / load_config write: keep it thread-local
         # Aliases (cache_size_limit -> recompile_limit) re-enter with the real name.
         if self.__dict__.get("__name__", None) in mirrored_modules:
             try:
