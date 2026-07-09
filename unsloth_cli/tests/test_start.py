@@ -2558,7 +2558,11 @@ _RESUME_ENV_VAR = {
 def _capture_launch(monkeypatch, argv):
     captured = {}
 
-    def run(command, env = None, **kwargs):
+    def run(
+        command,
+        env = None,
+        **kwargs,
+    ):
         captured["command"] = command
         captured["env"] = env
         return SimpleNamespace(returncode = 0)

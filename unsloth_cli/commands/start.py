@@ -1153,7 +1153,11 @@ def _agents_config_root() -> Path:
 
 
 @contextlib.contextmanager
-def _session_config(agent: str, launch: bool, persist: bool = False):
+def _session_config(
+    agent: str,
+    launch: bool,
+    persist: bool = False,
+):
     """Yield a private directory for an agent's session config (never the user's own).
 
     launch (default): an ephemeral temp dir removed after the agent process exits, so
