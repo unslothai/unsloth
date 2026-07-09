@@ -28,6 +28,7 @@ def _bare_orchestrator():
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
     o._unload_pending = False
+    o._exclusive_op_pending = False
     o.active_model_name = "m"
     o.models = {"m": {}}
     o.loading_models = set()

@@ -35,14 +35,18 @@ jobs:
         run: python -m pip install --upgrade pytest
 
       - name: Poll flash-attn releases for a torch >= 2.12 wheel
+        id: poll
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UNSLOTH_RUN_FLASH_ATTN_CANARY: "1"
         run: |
           python -m pytest studio/backend/tests/test_flash_attn_torch212_canary.py -v
 
+      # Only when the poll step itself failed (canary fired), not on infra/setup
+      # failures in earlier steps -- otherwise a transient checkout/pip failure
+      # would open a false "flash-attn ships torch 2.12" issue.
       - name: Open a tracking issue if the canary fired
-        if: failure()
+        if: failure() && steps.poll.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
