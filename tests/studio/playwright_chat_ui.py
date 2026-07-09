@@ -1312,7 +1312,20 @@ with sync_playwright() as p:
             pw_field = page.locator("#password")
             pw_field.wait_for(state = "visible", timeout = 60_000)
             pw_field.fill(NEW2)
-            page.locator('button[type="submit"]').click()
+            # Wait on the login POST so a transient 4xx/5xx is caught and retried
+            # here, not swallowed until the out-of-loop composer wait.
+            status, _ = click_and_wait_for_response(
+                page,
+                url_substr = "/api/auth/login",
+                method = "POST",
+                do_click = lambda: page.locator('button[type="submit"]').click(),
+                timeout_ms = 30_000,
+                info = lambda m: print(f"[ui]   {m}", flush = True),
+            )
+            if status is not None and status >= 400:
+                raise AssertionError(
+                    f"login POST returned {status}; see console_errors={console_errors[:1]!r}"
+                )
             relogin_err = None
             break
         except Exception as e:
@@ -1351,12 +1364,18 @@ with sync_playwright() as p:
                     time.sleep(backoff_s)
                 # Replace the page if it died; otherwise next iteration's
                 # page.goto() handles the reload.
+                old_page = page
                 page = recover_or_replace_page(
                     page,
                     ctx,
                     default_timeout_ms = 60_000,
                     info = lambda m: print(f"[ui]   recovery: {m}", flush = True),
                 )
+                # A freshly created replacement page loses the pageerror/console
+                # listeners; re-attach so error tracking survives recovery.
+                if page is not old_page:
+                    page.on("pageerror", lambda e: page_errors.append(str(e)))
+                    page.on("console", _on_console)
     if relogin_err is not None:
         raise relogin_err
     # Composer mount confirms the rotated session is authenticated. Kept OUTSIDE the
