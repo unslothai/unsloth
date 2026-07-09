@@ -1297,6 +1297,12 @@ async function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
+  // ``modelLoading`` can clear in the same 500ms tick the user aborts; the
+  // while-condition then exits before the in-loop abort check runs. Re-check
+  // once more so a cancelled send does not fall through to auto-load/generate.
+  if (abortSignal?.aborted) {
+    throw new Error("Aborted");
+  }
 }
 
 /**
@@ -1338,6 +1344,16 @@ async function serverLoadEvidence(): Promise<boolean> {
   return false;
 }
 
+// Safety cap for the evidence-gated adopt wait below. Matches the mount
+// poll's CLI_LOAD_POLL_MAX_MS (use-chat-model-runtime.ts): a large HF GGUF
+// download or slow llama-server warm-up routinely exceeds two minutes, and
+// while ``/status.loading`` still reports the CLI load we must keep waiting
+// rather than fall through to autoLoadSmallestModel(), whose competing /load
+// would queue behind and then replace the CLI model. The loop still exits
+// early the moment evidence disappears, a model is adopted, the user picks
+// one, or ``abortSignal`` fires, so this only bounds a genuinely stuck load.
+const CLI_LOAD_ADOPT_MAX_MS = 600_000;
+
 /**
  * On an empty checkpoint, adopt a model the server is already running or
  * loading (e.g. ``unsloth studio run -m``) instead of auto-loading a
@@ -1362,7 +1378,7 @@ async function adoptInFlightServerLoad(
   }
 
   toast.info("Waiting for model to finish loading…");
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + CLI_LOAD_ADOPT_MAX_MS;
   while (Date.now() < deadline) {
     if (abortSignal?.aborted) {
       throw new Error("Aborted");
