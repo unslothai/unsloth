@@ -1549,11 +1549,13 @@ async function autoLoadSmallestModel(): Promise<{
         loadedIsMultimodal: isMultimodalResponse(loadResp),
       });
     }
-    recordLastLocalModelLoad({
-      id: candidate.id,
-      kind: candidate.kind,
-      ggufVariant: candidate.ggufVariant,
-    });
+    if (!(loadResp.is_lora ?? false)) {
+      recordLastLocalModelLoad({
+        id: candidate.id,
+        kind: candidate.kind,
+        ggufVariant: candidate.ggufVariant,
+      });
+    }
     toast.success(candidate.successLabel, { id: toastId });
     return true;
   }
