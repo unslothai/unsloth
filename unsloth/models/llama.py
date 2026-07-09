@@ -2560,7 +2560,7 @@ class FastLlamaModel:
                     )
                 kwargs["rope_scaling"] = linear_scaling
             else:
-                # Native llama3/yarn/longrope scaling handles long context; just widen the window.
+                # Native llama3 scaling already handles long context; just widen the window.
                 logger.warning_once(
                     f"Unsloth: extending {model_name} to {max_seq_length} using its native "
                     f"{native_type} RoPE scaling."
