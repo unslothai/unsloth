@@ -736,6 +736,13 @@ class InferenceOrchestrator:
             )
             unloading = (
                 self._unload_pending
+                # An exclusive op (share_distributed_object) sets _exclusive_op_pending
+                # before its _wait_dispatcher_idle drains/stops the dispatcher; registering
+                # a mailbox now would be orphaned when it stops (the compare stream would
+                # then hang with no thread routing its responses). Rechecked here under
+                # _mailbox_lock so the gate is atomic with registration -- the unlocked
+                # pre-check plus _start_dispatcher's refusal alone leave a window.
+                or self._exclusive_op_pending
                 or self.active_model_name != expected_model
                 or not dispatcher_alive
             )
