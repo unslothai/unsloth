@@ -65,7 +65,9 @@ def _imports_transformers(node) -> bool:
     if isinstance(node, ast.Import):
         return any(a.name.split(".")[0] == "transformers" for a in node.names)
     if isinstance(node, ast.ImportFrom) and node.module:
-        return node.module.split(".")[0] == "transformers" or node.module == "core.inference.inference"
+        return (
+            node.module.split(".")[0] == "transformers" or node.module == "core.inference.inference"
+        )
     return False
 
 
@@ -79,7 +81,9 @@ def test_inference_worker_stubs_before_transformers():
     call inside the MLX branch is not an anchor: MLX is never Windows ROCm, so it needs no stub."""
     tree = ast.parse((_CORE / "inference" / "worker.py").read_text())
     fn = _func(tree, "run_inference_process")
-    assert fn is not None, "run_inference_process not found in inference/worker.py -- renamed? update this test."
+    assert (
+        fn is not None
+    ), "run_inference_process not found in inference/worker.py -- renamed? update this test."
 
     stub = _stub_call_linenos(fn)
     assert stub, f"run_inference_process must call {_STUB}()"
