@@ -937,13 +937,16 @@ class VideoBackend:
         # -quantises, and an explicit companion scheme still forces it.
         speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
         # text_encoder_quant tri-state (mirrors the image backend + transformer_quant): UNSET
-        # (None / "") -> auto (pick the best accurate TE scheme for this GPU + family); an explicit
-        # "none"/"off" pins the encoder dense; a scheme forces it. So the shipped default is auto.
-        if text_encoder_quant is None or str(text_encoder_quant).strip() == "":
+        # (None / "") or "auto" -> auto (pick the best accurate TE scheme for this GPU + family);
+        # an explicit "none"/"off" pins the encoder dense; a concrete scheme forces it. So the
+        # shipped default is auto. auto is backend-owned, so an explicit "auto" also goes dense
+        # under Speed="off", matching transformer_quant; only a concrete scheme forces quant off.
+        if text_encoder_quant is None or str(text_encoder_quant).strip().lower() in ("", "auto"):
             text_encoder_quant = "off" if speed_off else TE_QUANT_AUTO
-        # vae_quant tri-state, same contract. The vae_force_fp32 families (Wan) keep the VAE dense
-        # regardless (quantize_vae's force_fp32 gate), so auto is safe as the shipped default.
-        if vae_quant is None or str(vae_quant).strip() == "":
+        # vae_quant tri-state, same contract (UNSET or "auto" -> auto). The vae_force_fp32 families
+        # (Wan) keep the VAE dense regardless (quantize_vae's force_fp32 gate), so auto is safe as
+        # the shipped default.
+        if vae_quant is None or str(vae_quant).strip().lower() in ("", "auto"):
             vae_quant = "off" if speed_off else VAE_QUANT_AUTO
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
 

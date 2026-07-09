@@ -2298,6 +2298,44 @@ def test_speed_off_load_suppresses_auto_companion_quant(fake_runtime, tmp_path, 
     assert te_modes[-1] == "auto" and vae_modes[-1] == "auto"  # promoted when speed is not off
 
 
+def test_speed_off_load_suppresses_explicit_auto_companion_quant(fake_runtime, tmp_path, monkeypatch):
+    # auto is backend-owned, exactly like transformer_quant: an EXPLICIT text_encoder_quant/
+    # vae_quant="auto" must also go dense under Speed="off", not just an unset default. Otherwise a
+    # caller that sends auto + off would silently fp8/int8 the companions and break the bit-exact
+    # request. An explicit CONCRETE scheme still forces quant even under off.
+    from core.inference import diffusion as dmod
+
+    te_modes: list = []
+    vae_modes: list = []
+    monkeypatch.setattr(
+        dmod, "quantize_text_encoders", lambda pipe, target, *, mode, **kw: te_modes.append(mode)
+    )
+    monkeypatch.setattr(
+        dmod, "quantize_vae", lambda pipe, target, *, mode, **kw: vae_modes.append(mode)
+    )
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        speed_mode = "off",
+        text_encoder_quant = "auto",
+        vae_quant = "auto",
+    )
+    assert te_modes == ["off"] and vae_modes == ["off"]  # explicit auto suppressed under off
+    backend.unload()
+    # An explicit concrete scheme is still honoured under off (only auto is backend-owned).
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        speed_mode = "off",
+        text_encoder_quant = "fp8",
+    )
+    assert te_modes[-1] == "fp8"
+
+
 def test_transformer_quant_dense_path_engaged(fake_runtime, tmp_path, monkeypatch):
     # transformer_quant + a CUDA resident plan -> load the DENSE transformer from the
     # base repo, place it on the device, quantise it, and report the engaged scheme.

@@ -518,6 +518,7 @@ def _timed_video(
         num_inference_steps = steps,
         generator = g,
     )
+    restore_step = None
     if guidance_via_guider:
         # HunyuanVideo-1.5: CFG lives on a guider component and __call__ takes no
         # guidance_scale / callback_on_step_end (the loader writes the scale onto pipe.guider).
@@ -527,13 +528,35 @@ def _timed_video(
                 guider.guidance_scale = guidance
             except Exception:
                 pass
+        # __call__ ignores callback_on_step_end here, so the _cb step timer never fires and
+        # step_ts would stay empty -> per_step_ms published as 0.0 for every Hunyuan row despite a
+        # non-zero total latency. Time the denoise via a scheduler.step wrapper instead (the same
+        # inter-step delta the callback records elsewhere), restored after generation.
+        sched = getattr(pipe, "scheduler", None)
+        orig_step = getattr(sched, "step", None)
+        if callable(orig_step):
+
+            def _timed_step(*a, **k):
+                torch.cuda.synchronize()
+                now = time.perf_counter()
+                if last[0]:
+                    step_ts.append((now - last[0]) * 1000.0)
+                last[0] = now
+                return orig_step(*a, **k)
+
+            sched.step = _timed_step
+            restore_step = lambda: setattr(sched, "step", orig_step)  # noqa: E731
     else:
         kwargs["guidance_scale"] = guidance
         kwargs["callback_on_step_end"] = _cb
 
     _sync()
     t0 = time.perf_counter()
-    out = pipe(**kwargs)
+    try:
+        out = pipe(**kwargs)
+    finally:
+        if restore_step is not None:
+            restore_step()
     _sync()
     return out, (time.perf_counter() - t0), step_ts
 

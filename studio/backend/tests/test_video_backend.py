@@ -1186,6 +1186,42 @@ def test_video_speed_off_suppresses_auto_companion_quant(fake_runtime, monkeypat
     assert te_modes[-1] == "auto" and vae_modes[-1] == "auto"  # promoted when speed is not off
 
 
+def test_video_speed_off_suppresses_explicit_auto_companion_quant(fake_runtime, monkeypatch):
+    # auto is backend-owned (same as transformer_quant): an EXPLICIT text_encoder_quant/vae_quant
+    # ="auto" must also go dense under Speed="off", not only an unset default -- otherwise auto + off
+    # would fp8/int8 the companions and break the bit-exact request. A concrete scheme still forces it.
+    import core.inference.video as video_mod
+
+    te_modes: list = []
+    vae_modes: list = []
+    monkeypatch.setattr(
+        video_mod,
+        "quantize_text_encoders",
+        lambda pipe, target, *, mode, **kw: te_modes.append(mode),
+    )
+    monkeypatch.setattr(
+        video_mod, "quantize_vae", lambda pipe, target, *, mode, **kw: vae_modes.append(mode)
+    )
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        model_kind = "pipeline",
+        speed_mode = "off",
+        text_encoder_quant = "auto",
+        vae_quant = "auto",
+    )
+    assert te_modes == ["off"] and vae_modes == ["off"]  # explicit auto suppressed under off
+    backend.unload()
+    # A concrete scheme is still honoured under off (only auto is backend-owned).
+    backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        model_kind = "pipeline",
+        speed_mode = "off",
+        text_encoder_quant = "fp8",
+    )
+    assert te_modes[-1] == "fp8"
+
+
 def test_video_speed_off_skips_hunyuan_trim(fake_runtime, monkeypatch):
     # The HunyuanVideo joint-attention trim is a speed lever (swaps to the fused SDPA kernel), so an
     # explicit Speed="off" (bit-exact reference) keeps the stock dense-mask attention -- like the

@@ -313,6 +313,26 @@ def measure_te_accuracy(
     for scheme in schemes:
         bag = _load_text_encoders(repo, device)
         engaged = quantize_text_encoders(bag, _target(), mode = scheme, family = family, logger = logger)
+        if engaged is None:
+            # The scheme was skipped (unsupported GPU / build, family deny, or a failed kernel
+            # probe), so the encoder is still dense. Comparing it against the dense reference would
+            # score ~1.0 and falsely certify a scheme that never ran, so record it NOT engaged and
+            # move on rather than collecting accuracy metrics on a no-op.
+            rows.append(
+                {
+                    "family": family,
+                    "encoder": "*",
+                    "scheme": scheme,
+                    "cosine": None,
+                    "min_cosine": None,
+                    "relL2": None,
+                    "pass": None,
+                    "engaged": False,
+                }
+            )
+            del bag
+            _empty()
+            continue
         cur = _te_hidden_refs(bag, toks, device)
         for attr, ref_vecs in refs.items():
             q_vecs = cur.get(attr, [])
@@ -328,7 +348,7 @@ def measure_te_accuracy(
                 {
                     "family": family,
                     "encoder": attr,
-                    "scheme": engaged or scheme,
+                    "scheme": engaged,
                     "cosine": round(mean_cos, 5),
                     "min_cosine": round(min_cos, 5),
                     "relL2": round(sum(rell2) / len(rell2), 4),
@@ -642,8 +662,12 @@ def _e2e_run(
     _empty()
     return {
         "variant": "auto" if quant else "dense",
-        "te_scheme": te_scheme or ("auto" if quant else "dense"),
-        "vae_scheme": vae_scheme or ("auto" if quant else "dense"),
+        # te_scheme / vae_scheme are the ACTUAL engaged modes: quantize_* returns None when the
+        # component stays dense (unsupported HW, a failed kernel probe, or the VAE size gate on
+        # small image VAEs), so report "dense" then, NOT the requested "auto" -- otherwise a no-op
+        # default is mislabelled as an auto-quantised run and the latency/memory row looks quantised.
+        "te_scheme": te_scheme or "dense",
+        "vae_scheme": vae_scheme or "dense",
         "load_peak_gb": round(load_peak, 2),
         "weights_gb": round(weights_gb, 2),
         "gen_peak_gb": round(gen_peak, 2),
