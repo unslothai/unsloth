@@ -6411,7 +6411,11 @@ class LlamaCppBackend:
                 # oversize load the OS would otherwise kill mid-flight. Base model
                 # only: an optional MTP drafter is dropped by the MTP-drop fallback.
                 # CUDA/ROCm ids only; a Vulkan build's gpu_indices are ggml ordinals.
-                if model_size is not None and not is_vulkan_backend and self._amd_apu_wants_unified_memory(gpu_indices):
+                if (
+                    model_size is not None
+                    and not is_vulkan_backend
+                    and self._amd_apu_wants_unified_memory(gpu_indices)
+                ):
                     _ram_msg = self._apu_ram_shortfall_message(
                         model_size, self._available_system_memory_mib()
                     )
