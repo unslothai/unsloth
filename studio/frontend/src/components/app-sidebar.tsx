@@ -83,7 +83,6 @@ import {
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
-import { listStoredChatThreads } from "@/features/chat/utils/chat-history-storage";
 import {
   Tooltip,
   TooltipContent,
