@@ -2468,14 +2468,11 @@ case "$_torch_index_leaf" in
     *)          export UNSLOTH_TORCH_BACKEND="cuda" ;;
 esac
 
-# rocm7.2 and the CUDA 12.6+/13 indexes (cu126/cu128/cu130) ship torch 2.11.0 --
-# allow it there: torchao 0.17's cpp kernels load on 2.11, and flash-attn /
-# causal-conv1d / mamba reuse their torch2.10 wheels on 2.11 (see wheel_utils
-# prebuilt_wheel_torch_mm). Older CUDA (cu124/cu118), other ROCm tags, CPU and
-# macOS stay within <2.11.0 -- torch 2.11 publishes no wheels for those.
-# torch 2.11 wheels are cp310+, so gate on the actual venv interpreter (which may
-# be a reused 3.9 env even when PYTHON_VERSION defaults higher); 3.9 keeps the
-# default range, where those indexes still ship cp39 wheels.
+# rocm7.2 and CUDA 12.6+/13 (cu126/cu128/cu130) ship torch 2.11; allow it there
+# (torchao 0.17 cpp loads; flash-attn/causal-conv1d/mamba reuse their torch2.10
+# wheels via wheel_utils.prebuilt_wheel_torch_mm). Other tags stay <2.11 (no
+# wheels). torch 2.11 is cp310+, so gate on the real venv interpreter -- a reused
+# 3.9 env keeps the default range, which still has cp39 wheels.
 _venv_py_minor=$("$VENV_DIR/bin/python" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || echo 0)
 if [ "${_venv_py_minor:-0}" -ge 10 ] 2>/dev/null; then
     case "$TORCH_INDEX_URL" in
