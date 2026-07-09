@@ -32,7 +32,9 @@ def test_async_load_returns_immediately(monkeypatch):
 
     async def _slow_load(request, fastapi_request, current_subject):
         await asyncio.sleep(0.2)
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
     monkeypatch.setattr(inference_route, "_last_async_load_error", None)
@@ -55,7 +57,9 @@ def test_async_load_success_leaves_error_none(monkeypatch):
 
     async def _quick_load(request, fastapi_request, current_subject):
         await asyncio.sleep(0.02)
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _quick_load)
     monkeypatch.setattr(inference_route, "_last_async_load_error", None)
@@ -94,7 +98,9 @@ def test_async_load_clears_previous_error_before_scheduling(monkeypatch):
 
     async def _quick_load(request, fastapi_request, current_subject):
         await asyncio.sleep(0.2)
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _quick_load)
     monkeypatch.setattr(inference_route, "_last_async_load_error", "stale error from a prior load")
@@ -124,7 +130,9 @@ def test_overlapping_loads_success_clears_stale_error(monkeypatch):
             await asyncio.sleep(0.02)
             raise HTTPException(status_code = 400, detail = "A failed")
         await asyncio.sleep(0.02)
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "B", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "B", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _alternating_load)
     monkeypatch.setattr(inference_route, "_last_async_load_error", None)
@@ -152,7 +160,9 @@ def test_sync_load_unaffected_returns_load_response_directly(monkeypatch):
 
     async def _load(request, fastapi_request, current_subject):
         calls.append(request)
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _load)
 
