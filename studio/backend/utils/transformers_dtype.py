@@ -25,11 +25,9 @@ def _has_torch_dtype_kwarg() -> bool:
     name (i.e. predates the ``dtype`` rename). False when ``dtype`` is the accepted
     name, or when transformers is missing/broken (prefer the modern name)."""
     try:
-        try:
-            from transformers import PreTrainedConfig as _Config
-        except ImportError:
-            from transformers import PretrainedConfig as _Config
-        return "torch_dtype" in (_Config.__doc__ or "")
+        import transformers
+        from packaging.version import Version
+        return Version(transformers.__version__) < Version("4.56.0")
     except Exception:
         return False
 
