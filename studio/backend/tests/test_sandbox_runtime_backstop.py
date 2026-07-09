@@ -370,6 +370,142 @@ def test_sandboxed_fd_metadata_mutator_denied(tmp_path):
 
 
 @_POSIX_ONLY
+def test_sandboxed_posix_module_open_denied(tmp_path):
+    # os re-exports from the C module posix; posix.open must be guarded too.
+    target = tmp_path / "posix_escape.txt"
+    out = _python_exec(
+        "import posix, os\n"
+        f"fd = posix.open({str(target)!r}, os.O_CREAT | os.O_WRONLY, 0o600)\n"
+        "posix.write(fd, b'x')\nprint('DONE-OK')",
+        None,
+        30,
+        "backstop-posix",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_extra_os_mutators_denied(tmp_path):
+    # os.mkfifo creates a host node; os.utime mutates host metadata.
+    fifo = tmp_path / "escape.fifo"
+    out = _python_exec(
+        f"import os; os.mkfifo({str(fifo)!r}); print('DONE-OK')",
+        None,
+        30,
+        "backstop-mkfifo",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out
+    assert not fifo.exists()
+
+    victim = tmp_path / "utime_victim.txt"
+    victim.write_text("x")
+    before = victim.stat().st_mtime
+    out = _python_exec(
+        f"import os; os.utime({str(victim)!r}, (0, 0)); print('DONE-OK')",
+        None,
+        30,
+        "backstop-utime",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out
+    assert victim.stat().st_mtime == before
+
+
+@_POSIX_ONLY
+def test_sandboxed_io_fileio_write_denied(tmp_path):
+    # io.FileIO / _io.FileIO is a C constructor that opens a file without routing
+    # through open(), so it needs its own guard.
+    target = tmp_path / "fileio_escape.txt"
+    out = _python_exec(
+        f"import io; io.FileIO({str(target)!r}, 'w').write(b'x'); print('DONE-OK')",
+        None,
+        30,
+        "backstop-fileio",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_stateful_fspath_toctou_denied(tmp_path):
+    # A stateful __fspath__ returning a local path for the check and an outside path
+    # for the real open must not escape: the guard materializes fspath once.
+    target = tmp_path / "fspath_escape.txt"
+    out = _python_exec(
+        "class P:\n"
+        "    n = 0\n"
+        "    def __fspath__(self):\n"
+        "        P.n += 1\n"
+        f"        return 'ok.txt' if P.n == 1 else {str(target)!r}\n"
+        "open(P(), 'w').write('x')\nprint('DONE')",
+        None,
+        30,
+        "backstop-fspath",
+        disable_sandbox = False,
+    )
+    # The escape target is never written (the single fspath call yields the local path).
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_str_subclass_mode_denied(tmp_path):
+    # A str-subclass mode whose __contains__ lies must not defeat the write check.
+    target = tmp_path / "mode_escape.txt"
+    out = _python_exec(
+        "class M(str):\n"
+        "    def __contains__(self, c):\n"
+        "        return False\n"
+        f"open({str(target)!r}, M('w')).write('x')\nprint('DONE-OK')",
+        None,
+        30,
+        "backstop-mode",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_int_subclass_flags_denied(tmp_path):
+    # An int-subclass flags whose __and__ lies must not defeat the os.open write check.
+    target = tmp_path / "flags_escape.txt"
+    out = _python_exec(
+        "import os\n"
+        "class F(int):\n"
+        "    def __and__(self, o):\n"
+        "        return 0\n"
+        f"os.open({str(target)!r}, F(os.O_CREAT | os.O_WRONLY), 0o600)\nprint('DONE-OK')",
+        None,
+        30,
+        "backstop-flags",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_in_workdir_ops_still_work():
+    # The added guards must not break benign in-workdir writes.
+    out = _python_exec(
+        "import io, os\n"
+        "io.FileIO('fio.txt', 'w').write(b'z')\n"
+        "os.makedirs('subd', exist_ok = True)\n"
+        "print(io.FileIO('fio.txt', 'r').read())",
+        None,
+        30,
+        "backstop-inworkdir",
+        disable_sandbox = False,
+    )
+    assert "z" in out
+    assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
 def test_sandboxed_imports_still_work_under_guard():
     # The guard must not break library imports (bytecode caching failures are
     # swallowed by importlib) or benign compute.

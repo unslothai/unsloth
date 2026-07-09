@@ -85,6 +85,15 @@ class TestConstFoldAllocationDoS:
     def test_percent_format_width_refused(self):
         assert _fold("'%1000000000d' % 1") is None
 
+    def test_nested_format_width_refused(self):
+        # '{:{}}'.format('x', 10**9): the width is supplied by a large arg, so the
+        # template check must refuse before format() allocates.
+        assert _fold("'{:{}}'.format('x', 1000000000)") is None
+        assert _fold("'{:>{w}}'.format('x', w = 10 ** 9)") is None
+
+    def test_nested_format_small_width_folds(self):
+        assert _fold("'{:>{}}'.format('x', 5)") == "    x"
+
     def test_pad_method_width_refused(self):
         assert _fold("'x'.ljust(1000000000)") is None
         assert _fold("'x'.rjust(10 ** 9)") is None

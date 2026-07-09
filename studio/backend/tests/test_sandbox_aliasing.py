@@ -68,6 +68,31 @@ class TestFuncLocalAliasBlocked:
         _blocked("def f():\n    r = eval\n    r(\"__import__('os').system('rm -rf /')\")\nf()")
 
 
+class TestPerScopeAliasCounting:
+    """Alias single-assignment is counted PER function scope: two functions binding
+    the same local name must not cancel each other out (a tree-wide count would treat
+    both as ambiguous and miss a real sink)."""
+
+    def test_two_functions_same_shell_alias_name_blocked(self):
+        _blocked(
+            "import os\n"
+            "def a():\n    s = os.system\n    s('rm -rf /')\n"
+            "def b():\n    s = print\na()"
+        )
+
+    def test_two_functions_same_exec_alias_name_blocked(self):
+        _blocked(
+            "def a():\n    e = exec\n    e(\"__import__('os').system('id')\")\n"
+            "def b():\n    e = print\na()"
+        )
+
+    def test_two_functions_benign_aliases_allowed(self):
+        _ok(
+            "def a():\n    s = sorted\n    return s([3, 1])\n"
+            "def b():\n    s = max\n    return s([1, 2])\na()"
+        )
+
+
 class TestAliasingLowFalsePositive:
     def test_reassigned_alias_not_treated_as_sink(self):
         # s is stored twice -> ambiguous -> NOT aliased. The literal arg is benign

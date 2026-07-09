@@ -219,7 +219,7 @@ class TestUploadDenylist:
         )
 
     def test_plain_post_json_not_blocked(self):
-        _ok("import requests\n" 'requests.post("https://api.weather.gov/lookup", json={"k": "v"})')
+        _ok('import requests\nrequests.post("https://api.weather.gov/lookup", json={"k": "v"})')
 
 
 class TestSandboxEnvIsolation:
@@ -514,15 +514,11 @@ class TestHfUploadImportGate:
 
     def test_hf_bare_name_upload_folder_safe_allowed(self):
         _ok(
-            "from huggingface_hub import upload_folder;"
-            " upload_folder(folder_path='x', repo_id='r')"
+            "from huggingface_hub import upload_folder; upload_folder(folder_path='x', repo_id='r')"
         )
 
     def test_hf_bare_name_create_commit_safe_allowed(self):
-        _ok(
-            "from huggingface_hub import create_commit;"
-            " create_commit(operations=[], repo_id='r')"
-        )
+        _ok("from huggingface_hub import create_commit; create_commit(operations=[], repo_id='r')")
 
     def test_bare_name_upload_file_without_hf_import_allowed(self):
         # No HF import -- local helper named upload_file passes.
@@ -894,6 +890,12 @@ class TestReceiverAndVarsAndDynImportBypasses:
             "import importlib\nimportlib.import_module('pickle').loads(b)",
             # 628: literal os.path.join to a host secret.
             "import os\nopen(os.path.join('/etc', 'passwd')).read()",
+            # 602: multi-component / module-qualified pathlib receiver read.
+            "from pathlib import Path\nPath('/etc', 'passwd').read_text()",
+            "import pathlib\npathlib.Path('/etc', 'passwd').open().read()",
+            # 605: __import__ reached through the builtins module.
+            "import builtins\nbuiltins.__import__('os').system('rm -rf /')",
+            "__builtins__.__import__('subprocess').run(['id'])",
         ],
     )
     def test_blocked(self, code):
@@ -904,11 +906,15 @@ class TestReceiverAndVarsAndDynImportBypasses:
         [
             "from pathlib import Path\nPath('data/out.txt').read_text()",
             "from pathlib import Path\nPath('model.json').open()",
+            # 602: in-workdir multi-component pathlib read stays allowed.
+            "from pathlib import Path\nPath('data', 'out.txt').read_text()",
             "vars(obj)",
             "vars()",
             "import pickle\npickle.dumps(x)",
             "import importlib\nimportlib.import_module('numpy')",
             "import os\nopen(os.path.join('sub', 'a.txt'))",
+            # 605: benign builtins attribute access stays allowed.
+            "import builtins\nx = builtins.len([1, 2, 3])",
         ],
     )
     def test_benign_allowed(self, code):

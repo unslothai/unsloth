@@ -1705,6 +1705,21 @@ def _format_template_ok(template):
     return True
 
 
+def _format_has_nested_spec(template):
+    """A replacement field whose spec itself contains a field ({:{}}): the width is
+    supplied by an argument, so a large numeric arg drives the allocation."""
+    if not isinstance(template, str):
+        return False
+    try:
+        import string as _string
+        for _lit, _field, _spec, _conv in _string.Formatter().parse(template):
+            if _spec and "{" in _spec:
+                return True
+    except Exception:
+        return False
+    return False
+
+
 _PRINTF_WIDTH_RE = re.compile(r"%[-+ #0]*(\d+)?(?:\.(\d+))?[hlL]?[diouxXeEfFgGcrsab%]")
 
 
@@ -2077,8 +2092,15 @@ def _fold_call(node, _state, _depth):
                 if attr in ("center", "ljust", "rjust", "zfill") and call_args:
                     if _too_wide(call_args[0]):
                         return None
-                if attr == "format" and not _format_template_ok(recv):
-                    return None
+                if attr == "format":
+                    if not _format_template_ok(recv):
+                        return None
+                    # Nested-width field ({:{}}) whose width comes from a large numeric
+                    # arg: refuse before format() allocates.
+                    if _format_has_nested_spec(recv) and any(
+                        _too_wide(a) for a in list(call_args) + list(kwargs.values())
+                    ):
+                        return None
                 return _fold_cap(getattr(recv, attr)(*call_args, **kwargs))
             except Exception:
                 return None
@@ -2413,30 +2435,68 @@ def _compile_mode(node, const_env):
     return "exec"
 
 
+def _walk_scope_local(scope):
+    """Yield descendants of ``scope``'s body that share its namespace, WITHOUT
+    descending into nested def / lambda / class / comprehension (each of which is a
+    new scope). Used so single-assignment alias detection is scope-correct."""
+    stack = list(getattr(scope, "body", []))
+    _NESTED = (
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.Lambda,
+        ast.ClassDef,
+        ast.ListComp,
+        ast.SetComp,
+        ast.DictComp,
+        ast.GeneratorExp,
+    )
+    while stack:
+        n = stack.pop()
+        yield n
+        for child in ast.iter_child_nodes(n):
+            if not isinstance(child, _NESTED):
+                stack.append(child)
+
+
+def _iter_scope_single_assignments(tree):
+    """Yield (name, rhs) for each Name assigned exactly once within its OWN function
+    (or module) scope and not declared global / nonlocal there. Counting per scope --
+    not tree-wide -- means a name reused independently in two functions is still a
+    single-assignment alias in each (a tree-wide count would wrongly treat both as
+    ambiguous and miss a real sink alias)."""
+    scopes = [tree]
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scopes.append(n)
+    for scope in scopes:
+        counts: dict[str, int] = {}
+        rebound: set[str] = set()
+        assigns: list[tuple[str, ast.expr]] = []
+        for n in _walk_scope_local(scope):
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                counts[n.id] = counts.get(n.id, 0) + 1
+            elif isinstance(n, (ast.Global, ast.Nonlocal)):
+                rebound.update(n.names)
+            elif (
+                isinstance(n, ast.Assign)
+                and len(n.targets) == 1
+                and isinstance(n.targets[0], ast.Name)
+            ):
+                assigns.append((n.targets[0].id, n.value))
+        for name, rhs in assigns:
+            if counts.get(name) == 1 and name not in rebound:
+                yield name, rhs
+
+
 def _build_exec_env(tree, const_env):
     """Map single-assignment names to exec builtins (`e = exec`) and to a compiled
     source (`c = compile("...")`) so a later call through the alias is unwrapped."""
-    store_counts: dict[str, int] = {}
-    for n in ast.walk(tree):
-        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
-            store_counts[n.id] = store_counts.get(n.id, 0) + 1
-
     exec_aliases: dict[str, str] = {}
     compiled_env: dict[str, tuple] = {}
-    # Walk the whole tree, not just tree.body: an alias assigned inside a function
-    # (def f(): e = exec; e("...")) must still be unwrapped. store_counts spans the
-    # tree, so the "stored exactly once" guard keeps this single-assignment (low-FP).
-    for stmt in ast.walk(tree):
-        if not (
-            isinstance(stmt, ast.Assign)
-            and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Name)
-        ):
-            continue
-        name = stmt.targets[0].id
-        if store_counts.get(name, 0) != 1:
-            continue
-        rhs = stmt.value
+    # Per-scope single assignments: an alias assigned inside a function (def f():
+    # e = exec; e("...")) is unwrapped, and two functions sharing a local name do not
+    # cancel each other out (that would be a false negative).
+    for name, rhs in _iter_scope_single_assignments(tree):
         if isinstance(rhs, ast.Name) and rhs.id in _EXEC_BUILTINS:
             exec_aliases[name] = rhs.id
         elif (
@@ -2724,11 +2784,8 @@ def _build_shell_sink_aliases(tree):
     os_aliases = {"os"}
     subprocess_aliases = {"subprocess"}
     from_aliases: dict[str, str] = {}
-    store_counts: dict[str, int] = {}
     for n in ast.walk(tree):
-        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
-            store_counts[n.id] = store_counts.get(n.id, 0) + 1
-        elif isinstance(n, ast.Import):
+        if isinstance(n, ast.Import):
             for a in n.names:
                 if a.name == "os":
                     os_aliases.add(a.asname or "os")
@@ -2741,21 +2798,11 @@ def _build_shell_sink_aliases(tree):
                     from_aliases[a.asname or a.name] = fq
 
     aliases: dict[str, str] = {}
-    # Walk every Assign, not just the module body: a single-assignment alias created
-    # inside a function -- `def f(): s = os.system; s('rm -rf /')` -- is the common
-    # wrapper shape. store_counts is computed over the whole tree, so the "stored
-    # exactly once" guard still excludes any ambiguous re-binding (keeps it low-FP).
-    for stmt in ast.walk(tree):
-        if not (
-            isinstance(stmt, ast.Assign)
-            and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Name)
-        ):
-            continue
-        name = stmt.targets[0].id
-        if store_counts.get(name, 0) != 1:
-            continue  # ambiguous reassignment -> do not alias (avoids FPs)
-        fq = _resolve_static_shell_sink(stmt.value, os_aliases, subprocess_aliases, from_aliases)
+    # Per-scope single assignments: a function-local `s = os.system` is aliased, and
+    # two functions each binding their own local `s` do not cancel out (a tree-wide
+    # store count would treat both as ambiguous and miss a real sink alias).
+    for name, rhs in _iter_scope_single_assignments(tree):
+        fq = _resolve_static_shell_sink(rhs, os_aliases, subprocess_aliases, from_aliases)
         if fq:
             aliases[name] = fq
     return aliases
@@ -3334,6 +3381,12 @@ def _check_signal_escape_patterns(
                         isinstance(func, ast.Attribute)
                         and func.attr in ("import_module", "reload", "__import__")
                         and _ast_name_matches(func.value, self.importlib_aliases)
+                    )
+                    or (
+                        # builtins.__import__('os') / __builtins__.__import__(...)
+                        isinstance(func, ast.Attribute)
+                        and func.attr == "__import__"
+                        and _ast_name_matches(func.value, self.builtins_aliases)
                     )
                 )
                 # Deserialization sinks reconstruct arbitrary objects/code from bytes.
@@ -4145,16 +4198,29 @@ def _check_signal_escape_patterns(
     )
 
     def _pathlib_receiver_path(recv):
-        if (
-            isinstance(recv, ast.Call)
-            and isinstance(recv.func, ast.Name)
-            and recv.func.id in _PATHLIB_CTORS
-            and recv.args
-        ):
-            v = _const_fold(recv.args[0], _const_env)
-            if isinstance(v, (str, bytes, bytearray)):
-                return _to_text(v)
-        return None
+        # Path(...) or pathlib.Path(...) (module-qualified). Join ALL string args so a
+        # multi-component constructor -- Path('/etc', 'passwd') -- resolves to the full
+        # path rather than only its first (non-sensitive) component.
+        if not isinstance(recv, ast.Call) or not recv.args:
+            return None
+        rf = recv.func
+        ctor = (isinstance(rf, ast.Name) and rf.id in _PATHLIB_CTORS) or (
+            isinstance(rf, ast.Attribute) and rf.attr in _PATHLIB_CTORS
+        )
+        if not ctor:
+            return None
+        parts = []
+        for a in recv.args:
+            v = _const_fold(a, _const_env)
+            if not isinstance(v, (str, bytes, bytearray)):
+                return None
+            parts.append(_to_text(v))
+        if not parts:
+            return None
+        try:
+            return os.path.join(*parts)
+        except Exception:
+            return None
 
     def _flag_read_path(node, s, is_read_callee):
         norm = s.replace("\\", "/")
@@ -4360,13 +4426,29 @@ def _gwraps(real):
         return w
     return _deco
 
+def _fspath1(p):
+    # Materialize a path-like ONCE so a stateful __fspath__ cannot return a workdir
+    # path for the _within() check and a different path for the real syscall (TOCTOU).
+    if isinstance(p, int):
+        return p
+    try:
+        return _os.fspath(p)
+    except Exception:
+        return p
+
+def _mode_is_write(mode):
+    # Coerce through the *base* str: a str-subclass __contains__/__str__ must not be
+    # able to lie about whether the mode requests a write.
+    m = str.__str__(mode) if isinstance(mode, str) else "r"
+    return any(c in m for c in "wax+")
+
 def _guard_open_like(real):
     @_gwraps(real)
     def w(file, mode="r", *a, **k):
-        m = mode if isinstance(mode, str) else "r"
-        if any(c in m for c in "wax+") and not _within(file):
-            _deny(file, "write")
-        return real(file, mode, *a, **k)
+        f = _fspath1(file)
+        if _mode_is_write(mode) and not _within(f):
+            _deny(f, "write")
+        return real(f, mode, *a, **k)
     return w
 
 _bi.open = _guard_open_like(_bi.open)
@@ -4374,21 +4456,28 @@ _bi.open = _guard_open_like(_bi.open)
 # Low-level os.open: builtins.open does not route through it, so it needs its own
 # guard. Any mutating open flag confines the target; a mutating dir_fd call fails
 # closed (a string realpath against cwd is wrong for an fd-relative path).
-_real_osopen = _os.open
 _WRITE_OFLAGS = (
     getattr(_os, "O_WRONLY", 0) | getattr(_os, "O_RDWR", 0)
     | getattr(_os, "O_CREAT", 0) | getattr(_os, "O_TRUNC", 0) | getattr(_os, "O_APPEND", 0)
 )
-@_gwraps(_real_osopen)
-def _guarded_osopen(path, flags, *a, **k):
-    mutating = (not isinstance(flags, int)) or bool(flags & _WRITE_OFLAGS)
-    if mutating:
-        if k.get("dir_fd") is not None:
-            _deny(path, "os.open (dir_fd)")
-        if not _within(path):
-            _deny(path, "os.open write")
-    return _real_osopen(path, flags, *a, **k)
-_os.open = _guarded_osopen
+def _make_osopen_guard(real_open):
+    @_gwraps(real_open)
+    def _guarded(path, flags, *a, **k):
+        try:
+            fi = int.__index__(flags)  # base int: an int-subclass __and__ must not lie
+        except Exception:
+            fi = None
+        mutating = (fi is None) or bool(fi & _WRITE_OFLAGS)
+        if mutating:
+            if k.get("dir_fd") is not None:
+                _deny(path, "os.open (dir_fd)")
+            p = _fspath1(path)
+            if not _within(p):
+                _deny(p, "os.open write")
+            return real_open(p, flags, *a, **k)
+        return real_open(path, flags, *a, **k)
+    return _guarded
+_os.open = _make_osopen_guard(_os.open)
 
 def _wrap1(mod, name, what):
     orig = getattr(mod, name, None)
@@ -4398,14 +4487,20 @@ def _wrap1(mod, name, what):
     def w(path, *a, **k):
         if any(k.get(_f) is not None for _f in ("dir_fd", "src_dir_fd", "dst_dir_fd")):
             _deny(path, what + " (dir_fd)")  # fd-relative target: a realpath check is meaningless
-        if not _within(path):
-            _deny(path, what)
-        return orig(path, *a, **k)
+        p = _fspath1(path)
+        if not _within(p):
+            _deny(p, what)
+        return orig(p if not isinstance(path, int) else path, *a, **k)
     setattr(mod, name, w)
 
-# lchmod/lchown/chflags/mknod are platform-specific; _wrap1 no-ops when absent.
-for _n in ("remove", "unlink", "rmdir", "removedirs", "truncate", "chmod",
-           "chown", "mkdir", "makedirs", "mknod", "lchmod", "lchown", "chflags"):
+# Path-first single-arg mutators. mkfifo/utime/setxattr/removexattr create or mutate
+# host files/metadata; the platform-specific ones no-op via _wrap1 when absent.
+_OS_MUTATORS1 = (
+    "remove", "unlink", "rmdir", "removedirs", "truncate", "chmod", "chown",
+    "mkdir", "makedirs", "mknod", "mkfifo", "utime", "setxattr", "removexattr",
+    "lchmod", "lchown", "chflags", "lchflags",
+)
+for _n in _OS_MUTATORS1:
     _wrap1(_os, _n, _n)
 
 def _wrap2(mod, name, both):
@@ -4416,15 +4511,35 @@ def _wrap2(mod, name, both):
     def w(src, dst, *a, **k):
         if any(k.get(_f) is not None for _f in ("dir_fd", "src_dir_fd", "dst_dir_fd")):
             _deny(dst, name + " (dir_fd)")  # fd-relative target: a realpath check is meaningless
-        if both and not _within(src):
-            _deny(src, name + " source")
-        if not _within(dst):
-            _deny(dst, name + " destination")
-        return orig(src, dst, *a, **k)
+        s, d = _fspath1(src), _fspath1(dst)
+        if both and not _within(s):
+            _deny(s, name + " source")
+        if not _within(d):
+            _deny(d, name + " destination")
+        return orig(s, d, *a, **k)
     setattr(mod, name, w)
 
 for _n in ("rename", "renames", "replace", "link", "symlink"):
     _wrap2(_os, _n, True)
+
+# posix (POSIX) / nt (Windows) is the low-level C module os re-exports from; patching
+# os.* leaves posix.open / posix.rename / ... importable with the originals, so apply
+# the same guards to that module too.
+for _lowosname in ("posix", "nt"):
+    try:
+        _lowos = __import__(_lowosname)
+    except Exception:
+        _lowos = None
+    if _lowos is not None:
+        try:
+            if hasattr(_lowos, "open"):
+                _lowos.open = _make_osopen_guard(_lowos.open)
+            for _n in _OS_MUTATORS1:
+                _wrap1(_lowos, _n, _lowosname + "." + _n)
+            for _n in ("rename", "renames", "replace", "link", "symlink"):
+                _wrap2(_lowos, _n, True)
+        except Exception:
+            pass
 
 # io.open is a separate reference from the (now patched) builtins.open -- guard
 # direct io.open() writers (e.g. zipfile-based) the same way. (Path.open is handled
@@ -4441,7 +4556,26 @@ try:
     import _io as _lowio
     _lowio.open = _guard_open_like(_lowio.open)
 except Exception:
-    pass
+    _lowio = None
+
+# io.FileIO / _io.FileIO is a C constructor that opens a file WITHOUT routing through
+# open(), so `io.FileIO('/tmp/escape', 'w')` bypasses _guard_open_like. Subclass it to
+# confine mutating modes (subclassing keeps guard-built objects real FileIO instances).
+def _guard_fileio(_realcls):
+    class _GuardedFileIO(_realcls):
+        def __init__(self, name, mode="r", *a, **k):
+            f = _fspath1(name)
+            if _mode_is_write(mode) and not _within(f):
+                _deny(f, "FileIO write")
+            super().__init__(name, mode, *a, **k)
+    return _GuardedFileIO
+
+for _iomod in (_io, _lowio):
+    try:
+        if _iomod is not None and hasattr(_iomod, "FileIO"):
+            _iomod.FileIO = _guard_fileio(_iomod.FileIO)
+    except Exception:
+        pass
 
 # Confine the current working directory: os.chdir to a dir outside the workdir would
 # let a later relative write/read (which the static read scan treats as local) escape.
