@@ -566,7 +566,7 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
             short_url = url
 
         if cloudflare_url:
-            bootstrap_notice = _bootstrap_login_notice_html(include_password=is_kaggle)
+            bootstrap_notice = _bootstrap_login_notice_html(include_password = is_kaggle)
             if bootstrap_notice:
                 display(HTML(bootstrap_notice))
             if is_kaggle:
