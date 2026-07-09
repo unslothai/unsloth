@@ -852,7 +852,6 @@ class TestEvalExecRecursion:
             'eval("data = 1")',
             "df.eval('col_a + col_b')",
             "pd.eval('x + y')",
-            'eval(f"{a} + {b}")',
             "getattr(os, 'getpid')()",
         ],
     )
@@ -883,6 +882,11 @@ class TestEvalExecRecursion:
             "pickle.loads(blob)",
             'code_obj = compile("import os; os.system(\'rm -rf /\')", "<s>", "exec")\nexec(code_obj)',
             "eval(eval(eval(eval(eval(eval('2+2'))))))",
+            # Opaque, non-recoverable payload for an executing sink: the f-string
+            # is computed at runtime so its content cannot be AST-checked. Blocked
+            # (an executing sink of an un-analyzable string is a universal ACE
+            # bypass); compile() of the same would still be allowed.
+            'eval(f"{a} + {b}")',
         ],
     )
     def test_recurse_unsafe_payload_blocked(self, code):

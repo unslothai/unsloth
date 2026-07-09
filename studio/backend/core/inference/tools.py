@@ -1993,16 +1993,6 @@ _MAX_BRACKET_DEPTH = 200
 _MAX_ANALYZER_NODES = 200_000
 
 _EXEC_BUILTINS = frozenset({"eval", "exec", "compile"})
-# Modules that, once imported into a snippet, let an unreadable exec/eval payload
-# reach arbitrary code / shell / native execution. Narrowed to RCE-core so benign
-# `import os` for os.path plus a dynamic eval-for-math is not over-blocked by FS or
-# compute-adjacent modules alone.
-_RCE_CORE_MODULES = frozenset(
-    {
-        "os", "subprocess", "sys", "importlib", "ctypes", "pty", "socket",
-        "runpy", "builtins", "multiprocessing", "code", "codeop",
-    }
-)
 # Deserialization sinks that reconstruct/execute arbitrary objects from bytes.
 _CODE_DESERIALIZE_SINKS = frozenset(
     {
@@ -2127,27 +2117,6 @@ def _build_exec_env(tree, const_env):
             if isinstance(v, (str, bytes, bytearray)):
                 compiled_env[name] = (_to_text(v), _compile_mode(rhs, const_env))
     return exec_aliases, compiled_env
-
-
-def _scope_imported_roots(tree):
-    """Root module names imported / dynamically imported anywhere in the snippet."""
-    roots: set[str] = set()
-    for n in ast.walk(tree):
-        if isinstance(n, ast.Import):
-            for alias in n.names:
-                roots.add(alias.name.split(".", 1)[0])
-        elif isinstance(n, ast.ImportFrom):
-            if n.module:
-                roots.add(n.module.split(".", 1)[0])
-        elif isinstance(n, ast.Call) and n.args:
-            fn = n.func
-            is_import = (isinstance(fn, ast.Name) and fn.id in ("__import__", "import_module")) \
-                or (isinstance(fn, ast.Attribute) and fn.attr in ("import_module", "__import__"))
-            if is_import:
-                v = _const_fold(n.args[0])
-                if isinstance(v, str):
-                    roots.add(v.split(".", 1)[0])
-    return roots
 
 
 def _payload_has_obfuscation_primitive(node):
@@ -2594,15 +2563,14 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
         try:
             _const_env = _build_const_prop_env(tree)
             _exec_aliases, _compiled_env = _build_exec_env(tree, _const_env)
-            _rce_in_scope = bool(_scope_imported_roots(tree) & _RCE_CORE_MODULES)
             _sink_aliases = _build_shell_sink_aliases(tree)
         except Exception:  # pragma: no cover - defensive: never crashier than legacy
             logger.warning("sandbox analyzer context build failed; legacy fallback", exc_info = True)
             _analyzer_on = False
-            _const_env, _exec_aliases, _compiled_env, _rce_in_scope = {}, {}, {}, False
+            _const_env, _exec_aliases, _compiled_env = {}, {}, {}
             _sink_aliases = {}
     else:
-        _const_env, _exec_aliases, _compiled_env, _rce_in_scope = {}, {}, {}, False
+        _const_env, _exec_aliases, _compiled_env = {}, {}, {}
         _sink_aliases = {}
 
     def _analyze_exec_call(node, func_id):
@@ -2643,7 +2611,12 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
                         }
                     )
                     return
-                # SYNTAX_BAD -> dynamic policy below.
+                # SYNTAX_BAD on a fully RECOVERED literal: we hold the exact
+                # source and it simply is not valid Python for this sink's mode,
+                # so it raises SyntaxError at runtime (same mode as the static
+                # parse) -- harmless, not an ACE vector. Allow it; only truly
+                # opaque (non-recoverable) payloads fall to the dynamic policy.
+                return
             payload = node.args[0] if node.args else None
             if _payload_has_obfuscation_primitive(payload):
                 dynamic_exec.append(
@@ -2655,14 +2628,19 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
                         ),
                     }
                 )
-            elif func_id != "compile" and _rce_in_scope:
+            elif func_id != "compile":
+                # An opaque, non-recoverable payload for an executing sink (eval/exec/
+                # runpy) is a universal ACE bypass: it can synthesize any shell/network/
+                # filesystem escape at runtime, invisibly to every static check. Block it
+                # (compile() alone does not run, so it stays allowed -- the exec/eval of its
+                # result is caught at that call). ast.literal_eval / json.loads cover data.
                 dynamic_exec.append(
                     {
                         "type": "dynamic_exec",
                         "line": getattr(node, "lineno", -1),
                         "description": (
-                            f"{func_id}() with an unreadable payload and an "
-                            "RCE-capable module imported in scope"
+                            f"{func_id}() of a non-literal payload cannot be statically "
+                            "verified (use ast.literal_eval / json.loads for data)"
                         ),
                     }
                 )
