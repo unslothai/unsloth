@@ -2504,7 +2504,18 @@ class _ScopeAliasIndex:
     (a real sink would be missed) nor cross-contaminate (a benign call in one function
     would be flagged, or a dynamic exec in another wrongly treated as a safe alias)."""
 
-    __slots__ = ("tree", "node_scope", "enclosing", "shell", "execb", "compiled", "assigned")
+    __slots__ = (
+        "tree",
+        "node_scope",
+        "enclosing",
+        "shell",
+        "execb",
+        "compiled",
+        "impf",
+        "deser",
+        "strconst",
+        "assigned",
+    )
 
     def __init__(self, tree):
         self.tree = tree
@@ -2513,6 +2524,9 @@ class _ScopeAliasIndex:
         self.shell: dict = {}
         self.execb: dict = {}
         self.compiled: dict = {}
+        self.impf: dict = {}  # name -> True: alias of __import__ / importlib.import_module
+        self.deser: dict = {}  # name -> fq deserializer sink (pickle.loads, ...)
+        self.strconst: dict = {}  # name -> folded str/bytes constant (for read scanning)
         self.assigned: dict = {}
 
     def _chain(self, node):
@@ -2562,6 +2576,9 @@ def _build_scope_alias_index(tree, const_env):
     os_aliases = {"os"}
     subprocess_aliases = {"subprocess"}
     from_aliases: dict[str, str] = {}
+    builtins_aliases = {"builtins", "__builtins__"}
+    importlib_aliases = {"importlib"}
+    deser_module_aliases: dict[str, str] = {m: m for m in _DESERIALIZE_MODULES}
     for n in ast.walk(tree):
         if isinstance(n, ast.Import):
             for a in n.names:
@@ -2569,11 +2586,53 @@ def _build_scope_alias_index(tree, const_env):
                     os_aliases.add(a.asname or "os")
                 elif a.name == "subprocess":
                     subprocess_aliases.add(a.asname or "subprocess")
+                elif a.name == "builtins":
+                    builtins_aliases.add(a.asname or "builtins")
+                elif a.name == "importlib":
+                    importlib_aliases.add(a.asname or "importlib")
+                if a.name in _DESERIALIZE_MODULES:
+                    deser_module_aliases[a.asname or a.name] = a.name
         elif isinstance(n, ast.ImportFrom) and n.module in ("os", "subprocess"):
             for a in n.names:
                 fq = f"{n.module}.{a.name}"
                 if fq in _SHELL_SINK_FUNCS:
                     from_aliases[a.asname or a.name] = fq
+
+    def _rhs_exec_builtin(rhs):
+        # bare `exec` / `eval` / `compile`, or `builtins.eval` (attribute form).
+        if isinstance(rhs, ast.Name) and rhs.id in _EXEC_BUILTINS:
+            return rhs.id
+        if (
+            isinstance(rhs, ast.Attribute)
+            and rhs.attr in _EXEC_BUILTINS
+            and isinstance(rhs.value, ast.Name)
+            and rhs.value.id in builtins_aliases
+        ):
+            return rhs.attr
+        return None
+
+    def _rhs_import_func(rhs):
+        # `__import__` / `importlib.import_module` (+ reload) bound to a name.
+        if isinstance(rhs, ast.Name) and rhs.id in ("__import__", "import_module"):
+            return True
+        if (
+            isinstance(rhs, ast.Attribute)
+            and rhs.attr in ("import_module", "reload", "__import__")
+            and isinstance(rhs.value, ast.Name)
+            and rhs.value.id in importlib_aliases
+        ):
+            return True
+        return False
+
+    def _rhs_deserializer(rhs):
+        # `pickle.loads` (+ aliased module) bound to a name.
+        if isinstance(rhs, ast.Attribute) and isinstance(rhs.value, ast.Name):
+            canon = deser_module_aliases.get(rhs.value.id)
+            if canon is not None:
+                fq = f"{canon}.{rhs.attr}"
+                if fq in _CODE_DESERIALIZE_SINKS:
+                    return fq
+        return None
 
     scopes = [tree] + [
         n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -2583,6 +2642,15 @@ def _build_scope_alias_index(tree, const_env):
         rebound: set[str] = set()
         assigns: list[tuple[str, ast.expr]] = []
         allnames: set[str] = set()
+        # Function parameters bind local names that lexically shadow an outer alias of
+        # the same name, so count them as local assignments for the shadowing rules.
+        _sargs = getattr(scope, "args", None)
+        if _sargs is not None:
+            for _a in list(_sargs.posonlyargs) + list(_sargs.args) + list(_sargs.kwonlyargs):
+                allnames.add(_a.arg)
+            for _extra in (_sargs.vararg, _sargs.kwarg):
+                if _extra is not None:
+                    allnames.add(_extra.arg)
         for n in _walk_scope_local(scope):
             if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
                 counts[n.id] = counts.get(n.id, 0) + 1
@@ -2599,14 +2667,18 @@ def _build_scope_alias_index(tree, const_env):
         smap: dict[str, str] = {}
         emap: dict[str, str] = {}
         cmap: dict[str, tuple] = {}
+        imap: dict[str, bool] = {}
+        dmap: dict[str, str] = {}
+        scmap: dict[str, object] = {}
         for name, rhs in assigns:
             if counts.get(name) != 1 or name in rebound:
                 continue
             fq = _resolve_static_shell_sink(rhs, os_aliases, subprocess_aliases, from_aliases)
             if fq:
                 smap[name] = fq
-            if isinstance(rhs, ast.Name) and rhs.id in _EXEC_BUILTINS:
-                emap[name] = rhs.id
+            eb = _rhs_exec_builtin(rhs)
+            if eb is not None:
+                emap[name] = eb
             elif (
                 isinstance(rhs, ast.Call)
                 and isinstance(rhs.func, ast.Name)
@@ -2620,12 +2692,28 @@ def _build_scope_alias_index(tree, const_env):
                         _compile_mode(rhs, const_env),
                         isinstance(v, (bytes, bytearray)),
                     )
+            if _rhs_import_func(rhs):
+                imap[name] = True
+            dfq = _rhs_deserializer(rhs)
+            if dfq is not None:
+                dmap[name] = dfq
+            # Single-assignment string/bytes path constant (p = '/etc/passwd'), used by
+            # the sensitive-read scanner to fold function-local read paths.
+            cv = _const_fold(rhs, const_env)
+            if isinstance(cv, (str, bytes, bytearray)):
+                scmap[name] = cv
         if smap:
             idx.shell[scope] = smap
         if emap:
             idx.execb[scope] = emap
         if cmap:
             idx.compiled[scope] = cmap
+        if imap:
+            idx.impf[scope] = imap
+        if dmap:
+            idx.deser[scope] = dmap
+        if scmap:
+            idx.strconst[scope] = scmap
     return idx
 
 
@@ -3477,6 +3565,12 @@ def _check_signal_escape_patterns(
                         and func.attr == "__import__"
                         and _ast_name_matches(func.value, self.builtins_aliases)
                     )
+                    or (
+                        # single-assignment `im = importlib.import_module` in scope.
+                        _analyzer_on
+                        and isinstance(func, ast.Name)
+                        and bool(_scope_idx.resolve(func.id, func, "impf"))
+                    )
                 )
                 # Deserialization sinks reconstruct arbitrary objects/code from bytes.
                 # Resolve aliased imports (from pickle import loads as l), module aliases
@@ -3491,6 +3585,9 @@ def _check_signal_escape_patterns(
                             _deser_fq = _cand
                 elif isinstance(func, ast.Name):
                     _deser_fq = self.deserialize_aliases.get(func.id)
+                    if _deser_fq is None and _analyzer_on:
+                        # single-assignment `l = pickle.loads` in the call's scope.
+                        _deser_fq = _scope_idx.resolve(func.id, func, "deser")
                 if _deser_fq is None:
                     _fq_func = _fq_attr_name(func)
                     if _fq_func in _CODE_DESERIALIZE_SINKS:
@@ -3569,6 +3666,18 @@ def _check_signal_escape_patterns(
                         dynamic_desc = (
                             f"{func.id}() on a sensitive module (attribute-name obfuscation)"
                         )
+                elif (
+                    # sys.modules.get('os') -- the .get() twin of sys.modules['os'].
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "get"
+                    and isinstance(func.value, ast.Attribute)
+                    and func.value.attr == "modules"
+                    and _ast_name_matches(func.value.value, self.sys_aliases)
+                    and node.args
+                ):
+                    _key = _extract_string_from_node(node.args[0])
+                    if _key is not None and _key.split(".")[0] in _DANGEROUS_IMPORT_NAMES:
+                        dynamic_desc = "sys.modules.get(...) access to a sensitive module"
                 if dynamic_desc:
                     dynamic_exec.append(
                         {
@@ -4308,24 +4417,60 @@ def _check_signal_escape_patterns(
         "PureWindowsPath",
     )
 
+    def _fold_read_arg(arg):
+        # Fold a read-path argument to a concrete string, resolving a module-level
+        # constant (via _const_env) OR a function-local single-assignment string
+        # constant (p = '/etc/passwd' inside a def) via the scope index.
+        v = _const_fold(arg, _const_env)
+        if isinstance(v, (str, bytes, bytearray)):
+            return _to_text(v)
+        if isinstance(arg, ast.Name):
+            sv = _scope_idx.resolve(arg.id, arg, "strconst")
+            if isinstance(sv, (str, bytes, bytearray)):
+                return _to_text(sv)
+        return None
+
     def _pathlib_receiver_path(recv):
-        # Path(...) or pathlib.Path(...) (module-qualified). Join ALL string args so a
-        # multi-component constructor -- Path('/etc', 'passwd') -- resolves to the full
-        # path rather than only its first (non-sensitive) component.
-        if not isinstance(recv, ast.Call) or not recv.args:
+        # Resolve a pathlib receiver to a concrete path: Path(...) / pathlib.Path(...)
+        # (all constructor args joined), a `/` join (Path('/etc') / 'passwd'), or a
+        # .joinpath(...) chain.
+        if isinstance(recv, ast.BinOp) and isinstance(recv.op, ast.Div):
+            base = _pathlib_receiver_path(recv.left)
+            rv = _fold_read_arg(recv.right)
+            if base is None or rv is None:
+                return None
+            try:
+                return os.path.join(base, rv)
+            except Exception:
+                return None
+        if not isinstance(recv, ast.Call):
             return None
         rf = recv.func
+        if isinstance(rf, ast.Attribute) and rf.attr == "joinpath":
+            base = _pathlib_receiver_path(rf.value)
+            if base is None:
+                return None
+            parts = [base]
+            for a in recv.args:
+                v = _fold_read_arg(a)
+                if v is None:
+                    return None
+                parts.append(v)
+            try:
+                return os.path.join(*parts)
+            except Exception:
+                return None
         ctor = (isinstance(rf, ast.Name) and rf.id in _PATHLIB_CTORS) or (
             isinstance(rf, ast.Attribute) and rf.attr in _PATHLIB_CTORS
         )
-        if not ctor:
+        if not ctor or not recv.args:
             return None
         parts = []
         for a in recv.args:
-            v = _const_fold(a, _const_env)
-            if not isinstance(v, (str, bytes, bytearray)):
+            v = _fold_read_arg(a)
+            if v is None:
                 return None
-            parts.append(_to_text(v))
+            parts.append(v)
         if not parts:
             return None
         try:
@@ -4335,7 +4480,14 @@ def _check_signal_escape_patterns(
 
     def _flag_read_path(node, s, is_read_callee):
         norm = s.replace("\\", "/")
-        if _is_sensitive_abs_path(norm):
+        # Collapse redundant separators / '.' segments and resolve '..' so equivalent
+        # spellings (/etc//passwd, /etc/./passwd, /tmp/../etc/passwd) still match the
+        # sensitive exact / dir checks. Keep the raw form for the traversal check below.
+        try:
+            canon = os.path.normpath(norm)
+        except Exception:
+            canon = norm
+        if _is_sensitive_abs_path(norm) or _is_sensitive_abs_path(canon):
             _fs_block(node, f"{s!r} is a sensitive host identity / credential file")
             return True
         if is_read_callee and (s[:1] == "~" or ".." in norm.split("/")):
@@ -4357,14 +4509,13 @@ def _check_signal_escape_patterns(
                 or fq in ("io.open", "os.open")
                 or method in _READ_METHODS
             )
-            # Pathlib read on a literal Path(...) receiver: check the constructor path.
+            # Pathlib read on a Path(...) / join receiver: check the resolved path.
             if isinstance(f, ast.Attribute) and f.attr in _PATHLIB_READ_METHODS:
                 rp = _pathlib_receiver_path(f.value)
                 if rp is not None and _flag_read_path(node, rp, True):
                     return
             for arg in list(node.args) + [kw.value for kw in (node.keywords or [])]:
-                v = _const_fold(arg, _const_env)
-                s = _to_text(v) if isinstance(v, (str, bytes, bytearray)) else None
+                s = _fold_read_arg(arg)
                 if s is None:
                     continue
                 if _flag_read_path(node, s, is_read_callee):
@@ -4738,8 +4889,8 @@ try:
     _real_path_open = _pl.Path.open
     @_gwraps(_real_path_open)
     def _guarded_path_open(self, mode="r", *a, **k):
-        m = mode if isinstance(mode, str) else "r"
-        if any(c in m for c in "wax+") and not _within(self):
+        # Coerce mode through the base str (a str-subclass __contains__ must not lie).
+        if _mode_is_write(mode) and not _within(self):
             _deny(str(self), "Path.open")
         return _real_path_open(self, mode, *a, **k)
     _pl.Path.open = _guarded_path_open
@@ -4758,8 +4909,17 @@ try:
                 # accessor's ORIGINAL os.rename, so this wrapper is the only
                 # confinement -- check the keyword as well as the positional arg.
                 _t = a[0] if a else k.get("target")
-                if _t is not None and not _within(_t):
-                    _deny(str(_t), "Path." + name + " target")
+                if _t is not None:
+                    # Materialize the target once so a stateful __fspath__ cannot return
+                    # an in-workdir path here and an outside one to the real call.
+                    _tm = _fspath1(_t)
+                    if not _within(_tm):
+                        _deny(str(_tm), "Path." + name + " target")
+                    if a:
+                        a = (_tm,) + tuple(a[1:])
+                    else:
+                        k = dict(k)
+                        k["target"] = _tm
             return orig(self, *a, **k)
         setattr(_pl.Path, name, w)
     for _n in ("write_text", "write_bytes", "unlink", "mkdir", "rmdir", "chmod", "touch"):

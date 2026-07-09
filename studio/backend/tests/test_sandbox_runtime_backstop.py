@@ -529,6 +529,56 @@ def test_sandboxed_os_chmod_fd_denied(tmp_path):
 
 
 @_POSIX_ONLY
+def test_sandboxed_path_open_str_subclass_mode_denied(tmp_path):
+    # Path.open must coerce a str-subclass mode through the base str (a lying
+    # __contains__ must not defeat the write check). On 3.13 the underlying io.open
+    # guard also catches it; this asserts the write never lands regardless.
+    target = tmp_path / "pathopen_mode_escape.txt"
+    out = _python_exec(
+        "from pathlib import Path\n"
+        "class M(str):\n"
+        "    def __contains__(self, c):\n"
+        "        return False\n"
+        f"Path({str(target)!r}).open(M('w')).write('x')\nprint('DONE')",
+        None,
+        30,
+        "backstop-pathmode",
+        disable_sandbox = False,
+    )
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_path_rename_stateful_target_denied(tmp_path):
+    # Path.rename must materialize the target once so a stateful __fspath__ cannot
+    # return an in-workdir path for the check and an outside one for the real call.
+    target = tmp_path / "pathrename_target_escape.txt"
+    session = "backstop-pathrename-stateful"
+    workdir = get_sandbox_workdir(session)
+    src = os.path.join(workdir, "stateful_src.txt")
+    with open(src, "w") as f:
+        f.write("x")
+    try:
+        out = _python_exec(
+            "from pathlib import Path\n"
+            "class T:\n"
+            "    n = 0\n"
+            "    def __fspath__(self):\n"
+            "        T.n += 1\n"
+            f"        return 'okp.txt' if T.n == 1 else {str(target)!r}\n"
+            "Path('stateful_src.txt').rename(T())\nprint('DONE')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert not target.exists()
+    finally:
+        if os.path.exists(src):
+            os.remove(src)
+
+
+@_POSIX_ONLY
 def test_sandboxed_in_workdir_ops_still_work():
     # The added guards must not break benign in-workdir writes.
     out = _python_exec(

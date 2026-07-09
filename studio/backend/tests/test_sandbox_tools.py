@@ -928,6 +928,52 @@ class TestReceiverAndVarsAndDynImportBypasses:
         assert _check_code_safety(code) is None, code
 
 
+class TestAssignedAliasesAndNormalization:
+    """Fifth-round refinements: assignment aliases to dangerous callables, pathlib
+    join receivers, path normalization, function-local path constants, and the
+    sys.modules.get twin."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # 978: pathlib join receivers (/ operator and joinpath).
+            "from pathlib import Path\n(Path('/etc') / 'passwd').read_text()",
+            "from pathlib import Path\nPath('/etc').joinpath('passwd').read_bytes()",
+            # 984: eval/exec aliased from the builtins module.
+            "import builtins\ne = builtins.eval\ne(\"__import__('os').system('rm -rf /')\")",
+            # 988: equivalent path spellings normalize to a sensitive file.
+            "open('/etc//passwd').read()",
+            "open('/etc/./passwd').read()",
+            "open('/tmp/../etc/passwd').read()",
+            # 996: function-local path constant.
+            "def f():\n    p = '/etc/passwd'\n    return open(p).read()\nf()",
+            # 998: assignment alias of a dynamic-import function.
+            "import importlib\nim = importlib.import_module\nim('os').system('rm -rf /')",
+            "imp = __import__\nimp('os').system('rm -rf /')",
+            # 003: assignment alias of a deserializer.
+            "import pickle\nl = pickle.loads\nl(payload)",
+            "import pickle as pk\nl = pk.loads\nl(data)",
+            # 005: sys.modules.get twin of the subscript form.
+            "import sys\nsys.modules.get('os').system('rm -rf /')",
+        ],
+    )
+    def test_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path\n(Path('data') / 'out.txt').read_text()",
+            "def f():\n    p = 'data/out.txt'\n    return open(p).read()\nf()",
+            "import importlib\nm = importlib.import_module\nm('numpy')",
+            "import sys\nm = sys.modules.get('numpy')",
+            "open('output/result.txt').read()",
+        ],
+    )
+    def test_benign_allowed(self, code):
+        assert _check_code_safety(code) is None, code
+
+
 class TestEvalExecRecursion:
     """Stage 2: eval/exec/compile are unwrapped, not blanket-banned. A safe
     (constant-recoverable) payload is allowed; an obfuscated escape blocks."""

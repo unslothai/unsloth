@@ -116,6 +116,13 @@ class TestPerScopeAliasCounting:
         # the local binding inside that function.
         _ok("import os\ns = os.system\ndef f():\n    s = print\n    s('please rm the files')\nf()")
 
+    def test_parameter_shadows_module_alias_allowed(self):
+        # A function parameter lexically shadows an outer sink alias of the same name,
+        # so a call through the parameter is not the sink (must not be a false positive).
+        _ok("import os\ns = os.system\ndef f(s):\n    s('rm -rf /')\nf(print)")
+        _ok("import os\ns = os.system\ndef f(s, /):\n    s('rm -rf /')\nf(print)")
+        _ok("def e_outer():\n    pass\ne = exec\ndef g(e):\n    e('x')\ng(print)")
+
 
 class TestAliasingLowFalsePositive:
     def test_reassigned_alias_not_treated_as_sink(self):
