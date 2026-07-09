@@ -82,9 +82,13 @@ export function LlamaUpdateBanner({
   positioned = true,
 }: LlamaUpdateBannerProps): ReactElement | null {
   const showBannerPref = useShowLlamaUpdateBanner();
+  // Not gated on showBannerPref: this hook instance is the app-wide listener
+  // for a cross-tab reload_required resync (the settings-sheet's own instance
+  // only runs during an MTP-fallback rebuild), so muting the banner must not
+  // also silence that resync -- it only suppresses the UI below.
   const { status, visible, applying, apply, dismiss, snooze } =
     useLlamaUpdateCheck({
-      enabled: enabled && showBannerPref,
+      enabled,
       onReloadRequired: resyncInferenceStatusAfterServerModelChange,
     });
 
@@ -104,7 +108,10 @@ export function LlamaUpdateBanner({
   }
 
   const show =
-    visible && status != null && (status.update_available || applying);
+    showBannerPref &&
+    visible &&
+    status != null &&
+    (status.update_available || applying);
   const sizeBytes = status?.update_size_bytes ?? null;
   const sizeLabel =
     sizeBytes && sizeBytes > 0
