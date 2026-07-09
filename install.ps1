@@ -99,6 +99,8 @@ function Install-UnslothStudio {
     $TauriMode = $false
     $SkipTorch = $false
     $ShortcutsOnly = $false
+    # Launcher browser auto-open: "" = undecided (prompt, else keep existing, else on).
+    $OpenBrowserPref = ""
     $WithLlamaCppDir = ""
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
@@ -109,6 +111,8 @@ function Install-UnslothStudio {
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
+            "--no-browser" { $OpenBrowserPref = '0' }
+            "--browser"    { $OpenBrowserPref = '1' }
             "--package"  {
                 $i++
                 if ($i -ge $argList.Count) {
@@ -640,6 +644,20 @@ function Install-UnslothStudio {
                 "`$portFile = `$null`n`$mutexName = 'Local\UnslothStudioLauncher'`n"
             }
 
+            # Browser auto-open: explicit installer choice wins; else keep the
+            # value baked into the existing launcher so `studio update`
+            # (--shortcuts-only) never resets it.
+            $_openBrowser = $OpenBrowserPref
+            if (-not $_openBrowser -and (Test-Path -LiteralPath $launcherPs1)) {
+                try {
+                    $_prevLauncher = [System.IO.File]::ReadAllText($launcherPs1)
+                    if ($_prevLauncher -match "(?m)^\`$openBrowserDefault = '([01])'") {
+                        $_openBrowser = $Matches[1]
+                    }
+                } catch {}
+            }
+            if ($_openBrowser -ne '0') { $_openBrowser = '1' }
+
             $launcherContent = @"
 $studioHomeExport`$ErrorActionPreference = 'Stop'
 `$basePort = 8888
@@ -647,6 +665,30 @@ $studioHomeExport`$ErrorActionPreference = 'Stop'
 `$timeoutSec = 60
 `$pollIntervalMs = 1000
 `$_ExpectedStudioRootId = '$_studioRootId'
+`$openBrowserDefault = '$_openBrowser'
+
+# Browser auto-open: disabled by -NoBrowser/--no-browser, the
+# UNSLOTH_STUDIO_NO_BROWSER env var, or the baked installer preference.
+# When off the server still starts; the URL is printed instead (PWA use).
+`$openBrowser = (`$openBrowserDefault -ne '0')
+if (`$env:UNSLOTH_STUDIO_NO_BROWSER -and
+    (`$env:UNSLOTH_STUDIO_NO_BROWSER -notin @('0', 'false', 'no', 'off'))) {
+    `$openBrowser = `$false
+}
+foreach (`$_launchArg in `$args) {
+    if (`$_launchArg -in @('-NoBrowser', '--no-browser')) { `$openBrowser = `$false }
+    elseif (`$_launchArg -in @('-Browser', '--browser')) { `$openBrowser = `$true }
+}
+
+function Open-StudioUrl {
+    param([Parameter(Mandatory = `$true)][string]`$Url)
+    if (`$openBrowser) {
+        Start-Process `$Url
+    } else {
+        # Hidden-window launches have no console; never fail on the echo.
+        try { Write-Host "Unsloth Studio is running at: `$Url" } catch {}
+    }
+}
 
 function Test-StudioHealth {
     param([Parameter(Mandatory = `$true)][int]`$Port)
@@ -743,7 +785,7 @@ function Find-FreeLaunchPort {
 # If Studio is already healthy on any expected port, just open it and exit.
 `$existingPort = Find-HealthyStudioPort
 if (`$existingPort) {
-    Start-Process "http://localhost:`$existingPort"
+    Open-StudioUrl "http://localhost:`$existingPort"
     exit 0
 }
 
@@ -760,7 +802,7 @@ try {
         `$deadline = (Get-Date).AddSeconds(`$timeoutSec)
         while ((Get-Date) -lt `$deadline) {
             `$port = Find-HealthyStudioPort
-            if (`$port) { Start-Process "http://localhost:`$port"; exit 0 }
+            if (`$port) { Open-StudioUrl "http://localhost:`$port"; exit 0 }
             Start-Sleep -Milliseconds `$pollIntervalMs
         }
         exit 0
@@ -809,7 +851,7 @@ try {
                     [System.IO.File]::WriteAllText(`$portFile, "`$launchPort`n")
                 } catch {}
             }
-            Start-Process "http://localhost:`$launchPort"
+            Open-StudioUrl "http://localhost:`$launchPort"
             `$browserOpened = `$true
             break
         }
@@ -2568,6 +2610,16 @@ exit 0
     if ($TauriMode) {
         Write-TauriLog "DONE" ""
         return
+    }
+
+    # Ask once (interactive installs only) whether the launcher should open
+    # the browser after the server is up. Skipped when --no-browser/--browser
+    # was passed or input is redirected; then an existing choice is kept.
+    $_browserPromptOk = [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
+    if (-not $OpenBrowserPref -and $_browserPromptOk) {
+        Write-Host ""
+        $_browserReply = Read-Host "  Open Unsloth Studio in your default browser after launch? [Y/n]"
+        $OpenBrowserPref = if ($_browserReply -match '^[Nn]') { '0' } else { '1' }
     }
 
     # New-StudioShortcuts gates the .lnk shortcuts on env-mode internally.

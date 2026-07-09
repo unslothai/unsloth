@@ -12,6 +12,7 @@
 #   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh   # pin Python version
 #   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
 # Equivalent flags: ./install.sh --no-torch --python 3.12  (or pipe them: sh -s -- --no-torch)
+# ./install.sh --no-browser: launcher starts the server without opening the browser.
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $HOME/.unsloth/studio
 #
@@ -51,6 +52,8 @@ _USER_PYTHON=""
 _NO_TORCH_FLAG=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
+# Launcher browser auto-open: "" = undecided (prompt, else keep existing, else on).
+_STUDIO_OPEN_BROWSER=""
 _next_is_package=false
 _next_is_python=false
 _next_is_llama_cpp_dir=false
@@ -82,6 +85,8 @@ for arg in "$@"; do
         --no-torch) _NO_TORCH_FLAG=true ;;
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
+        --no-browser) _STUDIO_OPEN_BROWSER=0 ;;
+        --browser) _STUDIO_OPEN_BROWSER=1 ;;
         --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
     esac
 done
@@ -647,6 +652,21 @@ if [ -z "${UNSLOTH_EXE:-}" ] || [ ! -x "${UNSLOTH_EXE:-}" ]; then
     exit 1
 fi
 
+# Browser auto-open. Priority: --no-browser/--browser arg, then
+# UNSLOTH_STUDIO_NO_BROWSER env var, then studio.conf, default on.
+# When off the server still starts; the URL is printed instead (PWA use).
+OPEN_BROWSER="${STUDIO_OPEN_BROWSER:-1}"
+case "${UNSLOTH_STUDIO_NO_BROWSER:-}" in
+    ''|0|false|FALSE|no|NO|off|OFF) ;;
+    *) OPEN_BROWSER=0 ;;
+esac
+for _arg in "$@"; do
+    case "$_arg" in
+        --no-browser) OPEN_BROWSER=0 ;;
+        --browser)    OPEN_BROWSER=1 ;;
+    esac
+done
+
 BASE_PORT=8888
 MAX_PORT_OFFSET=20
 TIMEOUT_SEC=60
@@ -780,6 +800,10 @@ _find_launch_port() {
 # ── Open browser ──
 _open_browser() {
     _url="$1"
+    if [ "$OPEN_BROWSER" = "0" ]; then
+        echo "Unsloth Studio is running at: $_url"
+        return 0
+    fi
     if [ "$(uname)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
         open "$_url"
     elif grep -qi microsoft /proc/version 2>/dev/null; then
@@ -1011,11 +1035,21 @@ LAUNCHER_EOF
 
     chmod +x "$_css_launcher"
 
+    # Browser auto-open: explicit installer choice wins; else keep the existing
+    # studio.conf value so `studio update` (--shortcuts-only) never resets it.
+    _css_open_browser="${_STUDIO_OPEN_BROWSER:-}"
+    if [ -z "$_css_open_browser" ] && [ -f "$_css_data_dir/studio.conf" ]; then
+        _css_open_browser=$(sed -n "s/^STUDIO_OPEN_BROWSER='\([01]\)'\$/\1/p" \
+            "$_css_data_dir/studio.conf" 2>/dev/null | head -n 1)
+    fi
+    [ "$_css_open_browser" = "0" ] || _css_open_browser=1
+
     # studio.conf: exe path + (env-mode only) persisted env vars so fresh
     # shells launch the right install without re-exporting.
     _css_quoted_exe=$(printf '%s' "$_css_exe" | sed "s/'/'\\\\''/g")
     {
         printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'"
+        printf '%s\n' "STUDIO_OPEN_BROWSER='$_css_open_browser'"
         if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
             # When an override resolves to the legacy default, llama.cpp
             # still lives at ~/.unsloth/llama.cpp (one shared build).
@@ -3160,6 +3194,18 @@ esac
 # create_studio_shortcuts gates persistent menu shortcuts on env-mode;
 # launcher + studio.conf + icon are always written.
 if [ "$TAURI_MODE" != true ]; then
+    # Ask once (interactive installs only) whether the launcher should open
+    # the browser after the server is up. Skipped when --no-browser/--browser
+    # was passed or no TTY; then an existing choice is kept, defaulting to on.
+    if [ -z "$_STUDIO_OPEN_BROWSER" ] && [ -t 1 ] && [ -r /dev/tty ]; then
+        echo ""
+        printf "  Open Unsloth Studio in your default browser after launch? [Y/n] "
+        read -r _browser_reply </dev/tty || _browser_reply="y"
+        case "$_browser_reply" in
+            [nN]*) _STUDIO_OPEN_BROWSER=0 ;;
+            *) _STUDIO_OPEN_BROWSER=1 ;;
+        esac
+    fi
     create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 fi
 
