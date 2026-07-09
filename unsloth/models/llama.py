@@ -1652,22 +1652,23 @@ def _rope_scaling_as_dict(rope_scaling):
 
 
 def _extended_rope_scaling(config, factor):
-    """RoPE scaling to extend a model past its native window. Keeps a native scaled
-    RoPE (llama3 / yarn / longrope) untouched (replacing it with linear is far worse for
-    long context); only plain RoPE gets linear scaling. Returns (scaling_or_None, type):
-    None keeps the native scaling. The linear dict carries rope_theta so transformers v5
-    (which stores it under rope_parameters) keeps the real base instead of defaulting to 10000."""
+    """RoPE scaling to extend a model past its native window. Keeps native llama3 as-is
+    (linear extension is far worse for long context); everything else gets linear. Returns
+    (scaling_or_None, type): None keeps llama3. The linear dict carries rope_theta so
+    transformers v5 (which stores it under rope_parameters) keeps the real base, not 10000.
+    Only llama3 is preserved because patch_llama_rope_scaling can only rebuild linear/llama3/
+    longrope and its longrope branch needs a top-level original_max_position_embeddings."""
     existing = _rope_scaling_as_dict(
         getattr(config, "rope_scaling", None) or getattr(config, "rope_parameters", None) or {}
     )
     existing_type = existing.get("rope_type") or existing.get("type")
-    if existing_type in (None, "default", "linear"):
-        return {
-            "type": "linear",
-            "factor": factor,
-            "rope_theta": _get_rope_theta(config),
-        }, existing_type
-    return None, existing_type
+    if existing_type == "llama3":
+        return None, existing_type
+    return {
+        "type": "linear",
+        "factor": factor,
+        "rope_theta": _get_rope_theta(config),
+    }, existing_type
 
 
 def _llama3_inv_freq_from_config(
