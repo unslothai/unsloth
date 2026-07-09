@@ -2,6 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
+import {
+  loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
@@ -73,6 +77,7 @@ import {
   hasClosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   generateAudio,
   listCachedGguf,
@@ -1429,10 +1434,32 @@ async function autoLoadSmallestModel(): Promise<{
     if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
       return false;
     }
+    const currentStore = useChatRuntimeStore.getState();
+    const remembered = loadRememberedLoadSettings(
+      rememberedLoadSettingsKey({
+        id: candidate.id,
+        ggufVariant: candidate.ggufVariant,
+      }),
+    );
+    const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
+      modelId: candidate.id,
+      ggufVariant: candidate.ggufVariant,
+      isGguf: candidate.kind === "gguf",
+      customContextLength: remembered?.contextLength ?? null,
+      ggufContextLength: null,
+      currentCheckpoint: currentStore.params.checkpoint,
+      activeGgufVariant: currentStore.activeGgufVariant,
+      maxSeqLength: candidate.maxSeqLength,
+      presetSource: currentStore.activePresetSource,
+    });
+    const effectiveSpeculativeType =
+      remembered?.speculativeType ?? specSettings.speculativeType;
+    const effectiveSpecDraftNMax =
+      remembered?.specDraftNMax ?? specSettings.specDraftNMax;
     if (
       !(await canAutoLoad({
         model_path: candidate.id,
-        max_seq_length: candidate.maxSeqLength,
+        max_seq_length: effectiveMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
       }))
@@ -1446,15 +1473,17 @@ async function autoLoadSmallestModel(): Promise<{
     const loadResp = await loadModel({
       model_path: candidate.id,
       hf_token: hfToken,
-      max_seq_length: candidate.maxSeqLength,
+      max_seq_length: effectiveMaxSeqLength,
       load_in_4bit: true,
       is_lora: false,
       gguf_variant: candidate.ggufVariant,
       trust_remote_code: trustRemoteCode,
-      speculative_type: specSettings.speculativeType,
-      spec_draft_n_max: specSettings.specDraftNMax,
+      cache_type_kv: remembered?.kvCacheDtype ?? null,
+      speculative_type: effectiveSpeculativeType,
+      spec_draft_n_max: effectiveSpecDraftNMax,
+      tensor_parallel: remembered?.tensorParallel ?? false,
     });
-    saveSpeculativeType(specSettings.speculativeType);
+    saveSpeculativeType(effectiveSpeculativeType);
     useChatRuntimeStore
       .getState()
       .setCheckpoint(candidate.id, candidate.ggufVariant ?? undefined);
