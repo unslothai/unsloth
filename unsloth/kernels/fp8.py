@@ -43,6 +43,11 @@ except:
     )
 
 try:
+    from transformers.integrations.finegrained_fp8 import FP8GroupedLinear
+except:
+    FP8GroupedLinear = None
+
+try:
     from transformers.integrations.fbgemm_fp8 import FbgemmFp8Linear
 except:
     FbgemmFp8Linear = None
@@ -688,3 +693,25 @@ if FbgemmFp8Linear is not None:
     FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, "weight_scale")
 if FP8Linear is not None:
     FP8Linear.forward = module_forward_patch(fp8_block_quant_linear, "weight_scale_inv")
+
+# FP8GroupedLinear.forward calls a grouped matmul kernel with no autograd
+# formula, so backward fails while training. For training, dequantize the frozen
+# fp8 weight and run a differentiable grouped matmul; inference keeps the kernel.
+# torch._grouped_mm matches but has no backward here; _scaled_grouped_mm needs
+# fp8 activations, so bmm on the dequantized weight is exact and universal.
+if FP8GroupedLinear is not None:
+    _fp8_grouped_forward_orig = FP8GroupedLinear.forward
+
+    def _fp8_grouped_forward(self, x):
+        if self.weight.element_size() > 1 or not torch.is_grad_enabled():
+            return _fp8_grouped_forward_orig(self, x)
+        hidden_dim = x.shape[-1]
+        W = weight_dequant(self.weight, self.weight_scale_inv.float()).to(x.dtype)
+        w = W.view(self.n_groups, -1, hidden_dim).transpose(1, 2)
+        xg = x.reshape(-1, self.n_groups, hidden_dim).transpose(0, 1)
+        y = torch.bmm(xg, w).transpose(0, 1).reshape(*x.shape[:-2], self.n_groups, -1)
+        if self.has_bias:
+            y = y + self.bias.view(self.n_groups, -1)
+        return y
+
+    FP8GroupedLinear.forward = _fp8_grouped_forward
