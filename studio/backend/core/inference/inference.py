@@ -1178,13 +1178,22 @@ class InferenceBackend:
                 add_special_tokens = False,
                 return_tensors = "pt",
             ).to(model.device)
+            prompt_text = input_text
         else:
             # Text-only path for a vision model
             formatted_prompt = self.format_chat_prompt(messages, system_prompt)
             inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(model.device)
+            prompt_text = formatted_prompt
 
         # Stream with TextIteratorStreamer + background thread
         try:
+            from core.inference.chat_template_helpers import detect_think_prefill
+
+            # Re-emit an open <think> prefill swallowed by skip_prompt (see
+            # generate_stream).
+            think_prefix = detect_think_prefill(
+                prompt_text, getattr(raw_tokenizer, "all_special_tokens", None)
+            )
             from transformers import TextIteratorStreamer
             import threading
 
@@ -1233,7 +1242,11 @@ class InferenceBackend:
             thread = threading.Thread(target = generate_fn)
             thread.start()
 
-            output = ""
+            output = think_prefix
+            # Emit the prefilled <think> before the first token so the block
+            # renders during prompt prefill (which can take seconds).
+            if think_prefix:
+                yield think_prefix
             from queue import Empty
 
             generation_complete = False
@@ -1467,6 +1480,16 @@ class InferenceBackend:
 
             from transformers import TextIteratorStreamer
             import threading
+            from core.inference.chat_template_helpers import detect_think_prefill
+
+            # skip_prompt swallows an open <think> prefilled by the template;
+            # re-emit it so the frontend can render the thinking block.
+            # gpt-oss emits its own tags via HarmonyTextStreamer.
+            think_prefix = (
+                ""
+                if self._is_gpt_oss_model()
+                else detect_think_prefill(prompt, getattr(tokenizer, "all_special_tokens", None))
+            )
 
             # gpt-oss models: HarmonyTextStreamer parses the multi-channel
             # harmony protocol into <think> tags
@@ -1550,7 +1573,11 @@ class InferenceBackend:
             thread = threading.Thread(target = generate_fn)
             thread.start()
 
-            output = ""
+            output = think_prefix
+            # Emit the prefilled <think> before the first token so the block
+            # renders during prompt prefill (which can take seconds).
+            if think_prefix:
+                yield think_prefix
             from queue import Empty
 
             generation_complete = False
