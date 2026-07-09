@@ -368,7 +368,6 @@ def clear_gpu_cache():
         # torch.xpu has no ipc_collect(), so do not call it here.
         try:
             import torch
-
             if hasattr(torch, "xpu"):
                 if hasattr(torch.xpu, "synchronize"):
                     torch.xpu.synchronize()
@@ -549,6 +548,7 @@ def get_package_versions() -> Dict[str, Optional[str]]:
     # GPU runtime versions bundled with torch (CUDA, ROCm/HIP, Intel XPU)
     try:
         import torch
+
         versions["cuda"] = getattr(torch.version, "cuda", None)
         versions["rocm"] = getattr(torch.version, "hip", None)
         if hasattr(torch, "xpu") and torch.xpu.is_available():
@@ -624,9 +624,7 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
                     "name": props.name,
                     "total_gb": round(total_bytes / (1024**3), 2),
                     "used_gb": (
-                        round(used_bytes / (1024**3), 2)
-                        if used_bytes is not None
-                        else None
+                        round(used_bytes / (1024**3), 2) if used_bytes is not None else None
                     ),
                 }
             )
@@ -1192,9 +1190,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                 # mem_get_info); propagate None instead of dividing by it. On
                 # CUDA/ROCm used is always an int, so this stays byte-identical.
                 vram_pct = (
-                    round((used / total) * 100, 1)
-                    if used is not None and total > 0
-                    else None
+                    round((used / total) * 100, 1) if used is not None and total > 0 else None
                 )
                 devices.append(
                     {
@@ -1300,9 +1296,7 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
 
         # Subdevice syntax ("N.M") expands one root into multiple
         # logical devices -- not addressable by explicit root-ID selection.
-        has_subdevice = any(
-            "." in token.strip() for token in xpu_mask.split(",") if token.strip()
-        )
+        has_subdevice = any("." in token.strip() for token in xpu_mask.split(",") if token.strip())
         if has_subdevice:
             return {
                 "raw": xpu_mask,
@@ -1415,9 +1409,7 @@ def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
 
     if not parent_visible_spec["supports_explicit_gpu_ids"]:
         env_var_name = (
-            "ZE_AFFINITY_MASK"
-            if get_device() == DeviceType.XPU
-            else "CUDA_VISIBLE_DEVICES"
+            "ZE_AFFINITY_MASK" if get_device() == DeviceType.XPU else "CUDA_VISIBLE_DEVICES"
         )
         raise ValueError(
             f"Invalid gpu_ids {requested_ids}: explicit physical GPU IDs are "
@@ -2234,7 +2226,6 @@ def get_visible_gpu_count() -> int:
 
         try:
             import torch
-
             _visible_gpu_count = torch.xpu.device_count()
         except Exception as e:
             logger.debug(
@@ -2384,12 +2375,9 @@ def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
                     and len(parent_visible_spec["numeric_ids"]) > 1
                 )
                 has_multiple_unresolved = (
-                    parent_visible_spec["numeric_ids"] is None
-                    and get_visible_gpu_count() > 1
+                    parent_visible_spec["numeric_ids"] is None and get_visible_gpu_count() > 1
                 )
-                if has_multiple_unresolved or (
-                    not supports_physical and has_multiple_numeric
-                ):
+                if has_multiple_unresolved or (not supports_physical and has_multiple_numeric):
                     multi_gpu = True
 
         if multi_gpu:

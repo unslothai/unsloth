@@ -106,7 +106,7 @@ def spoof_xpu(monkeypatch):
         cuda_visible: str = "",  # "" hides CUDA; None unsets; else passthrough
         ze_mask: str = "0,1",  # None unsets the mask
         force_xpu: bool = False,
-        xpu_version="2.7",
+        xpu_version = "2.7",
         **xpu_kwargs,
     ):
         import torch
