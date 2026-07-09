@@ -9,7 +9,8 @@ def _load_remove_special_tokens():
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     funcs = [
-        node for node in tree.body
+        node
+        for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "remove_special_tokens"
     ]
     namespace = {}
