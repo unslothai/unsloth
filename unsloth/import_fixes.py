@@ -258,9 +258,8 @@ if not UNSLOTH_ENABLE_LOGGING:
 
 
 def fix_torch_check_is_size():
-    """torch deprecated torch._check_is_size (bitsandbytes 4-bit dequant calls
-    it); if a future torch removes it, shim it to _check(i >= 0) so bitsandbytes
-    keeps working. The FutureWarning itself is silenced in suppress_cuda_printf."""
+    """Shim torch._check_is_size if a future torch removes it (bitsandbytes 4-bit
+    dequant calls it). The FutureWarning is silenced in suppress_cuda_printf."""
     try:
         import torch
 
