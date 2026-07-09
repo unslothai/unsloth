@@ -1348,14 +1348,35 @@ jobs:
             foreach ($cmd in (Get-Command $tool -All -ErrorAction SilentlyContinue)) {
               if ($cmd.Source) {
                 $dir = Split-Path -Parent $cmd.Source
-                if ($dir) { [void] $blocked.Add($dir) }
+                if ($dir) {
+                  [void] $blocked.Add(
+                    [Environment]::ExpandEnvironmentVariables($dir).Trim().Trim('"').TrimEnd('\'))
+                }
               }
             }
           }
+          # Normalized comparison so registry spellings (trailing slash,
+          # unexpanded %VAR%) still match.
+          function Test-Blocked([string]$p) {
+            $n = [Environment]::ExpandEnvironmentVariables($p).Trim().Trim('"').TrimEnd('\')
+            return $blocked.Contains($n)
+          }
 
           $pathParts = $env:Path -split [IO.Path]::PathSeparator |
-            Where-Object { $_ -and -not $blocked.Contains($_) }
+            Where-Object { $_ -and -not (Test-Blocked $_) }
           $noBuildToolsPath = $pathParts -join [IO.Path]::PathSeparator
+
+          # install.ps1's Refresh-SessionPath and setup.ps1's Refresh-Environment
+          # rebuild the session Path from these scopes mid-install, so filter
+          # them too. Originals are saved for the cleanup step.
+          foreach ($scope in @('Machine', 'User')) {
+            $orig = [Environment]::GetEnvironmentVariable('Path', $scope)
+            if (-not $orig) { continue }
+            Set-Content -LiteralPath (Join-Path $root "orig-path-$scope.txt") -Value $orig -NoNewline
+            $kept = ($orig -split ';' | Where-Object { $_ -and -not (Test-Blocked $_) }) -join ';'
+            [Environment]::SetEnvironmentVariable('Path', $kept, $scope)
+            Write-Host "Filtered $scope Path scope."
+          }
 
           "NO_BUILD_TOOLS_PROGRAMFILES=$pf" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "NO_BUILD_TOOLS_PROGRAMFILES_X86=$pfx86" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
@@ -1500,7 +1521,15 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'no-build-tools') -Recurse -Force -ErrorAction SilentlyContinue
+          $root = Join-Path $env:GITHUB_WORKSPACE 'no-build-tools'
+          foreach ($scope in @('Machine', 'User')) {
+            $saved = Join-Path $root "orig-path-$scope.txt"
+            if (Test-Path -LiteralPath $saved) {
+              [Environment]::SetEnvironmentVariable('Path', (Get-Content -LiteralPath $saved -Raw), $scope)
+              Write-Host "Restored $scope Path scope."
+            }
+          }
+          Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Stop Studio
         if: always()
