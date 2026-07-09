@@ -380,6 +380,18 @@ with sync_playwright() as p:
                 fail(f"/api/auth/refresh wedged: {refresh_resp['error']!r}")
             refresh = refresh_resp.get("body") or {}
             token = (refresh or {}).get("access_token")
+            next_refresh_token = (refresh or {}).get("refresh_token")
+            if token and next_refresh_token:
+                robust_evaluate(
+                    page,
+                    """([accessToken, refreshToken]) => {
+                        localStorage.setItem('unsloth_auth_token', accessToken);
+                        localStorage.setItem('unsloth_auth_refresh_token', refreshToken);
+                    }""",
+                    [token, next_refresh_token],
+                )
+            elif token:
+                fail("/api/auth/refresh returned access_token but no refresh_token")
     if not token:
         fail("could not obtain auth token after change-password")
 
@@ -1169,6 +1181,13 @@ with sync_playwright() as p:
         fail(f"curl login returned no access_token: {login_body!r}")
     info("CLI obtained an access token")
 
+    browser_refresh_token = robust_evaluate(
+        page,
+        "() => localStorage.getItem('unsloth_auth_refresh_token')",
+    )
+    if not browser_refresh_token:
+        fail("browser refresh token missing before CLI rotation")
+
     change_proc = subprocess.run(
         [
             "curl",
@@ -1203,18 +1222,39 @@ with sync_playwright() as p:
 
     # /change-password revoked refresh tokens server-side (auth.py), so
     # the browser's /api/auth/refresh must now fail.
-    refresh_after = evaluate_fetch(
-        page,
-        f"{BASE}/api/auth/refresh",
-        method = "POST",
-        timeout_ms = FETCH_TIMEOUT_MS,
+    refresh_proc = subprocess.run(
+        [
+            "curl",
+            "-sS",
+            "-o",
+            os.devnull,
+            "-w",
+            "%{http_code}",
+            "-X",
+            "POST",
+            f"{BASE}/api/auth/refresh",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            json.dumps({"refresh_token": browser_refresh_token}),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 15,
     )
-    if refresh_after.get("error"):
-        fail(f"/api/auth/refresh wedged: {refresh_after['error']!r}")
-    if refresh_after["status"] == 200:
+    if refresh_proc.returncode != 0:
+        fail(
+            f"curl refresh-token check failed: rc={refresh_proc.returncode} "
+            f"stderr={refresh_proc.stderr!r} stdout={refresh_proc.stdout!r}"
+        )
+    try:
+        refresh_status = int(refresh_proc.stdout.strip())
+    except ValueError:
+        fail(f"curl refresh-token check returned invalid status: " f"{refresh_proc.stdout!r}")
+    if refresh_status == 200:
         fail(f"/api/auth/refresh should fail after CLI rotation; got 200")
     info(
-        f"OK browser /api/auth/refresh now {refresh_after['status']} "
+        f"OK browser /api/auth/refresh now {refresh_status} "
         "(refresh token revoked) -- old studio session can no longer renew"
     )
 

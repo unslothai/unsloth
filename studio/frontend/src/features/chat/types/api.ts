@@ -365,6 +365,7 @@ export interface OpenAIChatCompletionsRequest {
     context_length?: number;
   };
   auto_heal_tool_calls?: boolean;
+  nudge_tool_calls?: boolean;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;

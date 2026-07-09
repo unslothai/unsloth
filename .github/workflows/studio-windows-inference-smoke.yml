@@ -1610,6 +1610,13 @@ jobs:
       - name: Install Pester v5
         shell: pwsh
         run: |
+          # PSGallery is intermittently absent from the repository list on GitHub's Windows
+          # runners, which makes `Set-PSRepository PSGallery` fail with "No repository with the
+          # name 'PSGallery' was found." Re-register the default gallery first so the policy
+          # change and module install below always have a repository to target.
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default -ErrorAction SilentlyContinue
+          }
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
           Import-Module Pester -MinimumVersion 5.5.0

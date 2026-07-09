@@ -650,6 +650,7 @@ type ChatRuntimeStore = {
   toolStatus: string | null;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
+  nudgeToolCalls: boolean;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
@@ -784,6 +785,7 @@ type ChatRuntimeStore = {
   setGeneratingStatus: (status: string | null) => void;
   setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
+  setNudgeToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
@@ -836,6 +838,7 @@ type ScalarSettingKey =
   | "collapseHtmlArtifacts"
   | "allowArtifactNetworkAccess"
   | "autoHealToolCalls"
+  | "nudgeToolCalls"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout";
 
@@ -873,6 +876,7 @@ const SCALAR_SETTING_KEYS = [
   "collapseHtmlArtifacts",
   "allowArtifactNetworkAccess",
   "autoHealToolCalls",
+  "nudgeToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
 ] as const satisfies readonly ScalarSettingKey[];
@@ -1109,6 +1113,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   generatingStatus: null,
   activeDiffusionCanvas: null,
   autoHealToolCalls: true,
+  nudgeToolCalls: true,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
@@ -1551,6 +1556,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.autoHealToolCalls,
       );
       return { autoHealToolCalls };
+    }),
+  setNudgeToolCalls: (nudgeToolCalls) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "nudgeToolCalls",
+        nudgeToolCalls,
+        state.nudgeToolCalls,
+      );
+      return { nudgeToolCalls };
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {
