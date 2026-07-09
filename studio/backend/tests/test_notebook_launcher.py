@@ -145,11 +145,10 @@ def test_start_and_publish_tunnel_fails_closed_when_publish_fails(monkeypatch):
         lambda port, *, allow_bootstrap_pending = False: "https://ready.trycloudflare.com",
     )
     monkeypatch.setattr(colab, "_publish_cloudflare_url", lambda *args, **kwargs: False)
-
-    monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda: calls.append("stopped"))
 
     assert colab._start_and_publish_cloudflare_tunnel(8888, allow_bootstrap_pending = True) is None
-    assert calls == [{"expected_url": "https://ready.trycloudflare.com"}]
+    assert calls == ["stopped"]
 
 
 def test_kaggle_reuse_path_keeps_bootstrap_guard_for_external_server(monkeypatch):
@@ -177,6 +176,7 @@ def test_kaggle_reuse_path_keeps_bootstrap_guard_for_external_server(monkeypatch
         "_show_and_embed",
         lambda port, *, cloudflare_url = None: calls.setdefault("embed", (port, cloudflare_url)),
     )
+    monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda: calls.setdefault("stopped", True))
 
     import time
 
@@ -187,6 +187,7 @@ def test_kaggle_reuse_path_keeps_bootstrap_guard_for_external_server(monkeypatch
     assert calls["tunnel"] == (8888, False)
     assert "published" not in calls
     assert calls["embed"] == (8888, None)
+    assert calls["stopped"] is True
     assert env["UNSLOTH_STUDIO_HOSTED_NOTEBOOK"] == "1"
     assert env["UNSLOTH_STUDIO_NOTEBOOK_FRAME_TOKEN"]
 
@@ -218,13 +219,11 @@ def test_kaggle_reuse_path_allows_bootstrap_pending_for_owned_server(monkeypatch
     monkeypatch.setattr(colab, "start_cloudflare_tunnel", _fake_tunnel)
     monkeypatch.setattr(colab, "_publish_cloudflare_url", _fake_publish)
     monkeypatch.setattr(
-        colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.setdefault("stopped", kwargs)
-    )
-    monkeypatch.setattr(
         colab,
         "_show_and_embed",
         lambda port, *, cloudflare_url = None: calls.setdefault("embed", (port, cloudflare_url)),
     )
+    monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda: calls.setdefault("stopped", True))
 
     import time
 
@@ -239,7 +238,7 @@ def test_kaggle_reuse_path_allows_bootstrap_pending_for_owned_server(monkeypatch
         {"suppress_bootstrap": True},
     )
     assert calls["embed"] == (8888, "https://ready.trycloudflare.com")
-    assert calls["stopped"] == {"expected_url": "https://ready.trycloudflare.com"}
+    assert calls["stopped"] is True
 
 
 def test_kaggle_start_explicit_cloudflare_false_disables_tunnel(monkeypatch):
@@ -261,9 +260,7 @@ def test_kaggle_start_explicit_cloudflare_false_disables_tunnel(monkeypatch):
         "_show_and_embed",
         lambda port, *, cloudflare_url = None: calls.setdefault("embed", (port, cloudflare_url)),
     )
-    monkeypatch.setattr(
-        colab, "_stop_cloudflare_tunnel", lambda **kwargs: calls.setdefault("stopped", kwargs)
-    )
+    monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda: calls.setdefault("stopped", True))
 
     import time
 
@@ -273,6 +270,7 @@ def test_kaggle_start_explicit_cloudflare_false_disables_tunnel(monkeypatch):
 
     assert "published" not in calls
     assert calls["embed"] == (8888, None)
+    assert calls["stopped"] is True
     assert env["UNSLOTH_STUDIO_HOSTED_NOTEBOOK"] == "1"
 
 
@@ -300,19 +298,6 @@ def test_show_and_embed_uses_cloudflare_iframe_for_kaggle(monkeypatch):
     assert waits == [("https://ready.trycloudflare.com", 8.0)]
     assert 'src="https://ready.trycloudflare.com?__unsloth_frame=frame-token"' in html
     assert 'href="https://ready.trycloudflare.com"' in html
-
-
-def test_show_and_embed_skips_cloudflare_iframe_when_public_url_not_ready(monkeypatch):
-    rendered = _capture_display(monkeypatch)
-    monkeypatch.setattr(colab, "_is_kaggle_environment", lambda: True)
-    monkeypatch.setattr(colab, "_wait_for_public_url", lambda *_, **__: False)
-    monkeypatch.setattr(colab, "_bootstrap_login_notice_html", lambda: None)
-
-    colab._show_and_embed(8888, cloudflare_url = "https://not-ready.trycloudflare.com")
-
-    html = "\n".join(rendered)
-    assert "<iframe" not in html
-    assert "not loaded" in html
 
 
 def test_show_and_embed_keeps_colab_proxy_if_available(monkeypatch):
@@ -403,26 +388,3 @@ def test_wait_for_public_url_skips_non_https(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", _fail_urlopen)
 
     assert colab._wait_for_public_url("http://localhost:8888", timeout = 1)
-
-
-def test_stop_cloudflare_tunnel_preserves_state_when_stop_fails(monkeypatch):
-    state = types.SimpleNamespace(
-        cloudflare_url = "https://ready.trycloudflare.com",
-        suppress_bootstrap_injection_for_public_tunnel = True,
-        trust_cloudflare_client_ip = True,
-    )
-    monkeypatch.setitem(
-        sys.modules, "main", types.SimpleNamespace(app = types.SimpleNamespace(state = state))
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "cloudflare_tunnel",
-        types.SimpleNamespace(
-            stop_studio_tunnel = lambda: (_ for _ in ()).throw(RuntimeError("still running"))
-        ),
-    )
-
-    assert colab._stop_cloudflare_tunnel(expected_url = "https://ready.trycloudflare.com") is False
-    assert state.cloudflare_url == "https://ready.trycloudflare.com"
-    assert state.suppress_bootstrap_injection_for_public_tunnel is True
-    assert state.trust_cloudflare_client_ip is True

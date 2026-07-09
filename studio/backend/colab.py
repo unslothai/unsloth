@@ -35,6 +35,8 @@ _PUBLIC_URL_WAIT_TIMEOUT_ENV = "UNSLOTH_STUDIO_PUBLIC_URL_WAIT_SECONDS"
 _PUBLIC_URL_WAIT_TIMEOUT_SECONDS = 8.0
 _OWNED_SERVER_APP = None
 _OWNED_SERVER_PORT: int | None = None
+_NO_CLOUDFLARE_TUNNEL_TO_STOP = object()
+_CLOUDFLARE_STOP_EXPECTED_URL = None
 
 
 def _is_kaggle_environment() -> bool:
@@ -326,13 +328,30 @@ def _start_and_publish_cloudflare_tunnel(
         cf_url,
         suppress_bootstrap = bootstrap_pending and allow_bootstrap_pending,
     ):
-        _stop_cloudflare_tunnel(expected_url = cf_url)
+        _stop_cloudflare_tunnel_started_for(cf_url)
         return None
     return cf_url
 
 
+def _stop_cloudflare_tunnel_started_for(expected_url: "str | None") -> bool:
+    global _CLOUDFLARE_STOP_EXPECTED_URL
+    previous = _CLOUDFLARE_STOP_EXPECTED_URL
+    _CLOUDFLARE_STOP_EXPECTED_URL = expected_url or _NO_CLOUDFLARE_TUNNEL_TO_STOP
+    try:
+        return _stop_cloudflare_tunnel()
+    finally:
+        _CLOUDFLARE_STOP_EXPECTED_URL = previous
+
+
 def _stop_cloudflare_tunnel(*, expected_url: "str | None" = None) -> bool:
     """Best-effort teardown of the Cloudflare tunnel started by start_cloudflare_tunnel."""
+    if expected_url is None:
+        expected_url = _CLOUDFLARE_STOP_EXPECTED_URL
+        if expected_url is _NO_CLOUDFLARE_TUNNEL_TO_STOP:
+            return False
+        if not isinstance(expected_url, str):
+            expected_url = None
+
     current_url = None
     try:
         from main import app as _studio_app
@@ -574,8 +593,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
         except KeyboardInterrupt:
             logger.info("\nUnsloth Studio keepalive stopped.")
         finally:
-            if cf_url:
-                _stop_cloudflare_tunnel(expected_url = cf_url)
+            _stop_cloudflare_tunnel_started_for(cf_url)
         return
 
     logger.info("   Loading backend...")
@@ -655,8 +673,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     except KeyboardInterrupt:
         logger.info("\nUnsloth Studio keepalive stopped.")
     finally:
-        if cf_url:
-            _stop_cloudflare_tunnel(expected_url = cf_url)
+        _stop_cloudflare_tunnel_started_for(cf_url)
 
 
 if __name__ == "__main__":
