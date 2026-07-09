@@ -17,9 +17,11 @@ INSTALL_PS1="$SCRIPT_DIR/../../install.ps1"
 PASS=0
 FAIL=0
 
+# Here-strings, not `echo | grep -q`: grep exiting on first match SIGPIPEs
+# the echo on large haystacks, spamming "write error: Broken pipe" in CI logs.
 assert_contains() {
     _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF -- "$_needle"; then
+    if grep -qF -- "$_needle" <<< "$_haystack"; then
         echo "  PASS: $_label"
         PASS=$((PASS + 1))
     else
@@ -30,7 +32,7 @@ assert_contains() {
 
 assert_not_contains() {
     _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF -- "$_needle"; then
+    if grep -qF -- "$_needle" <<< "$_haystack"; then
         echo "  FAIL: $_label (found '$_needle' but should not)"
         FAIL=$((FAIL + 1))
     else
