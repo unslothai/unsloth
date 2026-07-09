@@ -2817,8 +2817,7 @@ def _no_model_loaded_detail(base: str) -> str:
     if get_openai_auto_switch_enabled():
         return base
     return base + (
-        " Or enable Model auto-switch (Settings > API) to load a requested"
-        " model automatically."
+        " Or enable Model auto-switch (Settings > API) to load a requested model automatically."
     )
 
 
@@ -5925,9 +5924,7 @@ async def openai_chat_completions(
         if not backend.active_model_name:
             raise HTTPException(
                 status_code = 400,
-                detail = _no_model_loaded_detail(
-                    "No model loaded. Call POST /inference/load first."
-                ),
+                detail = _no_model_loaded_detail("No model loaded. Call POST /inference/load first."),
             )
         # Clean public id so the response never echoes a local path; the audio
         # branch below receives this sanitized label too.
@@ -8046,9 +8043,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
-            detail = _no_model_loaded_detail(
-                "No GGUF model loaded. Load a GGUF model first."
-            ),
+            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
         )
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
@@ -8260,9 +8255,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
-            detail = _no_model_loaded_detail(
-                "No GGUF model loaded. Load a GGUF model first."
-            ),
+            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
         )
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
@@ -10103,9 +10096,7 @@ async def anthropic_count_tokens(
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
-            detail = _no_model_loaded_detail(
-                "No GGUF model loaded. Load a GGUF model first."
-            ),
+            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
         )
 
     # Same Anthropic → OpenAI translation as anthropic_messages: system is
@@ -10175,9 +10166,7 @@ async def anthropic_messages(
     if not llama_backend.is_loaded and not _automatic_model_load_may_run():
         raise HTTPException(
             status_code = 503,
-            detail = _no_model_loaded_detail(
-                "No GGUF model loaded. Load a GGUF model first."
-            ),
+            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
         )
 
     # max_tokens is a required field on the Anthropic Messages API; real Anthropic
@@ -10228,9 +10217,7 @@ async def anthropic_messages(
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
-            detail = _no_model_loaded_detail(
-                "No GGUF model loaded. Load a GGUF model first."
-            ),
+            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
         )
 
     # Advertised repo id after an auto-switch load, else a clean public id, never

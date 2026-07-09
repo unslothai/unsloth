@@ -3082,14 +3082,10 @@ def test_responses_stream_hint_only_when_nothing_loaded_and_off(monkeypatch):
     # state, so the auto-switch hint attaches only when nothing is loaded at all
     # (the reported bug class) and the toggle is off. A live non-GGUF model, or
     # the toggle already on, must not draw the hint.
-    hinted = _run_responses_stream_no_model(
-        monkeypatch, enabled = False, active_model_name = None
-    )
+    hinted = _run_responses_stream_no_model(monkeypatch, enabled = False, active_model_name = None)
     assert "Model auto-switch" in hinted
 
-    on = _run_responses_stream_no_model(
-        monkeypatch, enabled = True, active_model_name = None
-    )
+    on = _run_responses_stream_no_model(monkeypatch, enabled = True, active_model_name = None)
     assert "Model auto-switch" not in on
 
     non_gguf_loaded = _run_responses_stream_no_model(
