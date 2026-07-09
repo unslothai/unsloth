@@ -3,9 +3,8 @@
 
 """Version-safe fp-dtype kwarg for transformers/sentence-transformers loads.
 
-transformers renamed the ``torch_dtype`` kwarg to ``dtype`` in the 5.x line, and
-emits ``torch_dtype is deprecated! Use dtype instead!`` when the old name is
-passed. But our floor (``transformers>=4.51.3``) predates ``dtype`` and only
+transformers renamed the ``torch_dtype`` kwarg to ``dtype`` in 4.56.0, and emits
+``torch_dtype is deprecated! Use dtype instead!`` when the old name is passed. But our floor (``transformers>=4.51.3``) predates ``dtype`` and only
 accepts ``torch_dtype``, so a bare rename would ``TypeError`` on the floor. Pick
 the name the installed version accepts instead.
 
