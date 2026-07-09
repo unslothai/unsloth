@@ -731,6 +731,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/v1/completions",
     "/p/",
     "/api/inference",
+    "/api/picker",
     "/api/data-recipe",
     "/api/datasets",
     "/api/hub",

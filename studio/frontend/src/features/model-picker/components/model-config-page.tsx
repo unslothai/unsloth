@@ -298,6 +298,7 @@ interface ModelConfigPageProps {
   onRun: (config: PerModelConfig) => void;
   loadedConfig?: PerModelConfig | null;
   loadedContextLength?: number | null;
+  initialConfig?: PerModelConfig | null;
 }
 
 export function ModelConfigPage({
@@ -306,6 +307,7 @@ export function ModelConfigPage({
   onRun,
   loadedConfig = null,
   loadedContextLength = null,
+  initialConfig = null,
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
@@ -318,9 +320,18 @@ export function ModelConfigPage({
   );
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(target.id, target.ggufVariant);
-    return loadedConfig
-      ? { config: loadedConfig, remembered: resolved.remembered }
-      : resolved;
+    if (loadedConfig) {
+      return { config: loadedConfig, remembered: resolved.remembered };
+    }
+    if (initialConfig) {
+      return {
+        config: initialConfig,
+        remembered:
+          resolved.remembered &&
+          perModelConfigsEqual(initialConfig, resolved.config),
+      };
+    }
+    return resolved;
   };
   const [initial] = useState(resolveInitial);
   const [config, setConfig] = useState<PerModelConfig>(() => initial.config);
@@ -393,10 +404,11 @@ export function ModelConfigPage({
     (fetchedContextLength?.key === contextFetchKey
       ? fetchedContextLength.value
       : null);
-  const minContext = 128;
-  const maxContext = nativeContextLength ?? 32768;
   const activeLoadedContext =
     isActiveModel && target.isGguf ? loadedContextLength : null;
+  const minContext = 128;
+  const maxContext =
+    Math.max(nativeContextLength ?? 0, activeLoadedContext ?? 0) || 32768;
   const contextBaseline = activeLoadedContext ?? nativeContextLength;
   const contextValue = Math.min(
     Math.max(

@@ -417,6 +417,9 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.keepSpeculative ?? false;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
+        if (typeof selection !== "string" && selection.previousConfig) {
+          applyPerModelConfigToRuntime(selection.previousConfig);
+        }
         return;
       }
       // A load is already in flight. If it's this exact pick (id + GGUF variant +

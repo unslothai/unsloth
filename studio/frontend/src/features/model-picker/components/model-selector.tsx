@@ -131,6 +131,8 @@ interface ModelSelectorProps {
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
   activeGgufContextLength?: number | null;
+  selectedConfig?: PerModelConfig | null;
+  selectedGgufVariant?: string | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
@@ -320,6 +322,8 @@ function ModelSelectorContent({
   activeGgufVariant,
   activeModelConfig,
   activeGgufContextLength,
+  selectedConfig,
+  selectedGgufVariant,
   onSelect,
   onEject,
   onFoldersChange,
@@ -338,6 +342,8 @@ function ModelSelectorContent({
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
   activeGgufContextLength?: number | null;
+  selectedConfig?: PerModelConfig | null;
+  selectedGgufVariant?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
@@ -550,6 +556,12 @@ function ModelSelectorContent({
                 ? (activeGgufContextLength ?? null)
                 : null
             }
+            initialConfig={
+              value === configTarget.id &&
+              (selectedGgufVariant ?? null) === (configTarget.ggufVariant ?? null)
+                ? (selectedConfig ?? null)
+                : null
+            }
           />
         ) : (
           <>
@@ -644,6 +656,8 @@ export function ModelSelector({
   activeGgufVariant,
   activeModelConfig,
   activeGgufContextLength,
+  selectedConfig,
+  selectedGgufVariant,
   onValueChange,
   onEject,
   onFoldersChange,
@@ -775,6 +789,8 @@ export function ModelSelector({
         activeGgufVariant={activeGgufVariant}
         activeModelConfig={activeModelConfig}
         activeGgufContextLength={activeGgufContextLength}
+        selectedConfig={selectedConfig}
+        selectedGgufVariant={selectedGgufVariant}
         onSelect={handleSelect}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}

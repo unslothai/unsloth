@@ -242,17 +242,31 @@ def read_default_chat_template(
     try:
         from huggingface_hub import hf_hub_download
 
-        try:
-            jinja_path = hf_hub_download(resolved, "chat_template.jinja", token = hf_token)
-            template = Path(jinja_path).read_text(encoding = "utf-8")
-            if template.strip():
-                return template
-        except Exception:
-            pass
+        def _download_text(rel: str) -> Optional[str]:
+            try:
+                path = hf_hub_download(resolved, rel, token = hf_token)
+                return Path(path).read_text(encoding = "utf-8")
+            except Exception:
+                return None
 
-        downloaded = hf_hub_download(resolved, "tokenizer_config.json", token = hf_token)
-        config = json.loads(Path(downloaded).read_text(encoding = "utf-8"))
-        return _chat_template_from_tokenizer_config(config)
+        for rel in _JINJA_TEMPLATE_PATHS:
+            template = _download_text(rel)
+            if template and template.strip():
+                return template
+
+        for rel in (*_TOKENIZER_CONFIG_PATHS, *_PROCESSOR_TEMPLATE_PATHS):
+            raw = _download_text(rel)
+            if not raw:
+                continue
+            try:
+                config = json.loads(raw)
+            except Exception:
+                continue
+            template = _chat_template_from_tokenizer_config(config)
+            if template:
+                return template
+
+        return None
     except Exception as exc:
         logger.debug("Could not fetch chat template for %s: %s", resolved, exc)
         return None

@@ -637,6 +637,8 @@ function GeneralCompareHeader({
   loraModels,
   externalModels,
   value,
+  selectedConfig,
+  selectedGgufVariant,
   onValueChange,
   onFoldersChange,
   onModelsChange,
@@ -647,6 +649,8 @@ function GeneralCompareHeader({
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
   value: string;
+  selectedConfig?: PerModelConfig | null;
+  selectedGgufVariant?: string | null;
   onValueChange: (
     id: string,
     meta: ModelSelectorChangeMeta,
@@ -676,6 +680,8 @@ function GeneralCompareHeader({
         loraModels={loraModels}
         externalModels={externalModels}
         value={value}
+        selectedConfig={selectedConfig}
+        selectedGgufVariant={selectedGgufVariant}
         onValueChange={onValueChange}
         onFoldersChange={onFoldersChange}
         onModelsChange={onModelsChange}
@@ -803,6 +809,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               loraModels={loraModels}
               externalModels={externalModels}
               value={model1.id}
+              selectedConfig={model1.config}
+              selectedGgufVariant={model1.ggufVariant}
               onValueChange={(id, meta) =>
                 setModel1({
                   id,
@@ -831,6 +839,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               loraModels={loraModels}
               externalModels={externalModels}
               value={model2.id}
+              selectedConfig={model2.config}
+              selectedGgufVariant={model2.ggufVariant}
               onValueChange={(id, meta) =>
                 setModel2({
                   id,
