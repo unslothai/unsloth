@@ -1076,6 +1076,7 @@ def fix_dynamo_config_thread_visibility():
     """
     try:
         import torch
+
         if Version(torch.__version__) < Version("2.12.0"):
             return
         import torch._dynamo.config as _dynamo_config
