@@ -1362,6 +1362,30 @@ def _LlamaModel_fast_forward_inference(
 LlamaModel_fast_forward_inference = _LlamaModel_fast_forward_inference()
 
 
+# Gemma4's multimodal masking (mm_token_type_ids) combined with an active LoRA
+# adapter can leave a batch with almost no valid (non -100) labels. In that
+# regime unsloth_fused_ce_loss's chunking can zero out gradients entirely
+# instead of raising or averaging correctly, so we fall back to the standard
+# (unfused) cross-entropy path once the valid-label fraction drops below this.
+GEMMA4_SPARSE_LABEL_MAX_VALID_FRAC = 0.15
+
+
+def _gemma4_model_has_active_lora(model) -> bool:
+    """Detect whether `model` has an active PEFT/LoRA adapter attached.
+    Cached on the instance since this is called on every forward pass and
+    walking every submodule each time would add measurable overhead."""
+    cached = getattr(model, "_unsloth_gemma4_has_lora", None)
+    if cached is not None:
+        return cached
+    has_lora = any(hasattr(m, "lora_A") for m in model.modules())
+    try:
+        model._unsloth_gemma4_has_lora = has_lora
+    except Exception:
+        pass
+    return has_lora
+pass
+
+
 def CausalLM_fast_forward(fast_forward_inference):
     def _CausalLM_fast_forward(
         self,
@@ -1462,6 +1486,22 @@ def CausalLM_fast_forward(fast_forward_inference):
             if bsz * q_len <= 1024 and not RETURN_LOGITS:
                 # Use unsloth_fused_ce_loss which actually calculates the best chunk size to reduce VRAM usage
                 RETURN_LOGITS = False
+
+            # Gemma4 + LoRA + multimodal masking can produce batches where almost
+            # every label is -100. unsloth_fused_ce_loss's chunked kernel can zero
+            # out gradients entirely in that regime, so fall back to the standard
+            # (unfused) cross-entropy path, which correctly masks ignored labels.
+            if (
+                os.environ.get("UNSLOTH_GEMMA4_SPARSE_LOSS_GUARD", "1") != "0"
+                and not RETURN_LOGITS
+                and labels is not None
+                and getattr(self.config, "model_type", None) == "gemma4"
+                and kwargs.get("mm_token_type_ids", None) is not None
+                and _gemma4_model_has_active_lora(self)
+            ):
+                _valid = (labels[..., 1:] != -100)
+                if _valid.numel() > 0 and _valid.float().mean().item() < GEMMA4_SPARSE_LABEL_MAX_VALID_FRAC:
+                    RETURN_LOGITS = True
 
             if not RETURN_LOGITS and labels is not None:
                 n_items = kwargs.get("num_items_in_batch", None)
