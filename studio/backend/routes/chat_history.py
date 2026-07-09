@@ -296,6 +296,7 @@ async def get_attachment_file(
 ):
     """Serve one attachment's stored content (image bytes or extracted text)."""
     import base64
+    import urllib.parse
 
     from fastapi.responses import Response
 
@@ -311,8 +312,18 @@ async def get_attachment_file(
         if isinstance(image, str) and image.startswith("data:"):
             header, _, payload = image.partition(",")
             media_type = header[5:].split(";", 1)[0] or "application/octet-stream"
+            if "base64" not in header:
+                # RFC 2397 non-base64 form stores percent-encoded bytes.
+                data = urllib.parse.unquote_to_bytes(payload)
+                return Response(content = data, media_type = media_type)
+            # Normalize before a strict decode: strip whitespace, fix padding,
+            # accept the URL-safe alphabet. validate=False would silently drop
+            # bad characters and serve corrupted bytes instead of failing.
+            normalized = "".join(payload.split())
+            altchars = b"-_" if ("-" in normalized or "_" in normalized) else None
+            normalized += "=" * (-len(normalized) % 4)
             try:
-                data = base64.b64decode(payload, validate = False)
+                data = base64.b64decode(normalized, altchars = altchars, validate = True)
             except Exception as exc:  # noqa: BLE001 - corrupt stored payload
                 raise HTTPException(
                     status_code = 422, detail = "Attachment image data is corrupt"

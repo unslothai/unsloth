@@ -1319,6 +1319,8 @@ export function HubModelPicker({
   // Live model id from the runtime store (backend-mirrored active_model), not the dropdown
   // highlight which can be a staged pick. Disables the update action for it.
   const loadedModelId = useChatRuntimeStore((s) => s.params.checkpoint);
+  // Loaded GGUF quant of the active model; marks the matching pinned row.
+  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
   const loadTimes = useModelLoadTimes(value);
   // Fade the list's top edge once scrolled, and its bottom edge while more
@@ -2577,7 +2579,13 @@ export function HubModelPicker({
 
   // Pin toggle at a row's right edge: hidden until the row is hovered (or the
   // button is focused), always visible while pinned so pinned rows read as such.
-  const renderPinAction = (repoId: string, quant?: string, className?: string) => {
+  // `small` matches the compact quant-row action sizing; it also skips the
+  // hide-until-hover classes since small pins render inside a hover-gated group.
+  const renderPinAction = (
+    repoId: string,
+    quant?: string,
+    opts?: { className?: string; small?: boolean },
+  ) => {
     const pinned = pinnedSet.has(pinKey(repoId, quant));
     const target = quant ? `${repoId} ${quant}` : repoId;
     return (
@@ -2592,17 +2600,21 @@ export function HubModelPicker({
             aria-label={pinned ? `Unpin ${target}` : `Pin ${target}`}
             aria-pressed={pinned}
             className={cn(
-              "shrink-0 rounded-md p-1.5 transition-colors hover:bg-black/5 dark:hover:bg-white/10",
+              "shrink-0 rounded-md transition-colors hover:bg-black/5 dark:hover:bg-white/10",
+              opts?.small ? "p-1" : "p-1.5",
               pinned
                 ? "text-foreground/80 hover:text-foreground"
-                : "text-muted-foreground/60 opacity-0 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100",
-              className,
+                : "text-muted-foreground/60 hover:text-foreground",
+              !pinned &&
+                !opts?.small &&
+                "opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100",
+              opts?.className,
             )}
           >
             <HugeiconsIcon
               icon={pinned ? PinOffIcon : PinIcon}
               strokeWidth={1.75}
-              className="size-3.5"
+              className={opts?.small ? "size-3" : "size-3.5"}
             />
           </button>
         </TooltipTrigger>
@@ -2627,14 +2639,15 @@ export function HubModelPicker({
       pinKey(entry.repoId, entry.quant),
     );
     const { owner, name } = splitRepoLabel(entry.repoId);
+    const isSelected = value === entry.repoId && activeGgufVariant === entry.quant;
     return (
       <div
         key={optionKey}
-        className={downloadedRowShellClassName(false)}
+        className={downloadedRowShellClassName(isSelected)}
       >
         <button
           type="button"
-          {...hubModelList.getOptionProps(optionKey, false)}
+          {...hubModelList.getOptionProps(optionKey, isSelected)}
           onClick={() =>
             onSelect(entry.repoId, {
               source: "hub",
@@ -2661,8 +2674,45 @@ export function HubModelPicker({
           <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px font-mono text-[10px] text-muted-foreground dark:bg-white/[0.1]">
             {entry.quant}
           </span>
+          {isSelected && (
+            <DotTag
+              tone="success"
+              label="Loaded"
+              className="ml-auto h-[18px] shrink-0 gap-1 rounded-md px-1.5"
+              dotClassName="size-[5px]"
+            />
+          )}
         </button>
-        {renderPinAction(entry.repoId, entry.quant, "mr-1")}
+        <span className="mr-1 flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100">
+          {renderPinAction(entry.repoId, entry.quant, { small: true })}
+          <ModelLoadSettingsAction
+            ariaLabel={`Inference settings for ${entry.repoId} ${entry.quant}`}
+            repoId={entry.repoId}
+            quant={entry.quant}
+          />
+          <ModelDeleteAction
+            ariaLabel={`Delete ${entry.repoId} ${entry.quant}`}
+            title="Delete cached model?"
+            description={
+              <>
+                This will remove{" "}
+                <span className="font-medium text-foreground">
+                  {entry.repoId} ({entry.quant})
+                </span>{" "}
+                from disk. You can re-download it later.
+              </>
+            }
+            successMessage={`Deleted ${entry.repoId} ${entry.quant}`}
+            buttonClassName="p-1"
+            iconClassName="size-3"
+            onConfirm={async () => {
+              await deleteCachedModel(entry.repoId, entry.quant);
+              refreshCachedLists();
+              // The file is gone, so drop its pin too.
+              togglePinned(entry.repoId, entry.quant);
+            }}
+          />
+        </span>
       </div>
     );
   };

@@ -30,6 +30,7 @@ import {
   listAllDocuments,
 } from "@/features/rag/api/rag-api";
 import type { UploadedDocument } from "@/features/rag/types/rag";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { toast } from "@/lib/toast";
 import {
   ArrowUpRight01Icon,
@@ -37,6 +38,7 @@ import {
   File02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 
 function formatUploadedAt(value: string | number | null | undefined): string {
@@ -143,6 +145,8 @@ interface UploadedFileRow {
   typeLabel: string | null;
   /** Image rows render a thumbnail; others show a file icon. */
   thumb: ReactNode;
+  /** Chat rows link back to their thread. */
+  threadId?: string | null;
   open: () => Promise<void>;
   remove: () => Promise<void>;
   deleteDescription: string;
@@ -152,6 +156,23 @@ function toSortTime(value: string | number | null | undefined): number {
   if (value === null || value === undefined || value === "") return 0;
   const parsed = new Date(value).getTime();
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+// Safari and Firefox block window.open after an await (the user gesture is
+// gone), so open a blank tab synchronously and point it at the URL once
+// resolved. Falls back to a direct open if the sync open was blocked.
+async function openResolvedUrl(resolve: () => Promise<string>): Promise<void> {
+  const win = window.open("", "_blank");
+  if (win) win.opener = null;
+  let url: string;
+  try {
+    url = await resolve();
+  } catch (err) {
+    win?.close();
+    throw err;
+  }
+  if (win) win.location.replace(url);
+  else window.open(url, "_blank", "noopener");
 }
 
 function ragRow(doc: UploadedDocument): UploadedFileRow {
@@ -166,10 +187,7 @@ function ragRow(doc: UploadedDocument): UploadedFileRow {
     typeLabel: fileTypeLabel(doc.filename),
     // RAG uploads are documents (pdf, txt, md, docx, html), not images.
     thumb: <FileIconThumb />,
-    open: async () => {
-      const url = await getDocumentFileUrl(doc.id);
-      window.open(url, "_blank", "noopener");
-    },
+    open: () => openResolvedUrl(() => getDocumentFileUrl(doc.id)),
     remove: async () => {
       await deleteDocument(doc.id);
     },
@@ -189,18 +207,20 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
     createdAt: att.createdAt,
     sortTime: toSortTime(att.createdAt),
     typeLabel: fileTypeLabel(att.name, att.contentType),
+    threadId: att.threadId,
     thumb: isImage ? (
       <ChatImageThumb messageId={att.messageId} attachmentId={att.id} />
     ) : (
       <FileIconThumb />
     ),
-    open: async () => {
-      const blob = await fetchChatAttachmentBlob(att.messageId, att.id);
-      const url = URL.createObjectURL(blob);
-      window.open(url, "_blank", "noopener");
-      // Give the new tab time to load the blob before revoking.
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    },
+    open: () =>
+      openResolvedUrl(async () => {
+        const blob = await fetchChatAttachmentBlob(att.messageId, att.id);
+        const url = URL.createObjectURL(blob);
+        // Give the new tab time to load the blob before revoking.
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        return url;
+      }),
     remove: async () => {
       await deleteChatAttachment(att.messageId, att.id);
     },
@@ -220,6 +240,15 @@ export function UploadedFilesDialog({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] =
     useState<UploadedFileRow | null>(null);
+  const navigate = useNavigate();
+
+  // Jump to the chat thread the attachment lives in, closing this dialog and
+  // the settings dialog underneath so the thread is actually visible.
+  function goToThread(threadId: string) {
+    onOpenChange(false);
+    useSettingsDialogStore.getState().closeDialog();
+    void navigate({ to: "/chat", search: { thread: threadId } });
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -281,7 +310,7 @@ export function UploadedFilesDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-3xl sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Uploaded files</DialogTitle>
         </DialogHeader>
@@ -299,10 +328,10 @@ export function UploadedFilesDialog({
             No uploaded files.
           </p>
         ) : (
-          <div className="max-h-[60vh] overflow-y-auto">
+          <div className="max-h-[70vh] overflow-y-auto">
             <div className="flex items-center gap-4 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
               <span className="flex-1">Name</span>
-              <span className="w-32 shrink-0">Location</span>
+              <span className="w-44 shrink-0">Location</span>
               <span className="w-16 shrink-0 text-right">Size</span>
               <span className="w-28 shrink-0">Uploaded</span>
               <span className="w-16 shrink-0" />
@@ -332,12 +361,23 @@ export function UploadedFilesDialog({
                     </span>
                   ) : null}
                 </span>
-                <span
-                  className="w-32 shrink-0 truncate text-muted-foreground"
-                  title={row.location}
-                >
-                  {row.location}
-                </span>
+                {row.threadId ? (
+                  <button
+                    type="button"
+                    onClick={() => goToThread(row.threadId as string)}
+                    title={`Go to ${row.location}`}
+                    className="w-44 shrink-0 truncate text-left text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                  >
+                    {row.location}
+                  </button>
+                ) : (
+                  <span
+                    className="w-44 shrink-0 truncate text-muted-foreground"
+                    title={row.location}
+                  >
+                    {row.location}
+                  </span>
+                )}
                 <span className="w-16 shrink-0 text-right text-muted-foreground tabular-nums">
                   {formatSize(row.sizeBytes)}
                 </span>
