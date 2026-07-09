@@ -196,7 +196,6 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
                         iter_recursive_scan_dirs,
                         scan_result_within_folder,
                     )
-
                     for subdir in iter_recursive_scan_dirs(fp):
                         found += [
                             m

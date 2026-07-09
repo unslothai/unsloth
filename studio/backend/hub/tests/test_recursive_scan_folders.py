@@ -142,9 +142,7 @@ def test_recursive_scan_rejects_symlinked_weight_files(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "real.safetensors").write_bytes(b"\0" * 8)
-    os.symlink(
-        outside / "real.safetensors", root / "x" / "a" / "model-s" / "model.safetensors"
-    )
+    os.symlink(outside / "real.safetensors", root / "x" / "a" / "model-s" / "model.safetensors")
 
     recursive = local_inventory._scan_custom_folder(root, recursive = True)
 
