@@ -46,7 +46,10 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ArchivedChatsDialog } from "../components/archived-chats-dialog";
-import { createFineTuneRecipeFromChats } from "../components/finetune-recipe";
+import {
+  createFineTuneRecipeFromChats,
+  loadFineTuneDatasetInTrainTab,
+} from "../components/finetune-recipe";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { UploadedFilesView } from "../components/uploaded-files-dialog";
@@ -66,6 +69,7 @@ export function DataTab() {
   const [archiving, setArchiving] = useState(false);
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
+  const [loadingTraining, setLoadingTraining] = useState(false);
   const archivedChatsRequested = useSettingsDialogStore(
     (s) => s.archivedChatsRequested,
   );
@@ -182,6 +186,22 @@ export function DataTab() {
     }
   };
 
+  const handleUseInTraining = async () => {
+    setLoadingTraining(true);
+    try {
+      const loaded = await loadFineTuneDatasetInTrainTab();
+      if (!loaded) return;
+      useSettingsDialogStore.getState().closeDialog();
+      void navigate({ to: "/studio" });
+    } catch (error) {
+      toast.error(t("settings.data.fineTuneTrainFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setLoadingTraining(false);
+    }
+  };
+
   const handleClear = async () => {
     setClearing(true);
     try {
@@ -279,7 +299,50 @@ export function DataTab() {
         </p>
       </header>
 
-      <SettingsSection title={t("settings.data.chatsSection")}>
+      <div className="flex flex-col divide-y divide-border/60">
+        <SettingsRow
+          alignTop={true}
+          label={t("settings.data.fineTuneExport")}
+          description={t("settings.data.fineTuneExportDescription")}
+        >
+          <div className="flex max-w-56 flex-wrap items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleUseInTraining()}
+              disabled={loadingTraining || count === 0}
+            >
+              {loadingTraining
+                ? t("settings.data.fineTuneTrainingAction")
+                : t("settings.data.fineTuneTrainAction")}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleOpenInRecipes()}
+              disabled={openingRecipe || count === 0}
+            >
+              {openingRecipe
+                ? t("settings.data.fineTuneOpeningRecipesAction")
+                : t("settings.data.fineTuneOpenRecipesAction")}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleFineTuneExport()}
+              disabled={fineTuneExporting || count === 0}
+            >
+              <HugeiconsIcon
+                icon={Download01Icon}
+                className="size-3.5 mr-1.5"
+              />
+              {fineTuneExporting
+                ? t("settings.data.fineTuneExportingAction")
+                : t("settings.data.fineTuneExportAction")}
+            </Button>
+          </div>
+        </SettingsRow>
+
         <SettingsRow
           label={t("settings.data.archivedChats")}
           description={t("settings.data.archivedChatsDescription")}
@@ -443,7 +506,7 @@ export function DataTab() {
             }}
           />
         </SettingsRow>
-      </SettingsSection>
+      </div>
 
       <SettingsSection title={t("settings.data.filesSection")}>
         <SettingsRow
@@ -457,40 +520,6 @@ export function DataTab() {
           >
             {t("settings.data.manageAction")}
           </Button>
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.data.fineTuningSection")}>
-        <SettingsRow
-          label={t("settings.data.fineTuneExport")}
-          description={t("settings.data.fineTuneExportDescription")}
-        >
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void handleFineTuneExport()}
-              disabled={fineTuneExporting || count === 0}
-            >
-              <HugeiconsIcon
-                icon={Download01Icon}
-                className="size-3.5 mr-1.5"
-              />
-              {fineTuneExporting
-                ? t("settings.data.fineTuneExportingAction")
-                : t("settings.data.fineTuneExportAction")}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void handleOpenInRecipes()}
-              disabled={openingRecipe || count === 0}
-            >
-              {openingRecipe
-                ? t("settings.data.fineTuneOpeningRecipesAction")
-                : t("settings.data.fineTuneOpenRecipesAction")}
-            </Button>
-          </div>
         </SettingsRow>
       </SettingsSection>
 

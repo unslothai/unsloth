@@ -8,6 +8,8 @@ import { buildFineTuneJsonl } from "@/features/chat";
 import { saveRecipe } from "@/features/data-recipes/data/recipes-db";
 import { createEmptyRecipePayload } from "@/features/recipe-studio";
 import { inspectSeedUpload } from "@/features/recipe-studio/api";
+import { uploadTrainingDataset } from "@/features/training/api/datasets-api";
+import { useTrainingConfigStore } from "@/features/training/stores/training-config-store";
 import { toast } from "@/lib/toast";
 
 /** btoa cannot handle code points above latin-1, so encode UTF-8 bytes. */
@@ -64,4 +66,27 @@ export async function createFineTuneRecipeFromChats(): Promise<string | null> {
     payload,
   });
   return record.id;
+}
+
+/** Builds the JSONL, uploads it as a training dataset, and selects it in the
+ *  Train tab's config store so the Train page opens with it loaded. Returns
+ *  false when there is nothing to export. */
+export async function loadFineTuneDatasetInTrainTab(): Promise<boolean> {
+  const { lines, conversations } = await buildFineTuneJsonl();
+  if (conversations === 0) {
+    toast.info("No chats with a user and assistant exchange to export.");
+    return false;
+  }
+
+  const dateLabel = new Date().toISOString().slice(0, 10);
+  const file = new File(
+    [lines.join("\n")],
+    `chat-finetune-${dateLabel}.jsonl`,
+    { type: "application/x-ndjson" },
+  );
+  const uploaded = await uploadTrainingDataset(file);
+  // Selecting also kicks off the dataset format check, so the Train tab
+  // shows the detected chatml format as soon as it mounts.
+  useTrainingConfigStore.getState().selectLocalDataset(uploaded.stored_path);
+  return true;
 }

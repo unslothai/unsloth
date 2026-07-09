@@ -405,7 +405,6 @@ export const en = {
       title: "Data",
       description:
         "Manage chat history and uploaded files stored on this device.",
-      chatsSection: "Chats",
       archivedChats: "Archived chats",
       archivedChatsDescription: "View and manage chats you have archived.",
       manageAction: "Manage",
@@ -429,7 +428,6 @@ export const en = {
       uploadedFiles: "Uploaded files",
       uploadedFilesDescription:
         "View and manage files uploaded to chats, projects, and knowledge bases.",
-      fineTuningSection: "Fine-tuning",
       fineTuneExport: "Use chats as training data",
       fineTuneExportDescription:
         "Convert your chats into a JSONL dataset in the OpenAI messages format ({role, content} turns). The Train tab reads it directly and it works with train-on-completions, or refine it first in Data Recipes.",
@@ -437,8 +435,11 @@ export const en = {
       fineTuneExportingAction: "Exporting...",
       fineTuneOpenRecipesAction: "Open in Recipes",
       fineTuneOpeningRecipesAction: "Opening...",
+      fineTuneTrainAction: "Load in Train tab",
+      fineTuneTrainingAction: "Loading...",
       fineTuneExportFailed: "Failed to export training data",
       fineTuneRecipeFailed: "Failed to open chats in Recipes",
+      fineTuneTrainFailed: "Failed to load dataset in the Train tab",
     },
     connections: {
       title: "Connections",
