@@ -3984,6 +3984,7 @@ _background_tasks: set = set()
 _async_load_generation = 0
 _accepted_async_load_model: Optional[str] = None
 _active_async_load_task: Optional[asyncio.Task] = None
+_async_load_admission_lock = threading.Lock()
 
 
 def _async_loading_models(backend_loading: Iterable[str] = ()) -> List[str]:
@@ -4036,48 +4037,69 @@ async def load_model(
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
+    from core.inference.llama_keepwarm import (
+        acquire_inference_lifecycle_gate_nowait,
+        inference_lifecycle_gate,
+        release_inference_lifecycle_gate,
+    )
     global _active_async_load_task, _accepted_async_load_model, _async_load_generation
     global _last_async_load_error
+
+    if request.async_load:
+        with _async_load_admission_lock:
+            if _active_async_load_task is not None and not _active_async_load_task.done():
+                raise HTTPException(
+                    status_code = status.HTTP_409_CONFLICT,
+                    detail = f"Model load already in progress: {_accepted_async_load_model}",
+                )
+            if not acquire_inference_lifecycle_gate_nowait():
+                raise HTTPException(
+                    status_code = status.HTTP_409_CONFLICT,
+                    detail = "Another model operation is already in progress.",
+                )
+            if sidecar_swap_in_progress():
+                release_inference_lifecycle_gate()
+                raise _swap_409
+            _async_load_generation += 1
+            generation = _async_load_generation
+            _accepted_async_load_model = request.model_path
+            _last_async_load_error = None
+
+            async def _background_load() -> None:
+                global _last_async_load_error
+                try:
+                    await asyncio.sleep(0)
+                    await _load_model_impl(request, fastapi_request, current_subject)
+                    if generation == _async_load_generation:
+                        _last_async_load_error = None
+                except Exception as exc:
+                    detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+                    logger.warning("inference.async_load_failed: %s", detail)
+                    if generation == _async_load_generation:
+                        _last_async_load_error = str(detail)
+
+            def _finish_async_load(done_task: asyncio.Task) -> None:
+                try:
+                    release_inference_lifecycle_gate()
+                finally:
+                    _clear_async_load_if_current(done_task, generation)
+
+            try:
+                task = asyncio.create_task(_background_load())
+            except Exception:
+                _accepted_async_load_model = None
+                release_inference_lifecycle_gate()
+                raise
+            _active_async_load_task = task
+            _background_tasks.add(task)
+            task.add_done_callback(_finish_async_load)
+        return LoadAcceptedResponse(model = request.model_path)
+
     if _active_async_load_task is not None and not _active_async_load_task.done():
         raise HTTPException(
             status_code = status.HTTP_409_CONFLICT,
             detail = f"Model load already in progress: {_accepted_async_load_model}",
         )
-
-    if request.async_load:
-        _async_load_generation += 1
-        generation = _async_load_generation
-        _accepted_async_load_model = request.model_path
-        _last_async_load_error = None
-        gate_acquired = asyncio.get_running_loop().create_future()
-
-        async def _background_load() -> None:
-            global _last_async_load_error
-            try:
-                async with inference_lifecycle_gate():
-                    if sidecar_swap_in_progress():
-                        raise _swap_409
-                    if not gate_acquired.done():
-                        gate_acquired.set_result(None)
-                    await _load_model_impl(request, fastapi_request, current_subject)
-                if generation == _async_load_generation:
-                    _last_async_load_error = None
-            except Exception as exc:
-                detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
-                logger.warning("inference.async_load_failed: %s", detail)
-                if not gate_acquired.done():
-                    gate_acquired.set_exception(exc)
-                if generation == _async_load_generation:
-                    _last_async_load_error = str(detail)
-
-        task = asyncio.create_task(_background_load())
-        _active_async_load_task = task
-        _background_tasks.add(task)
-        task.add_done_callback(
-            lambda done_task: _clear_async_load_if_current(done_task, generation)
-        )
-        await gate_acquired
-        return LoadAcceptedResponse(model = request.model_path)
     async with inference_lifecycle_gate():
         if sidecar_swap_in_progress():
             raise _swap_409

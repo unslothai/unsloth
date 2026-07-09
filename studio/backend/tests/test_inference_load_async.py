@@ -10,6 +10,7 @@ mirroring tests/test_openai_auto_switch.py.
 """
 
 import asyncio
+import time
 
 import pytest
 from fastapi import HTTPException
@@ -43,21 +44,18 @@ def test_async_load_returns_immediately(monkeypatch):
 
     gate_entered = asyncio.Event()
 
-    class _Gate:
-        async def __aenter__(self):
-            gate_entered.set()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            pass
-
     async def _slow_load(request, fastapi_request, current_subject):
+        time.sleep(0.2)
         await asyncio.sleep(0.2)
         return LoadResponse(
             status = "loaded", model = request.model_path, display_name = "A", inference = {}
         )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
-    monkeypatch.setattr(keepwarm, "inference_lifecycle_gate", lambda: _Gate())
+    monkeypatch.setattr(
+        keepwarm, "acquire_inference_lifecycle_gate_nowait", lambda: gate_entered.set() or True
+    )
+    monkeypatch.setattr(keepwarm, "release_inference_lifecycle_gate", lambda: None)
 
     async def _scenario():
         start = asyncio.get_event_loop().time()
@@ -174,6 +172,62 @@ def test_sync_load_rejected_while_async_load_pending(monkeypatch):
     exc = _run(_scenario())
     assert exc.status_code == 409
     assert "unsloth/A-GGUF" in exc.detail
+
+
+def test_async_load_rejects_when_lifecycle_gate_is_busy(monkeypatch):
+    calls = []
+
+    async def _load(request, fastapi_request, current_subject):
+        calls.append(request.model_path)
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+    monkeypatch.setattr(keepwarm, "acquire_inference_lifecycle_gate_nowait", lambda: False)
+
+    async def _scenario():
+        with pytest.raises(HTTPException) as exc_info:
+            await inference_route.load_model(_request("unsloth/A-GGUF"), object(), "tester")
+        return exc_info.value
+
+    exc = _run(_scenario())
+    assert exc.status_code == 409
+    assert calls == []
+    assert inference_route._accepted_async_load_model is None
+
+
+def test_async_load_releases_lifecycle_gate_when_cancelled_before_start(monkeypatch):
+    calls = []
+    releases = []
+
+    async def _load(request, fastapi_request, current_subject):
+        calls.append(request.model_path)
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+    monkeypatch.setattr(keepwarm, "acquire_inference_lifecycle_gate_nowait", lambda: True)
+    monkeypatch.setattr(
+        keepwarm, "release_inference_lifecycle_gate", lambda: releases.append("released")
+    )
+
+    async def _scenario():
+        await inference_route.load_model(_request("unsloth/A-GGUF"), object(), "tester")
+        task = inference_route._active_async_load_task
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await asyncio.sleep(0)
+
+    _run(_scenario())
+    assert calls == []
+    assert releases == ["released"]
+    assert inference_route._active_async_load_task is None
+    assert inference_route._accepted_async_load_model is None
 
 
 def test_async_load_status_reports_pending_model_immediately(monkeypatch):
