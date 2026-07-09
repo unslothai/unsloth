@@ -1,7 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Stage 3: filesystem-confinement policy in the sandbox static classifier."""
+"""Stage 3: static sensitive-read scanner in the sandbox classifier.
+
+Filesystem WRITE confinement is enforced at runtime by the realpath backstop (see
+test_sandbox_runtime_backstop.py), which is strictly more robust than static path
+proving. This static pass only blocks host-secret READS, which the backstop leaves
+unpatched, so writes/deletes must pass the static gate and be confined at runtime.
+"""
 
 import sys
 from pathlib import Path
@@ -12,8 +18,7 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
-from core.inference.tools import _check_code_safety, _resolve_path
-import ast
+from core.inference.tools import _check_code_safety
 
 
 def _blocked(code):
@@ -24,78 +29,56 @@ def _ok(code):
     assert _check_code_safety(code) is None, code
 
 
-def _verdict(expr):
-    return _resolve_path(ast.parse(expr, mode = "eval").body)
+class TestSensitiveReadBlocked:
+    """Host-secret reads must block statically (the runtime backstop skips reads)."""
 
-
-class TestPathResolver:
     @pytest.mark.parametrize(
-        "expr, expect",
+        "code",
         [
-            ('"out.txt"', "LOCAL"),
-            ('"outputs/run/m.bin"', "LOCAL"),
-            ('"/etc/passwd"', "ESCAPE"),
-            ('"../secret"', "ESCAPE"),
-            ('"~/.bashrc"', "ESCAPE"),
-            ('"C:\\\\Windows"', "ESCAPE"),
-            ('os.path.join("out", "a.txt")', "LOCAL"),
-            ('os.path.join("out", "..", "etc")', "ESCAPE"),
-            ('os.path.join("/home/u", ".ssh", "authorized_keys")', "ESCAPE"),
-            ('os.path.join("sub", name)', "UNKNOWN"),
-            ('Path("results") / "m.json"', "LOCAL"),
-            ('Path("/tmp/x")', "ESCAPE"),
-            ('os.path.expanduser("~/.bashrc")', "UNKNOWN"),
-            ('f"/var/log/{name}"', "ESCAPE"),
-            ('f"out/{name}"', "UNKNOWN"),
-            ("fname", "UNKNOWN"),
+            'open("/etc/passwd").read()',
+            'open("/etc/shadow").read()',
+            'open("../../etc/passwd").read()',
+            'open("~/.ssh/id_rsa").read()',
+            'open("/proc/self/environ").read()',
+            'open("~/.aws/credentials").read()',
+            # library loaders that internally open() the path
+            'import numpy as np; np.load("/etc/shadow")',
+            'import pandas as pd; pd.read_csv("/etc/passwd")',
+            'from pathlib import Path; Path("/root/.ssh/id_rsa").read_text()',
+            # a sensitive path anywhere (incl. write targets) is caught by the
+            # callee-independent scan, which is fine (also runtime-confined)
+            'import os; os.rename("data.csv", "/root/data.csv")',
         ],
     )
-    def test_resolve(self, expr, expect):
-        assert _verdict(expr) == expect, expr
+    def test_block(self, code):
+        _blocked(code)
 
 
-class TestMutatingBlocked:
+class TestWritesPassStaticGate:
+    """Writes/deletes/renames to non-secret paths are no longer statically blocked;
+    the runtime realpath backstop confines them. They must pass the static gate so
+    benign in-workdir I/O is never over-blocked."""
+
     @pytest.mark.parametrize(
         "code",
         [
             'import shutil; shutil.rmtree("/home/user")',
             'import os; os.remove("../secret.txt")',
             'open("/etc/cron.d/x", "w").write("* * * * *")',
-            'import os; open(os.path.expanduser("~/.bashrc"), "a")',
-            "import os; os.remove(user_path)",
-            'from pathlib import Path; Path("/tmp/x").write_text("hi")',
-            'import os; os.rename("data.csv", "/root/data.csv")',
             'import os; os.symlink("/etc", "link")',
-            'import os; os.chdir("/")',
             'import os; os.chmod("/usr/bin/python", 0o777)',
-            'import pandas as pd; df.to_csv(os.path.join("/home/u", ".ssh", "authorized_keys"))',
             'open(f"/var/log/{name}", "w")',
             'import tempfile; tempfile.mkstemp(dir="/tmp")',
             'import numpy as np; np.save("/etc/x.npy", a)',
             'import os; os.makedirs("/opt/evil")',
-            'open("out/" + name, "w")',
+            'import os; os.rename("data.csv", "backup/data.csv")',
         ],
     )
-    def test_block(self, code):
-        _blocked(code)
+    def test_static_allow(self, code):
+        _ok(code)
 
 
-class TestReadEscapeBlocked:
-    @pytest.mark.parametrize(
-        "code",
-        [
-            'open("../../etc/passwd").read()',
-            'open("/etc/shadow").read()',
-            'import numpy as np; np.load("/etc/shadow")',
-            'import pandas as pd; pd.read_csv("/etc/passwd")',
-            'open("~/.ssh/id_rsa").read()',
-        ],
-    )
-    def test_block(self, code):
-        _blocked(code)
-
-
-class TestFilesystemAllowed:
+class TestBenignFilesystemAllowed:
     @pytest.mark.parametrize(
         "code",
         [
@@ -116,13 +99,3 @@ class TestFilesystemAllowed:
     )
     def test_allow(self, code):
         _ok(code)
-
-
-class TestReadStrictKnob:
-    def test_dynamic_read_allowed_by_default(self, monkeypatch):
-        monkeypatch.delenv("FS_READ_STRICT", raising = False)
-        _ok("open(fname).read()")
-
-    def test_dynamic_read_blocked_when_strict(self, monkeypatch):
-        monkeypatch.setenv("FS_READ_STRICT", "1")
-        _blocked("open(fname).read()")

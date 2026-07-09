@@ -108,6 +108,87 @@ def test_bypass_open_write_not_guarded(monkeypatch, tmp_path):
 
 
 @_POSIX_ONLY
+def test_sandboxed_os_open_write_escape_denied(tmp_path):
+    # Low-level os.open with write flags to an absolute path outside the workdir.
+    # The static gate allows it (write-confinement is now runtime-only); the guard
+    # must deny it -- os.open is the classic builtins.open bypass.
+    target = tmp_path / "osopen_escape.txt"
+    out = _python_exec(
+        f"import os; os.open({str(target)!r}, os.O_CREAT | os.O_WRONLY, 0o600); print('OPENED')",
+        None,
+        30,
+        "backstop-osopen-write",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_os_open_read_local_allowed():
+    # Read-only os.open of a workdir-local file is allowed (reads are not confined
+    # by the backstop; host-secret reads are caught by the static scanner instead).
+    out = _python_exec(
+        "import os\n"
+        "fd = os.open('ro_probe.txt', os.O_CREAT | os.O_WRONLY, 0o600)\n"
+        "os.write(fd, b'hi'); os.close(fd)\n"
+        "fd2 = os.open('ro_probe.txt', os.O_RDONLY); print('READ_OK'); os.close(fd2)",
+        None,
+        30,
+        "backstop-osopen-read",
+        disable_sandbox = False,
+    )
+    assert "READ_OK" in out
+    assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_os_open_dir_fd_denied(tmp_path):
+    # A mutating os.open with dir_fd cannot be confined by a string realpath, so it
+    # fails closed even though the relative name looks local.
+    out = _python_exec(
+        "import os\n"
+        f"dfd = os.open({str(tmp_path)!r}, os.O_RDONLY)\n"
+        "os.open('evil.txt', os.O_CREAT | os.O_WRONLY, dir_fd=dfd); print('OPENED')",
+        None,
+        30,
+        "backstop-osopen-dirfd",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not (tmp_path / "evil.txt").exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_io_open_write_escape_denied(tmp_path):
+    target = tmp_path / "ioopen_escape.txt"
+    out = _python_exec(
+        f"import io; io.open({str(target)!r}, 'w').write('x'); print('WROTE')",
+        None,
+        30,
+        "backstop-ioopen",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_pathlib_open_write_escape_denied(tmp_path):
+    # Path.open("w") routes through io.open, which the guard now patches too.
+    target = tmp_path / "pathopen_escape.txt"
+    out = _python_exec(
+        f"from pathlib import Path; Path({str(target)!r}).open('w').write('x'); print('WROTE')",
+        None,
+        30,
+        "backstop-pathopen",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
 def test_sandboxed_imports_still_work_under_guard():
     # The guard must not break library imports (bytecode caching failures are
     # swallowed by importlib) or benign compute.
