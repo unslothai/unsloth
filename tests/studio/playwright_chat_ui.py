@@ -1267,12 +1267,21 @@ with sync_playwright() as p:
     # Start fresh after the CLI rotation invalidates this browser session.
     # Stay in the SAME context: macOS Chromium runs --single-process, where
     # closing the last context kills the browser and a second context cannot
-    # be created. Clear cookies to drop the stale token and open the new page
-    # before closing the old one; the context init script covers the new page.
+    # be created. Open the new page before closing the old one; the context
+    # init script covers the new page.
     try:
         ctx.clear_cookies()
     except Exception as exc:
         info(f"WARN clearing stale session cookies failed: {exc!r}")
+    # Auth tokens live in localStorage, and /login's guest guard redirects on
+    # their mere presence, so drop them before navigating.
+    try:
+        page.evaluate(
+            "['unsloth_auth_token', 'unsloth_auth_refresh_token']"
+            ".forEach((key) => localStorage.removeItem(key))"
+        )
+    except Exception as exc:
+        info(f"WARN clearing stale auth tokens failed: {exc!r}")
     _fresh_page = ctx.new_page()
     _fresh_page.set_default_timeout(60_000)
     _fresh_page.on("pageerror", lambda e: page_errors.append(str(e)))
