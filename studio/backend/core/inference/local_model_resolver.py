@@ -194,7 +194,6 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
                 if folder.get("recursive"):
                     from hub.services.models.local_inventory import iter_recursive_scan_dirs
                     from hub.utils.paths import path_is_same_or_child
-
                     for subdir in iter_recursive_scan_dirs(fp):
                         found += [
                             m
