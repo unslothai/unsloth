@@ -413,6 +413,21 @@ def test_download_mtp_prefers_root_across_snapshots_offline(tmp_path, monkeypatc
     assert got is not None and Path(got).name == "mtp-gemma-4-E4B-it.gguf"
 
 
+def test_download_mtp_reuse_follows_snapshot_order_offline(tmp_path, monkeypatch):
+    # Two snapshots both hold a root drafter; newest-first order must win so a
+    # fresh main GGUF is not paired with a stale drafter revision.
+    import utils.models.model_config as mc
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    newest = _seed_snapshot(tmp_path / "newest", ["mtp-gemma-4-E4B-it.gguf"])
+    oldest = _seed_snapshot(tmp_path / "oldest", ["mtp-gemma-4-E4B-it.gguf"])
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [newest, oldest])
+
+    got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    assert got is not None and Path(got).parent.parent.name == "newest"
+
+
 def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
     # Online, do not reuse a cached copy: go to the download path so a changed
     # drafter is refetched (hf_hub_download checks the current revision).

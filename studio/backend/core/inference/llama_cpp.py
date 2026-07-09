@@ -4683,13 +4683,13 @@ class LlamaCppBackend:
 
             roots: list[Path] = []
             subdirs: list[Path] = []
-            for snap in _iter_hf_cache_snapshots(hf_repo):
-                for f in _gguf_snapshot_files(snap):
+            for snap in _iter_hf_cache_snapshots(hf_repo):  # newest first
+                for f in sorted(_gguf_snapshot_files(snap)):
                     if _is_companion_gguf_path(f) and "mmproj" not in f.lower():
                         (roots if "/" not in f else subdirs).append(snap / f)
-            # Root before any MTP/ copy, across every snapshot, so a partial newer
-            # snapshot can't shadow the small root drafter in an older one.
-            for cand in sorted(roots) + sorted(subdirs):
+            # Keep snapshot order (newest first), root before any MTP/ copy, so a
+            # newer main GGUF pairs with the newest cached drafter, not a stale one.
+            for cand in roots + subdirs:
                 if cand.is_file():
                     return str(cand)
         except Exception as e:
