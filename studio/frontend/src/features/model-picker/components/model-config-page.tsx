@@ -294,11 +294,12 @@ function GgufAdvancedSettings({
 
 interface ModelConfigPageProps {
   target: ModelPickTarget;
-  onBack: () => void;
+  onBack?: () => void;
   onRun: (config: PerModelConfig) => void;
   loadedConfig?: PerModelConfig | null;
   loadedContextLength?: number | null;
   initialConfig?: PerModelConfig | null;
+  showHeader?: boolean;
 }
 
 export function ModelConfigPage({
@@ -308,6 +309,7 @@ export function ModelConfigPage({
   loadedConfig = null,
   loadedContextLength = null,
   initialConfig = null,
+  showHeader = true,
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
@@ -494,28 +496,32 @@ export function ModelConfigPage({
 
   return (
     <div className="flex flex-col">
-      <div className="flex items-center gap-2.5 pb-4">
-        <button
-          type="button"
-          onClick={onBack}
-          className="nav-icon-btn shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
-          aria-label="Back to model list"
-        >
-          <HugeiconsIcon
-            icon={ArrowLeft01Icon}
-            className="size-4"
-            strokeWidth={1.75}
-          />
-        </button>
-        <div className="min-w-0 flex-1">
-          <div className="text-[10px] font-semibold uppercase leading-none tracking-wider text-muted-foreground">
-            Run settings
-          </div>
-          <div className="mt-1.5 truncate text-[14px] font-semibold leading-tight text-nav-fg">
-            {target.displayName}
+      {showHeader && (
+        <div className="flex items-center gap-2.5 pb-4">
+          {onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              className="nav-icon-btn shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+              aria-label="Back to model list"
+            >
+              <HugeiconsIcon
+                icon={ArrowLeft01Icon}
+                className="size-4"
+                strokeWidth={1.75}
+              />
+            </button>
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-semibold uppercase leading-none tracking-wider text-muted-foreground">
+              Run settings
+            </div>
+            <div className="mt-1.5 truncate text-[14px] font-semibold leading-tight text-nav-fg">
+              {target.displayName}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <div className="space-y-3.5">
         {target.isGguf && (

@@ -15,6 +15,7 @@ import {
   type PerModelConfig,
   perModelConfigsEqual,
   resolveInitialConfig,
+  SidebarModelConfig,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
@@ -1342,6 +1343,28 @@ export function ChatPage({
     runtimeTensorParallel,
     runtimeChatTemplateOverride,
   ]);
+  const activeModelIsGguf = useMemo(() => {
+    const checkpoint = inferenceParams.checkpoint;
+    if (!checkpoint || isExternalModel) return false;
+    return (
+      activeGgufVariant != null ||
+      ggufContextLength != null ||
+      checkpoint.toLowerCase().endsWith(".gguf")
+    );
+  }, [
+    inferenceParams.checkpoint,
+    isExternalModel,
+    activeGgufVariant,
+    ggufContextLength,
+  ]);
+  const activeModelIsLora = useMemo(() => {
+    const checkpoint = inferenceParams.checkpoint;
+    if (!checkpoint || isExternalModel) return false;
+    const model = modelsFromStore.find((entry) => entry.id === checkpoint);
+    if (model) return model.isLora;
+    const lora = lorasFromStore.find((entry) => entry.id === checkpoint);
+    return lora?.exportType === "lora";
+  }, [inferenceParams.checkpoint, isExternalModel, modelsFromStore, lorasFromStore]);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
@@ -1984,6 +2007,27 @@ export function ChatPage({
       view,
     ],
   );
+  const handleReloadActiveModel = useCallback(
+    (config: PerModelConfig) => {
+      const checkpoint = inferenceParams.checkpoint;
+      if (!checkpoint) return;
+      handleCheckpointChange(checkpoint, {
+        source: "local",
+        isLora: activeModelIsLora,
+        ggufVariant: activeGgufVariant ?? undefined,
+        isGguf: activeModelIsGguf,
+        isDownloaded: true,
+        config,
+      });
+    },
+    [
+      inferenceParams.checkpoint,
+      activeGgufVariant,
+      activeModelIsLora,
+      activeModelIsGguf,
+      handleCheckpointChange,
+    ],
+  );
   const handleEject = useCallback(() => {
     void (async () => {
       if (await ejectModel()) {
@@ -2601,6 +2645,18 @@ export function ChatPage({
         }}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
+        modelConfig={
+          view.mode !== "compare" && activeModelConfig ? (
+            <SidebarModelConfig
+              modelId={inferenceParams.checkpoint}
+              ggufVariant={activeGgufVariant ?? null}
+              isGguf={activeModelIsGguf}
+              nativeContextLength={ggufContextLength}
+              loadedConfig={activeModelConfig}
+              onReload={handleReloadActiveModel}
+            />
+          ) : null
+        }
         isExternalModel={isExternalModel}
         providerCapabilities={activeProviderCapabilities}
         activeExternalProvider={activeExternalProvider}

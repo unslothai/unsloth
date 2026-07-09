@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { ModelSelector } from "./components/model-selector";
+export { SidebarModelConfig } from "./components/sidebar-model-config";
 export type {
   DeletedModelRef,
   ExternalModelOption,

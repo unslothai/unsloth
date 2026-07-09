@@ -439,6 +439,7 @@ interface ChatSettingsPanelProps {
   onOpenChange?: (open: boolean) => void;
   params: InferenceParams;
   onParamsChange: (params: InferenceParams) => void;
+  modelConfig?: ReactNode;
   isExternalModel?: boolean;
   /**
    * Sampling-param capabilities for the active external provider, or `null` for
@@ -460,6 +461,7 @@ export function ChatSettingsPanel({
   onOpenChange,
   params,
   onParamsChange,
+  modelConfig = null,
   isExternalModel = false,
   providerCapabilities = null,
   activeExternalProvider = null,
@@ -838,9 +840,10 @@ export function ChatSettingsPanel({
         className="run-settings-scroll relative min-h-0 flex-1 overflow-y-auto"
       >
       <div className="px-[18px] pt-3">
-        {hasModelContent && (
+        {(hasModelContent || modelConfig) && (
           <CollapsibleSection label="Model" defaultOpen={true} first>
             <div className="flex flex-col gap-3 pt-1">
+              {modelConfig}
               {showSpecFallback && (
                 <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-[12px] leading-[1.4] text-nav-fg/80">
                   <p>
@@ -883,7 +886,7 @@ export function ChatSettingsPanel({
         <CollapsibleSection
           label="Preset"
           defaultOpen={true}
-          first={!hasModelContent}
+          first={!hasModelContent && !modelConfig}
         >
           <div className="flex flex-col gap-3 pt-1">
             <DropdownMenu>
