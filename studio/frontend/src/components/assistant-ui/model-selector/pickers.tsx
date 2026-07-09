@@ -116,6 +116,7 @@ import {
   type CatalogGroup,
   type ModelArtifact,
   artifactForRepoId,
+  catalogGroupFitsDevice,
   groupForRepoId,
   groupMatchesQuery,
   pickDefaultArtifact,
@@ -2435,6 +2436,27 @@ export function HubModelPicker({
     return map;
   }, [results, recommendedSearch.results]);
 
+  // The fit-on-device toggle hides a catalog group with nothing runnable here,
+  // exactly as it hides an over-budget Recommended row -- otherwise a bare click
+  // on a fit-filtered list could still start a 90-114 GB OOM load (LTX-2 base,
+  // Wan2.2-A14B). Off = every group passes.
+  const catalogGroupPassesFit = useCallback(
+    (g: CatalogGroup) =>
+      !fitOnDeviceOnly ||
+      catalogGroupFitsDevice(g, deviceBudget, isRepoDownloaded),
+    [fitOnDeviceOnly, deviceBudget, isRepoDownloaded],
+  );
+
+  // Curated catalog rows for the Recommended section (no query): format toggle +
+  // the same fit gate as the live Recommended rows. Shared by the render and the
+  // roving-key list so navigation matches what is on screen.
+  const recommendedCatalogGroups = useMemo(() => {
+    if (!catalog) return [];
+    return catalog.filter(
+      (g) => catalogGroupMatchesFormat(g, formatFilter) && catalogGroupPassesFit(g),
+    );
+  }, [catalog, formatFilter, catalogGroupPassesFit]);
+
   // Recommended models that match the current search query
   // Catalog groups matching a typed query (old ids, format tokens, quant names
   // all match); rendered as canonical rows above the remaining search results.
@@ -2443,9 +2465,10 @@ export function HubModelPicker({
     return catalog.filter(
       (g) =>
         groupMatchesQuery(g, debouncedQuery.trim()) &&
-        catalogGroupMatchesFormat(g, formatFilter),
+        catalogGroupMatchesFormat(g, formatFilter) &&
+        catalogGroupPassesFit(g),
     );
-  }, [catalog, showHfSection, debouncedQuery, formatFilter]);
+  }, [catalog, showHfSection, debouncedQuery, formatFilter, catalogGroupPassesFit]);
 
   const filteredRecommendedIds = useMemo(() => {
     if (!showHfSection) return [];
@@ -2684,9 +2707,9 @@ export function HubModelPicker({
       // flat curated safetensors rows.
       if (catalog) {
         keys.push(
-          ...catalog
-            .filter((g) => catalogGroupMatchesFormat(g, formatFilter))
-            .map((g) => makeModelOptionKey("catalog-group", g.canonicalId)),
+          ...recommendedCatalogGroups.map((g) =>
+            makeModelOptionKey("catalog-group", g.canonicalId),
+          ),
         );
       } else {
         keys.push(
@@ -2713,9 +2736,9 @@ export function HubModelPicker({
     fineTunedRows,
     fineTunedCollapsed,
     filteredRecommendedIds,
-    formatFilter,
     hfIds,
     matchedCatalogGroups,
+    recommendedCatalogGroups,
     sortedLmStudio,
     lmStudioCollapsed,
     recommendedRows,
@@ -4138,9 +4161,9 @@ export function HubModelPicker({
                       listing's task tags. Without one (legacy), the flat curated
                       safetensors rows. */}
                   {catalog
-                    ? catalog
-                        .filter((g) => catalogGroupMatchesFormat(g, formatFilter))
-                        .map((g) => renderCatalogGroupRow(g, "catalog-group"))
+                    ? recommendedCatalogGroups.map((g) =>
+                        renderCatalogGroupRow(g, "catalog-group"),
+                      )
                     : curatedSafetensorsRows.map((m) => {
                         const optionKey = makeModelOptionKey(
                           "curated-safetensors",
