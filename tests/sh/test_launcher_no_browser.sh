@@ -50,6 +50,11 @@ assert_contains \
 assert_contains \
     "launcher template: UNSLOTH_STUDIO_NO_BROWSER env var handled" \
     "$_launcher" "UNSLOTH_STUDIO_NO_BROWSER"
+# Mixed-case falsy values (False, Off) must not disable, matching the
+# PowerShell launcher's case-insensitive -notin.
+assert_contains \
+    "launcher template: env var check is case-insensitive" \
+    "$_launcher" "tr '[:upper:]' '[:lower:]'"
 assert_contains \
     "launcher template: studio.conf preference is the default" \
     "$_launcher" 'OPEN_BROWSER="${STUDIO_OPEN_BROWSER:-1}"'

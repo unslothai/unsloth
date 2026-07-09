@@ -656,8 +656,9 @@ fi
 # UNSLOTH_STUDIO_NO_BROWSER env var, then studio.conf, default on.
 # When off the server still starts; the URL is printed instead (PWA use).
 OPEN_BROWSER="${STUDIO_OPEN_BROWSER:-1}"
-case "${UNSLOTH_STUDIO_NO_BROWSER:-}" in
-    ''|0|false|FALSE|no|NO|off|OFF) ;;
+# Case-insensitive falsy check, matching the PowerShell launcher's -notin.
+case "$(printf '%s' "${UNSLOTH_STUDIO_NO_BROWSER:-}" | tr '[:upper:]' '[:lower:]')" in
+    ''|0|false|no|off) ;;
     *) OPEN_BROWSER=0 ;;
 esac
 for _arg in "$@"; do
