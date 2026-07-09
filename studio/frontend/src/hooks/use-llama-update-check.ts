@@ -268,6 +268,26 @@ export function useLlamaUpdateCheck({
     };
   }, [enabled, surfaceIfAvailable, clearPollTimer]);
 
+  // Cross-tab nudge: a tab that only checks hourly would otherwise stay
+  // pointed at a server-unloaded model for up to an hour after a DIFFERENT
+  // open tab applies an update. The storage event only fires in other tabs
+  // (never the one that wrote it), so this recheck fires promptly there
+  // without this tab redundantly re-triggering itself.
+  useEffect(() => {
+    if (!enabled) return;
+    const onStorage = (event: StorageEvent) => {
+      if (
+        event.key === HANDLED_RELOAD_STORAGE_KEY &&
+        event.newValue &&
+        event.newValue !== reloadNotifiedForRef.current
+      ) {
+        recheckStatus().then(surfaceIfAvailable);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [enabled, surfaceIfAvailable]);
+
   const dismiss = useCallback(() => {
     setVisible(false);
   }, []);
