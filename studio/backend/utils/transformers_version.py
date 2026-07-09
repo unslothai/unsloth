@@ -882,31 +882,48 @@ _config_mapping_cache: dict[str, frozenset[str]] = {}
 
 def _overlay_transformers_dir(tier: str) -> str | None:
     """transformers source dir for a tier, located without importing it."""
-    if tier == "default":
-        try:
-            spec = importlib.util.find_spec("transformers")
-        except Exception:
-            return None
-        return os.path.dirname(spec.origin) if spec and spec.origin else None
-    root = {"530": _VENV_T5_530_DIR, "550": _VENV_T5_550_DIR, "510": _VENV_T5_510_DIR}.get(tier)
-    src = os.path.join(root, "transformers") if root else None
-    return src if src and _safe_is_dir(Path(src)) else None
+    if tier != "default":
+        root = {"530": _VENV_T5_530_DIR, "550": _VENV_T5_550_DIR, "510": _VENV_T5_510_DIR}.get(tier)
+        src = os.path.join(root, "transformers") if root else None
+        return src if src and _safe_is_dir(Path(src)) else None
+    # default: the base 4.x transformers. find_spec resolves to a 5.x sidecar if one
+    # is already on sys.path, so skip any .venv_t5_* / llmcompressor overlay dir.
+    sidecars = tuple(
+        os.path.abspath(d) + os.sep
+        for d in (_VENV_T5_530_DIR, _VENV_T5_550_DIR, _VENV_T5_510_DIR, _VENV_LLMCOMPRESSOR_DIR)
+    )
+    candidates = []
+    try:
+        spec = importlib.util.find_spec("transformers")
+        if spec and spec.origin:
+            candidates.append(os.path.dirname(spec.origin))
+    except Exception:
+        pass
+    candidates += [os.path.join(e, "transformers") for e in sys.path if e]
+    for c in candidates:
+        if _safe_is_dir(Path(c)) and not os.path.abspath(c).startswith(sidecars):
+            return c
+    return None
 
 
 def _mapping_first_keys(value: ast.AST) -> set[str]:
-    """String keys of a dict literal or an OrderedDict(...)/dict(...) of 2-tuples."""
-    if isinstance(value, ast.Dict):
-        nodes = value.keys
-    elif isinstance(value, ast.Call):
-        nodes = [
-            el.elts[0]
-            for a in value.args
-            if isinstance(a, (ast.List, ast.Tuple))
-            for el in a.elts
-            if isinstance(el, (ast.Tuple, ast.List)) and el.elts
-        ]
-    else:
-        nodes = []
+    """First keys of a dict literal, or of an OrderedDict(...)/dict(...)/.update(...)
+    built from 2-tuple lists and **{...} unpacking."""
+
+    def keys_of(node):
+        if isinstance(node, ast.Dict):
+            return list(node.keys)
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return [el.elts[0] for el in node.elts if isinstance(el, (ast.Tuple, ast.List)) and el.elts]
+        return []
+
+    nodes = keys_of(value)
+    if isinstance(value, ast.Call):
+        for a in value.args:
+            nodes += keys_of(a)
+        for kw in value.keywords:  # **{...} unpacking has kw.arg is None
+            if kw.arg is None:
+                nodes += keys_of(kw.value)
     return {n.value for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str)}
 
 
@@ -915,22 +932,33 @@ def _config_model_types(tier: str) -> frozenset[str]:
     cached = _config_mapping_cache.get(tier)
     if cached is not None:
         return cached
-    keys: set[str] = set()
     tdir = _overlay_transformers_dir(tier)
-    if tdir:
-        for rel in ("models/auto/configuration_auto.py", "models/auto/auto_mappings.py"):
-            path = Path(tdir) / rel
-            if not _safe_is_file(path):
-                continue
-            try:
-                tree = ast.parse(path.read_text(encoding = "utf-8"))
-            except Exception:
-                continue
+    if tdir is None:
+        return frozenset()  # overlay not provisioned yet; do not cache so a later call re-reads
+    keys: set[str] = set()
+    for rel in ("models/auto/configuration_auto.py", "models/auto/auto_mappings.py"):
+        path = Path(tdir) / rel
+        if not _safe_is_file(path):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding = "utf-8"))
             for node in ast.walk(tree):
+                # direct binding, or a CONFIG_MAPPING_NAMES.update({...}) mutation
                 if isinstance(node, ast.Assign) and any(
                     isinstance(t, ast.Name) and t.id == "CONFIG_MAPPING_NAMES" for t in node.targets
                 ):
                     keys |= _mapping_first_keys(node.value)
+                elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+                    fn = node.value.func
+                    if (
+                        isinstance(fn, ast.Attribute)
+                        and fn.attr == "update"
+                        and isinstance(fn.value, ast.Name)
+                        and fn.value.id == "CONFIG_MAPPING_NAMES"
+                    ):
+                        keys |= _mapping_first_keys(node.value)
+        except Exception:
+            continue
     result = frozenset(keys)
     _config_mapping_cache[tier] = result
     return result
@@ -1360,7 +1388,9 @@ def get_transformers_tier(
             return override
         logger.info("Transformers tier 530 selected for %s (config.json check)", model_name)
         return "530"
-    remote_cfg = _cached_config_json(model_name, hf_token)
+    # _load_config_json (not the cache-only reader) so a config served from the hub
+    # cache during a transient outage still feeds the mapping resolver.
+    remote_cfg = _load_config_json(model_name, hf_token)
     if remote_cfg is not None:
         static = _tier_from_config_mapping(remote_cfg)
         if static is not None and static != "default":
