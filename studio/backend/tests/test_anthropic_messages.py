@@ -1773,9 +1773,8 @@ class TestAnthropicMessagesToolRouting:
 
 
 def test_resumed_session_thinking_and_null_content_do_not_400():
-    # A resumed Claude session replays assistant turns containing `thinking`
-    # (and sometimes null) content. Those must be accepted (and the thinking
-    # dropped by the converter), not rejected with a 400 on messages[n].content.
+    # A resumed session replays assistant turns with `thinking` (and sometimes null)
+    # content. Those must be accepted (thinking dropped by the converter), not 400ed.
     from pydantic import ValidationError
 
     req = AnthropicMessagesRequest(
@@ -1814,9 +1813,8 @@ def test_resumed_session_thinking_and_null_content_do_not_400():
 
 
 def test_user_null_content_rejected():
-    # The null->"" leniency is assistant-only. A malformed user turn with null
-    # content must be rejected at the boundary, not coerced into an empty prompt
-    # and forwarded to the model.
+    # The null->"" leniency is assistant-only; a null user content must be rejected
+    # at the boundary, not coerced into an empty prompt and forwarded to the model.
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
@@ -1827,10 +1825,9 @@ def test_user_null_content_rejected():
 
 
 def test_user_unknown_block_rejected_not_silently_dropped():
-    # anthropic_messages_to_openai skips user blocks it cannot translate, so a
-    # user turn whose only block is unknown/future would validate yet forward no
-    # user content at all. Reject it at the boundary instead of that silent
-    # data loss (the assistant fallback is unaffected).
+    # The converter skips user blocks it cannot translate, so a user turn whose only
+    # block is unknown would validate yet forward no content. Reject at the boundary
+    # to avoid that silent data loss (the assistant fallback is unaffected).
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
@@ -1843,9 +1840,8 @@ def test_user_unknown_block_rejected_not_silently_dropped():
 
 
 def test_user_translatable_blocks_still_accepted():
-    # text / image / tool_result are the block types the converter translates for
-    # a user turn, so a real user message built from them must still pass; the
-    # unknown-block guard only trips on other types.
+    # text / image / tool_result are translatable, so a real user message built from
+    # them must still pass; the unknown-block guard only trips on other types.
     req = AnthropicMessagesRequest(
         model = "x",
         max_tokens = 16,
@@ -1874,9 +1870,8 @@ def test_user_translatable_blocks_still_accepted():
 
 
 def test_user_malformed_known_block_still_rejected():
-    # The role-aware guard only allow-lists a user block's *type*; the union
-    # still validates its shape, so a known-but-malformed user block (tool_result
-    # without tool_use_id) still fails strict validation.
+    # The guard only allow-lists a user block's *type*; the union still validates its
+    # shape, so a known-but-malformed block (tool_result without tool_use_id) fails.
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
@@ -1889,9 +1884,9 @@ def test_user_malformed_known_block_still_rejected():
 
 
 def test_user_content_block_non_string_type_rejected_cleanly():
-    # A malformed user block whose `type` is a non-string (unhashable list / dict,
-    # or a stray int) must fail as a clean validation error -> 400, not raise
-    # TypeError from the frozenset membership test and escape as a 500.
+    # A user block whose `type` is a non-string (unhashable list / dict, or a stray
+    # int) must fail as a clean validation error, not raise TypeError from the
+    # frozenset membership test and escape as a 500.
     from pydantic import ValidationError
     for bad_type in ([], {}, 5):
         with pytest.raises(ValidationError):
@@ -1903,9 +1898,8 @@ def test_user_content_block_non_string_type_rejected_cleanly():
 
 
 def test_assistant_missing_content_key_still_rejected():
-    # The null -> "" leniency is only for an EXPLICIT null (a resumed tool-only
-    # turn). An assistant message that omits content entirely stays malformed and
-    # must still fail required-field validation, not be silently coerced to "".
+    # The null -> "" leniency is only for an EXPLICIT null. An assistant message that
+    # omits content entirely stays malformed and must fail required-field validation.
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
@@ -1927,10 +1921,9 @@ def test_assistant_missing_content_key_still_rejected():
 
 
 def test_resumed_null_assistant_between_users_coalesced_on_messages_route(monkeypatch):
-    # user -> assistant(content: null) -> user is now accepted: the null assistant
-    # turn coerces to "" and is dropped. The /v1/messages route must then coalesce
-    # the two remaining user turns so a strict GGUF chat template does not 400 on
-    # non-alternating roles.
+    # user -> assistant(null) -> user is now accepted: the null assistant turn coerces
+    # to "" and is dropped. The route must then coalesce the two remaining user turns
+    # so a strict GGUF chat template does not 400 on non-alternating roles.
     backend = _mock_backend(monkeypatch, context_length = 2048)
 
     class _Req:

@@ -1536,16 +1536,15 @@ class AnthropicToolResultBlock(BaseModel):
     @field_validator("content", mode = "before")
     @classmethod
     def _coerce_null_content(cls, v):
-        # Some clients emit a null content for an empty tool result; the str|list
-        # union would 400 on it, so treat null as the empty string.
+        # Some clients send null content for an empty tool result; the str|list
+        # union would 400 on it, so treat null as "".
         return "" if v is None else v
 
 
-# Block types Studio translates explicitly. Anything else -- Claude's `thinking`
-# / `redacted_thinking`, a provider-specific block a resumed session replays, or a
-# future block type -- is accepted verbatim as an unknown block and dropped by the
-# converter (anthropic_messages_to_openai ignores types it doesn't translate),
-# instead of the whole request 400-ing on strict validation.
+# Block types the converter translates explicitly. Anything else (thinking /
+# redacted_thinking, a provider block a resumed session replays, or a future type)
+# is accepted as an unknown block and dropped by the converter, rather than 400-ing
+# the whole request on strict validation.
 _KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result"})
 
 
@@ -1556,8 +1555,8 @@ class AnthropicUnknownBlock(BaseModel):
     @field_validator("type")
     @classmethod
     def _only_unknown_types(cls, v):
-        # A known type must parse as its typed model above (so a malformed known
-        # block still fails cleanly); this fallback only catches the rest.
+        # Known types parse as their typed models above (so a malformed known block
+        # still fails cleanly); this fallback only catches the rest.
         if v in _KNOWN_ANTHROPIC_BLOCK_TYPES:
             raise ValueError("known block type handled by its typed model")
         return v
@@ -1616,25 +1615,22 @@ class AnthropicMessage(BaseModel):
     @model_validator(mode = "before")
     @classmethod
     def _normalize_content(cls, data):
-        # Leniency is role-aware so it never silently drops real user input:
-        #  - assistant: a resumed tool-only turn can carry null content -> "" (the
-        #    str|list union would 400 on null; "" is the neutral equivalent and
-        #    keeps the converter's `for block in content` safe). Unknown blocks
-        #    (thinking / redacted_thinking / future types) validate via
+        # Role-aware leniency that never silently drops real user input:
+        #  - assistant: a resumed tool-only turn's null content -> "" (str|list would
+        #    400 on null; "" keeps the converter's `for block in content` safe).
+        #    Unknown blocks (thinking / future types) validate via
         #    AnthropicUnknownBlock and are dropped by the converter.
-        #  - user: keep the boundary strict. A null user content is malformed, so
-        #    leave it None for the str|list field to reject (400) instead of
-        #    forwarding an empty prompt; and reject any block type the converter
-        #    cannot translate. anthropic_messages_to_openai silently skips unknown
-        #    user blocks, so a user turn made only of them would otherwise validate
-        #    yet send the model no user content at all (silent data loss).
+        #  - user: keep strict. Null user content stays None so str|list rejects it
+        #    (400) rather than forwarding an empty prompt; and reject block types the
+        #    converter cannot translate, since it silently skips unknown user blocks
+        #    -- a user turn made only of them would validate yet send no content
+        #    (silent data loss).
         if not isinstance(data, dict):
             return data
         content = data.get("content")
         if data.get("role") == "assistant":
-            # Coerce only an explicit null (a resumed tool-only turn serializes
-            # its content as null). A missing content key stays malformed so the
-            # required-field check still 400s instead of silently becoming "".
+            # Coerce only an explicit null (resumed tool-only turn). A missing
+            # content key stays malformed so the required-field check still 400s.
             if "content" in data and content is None:
                 return {**data, "content": ""}
             return data
@@ -1643,9 +1639,9 @@ class AnthropicMessage(BaseModel):
                 btype = (
                     block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
                 )
-                # Compare as a plain value: a non-string type (list / dict) is
-                # unsupported too, and a membership test on an unhashable value
-                # would raise TypeError and escape as a 500 instead of a clean 400.
+                # Guard the value: a non-string type is unsupported too, and a
+                # membership test on an unhashable value would raise TypeError
+                # (escaping as a 500 instead of a clean 400).
                 if not isinstance(btype, str) or btype not in _KNOWN_ANTHROPIC_BLOCK_TYPES:
                     raise ValueError(f"unsupported content block type {btype!r} in a user message")
         return data

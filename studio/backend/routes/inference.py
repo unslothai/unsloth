@@ -10088,10 +10088,9 @@ async def anthropic_count_tokens(
     # Apply the same sanitization /messages does before generation, so the count
     # matches the prompt the real request would build (otherwise empty-assistant
     # sentinels / synthetic tool history inflate the count or hit the fallback).
-    # Coalesce the adjacent user turns that dropping an empty / null assistant
-    # turn can leave behind, so a strict GGUF chat template does not 400 on
-    # non-alternating roles (mirrors the GGUF chat path); a no-op for histories
-    # that are already alternating.
+    # Coalesce adjacent user turns left behind by dropping an empty / null assistant
+    # turn, so a strict GGUF chat template does not 400 on non-alternating roles
+    # (mirrors the GGUF chat path); a no-op for already-alternating histories.
     openai_messages = _coalesce_consecutive_user_turns(
         _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
@@ -10221,10 +10220,9 @@ async def anthropic_messages(
     # builders apply the same strip; without it an Anthropic /v1/messages caller
     # replaying a prior provider-side tool_use forwards fake builtin tool
     # history to a backend with no matching function declarations.
-    # Coalesce the adjacent user turns that dropping an empty / null assistant
-    # turn can leave behind, so a strict GGUF chat template does not 400 on
-    # non-alternating roles (mirrors the GGUF chat path); a no-op for histories
-    # that are already alternating.
+    # Coalesce adjacent user turns left behind by dropping an empty / null assistant
+    # turn, so a strict GGUF chat template does not 400 on non-alternating roles
+    # (mirrors the GGUF chat path); a no-op for already-alternating histories.
     openai_messages = _coalesce_consecutive_user_turns(
         _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
