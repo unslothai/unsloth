@@ -31,9 +31,13 @@ import {
 } from "@/features/rag/api/rag-api";
 import type { UploadedDocument } from "@/features/rag/types/rag";
 import { toast } from "@/lib/toast";
-import { ArrowUpRight01Icon, Delete02Icon } from "@hugeicons/core-free-icons";
+import {
+  ArrowUpRight01Icon,
+  Delete02Icon,
+  File02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 function formatUploadedAt(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === "") return "-";
@@ -71,6 +75,61 @@ function ragLocationLabel(doc: UploadedDocument): string {
   return "-";
 }
 
+/** Short uppercase file-type label from the filename extension, falling back
+ *  to the content-type subtype (e.g. "image/webp" gives WEBP). */
+function fileTypeLabel(
+  name: string,
+  contentType?: string | null,
+): string | null {
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot + 1).trim() : "";
+  if (ext && ext.length <= 5) return ext.toUpperCase();
+  const subtype = contentType?.split("/")[1]?.split("+")[0]?.trim();
+  return subtype && subtype.length <= 10 ? subtype.toUpperCase() : null;
+}
+
+/** Lazy image thumbnail for a chat attachment; a file icon until it loads. */
+function ChatImageThumb({
+  messageId,
+  attachmentId,
+}: {
+  messageId: string;
+  attachmentId: string;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let url: string | null = null;
+    fetchChatAttachmentBlob(messageId, attachmentId)
+      .then((blob) => {
+        if (cancelled) return;
+        url = URL.createObjectURL(blob);
+        setSrc(url);
+      })
+      .catch(() => {
+        // Keep the file icon on failure.
+      });
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [messageId, attachmentId]);
+
+  if (!src) return <FileIconThumb />;
+  return <img src={src} alt="" className="h-full w-full object-cover" />;
+}
+
+function FileIconThumb() {
+  return (
+    <HugeiconsIcon
+      icon={File02Icon}
+      strokeWidth={1.75}
+      className="size-4 text-muted-foreground"
+    />
+  );
+}
+
 /** One display row: a RAG document or a chat message attachment. */
 interface UploadedFileRow {
   key: string;
@@ -81,6 +140,9 @@ interface UploadedFileRow {
   failed?: boolean;
   /** Epoch ms for sorting; rows with unknown dates sort last. */
   sortTime: number;
+  typeLabel: string | null;
+  /** Image rows render a thumbnail; others show a file icon. */
+  thumb: ReactNode;
   open: () => Promise<void>;
   remove: () => Promise<void>;
   deleteDescription: string;
@@ -101,6 +163,9 @@ function ragRow(doc: UploadedDocument): UploadedFileRow {
     createdAt: doc.createdAt,
     failed: doc.status === "failed",
     sortTime: toSortTime(doc.createdAt),
+    typeLabel: fileTypeLabel(doc.filename),
+    // RAG uploads are documents (pdf, txt, md, docx, html), not images.
+    thumb: <FileIconThumb />,
     open: async () => {
       const url = await getDocumentFileUrl(doc.id);
       window.open(url, "_blank", "noopener");
@@ -114,6 +179,8 @@ function ragRow(doc: UploadedDocument): UploadedFileRow {
 }
 
 function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
+  const isImage =
+    att.type === "image" || Boolean(att.contentType?.startsWith("image/"));
   return {
     key: `chat-${att.messageId}-${att.id}`,
     name: att.name,
@@ -121,6 +188,12 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
     sizeBytes: att.sizeBytes,
     createdAt: att.createdAt,
     sortTime: toSortTime(att.createdAt),
+    typeLabel: fileTypeLabel(att.name, att.contentType),
+    thumb: isImage ? (
+      <ChatImageThumb messageId={att.messageId} attachmentId={att.id} />
+    ) : (
+      <FileIconThumb />
+    ),
     open: async () => {
       const blob = await fetchChatAttachmentBlob(att.messageId, att.id);
       const url = URL.createObjectURL(blob);
@@ -239,10 +312,22 @@ export function UploadedFilesDialog({
                 key={row.key}
                 className="group flex items-center gap-4 border-b border-border/40 px-1 py-2.5 text-sm last:border-0"
               >
-                <span className="min-w-0 flex-1 truncate" title={row.name}>
-                  {row.name}
+                <span className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden">
+                  <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/50 bg-muted/40">
+                    {row.thumb}
+                  </span>
+                  {/* Floor keeps the name visible when the chip and fixed
+                  columns squeeze the cell at narrow widths. */}
+                  <span className="min-w-[3.5rem] truncate" title={row.name}>
+                    {row.name}
+                  </span>
+                  {row.typeLabel ? (
+                    <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground dark:bg-white/[0.1]">
+                      {row.typeLabel}
+                    </span>
+                  ) : null}
                   {row.failed ? (
-                    <span className="ml-2 text-xs text-destructive">
+                    <span className="shrink-0 text-xs text-destructive">
                       failed
                     </span>
                   ) : null}
