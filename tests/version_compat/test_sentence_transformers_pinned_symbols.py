@@ -125,13 +125,10 @@ def test_st_transformer_base_class_either_path(tag: str):
 # Transformer.load classmethod: unsloth builds saved-ST modules through it (#6881).
 @pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_transformer_load_accepts_unsloth_kwargs(tag: str):
-    """`_create_transformer_module` builds saved ST models via Transformer.load(...)
-    so the saved module config (incl. ST 5.x modality_config) is honored; otherwise
-    ST 5.x infers a 'message' modality for chat-template embedders (e.g.
-    Qwen3-Embedding) and silently chat-wraps inputs (#6881). If .load stops accepting
-    the hub kwargs unsloth passes (and grows no **kwargs), the fix must be updated
-    before it silently regresses. Not locating .load here is a SKIP (it may be
-    inherited); the live signature test guards the installed version."""
+    """unsloth builds saved ST models via Transformer.load(...) so the saved
+    modality_config is honored (#6881). If .load stops accepting the hub kwargs it
+    passes (and has no **kwargs), update the fix before it silently regresses. Not
+    locating .load is a SKIP (may be inherited); the live test guards the install."""
     candidates = [
         "sentence_transformers/models/Transformer.py",
         "sentence_transformers/models/transformer.py",

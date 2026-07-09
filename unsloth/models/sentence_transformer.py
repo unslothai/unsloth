@@ -1086,15 +1086,12 @@ class FastSentenceTransformer(FastModel):
                 elif "tokenizer_args" in transformer_init_params:
                     transformer_kwargs["tokenizer_args"] = trust_remote_code_kwargs.copy()
 
-                # Saved ST models: build via Transformer.load so the saved module config
-                # (incl. ST 5.x modality_config) is honored; plain Transformer(...) lets ST
-                # 5.x add a "message" modality for chat-template models (e.g. Qwen3-Embedding)
-                # that chat-wraps inputs and silently degrades embeddings (#6881). Use .load
-                # only when it can resolve a Hub id: modern ST accepts these kwargs or has
-                # **kwargs; legacy ST 3.x/4.x is Transformer.load(input_path) (local-only, no
-                # modality bug), so fall back to the constructor there instead of crashing.
-                # Pass only kwargs its signature accepts so a renamed kwarg can't disable the
-                # fix. max_seq_length is (re)applied below regardless.
+                # Build via Transformer.load so the saved modality_config is honored: plain
+                # Transformer(...) makes ST 5.x infer a "message" modality for chat-template
+                # models (e.g. Qwen3-Embedding), chat-wrapping inputs and degrading embeddings
+                # (#6881). Only use .load when it resolves a Hub id (accepts the kwargs or
+                # **kwargs); legacy ST 3.x/4.x load(input_path) is local-only with no modality
+                # bug, so fall back to the constructor.
                 transformer_module = None
                 transformer_load = getattr(Transformer, "load", None)
                 has_modules_json = (

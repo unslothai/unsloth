@@ -1,19 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
 """Regression guard for issue #6881: FastSentenceTransformer must preprocess text
-exactly like a stock SentenceTransformer for decoder embedding models.
+like a stock SentenceTransformer for decoder embedding models. ST 5.x infers a
+"message" modality for chat-template models (e.g. Qwen/Qwen3-Embedding), so building
+via `Transformer(model_name, ...)` chat-wraps inputs and degrades embeddings;
+`_create_transformer_module` uses `Transformer.load(...)` instead.
 
-sentence-transformers 5.x infers a "message" modality for models whose tokenizer
-has a chat template (e.g. Qwen/Qwen3-Embedding), so building the module through
-`Transformer(model_name, ...)` chat-wraps plain inputs and silently degrades
-embeddings. `_create_transformer_module` builds through `Transformer.load(...)`
-instead, matching stock ST.
-
-Two layers:
-  * test_transformer_load_signature_supports_unsloth_kwargs - fast, runs wherever
-    sentence_transformers is importable; fails if ST drops the kwargs the fix passes.
-  * test_fast_sentence_transformer_matches_stock_st - end-to-end parity; opt-in via
-    UNSLOTH_EMBEDDING_PARITY_MODEL (a HF id or local path), so default CI is unaffected.
+Layers: test_transformer_load_signature_supports_unsloth_kwargs (fast, runs when ST
+is importable) and test_fast_sentence_transformer_matches_stock_st (end-to-end parity,
+opt-in via UNSLOTH_EMBEDDING_PARITY_MODEL so default CI is unaffected).
 """
 
 from __future__ import annotations
@@ -25,10 +20,9 @@ import pytest
 
 
 def test_transformer_load_signature_supports_unsloth_kwargs():
-    """Forwards-compat tripwire: when the installed Transformer.load is the modern
-    Hub-capable variant, it must accept the kwargs the #6881 fix passes. Legacy ST
-    3.x/4.x expose load(input_path); the production path treats that as non-Hub-capable
-    and falls back to Transformer(...), so mirror that gate and skip there."""
+    """Forwards-compat tripwire: a Hub-capable Transformer.load must accept the kwargs
+    the #6881 fix passes. Legacy ST 3.x/4.x expose load(input_path); the code falls back
+    to Transformer(...) there, so mirror that gate and skip."""
     models = pytest.importorskip("sentence_transformers.models")
     load = getattr(models.Transformer, "load", None)
     assert callable(load), (
