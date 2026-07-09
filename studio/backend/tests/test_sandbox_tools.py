@@ -874,6 +874,47 @@ class TestAliasIntrospectionBypasses:
         assert _check_code_safety(code) is not None, code
 
 
+class TestReceiverAndVarsAndDynImportBypasses:
+    """Second-round bypasses: sensitive reach through a pathlib receiver, vars() on a
+    module, and dynamic import of a deserializer module."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # 572: sensitive path on the pathlib receiver, not in a call arg.
+            "from pathlib import Path\nPath('../../.ssh/id_rsa').read_text()",
+            "from pathlib import Path\nPath('/etc/passwd').read_bytes()",
+            "from pathlib import Path\nPath('/etc/passwd').open().read()",
+            # 617: vars(module) exposes the module __dict__.
+            "import os\nvars(os)['system']('rm -rf /')",
+            "vars(__builtins__)['eval']('x')",
+            # 596: dynamic import of a deserializer module runs a reduce payload.
+            "__import__('pickle').loads(blob)",
+            "__import__('marshal').loads(b)",
+            "import importlib\nimportlib.import_module('pickle').loads(b)",
+            # 628: literal os.path.join to a host secret.
+            "import os\nopen(os.path.join('/etc', 'passwd')).read()",
+        ],
+    )
+    def test_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pathlib import Path\nPath('data/out.txt').read_text()",
+            "from pathlib import Path\nPath('model.json').open()",
+            "vars(obj)",
+            "vars()",
+            "import pickle\npickle.dumps(x)",
+            "import importlib\nimportlib.import_module('numpy')",
+            "import os\nopen(os.path.join('sub', 'a.txt'))",
+        ],
+    )
+    def test_benign_allowed(self, code):
+        assert _check_code_safety(code) is None, code
+
+
 class TestEvalExecRecursion:
     """Stage 2: eval/exec/compile are unwrapped, not blanket-banned. A safe
     (constant-recoverable) payload is allowed; an obfuscated escape blocks."""
@@ -946,27 +987,40 @@ class TestEvalExecRecursion:
     def test_import_concat_benign_module_allowed(self):
         _ok('__import__("hugging" + "face_hub")')
 
-    def test_exec_utf7_bytes_coding_cookie_blocked(self):
-        # exec()/eval()/compile() honor PEP 263 coding cookies on *bytes*: a UTF-7
-        # payload behind "# coding: utf-7" decodes to real Python that the UTF-8
-        # static view (which is SYNTAX_BAD) never sees. An unparseable *bytes*
-        # payload for an executing sink must block.
-        payload = (
-            b"# coding: utf-7\n"
-            b"+AGkAbQBwAG8AcgB0ACAAbwBz-\n"
-            b"+AG8AcwAuAHMAeQBzAHQAZQBtACgAJwBpAGQAJwAp-"
-        )
-        # self-check: the cookie-decoded payload really is os.system ACE.
-        assert "os.system" in payload.decode("utf-7")
+    def test_exec_utf7_comment_cookie_smuggle_blocked(self):
+        # The exec/eval/compile sinks honor a PEP 263 coding cookie on *bytes*. Here
+        # the UTF-8 view is TWO comment lines (safe), but "+AAo-" decodes (UTF-7) to a
+        # newline, so exec(bytes) actually runs the hidden __import__('os') call. The
+        # analyzer must decode with the cookie's codec, not read the UTF-8 view.
+        sneaky = b"# coding: utf_7\n#+AAo-__import__('os').system('id')\n"
+        # self-check: UTF-8 view is pure comments; the cookie decode reveals the call.
+        import ast as _ast
+
+        _ast.parse(sneaky.decode("utf-8"))  # parses (comments only) under UTF-8
+        assert "__import__('os')" in sneaky.decode("utf-7")
+        for sink in ("exec(%r)", "exec(compile(%r, '<s>', 'exec'))"):
+            assert _check_code_safety(sink % sneaky) is not None, sink
+
+    def test_exec_utf7_bytes_decodes_to_blocked_op(self):
+        # A bytes payload behind a coding cookie whose decoded source reaches a blocked
+        # operation must block for every executing sink (eval sees a statement -> the
+        # SYNTAX_BAD-bytes backstop still trips).
+        payload = b"# coding: utf-7\n" + "import os\nos.system('rm -rf /')\n".encode("utf-7")
+        assert "rm -rf" in payload.decode("utf-7")
         for sink in ("exec(%r)", "eval(%r)", "exec(compile(%r, '<s>', 'exec'))"):
-            code = sink % payload
-            assert _check_code_safety(code) is not None, code
-        # bare compile() does not run, so it stays allowed (the exec of its result
-        # is where the block lands).
-        assert _check_code_safety("compile(%r, '<s>', 'exec')" % payload) is None
+            assert _check_code_safety(sink % payload) is not None, sink
 
     def test_exec_plain_bytes_payload_allowed(self):
         # Legitimate exec/eval of ASCII/UTF-8 bytes that parse cleanly stay allowed.
         _ok('exec(b"x = 1")')
         _ok('exec(b"print(1)")')
         _ok('eval(b"2 + 2")')
+        # A UTF-7 payload that decodes to a benign, non-blocked call stays allowed too
+        # (os.system('id') is benign -- 'id' is not a blocked command), matching the
+        # plain-text exec("import os; os.system('id')") behavior.
+        benign = (
+            b"# coding: utf-7\n"
+            b"+AGkAbQBwAG8AcgB0ACAAbwBz-\n"
+            b"+AG8AcwAuAHMAeQBzAHQAZQBtACgAJwBpAGQAJwAp-"
+        )
+        _ok("exec(%r)" % benign)

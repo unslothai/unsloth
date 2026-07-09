@@ -71,6 +71,55 @@ class TestConstFoldArithAndConcat:
         assert _fold("bytes(10 ** 9)") is None
 
 
+class TestConstFoldAllocationDoS:
+    """Oversized format widths / sequence repetitions must refuse BEFORE the folder
+    allocates the result (folding runs in the Studio process, ahead of subprocess
+    rlimits)."""
+
+    def test_fstring_width_refused(self):
+        assert _fold("f'{1:1000000000}'") is None
+
+    def test_str_format_width_refused(self):
+        assert _fold("'{:1000000000}'.format(1)") is None
+
+    def test_percent_format_width_refused(self):
+        assert _fold("'%1000000000d' % 1") is None
+
+    def test_pad_method_width_refused(self):
+        assert _fold("'x'.ljust(1000000000)") is None
+        assert _fold("'x'.rjust(10 ** 9)") is None
+        assert _fold("'x'.center(2000000000)") is None
+        assert _fold("'x'.zfill(10 ** 9)") is None
+
+    def test_list_tuple_repeat_refused(self):
+        assert _fold("[0] * 1000000000") is None
+        assert _fold("(1,) * 10 ** 9") is None
+
+    def test_benign_format_and_repeat_still_fold(self):
+        assert _fold("f'{2 + 2}'") == "4"
+        assert _fold("'{:>8}'.format('hi')") == "      hi"
+        assert _fold("'%05d' % 7") == "00007"
+        assert _fold("'x'.ljust(10)") == "x         "
+        assert _fold("[0] * 8") == [0] * 8
+
+
+class TestConstFoldPathJoin:
+    """os.path.join / posixpath.join of string literals fold so the sensitive-read
+    scanner sees the concrete path (628)."""
+
+    def test_os_path_join_literal(self):
+        assert _fold("os.path.join('/etc', 'passwd')") == "/etc/passwd"
+
+    def test_posixpath_join_literal(self):
+        assert _fold("posixpath.join('/etc', 'shadow')") == "/etc/shadow"
+
+    def test_relative_join_literal(self):
+        assert _fold("os.path.join('sub', 'a.txt')") == "sub/a.txt"
+
+    def test_join_nonliteral_unknown(self):
+        assert _fold("os.path.join('/etc', x)") is None
+
+
 class TestConstFoldJoinFormatFstring:
     def test_sep_join(self):
         assert _fold('".".join(["os", "system"])') == "os.system"

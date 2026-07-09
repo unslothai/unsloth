@@ -290,6 +290,86 @@ def test_inject_sandbox_guard_plain_prepend_without_future():
 
 
 @_POSIX_ONLY
+def test_sandboxed_open_wrapped_attr_removed(tmp_path):
+    # functools.wraps would publish the ORIGINAL unguarded callable on __wrapped__;
+    # the guard must not expose it (open.__wrapped__(outside, 'w') would bypass).
+    target = tmp_path / "wrapped_escape.txt"
+    out = _python_exec(
+        f"open.__wrapped__({str(target)!r}, 'w').write('x'); print('WROTE')",
+        None,
+        30,
+        "backstop-wrapped",
+        disable_sandbox = False,
+    )
+    assert not target.exists()
+    assert "AttributeError" in out or "sandbox:" in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_low_level_io_open_denied(tmp_path):
+    # io.open / builtins.open originate from the C module _io; patching io.open leaves
+    # _io.open untouched, so it must be guarded too.
+    target = tmp_path / "lowio_escape.txt"
+    out = _python_exec(
+        f"import _io; _io.open({str(target)!r}, 'w').write('x'); print('WROTE')",
+        None,
+        30,
+        "backstop-lowio",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_chdir_escape_denied():
+    # os.chdir outside the workdir would let a later relative read/write (which the
+    # static scan treats as local) escape, so cwd changes are confined.
+    out = _python_exec(
+        "import os\nos.chdir('/etc')\nprint('CWD', os.getcwd())",
+        None,
+        30,
+        "backstop-chdir",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out and "chdir" in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_chdir_within_workdir_allowed():
+    out = _python_exec(
+        "import os\nos.chdir('.')\nprint('CWD-OK')",
+        None,
+        30,
+        "backstop-chdir-ok",
+        disable_sandbox = False,
+    )
+    assert "CWD-OK" in out
+    assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_fd_metadata_mutator_denied(tmp_path):
+    # A read-only os.open of an outside file is allowed (reads are not confined), but
+    # fd-based metadata mutators (os.fchmod/fchown) must be denied so they cannot be
+    # reused to mutate host files.
+    victim = tmp_path / "victim.txt"
+    victim.write_text("x")
+    os.chmod(victim, 0o600)
+    out = _python_exec(
+        "import os\n"
+        f"fd = os.open({str(victim)!r}, os.O_RDONLY)\n"
+        "os.fchmod(fd, 0o644); print('CHMODDED')",
+        None,
+        30,
+        "backstop-fchmod",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out and "fchmod" in out
+    assert oct(os.stat(victim).st_mode & 0o777) == "0o600"
+
+
+@_POSIX_ONLY
 def test_sandboxed_imports_still_work_under_guard():
     # The guard must not break library imports (bytecode caching failures are
     # swallowed by importlib) or benign compute.

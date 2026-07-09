@@ -1671,6 +1671,59 @@ def _fold_cap(value):
     return value
 
 
+def _too_wide(n):
+    """A format width / precision / size arg large enough to OOM the folder."""
+    return isinstance(n, int) and not isinstance(n, bool) and n > _FOLD_MAXLEN
+
+
+# Format-spec mini-language: reject an oversized width or precision BEFORE format()
+# allocates the padded string. format()/str.format()/f-strings all run in the Studio
+# process during static analysis, ahead of the child-subprocess rlimits.
+_FMT_SPEC_RE = re.compile(r"^(?:.?[<>=^])?[+\- ]?z?#?0?(\d+)?[,_]?(?:\.(\d+))?[a-zA-Z%]?$")
+
+
+def _format_spec_ok(spec):
+    if not isinstance(spec, str) or not spec:
+        return True
+    m = _FMT_SPEC_RE.match(spec)
+    if not m:
+        return True  # unrecognized spec: let format() itself decide at runtime
+    return not any(g and _too_wide(int(g)) for g in m.groups())
+
+
+def _format_template_ok(template):
+    """Every replacement field of a str.format template has a bounded width."""
+    if not isinstance(template, str):
+        return True
+    try:
+        import string as _string
+
+        for _lit, _field, _spec, _conv in _string.Formatter().parse(template):
+            if _spec and not _format_spec_ok(_spec):
+                return False
+    except Exception:
+        return True
+    return True
+
+
+_PRINTF_WIDTH_RE = re.compile(r"%[-+ #0]*(\d+)?(?:\.(\d+))?[hlL]?[diouxXeEfFgGcrsab%]")
+
+
+def _printf_ok(fmt):
+    """Percent-format string with no oversized field width / precision."""
+    if isinstance(fmt, (bytes, bytearray)):
+        try:
+            fmt = fmt.decode("latin-1")
+        except Exception:
+            return True
+    if not isinstance(fmt, str):
+        return True
+    for m in _PRINTF_WIDTH_RE.finditer(fmt):
+        if any(g and _too_wide(int(g)) for g in m.groups()):
+            return False
+    return True
+
+
 def _fold_apply_codec(name, data):
     """Pure data transforms only (rot13/hex/base64/zlib/text codecs). Bounded zlib."""
     name = name.lower().replace("-", "_")
@@ -1798,6 +1851,8 @@ def _const_fold(
                         v = {114: repr, 115: str, 97: ascii}[part.conversion](v)
                     except Exception:
                         return None
+                if not _format_spec_ok(spec if isinstance(spec, str) else ""):
+                    return None  # oversized f-string width/precision: refuse pre-format
                 try:
                     out.append(format(v, spec if isinstance(spec, str) else ""))
                 except Exception:
@@ -1820,10 +1875,20 @@ def _const_fold(
                 if isinstance(right, (str, bytes, bytearray)) and isinstance(left, int):
                     if len(right) * max(left, 0) > _FOLD_MAXLEN:
                         return None
+                # list/tuple repetition allocates len(seq)*n elements before _fold_cap
+                # (which only sizes str/bytes) can reject it -- cap it here too.
+                if isinstance(left, (list, tuple)) and isinstance(right, int):
+                    if len(left) * max(right, 0) > _FOLD_MAX_SEQ:
+                        return None
+                if isinstance(right, (list, tuple)) and isinstance(left, int):
+                    if len(right) * max(left, 0) > _FOLD_MAX_SEQ:
+                        return None
                 return _fold_cap(left * right)
             if isinstance(op, ast.Add):
                 return _fold_cap(left + right)
             if isinstance(op, ast.Mod):
+                if isinstance(left, (str, bytes, bytearray)) and not _printf_ok(left):
+                    return None  # oversized %-format width/precision: refuse pre-format
                 return _fold_cap(left % right)
             if isinstance(op, ast.Sub):
                 return _fold_cap(left - right)
@@ -1889,6 +1954,18 @@ def _const_fold(
     return None
 
 
+def _is_path_join_owner(nv):
+    """AST for ``os.path`` (Attribute) or ``posixpath`` / ``ntpath`` (Name)."""
+    if (
+        isinstance(nv, ast.Attribute)
+        and nv.attr == "path"
+        and isinstance(nv.value, ast.Name)
+        and nv.value.id == "os"
+    ):
+        return True
+    return isinstance(nv, ast.Name) and nv.id in ("posixpath", "ntpath")
+
+
 def _fold_call(node, _state, _depth):
     """Fold a whitelisted pure builtin / method / decode call, else None."""
     f = node.func
@@ -1946,6 +2023,16 @@ def _fold_call(node, _state, _depth):
     if isinstance(f, ast.Attribute):
         attr = f.attr
         owner = f.value
+        # os.path.join('/etc', 'passwd') / posixpath.join(...) / ntpath.join(...):
+        # fold literal path builders so the sensitive-read scanner sees the concrete
+        # path (open(os.path.join('/etc','passwd')) must not be treated as opaque).
+        if attr == "join" and _is_path_join_owner(owner):
+            if args and all(isinstance(x, str) for x in args):
+                try:
+                    return _fold_cap(os.path.join(*args))
+                except Exception:
+                    return None
+            return None
         if isinstance(owner, ast.Name):
             mod = owner.id
             try:
@@ -1985,6 +2072,14 @@ def _fold_call(node, _state, _depth):
                     call_args.append(
                         list(a) if attr == "join" and isinstance(a, (list, tuple)) else a
                     )
+                # Padding methods take a width as their first arg; str.format takes a
+                # template with per-field widths. Reject an oversized width before the
+                # method allocates the padded string during folding.
+                if attr in ("center", "ljust", "rjust", "zfill") and call_args:
+                    if _too_wide(call_args[0]):
+                        return None
+                if attr == "format" and not _format_template_ok(recv):
+                    return None
                 return _fold_cap(getattr(recv, attr)(*call_args, **kwargs))
             except Exception:
                 return None
@@ -2258,6 +2353,53 @@ def _to_text(value):
     return value
 
 
+# PEP 263 source-encoding cookie ("# -*- coding: utf-8 -*-", "# coding: utf_7").
+_CODING_COOKIE_RE = re.compile(rb"coding[:=]\s*([-\w.]+)")
+_CODING_COOKIE_TEXT_RE = re.compile(r"coding[:=]\s*([-\w.]+)")
+
+
+def _decode_source_bytes(data):
+    """Decode an exec/compile *bytes* payload the way CPython would.
+
+    exec()/eval()/compile() honor a PEP 263 coding cookie on bytes, so the analyzer
+    must decode with that cookie's codec (not a fixed UTF-8 view) or a snippet like
+    ``exec(b"# coding: utf_7\\n#+AAo-__import__('os').system('id')")`` reads as pure
+    comments under UTF-8 while actually running hidden code. Detect the encoding,
+    decode, then neutralize the cookie so ast.parse(str) does not reject the decoded
+    text (a str carrying a coding declaration raises SyntaxError), preserving line
+    numbers so the recursive analysis sees the real source.
+    """
+    data = bytes(data)
+    enc = "utf-8"
+    try:
+        import io as _io_mod
+        import tokenize as _tok
+
+        enc, _ = _tok.detect_encoding(_io_mod.BytesIO(data).readline)
+    except Exception:
+        enc = "utf-8"
+    for _cand in (enc, "utf-8"):
+        try:
+            text = data.decode(_cand)
+            break
+        except Exception:
+            text = None
+    if text is None:
+        text = data.decode("latin-1", "replace")
+    lines = text.split("\n")
+    for _i in range(min(2, len(lines))):
+        if _CODING_COOKIE_TEXT_RE.search(lines[_i]):
+            lines[_i] = _CODING_COOKIE_TEXT_RE.sub("coding_neutralized", lines[_i], count=1)
+    return "\n".join(lines)
+
+
+def _recovered_source(v):
+    """Text an exec/compile sink actually runs: cookie-aware decode for bytes."""
+    if isinstance(v, (bytes, bytearray)):
+        return _decode_source_bytes(v)
+    return _to_text(v)
+
+
 def _compile_mode(node, const_env):
     """Recover a compile()'s literal mode= (3rd positional or keyword), else 'exec'."""
     mode_node = None
@@ -2283,7 +2425,10 @@ def _build_exec_env(tree, const_env):
 
     exec_aliases: dict[str, str] = {}
     compiled_env: dict[str, tuple] = {}
-    for stmt in getattr(tree, "body", []):
+    # Walk the whole tree, not just tree.body: an alias assigned inside a function
+    # (def f(): e = exec; e("...")) must still be unwrapped. store_counts spans the
+    # tree, so the "stored exactly once" guard keeps this single-assignment (low-FP).
+    for stmt in ast.walk(tree):
         if not (
             isinstance(stmt, ast.Assign)
             and len(stmt.targets) == 1
@@ -2305,7 +2450,7 @@ def _build_exec_env(tree, const_env):
             v = _const_fold(rhs.args[0], const_env)
             if isinstance(v, (str, bytes, bytearray)):
                 compiled_env[name] = (
-                    _to_text(v),
+                    _recovered_source(v),
                     _compile_mode(rhs, const_env),
                     isinstance(v, (bytes, bytearray)),
                 )
@@ -2440,7 +2585,7 @@ def _recover_exec_payload(node, func_id, const_env, exec_aliases, compiled_env):
         if isinstance(v, (str, bytes, bytearray)):
             return (
                 "RECOVERED",
-                _to_text(v),
+                _recovered_source(v),
                 _compile_mode(arg0, const_env),
                 isinstance(v, (bytes, bytearray)),
             )
@@ -2454,7 +2599,7 @@ def _recover_exec_payload(node, func_id, const_env, exec_aliases, compiled_env):
     v = _const_fold(arg0, const_env)
     if isinstance(v, (str, bytes, bytearray)):
         mode = _compile_mode(node, const_env) if func_id == "compile" else base_mode
-        return ("RECOVERED", _to_text(v), mode, isinstance(v, (bytes, bytearray)))
+        return ("RECOVERED", _recovered_source(v), mode, isinstance(v, (bytes, bytearray)))
     return ("DYNAMIC", None, None, False)
 
 
@@ -3225,8 +3370,33 @@ def _check_signal_escape_patterns(
                             mod = _extract_string_from_node(node.args[0])
                     else:
                         mod = None
-                    if mod is None or mod.split(".")[0] in _DANGEROUS_IMPORT_NAMES:
+                    _mod_top = mod.split(".")[0] if mod else None
+                    if (
+                        mod is None
+                        or _mod_top in _DANGEROUS_IMPORT_NAMES
+                        or _mod_top in _DESERIALIZE_MODULES
+                    ):
+                        # Deserializer modules (pickle/marshal/...) are dangerous import
+                        # targets too: __import__('pickle').loads(blob) executes a reduce
+                        # payload even though a plain `import pickle` is benign.
                         dynamic_desc = "dynamic import of a computed or sensitive module name"
+                elif (
+                    isinstance(func, ast.Name)
+                    and func.id == "vars"
+                    and node.args
+                    and _ast_name_matches(
+                        node.args[0],
+                        _DYNAMIC_ATTR_TARGETS
+                        | self.os_aliases
+                        | self.subprocess_aliases
+                        | self.importlib_aliases
+                        | self.sys_aliases
+                        | self.builtins_aliases,
+                    )
+                ):
+                    # vars(os) / vars(__builtins__) returns the module __dict__, the same
+                    # obfuscation as os.__dict__['system'] but without the attribute access.
+                    dynamic_desc = "vars() on a sensitive module (dict obfuscation)"
                 elif (
                     isinstance(func, ast.Name)
                     and func.id in ("getattr", "setattr")
@@ -3963,6 +4133,40 @@ def _check_signal_escape_patterns(
     # open()/read callees, so benign relative-path building (os.path.join('..','x'))
     # is not caught. Dynamic (non-foldable) paths are left to the runtime backstop.
     _READ_METHODS = ("read_text", "read_bytes")
+    # Pathlib read methods carry the path on the RECEIVER, not in an argument:
+    # Path('../../.ssh/id_rsa').read_text() has no call args, so the constructor path
+    # must be inspected separately.
+    _PATHLIB_READ_METHODS = ("read_text", "read_bytes", "open")
+    _PATHLIB_CTORS = (
+        "Path",
+        "PurePath",
+        "PosixPath",
+        "PurePosixPath",
+        "WindowsPath",
+        "PureWindowsPath",
+    )
+
+    def _pathlib_receiver_path(recv):
+        if (
+            isinstance(recv, ast.Call)
+            and isinstance(recv.func, ast.Name)
+            and recv.func.id in _PATHLIB_CTORS
+            and recv.args
+        ):
+            v = _const_fold(recv.args[0], _const_env)
+            if isinstance(v, (str, bytes, bytearray)):
+                return _to_text(v)
+        return None
+
+    def _flag_read_path(node, s, is_read_callee):
+        norm = s.replace("\\", "/")
+        if _is_sensitive_abs_path(norm):
+            _fs_block(node, f"{s!r} is a sensitive host identity / credential file")
+            return True
+        if is_read_callee and (s[:1] == "~" or ".." in norm.split("/")):
+            _fs_block(node, f"{s!r} escapes the session workdir via path traversal")
+            return True
+        return False
 
     class _SensitiveReadVisitor(ast.NodeVisitor):
         def visit_Call(self, node):
@@ -3978,17 +4182,17 @@ def _check_signal_escape_patterns(
                 or fq in ("io.open", "os.open")
                 or method in _READ_METHODS
             )
+            # Pathlib read on a literal Path(...) receiver: check the constructor path.
+            if isinstance(f, ast.Attribute) and f.attr in _PATHLIB_READ_METHODS:
+                rp = _pathlib_receiver_path(f.value)
+                if rp is not None and _flag_read_path(node, rp, True):
+                    return
             for arg in list(node.args) + [kw.value for kw in (node.keywords or [])]:
                 v = _const_fold(arg, _const_env)
                 s = _to_text(v) if isinstance(v, (str, bytes, bytearray)) else None
                 if s is None:
                     continue
-                norm = s.replace("\\", "/")
-                if _is_sensitive_abs_path(norm):
-                    _fs_block(node, f"{s!r} is a sensitive host identity / credential file")
-                    break
-                if is_read_callee and (s[:1] == "~" or ".." in norm.split("/")):
-                    _fs_block(node, f"{s!r} escapes the session workdir via path traversal")
+                if _flag_read_path(node, s, is_read_callee):
                     break
             self.generic_visit(node)
 
@@ -4121,7 +4325,7 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
 # and the realpath-before-open TOCTOU window under adversarial in-sandbox threading.
 # --------------------------------------------------------------------------
 _SANDBOX_GUARD_SRC = r"""
-import os as _os, builtins as _bi, functools as _ft, io as _io, pathlib as _pl
+import os as _os, builtins as _bi, io as _io, pathlib as _pl
 # io + pathlib are imported BEFORE any patching on purpose: on Python <= 3.11
 # pathlib._NormalAccessor captures io.open / os.* into class attributes at import
 # time. A C builtin captured there does not bind on instance access, but a Python
@@ -4144,8 +4348,22 @@ def _deny(p, what):
         "sandbox: %s outside the session workdir is not permitted: %r" % (what, p)
     )
 
+def _gwraps(real):
+    # Like functools.wraps but WITHOUT publishing __wrapped__: functools.wraps stores
+    # the ORIGINAL unguarded callable on w.__wrapped__, and sandboxed code could reach
+    # it (builtins.open.__wrapped__('/etc/x', 'w'), os.rename.__wrapped__(...)) to call
+    # straight through every confinement below. Copy only the cosmetic metadata.
+    def _deco(w):
+        for _a in ("__module__", "__name__", "__qualname__", "__doc__"):
+            try:
+                setattr(w, _a, getattr(real, _a))
+            except Exception:
+                pass
+        return w
+    return _deco
+
 def _guard_open_like(real):
-    @_ft.wraps(real)
+    @_gwraps(real)
     def w(file, mode="r", *a, **k):
         m = mode if isinstance(mode, str) else "r"
         if any(c in m for c in "wax+") and not _within(file):
@@ -4163,7 +4381,7 @@ _WRITE_OFLAGS = (
     getattr(_os, "O_WRONLY", 0) | getattr(_os, "O_RDWR", 0)
     | getattr(_os, "O_CREAT", 0) | getattr(_os, "O_TRUNC", 0) | getattr(_os, "O_APPEND", 0)
 )
-@_ft.wraps(_real_osopen)
+@_gwraps(_real_osopen)
 def _guarded_osopen(path, flags, *a, **k):
     mutating = (not isinstance(flags, int)) or bool(flags & _WRITE_OFLAGS)
     if mutating:
@@ -4178,7 +4396,7 @@ def _wrap1(mod, name, what):
     orig = getattr(mod, name, None)
     if orig is None:
         return
-    @_ft.wraps(orig)
+    @_gwraps(orig)
     def w(path, *a, **k):
         if any(k.get(_f) is not None for _f in ("dir_fd", "src_dir_fd", "dst_dir_fd")):
             _deny(path, what + " (dir_fd)")  # fd-relative target: a realpath check is meaningless
@@ -4196,7 +4414,7 @@ def _wrap2(mod, name, both):
     orig = getattr(mod, name, None)
     if orig is None:
         return
-    @_ft.wraps(orig)
+    @_gwraps(orig)
     def w(src, dst, *a, **k):
         if any(k.get(_f) is not None for _f in ("dir_fd", "src_dir_fd", "dst_dir_fd")):
             _deny(dst, name + " (dir_fd)")  # fd-relative target: a realpath check is meaningless
@@ -4218,6 +4436,42 @@ try:
 except Exception:
     pass
 
+# The low-level C module _io is where io.open / builtins.open originate; patching the
+# io alias above leaves _io.open untouched, so `import _io; _io.open(p, 'w')` would
+# escape. Guard the underlying entry point too.
+try:
+    import _io as _lowio
+    _lowio.open = _guard_open_like(_lowio.open)
+except Exception:
+    pass
+
+# Confine the current working directory: os.chdir to a dir outside the workdir would
+# let a later relative write/read (which the static read scan treats as local) escape.
+# os.fchdir takes an fd whose target we cannot cheaply realpath, so deny it outright.
+_wrap1(_os, "chdir", "chdir")
+try:
+    _real_fchdir = _os.fchdir
+    @_gwraps(_real_fchdir)
+    def _guarded_fchdir(fd):
+        _deny(fd, "fchdir")
+    _os.fchdir = _guarded_fchdir
+except Exception:
+    pass
+
+# fd-based metadata mutators operate on an already-open descriptor, so a read-only
+# os.open of an outside file (allowed -- reads are not confined) could still be reused
+# to mutate host metadata. Deny them; sandboxed compute has no need to chmod/chown by fd.
+def _make_fd_denier(_name, _orig):
+    @_gwraps(_orig)
+    def _w(fd, *a, **k):
+        _deny(fd, _name)
+    return _w
+for _n in ("fchmod", "fchown"):
+    try:
+        setattr(_os, _n, _make_fd_denier(_n, getattr(_os, _n)))
+    except Exception:
+        pass
+
 try:
     import shutil as _sh
     _wrap1(_sh, "rmtree", "rmtree")
@@ -4232,7 +4486,7 @@ try:
     # Path.open("w"): wrap the public method directly (mode-aware). Version-robust
     # because pathlib's accessor holds the original io.open (captured at the top).
     _real_path_open = _pl.Path.open
-    @_ft.wraps(_real_path_open)
+    @_gwraps(_real_path_open)
     def _guarded_path_open(self, mode="r", *a, **k):
         m = mode if isinstance(mode, str) else "r"
         if any(c in m for c in "wax+") and not _within(self):
@@ -4244,7 +4498,7 @@ try:
         orig = getattr(_pl.Path, name, None)
         if orig is None:
             return
-        @_ft.wraps(orig)
+        @_gwraps(orig)
         def w(self, *a, **k):
             if not _within(self):
                 _deny(str(self), "Path." + name)

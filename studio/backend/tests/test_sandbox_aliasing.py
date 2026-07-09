@@ -61,6 +61,12 @@ class TestFuncLocalAliasBlocked:
         _ok("def run():\n    f = sorted\n    return f([3, 1, 2])\nrun()")
         _ok("import os\ndef run():\n    s = os.system\n    s('echo done')\nrun()")
 
+    def test_func_local_exec_alias_blocked(self):
+        # An exec builtin aliased inside a function must still be unwrapped and its
+        # recovered payload analyzed (exec-env aliasing walks the whole tree).
+        _blocked("def f():\n    e = exec\n    e(\"__import__('os').system('id')\")\nf()")
+        _blocked("def f():\n    r = eval\n    r(\"__import__('os').system('rm -rf /')\")\nf()")
+
 
 class TestAliasingLowFalsePositive:
     def test_reassigned_alias_not_treated_as_sink(self):
