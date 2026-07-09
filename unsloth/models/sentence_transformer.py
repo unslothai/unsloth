@@ -1089,10 +1089,12 @@ class FastSentenceTransformer(FastModel):
                 # Saved ST models: build via Transformer.load so the saved module config
                 # (incl. ST 5.x modality_config) is honored; plain Transformer(...) lets ST
                 # 5.x add a "message" modality for chat-template models (e.g. Qwen3-Embedding)
-                # that chat-wraps inputs and silently degrades embeddings (#6881). Prefer
-                # .load whenever present, passing only kwargs its signature accepts, so a
-                # renamed kwarg can't silently disable the fix and older ST without .load
-                # still loads. max_seq_length is (re)applied below regardless.
+                # that chat-wraps inputs and silently degrades embeddings (#6881). Use .load
+                # only when it can resolve a Hub id: modern ST accepts these kwargs or has
+                # **kwargs; legacy ST 3.x/4.x is Transformer.load(input_path) (local-only, no
+                # modality bug), so fall back to the constructor there instead of crashing.
+                # Pass only kwargs its signature accepts so a renamed kwarg can't disable the
+                # fix. max_seq_length is (re)applied below regardless.
                 transformer_module = None
                 transformer_load = getattr(Transformer, "load", None)
                 has_modules_json = (
@@ -1106,16 +1108,20 @@ class FastSentenceTransformer(FastModel):
                     accepts_var_kw = any(
                         p.kind is inspect.Parameter.VAR_KEYWORD for p in load_params.values()
                     )
-                    load_kwargs = {
-                        "token": token,
-                        "cache_folder": cache_dir,
-                        "revision": revision,
-                        "trust_remote_code": trust_remote_code,
-                        **transformer_kwargs,
-                    }
-                    if not accepts_var_kw:
-                        load_kwargs = {k: v for k, v in load_kwargs.items() if k in load_params}
-                    transformer_module = Transformer.load(model_name, **load_kwargs)
+                    hub_capable = accepts_var_kw or any(
+                        key in load_params for key in ("token", "cache_folder", "revision")
+                    )
+                    if hub_capable:
+                        load_kwargs = {
+                            "token": token,
+                            "cache_folder": cache_dir,
+                            "revision": revision,
+                            "trust_remote_code": trust_remote_code,
+                            **transformer_kwargs,
+                        }
+                        if not accepts_var_kw:
+                            load_kwargs = {k: v for k, v in load_kwargs.items() if k in load_params}
+                        transformer_module = Transformer.load(model_name, **load_kwargs)
                 if transformer_module is None:
                     transformer_module = Transformer(model_name, **transformer_kwargs)
             finally:
