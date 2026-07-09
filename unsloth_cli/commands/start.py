@@ -133,6 +133,16 @@ _YOLO_OPTION = typer.Option(
         "flag/config. Any of the three spellings works for any agent."
     ),
 )
+_RESUME_OPTION = typer.Option(
+    False,
+    "--resume/--no-resume",
+    help = (
+        "Keep this agent's session so you can resume it later. Without --resume a "
+        "launched agent's home is a throwaway temp dir wiped on exit (nothing "
+        "persists); with it, the session lives under the Unsloth agents dir (never "
+        "your own ~/.<agent>). A bare `--resume` also reopens the last conversation."
+    ),
+)
 
 # Per-agent CLI flag for "run tools without prompting". opencode and openclaw have no
 # such flag (config only) and are handled in their config writers, so they are absent.
@@ -149,6 +159,33 @@ _YOLO_COMMAND_FLAGS = {
 def _yolo_command_flags(agent: str, yolo: bool) -> list:
     # .get so a config-based agent (or a typo) yields no flag instead of a KeyError.
     return _YOLO_COMMAND_FLAGS.get(agent, []) if yolo else []
+
+
+# Native "reopen the previous session" tokens appended to a BARE `--resume` launch
+# (no passthrough args) so `unsloth start <agent> --resume` resumes the last chat
+# instead of opening a blank one. openclaw and hermes are omitted on purpose: their
+# resume is an in-app picker with no stable non-interactive selector, and --resume
+# already persists their session dir, so their own resume finds the prior sessions.
+_RESUME_LAUNCH_FLAGS = {
+    "claude": ["--continue"],
+    "codex": ["resume", "--last"],
+    "opencode": ["--continue"],
+    "pi": ["--continue"],
+}
+
+
+def _resume_launch_args(agent: str, resume: bool, launch: bool, passthrough) -> list:
+    """Tokens that make a bare `--resume` launch reopen the agent's last session.
+
+    Only a bare interactive launch (``--resume`` set, no passthrough args) gets them:
+    when the caller passes their own subcommand they drive resume themselves, and the
+    --no-launch printout is consumed by drivers that append their own subcommand, so a
+    resume token there would break it. An agent without a mapping returns nothing;
+    --resume still persists its session dir so its own resume works.
+    """
+    if resume and launch and not passthrough:
+        return list(_RESUME_LAUNCH_FLAGS.get(agent, []))
+    return []
 
 
 def _hermes_install_hint() -> str:
@@ -1116,15 +1153,16 @@ def _agents_config_root() -> Path:
 
 
 @contextlib.contextmanager
-def _session_config(agent: str, launch: bool):
+def _session_config(agent: str, launch: bool, persist: bool = False):
     """Yield a private directory for an agent's session config (never the user's own).
 
-    launch: an ephemeral temp dir removed after the agent process exits, so nothing
-    persists. no-launch: a stable Unsloth-owned dir (the printed recipe is run later
-    on this machine), reused across runs. Either way the user's real ~/.<agent>
-    config is left untouched.
+    launch (default): an ephemeral temp dir removed after the agent process exits, so
+    nothing persists. no-launch: a stable Unsloth-owned dir (the printed recipe is run
+    later on this machine), reused across runs. persist (from --resume): use that same
+    stable dir even for a launch, so the agent's session survives the exit and can be
+    resumed next time. Either way the user's real ~/.<agent> config is left untouched.
     """
-    if launch:
+    if launch and not persist:
         path = Path(tempfile.mkdtemp(prefix = f"unsloth-{agent}-"))
         try:
             yield path
@@ -1436,6 +1474,7 @@ def claude(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    resume: bool = _RESUME_OPTION,
 ):
     """Point Claude Code at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1480,6 +1519,8 @@ def claude(
     # --yolo (or its aliases) maps to Claude's own --dangerously-skip-permissions.
     # IS_SANDBOX is left unset on purpose: Claude refuses bypass mode as root unless a
     # sandbox is detected, and we don't want to falsely claim one on the user's host.
+    # claude keeps its history in ~/.claude/projects, which --settings/env never
+    # relocate, so a session already survives exit; --resume only needs to reopen it.
     command = [
         "claude",
         "--model",
@@ -1487,6 +1528,7 @@ def claude(
         *_claude_flags(),
         *_yolo_command_flags("claude", yolo),
         *ctx.args,
+        *_resume_launch_args("claude", resume, launch, ctx.args),
     ]
     install_hint = (
         "irm https://claude.ai/install.ps1 | iex"
@@ -1516,6 +1558,7 @@ def codex(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    resume: bool = _RESUME_OPTION,
 ):
     """Point OpenAI Codex at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1540,8 +1583,9 @@ def codex(
         _CODEX_PROFILE,
         *_yolo_command_flags("codex", yolo),
         *ctx.args,
+        *_resume_launch_args("codex", resume, launch, ctx.args),
     ]
-    with _session_config("codex", launch) as home:
+    with _session_config("codex", launch, persist = resume) as home:
         write_codex_config(base, entry, home)
         env = {_CODEX_ENV_KEY: key, "CODEX_HOME": str(home)}
         _run(base, entry, env, command, launch = launch, install_hint = "npm install -g @openai/codex")
@@ -1559,6 +1603,7 @@ def openclaw(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    resume: bool = _RESUME_OPTION,
 ):
     """Point OpenClaw at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1584,7 +1629,7 @@ def openclaw(
         if os.name == "nt"
         else "curl -fsSL https://openclaw.ai/install.sh | bash"
     )
-    with _session_config("openclaw", launch) as cfg:
+    with _session_config("openclaw", launch, persist = resume) as cfg:
         config_path = cfg / "openclaw.json"
         # key lives in the config, not the env; --yolo writes the exec policy here too.
         write_openclaw_config(base, key, entry, config_path, yolo = yolo)
@@ -1605,6 +1650,7 @@ def opencode(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    resume: bool = _RESUME_OPTION,
 ):
     """Point OpenCode at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1628,7 +1674,10 @@ def opencode(
         command = ["opencode", "--model", opencode_model]
     else:
         command = ["opencode"]
-    with _session_config("opencode", launch) as cfg:
+    # opencode keeps sessions in ~/.local/share/opencode (never relocated), so resume
+    # already survives exit; a bare --resume just reopens the last one with --continue.
+    command += _resume_launch_args("opencode", resume, launch, ctx.args)
+    with _session_config("opencode", launch, persist = resume) as cfg:
         config_path = cfg / "opencode.json"
         # OPENCODE_CONFIG is an overlay (loaded between the user's global and project
         # configs), so this adds the Unsloth provider/model for the session without
@@ -1680,6 +1729,7 @@ def hermes(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    resume: bool = _RESUME_OPTION,
 ):
     """Point Hermes (Nous Research) at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1691,7 +1741,7 @@ def hermes(
     )
     command = ["hermes", *_yolo_command_flags("hermes", yolo), *ctx.args]
     install_hint = _hermes_install_hint()
-    with _session_config("hermes", launch) as home:
+    with _session_config("hermes", launch, persist = resume) as home:
         # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state)
         # like CODEX_HOME, so the user's ~/.hermes is left untouched for the session.
         write_hermes_config(base, entry, home / "config.yaml")
@@ -1711,6 +1761,7 @@ def pi(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    resume: bool = _RESUME_OPTION,
 ):
     """Point Pi (coding agent) at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1731,11 +1782,12 @@ def pi(
         entry["id"],
         *_yolo_command_flags("pi", yolo),
         *ctx.args,
+        *_resume_launch_args("pi", resume, launch, ctx.args),
     ]
     # --ignore-scripts matches Pi's documented install recipe (its README notes Pi needs
     # no install scripts), so accepting the prompt skips dependency lifecycle scripts.
     install_hint = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
-    with _session_config("pi", launch) as home:
+    with _session_config("pi", launch, persist = resume) as home:
         # Pi resolves its config dir from PI_CODING_AGENT_DIR first (getAgentDir() prefers
         # it over $HOME/.pi/agent), so pin it at the session dir: an inherited
         # PI_CODING_AGENT_DIR in the user's shell would otherwise send Pi to their real
