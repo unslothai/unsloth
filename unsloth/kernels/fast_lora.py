@@ -95,6 +95,15 @@ class LoRA_MLP(torch.autograd.Function):
         h = _forward_function(e, g)
         i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
+        # custom_fwd disables autocast, so X may arrive in a different dtype than
+        # the fused-op compute dtype (e.g. fp32 hidden states from
+        # fast_rms_layernorm meeting fp16/bf16 base weights). matmul_lora computes
+        # in the base weight dtype (== e.dtype); keep the saved activation in that
+        # same dtype so the backward pass stays dtype-consistent. The incoming
+        # dtype is remembered in ctx.input_dtype and restored on the returned dX.
+        ctx.input_dtype = dtype
+        X = X.to(e.dtype)
+
         ctx.custom_saved_tensors = (
             gateW,
             gateW_quant,
@@ -134,6 +143,9 @@ class LoRA_MLP(torch.autograd.Function):
         e = e.view(-1, e.shape[-1])
         g = g.view(-1, g.shape[-1])
         dtype = X.dtype
+        # X (and thus dtype) is the compute dtype pinned in forward; align dY too.
+        if dY.dtype != dtype:
+            dY = dY.to(dtype)
 
         gateA, gateB, upA, upB, downA, downB = (
             gateA.to(dtype),
@@ -206,8 +218,11 @@ class LoRA_MLP(torch.autograd.Function):
         # gateW, gateW_quant, gateA, gateB, gateS,
         #  upW,    upW_quant,   upA,   upB,   upS,
         # downW, downW_quant, downA, downB, downS,
+        dX = dX.view(batch, seq_len, hd)
+        if dX.dtype != ctx.input_dtype:
+            dX = dX.to(ctx.input_dtype)
         return (
-            dX.view(batch, seq_len, hd),
+            dX,
             None,
             None,
             d_gateA.t(),
@@ -404,6 +419,12 @@ class LoRA_QKV(torch.autograd.Function):
             K = K.view(orig_shape[0], orig_shape[1], -1)
             V = V.view(orig_shape[0], orig_shape[1], -1)
 
+        # custom_fwd disables autocast; matmul_lora computed in the base weight
+        # (compute) dtype == Q.dtype. Pin the saved activation to it so backward
+        # is dtype-consistent, and remember the incoming dtype for the dX grad.
+        ctx.input_dtype = dtype
+        X = X.to(Q.dtype)
+
         ctx.custom_saved_tensors = (
             QW,
             QW_quant,
@@ -447,6 +468,13 @@ class LoRA_QKV(torch.autograd.Function):
         dV = dV.view(-1, dV.shape[-1])
         X = X.view(-1, X.shape[-1])
         dtype = X.dtype
+        # X (and thus dtype) is the compute dtype pinned in forward; align grads.
+        if dQ.dtype != dtype:
+            dQ = dQ.to(dtype)
+        if dK.dtype != dtype:
+            dK = dK.to(dtype)
+        if dV.dtype != dtype:
+            dV = dV.to(dtype)
 
         QA, QB, KA, KB, VA, VB = (
             QA.to(dtype),
@@ -519,8 +547,11 @@ class LoRA_QKV(torch.autograd.Function):
         # QW, QW_quant, QA, QB, QS,
         # KW, KW_quant, KA, KB, KS,
         # VW, VW_quant, VA, VB, VS,
+        dX = dX.view(batch, seq_len, hd)
+        if dX.dtype != ctx.input_dtype:
+            dX = dX.to(ctx.input_dtype)
         return (
-            dX.view(batch, seq_len, hd),
+            dX,
             None,
             None,
             d_QA.t(),
@@ -604,6 +635,11 @@ class LoRA_W(torch.autograd.Function):
     def forward(ctx, X: torch.Tensor, W, W_quant, A, B, S):
         dtype = X.dtype
         XW = matmul_lora(X, W, W_quant, A, B, S)
+        # custom_fwd disables autocast; pin the saved activation to the compute
+        # dtype (== XW.dtype) so backward is dtype-consistent, and remember the
+        # incoming dtype for the returned dX grad.
+        ctx.input_dtype = dtype
+        X = X.to(XW.dtype)
         ctx.custom_saved_tensors = (
             W,
             W_quant,
@@ -622,6 +658,9 @@ class LoRA_W(torch.autograd.Function):
         dY = dY.reshape(-1, dY.shape[-1])  # Must be reshape
         X = X.reshape(-1, X.shape[-1])  # Must be reshape
         dtype = X.dtype
+        # X (and thus dtype) is the compute dtype pinned in forward; align dY too.
+        if dY.dtype != dtype:
+            dY = dY.to(dtype)
 
         A, B = A.to(dtype), B.to(dtype)
 
@@ -647,7 +686,10 @@ class LoRA_W(torch.autograd.Function):
         dX.addmm_(dY @ B.t(), A.t(), alpha = S)
 
         # W, W_quant, A, B, S
-        return dX.view(batch, seq_len, hd), None, None, d_A.t(), d_B.t(), None
+        dX = dX.view(batch, seq_len, hd)
+        if dX.dtype != ctx.input_dtype:
+            dX = dX.to(ctx.input_dtype)
+        return dX, None, None, d_A.t(), d_B.t(), None
 
 
 def apply_lora_o(self, X):
