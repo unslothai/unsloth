@@ -6,12 +6,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
 from jinja2 import TemplateError
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
+from hub.services.models.folder_browser import (
+    _build_browse_allowlist,
+    _is_path_inside_allowlist,
+)
 from utils.models.gguf_metadata import read_gguf_chat_template
 from utils.models.model_config import (
     _extract_quant_label,
@@ -22,12 +27,19 @@ from utils.models.model_config import (
 from utils.paths.path_utils import (
     get_cache_path,
     is_local_path,
+    normalize_path,
     resolve_cached_repo_id_case,
 )
 
 from .schemas import ValidateChatTemplateResponse
 
 logger = logging.getLogger(__name__)
+
+_VALID_REPO_ID = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
+
+def _is_valid_repo_id(repo_id: str) -> bool:
+    return bool(_VALID_REPO_ID.fullmatch(repo_id))
 
 _TOKENIZER_CONFIG_PATHS = ("tokenizer_config.json", "LLM/tokenizer_config.json")
 _JINJA_TEMPLATE_PATHS = ("chat_template.jinja", "LLM/chat_template.jinja")
@@ -221,12 +233,19 @@ def read_default_chat_template(
 
     if is_local_path(name):
         try:
+            target = Path(normalize_path(name)).expanduser()
+            if not _is_path_inside_allowlist(target, _build_browse_allowlist()):
+                logger.debug("Refused chat template read outside allowed folders: %s", name)
+                return None
             if name.lower().endswith(".gguf"):
-                return read_gguf_chat_template(name)
-            return _chat_template_from_dir(Path(name), gguf_variant)
+                return read_gguf_chat_template(str(target))
+            return _chat_template_from_dir(target, gguf_variant)
         except Exception as exc:
             logger.debug("Could not read local chat template for %s: %s", name, exc)
             return None
+
+    if not _is_valid_repo_id(name):
+        return None
 
     resolved = resolve_cached_repo_id_case(name)
 

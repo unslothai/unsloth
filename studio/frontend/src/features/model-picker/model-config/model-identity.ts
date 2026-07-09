@@ -7,8 +7,6 @@ import {
 } from "@/features/hub/lib/model-identity";
 
 export {
-  ggufVariantsMatch,
-  modelIdsMatch,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
 } from "@/features/hub/lib/model-identity";

@@ -165,6 +165,9 @@ export function applyActiveModelStatusToStore(
   const ggufMaxContextLength = status.is_gguf
     ? (status.max_context_length ?? null)
     : null;
+  const ggufNativeContextLength = status.is_gguf
+    ? (status.native_context_length ?? null)
+    : null;
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const prevState = useChatRuntimeStore.getState();
   const clampedReasoningEffort =
@@ -199,6 +202,7 @@ export function applyActiveModelStatusToStore(
       : true,
     ggufContextLength: currentGgufContextLength,
     ggufMaxContextLength,
+    ggufNativeContextLength,
     ...(status.is_gguf ? {} : { activeNativePathToken: null }),
     modelRequiresTrustRemoteCode: status.requires_trust_remote_code ?? false,
     defaultChatTemplate: nextDefaultChatTemplate,

@@ -700,6 +700,9 @@ export function useChatModelRuntime() {
             const reportedMaxCtx = loadResponse.is_gguf
               ? (loadResponse.max_context_length ?? null)
               : null;
+            const reportedNativeCtx = loadResponse.is_gguf
+              ? (loadResponse.native_context_length ?? null)
+              : null;
             // A successful reload has applied settings, so clear pending custom
             // context state and display the backend-reported effective context.
             const keepCustomCtx = null;
@@ -732,6 +735,7 @@ export function useChatModelRuntime() {
             useChatRuntimeStore.setState({
               ggufContextLength: nativeCtx,
               ggufMaxContextLength,
+              ggufNativeContextLength: reportedNativeCtx,
               modelRequiresTrustRemoteCode:
                 loadResponse.requires_trust_remote_code ?? false,
               supportsReasoning,

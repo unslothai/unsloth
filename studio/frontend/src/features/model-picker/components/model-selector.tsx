@@ -118,7 +118,6 @@ export type {
   ExternalModelOption,
   LoraModelOption,
   ModelOption,
-  ModelPickTarget,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 

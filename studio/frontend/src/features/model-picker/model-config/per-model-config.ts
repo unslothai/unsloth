@@ -9,8 +9,6 @@ import {
   normalizeModelIdentity,
 } from "./model-identity";
 
-export { modelStorageKey as configEntryKey };
-
 export interface PerModelConfig {
   customContextLength: number | null;
   maxSeqLength: number | null;
@@ -553,25 +551,6 @@ export function deletePerModelConfig(
 ): void {
   const map = readMap();
   if (deleteConfigEntriesForModelVariant(map, modelId, ggufVariant)) {
-    writeMap(map);
-  }
-}
-
-export function deletePerModelConfigsForModel(modelId: string): void {
-  const map = readMap();
-  const targetIdentity = normalizeModelIdentity(modelId);
-  let changed = false;
-  for (const key of Object.keys(map)) {
-    const storedModelId = modelIdFromStorageKey(key);
-    if (
-      storedModelId &&
-      normalizeModelIdentity(storedModelId) === targetIdentity
-    ) {
-      delete map[key];
-      changed = true;
-    }
-  }
-  if (changed) {
     writeMap(map);
   }
 }

@@ -27,7 +27,7 @@ import type {
   CachedModelRepo,
   LocalModelInfo,
 } from "@/features/chat/api/chat-api";
-import { useChatPickerInventory } from "@/features/model-picker/inventory/use-chat-picker-inventory";
+import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import {

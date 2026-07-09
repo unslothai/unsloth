@@ -1211,6 +1211,9 @@ export function ChatPage({
   const ggufContextLength = useChatRuntimeStore(
     (state) => state.ggufContextLength,
   );
+  const ggufNativeContextLength = useChatRuntimeStore(
+    (state) => state.ggufNativeContextLength,
+  );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
@@ -1987,6 +1990,7 @@ export function ChatPage({
           activeGgufVariant: null,
           ggufContextLength: null,
           ggufMaxContextLength: null,
+          ggufNativeContextLength: null,
           activeNativePathToken: null,
           // Clear previous-model counters, else the relaxed external-provider
           // render gate shows stale stats until the next completion.
@@ -2720,6 +2724,7 @@ export function ChatPage({
               modelId={inferenceParams.checkpoint}
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
+              nativeContextLength={ggufNativeContextLength}
               loadedContextLength={ggufContextLength}
               loadedConfig={activeModelConfig}
               onReload={handleReloadActiveModel}
