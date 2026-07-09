@@ -123,15 +123,21 @@ class TestInstallPs1UvDefaultIndex:
         assert "--index-url $TorchIndexUrl" not in self._ps1
         assert "--index-url $ROCmIndexUrl" not in self._ps1
 
+    def test_torch_installs_neutralize_all_uv_index_env_vars(self):
+        # Extra-index vars outrank --default-index, so pinned installs must clear them.
+        for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL"):
+            assert var in self._ps1
+        assert 'Remove-Item "Env:$n"' in self._ps1
+
 
 class TestSetupPs1FastInstallIndex:
     """setup.ps1 Fast-Install must neutralize inherited uv indexes when pinning."""
 
     _ps1 = _read(_SETUP_PS1)
 
-    def test_fast_install_clears_uv_default_index(self):
-        assert "UV_DEFAULT_INDEX" in self._ps1
-        assert "UV_INDEX_URL" in self._ps1
+    def test_fast_install_clears_all_uv_index_env_vars(self):
+        for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL"):
+            assert var in self._ps1
         # Must truly remove the vars (child sees no value), not set them empty.
         assert 'Remove-Item "Env:$n"' in self._ps1
 
@@ -146,6 +152,10 @@ class TestInstallShUvDefaultIndex:
 
     def test_torch_installs_do_not_use_deprecated_index_url(self):
         assert '--index-url "$TORCH_INDEX_URL"' not in self._sh
+
+    def test_torch_installs_neutralize_all_uv_index_env_vars(self):
+        # --default-index installs run with all uv index env vars unset via `env -u`.
+        assert "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL" in self._sh
 
 
 # Group 2 -- Shell snippet tests (bash subprocess, mocked python)

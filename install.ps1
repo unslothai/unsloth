@@ -469,6 +469,17 @@ function Install-UnslothStudio {
         param(
             [Parameter(Mandatory = $true)][ScriptBlock]$Command
         )
+        # Installer-pinned index installs (torch) must beat an inherited uv mirror
+        # (#6898): when the command pins an index, clear every uv index env var so
+        # it wins, then restore in finally. Other installs keep the user's mirror.
+        $savedUvIndex = $null
+        if ($Command.ToString() -match '--default-index') {
+            $savedUvIndex = @{}
+            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL') {
+                $savedUvIndex[$n] = [Environment]::GetEnvironmentVariable($n)
+                Remove-Item "Env:$n" -ErrorAction SilentlyContinue
+            }
+        }
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
@@ -488,6 +499,7 @@ function Install-UnslothStudio {
             return [int]$LASTEXITCODE
         } finally {
             $ErrorActionPreference = $prevEap
+            if ($savedUvIndex) { foreach ($n in $savedUvIndex.Keys) { if ($null -ne $savedUvIndex[$n]) { Set-Item "Env:$n" $savedUvIndex[$n] } } }
         }
     }
 
