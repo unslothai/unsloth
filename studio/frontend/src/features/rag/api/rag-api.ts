@@ -10,6 +10,7 @@ import type {
   KnowledgeBase,
   PreviewTarget,
   RagDocument,
+  UploadedDocument,
 } from "../types/rag";
 
 const RAG_BASE = "/api/rag";
@@ -192,6 +193,13 @@ export async function projectHasSources(projectId: string): Promise<boolean> {
 
 export function invalidateProjectSources(projectId: string): void {
   projectSourcesCache.delete(projectId);
+}
+
+export async function listAllDocuments(): Promise<UploadedDocument[]> {
+  const data = await ragRequest<{ documents: UploadedDocument[] }>(
+    "/documents",
+  );
+  return data.documents ?? [];
 }
 
 export function deleteDocument(documentId: string): Promise<{ ok: boolean }> {

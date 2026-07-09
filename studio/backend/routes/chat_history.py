@@ -19,13 +19,16 @@ from storage.studio_db import (
     clear_chat_history,
     count_chat_threads,
     count_forks_for_message,
+    delete_chat_attachment,
     delete_chat_threads,
     delete_chat_project,
     ensure_chat_project_workspace,
     fork_chat_thread,
+    get_chat_attachment,
     get_chat_project,
     get_chat_thread,
     get_chat_message,
+    list_chat_attachments,
     list_chat_projects,
     list_chat_legacy_imports,
     list_chat_settings,
@@ -277,6 +280,64 @@ async def delete_threads(
 ):
     delete_chat_threads(payload.ids)
     return {"status": "deleted"}
+
+
+@router.get("/attachments")
+async def list_attachments(current_subject: str = Depends(get_current_subject)) -> dict:
+    """Every chat message attachment (settings Data tab uploaded-files list)."""
+    return {"attachments": list_chat_attachments()}
+
+
+@router.get("/attachments/{message_id}/{attachment_id}/file")
+async def get_attachment_file(
+    message_id: str,
+    attachment_id: str,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Serve one attachment's stored content (image bytes or extracted text)."""
+    import base64
+
+    from fastapi.responses import Response
+
+    attachment = get_chat_attachment(message_id, attachment_id)
+    if attachment is None:
+        raise HTTPException(status_code = 404, detail = "Attachment not found")
+
+    texts: list[str] = []
+    for part in attachment.get("content") or []:
+        if not isinstance(part, dict):
+            continue
+        image = part.get("image")
+        if isinstance(image, str) and image.startswith("data:"):
+            header, _, payload = image.partition(",")
+            media_type = header[5:].split(";", 1)[0] or "application/octet-stream"
+            try:
+                data = base64.b64decode(payload, validate = False)
+            except Exception as exc:  # noqa: BLE001 - corrupt stored payload
+                raise HTTPException(
+                    status_code = 422, detail = "Attachment image data is corrupt"
+                ) from exc
+            return Response(content = data, media_type = media_type)
+        text = part.get("text")
+        if isinstance(text, str) and text:
+            texts.append(text)
+    if texts:
+        return Response(
+            content = "\n".join(texts), media_type = "text/plain; charset=utf-8"
+        )
+    raise HTTPException(status_code = 404, detail = "Attachment has no stored content")
+
+
+@router.delete("/attachments/{message_id}/{attachment_id}")
+async def delete_attachment(
+    message_id: str,
+    attachment_id: str,
+    current_subject: str = Depends(get_current_subject),
+) -> dict:
+    """Remove one attachment from its chat message."""
+    if not delete_chat_attachment(message_id, attachment_id):
+        raise HTTPException(status_code = 404, detail = "Attachment not found")
+    return {"ok": True}
 
 
 @router.get("/projects", response_model = ChatProjectListResponse)

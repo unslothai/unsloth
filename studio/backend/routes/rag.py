@@ -318,6 +318,39 @@ def list_project_documents(project_id: str, subject: str = Depends(get_current_s
         conn.close()
 
 
+@router.get("/documents")
+def list_all_uploaded_documents(subject: str = Depends(get_current_subject)) -> dict:
+    """Every uploaded file across chats, projects, and knowledge bases (settings
+    Data tab)."""
+    _require_rag()
+    conn = rag_db.get_connection()
+    try:
+        docs = store.list_all_documents(conn)
+        kb_names = {kb["id"]: kb["name"] for kb in store.list_kbs(conn)}
+    finally:
+        conn.close()
+
+    from storage.studio_db import list_chat_projects
+
+    project_names = {p["id"]: p["name"] for p in list_chat_projects(include_archived = True)}
+
+    out = []
+    for doc in docs:
+        view = _doc_view(doc)
+        stored_path = doc.get("stored_path")
+        size = None
+        if stored_path:
+            try:
+                size = os.path.getsize(stored_path)
+            except OSError:
+                size = None
+        view["sizeBytes"] = size
+        view["kbName"] = kb_names.get(doc.get("kb_id"))
+        view["projectName"] = project_names.get(doc.get("project_id"))
+        out.append(view)
+    return {"documents": out}
+
+
 @router.delete("/documents/{document_id}")
 def delete_document(document_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()

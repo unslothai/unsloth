@@ -5,4 +5,4 @@ export { KnowledgeBaseComposerButton } from "./components/knowledge-base-compose
 export { KnowledgeBaseDialog } from "./components/knowledge-base-dialog";
 export { RetrievalSettingsSection } from "./components/retrieval-settings-section";
 export { ThreadDocumentsBar } from "./components/thread-documents-bar";
-export type { KnowledgeBase, RagDocument } from "./types/rag";
+export type { KnowledgeBase, RagDocument, UploadedDocument } from "./types/rag";

@@ -96,6 +96,7 @@ export const en = {
       resources: "System",
       chat: "Chat",
       connections: "Connections",
+      data: "Data",
       apiKeys: "API",
       about: "About",
     },
@@ -331,7 +332,7 @@ export const en = {
     },
     chat: {
       title: "Chat",
-      description: "Manage chat history stored on this device.",
+      description: "Customize how chat behaves on this device.",
       modelDisclaimer: "Show model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
@@ -399,6 +400,35 @@ export const en = {
       storageClearFailed:
         "A storage clear failed; {count} chats may remain. Please retry.",
       failedToClearChats: "Failed to clear chats",
+    },
+    data: {
+      title: "Data",
+      description:
+        "Manage chat history and uploaded files stored on this device.",
+      chatsSection: "Chats",
+      archivedChats: "Archived chats",
+      archivedChatsDescription: "View and manage chats you have archived.",
+      manageAction: "Manage",
+      archiveAllChats: "Archive all chats",
+      archiveAllChatsDescription:
+        "Move every chat in Recents and Projects to the archive.",
+      noChatsToArchive: "No chats to archive.",
+      archiveAllAction: "Archive all",
+      archivingAction: "Archiving...",
+      archiveAllChatsTitle: "Archive all chats?",
+      archiveAllChatsConfirmDescription:
+        "Moves every chat on this device to the archive. Archived chats stay available and can be unarchived at any time.",
+      archivedAllChats: "Archived all chats",
+      archivedOneChat: "Archived 1 chat",
+      archivedChatCount: "Archived {count} chats",
+      failedToArchiveChats: "Failed to archive chats",
+      confirmBeforeDeleting: "Confirm before deleting",
+      confirmBeforeDeletingDescription:
+        "Ask for confirmation before a chat is deleted. Turn off to delete instantly.",
+      filesSection: "Files",
+      uploadedFiles: "Uploaded files",
+      uploadedFilesDescription:
+        "View and manage files uploaded to chats, projects, and knowledge bases.",
     },
     connections: {
       title: "Connections",

@@ -158,6 +158,16 @@ def list_documents(conn: sqlite3.Connection, scope: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def list_all_documents(conn: sqlite3.Connection) -> list[dict]:
+    """Every uploaded document across all scopes (KBs, threads, projects)."""
+    rows = conn.execute(
+        "SELECT id, scope, kb_id, thread_id, project_id, filename, sha256, status, error, "
+        "num_chunks, stored_path, created_at "
+        "FROM documents ORDER BY created_at DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_document(conn: sqlite3.Connection, document_id: str) -> dict | None:
     row = conn.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()
     return dict(row) if row else None

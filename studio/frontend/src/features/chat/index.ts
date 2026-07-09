@@ -55,6 +55,7 @@ export {
   importConversationsFromFile,
 } from "./prompt-storage/prompt-storage-dialog";
 export {
+  archiveAllChatItems,
   archiveChatItem,
   deleteChatItem,
   renameChatItem,

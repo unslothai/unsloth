@@ -408,6 +408,53 @@ export async function listChatThreads(
   return Array.isArray(data.threads) ? data.threads : [];
 }
 
+/** One chat message attachment, as listed for the settings uploaded-files view. */
+export interface ChatAttachmentRecord {
+  id: string;
+  messageId: string;
+  threadId: string;
+  threadTitle?: string | null;
+  name: string;
+  type?: string | null;
+  contentType?: string | null;
+  sizeBytes?: number | null;
+  createdAt?: number | null;
+}
+
+export async function listChatAttachments(): Promise<ChatAttachmentRecord[]> {
+  const response = await authFetch("/api/chat/attachments");
+  const data = await parseJsonOrThrow<{ attachments: ChatAttachmentRecord[] }>(
+    response,
+  );
+  return Array.isArray(data.attachments) ? data.attachments : [];
+}
+
+/** Stored attachment content (image bytes or extracted text) as a Blob. */
+export async function fetchChatAttachmentBlob(
+  messageId: string,
+  attachmentId: string,
+): Promise<Blob> {
+  const response = await authFetch(
+    `/api/chat/attachments/${encodeURIComponent(messageId)}/${encodeURIComponent(attachmentId)}/file`,
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(parseErrorText(response.status, body));
+  }
+  return response.blob();
+}
+
+export async function deleteChatAttachment(
+  messageId: string,
+  attachmentId: string,
+): Promise<void> {
+  const response = await authFetch(
+    `/api/chat/attachments/${encodeURIComponent(messageId)}/${encodeURIComponent(attachmentId)}`,
+    { method: "DELETE" },
+  );
+  await parseJsonOrThrow<{ ok: boolean }>(response);
+}
+
 export async function getChatThread(
   threadId: string,
 ): Promise<ThreadRecord | null> {

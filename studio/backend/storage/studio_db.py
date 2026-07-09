@@ -1719,6 +1719,129 @@ def get_chat_message(thread_id: str, message_id: str) -> Optional[dict]:
         conn.close()
 
 
+def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
+    """Approximate stored size of one attachment's content parts.
+
+    Image parts hold a base64 data URL (decoded bytes ~= 3/4 of the encoded
+    length); text parts count their character length. None when there is no
+    sizable content (e.g. a stripped/legacy attachment).
+    """
+    total = 0
+    found = False
+    for part in attachment.get("content") or []:
+        if not isinstance(part, dict):
+            continue
+        image = part.get("image")
+        if isinstance(image, str) and image:
+            payload = image.rsplit(",", 1)[-1]
+            total += (len(payload) * 3) // 4
+            found = True
+            continue
+        text = part.get("text")
+        if isinstance(text, str) and text:
+            total += len(text.encode("utf-8", errors = "ignore"))
+            found = True
+    return total if found else None
+
+
+def list_chat_attachments() -> list[dict]:
+    """Every attachment across chat messages (settings Data tab uploads list)."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT m.id AS message_id, m.thread_id, m.attachments_json, m.created_at,
+                   t.title AS thread_title
+            FROM chat_messages m
+            LEFT JOIN chat_threads t ON t.id = m.thread_id
+            WHERE m.attachments_json IS NOT NULL
+              AND m.attachments_json != '[]'
+              AND m.attachments_json != 'null'
+            ORDER BY m.created_at DESC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    out: list[dict] = []
+    for row in rows:
+        attachments = _json_loads(row["attachments_json"], None)
+        if not isinstance(attachments, list):
+            continue
+        for attachment in attachments:
+            if not isinstance(attachment, dict) or not attachment.get("id"):
+                continue
+            out.append(
+                {
+                    "id": attachment["id"],
+                    "messageId": row["message_id"],
+                    "threadId": row["thread_id"],
+                    "threadTitle": row["thread_title"],
+                    "name": attachment.get("name") or "attachment",
+                    "type": attachment.get("type"),
+                    "contentType": attachment.get("contentType"),
+                    "sizeBytes": _chat_attachment_size_bytes(attachment),
+                    "createdAt": row["created_at"],
+                }
+            )
+    return out
+
+
+def get_chat_attachment(message_id: str, attachment_id: str) -> Optional[dict]:
+    """One attachment record (full content) from a message, or None."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT attachments_json FROM chat_messages WHERE id = ?",
+            (message_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    attachments = _json_loads(row["attachments_json"], None)
+    if not isinstance(attachments, list):
+        return None
+    for attachment in attachments:
+        if isinstance(attachment, dict) and attachment.get("id") == attachment_id:
+            return attachment
+    return None
+
+
+def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
+    """Remove one attachment from a message's attachments list.
+
+    Returns False when the message or attachment does not exist. An emptied
+    list is stored as NULL so the message no longer matches attachment scans.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT attachments_json FROM chat_messages WHERE id = ?",
+            (message_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        attachments = _json_loads(row["attachments_json"], None)
+        if not isinstance(attachments, list):
+            return False
+        remaining = [
+            a
+            for a in attachments
+            if not (isinstance(a, dict) and a.get("id") == attachment_id)
+        ]
+        if len(remaining) == len(attachments):
+            return False
+        conn.execute(
+            "UPDATE chat_messages SET attachments_json = ? WHERE id = ?",
+            (json.dumps(remaining) if remaining else None, message_id),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
 def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
     if not thread_ids:
         return []

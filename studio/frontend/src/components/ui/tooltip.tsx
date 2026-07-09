@@ -67,9 +67,14 @@ function TooltipTrigger({
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLButtonElement>) => {
+      // Run the composed handler first: when this trigger wraps another Radix
+      // trigger (e.g. DialogTrigger around an attachment tile), that trigger's
+      // action is skipped if the event is already default-prevented.
+      onClick?.(e);
+      // preventDefault keeps Radix Tooltip's internal close-on-click from
+      // undoing the tap-toggle below (its composed handler checks it).
       e.preventDefault();
       toggle?.();
-      onClick?.(e);
     },
     [toggle, onClick],
   );

@@ -67,6 +67,8 @@ import {
   Download01Icon,
   Flag01Icon,
   Folder02Icon,
+  PinIcon,
+  PinOffIcon,
   RemoveCircleIcon,
   Search01Icon,
   ViewIcon,
@@ -99,6 +101,11 @@ import {
   loadedAt,
   useModelLoadTimes,
 } from "./model-usage";
+import {
+  pinKey,
+  pinnedQuantEntries,
+  usePinnedModelsStore,
+} from "./pinned-models";
 import {
   type FormatFilter,
   estimateQuantBytes,
@@ -695,6 +702,8 @@ function GgufVariantExpander({
   /** Report GGUF vision support up so the parent row can badge it. */
   onHasVision?: (hasVision: boolean) => void;
 }) {
+  const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
+  const togglePinnedQuant = usePinnedModelsStore((s) => s.togglePinned);
   const onUpdateVariant = variantActions?.onUpdate;
   const updateVariantTitle = variantActions?.updateTitle ?? "Update cached model?";
   const renderUpdateVariantDescription = variantActions?.renderUpdateDescription;
@@ -946,7 +955,7 @@ function GgufVariantExpander({
                 </span>
                 {v.downloaded ? (
                   <>
-                    <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
+                    <span className="ml-1.5 text-[9px] font-sans font-medium text-green-600/90 dark:text-green-400/80">
                       downloaded
                     </span>
                     {v.update_available ? (
@@ -999,6 +1008,43 @@ function GgufVariantExpander({
                 onConfirm={() => onUpdateVariant(v.quant, expectedBytes)}
                 onUpdated={() => setRefreshKey((key) => key + 1)}
               />
+            )}
+            {v.downloaded && onDevice && (
+              <Tooltip delayDuration={0}>
+                <TooltipTrigger asChild={true}>
+                  <button
+                    type="button"
+                    onClick={() => togglePinnedQuant(repoId, v.quant)}
+                    aria-label={
+                      pinnedKeys.includes(pinKey(repoId, v.quant))
+                        ? `Unpin ${repoId} ${v.quant}`
+                        : `Pin ${repoId} ${v.quant}`
+                    }
+                    aria-pressed={pinnedKeys.includes(pinKey(repoId, v.quant))}
+                    className={cn(
+                      "shrink-0 rounded-md p-1 transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10",
+                      pinnedKeys.includes(pinKey(repoId, v.quant))
+                        ? "text-foreground/80"
+                        : "text-muted-foreground/60",
+                    )}
+                  >
+                    <HugeiconsIcon
+                      icon={
+                        pinnedKeys.includes(pinKey(repoId, v.quant))
+                          ? PinOffIcon
+                          : PinIcon
+                      }
+                      strokeWidth={1.75}
+                      className="size-3"
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="tooltip-compact">
+                  {pinnedKeys.includes(pinKey(repoId, v.quant))
+                    ? "Unpin quant"
+                    : "Pin quant to the top"}
+                </TooltipContent>
+              </Tooltip>
             )}
             {v.downloaded && (
               <ModelLoadSettingsAction
@@ -1396,6 +1442,7 @@ export function HubModelPicker({
     [expandQuantizations],
   );
 
+  const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
   const [downloadedCollapsed, setDownloadedCollapsed] = useState(false);
   const [otherModelsCollapsed, setOtherModelsCollapsed] = useState(false);
   const [customFoldersCollapsed, setCustomFoldersCollapsed] = useState(false);
@@ -1964,6 +2011,31 @@ export function HubModelPicker({
   // logic must use this (not visibleCachedModels) or the picker can go blank.
   const visibleCachedModelRows = chatOnly ? [] : visibleCachedModels;
 
+  // Pinned entries surface in their own section above the Unsloth heading.
+  // GGUF quants pin individually and their repo stays listed below; non-GGUF
+  // repos pin whole and leave the Unsloth / Other models groups.
+  const pinnedIds = usePinnedModelsStore((s) => s.pinned);
+  const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
+  const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
+
+  // Pinned quants of repos still in the cache (stale pins stay hidden), in
+  // pin order, filtered by the search query on repo id or quant name.
+  const pinnedQuants = useMemo(() => {
+    const cached = new Set(visibleCachedGguf.map((c) => c.repo_id));
+    const q = normalizeForSearch(debouncedQuery.trim());
+    return pinnedQuantEntries(pinnedIds).filter(
+      (entry) =>
+        cached.has(entry.repoId) &&
+        (!q ||
+          normalizeForSearch(`${entry.repoId} ${entry.quant}`).includes(q)),
+    );
+  }, [pinnedIds, visibleCachedGguf, debouncedQuery]);
+
+  const pinnedCachedModelRows = useMemo(
+    () => visibleCachedModelRows.filter((c) => pinnedSet.has(pinKey(c.repo_id))),
+    [visibleCachedModelRows, pinnedSet],
+  );
+
   // Split downloaded models so non-Unsloth repos get their own "Other models"
   // section above Fine-tuned.
   const unslothCachedGguf = useMemo(
@@ -1975,12 +2047,18 @@ export function HubModelPicker({
     [visibleCachedGguf],
   );
   const unslothCachedModelRows = useMemo(
-    () => visibleCachedModelRows.filter((c) => isUnslothRepoId(c.repo_id)),
-    [visibleCachedModelRows],
+    () =>
+      visibleCachedModelRows.filter(
+        (c) => isUnslothRepoId(c.repo_id) && !pinnedSet.has(pinKey(c.repo_id)),
+      ),
+    [visibleCachedModelRows, pinnedSet],
   );
   const otherCachedModelRows = useMemo(
-    () => visibleCachedModelRows.filter((c) => !isUnslothRepoId(c.repo_id)),
-    [visibleCachedModelRows],
+    () =>
+      visibleCachedModelRows.filter(
+        (c) => !isUnslothRepoId(c.repo_id) && !pinnedSet.has(pinKey(c.repo_id)),
+      ),
+    [visibleCachedModelRows, pinnedSet],
   );
 
   // Param counts come straight off the unsloth listings the picker already
@@ -2076,6 +2154,25 @@ export function HubModelPicker({
   const hubOptionKeys = useMemo(() => {
     const keys: string[] = [];
 
+    // Pinned rows sit above the Unsloth heading on the On Device tab.
+    if (
+      section === "downloaded" &&
+      cachedReady &&
+      !pinnedCollapsed &&
+      (pinnedQuants.length > 0 || pinnedCachedModelRows.length > 0)
+    ) {
+      keys.push(
+        ...pinnedQuants.map((entry) =>
+          makeModelOptionKey("pinned-quant", pinKey(entry.repoId, entry.quant)),
+        ),
+      );
+      keys.push(
+        ...pinnedCachedModelRows.map((model) =>
+          makeModelOptionKey("downloaded-model", model.repo_id),
+        ),
+      );
+    }
+
     // Downloaded (Unsloth) rows (query-filtered) on the On Device tab only.
     if (
       section === "downloaded" &&
@@ -2167,6 +2264,9 @@ export function HubModelPicker({
     chatOnly,
     sortedCustomFolderModels,
     customFoldersCollapsed,
+    pinnedQuants,
+    pinnedCachedModelRows,
+    pinnedCollapsed,
     downloadedCollapsed,
     fineTunedRows,
     fineTunedCollapsed,
@@ -2475,6 +2575,98 @@ export function HubModelPicker({
       selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
     );
 
+  // Pin toggle at a row's right edge: hidden until the row is hovered (or the
+  // button is focused), always visible while pinned so pinned rows read as such.
+  const renderPinAction = (repoId: string, quant?: string, className?: string) => {
+    const pinned = pinnedSet.has(pinKey(repoId, quant));
+    const target = quant ? `${repoId} ${quant}` : repoId;
+    return (
+      <Tooltip delayDuration={0}>
+        <TooltipTrigger asChild={true}>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              togglePinned(repoId, quant);
+            }}
+            aria-label={pinned ? `Unpin ${target}` : `Pin ${target}`}
+            aria-pressed={pinned}
+            className={cn(
+              "shrink-0 rounded-md p-1.5 transition-colors hover:bg-black/5 dark:hover:bg-white/10",
+              pinned
+                ? "text-foreground/80 hover:text-foreground"
+                : "text-muted-foreground/60 opacity-0 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100",
+              className,
+            )}
+          >
+            <HugeiconsIcon
+              icon={pinned ? PinOffIcon : PinIcon}
+              strokeWidth={1.75}
+              className="size-3.5"
+            />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="tooltip-compact">
+          {pinned
+            ? quant
+              ? "Unpin quant"
+              : "Unpin model"
+            : quant
+              ? "Pin quant to the top"
+              : "Pin model to the top"}
+        </TooltipContent>
+      </Tooltip>
+    );
+  };
+
+  // A pinned quant: repo name with the quant as a grey chip. One click loads
+  // that quant directly, no expansion needed.
+  const renderPinnedQuantRow = (entry: { repoId: string; quant: string }) => {
+    const optionKey = makeModelOptionKey(
+      "pinned-quant",
+      pinKey(entry.repoId, entry.quant),
+    );
+    const { owner, name } = splitRepoLabel(entry.repoId);
+    return (
+      <div
+        key={optionKey}
+        className={downloadedRowShellClassName(false)}
+      >
+        <button
+          type="button"
+          {...hubModelList.getOptionProps(optionKey, false)}
+          onClick={() =>
+            onSelect(entry.repoId, {
+              source: "hub",
+              isLora: false,
+              ggufVariant: entry.quant,
+              isDownloaded: true,
+            })
+          }
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45",
+            downloadedRowButtonClassName,
+          )}
+          title={`${entry.repoId} (${entry.quant})`}
+        >
+          <span className="flex min-w-0 items-baseline">
+            {owner ? (
+              <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-[13px] text-muted-foreground/90">
+                <span className="truncate">{owner}</span>
+                <span className="shrink-0 text-muted-foreground/45">/</span>
+              </span>
+            ) : null}
+            <span className="min-w-0 truncate">{name}</span>
+          </span>
+          <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px font-mono text-[10px] text-muted-foreground dark:bg-white/[0.1]">
+            {entry.quant}
+          </span>
+        </button>
+        {renderPinAction(entry.repoId, entry.quant, "mr-1")}
+      </div>
+    );
+  };
+
   // Shared row renderers so Downloaded (Unsloth) and Other models render alike.
   const renderDownloadedGgufRow = (c: (typeof visibleCachedGguf)[number]) => {
     const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
@@ -2562,6 +2754,7 @@ export function HubModelPicker({
             className={downloadedRowButtonClassName}
           />
         </div>
+        {renderPinAction(c.repo_id)}
         <ModelDeleteAction
           ariaLabel={`Delete ${c.repo_id}`}
           title="Delete cached model?"
@@ -2749,12 +2942,36 @@ export function HubModelPicker({
                 </div>
               ) : null}
 
+              {/* Pinned quants and models sit above the Unsloth heading so
+              favorites are always first. Filtered by the query like the
+              sections below. */}
+              {showDownloaded &&
+              (pinnedQuants.length > 0 ||
+                pinnedCachedModelRows.length > 0) ? (
+                <>
+                  <ListLabel
+                    icon={<HugeiconsIcon icon={PinIcon} className="size-3.5" />}
+                    collapsed={pinnedCollapsed}
+                    onToggle={() => setPinnedCollapsed((v) => !v)}
+                  >
+                    Pinned
+                  </ListLabel>
+                  {!pinnedCollapsed && pinnedQuants.map(renderPinnedQuantRow)}
+                  {!pinnedCollapsed &&
+                    pinnedCachedModelRows.map(renderDownloadedModelRow)}
+                </>
+              ) : null}
+
               {/* Downloaded (Unsloth) stays visible (filtered) while searching. */}
               {showDownloaded &&
               (unslothCachedGguf.length > 0 ||
                 unslothCachedModelRows.length > 0) ? (
                 <>
                   <ListLabel
+                    divider={
+                      pinnedQuants.length > 0 ||
+                      pinnedCachedModelRows.length > 0
+                    }
                     collapsed={downloadedCollapsed}
                     onToggle={() => setDownloadedCollapsed((v) => !v)}
                     action={
