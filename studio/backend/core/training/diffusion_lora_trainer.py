@@ -51,6 +51,7 @@ from core.training.diffusion_train_common import (  # noqa: F401
     StopCb,
     DiffusionLoraConfig,
     LATENT_CACHE_OVER_BUDGET,
+    native_bf16_supported,
     _apply_perf_flags,
     _assert_trusted_base_model,
     _coerce_gradient_checkpointing,
@@ -319,9 +320,11 @@ def run_diffusion_lora_training(
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     precision = cfg.mixed_precision if device == "cuda" else "no"
-    if precision == "bf16" and device == "cuda" and not torch.cuda.is_bf16_supported():
+    if precision == "bf16" and device == "cuda" and not native_bf16_supported():
         # The default is bf16, but pre-Ampere GPUs (T4 / V100 / RTX 20xx) have no
-        # bf16 compute; fall back to fp16 there instead of failing at load/forward.
+        # NATIVE bf16 compute; torch.cuda.is_bf16_supported() counts emulated support there,
+        # so use the compute-capability probe (matches the DiT trainer) and fall back to fp16
+        # instead of failing at load/forward.
         precision = "fp16"
     weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "no": torch.float32}[precision]
 
