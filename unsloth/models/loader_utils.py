@@ -568,6 +568,7 @@ def _restore_dropped_fp8_scales(
         restored = 0
         skipped = 0
         failed = 0
+        offloaded = 0
         shard_cache = {}
         for scale_key, shard in scale_keys.items():
             base = scale_key[: -len(".weight_scale_inv")]
@@ -575,11 +576,13 @@ def _restore_dropped_fp8_scales(
             if module is None:
                 continue
             weight = getattr(module, "weight", None)
-            if (
-                not isinstance(weight, torch.Tensor)
-                or weight.device.type == "meta"
-                or weight.ndim != 2
-            ):
+            if not isinstance(weight, torch.Tensor) or weight.ndim != 2:
+                continue
+            if weight.device.type == "meta":
+                # Disk-offloaded layer: the real weight is not materialized yet (it lives on
+                # meta until the offload hook loads it at forward time), so the scale cannot be
+                # applied in place here. Count and warn instead of silently leaving it unscaled.
+                offloaded += 1
                 continue
             if weight.dtype in _FP8_DTYPES:
                 # Correctly converted fp8 module: the scale is handled by the fp8 path already.
@@ -639,6 +642,11 @@ def _restore_dropped_fp8_scales(
             print(f"Unsloth: Restored {restored} dropped FP8 weight_scale_inv tensor(s) on load")
         if failed > 0:
             print(f"Unsloth: {failed} dropped FP8 weight_scale_inv tensor(s) could not be restored")
+        if offloaded > 0:
+            print(
+                f"Unsloth: {offloaded} dropped FP8 weight_scale_inv tensor(s) skipped because the "
+                "layer is disk-offloaded; load without disk offload so the scales can be restored"
+            )
         return (restored, skipped)
     except Exception:
         return (0, 0)

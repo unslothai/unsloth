@@ -128,6 +128,36 @@ def test_skips_already_fp8_weight():
     assert torch.equal(model.layer.weight.data.float(), before.float())
 
 
+def test_skips_offloaded_meta_weight():
+    """A disk-offloaded layer (weight on the meta device) is skipped without error or restore."""
+    if _FP8 is None:
+        return
+    raw = torch.randn(4, 4, dtype = torch.bfloat16)
+    scale = torch.rand(2, 2, dtype = torch.float32) + 0.1
+
+    model = nn.Module()
+    model.config = _fp8_config((2, 2))
+    model.anchor = _fp8_anchor()
+    model.layer = nn.Linear(4, 4, bias = False)
+    # Simulate an offloaded weight: not yet materialized, lives on the meta device.
+    model.layer.weight = nn.Parameter(
+        torch.empty(4, 4, dtype = torch.bfloat16, device = "meta"), requires_grad = False
+    )
+
+    with tempfile.TemporaryDirectory() as d:
+        _write_checkpoint(
+            d,
+            {
+                "layer.weight": raw.to(torch.float32),
+                "layer.weight_scale_inv": scale,
+            },
+        )
+        restored, skipped = _restore_dropped_fp8_scales(model, d, local_files_only = True)
+
+    assert restored == 0
+    assert model.layer.weight.device.type == "meta"
+
+
 def test_noop_when_fully_dequantized():
     """If the model has no fp8 weights at all (e.g. load_in_16bit dequantize), do not rescale."""
     raw = torch.randn(4, 4, dtype = torch.bfloat16)

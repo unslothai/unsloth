@@ -2688,7 +2688,10 @@ class FastLlamaModel:
                     model_name,
                     local_files_only = kwargs.get("local_files_only", False),
                     token = token,
-                    revision = revision,
+                    # The weight load above resolves model_name on its default branch (revision is
+                    # not forwarded here, see the prefetch note), so read the scales from the same
+                    # default branch to avoid rescaling default-branch weights with another revision.
+                    revision = None,
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
@@ -2737,7 +2740,10 @@ class FastLlamaModel:
                     model_name,
                     local_files_only = kwargs.get("local_files_only", False),
                     token = token,
-                    revision = revision,
+                    # The weight load above resolves model_name on its default branch (revision is
+                    # not forwarded here, see the prefetch note), so read the scales from the same
+                    # default branch to avoid rescaling default-branch weights with another revision.
+                    revision = None,
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
