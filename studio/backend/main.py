@@ -665,7 +665,9 @@ def _build_csp(script_nonce: "str | None" = None, *, allow_hosted_frame: bool = 
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
-    if _IS_COLAB and not _IS_KAGGLE:
+    if not allow_hosted_frame:
+        frame_ancestors = "'none'"
+    elif _IS_COLAB or _IS_KAGGLE:
         frame_ancestors = "*"
     elif _IS_HOSTED_NOTEBOOK and allow_hosted_frame:
         frame_ancestors = _HOSTED_FRAME_ANCESTORS

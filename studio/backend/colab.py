@@ -87,23 +87,32 @@ def _can_suppress_reused_server_bootstrap(port: int) -> bool:
     return _OWNED_SERVER_APP is not None and _OWNED_SERVER_PORT == port
 
 
-def _wait_for_public_url(url: str, timeout: float = 45.0) -> bool:
+def _wait_for_public_url(
+    url: str, timeout: float = 45.0, *, iframe_url: "str | None" = None
+) -> bool:
     """Wait for a public tunnel URL before embedding it.
 
     cloudflared can print the trycloudflare URL a few seconds before DNS and
     edge routing are ready. If an iframe navigates during that window, the
     browser can keep showing the initial DNS error even though opening the URL
-    later works.
+    later works. The health endpoint only proves the tunnel reaches the backend;
+    when an iframe URL is supplied, also verify the actual document response is
+    embeddable.
     """
     if not url.startswith("https://"):
         return True
 
     import time
     import urllib.request
+    from urllib.parse import urlsplit, urlunsplit
 
-    health_url = url.rstrip("/") + "/api/health"
+    def _with_path(raw_url: str, path: str) -> str:
+        parts = urlsplit(raw_url)
+        return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+
+    health_url = _with_path(url, "/api/health")
     deadline = time.monotonic() + timeout
-    last_error: Exception | None = None
+    last_error: Exception | str | None = None
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -114,8 +123,27 @@ def _wait_for_public_url(url: str, timeout: float = 45.0) -> bool:
                 headers = {"User-Agent": "unsloth-studio-notebook/1"},
             )
             with urllib.request.urlopen(req, timeout = min(5.0, max(0.1, remaining))) as resp:
-                if 200 <= getattr(resp, "status", 200) < 500:
+                if 200 <= getattr(resp, "status", 200) < 500 and not iframe_url:
                     return True
+            if iframe_url:
+                req = urllib.request.Request(
+                    iframe_url,
+                    headers = {"User-Agent": "unsloth-studio-notebook/1"},
+                )
+                with urllib.request.urlopen(
+                    req, timeout = min(5.0, max(0.1, remaining))
+                ) as resp:
+                    status = getattr(resp, "status", 200)
+                    x_frame_options = resp.headers.get("X-Frame-Options", "").strip()
+                    csp = resp.headers.get("Content-Security-Policy", "")
+                    if not (200 <= status < 400):
+                        last_error = f"iframe document returned HTTP {status}"
+                    elif x_frame_options:
+                        last_error = f"iframe document set X-Frame-Options: {x_frame_options}"
+                    elif "frame-ancestors 'none'" in csp:
+                        last_error = "iframe document CSP still denies frame ancestors"
+                    else:
+                        return True
         except Exception as exc:
             last_error = exc
         remaining = deadline - time.monotonic()
@@ -191,7 +219,7 @@ def show_link(port: int = 8888, *, _url: "str | None" = None):
         <h2 style="color: #000000; margin: 0 0 12px 0; font-size: 26px; font-weight: 800;
                    display: flex; align-items: center; gap: 12px;">
             <img src="https://github.com/unslothai/unsloth/raw/main/studio/frontend/public/unsloth-gem.png"
-                 height="48" style="display:block;">
+                 width="48" height="48" style="display:block;width:48px;height:48px;max-width:48px;max-height:48px;object-fit:contain;flex:0 0 48px;">
             Unsloth Studio is Ready!
         </h2>
         <a href="{url}" onclick="var w=window.open(this.href,'_blank');if(!w){{return true;}}return false;"
@@ -409,7 +437,7 @@ def _shareable_link_html(cloudflare_url: str) -> str:
         <h2 style="color: #000000; margin: 0 0 12px 0; font-size: 26px; font-weight: 800;
                    display: flex; align-items: center; gap: 12px;">
             <img src="https://github.com/unslothai/unsloth/raw/main/studio/frontend/public/unsloth-gem.png"
-                 height="48" style="display:block;">
+                 width="48" height="48" style="display:block;width:48px;height:48px;max-width:48px;max-height:48px;object-fit:contain;flex:0 0 48px;">
             Shareable Studio Link is Ready!
         </h2>
         <a href="{cloudflare_url}" onclick="var w=window.open(this.href,'_blank');if(!w){{return true;}}return false;"
@@ -435,7 +463,7 @@ def _public_url_not_ready_html(cloudflare_url: str) -> str:
                 border-radius: 10px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
         <div style="color:#3b2a00;font-weight:800;font-size:15px;margin-bottom:8px;">Studio link is still starting</div>
         <div style="color:#3b2a00;font-size:13px;line-height:1.45;">
-            The Cloudflare URL did not answer the health check yet, so the notebook iframe was not loaded.
+            The Cloudflare URL did not pass the notebook frame readiness check, so the notebook iframe was not loaded.
             Open the shareable link after a few seconds, or re-run the cell if it does not become reachable.
         </div>
         <div style="color:#3b2a00;margin-top:10px;font-size:13px;font-family:monospace;font-weight:bold;">
@@ -507,7 +535,11 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
             display(HTML(_shareable_link_html(cloudflare_url)))
 
         if use_cloudflare_iframe:
-            if not _wait_for_public_url(cloudflare_url, timeout = _public_url_wait_timeout()):
+            if not _wait_for_public_url(
+                cloudflare_url,
+                timeout = _public_url_wait_timeout(),
+                iframe_url = iframe_url,
+            ):
                 display(HTML(_public_url_not_ready_html(cloudflare_url)))
                 return
 
@@ -517,7 +549,7 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
             border-radius:12px;overflow:hidden;box-shadow:0 2px 16px rgba(0,0,0,0.18);">
   <div style="display:flex;align-items:center;gap:10px;padding:10px 16px;background:#000;">
     <img src="https://github.com/unslothai/unsloth/raw/main/studio/frontend/public/unsloth-gem.png"
-         height="26" style="display:block;">
+         width="26" height="26" style="display:block;width:26px;height:26px;max-width:26px;max-height:26px;object-fit:contain;flex:0 0 26px;">
     <span style="color:#fff;font-weight:700;font-size:15px;letter-spacing:-0.2px;">Unsloth Studio</span>
     <span style="margin-left:auto;color:#666;font-size:11px;font-family:monospace;">{short_url}</span>
   </div>

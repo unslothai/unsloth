@@ -349,13 +349,12 @@ class TestSecurityHeadersMiddleware:
         csp = main_module._build_csp()
         assert "frame-ancestors *" in csp
 
-    def test_kaggle_csp_uses_frame_ancestor_allowlist(self, main_module, monkeypatch):
+    def test_kaggle_csp_uses_broad_frame_ancestors(self, main_module, monkeypatch):
         monkeypatch.setattr(main_module, "_IS_COLAB", False)
+        monkeypatch.setattr(main_module, "_IS_KAGGLE", True)
         monkeypatch.setattr(main_module, "_IS_HOSTED_NOTEBOOK", True)
         csp = main_module._build_csp()
-        assert "frame-ancestors *" not in csp
-        assert "https://colab.research.google.com" in csp
-        assert "https://www.kaggle.com" in csp
+        assert "frame-ancestors *" in csp
 
     @pytest.mark.parametrize(
         ("is_kaggle", "expected_proxy_headers"),
