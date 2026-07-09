@@ -2114,3 +2114,73 @@ class TestRound14Bypasses:
 
     def test_class_attribute_benign_allowed(self):
         _ok("class C:\n    x = 1\nprint(C.x)")
+
+
+class TestRound15Bypasses:
+    """Fifteenth-round Codex findings: single-assignment aliases of shutil.copy /
+    subprocess.run read sinks, gc.get_referents guard-recovery, an uncapped list
+    concatenation during const folding, and relative multi-component shell redirects.
+    (The opaque-read backstop is a runtime guard, covered in the runtime test module.)"""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import shutil\nc = shutil.copy\nc('../../../etc/passwd', 'leak.txt')",
+            "import shutil as sh\nc = sh.copyfile\nc('../../../etc/passwd', 'leak.txt')",
+            "import subprocess\nr = subprocess.run\nr(['cat', '../../../root/.ssh/id_rsa'])",
+            "import subprocess\np = subprocess.Popen\np(['cat', '/etc/shadow'])",
+        ],
+    )
+    def test_aliased_read_sink_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_aliased_read_sink_local_allowed(self):
+        # A single-assignment alias whose source is an in-workdir relative path stays allowed.
+        _ok("import shutil\nc = shutil.copy\nc('data/in.csv', 'out.csv')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import gc, builtins\ngc.get_referents(builtins.open)",
+            "import gc\ngc.get_referrers(open)",
+            "from gc import get_referents as g\ng(open)",
+            "import gc\ngc.get_objects()",
+        ],
+    )
+    def test_gc_graph_walk_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_list_concat_fold_is_capped_and_fast(self):
+        # A doubling chain of list concatenations must NOT be materialized during folding
+        # (that is an analysis-time memory/CPU DoS); the fold caps the sequence length.
+        import time
+
+        dos = (
+            "a = [65] * 40000\n"
+            + "\n".join(
+                f"a{i} = a{'' if i == 0 else i - 1} + a{'' if i == 0 else i - 1}"
+                for i in range(1, 12)
+            )
+            + "\nexec(bytes(a11))"
+        )
+        t0 = time.time()
+        res = _check_code_safety(dos)
+        dt = time.time() - t0
+        assert res is not None, "the exec(...) sink should still be blocked"
+        assert dt < 2.0, f"folding a list-concat chain took {dt:.2f}s (should be capped)"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('echo escaped > outlink/pwn.txt')",
+            "import os\nos.system('echo x > logs/app.log')",
+            "import os\nos.system('cat data >> sub/dir/out.txt')",
+        ],
+    )
+    def test_relative_multicomponent_redirect_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_single_component_redirect_allowed(self):
+        # A bare single-component relative redirect target stays in the workdir cwd.
+        _ok("import os\nos.system('echo x > out.txt')")
+        _ok("import os\nos.system('echo x > ./out.txt')")

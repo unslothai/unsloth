@@ -501,10 +501,10 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # Output redirection (> / >> / &> / N>) to a path OUTSIDE the workdir: a child shell
     # runs unguarded, so `echo x > /tmp/p` / `>> ../p` / `> ~/p` writes past the session
-    # workdir. A relative literal target (> out.txt) stays in the workdir cwd and is
-    # allowed; a NON-LITERAL target (variable / command substitution) cannot be verified,
-    # so it fails closed (`echo x > "$p"` could expand anywhere). Scanning tokens (not the
-    # raw string) avoids matching a `>` inside a quoted argument.
+    # workdir. A relative SINGLE-component literal target (> out.txt) stays in the workdir
+    # cwd and is allowed; a NON-LITERAL target (variable / command substitution) cannot be
+    # verified, so it fails closed (`echo x > "$p"` could expand anywhere). Scanning tokens
+    # (not the raw string) avoids matching a `>` inside a quoted argument.
     for i, tok in enumerate(tokens):
         rm = re.search(r">{1,2}([^\s>]*)$", tok)
         if rm is None:
@@ -522,12 +522,19 @@ def _find_blocked_commands(command: str) -> set[str]:
         if not tgt:
             continue
         tn = tgt.replace("\\", "/")
+        # A relative multi-component target (sub/out.txt) resolves through a subdirectory
+        # component whose realpath the static scanner cannot verify -- if that component is
+        # a symlink pointing outside the workdir the unguarded child writes past it. Fail
+        # closed on any relative target carrying a `/` separator (a leading `./` is dropped
+        # first so `./out.txt` stays allowed); only a bare single-component name is allowed.
+        _rel = tn[2:] if tn.startswith("./") else tn
         if (
             tgt.startswith("~")
             or tn.startswith("/")
             or ".." in tn.split("/")
             or "$" in tgt
             or "`" in tgt
+            or "/" in _rel.rstrip("/")
         ):
             blocked.add("redirect:" + tgt)
 
@@ -2192,6 +2199,12 @@ def _const_fold(
                         return None
                 return _fold_cap(left * right)
             if isinstance(op, ast.Add):
+                # str/bytes concat is sized by _fold_cap, but list/tuple concatenation is
+                # not, so a chain (a + a + a + ...) materializes an oversized sequence in the
+                # parent process before child rlimits apply. Cap the combined length.
+                if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+                    if len(left) + len(right) > _FOLD_MAX_SEQ:
+                        return None
                 return _fold_cap(left + right)
             if isinstance(op, ast.Mod):
                 if isinstance(left, (str, bytes, bytearray)) and not _printf_ok(left):
@@ -3764,6 +3777,12 @@ def _check_signal_escape_patterns(
             # from operator import methodcaller as mc -> {"mc"}. methodcaller('__getattribute__',
             # 'system')(os) fetches os.system, the same obfuscation as attrgetter.
             self.methodcaller_aliases: set[str] = set()
+            # import gc as g -> {"gc", "g"}. gc.get_referents / get_referrers / get_objects
+            # walk the object graph to a guard wrapper's closure cell (the original unguarded
+            # callable) without spelling __closure__, so treat them as recovery gadgets.
+            self.gc_aliases = {"gc"}
+            # from gc import get_referents as gr -> {"gr"}.
+            self.gc_walk_aliases: set[str] = set()
             self.loop_depth = 0
 
         def visit_Import(self, node):
@@ -3790,6 +3809,8 @@ def _check_signal_escape_patterns(
                     self.inspect_aliases.add(alias.asname or "inspect")
                 elif alias.name == "operator":
                     self.operator_aliases.add(alias.asname or "operator")
+                elif alias.name == "gc":
+                    self.gc_aliases.add(alias.asname or "gc")
                 if alias.name in _DESERIALIZE_MODULES:
                     self.deserialize_module_aliases[alias.asname or alias.name] = alias.name
             self.generic_visit(node)
@@ -3854,6 +3875,10 @@ def _check_signal_escape_patterns(
                         self.attrgetter_aliases.add(alias.asname or alias.name)
                     elif alias.name == "methodcaller":
                         self.methodcaller_aliases.add(alias.asname or alias.name)
+            elif node.module == "gc":
+                for alias in node.names:
+                    if alias.name in ("get_referents", "get_referrers", "get_objects"):
+                        self.gc_walk_aliases.add(alias.asname or alias.name)
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -4660,6 +4685,22 @@ def _check_signal_escape_patterns(
                     or (isinstance(func, ast.Name) and func.id in self.getclosurevars_aliases)
                 ):
                     dynamic_desc = "inspect.getclosurevars() recovers a guarded wrapper's closure"
+                elif (
+                    # gc.get_referents / get_referrers / get_objects walk the object graph to a
+                    # guard wrapper's closure cell (the original unguarded open/os.* callable)
+                    # without spelling __closure__ / cell_contents, so a recovered original can
+                    # then write/read outside the workdir. Block the graph-traversal APIs.
+                    (
+                        isinstance(func, ast.Attribute)
+                        and func.attr in ("get_referents", "get_referrers", "get_objects")
+                        and _ast_name_matches(func.value, self.gc_aliases)
+                    )
+                    or (isinstance(func, ast.Name) and func.id in self.gc_walk_aliases)
+                ):
+                    _gn = func.attr if isinstance(func, ast.Attribute) else func.id
+                    dynamic_desc = (
+                        f"gc.{_gn}() walks the object graph to a guarded wrapper's closure"
+                    )
                 elif (
                     # cls.mro().__getitem__(1) / .pop(1) / cls.__mro__.__getitem__(1): the
                     # method-call twin of the subscripted-mro base extraction
@@ -5634,6 +5675,12 @@ def _check_signal_escape_patterns(
         return False
 
     def _is_shutil_copy_callee(fn):
+        while isinstance(fn, ast.Attribute) and fn.attr == "__call__":
+            fn = fn.value
+        # A single-assignment alias (c = shutil.copy; c('../../etc/passwd', 'x')) hides the
+        # shutil.copy attribute form behind a bare Name, so resolve the RHS before matching.
+        if isinstance(fn, ast.Name):
+            fn = _unwrap_container_node(_scope_idx.resolve(fn.id, fn, "rhsnode"))
         return (
             isinstance(fn, ast.Attribute)
             and fn.attr in _SHUTIL_COPY_METHODS
@@ -5646,6 +5693,12 @@ def _check_signal_escape_patterns(
         # `..` traversal in a literal argv (subprocess.run(['cat', '../../root/.ssh/id_rsa']))
         # reads a host secret. Treat these as read callees so the traversal check fires on
         # their argv path elements (absolute-sensitive elements already block regardless).
+        while isinstance(fn, ast.Attribute) and fn.attr == "__call__":
+            fn = fn.value
+        # r = subprocess.run; r(['cat', '../../root/.ssh/id_rsa']) hides the exec attribute
+        # form behind a single-assignment alias, so resolve the RHS before matching.
+        if isinstance(fn, ast.Name):
+            fn = _unwrap_container_node(_scope_idx.resolve(fn.id, fn, "rhsnode"))
         return (
             isinstance(fn, ast.Attribute)
             and isinstance(fn.value, ast.Name)
@@ -6094,7 +6147,7 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
 # and the realpath-before-open TOCTOU window under adversarial in-sandbox threading.
 # --------------------------------------------------------------------------
 _SANDBOX_GUARD_SRC = r"""
-import os as _os, builtins as _bi, io as _io, pathlib as _pl
+import os as _os, builtins as _bi, io as _io, pathlib as _pl, re as _re
 # io + pathlib are imported BEFORE any patching on purpose: on Python <= 3.11
 # pathlib._NormalAccessor captures io.open / os.* into class attributes at import
 # time. A C builtin captured there does not bind on instance access, but a Python
@@ -6184,12 +6237,78 @@ def _mode_is_write(mode):
     m = str.__str__(mode) if isinstance(mode, str) else "r"
     return any(c in m for c in "wax+")
 
+# Runtime sensitive-read backstop. The static scanner cannot fold every read path
+# (open(globals()['x']), open(fetch_name()), open(''.join(...))), and reads are otherwise
+# unconfined, so an opaque path could name a host secret. Deny a read whose REALPATH
+# resolves to a known-sensitive host file OUTSIDE the workdir. In-workdir files are the
+# sandbox's own and always allowed. The loose 'credentials' / '.pem' / '/root/' signals the
+# static layer uses are intentionally NOT applied here: importing common libraries reads
+# site-packages files such as google/auth/credentials.py and certifi/cacert.pem (and, under
+# a root home, /root/.local/.../site-packages), so matching them at runtime would break
+# imports. The specific SSH / cloud / kube / netrc / HF-token signals stay.
+_SENS_EXACT = frozenset({
+    "/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/gshadow", "/etc/master.passwd",
+})
+_SENS_DIRS = (
+    "/etc/ssh/", "/.ssh/", "/.aws/", "/.config/gcloud", "/.kube/", "/.docker/",
+    "/var/run/secrets/kubernetes.io/", "/run/secrets/kubernetes.io/",
+)
+_SENS_TOKENS = (
+    "id_rsa", "id_ed25519", ".netrc", ".git-credentials", "/.huggingface/token", ".kube/config",
+)
+_SENS_PROC = _re.compile(r"^/proc/(?:self|\d+)/(?:environ|cmdline|maps|mem|task/\d+/environ)$")
+
+def _is_sensitive_read(rp):
+    n = rp.replace("\\", "/")
+    if n in _SENS_EXACT:
+        return True
+    if any(part in n for part in _SENS_DIRS):
+        return True
+    if _SENS_PROC.match(n):
+        return True
+    low = n.lower()
+    return any(tok in low for tok in _SENS_TOKENS)
+
+def _read_realpath(p):
+    # Resolve to a truthful realpath the same self-healing way _within does, so a
+    # sandboxed reassignment of os.fspath / os.lstat / os.readlink / os.getcwd cannot
+    # poison the resolution.
+    try:
+        _os.fspath = _fspath
+        _os.lstat = _lstat
+        _os.readlink = _readlink
+        _os.getcwd = _getcwd
+        _os.stat = _stat
+        rp = _realpath(_fspath(p))
+        if isinstance(rp, bytes):
+            rp = _fsdecode(rp)
+        return rp
+    except Exception:
+        return None
+
+def _deny_sensitive_read(p):
+    if isinstance(p, int):
+        return
+    rp = _read_realpath(p)
+    if rp is None:
+        return
+    # In-workdir files are the sandbox's own; never treat them as host secrets.
+    if rp == _WD or rp.startswith(_WD + _sep):
+        return
+    if _is_sensitive_read(rp):
+        raise PermissionError(
+            "sandbox: reading a sensitive host path is not permitted: %r" % (rp,)
+        )
+
 def _guard_open_like(real):
     @_gwraps(real)
     def w(file, mode="r", *a, **k):
         f = _fspath1(file)
-        if _mode_is_write(mode) and not _within(f):
-            _deny(f, "write")
+        if _mode_is_write(mode):
+            if not _within(f):
+                _deny(f, "write")
+        else:
+            _deny_sensitive_read(f)
         return real(f, mode, *a, **k)
     return w
 
@@ -6219,7 +6338,10 @@ def _make_osopen_guard(real_open):
             if not _within(p):
                 _deny(p, "os.open write")
             return real_open(p, flags, *a, **k)
-        return real_open(path, flags, *a, **k)
+        # Read-only os.open: reads are unconfined, but a host secret is still off limits.
+        p = _fspath1(path)
+        _deny_sensitive_read(p)
+        return real_open(p, flags, *a, **k)
     return _guarded
 _os.open = _make_osopen_guard(_os.open)
 
@@ -6314,8 +6436,11 @@ def _guard_fileio(_realcls):
     class _GuardedFileIO(_realcls):
         def __init__(self, name, mode="r", *a, **k):
             f = _fspath1(name)
-            if _mode_is_write(mode) and not _within(f):
-                _deny(f, "FileIO write")
+            if _mode_is_write(mode):
+                if not _within(f):
+                    _deny(f, "FileIO write")
+            else:
+                _deny_sensitive_read(f)
             # Pass the MATERIALIZED path so a stateful __fspath__ cannot return a
             # different (outside) path to the real constructor than we checked.
             super().__init__(f, mode, *a, **k)

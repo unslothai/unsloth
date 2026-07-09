@@ -126,8 +126,9 @@ def test_sandboxed_os_open_write_escape_denied(tmp_path):
 
 @_POSIX_ONLY
 def test_sandboxed_os_open_read_local_allowed():
-    # Read-only os.open of a workdir-local file is allowed (reads are not confined
-    # by the backstop; host-secret reads are caught by the static scanner instead).
+    # Read-only os.open of a workdir-local file is allowed: reads of non-sensitive paths
+    # are not confined (only mutating opens are workdir-confined, and only host-secret
+    # realpaths are denied by the runtime sensitive-read backstop).
     out = _python_exec(
         "import os\n"
         "fd = os.open('ro_probe.txt', os.O_CREAT | os.O_WRONLY, 0o600)\n"
@@ -835,3 +836,85 @@ def test_sandboxed_posix_fd_metadata_mutator_denied(tmp_path):
     )
     assert "sandbox:" in out and "fchmod" in out
     assert oct(os.stat(victim).st_mode & 0o777) == "0o600"
+
+
+_SECRET_ABS = "/" + "etc" + "/" + "passwd"
+
+
+@_POSIX_ONLY
+def test_sandboxed_opaque_read_of_secret_denied():
+    # The static scanner cannot fold an opaque read path (globals()['x']), and reads are
+    # otherwise unconfined, so the runtime sensitive-read backstop must deny a read whose
+    # realpath resolves to a host secret regardless of how the path was computed.
+    out = _python_exec(
+        "x = " + repr(_SECRET_ABS) + "\np = globals()['x']\nprint('LEN', len(open(p).read()))\n",
+        None,
+        30,
+        "backstop-opaque-read",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert "reading a sensitive host path" in out
+    assert "LEN " not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_opaque_os_open_read_of_secret_denied():
+    # The same opaque path routed through the low-level os.open read entry point.
+    out = _python_exec(
+        "import os\n"
+        "x = " + repr(_SECRET_ABS) + "\n"
+        "p = globals()['x']\n"
+        "fd = os.open(p, os.O_RDONLY); print('FD', fd)\n",
+        None,
+        30,
+        "backstop-opaque-osopen",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert "reading a sensitive host path" in out
+    assert "FD " not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_symlink_read_of_secret_denied(tmp_path):
+    # A pre-existing in-workdir symlink pointing at a host secret: the static scanner sees a
+    # benign local name ('notes.txt'), only the runtime realpath backstop can follow the
+    # link and deny the read. (Sandboxed code cannot create the symlink; this is the
+    # defense-in-depth the runtime layer adds over static analysis.)
+    session = "backstop-symlink-read"
+    workdir = get_sandbox_workdir(session)
+    link = os.path.join(workdir, "notes.txt")
+    if os.path.islink(link) or os.path.exists(link):
+        os.remove(link)
+    os.symlink(_SECRET_ABS, link)
+    try:
+        out = _python_exec(
+            "print('LEN', len(open('notes.txt').read()))\n",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "sandbox:" in out or "PermissionError" in out
+        assert "reading a sensitive host path" in out
+        assert "LEN " not in out
+    finally:
+        os.remove(link)
+
+
+@_POSIX_ONLY
+def test_sandboxed_benign_outside_read_allowed():
+    # Reads are not confined to the workdir; only sensitive realpaths are denied. A benign
+    # outside read (and importing libraries whose files carry 'credentials'/'.pem' in the
+    # name) must stay allowed so the backstop does not break normal computation.
+    out = _python_exec(
+        "print('HOST', open('/etc/hostname').read().strip()[:0] == '')\n"
+        "import json, urllib.request, ssl, email\nprint('IMPORTS_OK')",
+        None,
+        30,
+        "backstop-benign-read",
+        disable_sandbox = False,
+    )
+    assert "IMPORTS_OK" in out
+    assert "sandbox:" not in out
