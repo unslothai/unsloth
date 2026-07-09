@@ -113,6 +113,32 @@ _BLOCKED_COMMANDS_COMMON = frozenset(
         "ln",
     }
 )
+# Language interpreters that run inline / file / stdin code in a FRESH child process.
+# The runtime filesystem backstop only patches the current interpreter, so a spawned
+# `python -c '...'`, `perl -e '...'`, `node -e '...'`, etc. runs with none of the guard
+# monkeypatches and can write/delete outside the session workdir. Blocking the
+# interpreter at shell command position closes that child-process escape; the sandbox's
+# own python_execute tool is the supported way to run Python (it IS guarded). Argument
+# position (`echo python`, `ls /usr/bin/python3`) is unaffected by the command-position
+# scanner.
+_INTERPRETER_COMMANDS = frozenset(
+    {
+        "python",
+        "python2",
+        "python3",
+        "pythonw",
+        "perl",
+        "ruby",
+        "node",
+        "nodejs",
+        "php",
+        "deno",
+        "lua",
+        "luajit",
+        "rscript",
+    }
+)
+_BLOCKED_COMMANDS_COMMON = _BLOCKED_COMMANDS_COMMON | _INTERPRETER_COMMANDS
 _BLOCKED_COMMANDS_WIN = frozenset(
     {
         "rmdir",
@@ -2511,6 +2537,7 @@ class _ScopeAliasIndex:
         "shell",
         "execb",
         "compiled",
+        "compiledany",
         "impf",
         "deser",
         "strconst",
@@ -2524,6 +2551,9 @@ class _ScopeAliasIndex:
         self.shell: dict = {}
         self.execb: dict = {}
         self.compiled: dict = {}
+        # name -> True: bound to a compile() result (foldable OR dynamic). Used to catch
+        # a code object executed through types.FunctionType(c, ...) after `c = compile(...)`.
+        self.compiledany: dict = {}
         self.impf: dict = {}  # name -> True: alias of __import__ / importlib.import_module
         self.deser: dict = {}  # name -> fq deserializer sink (pickle.loads, ...)
         self.strconst: dict = {}  # name -> folded str/bytes constant (for read scanning)
@@ -2667,6 +2697,7 @@ def _build_scope_alias_index(tree, const_env):
         smap: dict[str, str] = {}
         emap: dict[str, str] = {}
         cmap: dict[str, tuple] = {}
+        camap: dict[str, bool] = {}
         imap: dict[str, bool] = {}
         dmap: dict[str, str] = {}
         scmap: dict[str, object] = {}
@@ -2685,6 +2716,9 @@ def _build_scope_alias_index(tree, const_env):
                 and rhs.func.id == "compile"
                 and rhs.args
             ):
+                # Any `c = compile(...)` binds a code object, tracked for the
+                # types.FunctionType(c) execution gadget below (dynamic or foldable).
+                camap[name] = True
                 v = _const_fold(rhs.args[0], const_env)
                 if isinstance(v, (str, bytes, bytearray)):
                     cmap[name] = (
@@ -2708,6 +2742,8 @@ def _build_scope_alias_index(tree, const_env):
             idx.execb[scope] = emap
         if cmap:
             idx.compiled[scope] = cmap
+        if camap:
+            idx.compiledany[scope] = camap
         if imap:
             idx.impf[scope] = imap
         if dmap:
@@ -3259,6 +3295,11 @@ def _check_signal_escape_patterns(
             # import pickle as p  ->  {"p": "pickle"}; from pickle import loads as l -> {"l": "pickle.loads"}
             self.deserialize_module_aliases: dict[str, str] = {}
             self.deserialize_aliases: dict[str, str] = {}
+            # import types as t -> {"types", "t"}; from types import FunctionType as F -> {"F"}.
+            # FunctionType(code, globals)() runs a code object WITHOUT eval/exec, so a
+            # dynamic compile() result reaches execution through it (see visit_Call).
+            self.types_aliases = {"types"}
+            self.functiontype_aliases: set[str] = set()
             self.loop_depth = 0
 
         def visit_Import(self, node):
@@ -3277,6 +3318,8 @@ def _check_signal_escape_patterns(
                     self.sys_aliases.add(alias.asname or "sys")
                 elif alias.name == "builtins":
                     self.builtins_aliases.add(alias.asname or "builtins")
+                elif alias.name == "types":
+                    self.types_aliases.add(alias.asname or "types")
                 if alias.name in _DESERIALIZE_MODULES:
                     self.deserialize_module_aliases[alias.asname or alias.name] = alias.name
             self.generic_visit(node)
@@ -3314,11 +3357,19 @@ def _check_signal_escape_patterns(
                 for alias in node.names:
                     if alias.name in _DYNAMIC_EXEC_BUILTINS:
                         self.exec_from_aliases[alias.asname or alias.name] = alias.name
+                    elif alias.name == "__import__":
+                        # `from builtins import __import__ as imp; imp('os').system(...)`
+                        # is a dynamic import exactly like a bare __import__ call.
+                        self.import_func_aliases.add(alias.asname or alias.name)
             elif node.module in _DESERIALIZE_MODULES:
                 for alias in node.names:
                     fq = f"{node.module}.{alias.name}"
                     if fq in _CODE_DESERIALIZE_SINKS:
                         self.deserialize_aliases[alias.asname or alias.name] = fq
+            elif node.module == "types":
+                for alias in node.names:
+                    if alias.name == "FunctionType":
+                        self.functiontype_aliases.add(alias.asname or alias.name)
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -3357,6 +3408,43 @@ def _check_signal_escape_patterns(
                     if k is not None and _const_fold(k, _const_env) == ci:
                         return _elt(v)
             return None
+
+        def _is_compile_result(self, arg):
+            """True when ``arg`` is a ``compile(...)`` code object (bare / builtins /
+            single-assignment alias). Used to catch code objects executed through
+            ``types.FunctionType`` instead of eval/exec."""
+            if isinstance(arg, ast.Call):
+                af = arg.func
+                if isinstance(af, ast.Name):
+                    if af.id == "compile" or self.exec_from_aliases.get(af.id) == "compile":
+                        return True
+                    if _analyzer_on and _scope_idx.resolve(af.id, arg, "execb") == "compile":
+                        return True
+                elif (
+                    isinstance(af, ast.Attribute)
+                    and af.attr == "compile"
+                    and _ast_name_matches(af.value, self.builtins_aliases)
+                ):
+                    return True
+            if _analyzer_on and isinstance(arg, ast.Name):
+                if _scope_idx.resolve(arg.id, arg, "compiledany"):
+                    return True
+            return False
+
+        def _attr_obfuscation_targets(self):
+            # Modules whose DYNAMIC attribute / dict access (getattr, vars, __dict__) is
+            # obfuscation that reaches code execution: the exec / import / shell modules
+            # PLUS the deserializer modules -- getattr(pickle, 'loads')(x) and
+            # vars(pickle)['loads'](x) are just pickle.loads(x) with the name hidden.
+            return (
+                _DYNAMIC_ATTR_TARGETS
+                | self.os_aliases
+                | self.subprocess_aliases
+                | self.importlib_aliases
+                | self.sys_aliases
+                | self.builtins_aliases
+                | set(self.deserialize_module_aliases)
+            )
 
         def visit_Call(self, node):
             func = node.func
@@ -3619,17 +3707,24 @@ def _check_signal_escape_patterns(
                         dynamic_desc = "dynamic import of a computed or sensitive module name"
                 elif (
                     isinstance(func, ast.Name)
+                    and func.id in ("getattr", "setattr")
+                    and len(node.args) >= 2
+                    and isinstance(_const_fold(node.args[1], _const_env), str)
+                    and _const_fold(node.args[1], _const_env) in _GADGET_DUNDERS
+                ):
+                    # getattr(anything, '__globals__' / '__subclasses__' / ...) reaches an
+                    # introspection gadget with no ast.Attribute for visit_Attribute to catch.
+                    # Direct x.__globals__ is already flagged for ANY receiver, so flag the
+                    # getattr-string form regardless of receiver too.
+                    dynamic_desc = (
+                        "getattr() of an introspection gadget dunder "
+                        f"({_const_fold(node.args[1], _const_env)})"
+                    )
+                elif (
+                    isinstance(func, ast.Name)
                     and func.id == "vars"
                     and node.args
-                    and _ast_name_matches(
-                        node.args[0],
-                        _DYNAMIC_ATTR_TARGETS
-                        | self.os_aliases
-                        | self.subprocess_aliases
-                        | self.importlib_aliases
-                        | self.sys_aliases
-                        | self.builtins_aliases,
-                    )
+                    and _ast_name_matches(node.args[0], self._attr_obfuscation_targets())
                 ):
                     # vars(os) / vars(__builtins__) returns the module __dict__, the same
                     # obfuscation as os.__dict__['system'] but without the attribute access.
@@ -3638,15 +3733,7 @@ def _check_signal_escape_patterns(
                     isinstance(func, ast.Name)
                     and func.id in ("getattr", "setattr")
                     and node.args
-                    and _ast_name_matches(
-                        node.args[0],
-                        _DYNAMIC_ATTR_TARGETS
-                        | self.os_aliases
-                        | self.subprocess_aliases
-                        | self.importlib_aliases
-                        | self.sys_aliases
-                        | self.builtins_aliases,
-                    )
+                    and _ast_name_matches(node.args[0], self._attr_obfuscation_targets())
                 ):
                     # Stage 2 refinement: a benign constant attr (getattr(os, "getpid"))
                     # is allowed; only a dynamic attr or a dangerous constant attr blocks.
@@ -3675,9 +3762,50 @@ def _check_signal_escape_patterns(
                     and _ast_name_matches(func.value.value, self.sys_aliases)
                     and node.args
                 ):
-                    _key = _extract_string_from_node(node.args[0])
-                    if _key is not None and _key.split(".")[0] in _DANGEROUS_IMPORT_NAMES:
+                    # Constant-fold the key so sys.modules.get('o' + 's') is caught, not
+                    # just a bare literal (the module is already loaded by the prelude).
+                    _key = _const_fold(node.args[0], _const_env)
+                    if isinstance(_key, str) and _key.split(".")[0] in _DANGEROUS_IMPORT_NAMES:
                         dynamic_desc = "sys.modules.get(...) access to a sensitive module"
+                elif (
+                    # globals().get('__builtins__') / locals().get(...) / vars().get(...)
+                    # -- the .get() twin of the globals()['__builtins__'] subscript form.
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "get"
+                    and isinstance(func.value, ast.Call)
+                    and isinstance(func.value.func, ast.Name)
+                    and func.value.func.id in ("globals", "locals", "vars")
+                    and not func.value.args
+                    and node.args
+                ):
+                    _key = _const_fold(node.args[0], _const_env)
+                    if isinstance(_key, str) and (
+                        _key in ("__builtins__", "__builtin__")
+                        or _key.split(".")[0] in _DANGEROUS_IMPORT_NAMES
+                    ):
+                        dynamic_desc = (
+                            "namespace-dict .get() access to builtins / a sensitive module"
+                        )
+                elif (
+                    (
+                        # types.FunctionType(compile(src, ...), {})() runs a code object WITHOUT
+                        # eval/exec, so a dynamic compile() payload reaches execution here even
+                        # though compile() alone is allowed. Flag when a FunctionType call takes
+                        # a compile()-derived code object as its first argument.
+                        (
+                            isinstance(func, ast.Attribute)
+                            and func.attr == "FunctionType"
+                            and _ast_name_matches(func.value, self.types_aliases)
+                        )
+                        or (isinstance(func, ast.Name) and func.id in self.functiontype_aliases)
+                    )
+                    and node.args
+                    and self._is_compile_result(node.args[0])
+                ):
+                    dynamic_desc = (
+                        "types.FunctionType() executes a compile() code object "
+                        "(bypasses the eval/exec gate)"
+                    )
                 if dynamic_desc:
                     dynamic_exec.append(
                         {
@@ -3702,13 +3830,7 @@ def _check_signal_escape_patterns(
                     }
                 )
             elif node.attr == "__dict__" and _ast_name_matches(
-                node.value,
-                _DYNAMIC_ATTR_TARGETS
-                | self.os_aliases
-                | self.subprocess_aliases
-                | self.importlib_aliases
-                | self.sys_aliases
-                | self.builtins_aliases,
+                node.value, self._attr_obfuscation_targets()
             ):
                 # os.__dict__['system']('id') reaches the sink with no getattr call for
                 # the name-based checks to see. __dict__ on ordinary objects stays allowed.
@@ -3742,8 +3864,10 @@ def _check_signal_escape_patterns(
                 and _extract_string_from_node(v.args[1]) == "modules"
             )
             if isinstance(node.ctx, ast.Load) and is_sys_modules:
-                key = _extract_string_from_node(node.slice)
-                if key is not None and key.split(".")[0] in _DANGEROUS_IMPORT_NAMES:
+                # Constant-fold the key so sys.modules['o' + 's'] is caught, not just a
+                # bare literal; a truly dynamic key (sys.modules[name]) stays allowed.
+                key = _const_fold(node.slice, _const_env)
+                if isinstance(key, str) and key.split(".")[0] in _DANGEROUS_IMPORT_NAMES:
                     dynamic_exec.append(
                         {
                             "type": "dynamic_exec",
@@ -3761,8 +3885,8 @@ def _check_signal_escape_patterns(
                 and v.func.id in ("globals", "locals", "vars")
                 and not v.args
             ):
-                key = _extract_string_from_node(node.slice)
-                if key is not None and (
+                key = _const_fold(node.slice, _const_env)
+                if isinstance(key, str) and (
                     key in ("__builtins__", "__builtin__")
                     or key.split(".")[0] in _DANGEROUS_IMPORT_NAMES
                 ):
@@ -4517,6 +4641,12 @@ def _check_signal_escape_patterns(
             for arg in list(node.args) + [kw.value for kw in (node.keywords or [])]:
                 s = _fold_read_arg(arg)
                 if s is None:
+                    # A pathlib expression carries no foldable string constant
+                    # (open(Path('/etc') / 'passwd')), so resolve it the same way a
+                    # Path(...).read_text() receiver is resolved before skipping.
+                    rp = _pathlib_receiver_path(arg)
+                    if rp is not None and _flag_read_path(node, rp, is_read_callee):
+                        break
                     continue
                 if _flag_read_path(node, s, is_read_callee):
                     break
@@ -4658,16 +4788,33 @@ import os as _os, builtins as _bi, io as _io, pathlib as _pl
 # wrapper does (self shifts into the next arg), which would corrupt Path.open /
 # Path.write_text. Importing here makes the accessor capture the originals; the
 # confinement is applied on the public os / io / Path.* APIs below instead.
-_WD = _os.path.realpath(__WORKDIR__)
+# Capture the path helpers/separator into IMMUTABLE guard-local names BEFORE user code
+# runs. _within() otherwise reads os.path.realpath / os.fspath / os.sep off the live
+# module every call, so sandboxed code could reassign os.path.realpath (e.g. to a lambda
+# that echoes an in-workdir path) right before a write and have the guard approve an
+# outside target while the real open() still writes there. These references cannot be
+# rebound by mutating the os module.
+_realpath = _os.path.realpath
+_fspath = _os.fspath
+_sep = _os.sep
+_WD = _realpath(__WORKDIR__)
 
 def _within(p):
     try:
         if isinstance(p, int):
             return True
-        rp = _os.path.realpath(_os.fspath(p))
+        # os.path.realpath internally calls the LIVE os.fspath (posixpath.realpath does
+        # `filename = os.fspath(filename)`), so a sandboxed reassignment of os.fspath
+        # would still poison the resolution even though we hold the original realpath.
+        # Re-pin os.fspath to the captured original before resolving; a str target then
+        # resolves truthfully. (Re-pinning per check keeps it self-healing if user code
+        # re-patches; the real open() call receives the already-materialized str and does
+        # not route through os.fspath, so restoring it has no effect on the write itself.)
+        _os.fspath = _fspath
+        rp = _realpath(_fspath(p))
     except Exception:
         return False
-    return rp == _WD or rp.startswith(_WD + _os.sep)
+    return rp == _WD or rp.startswith(_WD + _sep)
 
 def _deny(p, what):
     raise PermissionError(
@@ -4691,10 +4838,11 @@ def _gwraps(real):
 def _fspath1(p):
     # Materialize a path-like ONCE so a stateful __fspath__ cannot return a workdir
     # path for the _within() check and a different path for the real syscall (TOCTOU).
+    # Uses the captured _fspath so a reassigned os.fspath cannot interpose here.
     if isinstance(p, int):
         return p
     try:
-        return _os.fspath(p)
+        return _fspath(p)
     except Exception:
         return p
 

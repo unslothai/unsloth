@@ -1083,3 +1083,139 @@ class TestEvalExecRecursion:
             b"+AG8AcwAuAHMAeQBzAHQAZQBtACgAJwBpAGQAJwAp-"
         )
         _ok("exec(%r)" % benign)
+
+
+class TestRound6Bypasses:
+    """Sixth-round Codex findings: pathlib read args, getattr gadget dunders, namespace
+    .get() lookups, folded sys.modules keys, builtins __import__ aliases, deserializer
+    obfuscation, and code objects executed through types.FunctionType."""
+
+    def test_pathlib_open_read_resolved(self):
+        # open(Path('/etc') / 'passwd') carries no foldable string constant, but the
+        # pathlib resolver must reconstruct the path so it blocks like open('/etc/passwd').
+        assert (
+            _check_code_safety("from pathlib import Path\nopen(Path('/etc') / 'passwd').read()")
+            is not None
+        )
+        assert (
+            _check_code_safety(
+                "from pathlib import Path\nopen(Path('/etc').joinpath('passwd')).read()"
+            )
+            is not None
+        )
+        # A benign relative pathlib read stays allowed (no false positive).
+        _ok("from pathlib import Path\nopen(Path('data') / 'train.csv').read()")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "getattr(object, '__subclasses__')()",
+            "getattr(lambda: 0, '__globals__')",
+            "setattr(object, '__bases__', ())",
+            "getattr(getattr(object, '__subclasses__')()[0], '__init__')",
+            "getattr(().__class__, '__bases__')",
+        ],
+    )
+    def test_getattr_gadget_dunder_any_receiver_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_getattr_benign_attr_allowed(self):
+        # A non-gadget attribute name via getattr on an ordinary object stays allowed.
+        _ok("getattr(object, 'mro')")
+        _ok("import numpy as np\ngetattr(np, 'zeros')((3, 3))")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "globals().get('__builtins__').__import__('os').system('id')",
+            "locals().get('__builtins__')",
+            "vars().get('os')",
+        ],
+    )
+    def test_namespace_get_builtins_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_namespace_get_benign_key_allowed(self):
+        _ok("d = {'x': 1}\nd.get('x')")
+        _ok("globals().get('my_var')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import sys\nsys.modules['o' + 's'].system('id')",
+            "import sys\nsys.modules.get('o' + 's').system('id')",
+            "import sys\nk = 'o' + 's'\nsys.modules[k].system('id')",
+        ],
+    )
+    def test_sys_modules_folded_key_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_sys_modules_dynamic_key_allowed(self):
+        # A genuinely dynamic key (not constant-foldable) stays allowed -- legit uses
+        # like sys.modules[name] for an unknown name must not be over-blocked.
+        _ok("import sys\ndef f(name):\n    return sys.modules.get(name)\nf('json')")
+
+    def test_builtins_import_alias_blocked(self):
+        assert (
+            _check_code_safety("from builtins import __import__ as imp\nimp('os').system('id')")
+            is not None
+        )
+        assert (
+            _check_code_safety("import builtins\nbuiltins.__import__('os').system('id')")
+            is not None
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import pickle\ngetattr(pickle, 'loads')(b'x')",
+            "import pickle\nvars(pickle)['loads'](b'x')",
+            "import pickle\npickle.__dict__['loads'](b'x')",
+            "import pickle as p\ngetattr(p, 'loads')(b'x')",
+        ],
+    )
+    def test_deserializer_attr_obfuscation_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_deserializer_benign_attr_allowed(self):
+        # getattr(pickle, 'dumps') (serialize) is not a code-exec sink -> allowed.
+        _ok("import pickle\ngetattr(pickle, 'dumps')({'a': 1})")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import types\n"
+            "def f(src):\n    types.FunctionType(compile(src, '<s>', 'exec'), {})()\nf('import os')",
+            "from types import FunctionType as F\n"
+            "def f(src):\n    F(compile(src, '<s>', 'exec'), {})()\nf('x')",
+            "import types\n"
+            "def f(src):\n    c = compile(src, '<s>', 'exec')\n    types.FunctionType(c, {})()\nf('x')",
+        ],
+    )
+    def test_functiontype_compile_result_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_functiontype_without_compile_allowed(self):
+        # types.FunctionType on an ordinary code object (fn.__code__) is not the
+        # dynamic-compile gadget; keep it allowed to avoid over-blocking metaprogramming.
+        _ok("import types\ndef g():\n    return 1\ntypes.FunctionType(g.__code__, {})")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system(\"python -c 'print(1)'\")",
+            "import os\nos.system('python3 evil.py')",
+            "import subprocess\nsubprocess.run(['python3', '-c', 'print(1)'])",
+            "import os\nos.system('perl -e \"print 1\"')",
+            "import os\nos.system('node -e \"1\"')",
+        ],
+    )
+    def test_interpreter_child_process_blocked(self, code):
+        # A child interpreter runs WITHOUT the in-process write guard, so spawning one
+        # escapes the sandbox; interpreters are blocked at shell command position.
+        assert _check_code_safety(code) is not None, code
+
+    def test_benign_shell_still_allowed(self):
+        _ok("import os\nos.system('echo hello')")
+        _ok("import os\nos.system('ls -la')")
+        _ok("import subprocess\nsubprocess.run(['echo', 'hi'])")

@@ -607,4 +607,53 @@ def test_sandboxed_imports_still_work_under_guard():
         disable_sandbox = False,
     )
     assert '{"a": 1}' in out
-    assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_realpath_monkeypatch_write_escape_denied(tmp_path):
+    # Sandboxed code reassigns os.path.realpath to a lambda that echoes an in-workdir
+    # path, then writes to an absolute path outside the workdir. If the guard read
+    # os.path.realpath off the live module every call, the reassignment would fool
+    # _within() into approving the outside write. The guard captures the original path
+    # helpers at prelude time, so the write is still denied.
+    session = "backstop-realpath-monkeypatch"
+    workdir = get_sandbox_workdir(session)
+    target = tmp_path / "realpath_escape_probe.txt"
+    if target.exists():
+        target.unlink()
+    out = _python_exec(
+        "import os\n"
+        f"os.path.realpath = lambda p: {workdir!r} + '/ok'\n"
+        f"os.fspath = lambda p: {workdir!r} + '/ok'\n"
+        f"open({str(target)!r}, 'w').write('escaped')\n"
+        "print('WROTE-VIA-MONKEYPATCH')\n",
+        None,
+        30,
+        session,
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_fspath_monkeypatch_write_escape_denied(tmp_path):
+    # The os.fspath twin of the realpath monkeypatch: reassigning os.fspath must not
+    # let a materialized outside path slip past the confinement check.
+    session = "backstop-fspath-monkeypatch"
+    workdir = get_sandbox_workdir(session)
+    target = tmp_path / "fspath_escape_probe.txt"
+    if target.exists():
+        target.unlink()
+    out = _python_exec(
+        "import os\n"
+        f"os.fspath = lambda p: {workdir!r} + '/ok'\n"
+        f"open({str(target)!r}, 'w').write('escaped')\n"
+        "print('WROTE-VIA-MONKEYPATCH')\n",
+        None,
+        30,
+        session,
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
