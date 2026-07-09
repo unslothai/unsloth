@@ -49,10 +49,8 @@ from routes.inference import (
     _monitor_openai_chunk,
     _monitor_openai_sse_event,
     _normalize_openai_passthrough_sse_line,
-    _openai_compat_stream_preheader_fallback_timeout,
     _openai_compat_stream_stall_timeout,
     _openai_messages_for_gguf_chat,
-    _openai_non_stream_chat_response_sse_lines,
     _openai_passthrough_sse_line_terminal_state,
     _openai_passthrough_upstream_headers,
     _openai_passthrough_non_streaming,
@@ -66,7 +64,6 @@ from routes.inference import (
     _OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV,
     _OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV,
     _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV,
-    _OPENAI_COMPAT_STREAM_PREHEADER_FALLBACK_TIMEOUT_ENV,
     _set_or_prepend_system_message,
     openai_completions,
     openai_embeddings,
@@ -1416,156 +1413,6 @@ class TestOpenAICompatibilityHelpers:
     ):
         monkeypatch.setenv(_OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV, raw_value)
         assert _openai_compat_stream_stall_timeout() is None
-
-    def test_openai_compat_preheader_fallback_timeout_uses_default(self, monkeypatch):
-        monkeypatch.delenv(_OPENAI_COMPAT_STREAM_PREHEADER_FALLBACK_TIMEOUT_ENV, raising = False)
-        assert _openai_compat_stream_preheader_fallback_timeout() is None
-
-    def test_openai_compat_preheader_fallback_timeout_uses_env_override(self, monkeypatch):
-        monkeypatch.setenv(_OPENAI_COMPAT_STREAM_PREHEADER_FALLBACK_TIMEOUT_ENV, "2.5")
-        assert _openai_compat_stream_preheader_fallback_timeout() == 2.5
-
-    @pytest.mark.parametrize("raw_value", ["", "not-a-float"])
-    def test_openai_compat_preheader_fallback_timeout_invalid_env_disables(
-        self, monkeypatch, raw_value
-    ):
-        monkeypatch.setenv(_OPENAI_COMPAT_STREAM_PREHEADER_FALLBACK_TIMEOUT_ENV, raw_value)
-        assert _openai_compat_stream_preheader_fallback_timeout() is None
-
-    @pytest.mark.parametrize("raw_value", ["0", "-1"])
-    def test_openai_compat_preheader_fallback_timeout_non_positive_env_disables(
-        self, monkeypatch, raw_value
-    ):
-        monkeypatch.setenv(_OPENAI_COMPAT_STREAM_PREHEADER_FALLBACK_TIMEOUT_ENV, raw_value)
-        assert _openai_compat_stream_preheader_fallback_timeout() is None
-
-    def test_non_streaming_fallback_response_converts_to_openai_sse(self):
-        payload = SimpleNamespace(stream_options = {"include_usage": True})
-        lines = _openai_non_stream_chat_response_sse_lines(
-            {
-                "id": "chatcmpl-fallback",
-                "created": 123,
-                "model": "model-a",
-                "system_fingerprint": "fp-test",
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": "OK",
-                            "reasoning_content": "short reasoning",
-                        },
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 7,
-                    "completion_tokens": 2,
-                    "total_tokens": 9,
-                },
-            },
-            payload,
-            "chatcmpl-original",
-            "model-b",
-        )
-
-        assert lines[-1] == "data: [DONE]"
-        delta = json.loads(lines[0][len("data: ") :])
-        assert delta["id"] == "chatcmpl-fallback"
-        assert delta["choices"][0]["delta"] == {
-            "role": "assistant",
-            "content": "OK",
-            "reasoning_content": "short reasoning",
-        }
-        finish = json.loads(lines[1][len("data: ") :])
-        assert finish["choices"][0]["finish_reason"] == "stop"
-        usage = json.loads(lines[2][len("data: ") :])
-        assert usage["choices"] == []
-        assert usage["usage"]["completion_tokens"] == 2
-
-    def test_non_streaming_fallback_response_omits_usage_without_opt_in(self):
-        payload = SimpleNamespace(stream_options = None)
-        lines = _openai_non_stream_chat_response_sse_lines(
-            {
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "OK"},
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9},
-            },
-            payload,
-            "chatcmpl-original",
-            "model-b",
-        )
-
-        assert len(lines) == 3
-        assert lines[-1] == "data: [DONE]"
-
-    def test_non_streaming_fallback_response_adds_empty_content_to_reasoning_only_delta(self):
-        payload = SimpleNamespace(stream_options = None)
-        lines = _openai_non_stream_chat_response_sse_lines(
-            {
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": None,
-                            "reasoning_content": "plan",
-                        },
-                        "finish_reason": "stop",
-                    }
-                ],
-            },
-            payload,
-            "chatcmpl-original",
-            "model-b",
-        )
-
-        delta = json.loads(lines[0][len("data: ") :])["choices"][0]["delta"]
-        assert delta["reasoning_content"] == "plan"
-        assert delta["content"] == ""
-
-    def test_non_streaming_fallback_response_adds_tool_call_delta_indexes(self):
-        payload = SimpleNamespace(stream_options = None)
-        lines = _openai_non_stream_chat_response_sse_lines(
-            {
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [
-                                {
-                                    "id": "call_1",
-                                    "type": "function",
-                                    "function": {"name": "lookup", "arguments": "{}"},
-                                },
-                                {
-                                    "index": 7,
-                                    "id": "call_2",
-                                    "type": "function",
-                                    "function": {"name": "search", "arguments": "{}"},
-                                },
-                            ],
-                        },
-                        "finish_reason": "tool_calls",
-                    }
-                ],
-            },
-            payload,
-            "chatcmpl-original",
-            "model-b",
-        )
-
-        delta = json.loads(lines[0][len("data: ") :])["choices"][0]["delta"]
-        assert [tool_call["index"] for tool_call in delta["tool_calls"]] == [0, 7]
-        finish = json.loads(lines[1][len("data: ") :])["choices"][0]
-        assert finish["finish_reason"] == "tool_calls"
 
     def test_openai_stream_error_sse_closes_with_done(self):
         error = {"error": {"message": "boom"}}
@@ -3625,84 +3472,6 @@ class TestApiMonitorProviderAndCompletionStreams:
                 await task
             await asyncio.wait_for(cancelled.wait(), timeout = 5.0)
             assert cancel_id not in inf_mod._CANCEL_REGISTRY
-
-        asyncio.run(_run())
-
-    def test_passthrough_stream_preheader_fallback_preserves_http_exception_detail(
-        self, monkeypatch
-    ):
-        async def _run():
-            import routes.inference as inf_mod
-
-            monkeypatch.setenv(_OPENAI_COMPAT_STREAM_PREHEADER_FALLBACK_TIMEOUT_ENV, "0.01")
-            entered = asyncio.Event()
-
-            async def fake_send(*_args, **_kwargs):
-                entered.set()
-                await asyncio.Event().wait()
-
-            async def fake_non_streaming_upstream(*_args, **_kwargs):
-                raise HTTPException(
-                    status_code = 400,
-                    detail = {
-                        "error": {
-                            "message": "bad schema",
-                            "type": "invalid_request_error",
-                            "code": "invalid_request_error",
-                        }
-                    },
-                )
-
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            monitor = ApiMonitor(max_entries = 3)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
-            monkeypatch.setattr(
-                inf_mod,
-                "_openai_passthrough_non_streaming",
-                fake_non_streaming_upstream,
-            )
-
-            payload = ChatCompletionRequest(
-                model = "default",
-                messages = [ChatMessage(role = "user", content = "hi")],
-                stream = True,
-            )
-            response = await _openai_passthrough_stream(
-                Request(),
-                threading.Event(),
-                SimpleNamespace(
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                ),
-                payload,
-                "gguf",
-                "chatcmpl-test",
-                monitor_id = monitor_id,
-            )
-            await asyncio.wait_for(entered.wait(), timeout = 0.2)
-            chunks = [
-                chunk.decode() if isinstance(chunk, bytes) else chunk
-                async for chunk in response.body_iterator
-            ]
-            body = "".join(chunks)
-
-            assert "bad schema" in body
-            assert "invalid_request_error" in body
-            assert "internal_error" not in body
-            assert body.endswith("data: [DONE]\n\n")
-            [entry] = monitor.snapshot()
-            assert entry["status"] == "error"
 
         asyncio.run(_run())
 

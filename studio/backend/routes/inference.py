@@ -271,9 +271,6 @@ def _effective_max_tokens(payload):
 _OPENAI_COMPAT_IMPLICIT_MAX_TOKENS_ENV = "UNSLOTH_OPENAI_COMPAT_IMPLICIT_MAX_TOKENS"
 _OPENAI_COMPAT_MAX_TOKENS_CEILING_ENV = "UNSLOTH_OPENAI_COMPAT_MAX_TOKENS_CEILING"
 _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV = "UNSLOTH_OPENAI_COMPAT_STREAM_STALL_TIMEOUT"
-_OPENAI_COMPAT_STREAM_PREHEADER_FALLBACK_TIMEOUT_ENV = (
-    "UNSLOTH_OPENAI_COMPAT_STREAM_PREHEADER_FALLBACK_TIMEOUT"
-)
 
 
 def _positive_int_env(env_name: str, default):
@@ -812,103 +809,6 @@ def _openai_stream_usage_chunk(
     return f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
 
 
-def _openai_non_stream_chat_response_sse_lines(
-    data: dict, payload, completion_id, model_name
-) -> list[str]:
-    """Convert a non-streaming chat completion JSON body into OpenAI SSE lines."""
-    if not isinstance(data, dict):
-        raise ValueError("non-streaming fallback response was not a JSON object")
-    created = data.get("created") or int(time.time())
-    chunk_id = data.get("id") or completion_id
-    chunk_model = data.get("model") or model_name
-
-    def _base_chunk() -> dict:
-        chunk = {
-            "id": chunk_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": chunk_model,
-        }
-        fingerprint = data.get("system_fingerprint")
-        if fingerprint is not None:
-            chunk["system_fingerprint"] = fingerprint
-        return chunk
-
-    def _stream_tool_calls_with_indexes(tool_calls):
-        if not isinstance(tool_calls, list):
-            return tool_calls
-        indexed = []
-        for tool_index, tool_call in enumerate(tool_calls):
-            if isinstance(tool_call, dict) and tool_call.get("index") is None:
-                tool_call = {**tool_call, "index": tool_index}
-            indexed.append(tool_call)
-        return indexed
-
-    delta_choices = []
-    finish_choices = []
-    for fallback_choice in data.get("choices") or []:
-        if not isinstance(fallback_choice, dict):
-            continue
-        index = fallback_choice.get("index")
-        if index is None:
-            index = len(delta_choices)
-        message = fallback_choice.get("message") or {}
-        if not isinstance(message, dict):
-            message = {}
-        delta = {"role": message.get("role") or "assistant"}
-        for key in ("content", "reasoning_content", "tool_calls", "function_call"):
-            if key in message and message.get(key) is not None:
-                value = message.get(key)
-                if key == "tool_calls":
-                    value = _stream_tool_calls_with_indexes(value)
-                delta[key] = value
-        if "reasoning_content" in delta and "content" not in delta:
-            delta["content"] = ""
-        delta_choices.append(
-            {
-                "index": index,
-                "delta": delta,
-                "finish_reason": None,
-            }
-        )
-        finish_choices.append(
-            {
-                "index": index,
-                "delta": {},
-                "finish_reason": _clamp_finish_reason(fallback_choice.get("finish_reason")),
-            }
-        )
-
-    lines = []
-    if delta_choices:
-        chunk = _base_chunk()
-        chunk["choices"] = delta_choices
-        lines.append("data: " + json.dumps(chunk, separators = (",", ":"), ensure_ascii = False))
-    if finish_choices:
-        chunk = _base_chunk()
-        chunk["choices"] = finish_choices
-        lines.append("data: " + json.dumps(chunk, separators = (",", ":"), ensure_ascii = False))
-
-    usage = data.get("usage")
-    if _wants_stream_usage(payload) and isinstance(usage, dict):
-        chunk = _base_chunk()
-        chunk["choices"] = []
-        chunk["usage"] = {
-            "prompt_tokens": usage.get("prompt_tokens") or 0,
-            "completion_tokens": usage.get("completion_tokens") or 0,
-            "total_tokens": usage.get("total_tokens")
-            or ((usage.get("prompt_tokens") or 0) + (usage.get("completion_tokens") or 0)),
-            "prompt_tokens_details": _prompt_tokens_details(usage.get("prompt_tokens_details")),
-        }
-        timings = data.get("timings")
-        if timings is not None:
-            chunk["timings"] = timings
-        lines.append("data: " + json.dumps(chunk, separators = (",", ":"), ensure_ascii = False))
-
-    lines.append(_SSE_DONE_LINE)
-    return lines
-
-
 def _chat_chunk_sse(completion_id, created, model_name, *, delta, finish_reason) -> str:
     """One ``ChatCompletionChunk`` as an SSE ``data:`` line. The role / content /
     final chunks every in-process streamer emits differ only in their ``delta``
@@ -1203,7 +1103,6 @@ _STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
 _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
-_OPENAI_PASSTHROUGH_PREHEADER_FALLBACK_DEFAULT = None
 
 
 def _openai_compat_stream_stall_timeout():
@@ -1217,26 +1116,6 @@ def _openai_compat_stream_stall_timeout():
     return _positive_float_env(
         _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
-    )
-
-
-def _openai_compat_stream_preheader_fallback_timeout():
-    """Optional retry deadline for a committed stream waiting for headers.
-
-    Studio always keeps the downstream SSE connection alive with comment
-    heartbeats while llama-server is still in prefill/header wait. Retrying via
-    the non-streaming path is intentionally opt-in: Studio cannot prove that
-    closing the HTTP request has released a single-slot backend, so starting a
-    second request too early can queue behind the first one and worsen latency
-    for agent clients.
-
-    Set ``UNSLOTH_OPENAI_COMPAT_STREAM_PREHEADER_FALLBACK_TIMEOUT`` to a
-    positive number to opt into the retry; leave it unset or set it to 0 to keep
-    waiting on the original stream with heartbeats.
-    """
-    return _positive_float_env(
-        _OPENAI_COMPAT_STREAM_PREHEADER_FALLBACK_TIMEOUT_ENV,
-        _OPENAI_PASSTHROUGH_PREHEADER_FALLBACK_DEFAULT,
     )
 
 
@@ -12222,7 +12101,6 @@ async def _openai_passthrough_stream(
     client = None
     resp = None
     send_task: Optional[asyncio.Task[Optional[httpx.Response]]] = None
-    preheader_fallback_deadline: Optional[float] = None
 
     async def _aclose_send_task(task: Optional[asyncio.Task[Optional[httpx.Response]]]) -> None:
         if task is None:
@@ -12238,10 +12116,6 @@ async def _openai_passthrough_stream(
                     pass
         except (asyncio.CancelledError, Exception):
             pass
-
-    def _new_preheader_fallback_deadline() -> Optional[float]:
-        timeout_s = _openai_compat_stream_preheader_fallback_timeout()
-        return None if timeout_s is None else time.monotonic() + timeout_s
 
     # Keep tracker cleanup paired if pre-header dispatch is cancelled.
     try:
@@ -12280,7 +12154,6 @@ async def _openai_passthrough_stream(
                         mark_cancel_on_cancel = False,
                     )
                 )
-                preheader_fallback_deadline = _new_preheader_fallback_deadline()
                 done, _ = await asyncio.wait(
                     {send_task},
                     timeout = _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S,
@@ -12292,7 +12165,6 @@ async def _openai_passthrough_stream(
                 # Dispatch returned quickly enough to preserve pre-header status.
                 resp = await send_task
                 send_task = None
-                preheader_fallback_deadline = None
             except httpx.RequestError as e:
                 # llama-server subprocess crashed / starting / unreachable.
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
@@ -12367,7 +12239,7 @@ async def _openai_passthrough_stream(
             disconnect_watcher = None
 
             nonlocal resp, send_task, first_token_deadline, _truncate_budget
-            nonlocal client, preheader_fallback_deadline
+            nonlocal client
             monitor_done = False
             saw_finish_reason = False
             saw_done = False
@@ -12441,32 +12313,6 @@ async def _openai_passthrough_stream(
                 if terminal_seen:
                     return _OPENAI_PASSTHROUGH_TERMINAL_GRACE_S
                 return stall_timeout_s
-
-            async def _non_streaming_fallback_lines() -> list[str]:
-                nonlocal resp, send_task, client
-                await _aclose_send_task(send_task)
-                send_task = None
-                await _aclose_stream_resources(resp = resp, client = client)
-                resp = None
-                client = None
-                fallback_response = await _openai_passthrough_non_streaming(
-                    llama_backend,
-                    payload,
-                    model_name,
-                    monitor_id = monitor_id,
-                    request = request,
-                    cancel_event = cancel_event,
-                )
-                body_bytes = getattr(fallback_response, "body", b"")
-                if isinstance(body_bytes, str):
-                    body_bytes = body_bytes.encode("utf-8")
-                fallback_data = json.loads(body_bytes.decode("utf-8"))
-                return _openai_non_stream_chat_response_sse_lines(
-                    fallback_data,
-                    payload,
-                    completion_id,
-                    model_name,
-                )
 
             def _heal_transform(chunk_data: dict, raw_line: str) -> list:
                 """SSE lines to emit in place of one upstream line (healing on)."""
@@ -12546,16 +12392,6 @@ async def _openai_passthrough_stream(
                                 _STREAM_DISCONNECT_POLL_TIMEOUT_S,
                                 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S,
                             )
-                            if preheader_fallback_deadline is not None:
-                                remaining_s = preheader_fallback_deadline - time.monotonic()
-                                if remaining_s <= 0:
-                                    logger.warning(
-                                        "openai passthrough stream: upstream headers delayed; falling back to non-streaming"
-                                    )
-                                    for fallback_line in await _non_streaming_fallback_lines():
-                                        yield fallback_line + "\n\n"
-                                    return
-                                wait_timeout = min(wait_timeout, max(remaining_s, 0.001))
                             done, _ = await asyncio.wait(
                                 {send_task},
                                 timeout = wait_timeout,
@@ -12587,7 +12423,6 @@ async def _openai_passthrough_stream(
                                 yield _openai_stream_error_sse(_openai_stream_error_chunk(e))
                                 return
                             send_task = None
-                            preheader_fallback_deadline = None
 
                     if resp is None:
                         api_monitor.finish(monitor_id, "cancelled")
@@ -12627,7 +12462,6 @@ async def _openai_passthrough_stream(
                                 mark_cancel_on_cancel = False,
                             )
                         )
-                        preheader_fallback_deadline = _new_preheader_fallback_deadline()
                         continue
 
                     upstream_error = _openai_passthrough_error(upstream_status, err_text)
