@@ -322,9 +322,7 @@ async def get_attachment_file(
         if isinstance(text, str) and text:
             texts.append(text)
     if texts:
-        return Response(
-            content = "\n".join(texts), media_type = "text/plain; charset=utf-8"
-        )
+        return Response(content = "\n".join(texts), media_type = "text/plain; charset=utf-8")
     raise HTTPException(status_code = 404, detail = "Attachment has no stored content")
 
 

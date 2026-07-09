@@ -1826,9 +1826,7 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         if not isinstance(attachments, list):
             return False
         remaining = [
-            a
-            for a in attachments
-            if not (isinstance(a, dict) and a.get("id") == attachment_id)
+            a for a in attachments if not (isinstance(a, dict) and a.get("id") == attachment_id)
         ]
         if len(remaining) == len(attachments):
             return False
