@@ -155,7 +155,9 @@ class TestInstallShUvDefaultIndex:
 
     def test_torch_installs_neutralize_all_uv_index_env_vars(self):
         # --default-index installs run with all uv index env vars unset via `env -u`.
-        assert "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL" in self._sh
+        assert (
+            "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL" in self._sh
+        )
 
 
 # Group 2 -- Shell snippet tests (bash subprocess, mocked python)
