@@ -22,11 +22,12 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-import unsloth  # noqa: F401  (sets UNSLOTH_IS_PRESENT before transformers)
-
-# Skip explicitly when the kernel deps are absent (e.g. CPU-only runner without bitsandbytes),
-# but let any other import error surface so a real break in the module is caught.
+# unsloth.kernels.utils imports bitsandbytes unconditionally, so skip the whole module up
+# front on runners without it (e.g. CPU-only) before importing unsloth, otherwise collection
+# errors instead of producing a skip. Any other import error still surfaces as a failure.
 pytest.importorskip("bitsandbytes")
+
+import unsloth  # noqa: F401  (sets UNSLOTH_IS_PRESENT before transformers)
 from unsloth.kernels.utils import get_lora_parameters_bias, _FP8_WEIGHT_DTYPES
 
 _FP8 = _FP8_WEIGHT_DTYPES[0] if _FP8_WEIGHT_DTYPES else None
