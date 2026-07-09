@@ -81,6 +81,7 @@ class _FakeBackend:
         model_kind = None,
         transformer_quant = None,
         text_encoder_quant = None,
+        vae_quant = None,
     ):
         # Mirror the real backend's cheap validation so the route's
         # validate-before-evict ordering is exercised.
