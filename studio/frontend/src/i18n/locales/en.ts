@@ -430,7 +430,7 @@ export const en = {
         "View and manage files uploaded to chats, projects, and knowledge bases.",
       fineTuneExport: "Use chats as training data",
       fineTuneExportDescription:
-        "Turn your chats into a fine-tuning JSONL dataset.",
+        "Create a fine-tuning JSONL dataset from your chats. Load it in Train, refine in Data Recipes, or export it.",
       fineTuneExportAction: "Export JSONL",
       fineTuneRunAction: "Run",
       fineTuneFormatLabel: "Format",
