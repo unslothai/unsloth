@@ -4068,7 +4068,9 @@ async def load_model(
         task = asyncio.create_task(_background_load())
         _active_async_load_task = task
         _background_tasks.add(task)
-        task.add_done_callback(lambda done_task: _clear_async_load_if_current(done_task, generation))
+        task.add_done_callback(
+            lambda done_task: _clear_async_load_if_current(done_task, generation)
+        )
         return LoadAcceptedResponse(model = request.model_path)
     async with inference_lifecycle_gate():
         if sidecar_swap_in_progress():

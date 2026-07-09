@@ -42,7 +42,9 @@ def test_async_load_returns_immediately(monkeypatch):
 
     async def _slow_load(request, fastapi_request, current_subject):
         await asyncio.sleep(0.2)
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
 
@@ -62,7 +64,9 @@ def test_async_load_returns_immediately(monkeypatch):
 def test_async_load_success_leaves_error_none(monkeypatch):
     async def _quick_load(request, fastapi_request, current_subject):
         await asyncio.sleep(0.02)
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _quick_load)
 
@@ -92,7 +96,9 @@ def test_async_load_failure_surfaces_via_last_async_load_error(monkeypatch):
 def test_async_load_clears_previous_error_before_scheduling(monkeypatch):
     async def _quick_load(request, fastapi_request, current_subject):
         await asyncio.sleep(0.2)
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _quick_load)
     monkeypatch.setattr(inference_route, "_last_async_load_error", "stale error from a prior load")
@@ -111,7 +117,9 @@ def test_async_load_rejects_second_load_while_pending(monkeypatch):
     async def _slow_load(request, fastapi_request, current_subject):
         calls.append(request.model_path)
         await release.wait()
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
 
@@ -147,7 +155,9 @@ def test_async_load_status_reports_pending_model_immediately(monkeypatch):
 
     async def _slow_load(request, fastapi_request, current_subject):
         await release.wait()
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _LlamaBackend())
@@ -211,16 +221,22 @@ def test_async_load_status_keeps_previous_gguf_loaded_while_pending(monkeypatch)
 
     async def _slow_load(request, fastapi_request, current_subject):
         await release.wait()
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _LlamaBackend())
     monkeypatch.setattr(inference_route, "display_label_for_native_path", lambda model_id: model_id)
     monkeypatch.setattr(inference_route, "load_inference_config", lambda model_id: None)
-    monkeypatch.setattr(inference_route, "resolve_effective_chat_template_override", lambda **kwargs: None)
+    monkeypatch.setattr(
+        inference_route, "resolve_effective_chat_template_override", lambda **kwargs: None
+    )
 
     async def _scenario():
-        accepted = await inference_route.load_model(_request("unsloth/Next-GGUF"), object(), "tester")
+        accepted = await inference_route.load_model(
+            _request("unsloth/Next-GGUF"), object(), "tester"
+        )
         status = await inference_route.get_status("tester")
         release.set()
         await inference_route._active_async_load_task
@@ -243,7 +259,9 @@ def test_overlapping_loads_success_clears_stale_error(monkeypatch):
             await asyncio.sleep(0.02)
             raise HTTPException(status_code = 400, detail = "A failed")
         await asyncio.sleep(0.02)
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "B", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "B", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _alternating_load)
 
@@ -264,7 +282,9 @@ def test_sync_load_unaffected_returns_load_response_directly(monkeypatch):
 
     async def _load(request, fastapi_request, current_subject):
         calls.append(request)
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _load)
 
