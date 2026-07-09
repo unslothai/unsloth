@@ -1070,9 +1070,10 @@ def fix_dynamo_config_thread_visibility():
     invisible to the autograd worker threads that run backward. Gradient
     checkpointing recompiles fullgraph gpt-oss kernels there against the default
     limit of 8, raising FailOnRecompileLimitHit at step 0. Mirror direct config
-    assignments into the process-global entry default (torch <= 2.11 semantics),
-    leaving the scoped config.patch API (which writes ContextVars) untouched.
-    No-op below torch 2.12 and on any torch without this internal layout.
+    assignments into the process-global entry default (torch <= 2.11 semantics).
+    config.patch(...) also assigns via __setattr__, but is thread-local by design,
+    so skip mirroring while inside a patch enter/exit (tracked per thread). No-op
+    below torch 2.12 and on any torch without this internal layout.
     """
     try:
         import torch
@@ -1099,9 +1100,58 @@ def fix_dynamo_config_thread_visibility():
 
     mirrored_modules = ("torch._dynamo.config", "torch._inductor.config")
 
+    # config.patch(...) assigns via __setattr__ too, but its writes are thread-local
+    # by design; a per-thread depth counter marks them so they are not mirrored.
+    import threading
+
+    _patch_depth = threading.local()
+
+    def _in_patch():
+        return getattr(_patch_depth, "n", 0) > 0
+
+    original_patch = ConfigModule.patch
+    if not getattr(original_patch, "__unsloth_patched__", False):
+
+        @functools.wraps(original_patch)
+        def _patched_patch(self, *args, **kwargs):
+            ctx = original_patch(self, *args, **kwargs)
+            try:
+                cls = type(ctx)  # patch() builds a fresh ConfigPatch class each call
+                if not getattr(cls, "__unsloth_patch_wrapped__", False):
+                    _enter0, _exit0 = cls.__enter__, cls.__exit__
+
+                    def _enter(s, _e = _enter0):
+                        _patch_depth.n = getattr(_patch_depth, "n", 0) + 1
+                        try:
+                            return _e(s)
+                        finally:
+                            _patch_depth.n -= 1
+
+                    def _exit(
+                        s,
+                        *a,
+                        _x = _exit0,
+                    ):
+                        _patch_depth.n = getattr(_patch_depth, "n", 0) + 1
+                        try:
+                            return _x(s, *a)
+                        finally:
+                            _patch_depth.n -= 1
+
+                    cls.__enter__, cls.__exit__ = _enter, _exit
+                    cls.__unsloth_patch_wrapped__ = True
+            except Exception:
+                pass
+            return ctx
+
+        _patched_patch.__unsloth_patched__ = True
+        ConfigModule.patch = _patched_patch
+
     @functools.wraps(original_setattr)
     def _patched_setattr(self, name, value):
         original_setattr(self, name, value)
+        if _in_patch():
+            return  # transient config.patch write: keep it thread-local
         # Aliases (cache_size_limit -> recompile_limit) re-enter with the real name.
         if self.__dict__.get("__name__", None) in mirrored_modules:
             try:
@@ -1393,8 +1443,7 @@ def fix_vllm_pdl_blackwell():
 
     if patched:
         logger.info(
-            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - "
-            f"patched: {', '.join(patched)}"
+            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - patched: {', '.join(patched)}"
         )
     else:
         # Just set the env var - vLLM might be an older version without supports_pdl
