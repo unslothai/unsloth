@@ -25,8 +25,10 @@ import pytest
 
 
 def test_transformer_load_signature_supports_unsloth_kwargs():
-    """Forwards-compat tripwire on the installed ST: Transformer.load must stay a
-    callable that accepts the hub kwargs the fix passes (or grow **kwargs)."""
+    """Forwards-compat tripwire: when the installed Transformer.load is the modern
+    Hub-capable variant, it must accept the kwargs the #6881 fix passes. Legacy ST
+    3.x/4.x expose load(input_path); the production path treats that as non-Hub-capable
+    and falls back to Transformer(...), so mirror that gate and skip there."""
     models = pytest.importorskip("sentence_transformers.models")
     load = getattr(models.Transformer, "load", None)
     assert callable(load), (
@@ -35,6 +37,12 @@ def test_transformer_load_signature_supports_unsloth_kwargs():
     )
     params = inspect.signature(load).parameters
     accepts_var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+    # Mirror _create_transformer_module's hub_capable gate.
+    hub_capable = accepts_var_kw or any(k in params for k in ("token", "cache_folder", "revision"))
+    if not hub_capable:
+        pytest.skip(
+            "legacy Transformer.load(input_path); production path falls back to Transformer(...)"
+        )
     unsupported = [
         k
         for k in ("token", "cache_folder", "revision", "trust_remote_code")
