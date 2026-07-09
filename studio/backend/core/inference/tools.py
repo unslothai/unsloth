@@ -2187,6 +2187,19 @@ def _fold_call(node, _state, _depth):
                 except Exception:
                     return None
             return None
+        # os.path.normpath / abspath on a literal reveal the same sensitive / traversal
+        # path a direct string would (open(os.path.normpath('a/../../etc/passwd')) must
+        # not stay opaque). normpath is a pure string transform; abspath is only foldable
+        # for an already-absolute arg (a relative abspath depends on the runtime cwd,
+        # which is the in-workdir sandbox cwd, so it need not be folded).
+        if attr in ("normpath", "abspath") and _is_path_join_owner(owner):
+            if len(args) == 1 and isinstance(args[0], str):
+                try:
+                    if attr == "normpath" or os.path.isabs(args[0]):
+                        return _fold_cap(os.path.normpath(args[0]))
+                except Exception:
+                    return None
+            return None
         if isinstance(owner, ast.Name):
             mod = owner.id
             try:
@@ -3161,6 +3174,38 @@ def _check_signal_escape_patterns(
             "warnings": [],
         }
 
+    # Charge this tree's node count against the shared analyzer budget BEFORE the several
+    # unbounded ast.walk / visitor passes below. A syntactically valid file (or a huge
+    # recovered exec/eval payload, since the budget is shared across the recursion) with
+    # hundreds of thousands of nodes would otherwise tie up the Studio parent process
+    # before the child rlimits apply. Fail closed (block) when the budget is exceeded.
+    if _budget is None:
+        _budget = _AnalyzerBudget()
+    try:
+        _budget.nodes += sum(1 for _ in ast.walk(tree))
+    except Exception:  # pragma: no cover - defensive
+        pass
+    if _budget.nodes > _MAX_ANALYZER_NODES:
+        return False, {
+            "error": None,
+            "signal_tampering": [],
+            "exception_catching": [],
+            "shell_escapes": [],
+            "dynamic_exec": [
+                {
+                    "type": "analyzer_budget",
+                    "line": -1,
+                    "description": (
+                        "code exceeds the static-analysis node budget (too large to verify safely)"
+                    ),
+                }
+            ],
+            "network_calls": [],
+            "sensitive_file_reads": [],
+            "filesystem_violations": [],
+            "warnings": [],
+        }
+
     signal_tampering = []
     exception_catching = []
     shell_escapes = []
@@ -3172,8 +3217,6 @@ def _check_signal_escape_patterns(
     # Default on; UNSLOTH_STUDIO_SINK_ANALYZER=0 reverts to the legacy blanket
     # eval/exec ban and disables filesystem-confinement + aliasing analysis.
     _analyzer_on = os.environ.get("UNSLOTH_STUDIO_SINK_ANALYZER", "1") != "0"
-    if _budget is None:
-        _budget = _AnalyzerBudget()
     if _analyzer_on:
         try:
             _const_env = _build_const_prop_env(tree)
@@ -3547,6 +3590,39 @@ def _check_signal_escape_patterns(
                         return _elt(v)
             return None
 
+        def _resolve_container_exec(self, sub):
+            """Resolve an inline literal-container index callee to a dynamic-exec builtin.
+
+            Covers ({'e': exec}['e'])(...), [exec][0](...), (eval,)[0](...): an inline
+            container hiding an eval/exec/compile sink from the bare-name recursion."""
+
+            def _elt(elt):
+                if isinstance(elt, ast.Name):
+                    if elt.id in _DYNAMIC_EXEC_BUILTINS:
+                        return elt.id
+                    if elt.id in self.exec_from_aliases:
+                        return self.exec_from_aliases[elt.id]
+                    if _analyzer_on:
+                        return _scope_idx.resolve(elt.id, elt, "execb")
+                if (
+                    isinstance(elt, ast.Attribute)
+                    and elt.attr in _DYNAMIC_EXEC_BUILTINS
+                    and _ast_name_matches(elt.value, self.builtins_aliases)
+                ):
+                    return elt.attr
+                return None
+
+            container = sub.value
+            ci = _const_fold(sub.slice, _const_env)
+            if isinstance(container, (ast.List, ast.Tuple)) and isinstance(ci, int):
+                if -len(container.elts) <= ci < len(container.elts):
+                    return _elt(container.elts[ci])
+            if isinstance(container, ast.Dict) and ci is not None:
+                for k, v in zip(container.keys, container.values):
+                    if k is not None and _const_fold(k, _const_env) == ci:
+                        return _elt(v)
+            return None
+
         def _is_compile_result(self, arg):
             """True when ``arg`` is a ``compile(...)`` code object (bare / builtins /
             single-assignment alias). Used to catch code objects executed through
@@ -3755,6 +3831,10 @@ def _check_signal_escape_patterns(
                 and _ast_name_matches(func.value, self.builtins_aliases)
             ):
                 exec_func_id = func.attr  # builtins.eval(...) / __builtins__.exec(...)
+            elif isinstance(func, ast.Subscript):
+                # ({'e': exec}['e'])(...) / [exec][0](...): an inline container hides the
+                # sink from the bare-name / attribute checks above.
+                exec_func_id = self._resolve_container_exec(func)
 
             if exec_func_id is not None:
                 if _analyzer_on:
@@ -3784,12 +3864,17 @@ def _check_signal_escape_patterns(
                     and len(node.args) >= 2
                 ):
                     _attr_call = (node.args[0], node.args[1])
-                elif (
-                    isinstance(func, ast.Attribute)
-                    and func.attr in ("__getattribute__", "__getattr__")
-                    and len(node.args) >= 2
+                elif isinstance(func, ast.Attribute) and func.attr in (
+                    "__getattribute__",
+                    "__getattr__",
                 ):
-                    _attr_call = (node.args[0], node.args[1])
+                    # Unbound form object.__getattribute__(obj, 'name') carries the receiver
+                    # as arg0; the BOUND form obj.__getattribute__('name') carries it as the
+                    # attribute's own value (builtins.open.__getattribute__('__closure__')).
+                    if len(node.args) >= 2:
+                        _attr_call = (node.args[0], node.args[1])
+                    elif len(node.args) == 1:
+                        _attr_call = (func.value, node.args[0])
                 is_dynamic_import = (
                     _ast_name_matches(func, _DYNAMIC_IMPORT_FUNCS)
                     or (
@@ -3975,6 +4060,19 @@ def _check_signal_escape_patterns(
                     dynamic_desc = (
                         f"runpy.{func.attr}() executes a file/module without static analysis"
                     )
+                elif isinstance(func, ast.Attribute) and func.attr in (
+                    "runcode",
+                    "runsource",
+                ):
+                    # code.InteractiveInterpreter().runcode(c) / InteractiveConsole()
+                    # .runsource(src) execute a code object / source string without the
+                    # recursive analysis exec/eval receive, so an opaque compile() result
+                    # (or raw source) runs un-analyzed. These method names are unique to the
+                    # code module's interpreters, so flag the call regardless of receiver.
+                    dynamic_desc = (
+                        f"{func.attr}() executes code without static analysis "
+                        "(code.InteractiveInterpreter / InteractiveConsole)"
+                    )
                 if dynamic_desc:
                     dynamic_exec.append(
                         {
@@ -4062,6 +4160,18 @@ def _check_signal_escape_patterns(
                             "description": "sys.modules[...] access to a sensitive module",
                         }
                     )
+            if isinstance(node.ctx, (ast.Store, ast.Del)) and is_sys_modules:
+                # `del sys.modules['posix']; import posix` (or reassigning the entry) drops
+                # the guard-patched module object so a fresh, UNWRAPPED C module is imported,
+                # bypassing the Stage 5 wrappers. Mutating the loader table has no legitimate
+                # use in sandboxed compute, so deny any Store/Del on sys.modules[...].
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(node, "lineno", -1),
+                        "description": "sys.modules mutation (del / assign) can drop a guarded module",
+                    }
+                )
             # globals()['__builtins__'] / locals()[...] / vars()[...] pulls the builtins
             # namespace (or a dangerous module) out of the namespace dict, e.g.
             # getattr(globals()['__builtins__'], '__import__')('os'). Flag a Load of a
@@ -4743,21 +4853,30 @@ def _check_signal_escape_patterns(
     #   import shutil as sh            -> sh.copy('../../etc/passwd', 'x')
     _pathlib_ctor_aliases = set(_PATHLIB_CTORS)
     _shutil_aliases = {"shutil"}
+    # from os import open as oo / from io import open as X / from builtins import open as X:
+    # the read-only os.open is deliberately allowed OUTSIDE the workdir by the runtime
+    # guard, so a traversal read via such an alias must be caught statically.
+    _open_from_aliases: set[str] = set()
     for _imp in ast.walk(tree):
         if isinstance(_imp, ast.ImportFrom) and _imp.module == "pathlib":
             for _a in _imp.names:
                 if _a.name in _PATHLIB_CTORS:
                     _pathlib_ctor_aliases.add(_a.asname or _a.name)
+        elif isinstance(_imp, ast.ImportFrom) and _imp.module in ("os", "io", "builtins"):
+            for _a in _imp.names:
+                if _a.name == "open":
+                    _open_from_aliases.add(_a.asname or "open")
         elif isinstance(_imp, ast.Import):
             for _a in _imp.names:
                 if _a.name == "shutil":
                     _shutil_aliases.add(_a.asname or "shutil")
 
     def _resolves_to_open(fn):
-        # A callee that is `open`, or a single-assignment alias of it (o = open;
-        # o('../../etc/passwd').read()), or builtins.open / io.open / os.open.
+        # A callee that is `open`, a `from os/io/builtins import open as X` alias, a
+        # single-assignment alias (o = open; o('../../etc/passwd').read()), or
+        # builtins.open / io.open / os.open.
         if isinstance(fn, ast.Name):
-            if fn.id == "open":
+            if fn.id == "open" or fn.id in _open_from_aliases:
                 return True
             rhs = _scope_idx.resolve(fn.id, fn, "rhsnode")
             if isinstance(rhs, ast.Name) and rhs.id == "open":
@@ -4899,6 +5018,16 @@ def _check_signal_escape_patterns(
                     scan_args.extend(v for v in kw.value.values if v is not None)
                 else:
                     scan_args.append(kw.value)
+            # Descend into a literal list/tuple argv so a sensitive path element is
+            # scanned: subprocess.run(['cat', '/etc/passwd']) reads the host file in an
+            # unguarded child even though the top-level arg is a list, not a string.
+            _expanded = []
+            for a in scan_args:
+                if isinstance(a, (ast.List, ast.Tuple)):
+                    _expanded.extend(a.elts)
+                else:
+                    _expanded.append(a)
+            scan_args = _expanded
             for arg in scan_args:
                 s = _fold_read_arg(arg)
                 if s is None:
@@ -5059,6 +5188,14 @@ _realpath = _os.path.realpath
 _fspath = _os.fspath
 _fsdecode = _os.fsdecode
 _sep = _os.sep
+# os.path.realpath resolves symlinks by consulting the LIVE os.lstat / os.readlink (and
+# os.getcwd for relative paths). Capture the originals so a monkeypatch of any of them --
+# e.g. os.lstat raising so realpath stops FOLLOWING an in-workdir symlink that points
+# outside -- cannot make _within() approve a path the real open() then escapes through.
+_lstat = _os.lstat
+_readlink = _os.readlink
+_getcwd = _os.getcwd
+_stat = _os.stat
 _WD = _realpath(__WORKDIR__)
 
 def _within(p):
@@ -5066,13 +5203,18 @@ def _within(p):
         if isinstance(p, int):
             return True
         # os.path.realpath internally calls the LIVE os.fspath (posixpath.realpath does
-        # `filename = os.fspath(filename)`), so a sandboxed reassignment of os.fspath
-        # would still poison the resolution even though we hold the original realpath.
-        # Re-pin os.fspath to the captured original before resolving; a str target then
-        # resolves truthfully. (Re-pinning per check keeps it self-healing if user code
-        # re-patches; the real open() call receives the already-materialized str and does
-        # not route through os.fspath, so restoring it has no effect on the write itself.)
+        # `filename = os.fspath(filename)`) and os.lstat / os.readlink / os.getcwd, so a
+        # sandboxed reassignment of any of them would poison the resolution even though we
+        # hold the original realpath. Re-pin them to the captured originals before
+        # resolving; the target then resolves truthfully (symlinks followed, cwd honest).
+        # Re-pinning per check keeps it self-healing if user code re-patches; the real
+        # open() receives the already-materialized str and does not route through these,
+        # so restoring them has no effect on the write itself.
         _os.fspath = _fspath
+        _os.lstat = _lstat
+        _os.readlink = _readlink
+        _os.getcwd = _getcwd
+        _os.stat = _stat
         rp = _realpath(_fspath(p))
         # A bytes path resolves to bytes; normalize to str so the prefix compare against
         # the str _WD does not raise (which would deny a legitimate in-workdir bytes write

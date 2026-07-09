@@ -742,3 +742,38 @@ def test_sandboxed_fileio_base_via_mro_blocked():
     )
     assert "unsafe code detected" in out or "sandbox:" in out or "PermissionError" in out
     assert not os.path.exists("/tmp/studio_mro_escape.txt")
+
+
+@_POSIX_ONLY
+def test_sandboxed_lstat_monkeypatch_symlink_escape_denied(tmp_path):
+    # A pre-existing in-workdir symlink points outside. Sandboxed code monkeypatches
+    # os.lstat to raise so os.path.realpath stops FOLLOWING the link, which would make
+    # _within() resolve to the in-workdir link path while the real open() escapes through
+    # it. The guard captures os.lstat/os.readlink and re-pins them before resolving, so
+    # the write is still denied.
+    session = "backstop-lstat-monkeypatch"
+    workdir = get_sandbox_workdir(session)
+    link = os.path.join(workdir, "lstat_escape_link")
+    if os.path.islink(link) or os.path.exists(link):
+        os.remove(link)
+    os.symlink(str(tmp_path), link)
+    target = tmp_path / "lstat_escape_probe.txt"
+    if target.exists():
+        target.unlink()
+    try:
+        out = _python_exec(
+            "import os\n"
+            "def _boom(*a, **k):\n"
+            "    raise OSError('nope')\n"
+            "os.lstat = _boom\n"
+            "open('lstat_escape_link/lstat_escape_probe.txt', 'w').write('escaped')\n"
+            "print('LSTAT_WROTE')\n",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "sandbox:" in out or "PermissionError" in out
+        assert not target.exists()
+    finally:
+        os.remove(link)

@@ -1446,3 +1446,107 @@ class TestRound8Bypasses:
         # No false positive on a benign env invocation or a benign dynamic getattr.
         _ok("import os\nos.system('env PYTHONPATH=. echo hi')")
         _ok("obj = {}\nname = 'keys'\ngetattr(obj, name)()")
+
+
+class TestRound9Bypasses:
+    """Ninth-round Codex findings: sys.modules mutation, code-object execution sinks,
+    indirect open aliases, path-builder folding, container-hidden exec, bound
+    __getattribute__, literal sequence reads, and the analyzer node budget."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import sys, os\ndel sys.modules['posix']\nimport posix\nposix.open('/tmp/x', os.O_CREAT)",
+            "import sys\nsys.modules['os'] = None",
+            "import sys\ndel sys.modules['_io']",
+        ],
+    )
+    def test_sys_modules_mutation_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import code\nc = compile(open('e.py').read(), '<s>', 'exec')\n"
+            "code.InteractiveInterpreter().runcode(c)",
+            "import code\ncode.InteractiveConsole().runsource('import os; os.system(\"id\")')",
+        ],
+    )
+    def test_code_object_execution_sinks_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_indirect_open_alias_traversal_blocked(self):
+        assert (
+            _check_code_safety(
+                "from os import open as oo, O_RDONLY\noo('../../../etc/passwd', O_RDONLY)"
+            )
+            is not None
+        )
+        assert (
+            _check_code_safety(
+                "from io import open as io_open\nio_open('../../../etc/passwd').read()"
+            )
+            is not None
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nopen(os.path.normpath('a/../../../../etc/passwd')).read()",
+            "import os\nopen(os.path.abspath('/etc/passwd')).read()",
+            "import os\nopen(os.path.normpath('/tmp/../etc/shadow')).read()",
+        ],
+    )
+    def test_path_builder_fold_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_path_builder_benign_allowed(self):
+        _ok("import os\nopen(os.path.normpath('data/train.csv')).read()")
+        _ok("import os\nopen(os.path.abspath('out.txt'), 'w')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "({'e': exec}['e'])(\"__import__('os').system('id')\")",
+            "[exec][0](\"__import__('os').system('rm -rf /')\")",
+            "(eval,)[0](\"__import__('os').system('id')\")",
+        ],
+    )
+    def test_container_hidden_exec_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_bound_getattribute_gadget_blocked(self):
+        assert (
+            _check_code_safety("import builtins\nbuiltins.open.__getattribute__('__closure__')")
+            is not None
+        )
+        assert (
+            _check_code_safety(
+                "import builtins\nc = builtins.open.__getattribute__('__closure__')\n"
+                "c[0].__getattribute__('cell_contents')('/tmp/x', 'w')"
+            )
+            is not None
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['cat', '/etc/passwd'])",
+            "import subprocess\nsubprocess.check_output(['cat', '/etc/shadow'])",
+            "import subprocess\nsubprocess.run(('cat', '/etc/passwd'))",
+        ],
+    )
+    def test_literal_sequence_secret_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_literal_sequence_benign_allowed(self):
+        _ok("import subprocess\nsubprocess.run(['echo', 'hi'])")
+        _ok("import subprocess\nsubprocess.run(['ls', 'data'])")
+
+    def test_analyzer_node_budget_enforced(self):
+        big = "\n".join(f"a{i} = {i} + {i}" for i in range(60000))
+        msg = _check_code_safety(big)
+        assert msg is not None
+        assert "node budget" in msg
+        # A normal-sized program is unaffected.
+        _ok("x = 1 + 2\ny = [i for i in range(10)]")
