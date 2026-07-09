@@ -65,6 +65,12 @@ def test_loopback_ipv6_is_host():
     assert auth.is_host_session(_Request(client_host = "::1")) is True
 
 
+def test_loopback_ipv4_mapped_ipv6_is_host():
+    # A dual-stack socket reports an IPv4 peer this way; CPython's own
+    # is_loopback only started resolving it in 3.12.12 (gh-117566).
+    assert auth.is_host_session(_Request(client_host = "::ffff:127.0.0.1")) is True
+
+
 def test_lan_peer_is_not_host():
     assert auth.is_host_session(_Request(client_host = "192.168.1.42")) is False
 
@@ -95,6 +101,23 @@ def test_loopback_with_empty_forwarding_header_is_not_host():
     # A present-but-empty forwarding header still means the request was proxied
     # (e.g. uvicorn with forwarded_allow_ips="*"); presence, not value, disqualifies.
     req = _Request(client_host = "127.0.0.1", headers = {"X-Forwarded-For": ""})
+    assert auth.is_host_session(req) is False
+
+
+def test_loopback_behind_proxy_with_x_real_ip_is_not_host():
+    # nginx's common proxy_pass config sets X-Real-IP without X-Forwarded-For.
+    req = _Request(
+        client_host = "127.0.0.1",
+        headers = {"X-Real-IP": "203.0.113.7"},
+    )
+    assert auth.is_host_session(req) is False
+
+
+def test_loopback_behind_proxy_with_forwarded_is_not_host():
+    req = _Request(
+        client_host = "127.0.0.1",
+        headers = {"Forwarded": "for=203.0.113.7"},
+    )
     assert auth.is_host_session(req) is False
 
 

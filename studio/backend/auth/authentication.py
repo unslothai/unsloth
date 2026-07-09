@@ -99,7 +99,17 @@ def is_desktop_access_token(token: str) -> bool:
 
 def _is_loopback_host(host: Optional[str]) -> bool:
     try:
-        return bool(host) and ipaddress.ip_address(host).is_loopback
+        if not host:
+            return False
+        addr = ipaddress.ip_address(host)
+        if addr.is_loopback:
+            return True
+        # A dual-stack socket reports an IPv4 peer as an IPv4-mapped IPv6
+        # address (e.g. ::ffff:127.0.0.1); is_loopback only started resolving
+        # this itself in Python 3.12.12 (gh-117566), and this project supports
+        # 3.9+, so check the mapped address explicitly.
+        mapped = getattr(addr, "ipv4_mapped", None)
+        return mapped is not None and mapped.is_loopback
     except ValueError:
         return False
 
@@ -116,8 +126,9 @@ def is_host_session(request: Request) -> bool:
     signal a loopback socket peer counts as host-local, but only when the request
     carries no forwarding header: behind the managed Cloudflare tunnel (or any
     reverse proxy) every remote visitor's socket peer is loopback, so a
-    ``CF-Connecting-IP`` / ``X-Forwarded-For`` header means the real client is
-    elsewhere and loopback no longer proves locality.
+    ``CF-Connecting-IP`` / ``X-Forwarded-For`` / ``X-Real-IP`` / ``Forwarded``
+    header means the real client is elsewhere and loopback no longer proves
+    locality.
     """
     auth_header = request.headers.get("authorization")
     if auth_header:
@@ -133,6 +144,8 @@ def is_host_session(request: Request) -> bool:
     if (
         request.headers.get("cf-connecting-ip") is not None
         or request.headers.get("x-forwarded-for") is not None
+        or request.headers.get("x-real-ip") is not None
+        or request.headers.get("forwarded") is not None
     ):
         return False
     return True
