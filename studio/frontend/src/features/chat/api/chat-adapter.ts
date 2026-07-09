@@ -1516,6 +1516,7 @@ async function autoLoadSmallestModel(): Promise<{
         ggufContextLength: loadResp.context_length ?? 131072,
         ggufMaxContextLength:
           loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+        ggufNativeContextLength: loadResp.native_context_length ?? null,
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
         reasoningEnabled: loadResp.supports_reasoning ?? false,
@@ -1531,6 +1532,7 @@ async function autoLoadSmallestModel(): Promise<{
         chatTemplateOverride: null,
         loadedChatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
+        loadedIsDiffusion: loadResp.is_diffusion ?? false,
         ...resolveLoadedSpeculativeSettings(loadResp),
       });
     } else {
@@ -1542,11 +1544,16 @@ async function autoLoadSmallestModel(): Promise<{
         supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
         supportsTools: loadResp.supports_tools ?? false,
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
+        kvCacheDtype: loadResp.cache_type_kv ?? null,
+        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        tensorParallel: loadResp.tensor_parallel ?? false,
+        loadedTensorParallel: loadResp.tensor_parallel ?? false,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedChatTemplateOverride: null,
         ...resolveLoadedSpeculativeSettings(loadResp),
         loadedIsMultimodal: isMultimodalResponse(loadResp),
+        loadedIsDiffusion: loadResp.is_diffusion ?? false,
       });
     }
     if (!(loadResp.is_lora ?? false)) {
