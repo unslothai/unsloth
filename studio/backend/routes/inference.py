@@ -3075,10 +3075,14 @@ def _remote_gguf_companion_bytes(
         info = model_info(repo, token = hf_token, files_metadata = True)
         total = 0
         for sibling in info.siblings or []:
-            base = Path(sibling.rfilename or "").name.lower()
+            name = sibling.rfilename or ""
+            base = Path(name).name.lower()
             if not base.endswith(".gguf"):
                 continue
-            if base.startswith("mtp-") or (include_mmproj and "mmproj" in base):
+            # Root-level mtp- only: -hf auto-fetches the repo-root drafter, not
+            # the MTP/ subdir copies (which now share the mtp- prefix too).
+            is_root_mtp = "/" not in name and base.startswith("mtp-")
+            if is_root_mtp or (include_mmproj and "mmproj" in base):
                 total += getattr(sibling, "size", 0) or 0
         return total
     except Exception as e:

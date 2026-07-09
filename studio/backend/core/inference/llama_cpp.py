@@ -4673,6 +4673,30 @@ class LlamaCppBackend:
             cancel_event = cancel_event,
         )
 
+    def _cached_repo_mtp_drafter(self, hf_repo: str) -> Optional[str]:
+        """A drafter already in this repo's local HF cache, to reuse instead of
+        re-downloading. Prefers the repo-root ``mtp-*.gguf``; else an existing
+        ``MTP/`` copy (any precision -- the target verifies every drafted token)
+        so an older on-disk file is not re-fetched. None if none is cached."""
+        try:
+            from utils.models.model_config import _iter_hf_cache_snapshots
+
+            for snap in _iter_hf_cache_snapshots(hf_repo):
+                drafters = [
+                    f
+                    for f in _gguf_snapshot_files(snap)
+                    if _is_companion_gguf_path(f) and "mmproj" not in f.lower()
+                ]
+                if not drafters:
+                    continue
+                root = sorted(f for f in drafters if "/" not in f)
+                chosen = snap / (root[0] if root else sorted(drafters)[0])
+                if chosen.is_file():
+                    return str(chosen)
+        except Exception as e:
+            logger.debug("Cached MTP drafter lookup failed for %s: %s", hf_repo, e)
+        return None
+
     def _download_mtp(
         self,
         *,
@@ -4686,14 +4710,24 @@ class LlamaCppBackend:
         recommended for speculation). Repos that bake the MTP head into the
         main GGUF (e.g. Qwen) ship no such sibling and this returns None. The
         higher-precision copies under ``MTP/`` are for explicit selection and
-        are intentionally skipped. Returns the local path, or None.
+        are intentionally skipped. Reuses a drafter already in the local cache
+        before downloading. Returns the local path, or None.
         """
 
+        cached = self._cached_repo_mtp_drafter(hf_repo)
+        if cached:
+            logger.info(f"Reusing cached MTP drafter: {cached}")
+            return cached
+
         def _pick_mtp(candidates: list[str]) -> Optional[str]:
+            # Root-level only: MTP/ subdir copies now share the mtp- prefix but
+            # are explicit-selection, not auto-fetch (they'd sort ahead of root).
             mtp_files = sorted(
                 f
                 for f in candidates
-                if f.lower().endswith(".gguf") and Path(f).name.lower().startswith("mtp-")
+                if f.lower().endswith(".gguf")
+                and "/" not in f
+                and Path(f).name.lower().startswith("mtp-")
             )
             return mtp_files[0] if mtp_files else None
 
