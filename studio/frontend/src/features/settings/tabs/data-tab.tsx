@@ -350,7 +350,7 @@ export function DataTab() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-60">
-                {(["train", "recipes", "export"] as const).map((action) => (
+                {(["export", "train", "recipes"] as const).map((action) => (
                   <DropdownMenuItem
                     key={action}
                     onSelect={() => setFineTuneAction(action)}

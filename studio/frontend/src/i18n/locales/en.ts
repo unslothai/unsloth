@@ -434,7 +434,7 @@ export const en = {
       fineTuneExportAction: "Export JSONL",
       fineTuneRunAction: "Run",
       fineTuneFormatLabel: "Format",
-      fineTuneFormatOpenAi: "OpenAI messages (default)",
+      fineTuneFormatOpenAi: "Chat Completions",
       fineTuneFormatShareGpt: "ShareGPT",
       fineTuneFormatAlpaca: "Alpaca (instruction)",
       fineTuneExportingAction: "Exporting...",
