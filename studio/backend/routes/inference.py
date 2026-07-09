@@ -12216,33 +12216,9 @@ async def _openai_passthrough_stream(
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
     _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
     _tracker.__enter__()
-    return await _openai_passthrough_stream_upstream(
-        request,
-        cancel_event,
-        llama_backend,
-        payload,
-        model_name,
-        completion_id,
-        monitor_id = monitor_id,
-        tracker = _tracker,
-    )
-
-
-async def _openai_passthrough_stream_upstream(
-    request,
-    cancel_event,
-    llama_backend,
-    payload,
-    model_name,
-    completion_id,
-    monitor_id: Optional[str] = None,
-    *,
-    tracker,
-):
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
 
-    _tracker = tracker
     client = None
     resp = None
     send_task: Optional[asyncio.Task[Optional[httpx.Response]]] = None
