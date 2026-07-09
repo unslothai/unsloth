@@ -3183,13 +3183,10 @@ def _forward_is_unsloth_compiled(model):
 
 
 def _rope_seq_len_1_fallback(q, k, cos, sin, unsqueeze_dim = 1):
-    # Minimal shape-safe RoPE for seq_len == 1 decoding steps (eg GRPO scoring).
-    # Mirrors transformers' apply_rotary_pos_emb, but instead of torch.cat-ing the
-    # rotated rotary slice back onto the untouched pass-through slice -- the concat
-    # torch.compile's guards can reject once seq_len collapses to 1 -- it writes both
-    # slices into a fresh tensor via indexed assignment. Issue #4801.
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
+    if cos.shape[-2] == 0:
+        return q, k
     rotary_dim = cos.shape[-1]
 
     def _apply(x):
