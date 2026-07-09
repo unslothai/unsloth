@@ -2268,6 +2268,227 @@ def _recover_exec_payload(node, func_id, const_env, exec_aliases, compiled_env):
     return ("DYNAMIC", None, None)
 
 
+# --------------------------------------------------------------------------
+# Stage 3: first-class filesystem confinement.
+#
+# A destructive/mutating op is allowed only when its path is PROVABLY inside the
+# session workdir (LOCAL). A read is blocked only when it PROVABLY escapes to a
+# sensitive or traversal target (ESCAPE_READ). Path resolution is a constant-fold
+# extended with os.path.join / pathlib join / f-string real-join + absolute-reset
+# semantics; anything host-controlled or dynamic collapses to UNKNOWN.
+# --------------------------------------------------------------------------
+_PATH_DEPTH_CAP = 24
+_PATHLIB_CTORS = frozenset(
+    {"Path", "PurePath", "PosixPath", "WindowsPath", "PurePosixPath", "PureWindowsPath"}
+)
+
+# Sensitive read targets: exact host-identity / credential files, credential dirs,
+# and the classic /proc self-inspection paths. Substring tokens are only consulted
+# for absolute or ~-rooted paths with no whitespace (avoids sentence false positives).
+_SANDBOX_SENSITIVE_EXACT = frozenset(
+    {"/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/gshadow", "/etc/master.passwd"}
+)
+_SANDBOX_SENSITIVE_DIR_PARTS = (
+    "/etc/ssh/", "/root/", "/.ssh/", "/.aws/", "/.config/gcloud", "/.kube/", "/.docker/",
+)
+_SANDBOX_SENSITIVE_TOKENS = (
+    "id_rsa", "id_ed25519", ".pem", ".netrc", "credentials", ".git-credentials",
+    "/.huggingface/token", ".kube/config",
+)
+_SANDBOX_SENSITIVE_RE = re.compile(
+    r"^/proc/(?:self|\d+)/(?:environ|cmdline|maps|mem|task/\d+/environ)$"
+)
+
+
+def _is_sensitive_abs_path(s):
+    """Provably-sensitive absolute (or ~-rooted) path, whitespace-free."""
+    if not isinstance(s, str) or not s:
+        return False
+    norm = s.replace("\\", "/")
+    if any(ch.isspace() for ch in norm):
+        return False
+    if not (norm.startswith("/") or norm.startswith("~")):
+        return False
+    if norm in _SANDBOX_SENSITIVE_EXACT:
+        return True
+    if any(part in norm for part in _SANDBOX_SENSITIVE_DIR_PARTS):
+        return True
+    if _SANDBOX_SENSITIVE_RE.match(norm):
+        return True
+    low = norm.lower()
+    return any(tok in low for tok in _SANDBOX_SENSITIVE_TOKENS)
+
+
+def _classify_path_string(s):
+    """LOCAL for a safe-relative path; ESCAPE for absolute / drive / ~ / `..`."""
+    if isinstance(s, (bytes, bytearray)):
+        s = _to_text(s)
+    if not isinstance(s, str) or s == "":
+        return "ESCAPE"  # empty path is not provably local -> fail closed
+    norm = s.replace("\\", "/")
+    if s[0] in ("/", "\\", "~"):
+        return "ESCAPE"
+    if len(s) >= 2 and s[1] == ":":
+        return "ESCAPE"
+    if ".." in norm.split("/"):
+        return "ESCAPE"
+    return "LOCAL"
+
+
+def _is_pathlib_expr(node):
+    """Whether an expression is structurally a pathlib.Path (ctor / join / attr chain)."""
+    if isinstance(node, ast.Call):
+        f = node.func
+        if isinstance(f, ast.Name) and f.id in _PATHLIB_CTORS:
+            return True
+        if isinstance(f, ast.Attribute):
+            if f.attr in _PATHLIB_CTORS:
+                return True
+            if f.attr in ("joinpath", "with_name", "with_suffix", "absolute", "resolve",
+                          "expanduser", "parent") and _is_pathlib_expr(f.value):
+                return True
+        return False
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return _is_pathlib_expr(node.left) or _is_pathlib_expr(node.right)
+    if isinstance(node, ast.Attribute):
+        return _is_pathlib_expr(node.value)
+    return False
+
+
+def _resolve_join(components, env, depth):
+    """Combine component verdicts with join + absolute-reset semantics."""
+    result = "LOCAL"
+    for c in components:
+        v = _resolve_path(c, env, depth + 1)
+        if v == "ESCAPE":
+            result = "ESCAPE"  # absolute reset or `..` -> outside
+        elif v == "UNKNOWN" and result != "ESCAPE":
+            result = "UNKNOWN"
+    return result
+
+
+def _resolve_path(node, env = None, depth = 0):
+    """Classify a path expression as LOCAL / ESCAPE / UNKNOWN (see Stage 3)."""
+    if node is None or depth > _PATH_DEPTH_CAP:
+        return "UNKNOWN"
+
+    v = _const_fold(node, env)
+    if isinstance(v, (str, bytes, bytearray)):
+        return _classify_path_string(v)
+
+    if isinstance(node, ast.Name):
+        rhs = (env or {}).get(node.id)
+        if rhs is not None:
+            return _resolve_path(rhs, env, depth + 1)
+        return "UNKNOWN"
+
+    if isinstance(node, ast.JoinedStr):
+        # Not all-const (else it folded above): an absolute literal prefix escapes;
+        # a relative prefix + dynamic hole cannot be proven local -> UNKNOWN.
+        prefix = ""
+        for part in node.values:
+            if isinstance(part, ast.Constant):
+                prefix += str(part.value)
+            else:
+                break
+        if prefix:
+            if prefix[0] in ("/", "\\", "~"):
+                return "ESCAPE"
+            if len(prefix) >= 2 and prefix[1] == ":":
+                return "ESCAPE"
+            if ".." in prefix.replace("\\", "/").split("/"):
+                return "ESCAPE"
+        return "UNKNOWN"
+
+    if isinstance(node, ast.BinOp):
+        if isinstance(node.op, ast.Add):
+            left = _resolve_path(node.left, env, depth + 1)
+            return "ESCAPE" if left == "ESCAPE" else "UNKNOWN"
+        if isinstance(node.op, ast.Div):
+            return _resolve_join([node.left, node.right], env, depth)
+        return "UNKNOWN"
+
+    if isinstance(node, ast.Call):
+        return _resolve_path_call(node, env, depth)
+
+    return "UNKNOWN"
+
+
+def _resolve_path_call(node, env, depth):
+    f = node.func
+    attr = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+
+    # os.path.join(...) / posixpath.join(...)
+    if attr == "join" and isinstance(f, ast.Attribute):
+        owner_fq = _fq_attr_name(f.value)
+        if owner_fq.endswith("path") or owner_fq in ("op",):
+            return _resolve_join(node.args, env, depth)
+    if attr == "joinpath" and isinstance(f, ast.Attribute):
+        return _resolve_join([f.value, *node.args], env, depth)
+    # Host-controlled / absolute anchors are never provably local.
+    if attr in ("expanduser", "expandvars", "abspath", "realpath", "getcwd", "getcwdb",
+                "gettempdir", "mkdtemp", "home", "cwd"):
+        return "UNKNOWN"
+    if attr == "normpath" and node.args:
+        v = _const_fold(node.args[0], env)
+        if isinstance(v, (str, bytes, bytearray)):
+            return _classify_path_string(os.path.normpath(_to_text(v)))
+        return "UNKNOWN"
+    # Path(...) / PurePath(...) constructors (bare or pathlib.Path).
+    if (isinstance(f, ast.Name) and f.id in _PATHLIB_CTORS) or \
+            (isinstance(f, ast.Attribute) and f.attr in _PATHLIB_CTORS):
+        if len(node.args) == 1:
+            return _resolve_path(node.args[0], env, depth + 1)
+        if len(node.args) >= 2:
+            return _resolve_join(node.args, env, depth)
+        return "UNKNOWN"
+    return "UNKNOWN"
+
+
+# Mutating-op inventory (fully-qualified stdlib names).
+_FS_DELETE = frozenset(
+    {"os.remove", "os.unlink", "os.rmdir", "os.removedirs", "shutil.rmtree",
+     "pathlib.Path.unlink", "pathlib.Path.rmdir"}
+)
+_FS_META = frozenset(
+    {"os.chmod", "os.lchmod", "os.chown", "os.lchown", "os.chflags", "os.truncate",
+     "shutil.chown"}
+)
+_FS_MKDIR = frozenset({"os.mkdir", "os.makedirs", "os.mknod"})
+_FS_CHDIR = frozenset({"os.chdir", "os.fchdir"})
+_FS_SINGLE_MUTATE = _FS_DELETE | _FS_META | _FS_MKDIR | _FS_CHDIR
+_FS_RENAME = frozenset({"os.rename", "os.renames", "os.replace", "shutil.move"})
+_FS_COPY = frozenset(
+    {"shutil.copy", "shutil.copy2", "shutil.copyfile", "shutil.copytree",
+     "shutil.copymode", "shutil.copystat"}
+)
+_FS_SYMLINK = frozenset({"os.symlink", "os.link"})
+_FS_TEMPFILE = frozenset(
+    {"tempfile.mkstemp", "tempfile.mkdtemp", "tempfile.NamedTemporaryFile",
+     "tempfile.TemporaryFile", "tempfile.TemporaryDirectory",
+     "tempfile.SpooledTemporaryFile"}
+)
+_FS_LIBWRITER_FQ = frozenset(
+    {"numpy.save", "numpy.savez", "numpy.savez_compressed", "numpy.savetxt",
+     "np.save", "np.savez", "np.savez_compressed", "np.savetxt",
+     "torch.save", "joblib.dump", "cv2.imwrite"}
+)
+# Method-name-keyed library writers (receiver is a df / array / image / figure).
+_FS_LIBWRITER_METHODS = frozenset(
+    {"to_csv", "to_parquet", "to_pickle", "to_json", "to_excel", "to_feather",
+     "savefig", "imwrite"}
+)
+# pathlib mutating methods -> (needs_receiver_path, extra_arg_index_or_None, op).
+# unambiguous method names fire on any pathlib-looking receiver; the ambiguous
+# ones (rename/replace/mkdir/chmod) require the receiver to be a pathlib expr.
+_FS_PATHLIB_MUTATE = {
+    "write_text": None, "write_bytes": None, "unlink": None, "rmdir": None,
+    "symlink_to": 0, "hardlink_to": 0, "touch": None, "rename": 0, "replace": 0,
+    "mkdir": None, "chmod": None,
+}
+_FS_PATHLIB_READ = frozenset({"read_text", "read_bytes"})
+
+
 def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
     """Check for patterns that could escape signal-based timeouts. Returns
     (safe: bool, details: dict). Vendored from unsloth_zoo.rl_environments to
@@ -3432,9 +3653,148 @@ def _check_signal_escape_patterns(code: str, _depth: int = 0, _budget = None):
                         )
             self.generic_visit(node)
 
+    _fs_read_strict = os.environ.get("FS_READ_STRICT", "0") != "0"
+
+    def _fs_block(node, description):
+        filesystem_violations.append(
+            {
+                "type": "filesystem_violation",
+                "line": getattr(node, "lineno", -1),
+                "description": description,
+            }
+        )
+
+    def _fs_mutating(node, path_node, label):
+        verdict = _resolve_path(path_node, _const_env)
+        if verdict != "LOCAL":
+            reason = "escapes the session workdir" if verdict == "ESCAPE" \
+                else "cannot be proven to stay inside the session workdir"
+            _fs_block(node, f"{label}: destination path {reason} (must be a sandbox-local relative path)")
+
+    def _fs_libwriter(node, path_node, label):
+        # Best-effort library writers block only on a PROVABLE escape; a dynamic
+        # (UNKNOWN) path is left to the runtime realpath backstop to avoid
+        # false-positiving on in-memory buffers.
+        if _resolve_path(path_node, _const_env) == "ESCAPE":
+            _fs_block(node, f"{label}: destination path escapes the session workdir")
+
+    def _fs_read(node, path_node, label):
+        v = _const_fold(path_node, _const_env)
+        s = _to_text(v) if isinstance(v, (str, bytes, bytearray)) else None
+        if s is not None:
+            norm = s.replace("\\", "/")
+            if s[:1] == "~" or ".." in norm.split("/"):
+                _fs_block(node, f"{label}: read escapes the session workdir via traversal")
+                return
+            if _is_sensitive_abs_path(norm):
+                _fs_block(node, f"{label}: reads a sensitive host identity / credential file")
+                return
+            return
+        if _fs_read_strict and _resolve_path(path_node, _const_env) != "LOCAL":
+            _fs_block(node, f"{label}: read path cannot be proven sandbox-local (FS_READ_STRICT)")
+
+    def _kw(node, name):
+        for kw in node.keywords or []:
+            if kw.arg == name:
+                return kw.value
+        return None
+
+    def _open_is_write(node):
+        mode_node = node.args[1] if len(node.args) >= 2 else _kw(node, "mode")
+        if mode_node is None:
+            return False, "r"
+        v = _const_fold(mode_node, _const_env)
+        if isinstance(v, str):
+            return any(c in v for c in "wax+"), v
+        return True, None  # dynamic mode -> treat as write (conservative)
+
     class _FilesystemPolicyVisitor(ast.NodeVisitor):
-        # Stage 3 fills this in; the stub keeps Stage 2 self-contained.
-        pass
+        def visit_Call(self, node):
+            fq = _fq_attr_name(node.func)
+            f = node.func
+            method = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+
+            # Callee-independent literal-sensitive-path scan (library loaders that
+            # internally open(): pandas.read_csv('/etc/shadow'), np.load('/etc/passwd')).
+            for arg in list(node.args) + [kw.value for kw in (node.keywords or [])]:
+                fv = _const_fold(arg, _const_env)
+                sv = _to_text(fv) if isinstance(fv, (str, bytes, bytearray)) else None
+                if sv is not None and _is_sensitive_abs_path(sv):
+                    _fs_block(node, f"{sv!r} is a sensitive host identity / credential file")
+                    break
+
+            # builtins/io open(): write mode -> mutating; read mode -> read policy.
+            is_open = (isinstance(f, ast.Name) and f.id == "open") or fq in ("io.open", "os.fdopen")
+            if is_open and fq != "os.fdopen" and node.args:
+                is_write, _mode = _open_is_write(node)
+                if is_write:
+                    _fs_mutating(node, node.args[0], "open(write)")
+                else:
+                    _fs_read(node, node.args[0], "open(read)")
+
+            # os.open(path, flags): write flags -> mutating; else read.
+            if fq == "os.open" and node.args:
+                flags = node.args[1] if len(node.args) >= 2 else None
+                flag_names = {n.attr for n in ast.walk(flags) if isinstance(n, ast.Attribute)} if flags else set()
+                is_write = flags is None or bool(
+                    flag_names & {"O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND"}
+                ) or not flag_names
+                if is_write:
+                    _fs_mutating(node, node.args[0], "os.open(write)")
+                else:
+                    _fs_read(node, node.args[0], "os.open(read)")
+
+            if fq in _FS_SINGLE_MUTATE and node.args:
+                _fs_mutating(node, node.args[0], fq)
+            elif fq in _FS_RENAME and node.args:
+                # rename/move: both src (removed) and dst are mutating.
+                _fs_mutating(node, node.args[0], f"{fq} (source)")
+                if len(node.args) >= 2:
+                    _fs_mutating(node, node.args[1], f"{fq} (destination)")
+                else:
+                    dst = _kw(node, "dst")
+                    if dst is not None:
+                        _fs_mutating(node, dst, f"{fq} (destination)")
+            elif fq in _FS_COPY and node.args:
+                dst = node.args[1] if len(node.args) >= 2 else _kw(node, "dst")
+                if dst is not None:
+                    _fs_mutating(node, dst, f"{fq} (destination)")
+                _fs_read(node, node.args[0], f"{fq} (source)")
+            elif fq in _FS_SYMLINK and node.args:
+                # os.symlink(src=target, dst=linkpath) / os.link: check BOTH.
+                _fs_mutating(node, node.args[0], f"{fq} (target)")
+                if len(node.args) >= 2:
+                    _fs_mutating(node, node.args[1], f"{fq} (link path)")
+            elif fq in _FS_TEMPFILE:
+                d = _kw(node, "dir")
+                if d is not None and _resolve_path(d, _const_env) != "LOCAL":
+                    _fs_block(node, f"{fq}: dir= must be a sandbox-local relative path")
+            elif fq in _FS_LIBWRITER_FQ and node.args:
+                _fs_libwriter(node, node.args[0], fq)
+
+            # Method-keyed library writers (df.to_csv(path), img.save(path), ...).
+            if isinstance(f, ast.Attribute):
+                if method in _FS_LIBWRITER_METHODS and node.args:
+                    _fs_libwriter(node, node.args[0], method)
+                elif method == "save" and node.args and fq not in _FS_LIBWRITER_FQ:
+                    # PIL Image.save / model.save style: block only a provable escape.
+                    _fs_libwriter(node, node.args[0], method)
+
+            # pathlib mutating / reading methods on a Path-looking receiver. A plain
+            # variable receiver is left to the Stage 5 runtime realpath backstop so
+            # benign `p = Path("out.txt"); p.write_text(...)` is not over-blocked.
+            if isinstance(f, ast.Attribute) and _is_pathlib_expr(f.value) \
+                    and (method in _FS_PATHLIB_MUTATE or method in _FS_PATHLIB_READ):
+                recv = f.value
+                if method in _FS_PATHLIB_READ:
+                    _fs_read(node, recv, f"pathlib.Path.{method}")
+                else:
+                    _fs_mutating(node, recv, f"pathlib.Path.{method}")
+                    extra = _FS_PATHLIB_MUTATE.get(method)
+                    if extra is not None and len(node.args) > extra:
+                        _fs_mutating(node, node.args[extra], f"pathlib.Path.{method} (target)")
+
+            self.generic_visit(node)
 
     NetworkAndIoVisitor().visit(tree)
 
