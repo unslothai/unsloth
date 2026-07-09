@@ -136,6 +136,12 @@ _INTERPRETER_COMMANDS = frozenset(
         "lua",
         "luajit",
         "rscript",
+        # awk variants run an inline program that can write files (print > "/path")
+        # in an unguarded child without any shell redirection token the scanner sees.
+        "awk",
+        "gawk",
+        "mawk",
+        "nawk",
     }
 )
 # File-creating / writing coreutils. Same rationale as the interpreters: a spawned child
@@ -396,6 +402,42 @@ def _find_blocked_commands(command: str) -> set[str]:
                 blocked |= _find_blocked_commands(payload)
             break
 
+    # A shell binary invoked with a SCRIPT FILE (`bash s.sh`) or `-s` (read the script from
+    # stdin) runs unscanned shell code in the same unguarded environment; only the inline
+    # `-c '...'` form is statically analyzable (handled above). Block a command-position
+    # shell whose operands include a non-flag argument (the script) and no -c/-lc flag.
+    _at_cmd_sh = True
+    for i, tok in enumerate(tokens):
+        if tok in _SHELL_SEPARATORS or tok in _SHELL_KEYWORDS_AS_SEP:
+            _at_cmd_sh = True
+            continue
+        if _at_cmd_sh and os.path.basename(tok).lower() in _SHELLS:
+            _has_c = False
+            _script = None
+            for k in range(i + 1, len(tokens)):
+                t = tokens[k]
+                if t in _SHELL_SEPARATORS or t in _SHELL_KEYWORDS_AS_SEP:
+                    break
+                tl = t.lower()
+                if tl == "-c" or (
+                    tl.startswith("-") and not tl.startswith("--") and tl.endswith("c")
+                ):
+                    _has_c = True
+                    break
+                if tl in ("-s", "--"):  # -s reads the script from stdin (unscanned)
+                    _script = t
+                    break
+                if t.startswith("-"):
+                    continue  # other shell flags: -l, -x, --login, --norc, ...
+                _script = t  # first non-flag operand is the script file
+                break
+            if not _has_c and _script is not None:
+                blocked.add("shell-script:" + _script)
+            _at_cmd_sh = False
+            continue
+        if not tok.startswith("-"):
+            _at_cmd_sh = False
+
     # Output redirection (> / >> / &> / N>) to a path OUTSIDE the workdir: a child shell
     # runs unguarded, so `echo x > /tmp/p` / `>> ../p` / `> ~/p` writes past the session
     # workdir. A relative literal target (> out.txt) stays in the workdir cwd and is
@@ -408,9 +450,11 @@ def _find_blocked_commands(command: str) -> set[str]:
             continue
         tgt = rm.group(1)
         j = i
-        # POSIX noclobber-override `>|` tokenizes as `>` then `|`, so the pipe is part of
-        # the redirect operator, not a pipeline; skip it and take the real target after.
-        if not tgt and j + 1 < len(tokens) and tokens[j + 1] == "|":
+        # `>|` (noclobber override) and `>&` (stdout+stderr / fd-or-file redirect) tokenize
+        # as `>` then `|` / `&`, so that punctuation is part of the redirect operator, not a
+        # pipeline / background op; skip it and take the real target after. A pure fd target
+        # (`>&2`) is a bare number that fails the path checks below and stays allowed.
+        if not tgt and j + 1 < len(tokens) and tokens[j + 1] in ("|", "&"):
             j += 1
         if not tgt and j + 1 < len(tokens):
             tgt = tokens[j + 1]
@@ -426,9 +470,10 @@ def _find_blocked_commands(command: str) -> set[str]:
         ):
             blocked.add("redirect:" + tgt)
 
-    # `cd` to a dir OUTSIDE the workdir moves the child shell's cwd so a later relative
-    # redirect / write escapes (`cd /tmp; echo x > p`). Block a command-position cd to an
-    # absolute / .. / ~ / variable target; a relative in-workdir `cd data` stays allowed.
+    # `cd` / `pushd` to a dir OUTSIDE the workdir moves the child shell's cwd so a later
+    # relative redirect / write escapes (`cd /tmp; echo x > p`, `pushd /tmp; echo x > p`).
+    # Block a command-position cwd change to an absolute / .. / ~ / variable target; a
+    # relative in-workdir `cd data` stays allowed.
     _at_cmd = True
     for i, tok in enumerate(tokens):
         if tok in _SHELL_SEPARATORS or tok in _SHELL_KEYWORDS_AS_SEP:
@@ -439,11 +484,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             # `command cd /tmp` still changes the cwd. Stay at command position so the cd
             # behind the wrapper is inspected (bash `help command`/`help builtin`).
             continue
-        if _at_cmd and _token_basename(tok) == "cd":
+        if _at_cmd and _token_basename(tok) in ("cd", "pushd"):
+            _cwd_kw = _token_basename(tok)
             for k in range(i + 1, len(tokens)):
                 t = tokens[k]
-                if t.startswith("-"):
-                    continue  # cd flags: -P, -L, -e, -@
+                if t.startswith("-") or t.startswith("+"):
+                    continue  # cd flags (-P/-L/-e/-@) and pushd rotation (+N/-N)
                 tnn = t.replace("\\", "/")
                 if (
                     t.startswith("~")
@@ -452,7 +498,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                     or "$" in t
                     or "`" in t
                 ):
-                    blocked.add("cd:" + t)
+                    blocked.add(_cwd_kw + ":" + t)
                 break
             _at_cmd = False
             continue
@@ -4316,7 +4362,10 @@ def _check_signal_escape_patterns(
                     if _analyzer_on:
                         attr_val = _const_fold(_attr_call[1], _const_env)
                         if isinstance(attr_val, str):
-                            if attr_val in _DANGEROUS_ATTR_NAMES:
+                            if attr_val in _DANGEROUS_ATTR_NAMES or attr_val == "__dict__":
+                                # getattr(__builtins__, '__dict__')['__import__'] exposes the
+                                # module namespace the same way vars()/direct .__dict__ do, so
+                                # a constant '__dict__' on a sensitive module is dangerous too.
                                 dynamic_desc = (
                                     "dynamic attribute access on a sensitive module "
                                     "(attribute-name obfuscation)"
@@ -5331,8 +5380,11 @@ def _check_signal_escape_patterns(
     def _resolves_to_open(fn):
         # A callee that is `open`, a `from os/io/builtins import open as X` alias, a
         # single-assignment alias (o = open; o('../../etc/passwd').read()), a
-        # container-hidden alias (o = [open][0]; o(...)), or builtins.open / io.open /
-        # os.open.
+        # container-hidden alias (o = [open][0]; o(...)), the attribute forms
+        # builtins.open / __builtins__.open / io.open / os.open, or any of these behind a
+        # trailing .__call__ (open.__call__('../../etc/passwd')).
+        while isinstance(fn, ast.Attribute) and fn.attr == "__call__":
+            fn = fn.value
         if isinstance(fn, ast.Name):
             if fn.id == "open" or fn.id in _open_from_aliases:
                 return True
@@ -5346,6 +5398,13 @@ def _check_signal_escape_patterns(
                 and rhs.value.id in ("builtins", "__builtins__", "io", "os")
             ):
                 return True
+        if (
+            isinstance(fn, ast.Attribute)
+            and fn.attr == "open"
+            and isinstance(fn.value, ast.Name)
+            and fn.value.id in ("builtins", "__builtins__", "io", "os")
+        ):
+            return True
         return False
 
     def _is_shutil_copy_callee(fn):
@@ -5354,6 +5413,18 @@ def _check_signal_escape_patterns(
             and fn.attr in _SHUTIL_COPY_METHODS
             and isinstance(fn.value, ast.Name)
             and fn.value.id in _shutil_aliases
+        )
+
+    def _is_subprocess_exec_callee(fn):
+        # subprocess.run/call/check_call/check_output/Popen run an unguarded child, so a
+        # `..` traversal in a literal argv (subprocess.run(['cat', '../../root/.ssh/id_rsa']))
+        # reads a host secret. Treat these as read callees so the traversal check fires on
+        # their argv path elements (absolute-sensitive elements already block regardless).
+        return (
+            isinstance(fn, ast.Attribute)
+            and isinstance(fn.value, ast.Name)
+            and fn.value.id in _subprocess_mod_aliases
+            and fn.attr in ("run", "call", "check_call", "check_output", "Popen")
         )
 
     def _fold_read_arg(arg):
@@ -5367,6 +5438,26 @@ def _check_signal_escape_patterns(
             sv = _scope_idx.resolve(arg.id, arg, "strconst")
             if isinstance(sv, (str, bytes, bytearray)):
                 return _to_text(sv)
+            return None
+        # A path-builder call (os.path.join(p, 'passwd'), normpath, ...) whose arguments
+        # include function-local single-assignment string constants stays opaque to the
+        # module-level _const_env. Augment the fold env with those scope-local names' RHS
+        # NODES and re-fold so `p = '/etc'; open(os.path.join(p, 'passwd'))` is caught.
+        # (_const_fold maps names to RHS nodes, not values.)
+        _local_env = None
+        for _sub in ast.walk(arg):
+            if isinstance(_sub, ast.Name) and isinstance(_sub.ctx, ast.Load):
+                if _const_env is not None and _sub.id in _const_env:
+                    continue
+                _svn = _scope_idx.resolve(_sub.id, _sub, "rhsnode")
+                if _svn is not None:
+                    if _local_env is None:
+                        _local_env = dict(_const_env or {})
+                    _local_env[_sub.id] = _svn
+        if _local_env is not None:
+            v = _const_fold(arg, _local_env)
+            if isinstance(v, (str, bytes, bytearray)):
+                return _to_text(v)
         return None
 
     def _pathlib_receiver_path(recv, _seen = None):
@@ -5417,9 +5508,16 @@ def _check_signal_escape_patterns(
                 return os.path.join(*parts)
             except Exception:
                 return None
-        ctor = (isinstance(rf, ast.Name) and rf.id in _pathlib_ctor_aliases) or (
-            isinstance(rf, ast.Attribute) and rf.attr in _PATHLIB_CTORS
-        )
+        # A single-assignment alias of the constructor (P = pathlib.Path / P = Path) is not
+        # in _pathlib_ctor_aliases, so resolve a Name callee's RHS to see if it binds a
+        # pathlib constructor before giving up.
+        _ctor_name = isinstance(rf, ast.Name) and rf.id in _pathlib_ctor_aliases
+        if not _ctor_name and isinstance(rf, ast.Name):
+            _crhs = _unwrap_container_node(_scope_idx.resolve(rf.id, rf, "rhsnode"))
+            _ctor_name = (isinstance(_crhs, ast.Name) and _crhs.id in _pathlib_ctor_aliases) or (
+                isinstance(_crhs, ast.Attribute) and _crhs.attr in _PATHLIB_CTORS
+            )
+        ctor = _ctor_name or (isinstance(rf, ast.Attribute) and rf.attr in _PATHLIB_CTORS)
         if not ctor or not recv.args:
             return None
         parts = []
@@ -5538,6 +5636,7 @@ def _check_signal_escape_patterns(
                 or fq in _SHUTIL_COPY_SINKS
                 or _is_shutil_copy_callee(f)
                 or (isinstance(f, ast.Name) and f.id in _shutil_copy_from_aliases)
+                or _is_subprocess_exec_callee(f)
                 or method in _READ_METHODS
             )
             # Pathlib read on a Path(...) / join receiver: check the resolved path.
@@ -5821,8 +5920,10 @@ def _guard_open_like(real):
 _bi.open = _guard_open_like(_bi.open)
 
 # Low-level os.open: builtins.open does not route through it, so it needs its own
-# guard. Any mutating open flag confines the target; a mutating dir_fd call fails
-# closed (a string realpath against cwd is wrong for an fd-relative path).
+# guard. Any mutating open flag confines the target; ANY dir_fd call (read or write) fails
+# closed -- a string realpath against cwd is wrong for an fd-relative path, and a read-only
+# dir_fd open can still read a host file under a directory fd opened outside the workdir
+# (d = os.open('/etc', O_RDONLY); os.open('passwd', O_RDONLY, dir_fd=d)).
 _WRITE_OFLAGS = (
     getattr(_os, "O_WRONLY", 0) | getattr(_os, "O_RDWR", 0)
     | getattr(_os, "O_CREAT", 0) | getattr(_os, "O_TRUNC", 0) | getattr(_os, "O_APPEND", 0)
@@ -5830,14 +5931,14 @@ _WRITE_OFLAGS = (
 def _make_osopen_guard(real_open):
     @_gwraps(real_open)
     def _guarded(path, flags, *a, **k):
+        if k.get("dir_fd") is not None:
+            _deny(path, "os.open (dir_fd)")
         try:
             fi = int.__index__(flags)  # base int: an int-subclass __and__ must not lie
         except Exception:
             fi = None
         mutating = (fi is None) or bool(fi & _WRITE_OFLAGS)
         if mutating:
-            if k.get("dir_fd") is not None:
-                _deny(path, "os.open (dir_fd)")
             p = _fspath1(path)
             if not _within(p):
                 _deny(p, "os.open write")

@@ -1895,3 +1895,122 @@ class TestRound12Bypasses:
     )
     def test_kubernetes_service_account_token_blocked(self, code):
         assert _check_code_safety(code) is not None, code
+
+
+class TestRound13Bypasses:
+    """Thirteenth-round Codex findings: __dict__ getattr, >& / pushd / awk / script-file
+    shell escapes, non-bare open callees, scoped path-builder constants, assigned Path
+    aliases, and subprocess argv traversals."""
+
+    def test_dict_getattr_on_sensitive_module_blocked(self):
+        assert (
+            _check_code_safety("getattr(__builtins__, '__dict__')['__import__']('os').system('id')")
+            is not None
+        )
+
+    def test_getattr_benign_attr_allowed(self):
+        _ok("import os\ngetattr(os, 'getpid')()")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('echo hi >& /tmp/x')",
+            "import os\nos.system('echo hi >&/tmp/x')",
+        ],
+    )
+    def test_ampersand_redirect_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_fd_redirect_allowed(self):
+        _ok("import os\nos.system('echo hi >&2')")
+        _ok("import os\nos.system('ls foo 2>&1')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('pushd /tmp; echo hi > review-pushd')",
+            "import os\nos.system('pushd ~/x && echo hi > out')",
+        ],
+    )
+    def test_pushd_cwd_escape_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_pushd_relative_allowed(self):
+        _ok("import os\nos.system('pushd data; echo hi > out.txt')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('awk \\'BEGIN { print \"hi\" > \"/tmp/p\" }\\'')",
+            "import os\nos.system('gawk \\'BEGIN{}\\' file')",
+        ],
+    )
+    def test_awk_interpreter_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('printf x > s.sh; bash s.sh')",
+            "import os\nos.system('sh script.sh')",
+            "import os\nos.system('bash -s < in.txt')",
+        ],
+    )
+    def test_shell_script_file_execution_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_shell_dash_c_inline_allowed(self):
+        _ok("import os\nos.system('bash -c \\'echo hi\\'')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import builtins\nbuiltins.open('../../../etc/passwd').read()",
+            "open.__call__('../../../etc/passwd').read()",
+            "__builtins__.open('../../../etc/passwd').read()",
+        ],
+    )
+    def test_non_bare_open_callee_traversal_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_non_bare_open_local_allowed(self):
+        _ok("import builtins\nbuiltins.open('out.txt', 'w')")
+
+    def test_scoped_constant_path_builder_blocked(self):
+        assert (
+            _check_code_safety(
+                "import os\ndef f():\n    p = '/etc'\n    return open(os.path.join(p, 'passwd')).read()\nf()"
+            )
+            is not None
+        )
+
+    def test_scoped_constant_path_builder_local_allowed(self):
+        _ok(
+            "import os\ndef f():\n    p = 'data'\n    return open(os.path.join(p, 'x.csv')).read()\nf()"
+        )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import pathlib\nP = pathlib.Path\nP('/etc', 'passwd').read_text()",
+            "from pathlib import Path\nQ = Path\nQ('/etc', 'shadow').read_bytes()",
+        ],
+    )
+    def test_assigned_path_ctor_alias_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_assigned_path_ctor_alias_local_allowed(self):
+        _ok("import pathlib\nP = pathlib.Path\nP('data', 'x.csv').read_text()")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['cat', '../../../root/.ssh/id_rsa'])",
+            "import subprocess\nsubprocess.check_output(['cat', '../../../etc/passwd'])",
+        ],
+    )
+    def test_subprocess_argv_traversal_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_subprocess_argv_local_allowed(self):
+        _ok("import subprocess\nsubprocess.run(['ls', 'data'])")

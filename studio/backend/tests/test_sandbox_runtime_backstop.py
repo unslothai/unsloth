@@ -160,6 +160,27 @@ def test_sandboxed_os_open_dir_fd_denied(tmp_path):
 
 
 @_POSIX_ONLY
+def test_sandboxed_os_open_readonly_dir_fd_denied(tmp_path):
+    # A READ-ONLY os.open with dir_fd can read a host file under a directory fd opened
+    # outside the workdir (d = os.open('/etc', O_RDONLY); os.open('hostname', O_RDONLY,
+    # dir_fd=d)); reads are not confined, so the fd-relative open must fail closed.
+    victim = tmp_path / "secret.txt"
+    victim.write_text("topsecret")
+    out = _python_exec(
+        "import os\n"
+        f"dfd = os.open({str(tmp_path)!r}, os.O_RDONLY)\n"
+        "fd = os.open('secret.txt', os.O_RDONLY, dir_fd=dfd)\n"
+        "print('READ', os.read(fd, 64))",
+        None,
+        30,
+        "backstop-osopen-ro-dirfd",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert "topsecret" not in out
+
+
+@_POSIX_ONLY
 def test_sandboxed_io_open_write_escape_denied(tmp_path):
     target = tmp_path / "ioopen_escape.txt"
     out = _python_exec(
