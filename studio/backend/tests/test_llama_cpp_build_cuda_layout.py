@@ -178,6 +178,17 @@ class TestBuildCudaLayoutPreference:
 
         assert result == str(cpu_bin)
 
+    def test_root_binary_beats_build_cuda(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(LlamaCppBackend, "_nvidia_available", staticmethod(lambda: True))
+        root_bin = _make_binary(tmp_path, _BINARY_NAME)
+        _make_binary(tmp_path, "build-cuda", "bin", _BINARY_NAME)
+        _make_binary(tmp_path, "build", "bin", _BINARY_NAME)
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path))
+
+        result = LlamaCppBackend._find_llama_server_binary()
+
+        assert result == str(root_bin)
+
     def test_nvidia_available_calls_get_gpu_memory(self, monkeypatch):
         # _nvidia_available must delegate to the existing _get_gpu_memory
         # probe rather than reimplementing GPU detection.

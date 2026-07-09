@@ -1982,9 +1982,7 @@ class LlamaCppBackend:
         when an NVIDIA GPU is present (see ``_nvidia_available``).
         """
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
-        # Probed once: an NVIDIA GPU makes the CUDA-accelerated build the right
-        # pick over a CPU-only ``build`` tree left behind by an earlier setup run.
-        prefer_cuda = LlamaCppBackend._nvidia_available()
+        prefer_cuda = None
 
         def _file_status(p: Path) -> str:
             # "file", "absent", or "denied" (exists but stays access-denied
@@ -2008,12 +2006,12 @@ class LlamaCppBackend:
             # prefer_cuda prepends the build-cuda tree so an NVIDIA-accelerated
             # binary wins over a CPU-only ``build`` one when both exist side by
             # side (setup.sh/.ps1 can leave both after a driver-less first build).
-            cands = []
+            cands = [d / binary_name]
             if prefer_cuda:
                 cands.append(d / "build-cuda" / "bin" / binary_name)
                 if sys.platform == "win32":
                     cands.append(d / "build-cuda" / "bin" / "Release" / binary_name)
-            cands += [d / binary_name, d / "build" / "bin" / binary_name]
+            cands.append(d / "build" / "bin" / binary_name)
             if sys.platform == "win32":
                 cands.append(d / "build" / "bin" / "Release" / binary_name)
             return cands
@@ -2051,6 +2049,7 @@ class LlamaCppBackend:
                 return hit
 
         # 1b. UNSLOTH_LLAMA_CPP_PATH: custom llama.cpp install dir
+        prefer_cuda = LlamaCppBackend._nvidia_available()
         custom_llama_cpp = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
         if custom_llama_cpp:
             hit, locked = _scan_pinned(_layout_candidates(Path(custom_llama_cpp), prefer_cuda))
