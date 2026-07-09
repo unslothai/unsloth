@@ -155,14 +155,18 @@ def test_sync_load_rejected_while_async_load_pending(monkeypatch):
 
     async def _slow_load(request, fastapi_request, current_subject):
         await release.wait()
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
 
     async def _scenario():
         await inference_route.load_model(_request("unsloth/A-GGUF"), object(), "tester")
         with pytest.raises(HTTPException) as exc_info:
-            await inference_route.load_model(_request("unsloth/B-GGUF", async_load = False), object(), "tester")
+            await inference_route.load_model(
+                _request("unsloth/B-GGUF", async_load = False), object(), "tester"
+            )
         release.set()
         await inference_route._active_async_load_task
         return exc_info.value
@@ -313,7 +317,9 @@ def test_overlapping_loads_success_clears_stale_error(monkeypatch):
 
 def test_sync_load_success_clears_stale_async_error(monkeypatch):
     async def _load(request, fastapi_request, current_subject):
-        return LoadResponse(status = "loaded", model = request.model_path, display_name = "A", inference = {})
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "A", inference = {}
+        )
 
     monkeypatch.setattr(inference_route, "_load_model_impl", _load)
     monkeypatch.setattr(inference_route, "_last_async_load_error", "stale async failure")
