@@ -1533,12 +1533,42 @@ class AnthropicToolResultBlock(BaseModel):
     tool_use_id: str
     content: Union[str, list] = ""
 
+    @field_validator("content", mode = "before")
+    @classmethod
+    def _coerce_null_content(cls, v):
+        # Some clients emit a null content for an empty tool result; the str|list
+        # union would 400 on it, so treat null as the empty string.
+        return "" if v is None else v
+
+
+# Block types Studio translates explicitly. Anything else -- Claude's `thinking`
+# / `redacted_thinking`, a provider-specific block a resumed session replays, or a
+# future block type -- is accepted verbatim as an unknown block and dropped by the
+# converter (anthropic_messages_to_openai ignores types it doesn't translate),
+# instead of the whole request 400-ing on strict validation.
+_KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result"})
+
+
+class AnthropicUnknownBlock(BaseModel):
+    type: str
+    model_config = {"extra": "allow"}
+
+    @field_validator("type")
+    @classmethod
+    def _only_unknown_types(cls, v):
+        # A known type must parse as its typed model above (so a malformed known
+        # block still fails cleanly); this fallback only catches the rest.
+        if v in _KNOWN_ANTHROPIC_BLOCK_TYPES:
+            raise ValueError("known block type handled by its typed model")
+        return v
+
 
 AnthropicContentBlock = Union[
     AnthropicTextBlock,
     AnthropicImageBlock,
     AnthropicToolUseBlock,
     AnthropicToolResultBlock,
+    AnthropicUnknownBlock,
 ]
 
 
@@ -1582,6 +1612,14 @@ def _merge_anthropic_system(system: Any, additions: list[str]) -> Any:
 class AnthropicMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: Union[str, list[AnthropicContentBlock]]
+
+    @field_validator("content", mode = "before")
+    @classmethod
+    def _coerce_null_content(cls, v):
+        # An assistant tool-only turn a resumed session replays can carry null
+        # content; the str|list union would 400 on it. An empty string is the
+        # neutral equivalent and keeps the converter's `for block in content` safe.
+        return "" if v is None else v
 
 
 class AnthropicTool(BaseModel):

@@ -1770,3 +1770,44 @@ class TestAnthropicMessagesToolRouting:
 
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "plain"
+
+
+def test_resumed_session_thinking_and_null_content_do_not_400():
+    # A resumed Claude session replays assistant turns containing `thinking`
+    # (and sometimes null) content. Those must be accepted (and the thinking
+    # dropped by the converter), not rejected with a 400 on messages[n].content.
+    from pydantic import ValidationError
+
+    req = AnthropicMessagesRequest(
+        model = "x",
+        max_tokens = 16,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "secret reasoning", "signature": "s"},
+                    {"type": "text", "text": "the answer"},
+                    {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
+                ],
+            },
+            {"role": "assistant", "content": None},  # tool-only turn serialized as null
+        ],
+    )
+    # Known blocks still parse as their typed models; only the unknown one is loose.
+    assert type(req.messages[1].content[0]).__name__ == "AnthropicUnknownBlock"
+    assert type(req.messages[1].content[1]).__name__ == "AnthropicTextBlock"
+    assert req.messages[2].content == ""  # null coerced
+
+    openai = anthropic_messages_to_openai([m.model_dump() for m in req.messages])
+    assistant = next(m for m in openai if m["role"] == "assistant" and m.get("content"))
+    assert assistant["content"] == "the answer"
+    assert "secret reasoning" not in json.dumps(openai)  # thinking never forwarded
+
+    # A malformed KNOWN block still fails cleanly instead of being swallowed.
+    with pytest.raises(ValidationError):
+        AnthropicMessagesRequest(
+            model = "x",
+            max_tokens = 16,
+            messages = [{"role": "assistant", "content": [{"type": "tool_use", "name": "f"}]}],
+        )
