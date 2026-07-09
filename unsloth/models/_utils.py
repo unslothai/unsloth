@@ -3182,6 +3182,81 @@ def _forward_is_unsloth_compiled(model):
     return False
 
 
+def _rope_seq_len_1_fallback(q, k, cos, sin, unsqueeze_dim = 1):
+    # Minimal shape-safe RoPE for seq_len == 1 decoding steps (eg GRPO scoring).
+    # Mirrors transformers' apply_rotary_pos_emb, but instead of torch.cat-ing the
+    # rotated rotary slice back onto the untouched pass-through slice -- the concat
+    # torch.compile's guards can reject once seq_len collapses to 1 -- it writes both
+    # slices into a fresh tensor via indexed assignment. Issue #4801.
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    rotary_dim = cos.shape[-1]
+
+    def _apply(x):
+        x_rot = x[..., :rotary_dim]
+        x_pass = x[..., rotary_dim:]
+        half = rotary_dim // 2
+        x1 = x_rot[..., :half]
+        x2 = x_rot[..., half:]
+        rotated_half = torch.cat((-x2, x1), dim = -1)
+        embed = (x_rot * cos) + (rotated_half * sin)
+        out = torch.empty_like(x)
+        out[..., :rotary_dim] = embed
+        if x_pass.shape[-1] > 0:
+            out[..., rotary_dim:] = x_pass
+        return out
+
+    return _apply(q), _apply(k)
+
+
+def _wrap_qwen3_5_rope(original_fn):
+    # Wraps Qwen3.5's apply_rotary_pos_emb so a compiled forward that blows up at
+    # seq_len == 1 (single-token GRPO scoring step) falls back to the shape-safe
+    # implementation above instead of crashing the eval step.
+    @functools.wraps(original_fn)
+    def _unsloth_wrapped_apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim = 1, *args, **kwargs):
+        try:
+            return original_fn(q, k, cos, sin, unsqueeze_dim, *args, **kwargs)
+        except RuntimeError as e:
+            if q.shape[-2] == 1 and "must match" in str(e):
+                return _rope_seq_len_1_fallback(q, k, cos, sin, unsqueeze_dim)
+            raise
+
+    _unsloth_wrapped_apply_rotary_pos_emb._unsloth_seqlen1_patched = True
+    return _unsloth_wrapped_apply_rotary_pos_emb
+
+
+def _patch_qwen3_5_rope_seq_len_1(phase = None):
+    # GRPO scoring frequently runs a compiled Qwen3.5 forward one token at a time
+    # (seq_len == 1). transformers' apply_rotary_pos_emb re-assembles q/k with
+    # torch.cat, which torch.compile's guards can reject at seq_len == 1. Only patch
+    # the copy living in Unsloth's compiled cache (provenance-checked the same way as
+    # _forward_is_unsloth_compiled) so the stock transformers module is left alone.
+    if phase not in (None, "post_compile"):
+        return
+    import sys as _sys
+
+    leaves = _unsloth_compile_cache_leaves()
+    for name, module in list(_sys.modules.items()):
+        if module is None or "qwen3_5" not in name:
+            continue
+        original_fn = getattr(module, "apply_rotary_pos_emb", None)
+        if original_fn is None or getattr(original_fn, "_unsloth_seqlen1_patched", False):
+            continue
+        fn = getattr(module, "__file__", "") or ""
+        fn = fn.replace("\\", "/")
+        parts = set(fn.split("/"))
+        if not any(leaf in parts for leaf in leaves):
+            continue
+        try:
+            module.apply_rotary_pos_emb = _wrap_qwen3_5_rope(original_fn)
+        except Exception:
+            pass
+
+
+TEMPORARY_PATCHES.append(_patch_qwen3_5_rope_seq_len_1)
+
+
 def _find_concrete_accepts_loss_kwargs(model):
     # Walk wrapper chain for first class that declares accepts_loss_kwargs in its
     # own __mro__ dict. Avoids PEFT __getattr__ forwarding and our own shadow.
