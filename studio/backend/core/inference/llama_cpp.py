@@ -100,6 +100,10 @@ class LlamaServerNotFoundError(RuntimeError):
     Subclasses RuntimeError so existing handlers still catch it."""
 
 
+class _LlamaStreamCancelled(Exception):
+    """Internal signal for an expected client/request cancellation."""
+
+
 # Shared so the from_identifier preflight and the load-time raise stay in sync.
 LLAMA_SERVER_NOT_FOUND_DETAIL = (
     "This is a GGUF model, but the llama.cpp runtime (llama-server) is not "
@@ -1440,6 +1444,50 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
+def _vulkan_lib_filename() -> str:
+    return "ggml-vulkan.dll" if sys.platform == "win32" else "libggml-vulkan.so"
+
+
+# Host RAM to leave free on an integrated GPU, matching llama.cpp's own --fit
+# margin (default 1024 MiB per device). ggml reports an iGPU's "VRAM" as shared
+# system RAM, so hold back the same margin rather than inventing a larger one.
+_IGPU_HOST_RESERVE_MIB = 1024
+
+
+def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
+    """Reserve host headroom on an integrated (shared-memory) Vulkan GPU.
+
+    An iGPU's reported free "VRAM" is really free system RAM, so sizing
+    context/offload against all of it would push the host into swap or the OOM
+    killer. Leave the same margin llama.cpp's --fit uses. ``is_igpu`` comes from
+    ggml's device type, so a discrete card is never touched; only ever reduces.
+    """
+    if not is_igpu:
+        return free_mib
+    return max(0, free_mib - _IGPU_HOST_RESERVE_MIB)
+
+
+def _llama_lib_dir(binary: str) -> Path:
+    # The installer exposes llama-server as a top-level entrypoint into build/bin/,
+    # where the ggml backend libs live, so callers looking for sibling libs (Vulkan
+    # detection, LD_LIBRARY_PATH, probe bindir) need the real dir. It is normally a
+    # symlink (resolve() reaches build/bin), but create_exec_entrypoint falls back to
+    # a shell wrapper (exec "$(dirname "$0")/build/bin/llama-server" "$@") when it
+    # cannot symlink, and resolve() stops at the wrapper file. Follow the wrapper's
+    # exec target too, so a wrapper-based install still finds build/bin.
+    resolved = Path(binary).resolve()
+    try:
+        with open(resolved, "rb") as _f:
+            _head = _f.read(256)
+        if _head.startswith(b"#!"):
+            _m = re.search(r'exec "\$\(dirname "\$0"\)/([^"]+)"', _head.decode("utf-8", "ignore"))
+            if _m:
+                return (resolved.parent / _m.group(1)).resolve().parent
+    except OSError:
+        pass
+    return resolved.parent
+
+
 def _is_external_link(path: Path) -> bool:
     """True when ``path`` is a --with-llama-cpp-dir local link: a POSIX symlink
     or a Windows directory junction / reparse point. Such a link resolves into
@@ -1497,6 +1545,7 @@ class LlamaCppBackend:
         self._context_length: Optional[int] = None
         self._effective_context_length: Optional[int] = None
         self._max_context_length: Optional[int] = None
+        self._effective_parallel_slots: int = 1
         self._chat_template: Optional[str] = None
         self._chat_template_override: Optional[str] = None
         self._supports_reasoning: bool = False
@@ -1683,6 +1732,15 @@ class LlamaCppBackend:
         return self._effective_context_length or self._context_length
 
     @property
+    def effective_parallel_slots(self) -> int:
+        """Return the serving-slot count the active llama-server actually uses."""
+        try:
+            slots = int(getattr(self, "_effective_parallel_slots", 1))
+        except (TypeError, ValueError):
+            slots = 1
+        return max(1, slots)
+
+    @property
     def max_context_length(self) -> Optional[int]:
         """Return the largest context that fits on this hardware at load time.
 
@@ -1697,6 +1755,16 @@ class LlamaCppBackend:
     def native_context_length(self) -> Optional[int]:
         """Return the model's native context length from GGUF metadata."""
         return self._context_length
+
+    def _commit_effective_parallel_slots(self, n_parallel: int) -> None:
+        try:
+            slots = int(n_parallel)
+        except (TypeError, ValueError):
+            slots = 1
+        self._effective_parallel_slots = max(1, slots)
+
+    def _reset_effective_parallel_slots(self) -> None:
+        self._effective_parallel_slots = 1
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
@@ -2283,6 +2351,30 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
+    def _is_vulkan_backend(binary: Optional[str] = None) -> bool:
+        """True if the installed llama.cpp build is Vulkan-only.
+
+        The official prebuilts are single-backend, so the Vulkan ggml lib next
+        to llama-server identifies a Vulkan build. Keeps the free-memory probe
+        and GPU pin in ggml's Vulkan device-index space. For a custom
+        multi-backend build with a CUDA or HIP ggml lib alongside Vulkan, defer
+        to that backend (torch-usable, better-understood probe/pin).
+        """
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return False
+        lib_dir = _llama_lib_dir(binary)
+        if not (lib_dir / _vulkan_lib_filename()).is_file():
+            return False
+        for _backend in ("cuda", "hip"):
+            sibling = (
+                f"ggml-{_backend}.dll" if sys.platform == "win32" else f"libggml-{_backend}.so"
+            )
+            if (lib_dir / sibling).is_file():
+                return False
+        return True
+
+    @staticmethod
     def _resolve_visible_physical_ids() -> Optional[list[int]]:
         """Physical GPU ids behind the active visibility mask (HIP/ROCR/CUDA on
         ROCm, CUDA otherwise). None when no mask is set; empty list for an empty
@@ -2444,11 +2536,42 @@ class LlamaCppBackend:
         return True
 
     @staticmethod
-    def _get_gpu_free_memory() -> list[tuple[int, int]]:
+    def _visible_devices_mask(env_name: str) -> Optional[set[int]]:
+        """Physical indices a ``*_VISIBLE_DEVICES`` mask permits, or None if unset.
+
+        ``if x.strip()`` filters trailing-comma masks ("0,1,"); an empty mask
+        ("") yields an empty set (all devices hidden), distinct from an unset
+        var (None, no mask). Used by the nvidia-smi probe.
+        """
+        raw = os.environ.get(env_name)
+        if raw is None:
+            return None
+        try:
+            return set(int(x.strip()) for x in raw.split(",") if x.strip())
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _vulkan_pin_args(gpu_indices: Optional[Iterable[int]]) -> list[str]:
+        """``--device Vulkan<i>,...`` to pin a Vulkan launch to selected GPUs.
+
+        The indices are ggml's compact Vulkan ordinals (as _get_gpu_free_memory
+        reports and the registry names ``Vulkan<i>``). Pin by that name, NOT via
+        GGML_VK_VISIBLE_DEVICES: ggml parses that env var in the raw
+        vkEnumeratePhysicalDevices space (before dropping CPU/llvmpipe devices
+        and deduplicating ICDs), so a compact ordinal there could select a
+        different physical device or the CPU rasterizer.
+        """
+        if not gpu_indices:
+            return []
+        return ["--device", ",".join(f"Vulkan{i}" for i in gpu_indices)]
+
+    @staticmethod
+    def _get_gpu_free_memory(binary: Optional[str] = None) -> list[tuple[int, int]]:
         """Query free memory per GPU. Returns ``(gpu_index, free_mib)`` sorted by
         index; empty if no supported GPU is reachable. Thin wrapper over
         ``_get_gpu_memory`` for callers that only need free VRAM."""
-        return [(idx, free) for idx, free, _total in LlamaCppBackend._get_gpu_memory()]
+        return [(idx, free) for idx, free, _total in LlamaCppBackend._get_gpu_memory(binary)]
 
     @staticmethod
     def _apple_metal_memory_budget_bytes() -> int:
@@ -2479,7 +2602,7 @@ class LlamaCppBackend:
         return int(rec_bytes * _APPLE_UNIFIED_MEMORY_FRACTION)
 
     @staticmethod
-    def _get_gpu_memory() -> list[tuple[int, int, int]]:
+    def _get_gpu_memory(binary: Optional[str] = None) -> list[tuple[int, int, int]]:
         """Query free AND total memory per GPU.
 
         Order:
@@ -2491,9 +2614,18 @@ class LlamaCppBackend:
              probe returned [] on AMD) and NVIDIA hosts missing
              ``nvidia-smi`` from PATH.
 
+        On a Vulkan build the ggml Vulkan probe is authoritative, so the indices
+        are ggml's compact Vulkan ordinals (the space the pin selects via
+        ``--device Vulkan<i>``). It reports ``total`` for discrete cards and 0
+        for an iGPU (shared RAM) so the fit falls back to free*frac there.
+        Otherwise nvidia-smi / torch cover NVIDIA + AMD ROCm.
+
         Returns (gpu_index, free_mib, total_mib) sorted by index; empty if no
-        supported GPU is reachable. ``total`` lets the fit reserve absolute headroom.
+        supported GPU is reachable.
         """
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if LlamaCppBackend._is_vulkan_backend(binary):
+            return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
             result = subprocess.run(
@@ -2509,16 +2641,7 @@ class LlamaCppBackend:
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
-                allowed: Optional[set[int]] = None
-                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-                if cvd is not None:
-                    try:
-                        # `if x.strip()` filters trailing-comma masks ("0,1,").
-                        # Empty mask (CVD="") yields an empty set -> all GPUs
-                        # filtered out, per codebase convention.
-                        allowed = set(int(x.strip()) for x in cvd.split(",") if x.strip())
-                    except ValueError:
-                        pass
+                allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
                 gpus: list[tuple[int, int, int]] = []
                 for line in result.stdout.strip().splitlines():
                     parts = [p.strip() for p in line.split(",")]
@@ -2582,6 +2705,91 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"torch GPU probe failed: {e}")
             return []
+
+    @staticmethod
+    def _get_gpu_free_memory_vulkan(binary: Optional[str] = None) -> list[tuple[int, int, int]]:
+        """Query free (and total) VRAM per device via the bundled ggml Vulkan backend.
+
+        Loads ``libggml-vulkan`` in a short-lived subprocess (no Vulkan instance
+        in this process) and returns (device_index, free_mib, total_mib) sorted
+        by index. The index is ggml's compact Vulkan ordinal -- the one the
+        registry names ``Vulkan<index>`` and load_model pins with ``--device``,
+        NOT the raw ``GGML_VK_VISIBLE_DEVICES`` space. A user-set
+        ``GGML_VK_VISIBLE_DEVICES`` is honored by ggml (passed through), so the
+        list already reflects it. iGPUs leave a host-RAM margin (see
+        ``_apply_igpu_host_reserve_mib``) and report total 0; discrete cards pass
+        their real total through. [] when no Vulkan build or device is reachable.
+        """
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return []
+        binary_dir = _llama_lib_dir(binary)
+        if not (binary_dir / _vulkan_lib_filename()).is_file():
+            return []
+
+        env = child_env_without_native_path_secret()
+        # Pass any inherited GGML_VK_VISIBLE_DEVICES through to ggml unchanged so
+        # the probe enumerates the same device list the launch will, named
+        # Vulkan0..N in the compact order reported here and pinned by that name
+        # via --device -- probe, mask, and pin stay in one index space. Do NOT
+        # filter the mask in Python: ggml parses the env var in raw
+        # vkEnumeratePhysicalDevices space while this probe reports the compact
+        # post-filter ordinal, so a Python filter would compare mismatched spaces.
+        if sys.platform != "win32":
+            # Let the loader resolve sibling ggml libs next to the binary.
+            existing_ld = env.get("LD_LIBRARY_PATH", "")
+            env["LD_LIBRARY_PATH"] = (
+                f"{binary_dir}:{existing_ld}" if existing_ld else str(binary_dir)
+            )
+        probe_script = Path(__file__).with_name("_vulkan_probe.py")
+        try:
+            result = subprocess.run(
+                [sys.executable, str(probe_script), str(binary_dir)],
+                capture_output = True,
+                text = True,
+                timeout = 15,
+                env = env,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            if result.returncode != 0:
+                logger.debug(
+                    f"vulkan GPU probe exited {result.returncode}: {result.stderr.strip()}"
+                )
+                return []
+        except Exception as e:
+            logger.debug(f"vulkan GPU probe failed: {e}")
+            return []
+
+        gpus: list[tuple[int, int, int]] = []
+        for line in result.stdout.strip().splitlines():
+            parts = line.split("\t")
+            if len(parts) != 4:
+                continue
+            try:
+                idx = int(parts[0])
+                free_mib = int(parts[1]) // (1024 * 1024)
+                is_igpu = parts[2] == "1"
+                # iGPU "total" is shared RAM, not a VRAM budget -> keep 0 so the
+                # fit stays on free*frac (the host reserve below is its
+                # headroom); a discrete card passes its real total through.
+                total_mib = 0 if is_igpu else int(parts[3]) // (1024 * 1024)
+            except ValueError:
+                continue
+            capped = _apply_igpu_host_reserve_mib(free_mib, is_igpu)
+            if capped < free_mib:
+                logger.info(
+                    f"Vulkan device VK{idx} is an integrated GPU sharing system "
+                    f"RAM; reserving {free_mib - capped}MiB host headroom "
+                    f"({free_mib}->{capped}MiB usable)"
+                )
+            gpus.append((idx, capped, total_mib))
+        gpus.sort(key = lambda g: g[0])
+        if gpus:
+            logger.info(
+                "Vulkan GPU memory detected: "
+                + ", ".join(f"VK{idx}={free}MiB" for idx, free, _total in gpus)
+            )
+        return gpus
 
     @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
@@ -2811,7 +3019,8 @@ class LlamaCppBackend:
     def _llama_server_env_for_binary(binary: str) -> dict[str, str]:
         """Build a subprocess env that lets llama-server resolve native libs."""
         env = child_env_without_native_path_secret()
-        binary_dir = str(Path(binary).parent)
+        # _llama_lib_dir resolves the llama-server symlink to the real build/bin.
+        binary_dir = str(_llama_lib_dir(binary))
 
         if sys.platform == "win32":
             # Ordering: see _build_windows_path_dirs. #5106.
@@ -4492,6 +4701,29 @@ class LlamaCppBackend:
             cancel_event = cancel_event,
         )
 
+    def _cached_repo_mtp_drafter(self, hf_repo: str) -> Optional[str]:
+        """A drafter already in this repo's local HF cache, reused offline when a
+        fresh copy can't be fetched. Prefers a repo-root ``mtp-*.gguf`` across all
+        cached snapshots; else an existing ``MTP/`` copy (any precision -- the
+        target verifies every drafted token). None if none is cached."""
+        try:
+            from utils.models.model_config import _iter_hf_cache_snapshots
+
+            roots: list[Path] = []
+            subdirs: list[Path] = []
+            for snap in _iter_hf_cache_snapshots(hf_repo):  # newest first
+                for f in sorted(_gguf_snapshot_files(snap)):
+                    if _is_companion_gguf_path(f) and "mmproj" not in f.lower():
+                        (roots if "/" not in f else subdirs).append(snap / f)
+            # Keep snapshot order (newest first), root before any MTP/ copy, so a
+            # newer main GGUF pairs with the newest cached drafter, not a stale one.
+            for cand in roots + subdirs:
+                if cand.is_file():
+                    return str(cand)
+        except Exception as e:
+            logger.debug("Cached MTP drafter lookup failed for %s: %s", hf_repo, e)
+        return None
+
     def _download_mtp(
         self,
         *,
@@ -4508,11 +4740,25 @@ class LlamaCppBackend:
         are intentionally skipped. Returns the local path, or None.
         """
 
+        # Offline, reuse any drafter already on disk (a fresh copy can't be
+        # fetched). Online, _download_companion_gguf/hf_hub_download reuse the
+        # current cached file and refetch a changed one, so skip the probe here
+        # rather than pair new weights with a stale draft.
+        if _hf_env_offline():
+            cached = self._cached_repo_mtp_drafter(hf_repo)
+            if cached:
+                logger.info(f"Reusing cached MTP drafter (offline): {cached}")
+                return cached
+
         def _pick_mtp(candidates: list[str]) -> Optional[str]:
+            # Root-level only: MTP/ subdir copies now share the mtp- prefix but
+            # are explicit-selection, not auto-fetch (they'd sort ahead of root).
             mtp_files = sorted(
                 f
                 for f in candidates
-                if f.lower().endswith(".gguf") and Path(f).name.lower().startswith("mtp-")
+                if f.lower().endswith(".gguf")
+                and "/" not in f
+                and Path(f).name.lower().startswith("mtp-")
             )
             return mtp_files[0] if mtp_files else None
 
@@ -5214,6 +5460,7 @@ class LlamaCppBackend:
             # Resolve llama-server now but defer a not-found error: a block-diffusion
             # GGUF uses the diffusion runner, and its arch is only known after the header.
             binary = self._find_llama_server_binary()
+            is_vulkan_backend = self._is_vulkan_backend(binary)
 
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
             # mtp_draft_path arrives set for local Gemma loads (detected
@@ -5453,7 +5700,8 @@ class LlamaCppBackend:
                     model_size = gguf_size + mmproj_size
                     # 2-tuple gpus for existing logic + a total map for the absolute
                     # per-GPU headroom (correct when the GPU is already partly used).
-                    _gpu_mem = self._get_gpu_memory()
+                    # Pass binary so a Vulkan build probes ggml's Vulkan ordinals.
+                    _gpu_mem = self._get_gpu_memory(binary)
                     gpus = [(idx, free) for idx, free, _t in _gpu_mem]
                     total_by_idx = {idx: total for idx, _f, total in _gpu_mem}
 
@@ -6226,7 +6474,12 @@ class LlamaCppBackend:
                 # cap, not the ROCm-reported VRAM, is the real ceiling); refuse an
                 # oversize load the OS would otherwise kill mid-flight. Base model
                 # only: an optional MTP drafter is dropped by the MTP-drop fallback.
-                if model_size is not None and self._amd_apu_wants_unified_memory(gpu_indices):
+                # CUDA/ROCm ids only; a Vulkan build's gpu_indices are ggml ordinals.
+                if (
+                    model_size is not None
+                    and not is_vulkan_backend
+                    and self._amd_apu_wants_unified_memory(gpu_indices)
+                ):
                     _ram_msg = self._apu_ram_shortfall_message(
                         model_size, self._available_system_memory_mib()
                     )
@@ -6489,6 +6742,12 @@ class LlamaCppBackend:
                             ", ".join(unsupported_cache_flags),
                         )
 
+                # Vulkan pins via --device (a cmd arg, unlike the env-based
+                # CUDA/ROCm pin below), emitted BEFORE user extras so llama.cpp's
+                # last-wins parsing lets a user --device override Studio's pick.
+                if is_vulkan_backend and gpu_indices is not None:
+                    cmd += LlamaCppBackend._vulkan_pin_args(gpu_indices)
+
                 # User pass-through args go last so llama.cpp's last-wins parsing
                 # lets the user override Studio's auto-set flags. Already
                 # validated by the route via validate_extra_args().
@@ -6540,23 +6799,25 @@ class LlamaCppBackend:
                         env.setdefault("OMP_NUM_THREADS", "2")
 
                 # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
-                # shared system RAM. setdefault so a user value wins.
-                if self._amd_apu_wants_unified_memory(gpu_indices):
+                # shared system RAM. setdefault so a user value wins. Not on Vulkan
+                # (nor DC below): gpu_indices are ggml ordinals, not CUDA/ROCm ids.
+                if not is_vulkan_backend and self._amd_apu_wants_unified_memory(gpu_indices):
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
                     logger.info("AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
 
                 # DC NVIDIA GPUs: FP32 accum (+ P2P / launch queues for multi-GPU).
                 # See _apply_datacenter_env; opt out with UNSLOTH_DISABLE_DC_TUNING=1.
-                if self._apply_datacenter_env(env, gpu_indices):
+                if not is_vulkan_backend and self._apply_datacenter_env(env, gpu_indices):
                     multi_gpu = self._effective_gpu_count(gpu_indices) > 1
                     logger.info(
                         f"Data-center GPU detected: applied DC llama.cpp env tuning (multi_gpu={multi_gpu})"
                     )
 
                 # Pin to selected GPU(s). On ROCm, narrowing only
-                # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full
-                # set, so set HIP_VISIBLE_DEVICES too.
-                if gpu_indices is not None:
+                # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full set, so
+                # set HIP_VISIBLE_DEVICES too. Vulkan is pinned via --device
+                # (above), not here.
+                if gpu_indices is not None and not is_vulkan_backend:
                     pinned = ",".join(str(i) for i in gpu_indices)
                     env["CUDA_VISIBLE_DEVICES"] = pinned
                     try:
@@ -6950,6 +7211,7 @@ class LlamaCppBackend:
                         )
 
                 self._healthy = True
+                self._commit_effective_parallel_slots(n_parallel)
 
                 # Commit caller intent only after _healthy=True so a failed start
                 # can't poison the next inheritance check. None keeps prior, []
@@ -7487,6 +7749,7 @@ class LlamaCppBackend:
             self._context_length = None
             self._effective_context_length = None
             self._max_context_length = None
+            self._reset_effective_parallel_slots()
             self._chat_template = None
             self._chat_template_override = None
             self._supports_reasoning = False
@@ -7542,6 +7805,7 @@ class LlamaCppBackend:
         # Stop the watchdog before a deliberate kill so a planned reload/unload
         # isn't seen as a crash; a real crash never routes through here.
         self._stop_mtp_crash_watchdog()
+        self._reset_effective_parallel_slots()
         if self._process is None:
             return
         try:
@@ -8420,7 +8684,7 @@ class LlamaCppBackend:
     ):
         """Open one streaming POST and let cancel interrupt prefill or reads."""
         if cancel_event is not None and cancel_event.is_set():
-            raise GeneratorExit
+            raise _LlamaStreamCancelled
 
         _cancel_closed = threading.Event()
         _response_ref: list = [None]
@@ -8465,13 +8729,13 @@ class LlamaCppBackend:
             ) as response:
                 _response_ref[0] = response
                 if cancel_event is not None and cancel_event.is_set():
-                    raise GeneratorExit
+                    raise _LlamaStreamCancelled
                 yield response
                 return
         except (httpx.RequestError, RuntimeError):
             # Response was closed by the cancel watcher
             if cancel_event is not None and cancel_event.is_set():
-                raise GeneratorExit
+                raise _LlamaStreamCancelled
             raise
         finally:
             _cancel_closed.set()
@@ -8676,6 +8940,8 @@ class LlamaCppBackend:
                         "finish_reason": _metadata_finish_reason,
                     }
 
+        except _LlamaStreamCancelled:
+            return
         except httpx.ConnectError as e:
             # Server already down. If this was an MTP+tensor crash, recover by
             # reloading without MTP (scheduled in the background) and fail this
@@ -9802,6 +10068,8 @@ class LlamaCppBackend:
                         break
                 continue
 
+            except _LlamaStreamCancelled:
+                return
             except httpx.ConnectError:
                 # Mark unresolved provisional cards as failed before raising.
                 for _pid, _pname in provisional_started_tool_calls.items():
@@ -9986,6 +10254,8 @@ class LlamaCppBackend:
                 if _meta is not None:
                     yield _meta
 
+        except _LlamaStreamCancelled:
+            return
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")
         except Exception as e:

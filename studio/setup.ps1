@@ -2621,7 +2621,18 @@ function Fast-Install {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
     if ($UseUv) {
         $VenvPy = (Get-Command python).Source
-        $result = & uv pip install --python $VenvPy @Args_ 2>&1
+        # An explicit --index-url must win. Inherited uv index env vars otherwise
+        # override it and pull CPU torch over the CUDA/ROCm build (#6898), so drop
+        # them only for index-pinned installs; mirrors still apply elsewhere.
+        $saved = @{}
+        if (@($Args_) -contains '--index-url') {
+            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL') {
+                $saved[$n] = [Environment]::GetEnvironmentVariable($n)
+                Remove-Item "Env:$n" -ErrorAction SilentlyContinue
+            }
+        }
+        try { $result = & uv pip install --python $VenvPy @Args_ 2>&1 }
+        finally { foreach ($n in $saved.Keys) { if ($null -ne $saved[$n]) { Set-Item "Env:$n" $saved[$n] } } }
         if ($LASTEXITCODE -eq 0) { return }
     }
     & python -m pip install @Args_ 2>&1
