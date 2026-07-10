@@ -198,7 +198,6 @@ def _vae_conv_ndims(vae: Any) -> tuple[int, ...]:
     ndims: set[int] = set()
     try:
         from torch import nn
-
         for module in vae.modules():
             if isinstance(module, nn.Conv3d):
                 ndims.add(3)
