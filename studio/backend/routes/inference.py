@@ -3440,9 +3440,7 @@ def _estimate_gguf_kv_gb(
         effective_kv = resolve_cache_type_kv(llama_extra_args, cache_type_kv) or (
             _env_main_cache_type_for_budget()
         )
-        kv = probe._estimate_kv_cache_bytes(
-            ctx, effective_kv, n_parallel = max(1, n_parallel or 1)
-        )
+        kv = probe._estimate_kv_cache_bytes(ctx, effective_kv, n_parallel = max(1, n_parallel or 1))
         return kv / (1024**3)
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")

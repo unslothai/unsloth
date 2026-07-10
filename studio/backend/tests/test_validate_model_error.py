@@ -49,7 +49,15 @@ def _provoke(
 
     req = ValidateModelRequest(model_path = "org/repo")
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(inf.validate_model(req, fastapi_request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))), current_subject = "tester"))
+        asyncio.run(
+            inf.validate_model(
+                req,
+                fastapi_request = SimpleNamespace(
+                    app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+                ),
+                current_subject = "tester",
+            )
+        )
     return excinfo.value
 
 
@@ -113,7 +121,15 @@ def _drive_validate(monkeypatch, *, is_gguf: bool):
     monkeypatch.setattr(inf, "_requires_security_review_for_model", lambda *_a, **_k: True)
 
     req = ValidateModelRequest(model_path = "org/mixed-repo")
-    return asyncio.run(inf.validate_model(req, fastapi_request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))), current_subject = "tester"))
+    return asyncio.run(
+        inf.validate_model(
+            req,
+            fastapi_request = SimpleNamespace(
+                app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+            ),
+            current_subject = "tester",
+        )
+    )
 
 
 def test_selected_gguf_variant_skips_trc_and_security_review(monkeypatch):
@@ -192,7 +208,15 @@ def _drive_validate_lora(monkeypatch, *, adapter_needs_trc, base_needs_trc):
     )
     monkeypatch.setattr(inf, "_requires_security_review_for_model", lambda *_a, **_k: False)
     req = ValidateModelRequest(model_path = adapter)
-    return asyncio.run(inf.validate_model(req, fastapi_request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))), current_subject = "tester"))
+    return asyncio.run(
+        inf.validate_model(
+            req,
+            fastapi_request = SimpleNamespace(
+                app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+            ),
+            current_subject = "tester",
+        )
+    )
 
 
 def test_validate_lora_flags_trc_from_adapter_only(monkeypatch):

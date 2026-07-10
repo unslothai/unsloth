@@ -46,7 +46,15 @@ class TestValidateGgufRuntimeMessage(unittest.TestCase):
             patch.object(route.ModelConfig, "from_identifier", side_effect = side_effect),
         ):
             with self.assertRaises(HTTPException) as exc:
-                asyncio.run(route.validate_model(request, fastapi_request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))), current_subject = "test-user"))
+                asyncio.run(
+                    route.validate_model(
+                        request,
+                        fastapi_request = SimpleNamespace(
+                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+                        ),
+                        current_subject = "test-user",
+                    )
+                )
         return exc.exception
 
     def test_missing_llama_server_returns_actionable_message(self):
