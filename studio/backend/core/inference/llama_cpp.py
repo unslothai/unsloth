@@ -7136,7 +7136,26 @@ class LlamaCppBackend:
                 # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full set, so
                 # set HIP_VISIBLE_DEVICES too. Vulkan is pinned via --device
                 # (above), not here.
-                if gpu_indices is not None and not is_vulkan_backend:
+                # A deliberate zero-offload load with no GPU companions runs
+                # entirely on CPU, yet a visible CUDA device still costs the
+                # child a ~0.5 GB context + compute scratch that the guard's
+                # zero estimate and the CPU-only classification deliberately
+                # report as free. Hide the GPUs so the load is exactly what it
+                # claims: zero VRAM (verified: GPU stays at idle baseline and
+                # generation runs). Companion loads keep the normal masking, and
+                # a user --device in extras keeps control of its own devices.
+                _cpu_only_zero_offload = (
+                    gpu_memory_mode == "manual"
+                    and gpu_layers == 0
+                    and not is_vulkan_backend
+                    and not any(
+                        a == "--device" or str(a).startswith("--device=") for a in cmd
+                    )
+                    and not self._cmd_has_gpu_companion(cmd, env)
+                )
+                if _cpu_only_zero_offload:
+                    self._emit_child_gpu_visibility(env, "-1")
+                elif gpu_indices is not None and not is_vulkan_backend:
                     # When the user picked GPUs by index, align CUDA's ordering
                     # with the PCI-bus order the picker enumerated (nvidia-smi),
                     # so "GPU 1" in the UI is GPU 1 to llama.cpp -- not CUDA's
@@ -8083,6 +8102,16 @@ class LlamaCppBackend:
         return classify_gpu_offload_lines(self._stdout_lines)
 
     @staticmethod
+    def _cmd_has_gpu_companion(cmd: list, env: Optional[Mapping[str, str]] = None) -> bool:
+        """True when the argv/env carries a GPU companion: any --mmproj form, or
+        a drafter (Studio's --model-draft, the extras aliases, or the
+        LLAMA_ARG_SPEC_DRAFT_* env) -- these offload to the GPU regardless of
+        the main ``--gpu-layers``."""
+        if any(str(a).startswith("--mmproj") for a in cmd):
+            return True
+        return _extra_args_mtp_draft_path(cmd, env) is not None
+
+    @staticmethod
     def _zero_offload_gpu_flag(
         spawn_cmd: list,
         detected_gpus: list,
@@ -8101,9 +8130,7 @@ class LlamaCppBackend:
         too, not just the Studio-emitted --model-draft."""
         if not detected_gpus:
             return None
-        if any(str(a).startswith("--mmproj") for a in spawn_cmd):
-            return True
-        return _extra_args_mtp_draft_path(spawn_cmd, env) is not None
+        return LlamaCppBackend._cmd_has_gpu_companion(spawn_cmd, env)
 
     def load_cancelled(self) -> bool:
         """True if a load was cancelled (e.g. via unload/_cancel_event) and not

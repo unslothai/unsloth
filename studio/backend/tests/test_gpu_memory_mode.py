@@ -676,3 +676,14 @@ def test_zero_offload_flag_true_with_env_drafter():
 def test_zero_offload_flag_none_without_gpus():
     cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0"]
     assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [], {}) is None
+
+
+def test_cmd_has_gpu_companion_detection():
+    # The env mask for CPU-only zero-offload loads keys off this scan: any
+    # --mmproj form or a drafter (flag aliases / env) keeps the GPUs visible.
+    has = LlamaCppBackend._cmd_has_gpu_companion
+    assert has(["llama-server", "-m", "m.gguf"], {}) is False
+    assert has(["llama-server", "--mmproj", "p.gguf"], {}) is True
+    assert has(["llama-server", "--mmproj=p.gguf"], {}) is True
+    assert has(["llama-server", "-md", "d.gguf"], {}) is True
+    assert has(["llama-server"], {"LLAMA_ARG_SPEC_DRAFT_MODEL": "d.gguf"}) is True
