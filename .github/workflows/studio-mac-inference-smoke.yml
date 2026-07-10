@@ -453,13 +453,15 @@ jobs:
                   },
               )
               # Shared CI runners stall sporadically, so retry transport-level
-              # failures only; HTTP status errors surface immediately. Long
-              # probes (timeout > 300s) get a single attempt so the worst
-              # case stays inside the job's timeout-minutes budget.
-              attempts = 3 if timeout <= 300 else 1
+              # failures only; HTTP status errors surface immediately. Bounded
+              # to fit the job's timeout-minutes: short probes get 3 full
+              # attempts, long probes one retry capped at 300s (a healthy
+              # server answers a retry quickly; a stalled one never does).
+              attempts = 3 if timeout <= 300 else 2
               for attempt in range(attempts):
                   try:
-                      with urllib.request.urlopen(req, timeout = timeout) as resp:
+                      t = timeout if attempt == 0 else min(timeout, 300)
+                      with urllib.request.urlopen(req, timeout = t) as resp:
                           return resp.status, json.loads(resp.read().decode())
                   except urllib.error.HTTPError:
                       raise
@@ -867,13 +869,15 @@ jobs:
                   },
               )
               # Shared CI runners stall sporadically, so retry transport-level
-              # failures only; HTTP status errors surface immediately. Long
-              # probes (timeout > 300s) get a single attempt so the worst
-              # case stays inside the job's timeout-minutes budget.
-              attempts = 3 if timeout <= 300 else 1
+              # failures only; HTTP status errors surface immediately. Bounded
+              # to fit the job's timeout-minutes: short probes get 3 full
+              # attempts, long probes one retry capped at 300s (a healthy
+              # server answers a retry quickly; a stalled one never does).
+              attempts = 3 if timeout <= 300 else 2
               for attempt in range(attempts):
                   try:
-                      with urllib.request.urlopen(req, timeout = timeout) as resp:
+                      t = timeout if attempt == 0 else min(timeout, 300)
+                      with urllib.request.urlopen(req, timeout = t) as resp:
                           return resp.status, json.loads(resp.read().decode())
                   except urllib.error.HTTPError:
                       raise
