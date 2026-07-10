@@ -1903,6 +1903,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         res.images.forEach((image) => void ensureSrc(image));
         setGenDone(i + 1);
       }
+      // A generation can change server-side status: Speed=Auto compiles the
+      // transformer on the 3rd LoRA-free run (supports_lora flips to false), so
+      // without a refresh the LoRA picker stays enabled and the next LoRA run
+      // fails on the backend. Cheap status GET; also picks up any other drift.
+      if (isMounted.current) void refreshStatus();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Image generation failed");
     } finally {
@@ -1912,7 +1917,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       setGenDone(null);
       setGenStep(null);
     }
-  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc]);
+  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, refreshStatus]);
 
   // Keep the active workflow valid for the loaded model: an edit-only model (Qwen-Image-
   // Edit) has no Create/Transform tabs, a base model has no Edit tab. Snap to the first

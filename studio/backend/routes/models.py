@@ -36,6 +36,11 @@ class CachedModelRepo(BaseModel):
     # weights). The picker must not treat a partial base repo as a usable download, or an
     # On Device click routes to a fresh multi-GB re-download instead of the complete GGUF.
     partial: Optional[bool] = None
+    # True for a diffusion-tagged repo with NO top-level model_index.json: a single-file
+    # checkpoint that needs from_single_file + a filename. The task-scoped pickers must not
+    # offer it as a pipeline load (from_pretrained on it fails after the GPU handoff)
+    # unless the curated catalog carries its artifact.
+    single_file: Optional[bool] = None
 
 
 class CachedModelsResponse(BaseModel):
@@ -3380,6 +3385,20 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
         return {"cached": []}
 
 
+def _repo_has_pipeline_index(repo_info) -> bool:
+    """Whether the cached snapshot carries a model_index.json, i.e. is loadable as a
+    full diffusers pipeline (from_pretrained). Single-file / ComfyUI checkpoints ship
+    none and need a checkpoint filename + from_single_file instead."""
+    try:
+        for rev in repo_info.revisions:
+            for f in rev.files:
+                if f.file_name == "model_index.json" or f.file_name.endswith("/model_index.json"):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def _repo_is_diffusers(repo_info) -> bool:
     """True for an image-diffusion repo, so the chat picker hides it (it renders
     images, not chat) and the Images picker claims it — mirroring how cached
@@ -3390,13 +3409,8 @@ def _repo_is_diffusers(repo_info) -> bool:
     Qwen-Image or a z-image .safetensors) ship none. For those, fall back to the
     repo id resolving to a known diffusion family — the same resolver the Images
     backend loads from — so they don't surface as loadable chat models."""
-    try:
-        for rev in repo_info.revisions:
-            for f in rev.files:
-                if f.file_name == "model_index.json" or f.file_name.endswith("/model_index.json"):
-                    return True
-    except Exception:
-        pass
+    if _repo_has_pipeline_index(repo_info):
+        return True
     try:
         from core.inference.diffusion_families import detect_family
         if detect_family(getattr(repo_info, "repo_id", "") or "") is not None:
@@ -3502,6 +3516,11 @@ async def list_cached_models(
                         }
                         if is_partial:
                             row["partial"] = True
+                        # Flag diffusion repos with no pipeline index: loadable only via
+                        # from_single_file with a checkpoint filename, so the pickers must
+                        # not offer them as pipeline loads unless the catalog carries them.
+                        if row["task"] is not None and not _repo_has_pipeline_index(repo_info):
+                            row["single_file"] = True
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
                         lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
