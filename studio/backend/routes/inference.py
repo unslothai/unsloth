@@ -3587,9 +3587,7 @@ def _guard_chat_load_against_training(
         required_override_gb = required_override_gb,
         # Emitted only under manual + pinned layers (see load_model); the guard
         # mirrors that so a stale split from another mode can't fire the check.
-        tensor_split = (
-            tensor_split if gpu_memory_mode == "manual" and gpu_layers >= 0 else None
-        ),
+        tensor_split = (tensor_split if gpu_memory_mode == "manual" and gpu_layers >= 0 else None),
     )
     if ok:
         return
