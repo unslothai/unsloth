@@ -732,7 +732,6 @@ def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None)
     sidecar_dir = _VENV_T5_DIR
     try:
         from utils.transformers_version import _VENV_T5_LATEST_DIR, get_transformers_tier
-
         if get_transformers_tier(model_name, hf_token, probe = False) == "latest":
             sidecar_dir = _VENV_T5_LATEST_DIR
     except Exception:

@@ -387,10 +387,9 @@ class TestCheckUpgradeForModel:
 
 class TestNestedModelTypeExtraction:
     def test_top_level_wins(self):
-        assert (
-            _model_types_from_config({"model_type": "a", "text_config": {"model_type": "b"}})
-            == ["a", "b"]
-        )
+        assert _model_types_from_config(
+            {"model_type": "a", "text_config": {"model_type": "b"}}
+        ) == ["a", "b"]
 
     def test_nested_fallback(self):
         assert _model_types_from_config({"llm_config": {"model_type": "b"}}) == ["b"]
@@ -799,8 +798,6 @@ def test_upgrade_check_ignores_nested_known_types(monkeypatch):
     }
     monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
     calls = []
-    monkeypatch.setattr(
-        tl, "latest_transformers_supports", lambda mt: calls.append(mt) or None
-    )
+    monkeypatch.setattr(tl, "latest_transformers_supports", lambda mt: calls.append(mt) or None)
     assert tl.check_upgrade_for_model("some-org/normal-vlm") is None
     assert calls == []
