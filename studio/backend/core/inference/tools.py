@@ -163,6 +163,9 @@ _CHILD_WRITE_COMMANDS = frozenset(
         "mknod",
         "shred",
         "unlink",
+        # rmdir removes (empty) directories; a bash child gets no realpath guard, so
+        # rmdir /tmp/some-empty-dir deletes a host directory outside the workdir.
+        "rmdir",
         # split / csplit slice a file into PREFIXaa, PREFIXab, ... at an arbitrary prefix
         # path, creating files outside the workdir in an unguarded child.
         "split",
@@ -363,6 +366,15 @@ def _wrapper_flag_takes_operand(wrapper, flag: str) -> bool:
     return flag in _WRAPPER_OPERAND_FLAGS.get(wrapper, frozenset())
 
 
+# GNU sed can WRITE files (`w FILE`, `W FILE`, `s///w FILE`) or EXECUTE shell commands
+# (`e COMMAND`, `s///e`) straight from its SCRIPT even without -i, escaping the workdir in an
+# unguarded child. The filename/command may follow immediately (GNU accepts `w/tmp/x`) or
+# after whitespace. A plain `s/word/x/` has `w`/`e` inside the pattern/replacement (a letter or
+# closing delimiter follows), so these patterns are shaped to skip that.
+_SED_WRITE_RE = re.compile(r"(?<![A-Za-z])[wW](?:[ \t]|/|~)")
+_SED_EXEC_RE = re.compile(r"(?:^|[;\n{}]|[0-9$])[ \t]*e(?:[ \t;}\n]|$)")
+# A completed s/PATTERN/REPL/FLAGS whose FLAGS include w (write) or e (execute).
+_SED_SFLAG_RE = re.compile(r"s(.)(?:(?!\1).)*\1(?:(?!\1).)*\1[A-Za-z0-9]*[we]")
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # find's -exec / -ok command runs up to a `;` or `+` terminator; everything between
 # is a full command line (may itself begin with a wrapper like env/timeout or sh -c).
@@ -535,12 +547,15 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # punctuation_chars splits separators into their own tokens, so command
     # position is detected even in `echo done; rm -rf x` (no whitespace) or
-    # quote-split names (`r''m` collapses to `rm` after `;`).
+    # quote-split names (`r''m` collapses to `rm` after `;`). Including `<` splits an INPUT
+    # redirect / here-string glued to the command word (sh<<<'...', cat</etc/passwd) so the
+    # shell / reader is still recognized. (`>` is left out so the regex-based output-redirect
+    # scan keeps seeing `>&` as one operator.)
     try:
         if sys.platform == "win32":
             tokens = shlex.split(command, posix = False)
         else:
-            lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
+            lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`<")
             lexer.whitespace_split = True
             tokens = list(lexer)
     except ValueError:
@@ -888,14 +903,12 @@ def _find_blocked_commands(command: str) -> set[str]:
                 if al.startswith("--in-place") or (_short and "i" in al[1:]):
                     blocked.add("mutating:" + _base)
                     break
-                # A sed script's `w FILE` / `W FILE` command (and the s///w FILE flag) writes
-                # arbitrary files even without -i: sed -n '1w /tmp/escape' /etc/hostname or
-                # sed 's/a/b/w /tmp/out' input.txt. The `w`/`W` command follows a sed address
-                # (a line number `1w`, `$w`, a `/re/w`, `;`/`}` separator) or an s/// flag, so
-                # it is preceded by a NON-LETTER and followed by whitespace + a filename. A
-                # plain s/word/x/ has `w` inside a word (preceded by a letter) and is not matched.
+                # A sed SCRIPT can write files (`w FILE` / `W FILE` / `s///w`) or execute shell
+                # commands (`e CMD` / `s///e`) even without -i: sed -n '1w /tmp/escape' file,
+                # sed -n 'w/tmp/probe' file (no space), sed '1e touch /tmp/x' file. Detect the
+                # write / execute commands and flags; a plain s/word/x/ is not matched.
                 if _base in ("sed", "gsed", "ssed") and not a.startswith("-"):
-                    if re.search(r"(?<![A-Za-z])[wW][ \t]+\S", a):
+                    if _SED_WRITE_RE.search(a) or _SED_EXEC_RE.search(a) or _SED_SFLAG_RE.search(a):
                         blocked.add("mutating:" + _base)
                         break
             elif _base == "sort":
@@ -2970,13 +2983,50 @@ _CODE_DESERIALIZE_SINKS = frozenset(
         "_pickle.loads",
         "_pickle.load",
         "jsonpickle.decode",
+        # PyYAML: unsafe_load / full_load construct arbitrary Python objects from
+        # `!!python/object/apply:os.system [...]`. yaml.load is conditional (safe only with a
+        # SafeLoader) and is handled separately.
+        "yaml.unsafe_load",
+        "yaml.unsafe_load_all",
+        "yaml.full_load",
+        "yaml.full_load_all",
     }
 )
 # Modules whose load/loads/decode entry points run a pickle reduce payload; used to
 # resolve `import pickle as p; p.loads(x)` and `from pickle import loads as l`.
 _DESERIALIZE_MODULES = frozenset(
-    {"pickle", "marshal", "dill", "cloudpickle", "_pickle", "jsonpickle"}
+    {"pickle", "marshal", "dill", "cloudpickle", "_pickle", "jsonpickle", "yaml"}
 )
+# yaml.load / yaml.load_all construct arbitrary objects UNLESS given a safe loader; flag them
+# when the Loader is absent or is one of the unsafe loader classes.
+_YAML_SAFE_LOADERS = frozenset({"SafeLoader", "CSafeLoader", "BaseLoader"})
+_YAML_LOAD_METHODS = frozenset({"load", "load_all"})
+
+
+def _yaml_loader_class_name(value):
+    """Terminal attribute/name of a Loader= argument (yaml.SafeLoader -> SafeLoader)."""
+    if isinstance(value, ast.Attribute):
+        return value.attr
+    if isinstance(value, ast.Name):
+        return value.id
+    return None
+
+
+def _yaml_call_has_safe_loader(node):
+    """True only when a yaml.load(...) call passes an explicit safe Loader= keyword.
+
+    A missing Loader (older PyYAML defaults to the full, unsafe loader), an unknown/computed
+    loader, or a **kwargs splat all fail closed so the call is treated as an unsafe sink.
+    """
+    for kw in node.keywords:
+        if kw.arg == "Loader":
+            return _yaml_loader_class_name(kw.value) in _YAML_SAFE_LOADERS
+        if kw.arg is None:
+            # **kwargs unpacking hides the loader; cannot prove it is safe.
+            return False
+    return False
+
+
 # Attribute names of pure decode/decompress primitives used to hide a payload.
 _DECODE_ATTRS = frozenset(
     {
@@ -3567,6 +3617,11 @@ def _build_scope_alias_index(tree, const_env):
         dmap: dict[str, str] = {}
         scmap: dict[str, object] = {}
         rnmap: dict[str, ast.expr] = {}
+        # Process assignments in SOURCE order so a chained single-assignment alias resolves
+        # against the earlier binding it copies (s = os.system; t = s -> t is os.system). The
+        # scope walk yields assignments out of order, so sort by the RHS position; Python
+        # binds top-to-bottom, so the aliased name is always defined on an earlier line.
+        assigns.sort(key = lambda _p: (getattr(_p[1], "lineno", 0), getattr(_p[1], "col_offset", 0)))
         for name, rhs in assigns:
             if counts.get(name) != 1 or name in rebound:
                 continue
@@ -3577,9 +3632,16 @@ def _build_scope_alias_index(tree, const_env):
             # it to the element so the sink resolvers below see the real sink.
             rhs_eff = _unwrap_container_index(rhs)
             fq = _resolve_static_shell_sink(rhs_eff, os_aliases, subprocess_aliases, from_aliases)
+            # A chained single-assignment alias (s = os.system; t = s; t('rm -rf /')): the RHS
+            # is a bare Name already resolved to a sink earlier in this scope (assigns are in
+            # source order), so propagate its sink identity instead of dropping it.
+            if fq is None and isinstance(rhs_eff, ast.Name) and rhs_eff.id in smap:
+                fq = smap[rhs_eff.id]
             if fq:
                 smap[name] = fq
             eb = _rhs_exec_builtin(rhs_eff)
+            if eb is None and isinstance(rhs_eff, ast.Name) and rhs_eff.id in emap:
+                eb = emap[rhs_eff.id]  # chained alias e = exec; f = e; f(payload)
             if eb is not None:
                 emap[name] = eb
             elif (
@@ -3607,6 +3669,8 @@ def _build_scope_alias_index(tree, const_env):
             if _rhs_import_func(rhs_eff):
                 imap[name] = True
             dfq = _rhs_deserializer(rhs_eff)
+            if dfq is None and isinstance(rhs_eff, ast.Name) and rhs_eff.id in dmap:
+                dfq = dmap[rhs_eff.id]  # chained alias d = pickle.loads; e = d; e(payload)
             if dfq is not None:
                 dmap[name] = dfq
             # Single-assignment string/bytes path constant (p = '/etc/passwd'), used by
@@ -3932,6 +3996,105 @@ def _is_sensitive_abs_path(s):
         return True
     low = norm.lower()
     return any(tok in low for tok in _SANDBOX_SENSITIVE_TOKENS)
+
+
+def _command_reads_sensitive(command: str) -> str | None:
+    """Scan a raw shell command STRING for an embedded host-secret read; return a short reason
+    or None. The terminal tool runs the command in an unguarded shell child (the runtime
+    open() backstop only wraps the Python tool), so a read of an identity/credential file, a
+    ``..`` traversal, a ``~``-rooted path, or an escaping glob / ``$()`` / backtick expansion
+    on a file-reading command is not confined and must be refused statically -- the same
+    policy applied to an os.system('cat /etc/passwd') shell string in the Python tool."""
+    if not command:
+        return None
+    cmd = _expand_ifs(_normalize_ansi_c_quotes(command))
+
+    def _traversal_hits_sensitive(norm):
+        # A relative path that climbs out of the workdir with '..' can name a host secret
+        # (../../../../etc/passwd). Resolve the climb and test whether the descent lands on a
+        # sensitive path; a plain in-tree relative path (../sibling/file.txt) is left alone so
+        # ordinary terminal navigation is not blocked.
+        if ".." not in norm.split("/"):
+            return False
+        try:
+            canon = os.path.normpath(norm)
+        except Exception:
+            canon = norm
+        parts = [p for p in canon.split("/") if p not in ("", ".", "..")]
+        return bool(parts) and _is_sensitive_abs_path("/" + "/".join(parts))
+
+    def _flag(s):
+        norm = s.replace("\\", "/")
+        try:
+            canon = os.path.normpath(norm)
+        except Exception:
+            canon = norm
+        if _is_sensitive_abs_path(norm) or _is_sensitive_abs_path(canon):
+            return f"{s!r} is a sensitive host identity / credential file"
+        if _traversal_hits_sensitive(norm):
+            return f"{s!r} reads a sensitive host path via directory traversal"
+        return None
+
+    def _escaping_glob(tok):
+        if not any(g in tok for g in "*?["):
+            return False
+        tn = tok.replace("\\", "/")
+        return tok[:1] == "~" or tn.startswith("/")
+
+    # Literal-path token scan (absolute-sensitive + traversal), splitting shell punctuation
+    # glued to an adjacent word (cat /etc/passwd|wc) so the path piece is still checked.
+    try:
+        toks = shlex.split(cmd, posix = True)
+    except ValueError:
+        toks = cmd.split()
+    for _t in toks:
+        for _piece in re.split(r"[;|&<>()`{}]+", _t):
+            if _piece and not _piece.startswith("-"):
+                _r = _flag(_piece)
+                if _r is not None:
+                    return _r
+
+    # Re-tokenize keeping redirects / separators for the input-redirect + expansion scan.
+    try:
+        _lx = shlex.shlex(cmd, posix = True, punctuation_chars = ";&|()`<>")
+        _lx.whitespace_split = True
+        ptoks = list(_lx)
+    except ValueError:
+        ptoks = cmd.split()
+
+    def _risky_read_target(tgt):
+        if not tgt:
+            return False
+        if "$" in tgt or "`" in tgt or _escaping_glob(tgt):
+            return True
+        tn = tgt.replace("\\", "/")
+        return _is_sensitive_abs_path(tgt) or _traversal_hits_sensitive(tn)
+
+    _at_cmd = True
+    _cur_reader = False
+    for _pi, _pt in enumerate(ptoks):
+        if _pt in (";", "&&", "||", "|", "&", "(", ")", "`", "{", "}", "\n"):
+            _at_cmd = True
+            _cur_reader = False
+            continue
+        if _pt.startswith("<"):
+            _rt = _pt.lstrip("<") or (ptoks[_pi + 1] if _pi + 1 < len(ptoks) else "")
+            if _risky_read_target(_rt):
+                return f"shell input redirect from a non-literal / sensitive path {_rt!r}"
+            continue
+        if _pt.startswith(">"):
+            continue  # output redirects are handled by _find_blocked_commands
+        if _at_cmd:
+            _cur_reader = os.path.basename(_pt).lower() in _SHELL_READ_COMMANDS
+            _at_cmd = False
+            continue
+        if (
+            _cur_reader
+            and not _pt.startswith("-")
+            and ("$" in _pt or "`" in _pt or _escaping_glob(_pt))
+        ):
+            return f"shell read command reads an expanded path {_pt!r}"
+    return None
 
 
 # Stage 4: pragmatic aliasing (single-assignment alias + inline literal container).
@@ -4682,6 +4845,47 @@ def _check_signal_escape_patterns(
                     return name
             return None
 
+        def _methodcaller_module_call(self, node):
+            """Rewrite ``operator.methodcaller('meth', *args)(receiver)`` into the equivalent
+            ``receiver.meth(*args)`` Call when the receiver is an os/subprocess module
+            reference, so a methodcaller-hidden sink -- methodcaller('system', 'rm -rf /')(os)
+            -- is analyzed exactly like the direct os.system('rm -rf /') call. Returns the
+            synthetic Call node (with the original location) or None when the pattern does not
+            apply. Only os/subprocess receivers are rewritten; a methodcaller aimed at some
+            other object is left untouched so benign method calls are not misread."""
+            if len(node.args) != 1 or node.keywords:
+                return None
+            mc = node.func
+            while isinstance(mc, ast.Attribute) and mc.attr == "__call__":
+                mc = mc.value
+            if not isinstance(mc, ast.Call) or not mc.args:
+                return None
+            mf = mc.func
+            is_mc = (
+                isinstance(mf, ast.Attribute)
+                and mf.attr == "methodcaller"
+                and _ast_name_matches(mf.value, self.operator_aliases)
+            ) or (isinstance(mf, ast.Name) and mf.id in self.methodcaller_aliases)
+            if not is_mc:
+                return None
+            meth = _const_fold(mc.args[0], _const_env)
+            if not isinstance(meth, str) or not meth.isidentifier():
+                return None
+            receiver = node.args[0]
+            if not (
+                isinstance(receiver, ast.Name)
+                and (receiver.id in self.os_aliases or receiver.id in self.subprocess_aliases)
+            ):
+                return None
+            synth = ast.Call(
+                func = ast.Attribute(value = receiver, attr = meth, ctx = ast.Load()),
+                args = list(mc.args[1:]),
+                keywords = list(mc.keywords),
+            )
+            ast.copy_location(synth, node)
+            ast.fix_missing_locations(synth)
+            return synth
+
         def _sink_ref_desc(self, n):
             """Describe ``n`` when it is a bare reference to a dangerous callable used as a
             first-class VALUE (map/reduce/partial argument): a dynamic-exec builtin, a shell
@@ -4861,6 +5065,13 @@ def _check_signal_escape_patterns(
             )
 
         def visit_Call(self, node):
+            # operator.methodcaller('system', 'rm -rf /')(os) applies a deferred method to a
+            # module receiver; rewrite it to the direct os.system('rm -rf /') call and analyze
+            # that instead so the hidden shell/exec sink is not missed.
+            _mc_rewrite = self._methodcaller_module_call(node)
+            if _mc_rewrite is not None:
+                self.visit_Call(_mc_rewrite)
+                return
             func = node.func
             # A trailing `.__call__` invokes the underlying callable through its bound
             # method: os.system.__call__(cmd), __import__.__call__('os'),
@@ -5276,6 +5487,15 @@ def _check_signal_escape_patterns(
                     _fq_func = _fq_attr_name(_ecf)
                     if _fq_func in _CODE_DESERIALIZE_SINKS:
                         _deser_fq = _fq_func
+                if _deser_fq is None and isinstance(_ecf, ast.Attribute):
+                    # yaml.load(...) / yaml.load_all(...) reconstruct arbitrary objects unless
+                    # handed a safe loader. Resolve the (possibly module-aliased) yaml receiver
+                    # and only flag when no explicit SafeLoader is passed, so yaml.load(data,
+                    # Loader=yaml.SafeLoader) and yaml.safe_load(data) stay allowed.
+                    if _ecf.attr in _YAML_LOAD_METHODS and isinstance(_ecf.value, ast.Name):
+                        if self.deserialize_module_aliases.get(_ecf.value.id) == "yaml":
+                            if not _yaml_call_has_safe_loader(node):
+                                _deser_fq = "yaml." + _ecf.attr
                 if _analyzer_on and _deser_fq is not None:
                     dynamic_desc = f"{_deser_fq}() deserializes an unverifiable code payload"
                 elif is_dynamic_import:
@@ -6520,6 +6740,11 @@ def _check_signal_escape_patterns(
     # from os.path import join as j / normpath / abspath -> {alias: 'join'} so a path builder
     # folder recognizes the bare-name form open(join('/etc', 'passwd')).
     _pathfunc_from_aliases: dict[str, str] = {}
+    # operator module + `from operator import methodcaller` aliases, so a deferred method
+    # applied to an os/subprocess receiver (methodcaller('popen', 'cat /etc/passwd')(os)) is
+    # rewritten to the direct call before the read scanner runs.
+    _operator_mod_aliases = {"operator"}
+    _methodcaller_from_aliases: set[str] = set()
     for _imp in ast.walk(tree):
         if isinstance(_imp, ast.ImportFrom) and _imp.module == "pathlib":
             for _a in _imp.names:
@@ -6554,10 +6779,16 @@ def _check_signal_escape_patterns(
             for _a in _imp.names:
                 if _a.name in ("join", "normpath", "abspath"):
                     _pathfunc_from_aliases[_a.asname or _a.name] = _a.name
+        elif isinstance(_imp, ast.ImportFrom) and _imp.module == "operator":
+            for _a in _imp.names:
+                if _a.name == "methodcaller":
+                    _methodcaller_from_aliases.add(_a.asname or _a.name)
         elif isinstance(_imp, ast.Import):
             for _a in _imp.names:
                 if _a.name == "shutil":
                     _shutil_aliases.add(_a.asname or "shutil")
+                elif _a.name == "operator":
+                    _operator_mod_aliases.add(_a.asname or "operator")
                 elif _a.name == "os":
                     _os_mod_aliases.add(_a.asname or "os")
                 elif _a.name in ("posix", "nt"):
@@ -6854,6 +7085,45 @@ def _check_signal_escape_patterns(
             return _shell_name_aliases.get(f.id)
         return None
 
+    def _rewrite_methodcaller_call(node):
+        # operator.methodcaller('popen', 'cat /etc/passwd')(os) applies a deferred method to a
+        # module receiver; rewrite it to the direct os.popen('cat /etc/passwd') call so the
+        # read scanner tokenizes the embedded secret read. Only os/subprocess receivers are
+        # rewritten, so a methodcaller aimed at a benign object is left untouched.
+        if len(node.args) != 1 or node.keywords:
+            return None
+        mc = node.func
+        while isinstance(mc, ast.Attribute) and mc.attr == "__call__":
+            mc = mc.value
+        if not isinstance(mc, ast.Call) or not mc.args:
+            return None
+        mf = mc.func
+        is_mc = (
+            isinstance(mf, ast.Attribute)
+            and mf.attr == "methodcaller"
+            and isinstance(mf.value, ast.Name)
+            and mf.value.id in _operator_mod_aliases
+        ) or (isinstance(mf, ast.Name) and mf.id in _methodcaller_from_aliases)
+        if not is_mc:
+            return None
+        meth = _fold_read_arg(mc.args[0])
+        if not isinstance(meth, str) or not meth.isidentifier():
+            return None
+        receiver = node.args[0]
+        if not (
+            isinstance(receiver, ast.Name)
+            and (receiver.id in _os_mod_aliases or receiver.id in _subprocess_mod_aliases)
+        ):
+            return None
+        synth = ast.Call(
+            func = ast.Attribute(value = receiver, attr = meth, ctx = ast.Load()),
+            args = list(mc.args[1:]),
+            keywords = list(mc.keywords),
+        )
+        ast.copy_location(synth, node)
+        ast.fix_missing_locations(synth)
+        return synth
+
     def _is_exec_family_callee(f):
         # os.execv / os.execl / os.spawnv / os.posix_spawn ... replace or fork the guarded
         # process with an unguarded program, so a `..` traversal in their argv reads a host
@@ -7007,6 +7277,11 @@ def _check_signal_escape_patterns(
 
     class _SensitiveReadVisitor(ast.NodeVisitor):
         def visit_Call(self, node):
+            _rw = _rewrite_methodcaller_call(node)
+            if _rw is not None:
+                # methodcaller('popen', 'cat /etc/passwd')(os): analyze the direct call form.
+                self.visit_Call(_rw)
+                return
             f = node.func
             fq = _fq_attr_name(f)
             method = (
@@ -7970,6 +8245,12 @@ def _bash_exec(
         blocked = _find_blocked_commands(command)
         if blocked:
             return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+        # The command runs in an unguarded shell child, so the Python-tool open() backstop
+        # does not confine its reads; refuse an embedded host-secret read the same way an
+        # os.system('cat /etc/passwd') shell string is refused in the Python tool.
+        _read = _command_reads_sensitive(command)
+        if _read is not None:
+            return f"Blocked command for safety: sensitive file read ({_read})"
     elif not _harden_parent_against_proc_env_leak():
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.

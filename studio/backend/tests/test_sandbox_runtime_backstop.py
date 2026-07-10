@@ -15,6 +15,8 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 from core.inference.tools import (
     _BLOCKED_COMMANDS_COMMON,
+    _bash_exec,
+    _command_reads_sensitive,
     _python_exec,
     get_sandbox_workdir,
 )
@@ -1180,3 +1182,43 @@ def test_sandboxed_dir_reader_stateful_fspath_confined(tmp_path):
     out = _python_exec(code, None, 30, "backstop-dir-toctou", disable_sandbox = False)
     # The outside directory's contents must not leak through the re-resolving path object.
     assert "SECRET_MARKER_FILE.txt" not in out
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat /etc/passwd | head -1",
+        "head -1 /etc/shadow",
+        "tr a b < /etc/passwd",
+        "cat ~/.ssh/id_rsa",
+        "cat ../../../../etc/passwd",
+        "cat${IFS}/etc/shadow",
+        "head /etc/shad*",
+    ],
+)
+def test_bash_sensitive_read_blocked(command):
+    # The terminal tool runs an unguarded shell child (no open() backstop), so an embedded
+    # host-secret read must be refused statically before the subprocess is spawned.
+    out = _bash_exec(command, None, 30, "bash-read-block", disable_sandbox = False)
+    assert "sensitive file read" in out, out
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo hello world",
+        "cat notes.txt",
+        "ls ../src",
+        "cat ../sibling/data.txt",
+        "sort input.txt",
+    ],
+)
+def test_bash_benign_read_scan_allows(command):
+    # Ordinary in-tree relative navigation and non-sensitive reads are not flagged by the
+    # sensitive-read scanner (they may still be shaped/executed, but not blocked as a read).
+    assert _command_reads_sensitive(command) is None, command
+
+
+def test_bash_bypass_permissions_skips_read_scan():
+    # Bypass Permissions intentionally disables the static command scans.
+    assert _command_reads_sensitive("cat /etc/passwd") is not None

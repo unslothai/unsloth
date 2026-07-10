@@ -2852,3 +2852,89 @@ class TestRound23Bypasses:
     )
     def test_round23_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound24Bypasses:
+    """Twenty-fourth-round Codex findings: whitespace-free sed w / e write+exec scripts, the
+    POSIX rmdir child-writer, glued input redirection, PyYAML unsafe deserialization sinks,
+    operator.methodcaller applied to a module receiver, and chained single-assignment aliases
+    (t = s = os.system) that were dropped by out-of-order alias-index processing."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # sed w<path> / w~ / w<tab> without a space before the filename still writes.
+            "import os\nos.system(\"sed -n 'w/tmp/probe' /etc/hostname\")",
+            # sed e command executes a shell command; the s///e flag does too.
+            "import os\nos.system(\"sed '1e touch /tmp/x' /etc/hostname\")",
+            "import os\nos.system(\"sed 's/a/b/e' file\")",
+        ],
+    )
+    def test_sed_write_and_exec_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_rmdir_child_writer_blocked(self):
+        _blocked(
+            "import os\nos.system('rmdir /tmp/some-empty-dir')",
+            expect_phrase = "unsafe",
+        )
+
+    def test_glued_input_redirection_blocked(self):
+        # `sh<<<payload` glues the here-string operator to the shell name, hiding the sh sink
+        # from a whitespace tokenizer.
+        assert _check_code_safety("import os\nos.system(\"sh<<<'touch /tmp/x'\")") is not None
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import yaml\nyaml.load(data, Loader=yaml.Loader)",
+            "import yaml\nyaml.load(data, Loader=yaml.UnsafeLoader)",
+            "import yaml\nyaml.load(data)",
+            "import yaml\nyaml.unsafe_load(data)",
+            "import yaml\nyaml.full_load(data)",
+            "import yaml as y\ny.load(data, Loader=y.Loader)",
+        ],
+    )
+    def test_pyyaml_unsafe_deserialization_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import operator, os\noperator.methodcaller('system', 'touch /tmp/x')(os)",
+            "import operator, os\noperator.methodcaller('popen', 'cat /etc/passwd')(os)",
+            "from operator import methodcaller as m\nimport os\nm('system', 'rm -rf /')(os)",
+            "import operator, subprocess as sp\noperator.methodcaller('getoutput', 'cat /etc/shadow')(sp)",
+        ],
+    )
+    def test_methodcaller_module_sink_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\ns = os.system\nt = s\nt('touch /tmp/x')",
+            "import os\na = os.system\nb = a\nc = b\nc('rm -rf /')",
+            "e = exec\nf = e\nf('import os; os.system(1)')",
+            "import pickle\nl = pickle.loads\nm = l\nm(b'x')",
+        ],
+    )
+    def test_chained_single_assignment_alias_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign sed / yaml / methodcaller / alias forms must still pass.
+            "import os\nos.system(\"sed 's/word/x/' input.txt\")",
+            "import os\nos.system(\"sed '3d' input.txt\")",
+            "import yaml\nyaml.safe_load(data)",
+            "import yaml\nyaml.load(data, Loader=yaml.SafeLoader)",
+            "import yaml\nyaml.load(data, Loader=BaseLoader)",
+            "import operator\noperator.methodcaller('upper')('hi')",
+            "import operator, os\noperator.methodcaller('getcwd')(os)",
+            "x = len\ny = x\nprint(y([1, 2]))",
+        ],
+    )
+    def test_round24_benign_allowed(self, code):
+        _ok(code)
