@@ -192,7 +192,7 @@ const PageDragContext = createContext(false);
 type PromptQueueTarget = {
   getDocumentThreadId: () => string | null;
   getRunningThreadIds: () => string[];
-  append: (prompt: string) => void;
+  append: (prompt: string) => void | Promise<void>;
   cancel: () => void;
   isIndexing: () => boolean;
 };
@@ -303,23 +303,46 @@ function resetPromptQueues() {
   syncPromptQueueUI();
 }
 
+function requestPromptQueuePumpIfReady(delay = 0) {
+  if (hasReadyPromptQueueRun()) {
+    requestPromptQueuePump(delay);
+  }
+}
+
+function handleQueuedPromptAppendFailure(
+  run: PromptQueueRun,
+  item: PromptQueueItem,
+  error: unknown,
+) {
+  if (!isActivePromptQueueItem(run, item, run.generation)) {
+    return;
+  }
+  item.dispatched = false;
+  promptQueueActiveRunIds.delete(run.id);
+  syncPromptQueueUI();
+  item.dispatchRetries += 1;
+  if (item.dispatchRetries > PROMPT_QUEUE_MAX_DISPATCH_RETRIES) {
+    console.error("Prompt queue dispatch failed permanently:", error);
+    deletePromptQueueRun(run);
+    requestPromptQueuePumpIfReady();
+    return;
+  }
+  scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_DISPATCH_RETRY_MS);
+}
+
 function appendQueuedPrompt(run: PromptQueueRun, item: PromptQueueItem) {
   item.dispatched = true;
   promptQueueActiveRunIds.add(run.id);
   syncPromptQueueUI();
   try {
-    item.target.append(item.prompt);
-  } catch (error) {
-    item.dispatched = false;
-    promptQueueActiveRunIds.delete(run.id);
-    syncPromptQueueUI();
-    item.dispatchRetries += 1;
-    if (item.dispatchRetries > PROMPT_QUEUE_MAX_DISPATCH_RETRIES) {
-      console.error("Prompt queue dispatch failed permanently:", error);
-      deletePromptQueueRun(run);
-      return;
+    const result = item.target.append(item.prompt);
+    if (result && typeof result.catch === "function") {
+      void result.catch((error) => {
+        handleQueuedPromptAppendFailure(run, item, error);
+      });
     }
-    scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_DISPATCH_RETRY_MS);
+  } catch (error) {
+    handleQueuedPromptAppendFailure(run, item, error);
   }
 }
 
@@ -915,6 +938,7 @@ function stopPromptQueueRun(threadIds?: string[]) {
       // The active run may have already ended.
     }
   }
+  requestPromptQueuePumpIfReady();
 }
 
 function stopPromptQueueRunForThreadIds(threadIds: string[]) {
@@ -1989,7 +2013,8 @@ const Composer: FC<{
         return;
       }
 
-      if (threadIsRunning || promptQueueActive) {
+      const promptQueueAtCapacity = !promptQueueHasCapacity();
+      if (threadIsRunning || promptQueueActive || promptQueueAtCapacity) {
         event.preventDefault();
         if (!canQueueCurrentPrompt) {
           if (overlay || hasAttachments || hasPendingAudio) {

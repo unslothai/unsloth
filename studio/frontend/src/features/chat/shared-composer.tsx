@@ -124,6 +124,10 @@ export interface CompareHandle {
   waitForRunEnd: () => Promise<void>;
 }
 
+function compactIds(ids: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(ids.filter((id): id is string => Boolean(id))));
+}
+
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
@@ -304,6 +308,14 @@ export function RegisterCompareHandle({
       return;
     }
     const currentHandles = handlesRef.current;
+    const getCompareThreadIds = () => {
+      try {
+        const item = aui.threadListItem().getState();
+        return compactIds([item.id, item.remoteId]);
+      } catch {
+        return [];
+      }
+    };
     currentHandles[name] = {
       // fixes occasional reorder on reload.
       append: (content) =>
@@ -329,14 +341,26 @@ export function RegisterCompareHandle({
       waitForRunEnd: () =>
         new Promise<void>((resolve) => {
           let wasRunning = false;
+          const isHandleRunning = (
+            runningByThreadId: Record<string, boolean>,
+          ) => {
+            const threadIds = getCompareThreadIds();
+            if (threadIds.length === 0) {
+              return Object.values(runningByThreadId).some(Boolean);
+            }
+            return threadIds.some((threadId) => runningByThreadId[threadId]);
+          };
           const unsub = useChatRuntimeStore.subscribe((state) => {
-            const anyRunning = Object.keys(state.runningByThreadId).length > 0;
-            if (anyRunning) wasRunning = true;
-            if (wasRunning && !anyRunning) {
+            const running = isHandleRunning(state.runningByThreadId);
+            if (running) wasRunning = true;
+            if (wasRunning && !running) {
               unsub();
               resolve();
             }
           });
+          if (isHandleRunning(useChatRuntimeStore.getState().runningByThreadId)) {
+            wasRunning = true;
+          }
         }),
     };
     return () => {
