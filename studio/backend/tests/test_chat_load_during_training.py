@@ -758,13 +758,19 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
         mtp_cfg = SimpleNamespace(
             identifier = "unsloth/GLM-5.2-MTP-GGUF",
-            gguf_file = None, gguf_mmproj_file = None, gguf_mtp_file = None,
-            gguf_hf_repo = "unsloth/GLM-5.2-MTP-GGUF", gguf_variant = "Q4_K_M",
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = "unsloth/GLM-5.2-MTP-GGUF",
+            gguf_variant = "Q4_K_M",
         )
         plain_cfg = SimpleNamespace(
             identifier = "unsloth/gemma-4-E2B-it-GGUF",
-            gguf_file = None, gguf_mmproj_file = None, gguf_mtp_file = None,
-            gguf_hf_repo = "unsloth/gemma-4-E2B-it-GGUF", gguf_variant = "Q4_K_M",
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = "unsloth/gemma-4-E2B-it-GGUF",
+            gguf_variant = "Q4_K_M",
         )
         with (
             patch.object(mc, "list_gguf_variants", return_value = ([variant], False)),
@@ -776,9 +782,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 self.route._estimate_gguf_required_gb(mtp_cfg, speculative_type = "auto")
             )
             # spec off never engages MTP -> allowed.
-            main_off, _ = self.route._estimate_gguf_required_gb(
-                mtp_cfg, speculative_type = "off"
-            )
+            main_off, _ = self.route._estimate_gguf_required_gb(mtp_cfg, speculative_type = "off")
             self.assertAlmostEqual(main_off, 10.0, places = 6)
             # non-MTP repo -> allowed even under auto.
             main_plain, _ = self.route._estimate_gguf_required_gb(
@@ -909,6 +913,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # A projector / drafter is GPU-resident no matter the spec mode or CPU
         # flags -- the conservative bound charges it, over-refusing at worst.
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             main = Path(d) / "model.gguf"
             main.write_bytes(b"x" * 1000)

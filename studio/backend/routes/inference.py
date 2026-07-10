@@ -3447,9 +3447,7 @@ def _estimate_gguf_kv_gb(
         return 0.0
 
 
-def _mtp_may_engage(
-    speculative_type: Optional[str], llama_extra_args: Optional[list[str]]
-) -> bool:
+def _mtp_may_engage(speculative_type: Optional[str], llama_extra_args: Optional[list[str]]) -> bool:
     """Whether the launch may run MTP speculative decoding: auto/mtp/mtp+ngram
     engage it, off/ngram/ngram-simple never do. Extras that set --spec-type own
     the mode (a user -md drafter is still in play), so don't gate those out."""
