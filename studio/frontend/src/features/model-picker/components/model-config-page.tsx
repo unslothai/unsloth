@@ -454,7 +454,7 @@ export function ModelConfigPage({
         customContextLength:
           contextBaseline == null && config.customContextLength == null
             ? null
-            : resolveCustomContextLength(contextValue, contextBaseline),
+            : resolveCustomContextLength(contextValue, nativeContextLength),
       }
     : {
         ...config,
