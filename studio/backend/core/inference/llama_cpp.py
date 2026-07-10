@@ -7562,9 +7562,7 @@ class LlamaCppBackend:
                     )
                 else:
                     self._gpu_offload_active = self._classify_gpu_offload(
-                        gpu_indices is not None
-                        or use_fit
-                        or gpu_memory_mode == "manual",
+                        gpu_indices is not None or use_fit or gpu_memory_mode == "manual",
                         _detected_gpus,
                     )
                 if self._gpu_offload_active is False and not _deliberate_cpu_only:
@@ -8085,9 +8083,7 @@ class LlamaCppBackend:
         return classify_gpu_offload_lines(self._stdout_lines)
 
     @staticmethod
-    def _zero_offload_gpu_flag(
-        spawn_cmd: list, detected_gpus: list
-    ) -> Optional[bool]:
+    def _zero_offload_gpu_flag(spawn_cmd: list, detected_gpus: list) -> Optional[bool]:
         """GPU-residency flag for a deliberate manual zero-offload load. The
         main model is CPU-only by construction, but launched companions (mmproj
         / an MTP drafter) offload to the GPU regardless of ``--gpu-layers`` --
