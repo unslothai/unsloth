@@ -854,7 +854,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # resident; charging the config-owned MTP file too would double-count
         # and over-block a low-layer load during training.
         import tempfile
-
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "model.gguf"
             p.write_bytes(b"x" * 1000)
