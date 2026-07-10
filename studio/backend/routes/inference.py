@@ -4648,6 +4648,7 @@ async def validate_model(
         transformers_upgrade: Optional[TransformersUpgradeInfo] = None
         if not is_gguf:
             from utils.transformers_latest import check_upgrade_for_model
+
             # Cover the [adapter, base] set: a LoRA adapter's base model is what
             # the worker actually activates transformers for.
             for _target in security_targets:
