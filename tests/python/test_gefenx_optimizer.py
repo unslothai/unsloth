@@ -238,6 +238,47 @@ def test_muon_extra_kwargs_reserved_backup_substrings_dropped(fake_gefen):
     assert kw["ns_steps"] == 7
 
 
+def test_extra_kwargs_reserved_model_and_embedding_keys_dropped(fake_gefen):
+    # model / embedding_lr / embedding_learning_rate would collide (model) or be
+    # unexpected keywords; they are dropped from extra_kwargs, and the real model
+    # is still routed through from_model positionally.
+    model = _FakeModel([("w", _FakeParam())])
+    config = _GefenXMuonConfig(
+        extra_kwargs = {"model": "oops", "embedding_lr": 1e-5, "embedding_learning_rate": 1e-5}
+    )
+    with pytest.warns(UserWarning, match = "reserved key"):
+        gefenx.build_gefenx_muon_optimizer(
+            model,
+            config,
+            lr = 1e-4,
+            weight_decay = 0.0,
+            betas = (0.9, 0.999),
+            eps = 1e-8,
+        )
+    kw = fake_gefen["muon"]["kwargs"]
+    assert "model" not in kw and "embedding_lr" not in kw
+    assert "embedding_learning_rate" not in kw
+    assert fake_gefen["muon"]["model"] is model
+
+
+def test_none_config_fields_are_not_forwarded(fake_gefen):
+    # None config fields are "unset" -> not passed, so gefen keeps its own defaults.
+    model = _FakeModel([("w", _FakeParam())])
+    config = _GefenXMuonConfig(muon_lr = None, muon_weight_decay = None, backup_weight_decay = None)
+    gefenx.build_gefenx_muon_optimizer(
+        model,
+        config,
+        lr = 1e-4,
+        weight_decay = 0.0,
+        betas = (0.9, 0.999),
+        eps = 1e-8,
+    )
+    kw = fake_gefen["muon"]["kwargs"]
+    assert "muon_lr" not in kw
+    assert "muon_weight_decay" not in kw
+    assert "backup_weight_decay" not in kw
+
+
 def test_build_gefenx_config_betas_override_and_extra_kwargs(fake_gefen):
     model = _FakeModel([("w", _FakeParam())])
     config = _GefenXConfig(

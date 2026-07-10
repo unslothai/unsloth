@@ -27,12 +27,23 @@ import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 # Keys the builders pass explicitly (positionally or by keyword) to the gefen
-# constructors. Allowing them through the ``extra_kwargs`` escape hatch would
-# duplicate a keyword argument (TypeError) or shadow ``learning_rate``, so they
-# are dropped from ``extra_kwargs`` with a warning — set them via the dedicated
-# config field / ``learning_rate`` / ``weight_decay`` instead.
+# constructors, or that Unsloth consumes elsewhere (embedding LR / param routing).
+# Allowing them through the ``extra_kwargs`` escape hatch would duplicate a keyword
+# argument (TypeError), shadow ``learning_rate``, or land as an unexpected keyword,
+# so they are dropped from ``extra_kwargs`` with a warning — set them via the
+# dedicated config field / ``learning_rate`` / ``weight_decay`` /
+# ``embedding_learning_rate`` instead.
 _RESERVED_EXTRA_KWARGS = frozenset(
-    {"params", "lr", "weight_decay", "backup_substrings", "backup_lr_scale"}
+    {
+        "params",
+        "model",
+        "lr",
+        "weight_decay",
+        "backup_substrings",
+        "backup_lr_scale",
+        "embedding_lr",
+        "embedding_learning_rate",
+    }
 )
 
 
@@ -140,6 +151,11 @@ def _collect_kwargs(config, fields: Tuple[str, ...]) -> Dict[str, Any]:
             # An empty period_one_substrings means "use the gefen default"; drop it
             # so we don't override with () when the user never set it.
             if name == "period_one_substrings" and not value:
+                continue
+            # None means "unset" in our configs (e.g. muon_lr / *_weight_decay) —
+            # skip it so gefen applies its own runtime default instead of being
+            # handed an explicit None.
+            if value is None:
                 continue
             kwargs[name] = value
     extra = getattr(config, "extra_kwargs", None)
