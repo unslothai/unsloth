@@ -70,7 +70,9 @@ def apply_completion_masking(
     # tokens stay trained, whereas auto-detection would mask them. Preserve
     # the current trained behavior.
     if not is_gpt_oss_model_name(model_name):
-        processor = getattr(trainer, "processing_class", None) or getattr(trainer, "tokenizer", None)
+        processor = getattr(trainer, "processing_class", None) or getattr(
+            trainer, "tokenizer", None
+        )
         inner = getattr(processor, "tokenizer", processor)
         if hasattr(inner, "_unsloth_input_part") and hasattr(inner, "_unsloth_output_part"):
             # Markers preset on the tokenizer (e.g. by get_chat_template); zoo

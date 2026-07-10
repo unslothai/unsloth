@@ -139,9 +139,7 @@ def test_application_failure_propagates_not_fallback():
         raise RuntimeError("dataset map worker crashed")
 
     with pytest.raises(RuntimeError, match = "dataset map worker crashed"):
-        apply_completion_masking(
-            _Trainer(), "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn = _detect_ok
-        )
+        apply_completion_masking(_Trainer(), "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn = _detect_ok)
 
 
 def test_preset_tokenizer_markers_used_directly():
