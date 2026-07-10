@@ -434,9 +434,7 @@ def test_status_reports_requested_context_length():
     # never-populated field would leave hydration silently reverting the pin).
     from pathlib import Path as _P
 
-    route_src = (_P(_BACKEND_DIR) / "routes" / "inference.py").read_text(
-        encoding = "utf-8"
-    )
+    route_src = (_P(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     assert "requested_context_length = llama_backend.requested_n_ctx" in route_src
 
 
