@@ -284,6 +284,45 @@ def test_apply_gpu_ids_predetect_force_on_cuda_build_writes_cvd(spoof_xpu, monke
     assert "ZE_AFFINITY_MASK" not in os.environ
 
 
+def test_apply_gpu_ids_predetect_dual_build_honors_xpu_hint(spoof_xpu, monkeypatch):
+    # Dual CUDA+XPU build launched the documented XPU way (CUDA hidden + ZE
+    # mask): the mask must narrow ZE_AFFINITY_MASK, not re-expose the hidden
+    # CUDA via CUDA_VISIBLE_DEVICES. Mirrors detect_hardware's hint.
+    import torch
+
+    hw, _ = spoof_xpu(ze_mask = "0,1", cuda_visible = "")
+    assert hw.DEVICE is None
+    monkeypatch.setattr(
+        hw, "detect_hardware", lambda: (_ for _ in ()).throw(AssertionError("detect ran"))
+    )
+    monkeypatch.setattr(torch.version, "cuda", "12.8", raising = False)
+    monkeypatch.setattr(torch.version, "xpu", "2.7", raising = False)
+    hw.apply_gpu_ids([0])
+    import os
+
+    assert os.environ["ZE_AFFINITY_MASK"] == "0"
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == ""  # stays hidden
+
+
+def test_apply_gpu_ids_predetect_dual_build_cuda_active_writes_cvd(spoof_xpu, monkeypatch):
+    # Canary: dual build with CUDA active (no hint) keeps CUDA masking, same
+    # as detect_hardware picking CUDA on a hybrid host.
+    import torch
+
+    hw, _ = spoof_xpu(ze_mask = "0,1", cuda_visible = None)
+    assert hw.DEVICE is None
+    monkeypatch.setattr(
+        hw, "detect_hardware", lambda: (_ for _ in ()).throw(AssertionError("detect ran"))
+    )
+    monkeypatch.setattr(torch.version, "cuda", "12.8", raising = False)
+    monkeypatch.setattr(torch.version, "xpu", "2.7", raising = False)
+    hw.apply_gpu_ids([1])
+    import os
+
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
+    assert os.environ["ZE_AFFINITY_MASK"] == "0,1"  # untouched
+
+
 # ---------- visibility / selection ----------
 
 

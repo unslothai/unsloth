@@ -2320,10 +2320,19 @@ def apply_gpu_ids(gpu_ids) -> None:
             if os.environ.get("UNSLOTH_FORCE_XPU") == "1":
                 _is_xpu = _xpu_build
             else:
-                _is_xpu = (
-                    _xpu_build
-                    and getattr(_ver, "cuda", None) is None
-                    and getattr(_ver, "hip", None) is None
+                # Mirror detect_hardware's XPU hint: ZE mask + CUDA hidden
+                # prefers XPU even on a dual CUDA+XPU build, where writing
+                # these ids to CUDA_VISIBLE_DEVICES would re-expose the
+                # deliberately hidden CUDA and leave the ZE mask unnarrowed.
+                _cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+                _cuda_hidden = _cvd is not None and _cvd.strip() in ("", "-1")
+                _xpu_hinted = bool(os.environ.get("ZE_AFFINITY_MASK")) and _cuda_hidden
+                _is_xpu = _xpu_build and (
+                    _xpu_hinted
+                    or (
+                        getattr(_ver, "cuda", None) is None
+                        and getattr(_ver, "hip", None) is None
+                    )
                 )
         except Exception as e:
             logger.debug(
