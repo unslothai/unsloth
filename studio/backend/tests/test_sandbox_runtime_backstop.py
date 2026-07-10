@@ -929,6 +929,76 @@ def test_sandboxed_os_alias_workdir_module_denied():
 
 
 @_POSIX_ONLY
+def test_sandboxed_builtins_exec_workdir_module_denied():
+    # import builtins; builtins.eval("__import__('os').system(...)") -- the execution builtins
+    # reached as an attribute of the builtins module (not the bare eval/exec name) must be
+    # recognized as an exec sink so a workdir helper cannot run arbitrary code at import.
+    session = "backstop-workdir-builtins"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "evilbi.py"), "w") as f:
+        f.write("import builtins\nbuiltins.eval(\"__import__('os').system('echo PWNED_BI')\")\n")
+    try:
+        out = _python_exec(
+            "import evilbi; print('REACHED_' + 'BODY')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "PWNED_BI" not in out
+        assert "REACHED_BODY" not in out
+        assert "sandbox:" in out or "ImportError" in out
+    finally:
+        os.remove(os.path.join(workdir, "evilbi.py"))
+
+
+@_POSIX_ONLY
+def test_sandboxed_dotted_network_workdir_module_denied():
+    # import urllib.request -- the bare top (urllib) is benign, but the dotted network submodule
+    # opens outbound connections the static policy never saw, so the vetter refuses it.
+    session = "backstop-workdir-urlreq"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "evilurl.py"), "w") as f:
+        f.write("print('URL_REACHED')\nimport urllib.request\n")
+    try:
+        out = _python_exec(
+            "import evilurl; print('REACHED_' + 'BODY')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "URL_REACHED" not in out
+        assert "REACHED_BODY" not in out
+        assert "sandbox:" in out or "ImportError" in out
+    finally:
+        os.remove(os.path.join(workdir, "evilurl.py"))
+
+
+@_POSIX_ONLY
+def test_sandboxed_benign_urllib_parse_workdir_module_allowed():
+    # The benign urllib sibling (urllib.parse) is NOT a network submodule and must still import
+    # from a workdir helper -- the dotted-network refusal keys on the full dotted name.
+    session = "backstop-workdir-urlparse"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "okparse.py"), "w") as f:
+        f.write("import urllib.parse\nVALUE = urllib.parse.quote('a b')\nprint('PARSE_OK')\n")
+    try:
+        out = _python_exec(
+            "import okparse; print('REACHED', okparse.VALUE)",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "PARSE_OK" in out
+        assert "REACHED a%20b" in out
+        assert "sandbox:" not in out
+    finally:
+        os.remove(os.path.join(workdir, "okparse.py"))
+
+
+@_POSIX_ONLY
 def test_sandboxed_realpath_monkeypatch_write_escape_denied(tmp_path):
     # Sandboxed code reassigns os.path.realpath to a lambda that echoes an in-workdir
     # path, then writes to an absolute path outside the workdir. If the guard read

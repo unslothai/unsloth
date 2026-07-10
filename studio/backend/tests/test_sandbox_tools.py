@@ -4442,3 +4442,55 @@ class TestRound42Bypasses:
     )
     def test_compile_source_keyword_payload_blocked(self, code):
         assert _check_code_safety(code) is not None, code
+
+
+class TestRound43Bypasses:
+    """Forty-third-round Codex findings. The keyword-only compile(source=...) reaching the
+    __code__ execution gadget and the sponge child-writer are static; the two workdir-module
+    import-vetter items (builtins-qualified exec sinks, dotted stdlib network imports) are covered
+    in test_sandbox_runtime_backstop.py."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A standalone compile() takes its source as the source= keyword with no positional
+            # arg, so it slipped past the payload recovery (no node.args -> NO_PAYLOAD) and its
+            # code object was executed via the fn.__code__ = c; fn() gadget entirely unscanned.
+            "c = compile(source=\"__import__('os').system('touch /tmp/p')\", filename='<s>', mode='exec')\n"
+            "f = lambda: None\n"
+            "f.__code__ = c\n"
+            "f()",
+            # keyword-only compile feeding types.FunctionType(code)() -- same source= path.
+            "import types\n"
+            "c = compile(source=\"__import__('os').system('touch /tmp/p')\", filename='<s>', mode='exec')\n"
+            "types.FunctionType(c, {})()",
+            # keyword-only exec(compile(source=...)) still recovers the source.
+            "exec(compile(source=\"__import__('os').system('touch /tmp/p')\", filename='<s>', mode='exec'))",
+        ],
+    )
+    def test_compile_source_keyword_gadget_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # sponge (moreutils) writes stdin to a file argument in an unguarded child, so
+            # printf x | sponge /tmp/probe escapes the workdir the same as tee / patch.
+            "import os\nos.system('printf x | sponge /tmp/probe')",
+            "import subprocess\nsubprocess.run(['sponge', '/tmp/x'])",
+        ],
+    )
+    def test_sponge_child_writer_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A keyword-only compile of a BENIGN literal must still be allowed -- the fix analyzes
+            # the source, it does not blanket-block keyword-only compile.
+            "c = compile(source='X = 1', filename='<s>', mode='exec')\nf = lambda: None\nf.__code__ = c\nf()",
+            "co = compile(source='result = sum(range(10))', filename='<s>', mode='exec')\nns = {}\neval(co, ns)",
+        ],
+    )
+    def test_round43_benign_compile_allowed(self, code):
+        _ok(code)

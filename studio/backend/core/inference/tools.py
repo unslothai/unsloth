@@ -225,6 +225,9 @@ _CHILD_WRITE_COMMANDS = frozenset(
         # mktemp creates a file / dir at a caller-chosen template path (mktemp
         # /tmp/x.XXXXXX, mktemp -d), writing outside the workdir in an unguarded child.
         "mktemp",
+        # sponge (moreutils) soaks up stdin and writes it to a file argument
+        # (printf x | sponge /tmp/probe), an unguarded-child write outside the workdir.
+        "sponge",
     }
 )
 _BLOCKED_COMMANDS_COMMON = (
@@ -4957,9 +4960,20 @@ def _recover_exec_payload(node, func_id, const_env, compiled_env):
     bytes, so a bytes payload that fails to parse as UTF-8 Python is treated as an
     obfuscation vector by the caller rather than a harmless SyntaxError.
     """
-    if not node.args:
+    if node.args:
+        arg0 = node.args[0]
+    elif func_id == "compile":
+        # compile(source=..., filename=..., mode=...) passes its payload as the source=
+        # keyword with no positional args. compile() alone does not execute, but its code
+        # object runs via a gadget (types.FunctionType(c)(); fn.__code__ = c; fn()), so the
+        # keyword-only source must be analyzed exactly like the positional form rather than
+        # slipping through as having no payload. (eval / exec take no keyword arguments in
+        # CPython, so an empty node.args there is genuinely payload-less.)
+        arg0 = _compile_source_node(node)
+        if arg0 is None:
+            return ("NO_PAYLOAD", None, None, False)
+    else:
         return ("NO_PAYLOAD", None, None, False)
-    arg0 = node.args[0]
     base_mode = "eval" if func_id == "eval" else "exec"
 
     # exec(compile("...", ...)) / eval(compile("...", "<s>", "eval")) -- the compile source may be
@@ -10192,6 +10206,13 @@ try:
         "socket", "ssl", "ftplib", "smtplib", "telnetlib", "poplib", "imaplib", "nntplib",
         "requests", "httpx", "aiohttp", "urllib3", "pycurl", "websocket", "websockets", "paramiko",
     })
+    # Network-capable stdlib SUBMODULES whose bare top (urllib / http / xmlrpc) is benign
+    # (urllib.parse, http.cookies) but whose dotted form opens outbound connections the static
+    # network policy never saw (urllib.request.urlopen, http.client.HTTPConnection). Matched on
+    # the full dotted name so the benign siblings stay importable.
+    _GUARD_NET_DOTTED = frozenset({
+        "urllib.request", "urllib.robotparser", "http.client", "xmlrpc.client",
+    })
     _GUARD_EXEC_ATTRS = frozenset({
         "system", "popen", "popen2", "popen3", "popen4", "startfile",
         "execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe",
@@ -10214,22 +10235,39 @@ try:
             return True  # unparseable workdir module -> fail closed
         # Pre-pass: record os / posix import ALIASES (import os as o) so an aliased sink reference
         # that is only assigned (s = o.system) -- not directly called -- is still recognized.
+        # Also record builtins aliases (import builtins as b) so the execution builtins reached
+        # as an attribute (builtins.eval / b.exec) are recognized alongside the bare names.
         _recv = set(_GUARD_EXEC_RECEIVERS)
+        _bi = {"builtins", "__builtins__"}
         for _nd in _gast.walk(_tree):
             if isinstance(_nd, _gast.Import):
                 for _al in _nd.names:
                     if _al.name in ("os", "posix"):
                         _recv.add(_al.asname or _al.name)
+                    elif _al.name == "builtins":
+                        _bi.add(_al.asname or _al.name)
         for _nd in _gast.walk(_tree):
             if isinstance(_nd, _gast.Import):
                 for _al in _nd.names:
                     _top = _al.name.split(".")[0]
                     if _top in _GUARD_EXEC_MODS or _top in _GUARD_NET_MODS:
                         return True
+                    # import urllib.request / import http.client -- benign top, network submodule.
+                    if _al.name in _GUARD_NET_DOTTED:
+                        return True
             elif isinstance(_nd, _gast.ImportFrom):
-                _mroot = (_nd.module or "").split(".")[0]
+                _mod = _nd.module or ""
+                _mroot = _mod.split(".")[0]
                 if _mroot in _GUARD_EXEC_MODS or _mroot in _GUARD_NET_MODS:
                     return True
+                # from urllib.request import urlopen -- the module itself is a network submodule.
+                if _mod in _GUARD_NET_DOTTED:
+                    return True
+                # from urllib import request / from http import client -- the network submodule is
+                # bound by name, so the dotted target is (package + . + imported name).
+                for _al in _nd.names:
+                    if (_mod + "." + _al.name) in _GUARD_NET_DOTTED:
+                        return True
                 # `from os import system` / `from os import *` binds a BARE sink name into the
                 # module namespace; a later bare system('id') call has no os. attribute to catch.
                 if _mroot in _GUARD_EXEC_RECEIVERS:
@@ -10244,11 +10282,28 @@ try:
                 if isinstance(_nd.func, _gast.Name) and _nd.func.id in (
                     "eval", "exec", "compile", "__import__"):
                     return True
+                # builtins.eval(...) / b.exec(...) -- the execution builtins reached as an
+                # attribute of the builtins module (or an alias). Require a builtins root so a
+                # benign .compile()/.eval() on some other object (model.compile, df.eval) is
+                # not misread as a sink.
+                if (
+                    isinstance(_nd.func, _gast.Attribute)
+                    and _nd.func.attr in ("eval", "exec", "compile", "__import__")
+                    and _guard_attr_root(_nd.func.value) in _bi
+                ):
+                    return True
             elif isinstance(_nd, _gast.Attribute):
                 # A sink-named attribute REFERENCE (even uncalled) rooted at os / posix / an
                 # os alias (x = os.system, s = o.system). A same-named attribute on an unrelated
                 # object (p.system = 'linux') is NOT a sink, so require a sink-module receiver.
                 if _nd.attr in _GUARD_EXEC_ATTRS and _guard_attr_root(_nd.value) in _recv:
+                    return True
+                # A builtins-rooted execution-builtin REFERENCE (e = builtins.eval; e(...)),
+                # even uncalled, is the same sink as calling it directly.
+                if (
+                    _nd.attr in ("eval", "exec", "compile", "__import__")
+                    and _guard_attr_root(_nd.value) in _bi
+                ):
                     return True
                 # A workdir module that touches the import machinery (sys.meta_path /
                 # sys.path_hooks / sys.path_importer_cache) can remove THIS vetter, then a
