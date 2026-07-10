@@ -484,7 +484,11 @@ def _apply_levers(
         _empty()
 
     # ── optimisation layers ──
-    snapshot_backend_flags()  # process-wide flags; benchmark process is short-lived so no restore.
+    # Process-wide flags (cudnn.benchmark, TF32/fp16 accumulation,
+    # emulate_precision_casts): snapshotted here and restored by _run_config after
+    # the row completes, like the production unload path. Without the restore a
+    # speed-enabled row would poison a later reference/off row in the same process.
+    engaged["_flags_snapshot"] = snapshot_backend_flags()
     speed = cfg["speed"]
     speed_active = speed != "off"
 
@@ -591,20 +595,22 @@ def _timed_video(
     import torch
 
     from core.inference.diffusion_cache import (
+        _disengage_step_cache,
+        apply_step_cache,
         auto_cache_mode,
         auto_cache_quality,
         maybe_toggle_step_cache,
         normalize_cache_quality,
     )
 
+    # Toggle on EVERY expert view, exactly like the loader's per-view recheck
+    # (video.py iterates _views_for): toggling only the primary pipe would disable
+    # FBCache on pipe.transformer while transformer_2 stays cached, measuring a
+    # mixed cache state production never runs on a dual-expert MoE.
+    views = [pipe]
+    if getattr(pipe, "transformer_2", None) is not None:
+        views.append(_SecondExpertView(pipe))
     if cache_mode == "auto":
-        # Toggle on EVERY expert view, exactly like the loader's per-view recheck
-        # (video.py iterates _views_for): toggling only the primary pipe would disable
-        # FBCache on pipe.transformer while transformer_2 stays cached, measuring a
-        # mixed cache state production never runs on a dual-expert MoE.
-        views = [pipe]
-        if getattr(pipe, "transformer_2", None) is not None:
-            views.append(_SecondExpertView(pipe))
         for v, expert in zip(views, ("transformer", "transformer_2")):
             try:
                 maybe_toggle_step_cache(
@@ -614,6 +620,37 @@ def _timed_video(
                     threshold = cache_threshold,
                     mode = auto_cache_mode(family),
                     family = family,
+                    quality = normalize_cache_quality(cache_quality) or auto_cache_quality(family),
+                    expert = expert,
+                    logger = logger,
+                )
+            except Exception:
+                pass
+    elif cache_mode == "magcache":
+        # An explicit magcache row never toggles off, but production re-engages it
+        # when the actual step count differs from the configured one (video.py: the
+        # marker carries "#s{steps}"; endswith, not substring, so "#s5" cannot match
+        # inside "#s50"). _apply_levers installed the cache at default_steps, so a
+        # --steps override would otherwise time a stale curve/skip budget users
+        # never run.
+        for v, expert in zip(views, ("transformer", "transformer_2")):
+            transformer = getattr(v, "transformer", None)
+            marker = getattr(transformer, "_unsloth_step_cache", None)
+            if not marker or str(marker).endswith(f"#s{int(steps)}"):
+                continue
+            try:
+                _disengage_step_cache(
+                    transformer,
+                    reason = f"explicit magcache re-interpolating for {steps} steps",
+                    logger = logger,
+                )
+                apply_step_cache(
+                    v,
+                    mode = "magcache",
+                    threshold = cache_threshold,
+                    quant_active = dit_quant_active,
+                    family = family,
+                    steps = steps,
                     quality = normalize_cache_quality(cache_quality) or auto_cache_quality(family),
                     expert = expert,
                     logger = logger,
@@ -841,6 +878,12 @@ def _run_config(
         except Exception:
             pass
 
+    # Report the GENERATION-time cache state, not the load-time one: the per-generation
+    # recheck in _timed_video can toggle an auto cache off (steps below the threshold) or
+    # re-size an explicit magcache, and production status reports the post-toggle state.
+    # The marker is "{mode}@{threshold}[#s{steps}]", written by apply_step_cache and
+    # cleared by _disengage_step_cache, so its mode prefix IS the live state.
+    cache_marker = getattr(getattr(pipe, "transformer", None), "_unsloth_step_cache", None)
     row = {
         "config": name,
         "family": family,
@@ -850,13 +893,14 @@ def _run_config(
         "te_scheme": engaged["te"] or "dense",
         "vae_scheme": engaged["vae"] or "dense",
         "attn": engaged["attn"] or "native",
-        "cache": engaged["cache"] or "off",
+        "cache": str(cache_marker).split("@")[0] if cache_marker else "off",
+        "cache_at_load": engaged["cache"] or "off",
         "effective_speed": engaged.get("_effective_speed"),
         "speed_optims": engaged["speed_optims"],
         "attn_trim": engaged.get("attn_trim", False),
         "cache_threshold": cache_threshold,
         "cache_quality": cache_quality,
-        "cache_marker": getattr(getattr(pipe, "transformer", None), "_unsloth_step_cache", None),
+        "cache_marker": cache_marker,
         "load_peak_gb": round(load_peak, 2),
         "weights_gb": round(weights_gb, 2),
         "gen_peak_gb": round(gen_peak, 2),
@@ -868,6 +912,19 @@ def _run_config(
     }
     del pipe
     _empty()
+    # Restore the process-wide backend flags this config's speed layer mutated
+    # (snapshot captured in _apply_levers before any mutation), mirroring the
+    # production unload path, so a later config in the same --configs run starts
+    # from clean flags instead of inheriting cudnn.benchmark / TF32 /
+    # emulate_precision_casts from this row. An exception skips this, but the main
+    # loop does not continue past a failed config, so no row can run with leaked
+    # flags.
+    try:
+        from core.inference.diffusion_speed import restore_backend_flags
+
+        restore_backend_flags(engaged.get("_flags_snapshot"))
+    except Exception:
+        pass
     return row, arrs
 
 
