@@ -4910,3 +4910,93 @@ class TestRound49Bypasses:
     )
     def test_round49_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound50Bypasses:
+    """Fiftieth-round Codex findings: the static exec/eval analyzer defeated by aliasing /
+    shadowing, and an unknown PATH variable. A subscript into an ASSIGNED container hiding an
+    exec/eval (or shell) sink, a rebound builtin/module used in the constant fold, a namespace-dict
+    write invalidating a folded constant, an exec/eval payload referencing a caller alias, and a
+    PATH entry that is an unset $VAR (empty -> cwd search)."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # d = {'e': exec}; d['e'](payload) / xs = [eval]; xs[0](payload): the container is an
+            # assigned Name, not an inline literal, so the sink was missed.
+            "d = {'e': exec}\nd['e'](\"import os\\nos.system('touch /tmp/x')\")",
+            "xs = [eval]\nxs[0](\"__import__('os').system('touch /tmp/x')\")",
+            # same, but a shell sink hidden in an assigned container.
+            "import os\nd = [os.system]\nd[0]('touch /tmp/x')",
+            "import os\nd = {'k': os.system}\nd['k']('touch /tmp/x')",
+        ],
+    )
+    def test_assigned_container_sink_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A rebound builtin / module used in the fold diverges from runtime; refuse to fold ->
+            # opaque payload -> eval/exec fails closed.
+            "str = lambda _: \"__import__('os').system('touch /tmp/x')\"\neval(str(1))",
+            "def chr(_):\n    return \"__import__('os').system('touch /tmp/x')\"\neval(chr(0))",
+        ],
+    )
+    def test_shadowed_fold_helper_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A write through the namespace dict invalidates the folded constant.
+            "x = '2+2'\nglobals()['x'] = \"__import__('os').system('touch /tmp/x')\"\neval(x)",
+            "x = '2+2'\nvars()['x'] = \"__import__('os').system('touch /tmp/x')\"\neval(x)",
+            "x = '2+2'\nglobals().update({'x': \"__import__('os').system('touch /tmp/x')\"})\neval(x)",
+        ],
+    )
+    def test_namespace_write_invalidates_constant_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # exec/eval run in the caller namespace, so the payload reaches a caller alias.
+            "import os\nf = os.system\nexec(\"f('touch /tmp/x')\")",
+            "import os\ns = os.system\neval(\"s('touch /tmp/x')\")",
+        ],
+    )
+    def test_exec_payload_caller_alias_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # An unknown/unset $VAR is an EMPTY PATH component -> the shell searches the cwd.
+            "import os\nos.system('PATH=$EVIL evil')",
+            "import os\nos.system('PATH=${EVIL} run')",
+        ],
+    )
+    def test_unknown_path_variable_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # An assigned container to a SAFE callee, normal builtin/module folds, a namespace
+            # READ, an eval of a safe literal via a var, an exec whose payload references only a
+            # SAFE caller alias or a builtin, and a PATH with trusted absolute entries stay allowed.
+            "d = {'e': print}\nd['e']('hi')",
+            "xs = [len]\nprint(xs[0]([1, 2]))",
+            "import base64\nprint(base64.b64decode('aGk='))",
+            "s = str(42)\nprint(s)",
+            "g = globals()\nprint(len(g))",
+            "x = '1 + 1'\neval(x)",
+            "f = print\nexec(\"f(1)\")",
+            "exec(\"y = 5\")",
+            "import os\nos.system('PATH=/usr/local/bin:$PATH ls')",
+            "import os\nos.system('ls -la')",
+        ],
+    )
+    def test_round50_benign_allowed(self, code):
+        _ok(code)

@@ -393,6 +393,22 @@ def _path_var_resolves_unsafe(var, assignments):
     return False
 
 
+def _path_var_is_unknown_external(var, assignments):
+    """True when ``var`` is neither a workdir alias (HOME/PWD), the trusted inherited PATH, nor a
+    variable assigned earlier in the same command. In the sandbox such a variable is UNSET, so its
+    expansion is EMPTY -- not a trusted absolute path."""
+    return var not in ("HOME", "PWD", "PATH") and not (assignments and var in assignments)
+
+
+def _path_entry_empty_expansion_unsafe(entry: str, var: str) -> bool:
+    """Model an unknown/unset ``$var`` in a PATH ENTRY as EMPTY (the sandbox reality) and report
+    whether the entry then collapses to an empty or RELATIVE path (both search the cwd). A bare
+    ``$EVIL`` -> ``''`` and ``${X}bin`` -> ``bin`` are unsafe; ``$CONDA_PREFIX/bin`` -> ``/bin``
+    stays absolute and is safe."""
+    blanked = re.sub(r"\$\{?" + re.escape(var) + r"\}?", "", entry)
+    return blanked == "" or not blanked.startswith(("/", "%"))
+
+
 def _path_value_is_unsafe(value: str, assignments = None) -> bool:
     """True when a PATH search list would let a BARE (no-slash) command resolve to a workdir
     executable: any entry that is ``.``, empty (``:`` = cwd), a relative directory, or one that
@@ -426,12 +442,25 @@ def _path_value_is_unsafe(value: str, assignments = None) -> bool:
             var = re.split(r"[/}]", inner, maxsplit = 1)[0]
             if _path_var_resolves_unsafe(var, assignments):
                 return True
+            if _path_var_is_unknown_external(var, assignments) and _path_entry_empty_expansion_unsafe(
+                e, var
+            ):
+                return True
             continue
         if e.startswith("$"):
             m = re.match(r"\$([A-Za-z_][A-Za-z0-9_]*)", e)
             if m and _path_var_resolves_unsafe(m.group(1), assignments):
                 return True
-            continue  # $PATH / $CONDA_PREFIX / $1: assume a trusted absolute expansion
+            # An unknown/unset $VAR expands to EMPTY in the sandbox, so a bare `$EVIL` (or one that
+            # leaves a relative remainder, `${X}bin`) collapses the entry to the cwd; only an entry
+            # that stays ABSOLUTE with the var blanked ($CONDA_PREFIX/bin -> /bin) is trusted.
+            if (
+                m
+                and _path_var_is_unknown_external(m.group(1), assignments)
+                and _path_entry_empty_expansion_unsafe(e, m.group(1))
+            ):
+                return True
+            continue  # $PATH / $CONDA_PREFIX/bin / $1: a trusted absolute expansion
         if e.startswith(("/", "%")):
             continue
         return True  # a relative directory (relbin, ./tools)
@@ -3618,14 +3647,27 @@ _FOLD_MAXINT = 1 << 64
 _UNKNOWN = object()  # sentinel: "not statically decidable"
 
 
+class _ConstEnv(dict):
+    """A const-prop env (name -> RHS node) that also carries the set of names REBOUND away from
+    their canonical builtin / stdlib module in the snippet, so the folder can refuse to fold a
+    shadowed helper (str = lambda _: '...'; eval(str(1))) as the real builtin."""
+
+    __slots__ = ("shadowed",)
+
+    def __init__(self, *a, shadowed = None, **k):
+        super().__init__(*a, **k)
+        self.shadowed = shadowed or frozenset()
+
+
 class _FoldState:
     """Shared op counter + single-assignment const-prop environment."""
 
-    __slots__ = ("ops", "names")
+    __slots__ = ("ops", "names", "shadowed")
 
     def __init__(self, names = None):
         self.ops = 0
         self.names = names or {}
+        self.shadowed = getattr(names, "shadowed", None) or frozenset()
 
 
 def _fold_cap(value):
@@ -4001,6 +4043,10 @@ def _fold_call(node, _state, _depth):
         name = f.id
         if name not in _FOLD_PURE_BUILTINS:
             return None
+        # A snippet that rebinds the builtin name (str = lambda _: '...'; eval(str(1))) makes the
+        # real-builtin fold diverge from runtime; refuse so the payload stays opaque (fail closed).
+        if name in _state.shadowed:
+            return None
         try:
             if name == "chr":
                 if len(args) == 1 and isinstance(args[0], int) and 0 <= args[0] <= 0x10FFFF:
@@ -4069,6 +4115,10 @@ def _fold_call(node, _state, _depth):
             return None
         if isinstance(owner, ast.Name):
             mod = owner.id
+            # A rebound module receiver (base64 = <fake>; eval(base64.b64decode('...'))) would fold
+            # through the real stdlib module while runtime uses the user binding; refuse the fold.
+            if mod in _state.shadowed:
+                return None
             try:
                 if mod == "base64" and attr in _FOLD_B64_FUNCS and len(args) >= 1:
                     return _fold_cap(getattr(base64, attr)(args[0]))
@@ -4203,6 +4253,45 @@ def _build_const_prop_env(tree):
                     if extra is not None:
                         disqualified.add(extra.arg)
 
+    # A write THROUGH the namespace dict (globals()['x'] = BAD, vars()['x'] = BAD, locals()[...]
+    # = ..., or globals().update(...) / .setdefault(...) / .__setitem__(...)) mutates a module
+    # variable with NO Name Store, so a folded constant would be stale and the recovered exec/eval
+    # payload wrong. Invalidate the affected name (constant key) or, for a dynamic key / bulk
+    # update, every recorded name -- the snippet is manipulating the namespace opaquely.
+    def _is_namespace_call(nv):
+        return (
+            isinstance(nv, ast.Call)
+            and isinstance(nv.func, ast.Name)
+            and nv.func.id in ("globals", "vars", "locals")
+        )
+
+    _ns_write_all = False
+    _ns_write_names: set[str] = set()
+    for n in ast.walk(tree):
+        # globals()[key] = ... (Assign target or AugAssign target).
+        _subs = []
+        if isinstance(n, ast.Assign):
+            _subs = [t for t in n.targets if isinstance(t, ast.Subscript)]
+        elif isinstance(n, (ast.AugAssign, ast.AnnAssign)):
+            if isinstance(getattr(n, "target", None), ast.Subscript):
+                _subs = [n.target]
+        for _t in _subs:
+            if not _is_namespace_call(_t.value):
+                continue
+            _key = _t.slice.value if isinstance(_t.slice, ast.Constant) else None
+            if isinstance(_key, str):
+                _ns_write_names.add(_key)
+            else:
+                _ns_write_all = True
+        # globals().update(...) / .setdefault(...) / .__setitem__(...) -- an opaque bulk write.
+        if (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr in ("update", "setdefault", "__setitem__", "pop", "clear")
+            and _is_namespace_call(n.func.value)
+        ):
+            _ns_write_all = True
+
     # Count how many module-level stores each recorded name really has; if more
     # than one Store target references it anywhere, drop it.
     store_counts: dict[str, int] = {}
@@ -4210,7 +4299,61 @@ def _build_const_prop_env(tree):
         if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
             store_counts[n.id] = store_counts.get(n.id, 0) + 1
 
-    env = {}
+    # Names REBOUND to something OTHER than their canonical builtin / stdlib module: a fold that
+    # calls the real builtin (str(...), len(...)) or hard-coded module (base64.b64decode(...))
+    # would diverge from runtime, which calls the user binding. A plain `import name` keeps the
+    # canonical module (NOT shadowing); every other binding -- assignment, def/class, param,
+    # from-import, an aliased import that rebinds the name, or a loop/with/except/comprehension
+    # target -- is. The folder consults this set before folding a Name builtin / module receiver.
+    shadowed: set[str] = set()
+
+    def _shadow_targets(t):
+        for nn in ast.walk(t):
+            if isinstance(nn, ast.Name) and isinstance(nn.ctx, (ast.Store, ast.Del)):
+                shadowed.add(nn.id)
+
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                _shadow_targets(t)
+        elif isinstance(n, (ast.AugAssign, ast.AnnAssign)):
+            if getattr(n, "target", None) is not None:
+                _shadow_targets(n.target)
+        elif isinstance(n, ast.NamedExpr):
+            _shadow_targets(n.target)
+        elif isinstance(n, (ast.For, ast.AsyncFor)):
+            _shadow_targets(n.target)
+        elif isinstance(n, ast.comprehension):
+            _shadow_targets(n.target)
+        elif isinstance(n, ast.withitem):
+            if n.optional_vars is not None:
+                _shadow_targets(n.optional_vars)
+        elif isinstance(n, ast.ExceptHandler):
+            if n.name:
+                shadowed.add(n.name)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            shadowed.add(n.name)
+            _a = getattr(n, "args", None)
+            if _a is not None:
+                for _p in list(_a.args) + list(_a.posonlyargs) + list(_a.kwonlyargs):
+                    shadowed.add(_p.arg)
+                for _extra in (_a.vararg, _a.kwarg):
+                    if _extra is not None:
+                        shadowed.add(_extra.arg)
+        elif isinstance(n, ast.ImportFrom):
+            for _al in n.names:
+                shadowed.add(_al.asname or _al.name)
+        elif isinstance(n, ast.Import):
+            for _al in n.names:
+                # import os as base64 rebinds `base64` to a different module; a plain
+                # `import base64` (asname None) keeps the canonical module and does not shadow.
+                if _al.asname is not None and _al.asname != _al.name:
+                    shadowed.add(_al.asname)
+
+    env = _ConstEnv(shadowed = frozenset(shadowed))
+    if _ns_write_all:
+        return env  # an opaque namespace mutation could rebind any recorded constant
+    disqualified |= _ns_write_names
     for name, rhs in assigned_once.items():
         if name in disqualified:
             continue
@@ -6199,6 +6342,35 @@ def _check_signal_escape_patterns(
         _const_env = {}
         _scope_idx = _ScopeAliasIndex(tree)
 
+    def _payload_free_name_hits_caller_alias(src, mode, node):
+        """A FREE name in an exec/eval payload that resolves, in the CALLER's scope at ``node``, to
+        a shell / exec-builtin / deserialize / import alias -- exec/eval run in the caller
+        namespace, so ``f`` in ``exec('f(...)')`` is the caller's ``f = os.system``. Returns the
+        offending name or None. Builtins / undefined names never resolve, so ``exec('print(1)')``
+        and ``exec('x = 1')`` stay allowed."""
+        try:
+            inner = ast.parse(src, mode = "eval" if mode == "eval" else "exec")
+        except Exception:
+            return None
+        bound: set[str] = set()
+        loaded: set[str] = set()
+        for n in ast.walk(inner):
+            if isinstance(n, ast.Name):
+                if isinstance(n.ctx, (ast.Store, ast.Del)):
+                    bound.add(n.id)
+                elif isinstance(n.ctx, ast.Load):
+                    loaded.add(n.id)
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bound.add(n.name)
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                for _al in n.names:
+                    bound.add((_al.asname or _al.name).split(".")[0])
+        for nm in loaded - bound:
+            for _kind in ("shell", "execb", "deser", "impf"):
+                if _scope_idx.resolve(nm, node, _kind):
+                    return nm
+        return None
+
     def _analyze_exec_call(node, func_id):
         """Stage 2 driver: recover + recurse a foldable payload, else dynamic policy."""
         try:
@@ -6222,6 +6394,23 @@ def _check_signal_escape_patterns(
                                 "description": (
                                     f"{func_id}() payload reaches unsafe operation: "
                                     f"{_first_unsafe_reason(inner_info)}"
+                                ),
+                            }
+                        )
+                        return
+                    # exec()/eval() run in the CALLER namespace, so the payload -- scanned above as a
+                    # fresh module -- can reference a caller-scope alias the inner pass cannot see
+                    # (import os; f = os.system; exec("f('rm -rf /')")). Fail closed when a payload
+                    # FREE name resolves to a shell / exec / deserialize / import alias at this call.
+                    _alias = _payload_free_name_hits_caller_alias(src, mode, node)
+                    if _alias is not None:
+                        dynamic_exec.append(
+                            {
+                                "type": "dynamic_exec",
+                                "line": getattr(node, "lineno", -1),
+                                "description": (
+                                    f"{func_id}() payload references caller alias {_alias!r} "
+                                    "bound to a shell / exec / deserialize sink"
                                 ),
                             }
                         )
@@ -6762,6 +6951,11 @@ def _check_signal_escape_patterns(
                 return None
 
             container = sub.value
+            # Resolve a single-assignment NAME container (d = [os.system]; d[0]('rm -rf /')) to its
+            # literal, mirroring the exec-container resolver -- a shell sink hidden in an assigned
+            # container was otherwise missed because the callee is an indexed Name.
+            if isinstance(container, ast.Name) and container.id in _const_env:
+                container = _const_env[container.id]
             ci = _const_fold(sub.slice, _const_env)
             if isinstance(container, (ast.List, ast.Tuple)) and isinstance(ci, int):
                 if -len(container.elts) <= ci < len(container.elts):
@@ -6795,6 +6989,12 @@ def _check_signal_escape_patterns(
                 return None
 
             container = sub.value
+            # Resolve a subscript into a container bound to a single-assignment NAME
+            # (d = {'e': exec}; d['e'](...), xs = [eval]; xs[0](...)) to the literal container,
+            # so the exec/eval sink hidden inside it is not missed just because the callee is an
+            # indexed Name rather than an inline literal.
+            if isinstance(container, ast.Name) and container.id in _const_env:
+                container = _const_env[container.id]
             ci = _const_fold(sub.slice, _const_env)
             if isinstance(container, (ast.List, ast.Tuple)) and isinstance(ci, int):
                 if -len(container.elts) <= ci < len(container.elts):
@@ -6832,6 +7032,10 @@ def _check_signal_escape_patterns(
                 return None
 
             container = sub.value
+            # Resolve a single-assignment NAME container (d = {'k': pickle.loads}; d['k'](payload))
+            # to its literal, mirroring the exec-container resolver above.
+            if isinstance(container, ast.Name) and container.id in _const_env:
+                container = _const_env[container.id]
             ci = _const_fold(sub.slice, _const_env)
             if isinstance(container, (ast.List, ast.Tuple)) and isinstance(ci, int):
                 if -len(container.elts) <= ci < len(container.elts):
