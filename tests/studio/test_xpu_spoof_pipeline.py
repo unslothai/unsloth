@@ -323,6 +323,55 @@ def test_apply_gpu_ids_predetect_dual_build_cuda_active_writes_cvd(spoof_xpu, mo
     assert os.environ["ZE_AFFINITY_MASK"] == "0,1"  # untouched
 
 
+def test_apply_gpu_ids_trusts_parent_backend_param(spoof_xpu, monkeypatch):
+    # Workers pass the parent's detected backend (config["device_backend"]):
+    # it must win over build heuristics in both directions, mirroring
+    # detect_hardware's availability check and CUDA fallback exactly.
+    import torch
+
+    hw, _ = spoof_xpu(ze_mask = None, cuda_visible = None, force_xpu = True)
+    assert hw.DEVICE is None
+    monkeypatch.setattr(
+        hw, "detect_hardware", lambda: (_ for _ in ()).throw(AssertionError("detect ran"))
+    )
+    # Forced XPU + XPU build, but the parent detected CUDA (xpu had no
+    # device): backend="cuda" must route to CUDA_VISIBLE_DEVICES.
+    monkeypatch.setattr(torch.version, "cuda", "12.8", raising = False)
+    monkeypatch.setattr(torch.version, "xpu", "2.7", raising = False)
+    hw.apply_gpu_ids([1], backend = "cuda")
+    import os
+
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
+    assert "ZE_AFFINITY_MASK" not in os.environ
+
+    # And backend="xpu" routes to ZE_AFFINITY_MASK even on a CUDA build.
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(torch.version, "xpu", None, raising = False)
+    hw.apply_gpu_ids([0], backend = "xpu")
+    assert os.environ["ZE_AFFINITY_MASK"] == "0"
+    assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+
+def test_apply_gpu_ids_predetect_hidden_cuda_without_mask_prefers_xpu(spoof_xpu, monkeypatch):
+    # Hidden CUDA on an XPU-capable build prefers XPU even with NO ZE mask
+    # set (detection falls through to XPU in that state); writing the ids to
+    # CUDA_VISIBLE_DEVICES would re-expose the hidden CUDA.
+    import torch
+
+    hw, _ = spoof_xpu(ze_mask = None, cuda_visible = "")
+    assert hw.DEVICE is None
+    monkeypatch.setattr(
+        hw, "detect_hardware", lambda: (_ for _ in ()).throw(AssertionError("detect ran"))
+    )
+    monkeypatch.setattr(torch.version, "cuda", "12.8", raising = False)
+    monkeypatch.setattr(torch.version, "xpu", "2.7", raising = False)
+    hw.apply_gpu_ids([0])
+    import os
+
+    assert os.environ["ZE_AFFINITY_MASK"] == "0"
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == ""  # stays hidden
+
+
 # ---------- visibility / selection ----------
 
 

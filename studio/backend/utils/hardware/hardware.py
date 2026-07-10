@@ -2279,7 +2279,7 @@ def get_visible_gpu_count() -> int:
     return _visible_gpu_count
 
 
-def apply_gpu_ids(gpu_ids) -> None:
+def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
     if gpu_ids is None:
         return
 
@@ -2303,12 +2303,18 @@ def apply_gpu_ids(gpu_ids) -> None:
     # use env + torch BUILD attributes only (no runtime init, like the ROCm
     # mirror below).
     _is_xpu = DEVICE == DeviceType.XPU
-    if DEVICE is None:
-        # version.xpu can be None on a working XPU build, so also accept
-        # torch.xpu._is_compiled() (a pure symbol-presence check, no runtime
-        # init). UNSLOTH_FORCE_XPU counts only on an XPU-capable build:
-        # detect_hardware() falls back to CUDA when XPU is missing, and the
-        # mask target must follow that fallback.
+    if backend is not None:
+        # The spawning parent's detected backend (config["device_backend"]):
+        # exact and probe-free, so the mask target always matches what
+        # detect_hardware() decided in the parent, including its XPU
+        # availability check and CUDA fallback.
+        _is_xpu = backend == DeviceType.XPU.value
+    elif DEVICE is None:
+        # No parent backend passed (direct caller). version.xpu can be None
+        # on a working XPU build, so also accept torch.xpu._is_compiled()
+        # (a pure symbol-presence check, no runtime init). UNSLOTH_FORCE_XPU
+        # counts only on an XPU-capable build: detect_hardware() falls back
+        # to CUDA when XPU is missing, and the mask target must follow.
         try:
             import torch as _torch
 
@@ -2320,15 +2326,15 @@ def apply_gpu_ids(gpu_ids) -> None:
             if os.environ.get("UNSLOTH_FORCE_XPU") == "1":
                 _is_xpu = _xpu_build
             else:
-                # Mirror detect_hardware's XPU hint: ZE mask + CUDA hidden
-                # prefers XPU even on a dual CUDA+XPU build, where writing
-                # these ids to CUDA_VISIBLE_DEVICES would re-expose the
-                # deliberately hidden CUDA and leave the ZE mask unnarrowed.
+                # Mirror detect_hardware: hidden CUDA prefers XPU on an
+                # XPU-capable build (with or without a ZE mask -- detection
+                # falls through to XPU either way), where writing these ids
+                # to CUDA_VISIBLE_DEVICES would re-expose the deliberately
+                # hidden CUDA.
                 _cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
                 _cuda_hidden = _cvd is not None and _cvd.strip() in ("", "-1")
-                _xpu_hinted = bool(os.environ.get("ZE_AFFINITY_MASK")) and _cuda_hidden
                 _is_xpu = _xpu_build and (
-                    _xpu_hinted
+                    _cuda_hidden
                     or (getattr(_ver, "cuda", None) is None and getattr(_ver, "hip", None) is None)
                 )
         except Exception as e:
