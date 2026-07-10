@@ -286,6 +286,15 @@ def _te_hidden_refs(bag, toks, device):
     return refs
 
 
+def _te_param_sig(te) -> tuple:
+    """Weight-storage fingerprint (per-param impl class + dtype). It changes iff a caster
+    actually rewrote this encoder's weights: layerwise fp8 restores float8 storage, the
+    torchao modes swap in tensor subclasses. quantize_text_encoders returns ONE scheme for
+    the whole bag even when a per-encoder cast failed, so this is how a bench tells which
+    encoders really engaged."""
+    return tuple((type(p).__name__, str(p.dtype)) for p in te.parameters())
+
+
 def measure_te_accuracy(
     family: str,
     *,
@@ -312,6 +321,11 @@ def measure_te_accuracy(
     rows: list[dict] = []
     for scheme in schemes:
         bag = _load_text_encoders(repo, device)
+        dense_sigs = {
+            attr: _te_param_sig(getattr(bag, attr))
+            for attr in _TE_ATTRS
+            if getattr(bag, attr, None) is not None
+        }
         engaged = quantize_text_encoders(bag, _target(), mode = scheme, family = family, logger = logger)
         if engaged is None:
             # The scheme was skipped (unsupported GPU / build, family deny, or a failed kernel
@@ -335,6 +349,24 @@ def measure_te_accuracy(
             continue
         cur = _te_hidden_refs(bag, toks, device)
         for attr, ref_vecs in refs.items():
+            # The caster is best-effort PER encoder (a failure leaves that one dense), yet
+            # the returned scheme covers the whole bag. Scoring a still-dense encoder against
+            # the dense reference would read ~1.0 and falsely certify the scheme for it, so
+            # record any encoder whose weight storage did not change as NOT engaged instead.
+            if _te_param_sig(getattr(bag, attr)) == dense_sigs.get(attr):
+                rows.append(
+                    {
+                        "family": family,
+                        "encoder": attr,
+                        "scheme": engaged,
+                        "cosine": None,
+                        "min_cosine": None,
+                        "relL2": None,
+                        "pass": None,
+                        "engaged": False,
+                    }
+                )
+                continue
             q_vecs = cur.get(attr, [])
             if not q_vecs:
                 continue
@@ -382,11 +414,15 @@ def _encode_once(bag) -> None:
 
 
 # ── VAE loading + latent shape (reused from quant_accuracy_sweep) ──────────────
-def _load_vae(repo: str, device: str):
+def _load_vae(repo: str, device: str, *, force_fp32: bool = False):
     import torch
 
     diffusers = _import_diffusers()
-    vae = diffusers.AutoModel.from_pretrained(repo, subfolder = "vae", torch_dtype = torch.bfloat16)
+    # vae_force_fp32 families (Wan) store AND run the VAE in fp32 in production (the loader
+    # pins a per-component dtype), and quantize_vae stays dense for them regardless. Loading
+    # bf16 here would measure the memory/latency of a truncated VAE production never runs.
+    dtype = torch.float32 if force_fp32 else torch.bfloat16
+    vae = diffusers.AutoModel.from_pretrained(repo, subfolder = "vae", torch_dtype = dtype)
     return vae.to(device).eval()
 
 
@@ -434,7 +470,10 @@ def _make_latent(vae, device: str):
     g = torch.Generator().manual_seed(1234)
     shape = (1, channels, 3, 32, 32) if is_3d else (1, channels, 64, 64)
     z = torch.randn(shape, generator = g, dtype = torch.float32)
-    return z.to(device = device, dtype = torch.bfloat16)
+    # Match the VAE's parameter dtype (fp32 for the vae_force_fp32 families, bf16 otherwise),
+    # like the pipelines do before decode; an fp32 conv rejects a bf16 latent outright.
+    dtype = next(vae.parameters()).dtype
+    return z.to(device = device, dtype = dtype)
 
 
 # ── measurement primitives ────────────────────────────────────────────────────
@@ -524,9 +563,10 @@ def _measure_vae_scheme(
     from core.inference.diffusion_vae_quant import quantize_vae
 
     device = "cuda"
+    force_fp32 = bool(_FAMILIES.get(family, {}).get("vae_force_fp32", False))
     _empty()
     _reset_peak()
-    vae = _load_vae(repo, device)
+    vae = _load_vae(repo, device, force_fp32 = force_fp32)
     z = _make_latent(vae, device)
     _sync()
     mem_dense = _alloc_gb()
@@ -536,7 +576,6 @@ def _measure_vae_scheme(
 
     # quantize_vae reads pipe.vae, so hand it a bag exposing .vae (it mutates that module in place).
     # Pass the family's force_fp32 (Wan) so the real dense-only behaviour is reflected.
-    force_fp32 = bool(_FAMILIES.get(family, {}).get("vae_force_fp32", False))
     engaged = quantize_vae(
         types.SimpleNamespace(vae = vae),
         _target(),

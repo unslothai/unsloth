@@ -12,9 +12,13 @@ from __future__ import annotations
 
 import types
 
-import torch
+import pytest
 
-import core.inference.diffusion_attention as att
+# Skip at collection (not abort) when torch is absent so the rest of the backend suite
+# stays collectable, matching how the policy tests next door gate their heavy imports.
+torch = pytest.importorskip("torch")
+
+import core.inference.diffusion_attention as att  # noqa: E402
 
 
 def test_trim_stream_drops_trailing_padding():

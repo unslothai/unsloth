@@ -385,6 +385,16 @@ def _apply_levers(
             quantize_transformer(v, tgt, mode = cfg["dit"], family = fam_name, logger = logger)
             for v in views
         ]
+        # All-or-none across experts, mirroring the production loader (video.py): the first
+        # expert is mutated in place, so a second-expert miss cannot fall back to dense and
+        # the loader fails that load. Rejecting here keeps the benchmark from publishing a
+        # dit_scheme + timings for a mixed quantized/dense pipeline users cannot actually load.
+        n_engaged = sum(1 for s in schemes if s is not None)
+        if 0 < n_engaged < len(views):
+            raise RuntimeError(
+                f"dit quant '{cfg['dit']}' engaged on only {n_engaged}/{len(views)} experts; "
+                "production rejects this partial state, so the row would be unloadable"
+            )
         engaged["dit"] = schemes[0]
         engaged["dit_experts"] = schemes
         _empty()
@@ -489,12 +499,20 @@ def _timed_video(
     from core.inference.diffusion_cache import maybe_toggle_step_cache, FBCACHE_MIN_STEPS
 
     if cache_mode == "auto":
-        try:
-            maybe_toggle_step_cache(
-                pipe, steps = steps, quant_active = dit_quant_active, threshold = None, logger = logger
-            )
-        except Exception:
-            pass
+        # Toggle on EVERY expert view, exactly like the loader's per-view recheck
+        # (video.py iterates _views_for): toggling only the primary pipe would disable
+        # FBCache on pipe.transformer while transformer_2 stays cached, measuring a
+        # mixed cache state production never runs on a dual-expert MoE.
+        views = [pipe]
+        if getattr(pipe, "transformer_2", None) is not None:
+            views.append(_SecondExpertView(pipe))
+        for v in views:
+            try:
+                maybe_toggle_step_cache(
+                    v, steps = steps, quant_active = dit_quant_active, threshold = None, logger = logger
+                )
+            except Exception:
+                pass
 
     g = torch.Generator(device = "cuda").manual_seed(seed)
     step_ts: list[float] = []
@@ -754,6 +772,7 @@ def main(argv = None) -> int:
                     ref_arrs = [z[k] for k in z.files]
             except Exception:
                 ref_arrs = None
+    row_arrs: list = []
     for n in names:
         row, arrs = _run_config(
             n,
@@ -772,10 +791,19 @@ def main(argv = None) -> int:
             ref_arrs = arrs
         row["lpips_vs_reference"] = _mean_lpips(ref_arrs, arrs) if ref_arrs is not None else None
         rows.append(row)
+        row_arrs.append(arrs)
         print(
             f"  [{n}] {json.dumps({k: row[k] for k in ('dit_scheme','te_scheme','attn','cache','effective_speed','weights_gb','gen_peak_gb','gen_latency_s','per_step_ms','lpips_vs_reference')})}",
             flush = True,
         )
+
+    # --configs accepts an arbitrary order, so rows finalized BEFORE the reference clip was
+    # generated (e.g. --configs shipped,reference) scored lpips_vs_reference as None; rescore
+    # them now that the reference frames exist instead of silently publishing null.
+    if ref_arrs is not None:
+        for r, arrs in zip(rows, row_arrs):
+            if r["lpips_vs_reference"] is None:
+                r["lpips_vs_reference"] = _mean_lpips(ref_arrs, arrs)
 
     # speedups relative to reference (if present)
     ref_lat = next((r["gen_latency_s"] for r in rows if r["config"] == "reference"), None)
