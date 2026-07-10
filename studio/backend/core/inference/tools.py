@@ -1142,6 +1142,18 @@ def _find_blocked_commands(command: str) -> set[str]:
         # block everything else.
         if not _has_c:
             blocked.add("shell-script:" + (_script or _token_basename(tok)))
+        # BASH_ENV=script / ENV=script assignment prefix before a shell makes bash / sh SOURCE
+        # that workdir file before the scanned -c payload runs, executing unscanned commands in
+        # the unguarded child (BASH_ENV=env.sh bash -c 'echo ok', env BASH_ENV=env.sh bash -c).
+        # Scan the command segment before this shell word for a non-empty startup-env assignment.
+        for k in range(i - 1, -1, -1):
+            pk = tokens[k]
+            if pk in _SHELL_SEPARATORS or pk in _SHELL_KEYWORDS_AS_SEP:
+                break
+            if _ASSIGNMENT_RE.match(pk):
+                _an, _, _av = pk.partition("=")
+                if _an in ("BASH_ENV", "ENV") and _av != "":
+                    blocked.add("shell-startup-env:" + _an)
 
     # Output redirection (> / >> / &> / N>) runs in an unguarded child shell that follows
     # symlinks before any Python guard, so no filename target can be trusted: a relative
@@ -3355,6 +3367,9 @@ _CODE_DESERIALIZE_SINKS = frozenset(
 _DESERIALIZE_MODULES = frozenset(
     {"pickle", "marshal", "dill", "cloudpickle", "_pickle", "jsonpickle", "yaml"}
 )
+# Modules exposing an Unpickler class whose .load() runs the same reduce payload as *.load:
+# pickle.Unpickler(f).load() / dill.Unpickler(f).load() bypass the *.load sink-name check.
+_UNPICKLER_MODULES = frozenset({"pickle", "_pickle", "dill", "cloudpickle"})
 # yaml.load / yaml.load_all construct arbitrary objects UNLESS given a safe loader; flag them
 # when the Loader is absent or is one of the unsafe loader classes.
 _YAML_SAFE_LOADERS = frozenset({"SafeLoader", "CSafeLoader", "BaseLoader"})
@@ -4364,7 +4379,10 @@ def _is_sensitive_abs_path(s):
         return False
     if norm in _SANDBOX_SENSITIVE_EXACT:
         return True
-    if any(part in norm for part in _SANDBOX_SENSITIVE_DIR_PARTS):
+    # The directory markers carry a trailing slash to match descendants (/root/id_rsa);
+    # append one to the candidate so the directory ITSELF (an unguarded `ls /root` /
+    # `find /etc/ssh`) matches too, without loosening the component boundary.
+    if any(part in (norm + "/") for part in _SANDBOX_SENSITIVE_DIR_PARTS):
         return True
     if _SANDBOX_SENSITIVE_RE.match(norm):
         return True
@@ -4386,6 +4404,42 @@ def _join_chdir(base, newdir):
     if newdir.startswith("/") or newdir.startswith("~"):
         return newdir
     return os.path.join(base, newdir) if base else newdir
+
+
+def _argv_env_chdir(str_elts):
+    """Extract an ``env -C DIR`` / ``--chdir[=DIR]`` target from a folded argv vector.
+
+    A wrapper-prefixed child that chdirs before the reader (``['env', '-C', '/etc', 'cat',
+    'passwd']``) reads ``/etc/passwd`` in the unguarded child, so the relative reader arg must
+    be resolved against DIR. Returns the DIR string (or None). Only the ``env`` wrapper honors
+    ``-C``; other flags / wrappers are skipped until the real command word is reached."""
+    i, n = 0, len(str_elts)
+    wrapper = None
+    while i < n:
+        tok = str_elts[i]
+        if tok is None:
+            return None
+        if _ASSIGNMENT_RE.match(tok):
+            i += 1
+            continue
+        if tok.startswith("-"):
+            if wrapper == "env":
+                if tok in ("-C", "--chdir"):
+                    return str_elts[i + 1] if i + 1 < n else None
+                if tok.startswith("--chdir="):
+                    return tok.split("=", 1)[1]
+                if _wrapper_flag_takes_operand("env", tok):
+                    i += 2
+                    continue
+            i += 1
+            continue
+        base = os.path.basename(tok).lower()
+        if base in _COMMAND_PREFIXES:
+            wrapper = base
+            i += 1
+            continue
+        return None  # reached the executed command word before any env -C
+    return None
 
 
 def _scan_command_string_for_reads(
@@ -4483,6 +4537,29 @@ def _scan_command_string_for_reads(
         ptoks = list(_lx)
     except ValueError:
         ptoks = cmd.split()
+
+    # find ... -exec CMD ... ; runs CMD directly on each match; CMD may be a nested shell
+    # (sh -c 'cat /etc/passwd') or a reader, so scan each -exec segment through this scanner
+    # (mirrors the blocked-command find -exec handling). The main command-word loop below only
+    # recurses into a shell that IS the command word, so the quoted -c payload would otherwise
+    # be treated as one inert argument.
+    for _fi, _ft in enumerate(ptoks):
+        if _ft in _FIND_EXEC_FLAGS:
+            _seg = []
+            _fj = _fi + 1
+            while _fj < len(ptoks) and ptoks[_fj] not in _FIND_EXEC_TERMINATORS:
+                _seg.append(ptoks[_fj])
+                _fj += 1
+            if _seg:
+                _r = _scan_command_string_for_reads(
+                    shlex.join(_seg),
+                    strict_traversal = strict_traversal,
+                    cwd = cwd,
+                    cwd_dynamic = cwd_dynamic,
+                    _depth = _depth + 1,
+                )
+                if _r is not None:
+                    return _r
 
     def _risky_read_target(tgt):
         if not tgt:
@@ -5056,6 +5133,13 @@ def _check_signal_escape_patterns(
             # import pickle as p  ->  {"p": "pickle"}; from pickle import loads as l -> {"l": "pickle.loads"}
             self.deserialize_module_aliases: dict[str, str] = {}
             self.deserialize_aliases: dict[str, str] = {}
+            # `from yaml import load [as X]` / load_all: yaml.load is conditional (safe only
+            # with a SafeLoader) so it is not a static sink; track the bare-name alias so the
+            # safe-loader check can be applied to the direct-call form.
+            self.yaml_load_aliases: dict[str, str] = {}
+            # `from pickle import Unpickler [as X]`: Unpickler(f).load() reaches the same reduce
+            # path as pickle.load; track the ctor alias so the .load() method call is flagged.
+            self.unpickler_aliases: set[str] = set()
             # import types as t -> {"types", "t"}; from types import FunctionType as F -> {"F"}.
             # FunctionType(code, globals)() runs a code object WITHOUT eval/exec, so a
             # dynamic compile() result reaches execution through it (see visit_Call).
@@ -5178,6 +5262,10 @@ def _check_signal_escape_patterns(
                     fq = f"{node.module}.{alias.name}"
                     if fq in _CODE_DESERIALIZE_SINKS:
                         self.deserialize_aliases[alias.asname or alias.name] = fq
+                    elif node.module == "yaml" and alias.name in _YAML_LOAD_METHODS:
+                        self.yaml_load_aliases[alias.asname or alias.name] = alias.name
+                    elif alias.name == "Unpickler" and node.module in _UNPICKLER_MODULES:
+                        self.unpickler_aliases.add(alias.asname or alias.name)
             elif node.module == "types":
                 for alias in node.names:
                     if alias.name == "FunctionType":
@@ -5313,6 +5401,23 @@ def _check_signal_escape_patterns(
                     if k is not None and _const_fold(k, _const_env) == ci:
                         return _elt(v)
             return None
+
+        def _is_unpickler_ctor(self, recv):
+            """True when ``recv`` constructs a pickle/dill Unpickler instance.
+
+            Covers pickle.Unpickler(f) (incl. an aliased module: import pickle as p;
+            p.Unpickler(f)) and a from-imported ctor (from pickle import Unpickler;
+            Unpickler(f)); its .load() runs the same reduce payload as pickle.load."""
+            if not isinstance(recv, ast.Call):
+                return False
+            cf = recv.func
+            if isinstance(cf, ast.Attribute) and cf.attr == "Unpickler":
+                if isinstance(cf.value, ast.Name):
+                    return self.deserialize_module_aliases.get(cf.value.id) in _UNPICKLER_MODULES
+                return _fq_attr_name(cf) in {m + ".Unpickler" for m in _UNPICKLER_MODULES}
+            if isinstance(cf, ast.Name):
+                return cf.id in self.unpickler_aliases
+            return False
 
         def _attrgetter_name(self, n):
             """Return the single attribute name for an ``operator.attrgetter('name')``
@@ -5719,16 +5824,57 @@ def _check_signal_escape_patterns(
                 )
                 blocked_in_args = _check_args_for_blocked(all_call_args, _shell_maybe_true)
 
-                # A shell startup variable (BASH_ENV / ENV) in an explicit env= dict names a
-                # script bash / sh SOURCES before the -c payload runs, executing unscanned code
+                # A shell startup variable (BASH_ENV / ENV) in the env= mapping names a script
+                # bash / sh SOURCES before the -c payload runs, executing unscanned code
                 # (subprocess.run(['bash','-c','echo OK'], env={'BASH_ENV':'env.sh'})). Flag a
-                # non-empty (or non-literal) value; an empty string is inert.
+                # non-empty value; an empty string is inert. Cover a literal dict, a dict(...)
+                # call, and -- for a shell child -- a non-literal mapping we cannot prove free
+                # of BASH_ENV / ENV (fail closed). Whether the child is a shell: shell=True, or
+                # the argv command word resolves to bash / sh.
                 _env_node = expanded_kwargs.get("env")
-                if isinstance(_env_node, ast.Dict):
-                    for _ek, _ev in zip(_env_node.keys, _env_node.values):
-                        _ekey = _extract_string_from_node(_ek) if _ek is not None else None
-                        if _ekey in ("BASH_ENV", "ENV") and _extract_string_from_node(_ev) != "":
-                            blocked_in_args = blocked_in_args | {"shell-startup-env:" + _ekey}
+                if _env_node is not None:
+                    _is_shell_child = _shell_maybe_true
+                    if (
+                        not _is_shell_child
+                        and node.args
+                        and isinstance(node.args[0], (ast.List, ast.Tuple))
+                    ):
+                        _elts0 = [_extract_string_from_node(_e) for _e in node.args[0].elts]
+                        _ci0 = _blocked_in_argv(_elts0)[1]
+                        if _ci0 is not None and _ci0 < len(_elts0) and _elts0[_ci0]:
+                            _is_shell_child = (
+                                os.path.basename(_elts0[_ci0]).lower() in _SHELL_BINARIES
+                            )
+                    if isinstance(_env_node, ast.Dict):
+                        _opaque_key = False
+                        for _ek, _ev in zip(_env_node.keys, _env_node.values):
+                            _ekey = _extract_string_from_node(_ek) if _ek is not None else None
+                            if _ekey in ("BASH_ENV", "ENV") and (
+                                _extract_string_from_node(_ev) != ""
+                            ):
+                                blocked_in_args = blocked_in_args | {"shell-startup-env:" + _ekey}
+                            elif _ek is not None and _ekey is None:
+                                _opaque_key = True  # a computed key could be BASH_ENV / ENV
+                        if _opaque_key and _is_shell_child:
+                            blocked_in_args = blocked_in_args | {"shell-startup-env:opaque"}
+                    elif (
+                        isinstance(_env_node, ast.Call)
+                        and isinstance(_env_node.func, ast.Name)
+                        and _env_node.func.id == "dict"
+                    ):
+                        for _kw2 in _env_node.keywords:
+                            if _kw2.arg in ("BASH_ENV", "ENV") and (
+                                _extract_string_from_node(_kw2.value) != ""
+                            ):
+                                blocked_in_args = blocked_in_args | {
+                                    "shell-startup-env:" + _kw2.arg
+                                }
+                            elif _kw2.arg is None and _is_shell_child:
+                                blocked_in_args = blocked_in_args | {"shell-startup-env:opaque"}
+                    elif _is_shell_child:
+                        # A non-literal env mapping (env=e, a comprehension) for a shell child
+                        # cannot be proven free of BASH_ENV / ENV, so fail closed.
+                        blocked_in_args = blocked_in_args | {"shell-startup-env:non-literal"}
 
                 # os.execl(path, a0, a1, ...) / os.execv(path, [a0, ...]) / os.spawnl(mode,
                 # path, a0, ...) spread the child's argv across separate positional args (or a
@@ -6027,6 +6173,21 @@ def _check_signal_escape_patterns(
                         if self.deserialize_module_aliases.get(_ecf.value.id) == "yaml":
                             if not _yaml_call_has_safe_loader(node):
                                 _deser_fq = "yaml." + _ecf.attr
+                    # pickle.Unpickler(f).load() / dill.Unpickler(f).load(): the reduce payload
+                    # runs on .load(); the sink-name check misses it because the callee is a
+                    # method on an Unpickler instance, not a *.load module function.
+                    if (
+                        _deser_fq is None
+                        and _ecf.attr in ("load", "load_all")
+                        and self._is_unpickler_ctor(_ecf.value)
+                    ):
+                        _deser_fq = "pickle.Unpickler.load"
+                if _deser_fq is None and isinstance(_ecf, ast.Name):
+                    # from yaml import load; load(data): apply the same safe-loader check to the
+                    # bare-name alias so importing the function directly is not a bypass.
+                    _ym = self.yaml_load_aliases.get(_ecf.id)
+                    if _ym is not None and not _yaml_call_has_safe_loader(node):
+                        _deser_fq = "yaml." + _ym
                 if _analyzer_on and _deser_fq is not None:
                     dynamic_desc = f"{_deser_fq}() deserializes an unverifiable code payload"
                 elif is_dynamic_import:
@@ -7865,6 +8026,23 @@ def _check_signal_escape_patterns(
                         elif not (isinstance(_val, ast.Constant) and _val.value is None):
                             _sub_cwd_dynamic = True
                         break
+                # An env -C DIR / --chdir=DIR at the front of the argv chdirs the child before
+                # the reader runs (['env', '-C', '/etc', 'cat', 'passwd']), just like the
+                # shell-string env -C case; fold that dir into the cwd used for relative reads.
+                _argv_for_cd = node.args[0] if node.args else None
+                if _argv_for_cd is None:
+                    for _name, _val in _iter_call_kwargs(node):
+                        if _name == "args":
+                            _argv_for_cd = _val
+                            break
+                if isinstance(_argv_for_cd, (ast.List, ast.Tuple)):
+                    _ec = _argv_env_chdir([_fold_read_arg(_e) for _e in _argv_for_cd.elts])
+                    if _ec is not None:
+                        if _ec.startswith("/") or _ec.startswith("~"):
+                            _sub_cwd = _ec  # absolute env -C overrides the ambient cwd
+                            _sub_cwd_dynamic = False
+                        elif not _sub_cwd_dynamic:
+                            _sub_cwd = _join_chdir(_sub_cwd, _ec)
             # A file-reading child (cat / head / ...) with a relative argv path under a
             # non-literal cwd could read a host secret (cwd=P; P evaluates to /etc); the child
             # is unguarded, so fail closed unless the cwd is proven sandbox-local. The argv may

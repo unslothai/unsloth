@@ -3281,3 +3281,115 @@ class TestRound29Bypasses:
     )
     def test_round29_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound30Bypasses:
+    """Thirtieth-round Codex findings: env -C inside a subprocess argv, from-imported
+    yaml.load aliases, non-literal / dict() shell startup env (BASH_ENV/ENV), a BASH_ENV=
+    assignment prefix before bash -c, sensitive directories without a trailing slash,
+    pickle.Unpickler(...).load(), and find -exec nested-shell reads."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # env -C DIR inside the argv chdirs the child before the reader, so the relative
+            # reader arg reads a host secret even without a cwd= kwarg.
+            "import subprocess\nsubprocess.run(['env', '-C', '/etc', 'cat', 'passwd'])",
+            "import subprocess\nsubprocess.run(['env', '--chdir=/etc', 'cat', 'passwd'])",
+            "import subprocess\nsubprocess.Popen(['env', '-C', '/etc/ssh', 'cat', 'sshd_config'])",
+        ],
+    )
+    def test_env_c_in_subprocess_argv_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # yaml.load / load_all imported directly must get the same safe-loader check.
+            "from yaml import load\nload(payload, Loader=yaml.Loader)",
+            "from yaml import load\nload(open('c.yaml'))",
+            "from yaml import load_all as la\nla(payload)",
+        ],
+    )
+    def test_from_imported_yaml_load_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A BASH_ENV / ENV startup script in env= (literal, dict(), or non-literal for a
+            # shell child) makes bash / sh source unscanned code before the -c payload.
+            "import subprocess\ne={'BASH_ENV': 'env.sh'}\nsubprocess.run(['bash', '-c', 'echo ok'], env=e)",
+            "import subprocess\nsubprocess.run(['bash', '-c', 'echo ok'], env=dict(BASH_ENV='env.sh'))",
+            "import os, subprocess\nsubprocess.run(['bash', '-c', 'echo ok'], env=os.environ)",
+            "import subprocess\nsubprocess.run(['sh', '-c', 'echo ok'], env={'ENV': 'rc.sh'})",
+        ],
+    )
+    def test_shell_startup_env_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # BASH_ENV=script before a shell command word sources the script first.
+            "import os\nos.system('BASH_ENV=env.sh bash -c \"echo ok\"')",
+            "import os\nos.system('env BASH_ENV=env.sh bash -c \"echo ok\"')",
+        ],
+    )
+    def test_bash_env_assignment_prefix_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A sensitive directory named without a trailing slash (the dir itself) is enumerable
+            # by an unguarded child; it must be flagged like its descendants.
+            "import subprocess\nsubprocess.run(['ls', '/root'])",
+            "import os\nos.system('find /root -maxdepth 1')",
+            "import os\nos.system('ls /etc/ssh')",
+        ],
+    )
+    def test_sensitive_dir_without_slash_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # pickle.Unpickler(f).load() reaches the same reduce path as pickle.load.
+            "import pickle\npickle.Unpickler(open('payload', 'rb')).load()",
+            "import pickle as p\np.Unpickler(f).load()",
+            "import dill\ndill.Unpickler(f).load()",
+            "from pickle import Unpickler as U\nU(f).load()",
+        ],
+    )
+    def test_unpickler_load_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # find -exec CMD runs CMD directly; a nested shell -c payload must be scanned.
+            "import os\nos.system(\"find . -exec sh -c 'cat /etc/passwd' {} ;\")",
+            "import os\nos.system(\"find . -execdir sh -c 'cat /etc/shadow' ;\")",
+        ],
+    )
+    def test_find_exec_shell_reads_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign env -C / yaml safe-loader / non-shell env / find local-exec / Unpickler-less
+            # forms must still pass.
+            "import subprocess\nsubprocess.run(['env', '-C', 'sub', 'cat', 'out.txt'])",
+            "from yaml import safe_load\nsafe_load(payload)",
+            "from yaml import load as L\nimport yaml\nL(d, Loader=yaml.SafeLoader)",
+            "import subprocess\nsubprocess.run(['cat', 'out.txt'], env=e)",
+            "import subprocess\nsubprocess.run(['bash', '-c', 'echo ok'], env={'PATH': '/usr/bin'})",
+            "import json\njson.load(open('a.json'))",
+            "import os\nos.system('find . -exec cat notes.txt ;')",
+            "import os\nos.system('ls sub')",
+        ],
+    )
+    def test_round30_benign_allowed(self, code):
+        _ok(code)
