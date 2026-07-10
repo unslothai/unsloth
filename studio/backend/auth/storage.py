@@ -18,6 +18,11 @@ from utils.paths import auth_db_path, ensure_dir
 DB_PATH = auth_db_path()
 DEFAULT_ADMIN_USERNAME = "unsloth"
 
+# Single source for the password policy. The HTTP schema
+# (models/auth.py ChangePasswordRequest) and the terminal password-change
+# prompt both enforce this; keep the unsloth_cli mirror in sync.
+MIN_PASSWORD_LENGTH = 8
+
 # Plaintext bootstrap password file beside auth.db, deleted on first password
 # change so the credential never lingers on disk.
 _BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"

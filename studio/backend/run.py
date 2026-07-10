@@ -10,7 +10,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 
 def _fix_torch_cuda_ld_path():
@@ -1064,6 +1064,82 @@ def _cloudflare_tunnel_should_start(
     return host in ("0.0.0.0", "::") and not api_only
 
 
+def _terminal_password_gate(*, tunnel_will_start: bool) -> "Tuple[bool, bool]":
+    """Force a terminal password change before the public tunnel goes up.
+
+    When the Cloudflare tunnel is about to publish Studio on the internet and
+    the seeded admin password was never changed, ask for a new password in the
+    terminal (masked, with confirmation) before any public URL exists. The CLI
+    normally does this before re-exec'ing the backend; this is the backstop for
+    direct `python run.py` launches and older-CLI installs.
+
+    Returns (proceed, changed):
+      proceed False -> the user aborted the prompt (Ctrl-C/EOF); fail closed.
+      changed True  -> the password was updated here; the caller must drop the
+                       now-stale app.state.bootstrap_password.
+
+    Without a usable terminal (stdin/stderr not ttys) the prompt is skipped
+    with a warning and the bootstrap deadline (arm'd below) remains the
+    protection. Deliberately NOT wrapped in a broad try/except: an auth
+    storage failure must abort startup rather than expose the default
+    credential.
+    """
+    if not tunnel_will_start:
+        return True, False
+
+    from auth import hashing as _auth_hashing
+    from auth import storage as _auth_storage
+    from auth.terminal_prompt import (
+        prompt_for_password_change,
+        should_prompt_password_change,
+    )
+
+    _admin = _auth_storage.DEFAULT_ADMIN_USERNAME
+    requires_change = _auth_storage.requires_password_change(_admin)
+    if not requires_change:
+        return True, False
+
+    if not should_prompt_password_change(
+        tunnel_will_start = tunnel_will_start,
+        requires_change = requires_change,
+        stdin_isatty = sys.stdin.isatty(),
+        stderr_isatty = sys.stderr.isatty(),
+    ):
+        print(
+            "  WARNING: the default admin password is still active while Studio is "
+            "about to be published on a public Cloudflare URL, and no terminal is "
+            "attached to change it here. Change it in the web UI as soon as "
+            "possible; if the web UI is served, Studio shuts down after the "
+            "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "
+            "unless the password is changed.",
+            file = sys.stderr,
+            flush = True,
+        )
+        return True, False
+
+    def _is_current_password(candidate: str) -> bool:
+        record = _auth_storage.get_user_and_secret(_admin)
+        if record is None:
+            return False
+        salt, pwd_hash, _jwt_secret, _must_change = record
+        return _auth_hashing.verify_password(candidate, salt, pwd_hash)
+
+    def _apply_change(new_password: str) -> None:
+        # Same server-side effects as routes/auth.py change_password: rehash +
+        # rotate the JWT secret (invalidates access tokens) and revoke refresh
+        # tokens so no pre-change token outlives the default credential.
+        _auth_storage.update_password(_admin, new_password)
+        _auth_storage.revoke_user_refresh_tokens(_admin)
+
+    changed = prompt_for_password_change(
+        min_length = _auth_storage.MIN_PASSWORD_LENGTH,
+        is_current_password = _is_current_password,
+        apply_change = _apply_change,
+        out = sys.stderr,
+    )
+    return (True, True) if changed else (False, False)
+
+
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
     """Honor an explicit --enable-tools/--disable-tools; None leaves the policy
     unset (tools default on, per-request enable_tools honored). Host is never
@@ -1388,6 +1464,29 @@ def run_server(
         is_colab = _IS_COLAB,
     )
     _cloudflare_requested = _cloudflare_enabled
+
+    # Never publish a public URL while the seeded default admin password is
+    # still active: ask for a new one in the terminal first (or warn + rely on
+    # the bootstrap deadline when no terminal is attached). Must stay BEFORE
+    # start_studio_tunnel below.
+    _pw_proceed, _pw_changed = _terminal_password_gate(
+        tunnel_will_start = _cloudflare_enabled
+    )
+    if not _pw_proceed:
+        print(
+            "Password change aborted; not starting the public Cloudflare tunnel. "
+            "Re-run and set a new admin password, or launch without "
+            "--secure/--cloudflare.",
+            file = sys.stderr,
+            flush = True,
+        )
+        _graceful_shutdown(_server)
+        sys.exit(1)
+    if _pw_changed:
+        # The app captured the bootstrap password at creation for the frontend
+        # first-login injection; it is stale (and sensitive) now.
+        app.state.bootstrap_password = None
+
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
             from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
@@ -1495,7 +1594,9 @@ def _build_arg_parser():
         help = "Expose Studio on a PUBLIC internet URL via a free Cloudflare HTTPS "
         "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
         "pass --cloudflare to enable it (--secure implies it), --no-cloudflare to "
-        "force it off. It does not change a raw wildcard bind.",
+        "force it off. It does not change a raw wildcard bind. If the admin "
+        "password was never changed, Studio asks for a new one in the terminal "
+        "before publishing the URL.",
     )
     parser.add_argument(
         "--secure",
@@ -1503,7 +1604,9 @@ def _build_arg_parser():
         default = False,
         help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
         "if the tunnel can't start. Without it, --no-secure also serves the raw "
-        "0.0.0.0 port, which is reachable from anywhere on the network",
+        "0.0.0.0 port, which is reachable from anywhere on the network. If the "
+        "admin password was never changed, Studio asks for a new one in the "
+        "terminal before publishing the URL.",
     )
     # Back-compat: accept --not-secure as a hidden alias for --no-secure.
     parser.add_argument(
