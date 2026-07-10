@@ -2336,19 +2336,43 @@ class VideoLoadRequest(BaseModel):
         "attention; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
         "kernel falls back to the default.",
     )
-    transformer_cache: Optional[Literal["off", "fbcache"]] = Field(
+    transformer_cache: Optional[Literal["off", "auto", "fbcache", "magcache"]] = Field(
         None,
-        description = "Opt-in step caching (off by default). fbcache = First-Block-Cache: "
-        "reuse the transformer tail across denoise steps when the first block's residual "
-        "barely changes. Engages on many-step schedules only; incompatible models run "
-        "uncached.",
+        description = "Step caching (null/auto: the family's measured mode engages on "
+        "many-step schedules, re-checked per generation). fbcache = First-Block-Cache: reuse "
+        "the transformer tail across denoise steps when the first block's residual barely "
+        "changes. magcache = MagCache: skip whole steps from a per-family calibrated "
+        "magnitude curve with a bounded error budget (the auto mode for HunyuanVideo-1.5, "
+        "where FBCache derails the trajectory; needs a calibrated family curve, else runs "
+        "uncached). Incompatible models run uncached.",
     )
     transformer_cache_threshold: Optional[float] = Field(
         None,
         ge = 0.0,
         le = 1.0,
-        description = "FBCache residual threshold (higher = skips more steps = faster, lower "
-        "quality). null auto-picks the family default.",
+        description = "Step-cache residual threshold (higher = skips more steps = faster, "
+        "lower quality). null auto-picks the engaged mode's family default.",
+    )
+    transformer_cache_quality: Optional[Literal["auto", "quality", "balanced", "fast"]] = Field(
+        None,
+        description = "Step-cache speed/accuracy preset. quality = near-lossless (lower "
+        "threshold + tighter skip budget, smaller speedup); balanced = the measured family "
+        "defaults; fast = more skipping for more speed at a visible quality cost. null/auto "
+        "picks the family's measured default: quality for HunyuanVideo-1.5 (1.6x at half the "
+        "drift of balanced), balanced elsewhere. An explicit transformer_cache_threshold "
+        "overrides the preset's threshold; the preset still sets the MagCache skip cap / "
+        "retention window.",
+    )
+    cfg_parallel: Optional[Literal["off", "auto", "on"]] = Field(
+        None,
+        description = "Dual-GPU CFG branch parallelism: run the two guidance branches "
+        "concurrently, one on a DiT replica on a second CUDA device (~1.7x end-to-end on "
+        "HunyuanVideo-1.5, replica ~20 GB VRAM). null/auto engages only where the output is "
+        "bit-identical to single-GPU: the measured families on an EAGER speed tier (each "
+        "compiled stack's per-device inductor artifacts drift ~1 ulp/step, which a clip "
+        "trajectory amplifies). on = engage wherever mechanically possible, including the "
+        "compiled stack, accepting that fp-noise divergence (composition/brightness "
+        "preserved). off = never.",
     )
     transformer_quant: Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]] = (
         Field(
@@ -2545,7 +2569,15 @@ class VideoStatusResponse(BaseModel):
         description = "Attention backend engaged via the diffusers dispatcher (e.g. "
         "_native_cudnn), or null for the default SDPA",
     )
-    transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
+    transformer_cache: Optional[str] = Field(
+        None, description = "Step cache engaged: fbcache | magcache | null"
+    )
+    cfg_parallel: Optional[str] = Field(
+        None,
+        description = "Dual-GPU CFG branch parallelism engaged: 'on' (DiT replica on a second "
+        "CUDA device runs one guidance branch) | null (single-device). The resolved record "
+        "carries the gate reason.",
+    )
     transformer_quant: Optional[str] = Field(
         None,
         description = "Dense transformer quant engaged on a pipeline load: int8 | fp8 | nvfp4 | "

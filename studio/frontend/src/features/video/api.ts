@@ -102,8 +102,13 @@ export interface VideoLoadRequest {
     | "sage"
     | "xformers"
     | "aiter";
-  transformer_cache?: "off" | "fbcache";
+  transformer_cache?: "off" | "fbcache" | "magcache";
   transformer_cache_threshold?: number;
+  // Step-cache speed/accuracy preset (omit for the backend default, "balanced").
+  transformer_cache_quality?: "quality" | "balanced" | "fast";
+  // Dual-GPU CFG branch parallelism (omit for auto: engages on measured families when a
+  // second GPU with enough free VRAM is available; bit-identical with the step cache on).
+  cfg_parallel?: "off" | "auto" | "on";
   // Dense DiT precision on full-pipeline loads (omit for the hardware-ladder auto;
   // "none" pins plain bf16). GGUF / single-file checkpoints carry their own precision.
   transformer_quant?: "none" | "fp8" | "int8" | "nvfp4" | "mxfp8";

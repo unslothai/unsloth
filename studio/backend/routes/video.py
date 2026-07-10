@@ -124,9 +124,11 @@ async def load_video_model(
             attention_backend = request.attention_backend,
             transformer_cache = request.transformer_cache,
             transformer_cache_threshold = request.transformer_cache_threshold,
+            transformer_cache_quality = request.transformer_cache_quality,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
             vae_quant = request.vae_quant,
+            cfg_parallel = request.cfg_parallel,
             model_kind = request.model_kind,
         )
         return VideoStatusResponse(**status_dict)

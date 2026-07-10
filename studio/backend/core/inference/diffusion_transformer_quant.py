@@ -230,6 +230,12 @@ _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     # on only the main blocks is still 100% non-finite). No small exclude set exists, so fp8 stays
     # denied and auto lands on int8 (clean, per-token). The 480p and 720p repacks share the DiT +
     # activations, so both deny. (ltx-2 fp8 measures clean on the same stack, so it is absent.)
+    # mxfp8 was ALSO separately measured here (B200, 720p/33f, Blackwell-blog selective recipe:
+    # block-32 MX, min(K,N) >= 1024, text-stream linears excluded, 434/784 Linears quantized):
+    # block scaling does fix the zero-row collapse (no black frames, all finite), but it is exactly
+    # latency-neutral (1.00x e2e at 30 AND 50 steps; only the FFN up-proj GEMM wins, 1.66x, and it
+    # is too small a share of the trimmed forward) at LPIPS 0.37-0.38 vs the same dense stack --
+    # fails both ship bars (>= 1.1x, <= 0.05), so the deny stays on measurement, not association.
     "hunyuanvideo-1.5": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
     "hunyuanvideo-1.5-720p": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
 }

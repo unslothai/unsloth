@@ -52,8 +52,16 @@ from .diffusion_cache import (
     TC_AUTO,
     apply_step_cache,
     auto_cache_mode,
+    auto_cache_quality,
     maybe_toggle_step_cache,
+    normalize_cache_quality,
     normalize_transformer_cache,
+)
+from .diffusion_cache import _disengage_step_cache
+from .diffusion_cfg_parallel import (
+    maybe_enable_cfg_parallel,
+    normalize_cfg_parallel,
+    teardown_cfg_parallel,
 )
 from .diffusion_device import resolve_diffusion_device_target
 from .diffusion_memory import (
@@ -286,6 +294,9 @@ class _VideoLoadState:
     # Inputs the generation-time toggle re-applies (quantised threshold + override).
     cache_quant_active: bool = False
     cache_threshold: Optional[float] = None
+    # The resolved cache quality preset ("quality" | "balanced" | "fast"); the toggle
+    # re-applies it so a mid-session re-engage keeps the requested preset.
+    cache_quality: Optional[str] = None
     # Dense transformer quant actually engaged ("int8" | "fp8" | "nvfp4" | "mxfp8") or
     # None. Mirrors the image backend's _LoadState.transformer_quant: on a pipeline-kind
     # load the dense DiT(s) can be torchao-quantised in place onto the low-precision
@@ -299,6 +310,12 @@ class _VideoLoadState:
     # convolutional decoder (Conv2d/Conv3d) shrinks in place; the vae_force_fp32 families
     # (Wan) never quantise (force_fp32 -> dense). Mirrors the image backend's _LoadState.
     vae_quant: Optional[str] = None
+    # Dual-GPU CFG branch parallelism: "on" when a DiT replica on a second CUDA device
+    # runs the pred_cond branch (bit-identical under the family's auto step cache;
+    # ~1.7x e2e). The handle is the installed proxy -- generate() plans each run's
+    # dispatch on it and _teardown_state frees the replica through it.
+    cfg_parallel: Optional[str] = None
+    cfg_parallel_handle: Any = None
     resolved: Optional[dict] = None
 
 
@@ -548,9 +565,11 @@ class VideoBackend:
         attention_backend: Optional[str] = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
+        transformer_cache_quality: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         vae_quant: Optional[str] = None,
+        cfg_parallel: Optional[str] = None,
         model_kind: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
@@ -586,9 +605,11 @@ class VideoBackend:
                 attention_backend = attention_backend,
                 transformer_cache = transformer_cache,
                 transformer_cache_threshold = transformer_cache_threshold,
+                transformer_cache_quality = transformer_cache_quality,
                 transformer_quant = transformer_quant,
                 text_encoder_quant = text_encoder_quant,
                 vae_quant = vae_quant,
+                cfg_parallel = cfg_parallel,
                 model_kind = model_kind,
                 _load_token = token,
             ),
@@ -909,9 +930,11 @@ class VideoBackend:
         attention_backend: Optional[str] = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
+        transformer_cache_quality: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         vae_quant: Optional[str] = None,
+        cfg_parallel: Optional[str] = None,
         model_kind: Optional[str] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
@@ -1314,6 +1337,15 @@ class VideoBackend:
         # so both denoisers cache; the engaged mode is identical across experts.
         cache_request = normalize_transformer_cache(transformer_cache)
         cache_auto = transformer_cache is None or cache_request == TC_AUTO
+        # Cache quality preset tri-state: unset / "auto" -> the family's measured
+        # default (the near-lossless "quality" preset for HunyuanVideo-1.5, "balanced"
+        # -- the pre-knob behaviour -- elsewhere); an explicit preset is honored
+        # verbatim. Resolved here so the generation-time toggle re-applies it.
+        cache_quality_requested = normalize_cache_quality(transformer_cache_quality)
+        cache_quality = cache_quality_requested or auto_cache_quality(fam.name)
+        # Validate the dual-GPU CFG request cheaply here; the gate itself must run
+        # after placement (it keys on the post-plan device layout + free VRAM).
+        normalize_cfg_parallel(cfg_parallel)
         # GGUF checkpoints and torchao-quantised DiTs both need the higher quantised
         # threshold for the cache to still trigger over the quant noise.
         cache_quant_active = kind == "gguf" or transformer_quant_engaged is not None
@@ -1340,6 +1372,7 @@ class VideoBackend:
                 quant_active = cache_quant_active,
                 family = fam.name,
                 steps = default_cache_steps,
+                quality = cache_quality,
                 logger = logger,
             )
             if view is pipe:
@@ -1434,6 +1467,48 @@ class VideoBackend:
                 except Exception as exc:  # noqa: BLE001 -- tiling is an optimisation only
                     logger.warning("video.vae_tiling_failed: %s", exc)
 
+            # ── dual-GPU CFG branch parallelism (auto on the measured families, else
+            # opt-in). AFTER placement so the memory plan stays single-device: the DiT
+            # replica lives entirely on a SECOND CUDA device and is gated on that
+            # device's free VRAM; a single-GPU host, an offload plan, or a quantised
+            # DiT all fall through to today's single-device path with the reason
+            # surfaced in the resolved record.
+            cfg_parallel_proxy, cfg_parallel_reason = maybe_enable_cfg_parallel(
+                pipe,
+                fam,
+                requested = cfg_parallel,
+                kind = kind,
+                transformer_source = _base_local_dir or base,
+                hf_token = hf_token,
+                dtype = dtype,
+                quant_engaged = transformer_quant_engaged,
+                offload_active = offload_policy != "none",
+                compiled = "compiled" in speed_optims,
+                attention_backend = attention_engaged,
+                speed_active = effective_speed != SPEED_OFF,
+                logger = logger,
+            )
+            if cfg_parallel_proxy is not None and cache_engaged:
+                # The load engaged the step cache on the primary BEFORE the proxy
+                # existed; re-engage THROUGH the proxy so the replica carries the same
+                # hooks and each branch's cache state matches the single-GPU run
+                # exactly (the bit-identity precondition). Cheap: hook install only.
+                _disengage_step_cache(
+                    cfg_parallel_proxy._primary,
+                    reason = "re-engaging through the cfg-parallel proxy",
+                    logger = logger,
+                )
+                cache_engaged = apply_step_cache(
+                    pipe,
+                    mode = cache_request,
+                    threshold = transformer_cache_threshold,
+                    quant_active = cache_quant_active,
+                    family = fam.name,
+                    steps = default_cache_steps,
+                    quality = cache_quality,
+                    logger = logger,
+                )
+
             resolved = build_resolved_record(
                 {
                     "memory_mode": (
@@ -1467,6 +1542,19 @@ class VideoBackend:
                         None if cache_auto else transformer_cache,
                         cache_engaged or "off",
                         cache_reason,
+                    ),
+                    "transformer_cache_quality": (
+                        transformer_cache_quality,
+                        cache_quality,
+                        "requested speed/accuracy preset (threshold + skip budget)"
+                        if cache_quality_requested is not None
+                        else "auto: the family's measured preset (near-lossless "
+                        "'quality' for HunyuanVideo-1.5, 'balanced' elsewhere)",
+                    ),
+                    "cfg_parallel": (
+                        cfg_parallel,
+                        "on" if cfg_parallel_proxy is not None else "off",
+                        cfg_parallel_reason,
                     ),
                     "transformer_quant": (
                         transformer_quant,
@@ -1530,9 +1618,12 @@ class VideoBackend:
                     cache_auto = cache_may_toggle,
                     cache_quant_active = cache_quant_active,
                     cache_threshold = transformer_cache_threshold,
+                    cache_quality = cache_quality,
                     transformer_quant = transformer_quant_engaged,
                     text_encoder_quant = text_encoder_quant_engaged,
                     vae_quant = vae_quant_engaged,
+                    cfg_parallel = "on" if cfg_parallel_proxy is not None else None,
+                    cfg_parallel_handle = cfg_parallel_proxy,
                     resolved = resolved,
                 )
                 # Ownership of the globals transferred to _state / _teardown_state.
@@ -1725,6 +1816,7 @@ class VideoBackend:
                             threshold = state.cache_threshold,
                             mode = auto_cache_mode(fam.name),
                             family = fam.name,
+                            quality = state.cache_quality,
                             logger = logger,
                         )
                     if toggled != state.transformer_cache:
@@ -1742,6 +1834,26 @@ class VideoBackend:
                             )
                 if state.transformer_cache:
                     self._reset_step_cache(pipe)
+                # Dual-GPU CFG parallelism: resolve this generation's routing AFTER the
+                # cache toggle (the plan keys on the engaged cache state -- parallel is
+                # bit-identical only with the cache on or an uncompiled stack) and
+                # serialize any run that may (re)compile. Planning must never fail a
+                # generation: a planner error just pins the sequential passthrough.
+                cfg_proxy = state.cfg_parallel_handle
+                if cfg_proxy is not None:
+                    try:
+                        cfg_proxy.plan_generation(
+                            cache_engaged = bool(state.transformer_cache),
+                            steps = steps,
+                            width = width,
+                            height = height,
+                            frames = frames,
+                        )
+                    except Exception:  # noqa: BLE001 -- fall back to single-device
+                        try:
+                            cfg_proxy.enabled = False
+                        except Exception:  # noqa: BLE001
+                            pass
                 try:
                     with torch.inference_mode(), progress_ctx:
                         output = pipe(**kwargs)
@@ -1760,6 +1872,13 @@ class VideoBackend:
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
+                if cfg_proxy is not None:
+                    # The (shape, steps, cache) key settles only on a COMPLETED run, so
+                    # a cancelled/failed one keeps the next dispatch compile-safe.
+                    try:
+                        cfg_proxy.note_generation_done()
+                    except Exception:  # noqa: BLE001
+                        pass
 
                 self._gen.update(phase = "export", eta_seconds = None)
                 video_frames = output.frames[0]
@@ -1852,6 +1971,11 @@ class VideoBackend:
             from . import diffusion_gguf_compile
 
             diffusion_gguf_compile.uninstall_all()
+            # Free the CFG-parallel replica on ITS device and restore the pipe's
+            # single-device shape (proxy out, guider forward + attention backend
+            # restored) before the pipe itself is dropped.
+            if state.cfg_parallel_handle is not None:
+                teardown_cfg_parallel(state.pipe, state.cfg_parallel_handle, logger = logger)
             del state
             clear_gpu_cache()
 
@@ -1895,6 +2019,7 @@ class VideoBackend:
                 "transformer_quant": None,
                 "text_encoder_quant": None,
                 "vae_quant": None,
+                "cfg_parallel": None,
                 "has_audio": False,
                 "defaults": None,
                 "resolved": None,
@@ -1924,6 +2049,7 @@ class VideoBackend:
             "transformer_quant": state.transformer_quant,
             "text_encoder_quant": state.text_encoder_quant,
             "vae_quant": state.vae_quant,
+            "cfg_parallel": state.cfg_parallel,
             "has_audio": fam.has_audio,
             "defaults": {
                 "steps": default_steps,

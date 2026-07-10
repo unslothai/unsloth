@@ -609,3 +609,269 @@ def test_toggle_magcache_disengages_below_bar(monkeypatch):
         _pipe(t), steps = 8, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
     )
     assert mode is None and t.disables == 1
+
+
+# ── cache quality presets (speed/accuracy knob) ────────────────────────────────────
+from core.inference.diffusion_cache import (  # noqa: E402
+    CACHE_QUALITY_LEVELS,
+    CQ_BALANCED,
+    CQ_FAST,
+    CQ_QUALITY,
+    _FBCACHE_QUALITY_THRESHOLDS,
+    _MAGCACHE_QUALITY_PRESETS,
+    normalize_cache_quality,
+)
+
+
+def test_normalize_cache_quality_unset_and_auto_are_none():
+    for value in (None, "", "  ", "auto", "AUTO"):
+        assert normalize_cache_quality(value) is None
+
+
+def test_normalize_cache_quality_levels_and_casing():
+    assert normalize_cache_quality("quality") == CQ_QUALITY
+    assert normalize_cache_quality("  Balanced ") == CQ_BALANCED
+    assert normalize_cache_quality("FAST") == CQ_FAST
+
+
+def test_normalize_cache_quality_rejects_unknown():
+    with pytest.raises(ValueError):
+        normalize_cache_quality("ultra")
+
+
+def test_quality_preset_tables_cover_every_level():
+    # A missing preset row would KeyError at engage time; the tables and the public
+    # levels tuple must stay in lockstep.
+    assert set(_MAGCACHE_QUALITY_PRESETS) == set(CACHE_QUALITY_LEVELS)
+    assert set(_FBCACHE_QUALITY_THRESHOLDS) == set(CACHE_QUALITY_LEVELS)
+
+
+def test_balanced_presets_match_the_preknob_defaults():
+    # "balanced" IS the pre-knob shipped behaviour: a load without the knob must be
+    # byte-identical to the round-1 defaults.
+    assert _MAGCACHE_QUALITY_PRESETS[CQ_BALANCED] == (
+        DEFAULT_MAGCACHE_THRESHOLD,
+        MAGCACHE_MAX_SKIP_STEPS,
+        MAGCACHE_RETENTION_RATIO,
+    )
+    assert _FBCACHE_QUALITY_THRESHOLDS[CQ_BALANCED] == (
+        DEFAULT_FBCACHE_THRESHOLD,
+        QUANT_FBCACHE_THRESHOLD,
+    )
+
+
+def test_magcache_quality_preset_engages_conservative_params(monkeypatch):
+    # Calibrated on HunyuanVideo-1.5-720p (50 steps): thr 0.06 / cap 2 / retention 0.3 =
+    # 1.11x at pairwise LPIPS 0.057 vs balanced's 1.49x at 0.126.
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _MixinTransformer()
+    engaged = apply_step_cache(
+        _pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p", steps = 50,
+        quality = "quality",
+    )
+    assert engaged == TC_MAGCACHE
+    thr, cap, retention = _MAGCACHE_QUALITY_PRESETS[CQ_QUALITY]
+    assert t.enabled_with.threshold == thr
+    assert t.enabled_with.max_skip_steps == cap
+    assert t.enabled_with.retention_ratio == retention
+
+
+def test_magcache_explicit_threshold_beats_the_preset(monkeypatch):
+    # The preset still supplies the skip cap / retention window, but a pinned threshold
+    # wins (the documented contract of transformer_cache_threshold).
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _MixinTransformer()
+    apply_step_cache(
+        _pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p", steps = 50,
+        quality = "fast", threshold = 0.05,
+    )
+    assert t.enabled_with.threshold == 0.05
+    assert t.enabled_with.max_skip_steps == _MAGCACHE_QUALITY_PRESETS[CQ_FAST][1]
+
+
+def test_fbcache_quality_preset_thresholds(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    dense_thr, quant_thr = _FBCACHE_QUALITY_THRESHOLDS[CQ_QUALITY]
+    t = _MixinTransformer()
+    apply_step_cache(_pipe(t), mode = "fbcache", quality = "quality")
+    assert t.enabled_with.threshold == dense_thr
+    t2 = _MixinTransformer()
+    apply_step_cache(_pipe(t2), mode = "fbcache", quality = "quality", quant_active = True)
+    assert t2.enabled_with.threshold == quant_thr
+
+
+def test_apply_step_cache_rejects_bad_quality(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    with pytest.raises(ValueError):
+        apply_step_cache(_pipe(_MixinTransformer()), mode = "fbcache", quality = "bogus")
+
+
+def test_toggle_threads_quality_through(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _ToggleTransformer()
+    maybe_toggle_step_cache(
+        _pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p",
+        quality = "quality",
+    )
+    assert t.enabled_with.threshold == _MAGCACHE_QUALITY_PRESETS[CQ_QUALITY][0]
+    assert t.enabled_with.max_skip_steps == _MAGCACHE_QUALITY_PRESETS[CQ_QUALITY][1]
+
+
+# ── compiled cache-hook inners (regional compile x step cache composition) ──────────
+import functools  # noqa: E402
+
+from core.inference.diffusion_cache import (  # noqa: E402
+    _compile_hooked_block_inners,
+    _restore_hooked_block_inners,
+    auto_cache_quality,
+)
+
+
+def test_auto_cache_quality_per_family():
+    assert auto_cache_quality("hunyuanvideo-1.5") == CQ_QUALITY
+    assert auto_cache_quality("HunyuanVideo-1.5-720p") == CQ_QUALITY
+    for other in (None, "", "flux", "wan2.2-ti2v-5b", "ltx-2"):
+        assert auto_cache_quality(other) == CQ_BALANCED
+
+
+class _BoundInner:
+    """Provides a plain bound method for fn_ref.original_forward (__self__ present)."""
+
+    def forward(self, *args, **kwargs):
+        return "eager"
+
+
+def _hooked_block(*, compiled = True, hook_name = "mag_cache_block_hook", bound = True):
+    inner = _BoundInner()
+    orig = inner.forward if bound else functools.partial(_BoundInner.forward, inner)
+    hook = types.SimpleNamespace(fn_ref = types.SimpleNamespace(original_forward = orig))
+    block = types.SimpleNamespace(
+        _diffusers_hook = types.SimpleNamespace(hooks = {hook_name: hook}),
+        _compiled_call_impl = object() if compiled else None,
+    )
+    return block, hook, orig
+
+
+def _fake_dit(blocks):
+    return types.SimpleNamespace(modules = lambda: [types.SimpleNamespace()] + blocks)
+
+
+def _stub_torch_compile(monkeypatch):
+    compiled_calls = []
+
+    def _compile(fn, **kwargs):
+        compiled_calls.append((fn, kwargs))
+        wrapper = lambda *a, **k: fn(*a, **k)  # noqa: E731
+        wrapper._unsloth_test_compiled_of = fn
+        return wrapper
+
+    torch = types.ModuleType("torch")
+    torch.compile = _compile
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    return compiled_calls
+
+
+def test_arming_swaps_inner_for_compiled_wrapper(monkeypatch):
+    calls = _stub_torch_compile(monkeypatch)
+    block, hook, orig = _hooked_block()
+    assert _compile_hooked_block_inners(_fake_dit([block])) == 1
+    assert hook.fn_ref.original_forward is not orig
+    assert hook.fn_ref.original_forward._unsloth_test_compiled_of is orig
+    assert hook._unsloth_orig_inner is orig
+    # The inner compile must match the cache-active tier: graph-breakable + dynamic.
+    assert calls[0][1] == {"fullgraph": False, "dynamic": True}
+
+
+def test_arming_is_idempotent(monkeypatch):
+    _stub_torch_compile(monkeypatch)
+    block, hook, _ = _hooked_block()
+    dit = _fake_dit([block])
+    assert _compile_hooked_block_inners(dit) == 1
+    once = hook.fn_ref.original_forward
+    assert _compile_hooked_block_inners(dit) == 0  # marker short-circuits
+    assert hook.fn_ref.original_forward is once
+
+
+def test_arming_skips_uncompiled_blocks(monkeypatch):
+    # An eager-tier load has no _compiled_call_impl: the hook must stay untouched
+    # (compiling the inner would ADD compile where the user chose eager).
+    _stub_torch_compile(monkeypatch)
+    block, hook, orig = _hooked_block(compiled = False)
+    assert _compile_hooked_block_inners(_fake_dit([block])) == 0
+    assert hook.fn_ref.original_forward is orig
+
+
+def test_arming_skips_partial_captured_inner(monkeypatch):
+    # A stacked hook chain (e.g. group offload) captures a functools.partial, not the
+    # plain bound method; arming would compile the wrong layer of the chain.
+    _stub_torch_compile(monkeypatch)
+    block, hook, orig = _hooked_block(bound = False)
+    assert _compile_hooked_block_inners(_fake_dit([block])) == 0
+    assert hook.fn_ref.original_forward is orig
+
+
+def test_arming_covers_every_cache_hook_family(monkeypatch):
+    _stub_torch_compile(monkeypatch)
+    names = (
+        "mag_cache_leader_block_hook",
+        "mag_cache_block_hook",
+        "fbc_leader_block_hook",
+        "fbc_block_hook",
+    )
+    blocks = [_hooked_block(hook_name = n)[0] for n in names]
+    assert _compile_hooked_block_inners(_fake_dit(blocks)) == len(names)
+
+
+def test_restore_puts_the_exact_original_back(monkeypatch):
+    _stub_torch_compile(monkeypatch)
+    block, hook, orig = _hooked_block()
+    dit = _fake_dit([block])
+    _compile_hooked_block_inners(dit)
+    _restore_hooked_block_inners(dit)
+    assert hook.fn_ref.original_forward is orig
+    assert hook._unsloth_orig_inner is None
+
+
+def test_restore_tolerates_fakes_without_modules():
+    _restore_hooked_block_inners(_MixinTransformer())  # no .modules(): no-op
+
+
+def test_disengage_restores_inners_before_disable(monkeypatch):
+    # remove_hook splices fn_ref.original_forward back into module.forward, so the
+    # compiled wrapper must be swapped out BEFORE disable_cache runs.
+    from core.inference import diffusion_cache as dc_mod
+
+    order = []
+
+    class _T(_MixinTransformer):
+        def disable_cache(self):
+            order.append("disable")
+
+        def modules(self):
+            order.append("restore-walk")
+            return []
+
+    t = _T()
+    t._unsloth_step_cache = "magcache@0.12#s50"
+    assert dc_mod._disengage_step_cache(t, reason = "test") is True
+    assert order == ["restore-walk", "disable"]
+
+
+def test_apply_step_cache_arms_compiled_blocks_on_toggle(monkeypatch):
+    # The generation-time toggle engages the cache AFTER the load already compiled the
+    # blocks; apply_step_cache must arm the fresh hooks itself.
+    _stub_diffusers_with_magcache(monkeypatch)
+    _stub_torch_compile(monkeypatch)
+    block, hook, orig = _hooked_block()
+
+    class _T(_MixinTransformer):
+        def modules(self):
+            return [block]
+
+    t = _T()
+    engaged = apply_step_cache(
+        _pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p", steps = 50
+    )
+    assert engaged == TC_MAGCACHE
+    assert hook.fn_ref.original_forward is not orig
+    assert hook._unsloth_orig_inner is orig

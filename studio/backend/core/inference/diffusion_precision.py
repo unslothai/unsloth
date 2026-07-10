@@ -131,6 +131,14 @@ _TE_AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
 # rarer case where even keep-bf16 int8 (or fp8) misses the bar for a specific encoder.
 _TE_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {}
 
+# Families whose AUTO text-encoder quant resolves dense (see select_te_quant_scheme):
+# measured out-of-bar trajectory drift for zero speed win on the video families below.
+# Unlike the deny table this only steers the AUTO default; an explicit scheme request
+# (text_encoder_quant="fp8_dynamic") is still honored verbatim.
+_TE_AUTO_DENSE_FAMILIES: frozenset[str] = frozenset(
+    {"hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"}
+)
+
 # Map a TE torchao scheme to the transformer smoke-probe scheme (same torchao GEMM), so ``auto``
 # degrades gracefully when a build lacks a kernel. Layerwise fp8 has no torchao GEMM to probe.
 _TE_SMOKE_SCHEME = {TE_QUANT_FP8_DYNAMIC: "fp8", TE_QUANT_INT8: "int8", TE_QUANT_NVFP4: "nvfp4"}
@@ -209,6 +217,16 @@ def select_te_quant_scheme(
     requested = normalize_te_quant(requested)
     if requested is None or requested != TE_QUANT_AUTO:
         return requested
+    # AUTO resolves dense for these families regardless of hardware. TE quant perturbs
+    # the CONDITIONING and a multi-step video trajectory amplifies that chaotically: on
+    # HunyuanVideo-1.5-720p (B200, 720p/33f/30 steps) TE fp8_dynamic ALONE moves the
+    # clip to LPIPS 0.236 vs the bit-exact reference while the rest of the shipped
+    # stack sits at 0.052-0.053, for ZERO speed win (35.48 vs 35.36 s e2e -- the TE
+    # runs once per generation). The ~6.7 GB of weight savings is not worth being the
+    # single dominant accuracy cost of the default stack. (VAE fp8 stays in auto:
+    # measured 0.053, at the compile floor -- decode-only, no trajectory to amplify.)
+    if (family or "").strip().lower() in _TE_AUTO_DENSE_FAMILIES:
+        return None
     from .diffusion_transformer_quant import _capability, _is_consumer_gpu
 
     cap = _capability()

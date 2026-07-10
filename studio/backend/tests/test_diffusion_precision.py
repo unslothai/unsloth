@@ -577,3 +577,27 @@ def test_quantize_text_encoders_auto_resolves_and_applies(monkeypatch):
     mode = quantize_text_encoders(pipe, _target(), mode = "auto", family = "qwen-image")
     assert mode == TE_QUANT_FP8_DYNAMIC
     assert calls == [te]
+
+
+def test_select_te_auto_resolves_dense_for_hunyuanvideo15(monkeypatch):
+    # HunyuanVideo-1.5 (both repacks): TE quant perturbs the conditioning and the video
+    # trajectory amplifies it chaotically (measured LPIPS 0.236 vs bit-exact from TE
+    # fp8_dynamic ALONE, vs 0.052 for the rest of the stack) at zero speed win, so the
+    # AUTO default keeps the encoder dense on ANY hardware.
+    _stub_tq_select(monkeypatch, cc = (10, 0), consumer = False)
+    _allow_te(monkeypatch, {TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8})
+    assert select_te_quant_scheme(_target(), "auto", family = "hunyuanvideo-1.5") is None
+    assert select_te_quant_scheme(_target(), "auto", family = "HunyuanVideo-1.5-720p") is None
+    # Other families keep the normal ladder on the same stubbed hardware.
+    assert select_te_quant_scheme(_target(), "auto", family = "qwen-image") == TE_QUANT_FP8_DYNAMIC
+
+
+def test_select_te_explicit_scheme_still_honored_for_hunyuanvideo15(monkeypatch):
+    # The auto-dense table steers only the DEFAULT; an explicit request stays verbatim
+    # (select returns it as-is; quantize_text_encoders re-gates hardware support).
+    _stub_tq_select(monkeypatch, cc = (10, 0), consumer = False)
+    _allow_te(monkeypatch, {TE_QUANT_FP8_DYNAMIC})
+    assert (
+        select_te_quant_scheme(_target(), "fp8_dynamic", family = "hunyuanvideo-1.5-720p")
+        == TE_QUANT_FP8_DYNAMIC
+    )

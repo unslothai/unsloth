@@ -50,6 +50,75 @@ DEFAULT_MAGCACHE_THRESHOLD = 0.12
 MAGCACHE_MAX_SKIP_STEPS = 3
 MAGCACHE_RETENTION_RATIO = 0.2
 
+# ── cache quality presets ──────────────────────────────────────────────────────────
+# A user-facing speed/accuracy knob over the step cache's internals (threshold, skip cap,
+# retention window). "balanced" is exactly the pre-knob shipped behaviour; "quality"
+# trades most of the cache speedup for a near-lossless clip; "fast" skips more
+# aggressively. An explicit transformer_cache_threshold always overrides the preset's
+# threshold (the preset still supplies the magcache skip cap / retention window).
+CQ_QUALITY = "quality"
+CQ_BALANCED = "balanced"
+CQ_FAST = "fast"
+CACHE_QUALITY_LEVELS = (CQ_QUALITY, CQ_BALANCED, CQ_FAST)
+
+# MagCache preset -> (threshold, max_skip_steps, retention_ratio). Calibrated on
+# HunyuanVideo-1.5-720p (B200, 1280x720, 33 frames, 50 steps, pairwise LPIPS vs the same
+# uncached trim+cudnn+compile stack, WITH the compiled hook inners below): quality
+# (0.06, 2, 0.3) = 1.64x at LPIPS 0.050 (30 steps: 1.63x at 0.093) vs balanced
+# (0.12, 3, 0.2) = 2.17x at LPIPS 0.129 (30 steps: 2.02x at 0.201). Skip counts bind on
+# the cap + retention window below threshold ~0.12, which is why quality tightens all
+# three rather than just the threshold.
+_MAGCACHE_QUALITY_PRESETS: dict[str, tuple[float, int, float]] = {
+    CQ_QUALITY: (0.06, 2, 0.3),
+    CQ_BALANCED: (DEFAULT_MAGCACHE_THRESHOLD, MAGCACHE_MAX_SKIP_STEPS, MAGCACHE_RETENTION_RATIO),
+    CQ_FAST: (0.24, MAGCACHE_MAX_SKIP_STEPS, MAGCACHE_RETENTION_RATIO),
+}
+
+# FBCache preset -> threshold (dense, quant-active). "balanced" keeps the measured
+# defaults (0.08 dense / 0.12 quantised); "quality" halves the trigger so the cache only
+# reuses when the first-block residual is nearly static; "fast" uses the quantised
+# threshold everywhere.
+_FBCACHE_QUALITY_THRESHOLDS: dict[str, tuple[float, float]] = {
+    CQ_QUALITY: (0.04, 0.06),
+    CQ_BALANCED: (DEFAULT_FBCACHE_THRESHOLD, QUANT_FBCACHE_THRESHOLD),
+    CQ_FAST: (QUANT_FBCACHE_THRESHOLD, 0.15),
+}
+
+
+def normalize_cache_quality(value: Optional[str]) -> Optional[str]:
+    """Lower/strip a requested cache quality; None / "" / "auto" -> None (the loader
+    resolves it per family via ``auto_cache_quality``). Raises ValueError for an
+    unsupported value."""
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized or normalized == "auto":
+        return None
+    if normalized not in CACHE_QUALITY_LEVELS:
+        raise ValueError(
+            f"Unsupported transformer_cache_quality '{value}'. Use one of: auto, "
+            f"{', '.join(CACHE_QUALITY_LEVELS)}."
+        )
+    return normalized
+
+
+# Families whose UNSET cache quality resolves to the near-lossless "quality" preset
+# instead of "balanced". HunyuanVideo-1.5 (both repacks) measured with the compiled
+# cache inners (see _compile_hooked_block_inners): quality = 1.63-1.64x at pairwise
+# LPIPS 0.05 (50 steps) / 0.09 (30 steps) vs balanced's 2.02-2.17x at 0.13-0.20 --
+# the accuracy-first default keeps most of the speedup at under half the drift, and
+# balanced / fast stay one explicit request away. Families without a measured quality
+# point keep balanced (their pre-knob behaviour).
+_FAMILY_AUTO_CACHE_QUALITY: dict[str, str] = {
+    "hunyuanvideo-1.5": CQ_QUALITY,
+    "hunyuanvideo-1.5-720p": CQ_QUALITY,
+}
+
+
+def auto_cache_quality(family: Optional[str]) -> str:
+    """The cache quality preset an UNSET request resolves to for ``family``."""
+    return _FAMILY_AUTO_CACHE_QUALITY.get(str(family or "").strip().lower(), CQ_BALANCED)
+
 # The auto policy's step-count bar: FBCache's win scales with step count (each skipped
 # step is a larger quality hit on a short trajectory), so auto engages it only at 20+
 # steps -- full "dev"-style schedules (28+) qualify, distilled turbo models (4-9) never do.
@@ -285,6 +354,101 @@ def _invalidate_child_registry_cache(transformer: Any) -> None:
             pass
 
 
+# diffusers' cache hook registry names whose compute branch we re-point at a compiled
+# inner forward (leader = the measuring first block, block = the remaining ones); both
+# hook families share the fn_ref layout.
+_CACHE_HOOK_NAMES = (
+    "mag_cache_leader_block_hook",
+    "mag_cache_block_hook",
+    "fbc_leader_block_hook",
+    "fbc_block_hook",
+)
+
+
+def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
+    """Restore the regional compile on cache-hooked blocks' COMPUTED steps.
+
+    ``enable_cache`` replaces each block's ``forward`` with the hook's ``new_forward``
+    (stashing the pre-hook bound method in ``fn_ref.original_forward``), and every cache
+    ``new_forward`` is ``@torch.compiler.disable``d because its skip decision is
+    data-dependent Python. The disable is recursive, so the compute branch's call into
+    ``original_forward`` runs EAGER and the block's regional compile artifact
+    (``_compiled_call_impl``) is never reached: measured 1.69 vs 1.09 s/step on
+    HunyuanVideo-1.5-720p, i.e. the cache forfeited the whole compile win on every
+    non-skipped step. An explicitly ``torch.compile``d callable re-enables dynamo for
+    its own extent even inside a disabled frame, so re-pointing
+    ``fn_ref.original_forward`` at a compiled wrapper of the same bound method restores
+    compiled compute steps while the skip decision stays eager exactly as designed
+    (measured: identical skip counts, balanced MagCache 39.4 -> 26.9 s at 50 steps).
+
+    Only blocks the speed layer actually compiled are armed (``_compiled_call_impl``
+    guard -- eager tiers stay untouched), and only when ``original_forward`` is a plain
+    bound method (a stacked hook chain, e.g. offload, captures a partial and is
+    skipped). Idempotent via the ``_unsloth_orig_inner`` marker; best-effort. Returns
+    the number of hooks armed."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001 -- no torch, nothing to arm
+        return 0
+    armed = 0
+    try:
+        for module in transformer.modules():
+            registry = getattr(module, "_diffusers_hook", None)
+            if registry is None or getattr(module, "_compiled_call_impl", None) is None:
+                continue
+            hooks = getattr(registry, "hooks", None) or {}
+            for name in _CACHE_HOOK_NAMES:
+                hook = hooks.get(name)
+                fn_ref = getattr(hook, "fn_ref", None) if hook is not None else None
+                orig = getattr(fn_ref, "original_forward", None)
+                if orig is None or getattr(hook, "_unsloth_orig_inner", None) is not None:
+                    continue
+                if getattr(orig, "__self__", None) is None:
+                    continue  # not the plain bound method; arming would miss the block
+                # fullgraph=False / dynamic=True: a cache is active by definition (its
+                # decision points graph-break) and this matches the default tier the
+                # regional compile used. Dynamo caches per code object, so re-arming
+                # after a toggle is effectively free (~0.03 s).
+                fn_ref.original_forward = torch.compile(orig, fullgraph = False, dynamic = True)
+                hook._unsloth_orig_inner = orig
+                armed += 1
+    except Exception as exc:  # noqa: BLE001 -- best-effort: the cache still works eager
+        _warn(logger, "cache-hook inner compile", exc)
+        return armed
+    if armed and logger is not None:
+        logger.info(
+            "diffusion.cache: %d cache-hooked block(s) armed with compiled inner forwards",
+            armed,
+        )
+    return armed
+
+
+def _restore_hooked_block_inners(transformer: Any) -> None:
+    """Undo ``_compile_hooked_block_inners``: put the plain bound methods back and clear
+    the markers. MUST run before ``disable_cache`` -- ``remove_hook`` splices
+    ``fn_ref.original_forward`` back into ``module.forward``, and leaving the compiled
+    wrapper there would pin a stale compiled callable onto the uncached path."""
+    try:
+        modules = list(transformer.modules())
+    except Exception:  # noqa: BLE001 -- not a torch module (tests/fakes): nothing armed
+        return
+    for module in modules:
+        registry = getattr(module, "_diffusers_hook", None)
+        if registry is None:
+            continue
+        hooks = getattr(registry, "hooks", None) or {}
+        for name in _CACHE_HOOK_NAMES:
+            hook = hooks.get(name)
+            orig = getattr(hook, "_unsloth_orig_inner", None) if hook is not None else None
+            if orig is None:
+                continue
+            try:
+                hook.fn_ref.original_forward = orig
+                hook._unsloth_orig_inner = None
+            except Exception:  # noqa: BLE001 -- per-hook best-effort
+                pass
+
+
 def _pipeline_opens_cache_context(pipe: Any) -> bool:
     """Whether the pipeline enters ``transformer.cache_context(...)`` in its denoise loop.
     The First-Block-Cache hook requires it at run time, and a CacheMixin transformer alone
@@ -314,12 +478,15 @@ def apply_step_cache(
     quant_active: bool = False,
     family: Optional[str] = None,
     steps: Optional[int] = None,
+    quality: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[str]:
     """Engage step caching on ``pipe.transformer``. Returns the mode actually engaged, or
     None when disabled / unsupported (the load then runs uncached). ``threshold`` overrides
     the default; ``quant_active`` raises the FBCache default so the cache still triggers on
-    a quantised transformer. The magcache mode additionally needs ``family`` (to look up the
+    a quantised transformer. ``quality`` picks the preset parameter set (threshold + the
+    magcache skip cap / retention window); an explicit ``threshold`` still wins over the
+    preset's threshold. The magcache mode additionally needs ``family`` (to look up the
     calibrated ratio curve) and ``steps`` (MagCache interpolates that curve over the
     configured step count and sizes its no-skip retention window from it). Best-effort:
     never raises for an incompatible model."""
@@ -331,14 +498,13 @@ def apply_step_cache(
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return None
+    quality = normalize_cache_quality(quality) or CQ_BALANCED
     if mode == TC_MAGCACHE:
-        thr = threshold if threshold is not None else DEFAULT_MAGCACHE_THRESHOLD
+        preset_thr, mag_skip, mag_retention = _MAGCACHE_QUALITY_PRESETS[quality]
+        thr = threshold if threshold is not None else preset_thr
     else:
-        thr = (
-            threshold
-            if threshold is not None
-            else (QUANT_FBCACHE_THRESHOLD if quant_active else DEFAULT_FBCACHE_THRESHOLD)
-        )
+        dense_thr, quant_thr = _FBCACHE_QUALITY_THRESHOLDS[quality]
+        thr = threshold if threshold is not None else (quant_thr if quant_active else dense_thr)
     # Engage only via the transformer's native enable_cache (the diffusers CacheMixin path):
     # the lower-level apply_first_block_cache hook would install on a non-CacheMixin
     # transformer too (e.g. Z-Image), whose pipeline opens no cache_context and would crash
@@ -381,8 +547,8 @@ def apply_step_cache(
 
             config: Any = MagCacheConfig(
                 threshold = thr,
-                max_skip_steps = MAGCACHE_MAX_SKIP_STEPS,
-                retention_ratio = MAGCACHE_RETENTION_RATIO,
+                max_skip_steps = mag_skip,
+                retention_ratio = mag_retention,
                 num_inference_steps = int(steps),
                 mag_ratios = list(ratios),
             )
@@ -402,6 +568,11 @@ def apply_step_cache(
         # the transformer's HookRegistry; the block hooks just installed would then
         # never receive the cache context. Must follow every enable_cache.
         _invalidate_child_registry_cache(transformer)
+        # If the blocks are already regionally compiled (the generation-time toggle
+        # path: compile ran at load), re-point the fresh hooks' compute branch at
+        # compiled inners; the load path (cache before compile) is armed by
+        # _compile_repeated_blocks instead. No-op when nothing is compiled.
+        _compile_hooked_block_inners(transformer, logger)
         try:
             transformer._unsloth_step_cache = marker
         except Exception:  # noqa: BLE001 — marker is best-effort
@@ -411,7 +582,10 @@ def apply_step_cache(
         return mode
     except Exception as exc:  # noqa: BLE001 — incompatible model -> run uncached
         # enable_cache can fail after hooking some blocks; drop any partial hooks so
-        # the reported-uncached model doesn't actually run half-cached.
+        # the reported-uncached model doesn't actually run half-cached. Any armed
+        # compiled inners must be restored FIRST (remove_hook splices original_forward
+        # back into module.forward).
+        _restore_hooked_block_inners(transformer)
         try:
             transformer.disable_cache()
         except Exception:  # noqa: BLE001
@@ -471,6 +645,9 @@ def _disengage_step_cache(
     if not callable(disable_cache):
         return False
     try:
+        # Before remove_hook splices fn_ref.original_forward back into module.forward:
+        # the compiled inner wrappers must not leak onto the uncached path.
+        _restore_hooked_block_inners(transformer)
         disable_cache()
         transformer._unsloth_step_cache = None
         if logger is not None:
@@ -489,6 +666,7 @@ def maybe_toggle_step_cache(
     threshold: Optional[float] = None,
     mode: str = TC_FBCACHE,
     family: Optional[str] = None,
+    quality: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[str]:
     """Generation-time enable/disable for an AUTO cache decision, keyed on the actual
@@ -521,6 +699,7 @@ def maybe_toggle_step_cache(
             quant_active = quant_active,
             family = family,
             steps = steps,
+            quality = quality,
             logger = logger,
         )
     if not want and engaged:

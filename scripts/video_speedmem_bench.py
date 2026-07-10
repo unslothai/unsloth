@@ -250,6 +250,16 @@ _CONFIGS: dict[str, dict[str, Any]] = {
     "te_fbcache": dict(
         te = "auto", vae = "none", dit = "none", speed = "default", attn = "auto", cache = "auto"
     ),
+    # Companion-quant accuracy isolation vs the bit-exact reference (uncached, so the cache
+    # cannot mask it): TE-only and VAE-only on top of the trim+cudnn+compile stack. With the
+    # compile rounding fixed (emulate_precision_casts), the companions are the next-largest
+    # divergence source, and only one of them should pay for it.
+    "diag_te_nocache": dict(
+        te = "auto", vae = "none", dit = "none", speed = "default", attn = "auto", cache = "off"
+    ),
+    "diag_vae_nocache": dict(
+        te = "none", vae = "auto", dit = "none", speed = "default", attn = "auto", cache = "off"
+    ),
     "ditfp8_fbcache": dict(
         te = "none", vae = "none", dit = "auto", speed = "default", attn = "auto", cache = "auto"
     ),
@@ -362,6 +372,7 @@ def _apply_levers(
     force_fp32_vae: bool,
     default_steps: int,
     cache_threshold: Optional[float] = None,
+    cache_quality: Optional[str] = None,
     logger = None,
 ) -> dict:
     """Apply the configured levers with the loader's own argument values, in the loader's order:
@@ -383,6 +394,8 @@ def _apply_levers(
     from core.inference.diffusion_cache import (
         apply_step_cache,
         auto_cache_mode,
+        auto_cache_quality,
+        normalize_cache_quality,
         FBCACHE_MIN_STEPS,
     )
 
@@ -467,6 +480,9 @@ def _apply_levers(
         # HunyuanVideo-1.5 families, FBCache elsewhere.
         cache_request = auto_cache_mode(fam_name) if default_steps >= FBCACHE_MIN_STEPS else None
         if cache_request is not None:
+            # Quality preset resolution, exactly like the loader (video.py): an unset
+            # request takes the family's measured auto default.
+            quality = normalize_cache_quality(cache_quality) or auto_cache_quality(fam_name)
             for v in views:
                 engaged["cache"] = apply_step_cache(
                     v,
@@ -475,6 +491,7 @@ def _apply_levers(
                     quant_active = dit_quant_active,
                     family = fam_name,
                     steps = default_steps,
+                    quality = quality,
                     logger = logger,
                 )
             cache_active = engaged["cache"] not in (None, "off")
@@ -525,6 +542,7 @@ def _timed_video(
     default_steps,
     guidance_via_guider = False,
     cache_threshold = None,
+    cache_quality = None,
     family = None,
     logger = None,
 ):
@@ -532,7 +550,12 @@ def _timed_video(
     exactly like the loader, then times total + per-step. Returns (output, total_s, [per_step_ms])."""
     import torch
 
-    from core.inference.diffusion_cache import auto_cache_mode, maybe_toggle_step_cache
+    from core.inference.diffusion_cache import (
+        auto_cache_mode,
+        auto_cache_quality,
+        maybe_toggle_step_cache,
+        normalize_cache_quality,
+    )
 
     if cache_mode == "auto":
         # Toggle on EVERY expert view, exactly like the loader's per-view recheck
@@ -551,6 +574,8 @@ def _timed_video(
                     threshold = cache_threshold,
                     mode = auto_cache_mode(family),
                     family = family,
+                    quality = normalize_cache_quality(cache_quality)
+                    or auto_cache_quality(family),
                     logger = logger,
                 )
             except Exception:
@@ -632,6 +657,7 @@ def _run_config(
     iters: int,
     out: Path,
     cache_threshold: Optional[float] = None,
+    cache_quality: Optional[str] = None,
     logger = None,
 ):
     import numpy as np
@@ -668,6 +694,7 @@ def _run_config(
         force_fp32_vae = force_fp32,
         default_steps = default_steps,
         cache_threshold = cache_threshold,
+        cache_quality = cache_quality,
         logger = logger,
     )
     pipe = pipe.to("cuda")
@@ -693,6 +720,7 @@ def _run_config(
         default_steps = default_steps,
         guidance_via_guider = gvg,
         cache_threshold = cache_threshold,
+        cache_quality = cache_quality,
         family = family,
         logger = logger,
     )
@@ -714,6 +742,7 @@ def _run_config(
             default_steps = default_steps,
             guidance_via_guider = gvg,
             cache_threshold = cache_threshold,
+            cache_quality = cache_quality,
             family = family,
             logger = logger,
         )
@@ -770,6 +799,7 @@ def _run_config(
         "speed_optims": engaged["speed_optims"],
         "attn_trim": engaged.get("attn_trim", False),
         "cache_threshold": cache_threshold,
+        "cache_quality": cache_quality,
         "cache_marker": getattr(getattr(pipe, "transformer", None), "_unsloth_step_cache", None),
         "load_peak_gb": round(load_peak, 2),
         "weights_gb": round(weights_gb, 2),
@@ -803,6 +833,12 @@ def main(argv = None) -> int:
         type = float,
         default = None,
         help = "FBCache residual-diff threshold override (None -> the production default)",
+    )
+    ap.add_argument(
+        "--cache-quality",
+        default = None,
+        choices = ("quality", "balanced", "fast"),
+        help = "Step-cache quality preset (None -> the family's production auto default)",
     )
     args = ap.parse_args(argv)
 
@@ -859,6 +895,7 @@ def main(argv = None) -> int:
             iters = args.iters,
             out = out,
             cache_threshold = args.cache_threshold,
+            cache_quality = args.cache_quality,
             logger = logger,
         )
         if n == "reference":
