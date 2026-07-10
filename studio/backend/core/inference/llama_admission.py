@@ -358,9 +358,7 @@ def get_llama_admission_queue(key: str) -> LlamaAdmissionQueue:
             # each load registers a new key. Drop the now-idle queues from prior
             # loads so the registry can't grow without bound on a long-running
             # server. Queues with in-flight requests are kept until they drain.
-            for stale_key in [
-                k for k in _QUEUES if k != key and _QUEUES[k].is_idle()
-            ]:
+            for stale_key in [k for k in _QUEUES if k != key and _QUEUES[k].is_idle()]:
                 del _QUEUES[stale_key]
         return queue
 
