@@ -556,12 +556,17 @@ def get_package_versions() -> Dict[str, Optional[str]]:
 
         versions["cuda"] = getattr(torch.version, "cuda", None)
         versions["rocm"] = getattr(torch.version, "hip", None)
-        if hasattr(torch, "xpu") and torch.xpu.is_available():
-            # torch.version.xpu may be None on modern builds; fall back to
-            # "available" so the UI distinguishes present-but-unknown from
-            # "package not found".
-            xpu_ver = getattr(torch.version, "xpu", None)
-            versions["xpu"] = xpu_ver if xpu_ver is not None else "available"
+        # Isolated probe: a broken Intel runtime raising in is_available()
+        # must not blank the already-read cuda/rocm versions.
+        try:
+            if hasattr(torch, "xpu") and torch.xpu.is_available():
+                # torch.version.xpu may be None on modern builds; fall back to
+                # "available" so the UI distinguishes present-but-unknown from
+                # "package not found".
+                xpu_ver = getattr(torch.version, "xpu", None)
+                versions["xpu"] = xpu_ver if xpu_ver is not None else "available"
+        except Exception:
+            versions["xpu"] = None
     except Exception:
         versions["cuda"] = None
         versions["rocm"] = None

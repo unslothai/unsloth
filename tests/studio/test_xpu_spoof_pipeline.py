@@ -423,6 +423,23 @@ def test_clear_gpu_cache_calls_xpu(spoof_xpu):
     assert calls["empty_cache"] >= 1
 
 
+def test_package_versions_survive_broken_xpu_runtime(spoof_xpu, monkeypatch):
+    # A broken Intel runtime raising in is_available() must not blank the
+    # CUDA/ROCm versions on NVIDIA/AMD hosts.
+    import torch
+
+    hw, _ = spoof_xpu(cuda_available = True, cuda_visible = None, ze_mask = None)
+    monkeypatch.setattr(torch.version, "cuda", "12.8", raising = False)
+
+    def _broken():
+        raise RuntimeError("Level Zero init failed")
+
+    monkeypatch.setattr(torch.xpu, "is_available", _broken)
+    versions = hw.get_package_versions()
+    assert versions["cuda"] == "12.8"
+    assert versions.get("xpu") is None
+
+
 def test_package_versions_reports_xpu(spoof_xpu):
     hw, _ = spoof_xpu(xpu_version = "2.7")
     hw.detect_hardware()
