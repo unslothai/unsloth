@@ -8,8 +8,8 @@ the CUDA trainer (core/training/trainer.py) and the MLX worker
 (core/training/worker.py):
   - unmapped models use chat template auto-detection (previously masking was
     silently disabled),
-  - gpt-oss models keep their manual markers (non-final assistant <|end|>
-    tokens stay trained),
+  - gpt-oss goes auto-first too (its quantized checkpoints ship a template
+    the manual markers cannot match),
   - an auto-detection failure falls back to the template table markers,
   - a table miss after an auto failure warns and leaves the trainer unchanged.
 """
@@ -92,13 +92,28 @@ def test_mapped_model_prefers_auto_detection():
     assert train_fn.calls == [dict(_AUTO)]
 
 
-def test_gpt_oss_stays_on_manual_markers():
-    # gpt-oss is the deliberate exception: manual markers keep non-final
-    # assistant <|end|> tokens trained that auto-detection would mask.
+def test_gpt_oss_uses_auto_detection_first():
+    # The quantized gpt-oss checkpoints ship a template without the
+    # <|channel|>final header, where the manual markers match nothing; auto
+    # derives markers from the template the checkpoint actually ships.
     trainer = _Trainer()
     train_fn = _Recorder()
 
-    _, applied = apply_completion_masking(trainer, "unsloth/gpt-oss-20b", train_fn)
+    _, applied = apply_completion_masking(
+        trainer, "unsloth/gpt-oss-20b", train_fn, detect_fn = _detect_ok
+    )
+
+    assert applied is True
+    assert train_fn.calls == [dict(_AUTO)]
+
+
+def test_gpt_oss_detection_failure_falls_back_to_manual_markers():
+    trainer = _Trainer()
+    train_fn = _Recorder()
+
+    _, applied = apply_completion_masking(
+        trainer, "unsloth/gpt-oss-20b", train_fn, detect_fn = _detect_fail
+    )
 
     assert applied is True
     expected = TEMPLATE_TO_RESPONSES_MAPPER["gpt-oss"]
@@ -194,7 +209,7 @@ def test_num_proc_forwarded_only_when_given():
 
 
 def test_manual_fallback_failure_propagates_to_caller():
-    # Both callsites wrap the helper in try/except and disable masking on error.
+    # Errors while applying the manual fallback must propagate to the caller.
     def train_fn(trainer, **kwargs):
         raise RuntimeError("boom")
 

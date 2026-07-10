@@ -5,7 +5,8 @@
 
 Decides how train_on_responses_only is applied for a model: chat template
 auto-detection first, manual TEMPLATE_TO_RESPONSES_MAPPER markers as the
-fallback, with gpt-oss pinned to its manual markers.
+fallback. gpt-oss included: its quantized checkpoints ship a different
+chat template, so only detection from the actual template is reliable.
 """
 
 from .model_mappings import (
@@ -39,7 +40,8 @@ def apply_completion_masking(
 
     Args:
         trainer: The platform trainer (SFTTrainer or MLXTrainer).
-        model_name: Model repo id used for table lookup and gpt-oss detection.
+        model_name: Model repo id used for table lookup and the gpt-oss
+            renamed-checkpoint fallback.
         train_fn: The platform train_on_responses_only callable.
         num_proc: Forwarded to train_fn when not None (CUDA path only).
         notify: Optional callback notify(level, message) with level "info" or
@@ -66,61 +68,63 @@ def apply_completion_masking(
 
     template, instruction_part, response_part = lookup_manual_markers(model_name)
 
-    # gpt-oss keeps its manual markers: they keep non-final assistant <|end|>
-    # tokens trained, which auto-detection would mask. Renamed/private gpt-oss
-    # checkpoints miss the exact-name table, so default to the gpt-oss markers.
-    if is_gpt_oss_model_name(model_name):
-        if not (instruction_part and response_part):
-            markers = TEMPLATE_TO_RESPONSES_MAPPER.get("gpt-oss")
-            if markers:
-                template = "gpt-oss"
-                instruction_part = markers["instruction"]
-                response_part = markers["response"]
-    else:
-        processor = getattr(trainer, "processing_class", None) or getattr(
-            trainer, "tokenizer", None
+    # gpt-oss goes auto-first too: the quantized/BF16 checkpoints ship a chat
+    # template without the <|channel|>final header, so the manual markers match
+    # nothing there (zero tokens trained). Auto derives markers from whichever
+    # template the checkpoint actually ships; the final <|return|>/<|end|> stays
+    # trained either way, and per the harmony format only the final terminator
+    # carries stop supervision. Renamed gpt-oss checkpoints miss the exact-name
+    # table, so give the fallback the gpt-oss template markers.
+    if is_gpt_oss_model_name(model_name) and not (instruction_part and response_part):
+        markers = TEMPLATE_TO_RESPONSES_MAPPER.get("gpt-oss")
+        if markers:
+            template = "gpt-oss"
+            instruction_part = markers["instruction"]
+            response_part = markers["response"]
+    processor = getattr(trainer, "processing_class", None) or getattr(
+        trainer, "tokenizer", None
+    )
+    # mlx-lm TokenizerWrapper hides underscore attrs, so preset _unsloth_*
+    # markers are invisible through it. Unwrap to the real tokenizer (as
+    # zoo's MLX resolver does) before the preset check and detection.
+    if type(processor).__name__ == "TokenizerWrapper":
+        wrapped = getattr(processor, "_tokenizer", None)
+        if wrapped is not None:
+            processor = wrapped
+    inner = getattr(processor, "tokenizer", processor)
+    if hasattr(inner, "_unsloth_input_part") and hasattr(inner, "_unsloth_output_part"):
+        # Markers preset on the tokenizer; zoo reuses them on a bare call.
+        trainer = train_fn(trainer, **kwargs)
+        notify(
+            "info",
+            "Train on responses only configured via tokenizer preset markers",
         )
-        # mlx-lm TokenizerWrapper hides underscore attrs, so preset _unsloth_*
-        # markers are invisible through it. Unwrap to the real tokenizer (as
-        # zoo's MLX resolver does) before the preset check and detection.
-        if type(processor).__name__ == "TokenizerWrapper":
-            wrapped = getattr(processor, "_tokenizer", None)
-            if wrapped is not None:
-                processor = wrapped
-        inner = getattr(processor, "tokenizer", processor)
-        if hasattr(inner, "_unsloth_input_part") and hasattr(inner, "_unsloth_output_part"):
-            # Markers preset on the tokenizer; zoo reuses them on a bare call.
-            trainer = train_fn(trainer, **kwargs)
-            notify(
-                "info",
-                "Train on responses only configured via tokenizer preset markers",
-            )
-            return trainer, True
-        auto_instruction = auto_response = None
-        try:
-            if detect_fn is None:
-                # Torch-backed import is fine: the MLX train_fn itself requires
-                # unsloth_zoo.dataset_utils, so a torch-free host cannot mask either way.
-                from unsloth_zoo.dataset_utils import get_chat_template_parts as detect_fn
-            auto_instruction, auto_response = detect_fn(processor)
-        except Exception as e:
-            notify(
-                "warning",
-                f"Auto-detection of instruction/response markers failed ({e}); "
-                f"falling back to the template table",
-            )
-        if auto_instruction and auto_response:
-            trainer = train_fn(
-                trainer,
-                instruction_part = auto_instruction,
-                response_part = auto_response,
-                **kwargs,
-            )
-            notify(
-                "info",
-                "Train on responses only configured via chat template auto-detection",
-            )
-            return trainer, True
+        return trainer, True
+    auto_instruction = auto_response = None
+    try:
+        if detect_fn is None:
+            # Torch-backed import is fine: the MLX train_fn itself requires
+            # unsloth_zoo.dataset_utils, so a torch-free host cannot mask either way.
+            from unsloth_zoo.dataset_utils import get_chat_template_parts as detect_fn
+        auto_instruction, auto_response = detect_fn(processor)
+    except Exception as e:
+        notify(
+            "warning",
+            f"Auto-detection of instruction/response markers failed ({e}); "
+            f"falling back to the template table",
+        )
+    if auto_instruction and auto_response:
+        trainer = train_fn(
+            trainer,
+            instruction_part = auto_instruction,
+            response_part = auto_response,
+            **kwargs,
+        )
+        notify(
+            "info",
+            "Train on responses only configured via chat template auto-detection",
+        )
+        return trainer, True
 
     if instruction_part and response_part:
         trainer = train_fn(
