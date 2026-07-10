@@ -452,11 +452,8 @@ jobs:
                       "Content-Type": "application/json",
                   },
               )
-              # Shared CI runners stall sporadically, so retry transport-level
-              # failures only; HTTP status errors surface immediately. Bounded
-              # to fit the job's timeout-minutes: short probes get 3 full
-              # attempts, long probes one retry capped at 300s (a healthy
-              # server answers a retry quickly; a stalled one never does).
+              # Retry transport failures only (HTTP errors raise immediately);
+              # short probes get 3 attempts, long probes 1 retry capped at 300s.
               attempts = 3 if timeout <= 300 else 2
               for attempt in range(attempts):
                   try:
@@ -868,11 +865,8 @@ jobs:
                       "Content-Type":  "application/json",
                   },
               )
-              # Shared CI runners stall sporadically, so retry transport-level
-              # failures only; HTTP status errors surface immediately. Bounded
-              # to fit the job's timeout-minutes: short probes get 3 full
-              # attempts, long probes one retry capped at 300s (a healthy
-              # server answers a retry quickly; a stalled one never does).
+              # Retry transport failures only (HTTP errors raise immediately);
+              # short probes get 3 attempts, long probes 1 retry capped at 300s.
               attempts = 3 if timeout <= 300 else 2
               for attempt in range(attempts):
                   try:
