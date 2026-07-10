@@ -485,9 +485,12 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
+    # No "<think>" suffix: Qwen3-Thinking-2507 strips the think block from
+    # non-final assistant turns and QwQ renders none at all, so a marker
+    # holding it misses those turns and masks their responses.
     "qwen3-thinking": {
         "instruction": "<|im_start|>user\n",
-        "response": "<|im_start|>assistant\n<think>",
+        "response": "<|im_start|>assistant\n",
     },
     "qwen3": {
         "instruction": "<|im_start|>user\n",
@@ -525,21 +528,30 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user<|im_sep|>",
         "response": "<|im_start|>assistant<|im_sep|>",
     },
+    # No surrounding spaces: with Mistral v0.3 the space around "[/INST]" folds
+    # into the neighbouring text tokens (and "[INST]"/"[/INST]" are single
+    # special tokens), so the padded strings never match and every assistant
+    # token gets masked. Same for Llama-2's SentencePiece tokenization.
     "mistral": {
-        "instruction": "[INST] ",
-        "response": " [/INST]",
+        "instruction": "[INST]",
+        "response": "[/INST]",
     },
     "llama": {
-        "instruction": "[INST] ",
-        "response": " [/INST]",
+        "instruction": "[INST]",
+        "response": "[/INST]",
     },
     "chatml": {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
+    # Leading newline required: Zephyr's role tags are plain text (not special
+    # tokens) and SentencePiece tokenizes "<|assistant|>" differently at text
+    # start than after "</s>\n" mid-conversation. Without the "\n" anchor the
+    # markers only tokenize like the text-start form and never match real
+    # turns, so every assistant token gets masked.
     "zephyr": {
-        "instruction": "<|user|>\n",
-        "response": "<|assistant|>\n",
+        "instruction": "\n<|user|>\n",
+        "response": "\n<|assistant|>\n",
     },
     "unsloth": {
         "instruction": ">>> User: ",
@@ -573,16 +585,22 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
+    # No trailing space: SentencePiece folds it into the next content token
+    # ("▁Hello"), so the padded marker never matches and masks everything.
     "starling": {
-        "instruction": "GPT4 Correct User: ",
-        "response": "GPT4 Correct Assistant: ",
+        "instruction": "GPT4 Correct User:",
+        "response": "GPT4 Correct Assistant:",
     },
     "yi-chat": {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
+    # "[gMASK]<sop>" only appears once at the start of the rendered text, so a
+    # marker holding it matches no later user turn; "<think>" is generation
+    # scaffolding that GLM-4.x renders as a lone "</think>" on non-final turns,
+    # so "<|assistant|><think>" never matches and masks every assistant token.
     "glm": {
-        "instruction": "[gMASK]<sop><|user|>",
-        "response": "<|assistant|><think>",
+        "instruction": "<|user|>",
+        "response": "<|assistant|>",
     },
 }
