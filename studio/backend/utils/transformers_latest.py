@@ -346,9 +346,7 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         # surface as dev-only so no install is offered that would still fail.
         model_type = missing[0]
         supported_in_pypi = all(s["supported_in_pypi"] for s in supports)
-        supported_in_main = all(
-            s["supported_in_pypi"] or s["supported_in_main"] for s in supports
-        )
+        supported_in_main = all(s["supported_in_pypi"] or s["supported_in_main"] for s in supports)
         logger.info(
             "Model %s has model_type=%s unknown to every installed transformers "
             "(latest PyPI %s: %s, main: %s)",

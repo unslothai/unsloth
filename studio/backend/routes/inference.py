@@ -4745,7 +4745,9 @@ async def validate_model(
 
 # On studio_router: a consented server-side install is a Studio admin action,
 # so it must not be reachable through the OpenAI-compatible /v1 mount.
-@studio_router.post("/install-latest-transformers", response_model = InstallLatestTransformersResponse)
+@studio_router.post(
+    "/install-latest-transformers", response_model = InstallLatestTransformersResponse
+)
 async def install_latest_transformers_route(
     request: InstallLatestTransformersRequest, current_subject: str = Depends(get_current_subject)
 ):
