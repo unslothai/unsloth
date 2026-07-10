@@ -89,8 +89,10 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
   // launcher's applicators (CUDA/HIP visibility masks, Vulkan --device with
   // ggml's own ordinals) have no defined mapping from that space, so a pick
   // could silently land on the wrong device. Every gate keyed on physicalIndex
-  // (picker, persisted-pick reconcile) treats XPU devices as unpinnable.
-  const pinnableBackend = data?.gpu?.backend !== "xpu";
+  // (picker, persisted-pick reconcile) treats XPU devices as unpinnable. The
+  // backend flavor lives on the TOP-LEVEL device_backend field (/api/system's
+  // gpu object carries only available + devices).
+  const pinnableBackend = data?.device_backend !== "xpu";
   return (data?.gpu?.devices ?? [])
     .filter((d) => typeof d.index === "number")
     .map((d) => ({

@@ -4096,6 +4096,19 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                         "Omit gpu_ids to use all devices."
                     ),
                 )
+            # Same reasoning for a Vulkan-only build: --device pins ggml's own
+            # Vulkan ordinals, so a physical pick can land on the wrong card on
+            # masked or non-contiguous hosts.
+            if LlamaCppBackend._is_vulkan_backend():
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "GPU selection (gpu_ids) is not supported with a Vulkan "
+                        "llama.cpp build: physical GPU ids have no defined "
+                        "mapping to Vulkan device ordinals. Omit gpu_ids to use "
+                        "all devices."
+                    ),
+                )
             try:
                 resolve_requested_gpu_ids(effective_gpu_ids)
             except ValueError as exc:
@@ -4636,6 +4649,16 @@ async def validate_model(
                         "Omit gpu_ids to use all devices."
                     ),
                 )
+            if LlamaCppBackend._is_vulkan_backend():
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "GPU selection (gpu_ids) is not supported with a Vulkan "
+                        "llama.cpp build: physical GPU ids have no defined "
+                        "mapping to Vulkan device ordinals. Omit gpu_ids to use "
+                        "all devices."
+                    ),
+                )
             try:
                 resolve_requested_gpu_ids(effective_gpu_ids)
             except ValueError as exc:
@@ -5158,6 +5181,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 gpu_layers = llama_backend.gpu_layers,
                 n_cpu_moe = llama_backend.n_cpu_moe,
                 tensor_split = llama_backend.tensor_split,
+                requested_context_length = llama_backend.requested_n_ctx,
                 n_layers = llama_backend.n_layers,
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,

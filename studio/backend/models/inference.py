@@ -505,6 +505,14 @@ class InferenceStatusResponse(BaseModel):
         None,
         description = "Manual mode: relative model share per GPU (--tensor-split); None = default (split by free VRAM).",
     )
+    requested_context_length: Optional[int] = Field(
+        None,
+        description = (
+            "The n_ctx the active GGUF load was invoked with (0 = Auto). Lets the "
+            "UI re-seed a Manual + Auto-layers context pin on hydration, where "
+            "context_length only exposes the resolved value. None for non-GGUF."
+        ),
+    )
     n_layers: Optional[int] = Field(
         None,
         description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",

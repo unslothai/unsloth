@@ -260,6 +260,21 @@ export function applyActiveModelStatusToStore(
       prevState.pendingSelection == null &&
       (prevState.loadedGpuMemoryMode === null || hydratingExistingModel) &&
       loadedGpuMemoryFields(status)),
+    // A Manual + Auto-layers load with a positive context pin sent the pin as
+    // max_seq_length, and status only exposes the RESOLVED context -- re-seed
+    // the pin from the requested value (parity with the load paths'
+    // keepCustomCtx) or the next Apply sends 0 and silently reverts the model
+    // to auto-fit sizing.
+    ...(seedLoadParams &&
+      prevState.pendingSelection == null &&
+      (prevState.loadedGpuMemoryMode === null || hydratingExistingModel) &&
+      status.is_gguf &&
+      status.gpu_memory_mode === "manual" &&
+      (status.gpu_layers ?? -1) < 0 &&
+      (status.requested_context_length ?? 0) > 0 && {
+        customContextLength: status.requested_context_length,
+        loadedCustomContextLength: status.requested_context_length,
+      }),
     ...(status.chat_template_override !== undefined &&
       prevState.loadedChatTemplateOverride === null &&
       prevState.chatTemplateOverride === null && {

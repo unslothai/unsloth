@@ -6859,16 +6859,23 @@ class LlamaCppBackend:
                     # at launch, so fall back to the free-VRAM default instead.
                     _split_gpus = self._effective_gpu_count(gpu_indices)
                     if tensor_split and _split_gpus > 1:
-                        if len(tensor_split) == _split_gpus:
+                        # Sanitized-positive total, mirroring the training guard:
+                        # an all-zero/non-positive split assigns nothing anywhere.
+                        try:
+                            _split_total = sum(max(float(x), 0.0) for x in tensor_split)
+                        except (TypeError, ValueError):
+                            _split_total = 0.0
+                        if len(tensor_split) == _split_gpus and _split_total > 0:
                             cmd.extend(["--tensor-split", ",".join(f"{x:g}" for x in tensor_split)])
                             manual_tensor_split_emitted = True
                         else:
                             logger.warning(
-                                "Dropping manual --tensor-split: %d entries for "
-                                "%d GPUs in use; llama.cpp's free-VRAM split "
-                                "applies instead",
+                                "Dropping manual --tensor-split (%d entries for "
+                                "%d GPUs, sanitized total %s); llama.cpp's "
+                                "free-VRAM split applies instead",
                                 len(tensor_split),
                                 _split_gpus,
+                                _split_total,
                             )
                             self._tensor_split = None
                 elif use_fit:

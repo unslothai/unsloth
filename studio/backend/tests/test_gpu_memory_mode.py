@@ -423,6 +423,23 @@ def test_manual_offload_emits_gpu_layers_fit_off_and_n_cpu_moe():
     assert "use_fit = False" in src[src.rfind("\n", 0, emit) - 200 : emit + 80]
 
 
+def test_status_reports_requested_context_length():
+    # The hydration path re-seeds a Manual+Auto context pin from the REQUESTED
+    # n_ctx (0 = Auto); context_length only exposes the resolved value.
+    assert "requested_context_length" in InferenceStatusResponse.model_fields
+    s = InferenceStatusResponse(requested_context_length = 8192)
+    assert s.model_dump()["requested_context_length"] == 8192
+    assert InferenceStatusResponse().model_dump()["requested_context_length"] is None
+    # The /status route must actually wire it from the backend (a declared-but-
+    # never-populated field would leave hydration silently reverting the pin).
+    from pathlib import Path as _P
+
+    route_src = (_P(_BACKEND_DIR) / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "requested_context_length = llama_backend.requested_n_ctx" in route_src
+
+
 def test_manual_offload_emits_tensor_split():
     # The offload path emits --tensor-split from the per-GPU shares, only when
     # provided, with >1 GPU in use, AND matching that count (a stale ratio on a
@@ -430,7 +447,9 @@ def test_manual_offload_emits_tensor_split():
     # server aborts on a split/GPU-count mismatch).
     src = _load_model_source()
     assert "if tensor_split and _split_gpus > 1:" in src
-    assert "if len(tensor_split) == _split_gpus:" in src
+    # Emit only on a length match AND a positive sanitized total: a mismatched
+    # or all-zero split aborts llama-server / assigns nothing, so it's dropped.
+    assert "if len(tensor_split) == _split_gpus and _split_total > 0:" in src
     assert '"--tensor-split"' in src
     # Joined as a comma list (e.g. "2,1") within the explicit-offload cmd branch.
     gate = src.find('if gpu_memory_mode == "manual" and gpu_layers >= 0:')

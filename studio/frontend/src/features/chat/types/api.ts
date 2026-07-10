@@ -230,6 +230,9 @@ export interface InferenceStatusResponse {
   gpu_layers?: number;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
+  /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
+   * Manual + Auto-layers context pin on hydration. Null for non-GGUF. */
+  requested_context_length?: number | null;
   gpu_ids?: number[] | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
