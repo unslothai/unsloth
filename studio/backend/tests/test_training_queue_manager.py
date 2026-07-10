@@ -59,8 +59,20 @@ def _enqueue(manager, monkeypatch, **overrides) -> dict:
     return manager.enqueue(_request(**overrides), subject = "tester")
 
 
-def _patch_launch(monkeypatch, result = True, error = None, record = None):
-    def _launch(job_id, request, resume_output_dir, subject, backend = None, **kwargs):
+def _patch_launch(
+    monkeypatch,
+    result = True,
+    error = None,
+    record = None,
+):
+    def _launch(
+        job_id,
+        request,
+        resume_output_dir,
+        subject,
+        backend = None,
+        **kwargs,
+    ):
         if record is not None:
             record.append({"job_id": job_id, "request": request, "subject": subject})
         if error is not None:
@@ -120,6 +132,24 @@ def test_noop_while_paused(manager, backend, monkeypatch):
     assert len(record) == 1
 
 
+def test_pause_during_settle_delay_prevents_launch(manager, backend, monkeypatch):
+    record = []
+    _patch_launch(monkeypatch, record = record)
+    item = _enqueue(manager, monkeypatch)
+    manager.settle_delay = 3.0
+
+    def _pause_while_settling(timeout):
+        manager.pause("user")
+        return False  # not stopping, just done waiting
+
+    monkeypatch.setattr(manager._stop_runner, "wait", _pause_while_settling)
+
+    manager._tick()
+
+    assert record == []
+    assert studio_db.get_queue_item(item["id"])["status"] == "pending"
+
+
 def test_launch_validation_failure_skips_and_advances(manager, backend, monkeypatch):
     item1 = _enqueue(manager, monkeypatch)
     item2 = _enqueue(manager, monkeypatch)
@@ -154,7 +184,14 @@ def test_launch_validation_failure_skips_and_advances(manager, backend, monkeypa
 def test_launch_false_reverts_to_pending_when_backend_busy(manager, backend, monkeypatch):
     item = _enqueue(manager, monkeypatch)
 
-    def _launch(job_id, request, resume_output_dir, subject, backend = None, **kwargs):
+    def _launch(
+        job_id,
+        request,
+        resume_output_dir,
+        subject,
+        backend = None,
+        **kwargs,
+    ):
         # A manual /start won the race while we prepared.
         backend.active = True
         backend.current_job_id = "job_manual"
@@ -204,7 +241,11 @@ def test_removed_item_not_launched(manager, backend, monkeypatch):
 # -- reconcile ------------------------------------------------------------------
 
 
-def _seed_run(job_id: str, status: str, error_message = None):
+def _seed_run(
+    job_id: str,
+    status: str,
+    error_message = None,
+):
     studio_db.create_run(
         id = job_id,
         model_name = "unsloth/test",
@@ -329,6 +370,21 @@ def test_enqueue_enforces_cap(manager, backend, monkeypatch):
     assert "full" in exc_info.value.detail.lower()
 
 
+def test_enqueue_persists_pre_validation_request(manager, backend, monkeypatch):
+    # validate_training_request rewrites resume_from_checkpoint (run dir ->
+    # concrete checkpoint path); the stored payload must keep the original so
+    # launch-time validation can resolve the resumable run again.
+    def _validate(request):
+        request.resume_from_checkpoint = "/outputs/run_x/checkpoint-500"
+        return "/outputs/run_x"
+
+    monkeypatch.setattr(queue_module, "validate_training_request", _validate)
+    item = manager.enqueue(_request(resume_from_checkpoint = "/outputs/run_x"), subject = "t")
+    stored = studio_db.get_queue_item(item["id"])
+    data = json.loads(stored["request_json"])
+    assert data["resume_from_checkpoint"] == "/outputs/run_x"
+
+
 def test_enqueue_validation_failure_propagates(manager, backend, monkeypatch):
     def _validate(request):
         raise HTTPException(status_code = 400, detail = "Local dataset not found")
@@ -352,8 +408,14 @@ def test_restore_marks_orphans_and_pauses(manager, backend, monkeypatch):
 
     manager.restore_on_startup()
     try:
-        assert studio_db.get_queue_item(item1["id"])["status"] == "skipped"
-        assert studio_db.get_queue_item(item2["id"])["status"] == "skipped"
+        stored1 = studio_db.get_queue_item(item1["id"])
+        stored2 = studio_db.get_queue_item(item2["id"])
+        assert stored1["status"] == "skipped"
+        assert stored2["status"] == "skipped"
+        assert "restarted" in stored1["error_message"]
+        # Orphaning is a terminal transition: no secrets left behind.
+        assert "hf_secret" not in stored1["request_json"]
+        assert "hf_secret" not in stored2["request_json"]
         assert studio_db.get_queue_item(item3["id"])["status"] == "pending"
         assert studio_db.get_queue_paused() == (True, "restart")
     finally:

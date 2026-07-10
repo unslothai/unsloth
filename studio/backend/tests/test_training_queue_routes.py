@@ -51,9 +51,7 @@ def _request(**overrides) -> TrainingStartRequest:
 
 
 def _enqueue(**overrides):
-    return asyncio.run(
-        routes_module.enqueue_item(_request(**overrides), current_subject = "tester")
-    )
+    return asyncio.run(routes_module.enqueue_item(_request(**overrides), current_subject = "tester"))
 
 
 def test_enqueue_returns_item():
@@ -72,6 +70,27 @@ def test_enqueue_cap_409(_isolated):
         _enqueue()
     assert exc_info.value.status_code == 409
     assert "full" in exc_info.value.detail.lower()
+
+
+def test_enqueue_via_api_key_blocked_during_inference(monkeypatch):
+    from core.inference import llama_keepwarm
+
+    monkeypatch.setattr(llama_keepwarm, "other_inference_request_count", lambda **kwargs: 1)
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(routes_module.enqueue_item(_request(), current_subject = "api", via_api_key = True))
+    assert exc_info.value.status_code == 409
+    assert "inference" in exc_info.value.detail.lower()
+    assert studio_db.count_pending_queue_items() == 0
+
+
+def test_enqueue_via_api_key_allowed_when_inference_idle(monkeypatch):
+    from core.inference import llama_keepwarm
+
+    monkeypatch.setattr(llama_keepwarm, "other_inference_request_count", lambda **kwargs: 0)
+    item = asyncio.run(
+        routes_module.enqueue_item(_request(), current_subject = "api", via_api_key = True)
+    )
+    assert item.status == "pending"
 
 
 def test_enqueue_validation_400(monkeypatch):

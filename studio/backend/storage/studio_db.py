@@ -934,10 +934,24 @@ def enqueue_queue_item(
     model_name: str,
     dataset_summary: str,
     subject: Optional[str],
-) -> dict:
+    max_pending: Optional[int] = None,
+) -> Optional[dict]:
+    """Insert a pending queue item; returns None if max_pending is reached.
+
+    BEGIN IMMEDIATE serializes writers so the cap check and the insert are one
+    atomic step under concurrent enqueue requests.
+    """
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        if max_pending is not None:
+            pending = conn.execute(
+                "SELECT COUNT(*) FROM training_queue WHERE status = 'pending'"
+            ).fetchone()[0]
+            if int(pending) >= max_pending:
+                conn.rollback()
+                return None
         position = int(
             conn.execute("SELECT COALESCE(MAX(position), 0) + 10 FROM training_queue").fetchone()[0]
         )
@@ -1142,25 +1156,6 @@ def set_queue_paused(paused: bool, reason: Optional[str] = None) -> None:
             (1 if paused else 0, reason if paused else None),
         )
         conn.commit()
-    finally:
-        conn.close()
-
-
-def mark_orphaned_queue_items_skipped() -> int:
-    conn = get_connection()
-    try:
-        cur = conn.execute(
-            """
-            UPDATE training_queue
-            SET status = 'skipped',
-                error_message = 'Server restarted while this job was running',
-                finished_at = ?
-            WHERE status IN ('starting', 'running')
-            """,
-            (datetime.now(timezone.utc).isoformat(),),
-        )
-        conn.commit()
-        return cur.rowcount
     finally:
         conn.close()
 

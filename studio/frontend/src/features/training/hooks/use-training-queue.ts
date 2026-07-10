@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useRef } from "react";
 import { toast } from "@/lib/toast";
+import { useCallback, useEffect, useRef } from "react";
 import {
   getQueueState,
   moveQueueItem,
@@ -89,13 +89,26 @@ export function useTrainingQueue() {
       }
     };
 
+    // Re-evaluate the interval as soon as queue/runtime state changes, so a
+    // fresh enqueue or run start switches to fast polling without waiting out
+    // a 30s idle tick. start() is a no-op unless the desired interval changed.
+    const syncInterval = () => {
+      if (document.visibilityState === "visible") {
+        start();
+      }
+    };
+
     if (document.visibilityState === "visible") {
       start();
     }
     document.addEventListener("visibilitychange", onVisibilityChange);
+    const unsubQueue = useTrainingQueueStore.subscribe(syncInterval);
+    const unsubRuntime = useTrainingRuntimeStore.subscribe(syncInterval);
 
     return () => {
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      unsubQueue();
+      unsubRuntime();
       stop();
       controllerRef.current?.abort();
     };
@@ -121,10 +134,17 @@ function applyQueueState(state: TrainingQueueState): void {
 
 export function useTrainingQueueActions() {
   const withRefresh = useCallback(
-    async (action: () => Promise<unknown>, failureTitle: string): Promise<boolean> => {
+    async (
+      action: () => Promise<unknown>,
+      failureTitle: string,
+    ): Promise<boolean> => {
       try {
         const result = await action();
-        if (result && typeof result === "object" && "items" in (result as object)) {
+        if (
+          result &&
+          typeof result === "object" &&
+          "items" in (result as object)
+        ) {
           applyQueueState(result as TrainingQueueState);
         } else {
           applyQueueState(await getQueueState());
@@ -153,7 +173,10 @@ export function useTrainingQueueActions() {
 
   const moveItem = useCallback(
     (itemId: string, direction: "up" | "down") =>
-      withRefresh(() => moveQueueItem(itemId, direction), "Couldn't reorder queue"),
+      withRefresh(
+        () => moveQueueItem(itemId, direction),
+        "Couldn't reorder queue",
+      ),
     [withRefresh],
   );
 

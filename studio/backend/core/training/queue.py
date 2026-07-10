@@ -38,6 +38,8 @@ def _redact_request_json(request_json: str) -> str:
         data = json.loads(request_json)
     except (json.JSONDecodeError, TypeError):
         return "{}"
+    if not isinstance(data, dict):
+        return "{}"
     for key in ("hf_token", "wandb_token"):
         if data.get(key):
             data[key] = None
@@ -82,22 +84,34 @@ class TrainingQueueManager:
             self._backend = get_training_backend()
         return self._backend
 
+    def _queue_full_error(self) -> HTTPException:
+        return HTTPException(
+            status_code = 409,
+            detail = f"Queue is full ({self.max_pending} pending jobs). "
+            "Remove an item or wait for a job to start.",
+        )
+
     def enqueue(self, request: TrainingStartRequest, subject: str) -> dict:
+        # Fast fail before validation; the insert re-checks the cap atomically.
         if studio_db.count_pending_queue_items() >= self.max_pending:
-            raise HTTPException(
-                status_code = 409,
-                detail = f"Queue is full ({self.max_pending} pending jobs). "
-                "Remove an item or wait for a job to start.",
-            )
+            raise self._queue_full_error()
+
+        # validate_training_request mutates the request (resume_from_checkpoint:
+        # run dir -> concrete checkpoint path). Persist the pre-validation
+        # payload so launch-time validation resolves the original resume target.
+        request_json = request.model_dump_json()
         validate_training_request(request)
 
         item = studio_db.enqueue_queue_item(
             id = f"qitem_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}",
-            request_json = request.model_dump_json(),
+            request_json = request_json,
             model_name = request.model_name,
             dataset_summary = _dataset_summary(request),
             subject = subject,
+            max_pending = self.max_pending,
         )
+        if item is None:
+            raise self._queue_full_error()
         logger.info("Enqueued training job %s (%s)", item["id"], request.model_name)
         self._wake.set()
         return item
@@ -127,12 +141,22 @@ class TrainingQueueManager:
             "pending_count": studio_db.count_pending_queue_items(),
             "max_pending": self.max_pending,
             "active_job_id": active_job_id,
-            "items": studio_db.list_queue_items()
-            + studio_db.list_finished_queue_items(limit = 10),
+            "items": studio_db.list_queue_items() + studio_db.list_finished_queue_items(limit = 10),
         }
 
     def restore_on_startup(self) -> None:
-        skipped = studio_db.mark_orphaned_queue_items_skipped()
+        # Terminal transition, so redact request_json like every other one:
+        # orphaned items must not keep credentials in studio.db.
+        skipped = 0
+        for item in studio_db.list_queue_items(statuses = ("starting", "running")):
+            studio_db.update_queue_item_status(
+                item["id"],
+                "skipped",
+                error_message = RESTART_SKIP_REASON,
+                finished_at = _now(),
+                request_json = _redact_request_json(item["request_json"]),
+            )
+            skipped += 1
         if skipped:
             logger.info("Skipped %d queue item(s) orphaned by restart", skipped)
         if studio_db.count_pending_queue_items() > 0:
@@ -190,6 +214,10 @@ class TrainingQueueManager:
         if self.settle_delay > 0:
             if self._stop_runner.wait(self.settle_delay):
                 return
+            # A pause request during the delay must win over the launch.
+            paused, _reason = studio_db.get_queue_paused()
+            if paused:
+                return
         if backend.is_training_active():
             return
 
@@ -224,9 +252,7 @@ class TrainingQueueManager:
                 finished_at = _now(),
                 request_json = _redact_request_json(item["request_json"]),
             )
-            logger.info(
-                "Queue item %s finished: run %s -> %s", item["id"], job_id, result_status
-            )
+            logger.info("Queue item %s finished: run %s -> %s", item["id"], job_id, result_status)
 
     def _launch_item(self, backend, item: dict) -> None:
         if not studio_db.update_queue_item_status(
@@ -285,9 +311,7 @@ class TrainingQueueManager:
                 studio_db.update_queue_item_status(
                     item["id"], "pending", expected_status = "starting"
                 )
-                logger.info(
-                    "Queue item %s deferred: backend busy with a manual start", item["id"]
-                )
+                logger.info("Queue item %s deferred: backend busy with a manual start", item["id"])
             else:
                 error = None
                 try:

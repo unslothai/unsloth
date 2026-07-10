@@ -143,19 +143,36 @@ def test_list_finished_returns_newest_first():
     assert [i["id"] for i in finished] == ["q2", "q1"]
 
 
-def test_mark_orphaned_queue_items_skipped():
-    _enqueue("q1")
-    _enqueue("q2")
-    _enqueue("q3")
+def test_enqueue_enforces_cap_in_insert():
+    # The cap is checked inside the insert transaction, so racing enqueues
+    # can't both slip past a stale count.
+    assert _enqueue("q1") is not None
+    assert (
+        studio_db.enqueue_queue_item(
+            id = "q2",
+            request_json = "{}",
+            model_name = "unsloth/Qwen3-0.6B",
+            dataset_summary = "test_dataset.jsonl",
+            subject = "tester",
+            max_pending = 1,
+        )
+        is None
+    )
+    assert studio_db.get_queue_item("q2") is None
+    assert studio_db.count_pending_queue_items() == 1
+    # Non-pending items don't count against the cap.
     studio_db.update_queue_item_status("q1", "running")
-    studio_db.update_queue_item_status("q2", "starting")
-    marked = studio_db.mark_orphaned_queue_items_skipped()
-    assert marked == 2
-    assert studio_db.get_queue_item("q1")["status"] == "skipped"
-    assert studio_db.get_queue_item("q2")["status"] == "skipped"
-    # Pending items survive a restart.
-    assert studio_db.get_queue_item("q3")["status"] == "pending"
-    assert "restarted" in studio_db.get_queue_item("q1")["error_message"]
+    assert (
+        studio_db.enqueue_queue_item(
+            id = "q3",
+            request_json = "{}",
+            model_name = "unsloth/Qwen3-0.6B",
+            dataset_summary = "test_dataset.jsonl",
+            subject = "tester",
+            max_pending = 1,
+        )
+        is not None
+    )
 
 
 def test_paused_flag_round_trip():

@@ -5,7 +5,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.training.queue import get_training_queue_manager
 from loggers import get_logger
 from models import (
@@ -56,8 +56,11 @@ async def get_queue_state(current_subject: str = Depends(get_current_subject)):
         return _state_response()
     except Exception as e:
         raise log_and_http_error(
-            e, 500, "Failed to read training queue",
-            event = "training_queue.state_failed", log = logger,
+            e,
+            500,
+            "Failed to read training queue",
+            event = "training_queue.state_failed",
+            log = logger,
         )
 
 
@@ -65,7 +68,21 @@ async def get_queue_state(current_subject: str = Depends(get_current_subject)):
 async def enqueue_item(
     request: TrainingStartRequest,
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
+    # Same guard as POST /start: an idle backend launches a queued job
+    # immediately, and the training VRAM hook would unload the chat model out
+    # from under an in-flight API inference stream.
+    if via_api_key is True:
+        from core.inference.llama_keepwarm import other_inference_request_count
+        if other_inference_request_count(current_request_counted = False) > 0:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "Cannot queue training over the API while an inference request is in "
+                    "progress. Wait for it to finish, or queue the run from the Studio UI."
+                ),
+            )
     try:
         item = get_training_queue_manager().enqueue(request, subject = current_subject)
         return _item_model(item)
@@ -75,16 +92,16 @@ async def enqueue_item(
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         raise log_and_http_error(
-            e, 500, "Failed to enqueue training job",
-            event = "training_queue.enqueue_failed", log = logger,
+            e,
+            500,
+            "Failed to enqueue training job",
+            event = "training_queue.enqueue_failed",
+            log = logger,
         )
 
 
 @router.delete("/queue/items/{item_id}")
-async def remove_item(
-    item_id: str,
-    current_subject: str = Depends(get_current_subject),
-):
+async def remove_item(item_id: str, current_subject: str = Depends(get_current_subject)):
     from storage.studio_db import get_queue_item
 
     if get_queue_item(item_id) is None:
