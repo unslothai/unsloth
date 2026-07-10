@@ -1055,6 +1055,53 @@ def test_sandboxed_benign_json_workdir_module_allowed():
 
 
 @_POSIX_ONLY
+def test_sandboxed_getattr_obfuscated_sink_workdir_module_denied():
+    # getattr(os, 'system')('...') in a workdir helper is the obfuscated twin of os.system, which
+    # the direct-attribute checks miss -- the dynamic-attribute sink must be refused at import.
+    session = "backstop-workdir-getattr"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "evilga.py"), "w") as f:
+        f.write("import os\nprint('OBF_REACHED')\ngetattr(os, 'system')('echo PWNED_GA')\n")
+    try:
+        out = _python_exec(
+            "import evilga; print('REACHED_' + 'BODY')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "PWNED_GA" not in out
+        assert "OBF_REACHED" not in out
+        assert "REACHED_BODY" not in out
+        assert "sandbox:" in out or "ImportError" in out
+    finally:
+        os.remove(os.path.join(workdir, "evilga.py"))
+
+
+@_POSIX_ONLY
+def test_sandboxed_benign_getattr_workdir_module_allowed():
+    # getattr on a non-sink receiver (a plain object attribute) is ordinary reflection, not a sink,
+    # so a workdir helper using it must still import.
+    session = "backstop-workdir-okgetattr"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "okga.py"), "w") as f:
+        f.write("class K:\n    v = 7\nVALUE = getattr(K, 'v')\nprint('GA_OK')\n")
+    try:
+        out = _python_exec(
+            "import okga; print('REACHED', okga.VALUE)",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "GA_OK" in out
+        assert "REACHED 7" in out
+        assert "sandbox:" not in out
+    finally:
+        os.remove(os.path.join(workdir, "okga.py"))
+
+
+@_POSIX_ONLY
 def test_sandboxed_realpath_monkeypatch_write_escape_denied(tmp_path):
     # Sandboxed code reassigns os.path.realpath to a lambda that echoes an in-workdir
     # path, then writes to an absolute path outside the workdir. If the guard read

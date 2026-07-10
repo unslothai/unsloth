@@ -1526,6 +1526,10 @@ def _find_blocked_commands(command: str) -> set[str]:
                     _git_cwd_escapes = True
             elif _bt.startswith("--chdir=") and _arg_escapes_workdir(_bt.split("=", 1)[1]):
                 _git_cwd_escapes = True
+            # GNU env glues the short chdir operand directly onto the flag (env -C/tmp git init),
+            # which the separated / --chdir= forms above miss. Only -C takes a dir here.
+            elif _bt.startswith("-C") and len(_bt) > 2 and _arg_escapes_workdir(_bt[2:]):
+                _git_cwd_escapes = True
             # env -i / --ignore-environment / a bare `-` start git with an EMPTY environment, and
             # env -u NAME / --unset NAME / --unset=NAME strip just the suppression var; either
             # removes the injected core.hooksPath suppression so a planted .git/hooks/* runs in
@@ -1539,6 +1543,9 @@ def _find_blocked_commands(command: str) -> set[str]:
             ):
                 _env_suppress_dropped = True
             elif _bt.startswith("--unset=") and _bt.split("=", 1)[1].startswith("GIT_CONFIG"):
+                _env_suppress_dropped = True
+            # GNU env glues the short unset operand onto the flag (env -uGIT_CONFIG git ...).
+            elif _bt.startswith("-u") and len(_bt) > 2 and _bt[2:].startswith("GIT_CONFIG"):
                 _env_suppress_dropped = True
             elif _token_basename(_bt) == "env":
                 _seg_has_env = True
@@ -6049,8 +6056,11 @@ def _check_signal_escape_patterns(
         found.add("shell-script:" + first)
         return found
 
-    def _check_args_for_blocked(args_nodes, shell_maybe_true = False):
-        """Check if any call arguments contain blocked commands."""
+    def _check_args_for_blocked(args_nodes, shell_maybe_true = False, cwd_prefix = ""):
+        """Check if any call arguments contain blocked commands. ``cwd_prefix`` is a synthetic
+        ``env -C <dir> `` wrapper string prepended to a reconstructed argv command when the call
+        has a literal escaping ``cwd=`` (subprocess.run(['git','init','repo'], cwd='/tmp')), so the
+        git cwd backscan resolves the child's real working directory."""
         found = set()
         for arg in args_nodes:
             s = _extract_string_from_node(arg)
@@ -6092,7 +6102,8 @@ def _check_signal_escape_patterns(
                         # env -C /tmp before git -- is still seen by the git cwd backscan.
                         elif _cmd_base in _ARGV_TAIL_SCAN_COMMANDS:
                             found |= _find_blocked_commands(
-                                " ".join(shlex.quote(s) for s in str_elts if s is not None)
+                                cwd_prefix
+                                + " ".join(shlex.quote(s) for s in str_elts if s is not None)
                             )
                     # An env WRAPPER in the argv applies NAME=value assignments before the command
                     # (env PATH=. evil, env BASH_ENV=env.sh bash -c ..., env GIT_DIR=/tmp git init);
@@ -6756,6 +6767,34 @@ def _check_signal_escape_patterns(
                 return True
             return False
 
+        def _code_store_rhs_vetted(self, rhs):
+            # A value assigned to fn.__code__ that we can prove is safe to execute. An in-source
+            # function's code (g.__code__ / meth.__func__) is analyzed normally, and a compile()
+            # result -- direct call or a c = compile(...) alias -- has its SOURCE analyzed at the
+            # compile site (a malicious / opaque source is flagged there). Everything else (a
+            # producer code object from codeop / a loader's get_code() / marshal, or an opaque
+            # name) is unvetted and fails closed.
+            if isinstance(rhs, ast.Attribute) and rhs.attr in ("__code__", "__func__"):
+                return True
+            if isinstance(rhs, ast.Call):
+                rf = rhs.func
+                if isinstance(rf, ast.Name) and (
+                    rf.id == "compile" or self.exec_from_aliases.get(rf.id) == "compile"
+                ):
+                    return True
+                if (
+                    isinstance(rf, ast.Attribute)
+                    and rf.attr == "compile"
+                    and _ast_name_matches(rf.value, self.builtins_aliases)
+                ):
+                    return True
+            if _analyzer_on and isinstance(rhs, ast.Name):
+                if _scope_idx.resolve(rhs.id, rhs, "compiledany"):
+                    return True
+                if _scope_idx.resolve(rhs.id, rhs, "execb") == "compile":
+                    return True
+            return False
+
         def visit_Assign(self, node):
             # d['e'] = exec / lst[0] = eval -- storing a dynamic-exec builtin into a CONTAINER
             # element (not a plain name, which the alias tracker already follows) hides the sink
@@ -6772,6 +6811,24 @@ def _check_signal_escape_patterns(
                         "description": (
                             "a dynamic-exec builtin stored into a container element "
                             "(obfuscated exec alias)"
+                        ),
+                    }
+                )
+            # fn.__code__ = <code object> rebinds a function's body, so fn() then runs that code
+            # WITHOUT eval / exec. A code object from an unvetted producer (codeop.compile_command,
+            # a loader's get_code(), marshal) runs source the recursive analysis never saw, the
+            # __code__ twin of the FunctionType gadget. Flag a __code__ store whose RHS is not a
+            # vetted in-source / compile()-analyzed code object.
+            if any(
+                isinstance(t, ast.Attribute) and t.attr == "__code__" for t in node.targets
+            ) and not self._code_store_rhs_vetted(node.value):
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(node, "lineno", -1),
+                        "description": (
+                            "an unvetted code object assigned to __code__ "
+                            "(executes via the function without eval/exec)"
                         ),
                     }
                 )
@@ -6930,7 +6987,19 @@ def _check_signal_escape_patterns(
                     _shell_node is None
                     or (isinstance(_shell_node, ast.Constant) and _shell_node.value is False)
                 )
-                blocked_in_args = _check_args_for_blocked(all_call_args, _shell_maybe_true)
+                # A literal cwd= that escapes the workdir sets the child's real working directory,
+                # so a relative write operand (subprocess.run(['git','init','repo'], cwd='/tmp'))
+                # lands OUTSIDE the session. Model it as a synthetic `env -C <cwd>` wrapper so the
+                # git cwd backscan resolves the escape; a workdir-relative / in-tree cwd adds no
+                # prefix and stays allowed.
+                _cwd_node = expanded_kwargs.get("cwd")
+                _cwd_str = _extract_string_from_node(_cwd_node) if _cwd_node is not None else None
+                _cwd_prefix = ""
+                if _cwd_str is not None and _arg_escapes_workdir(_cwd_str):
+                    _cwd_prefix = "env -C " + shlex.quote(_cwd_str) + " "
+                blocked_in_args = _check_args_for_blocked(
+                    all_call_args, _shell_maybe_true, _cwd_prefix
+                )
 
                 # The argv sequence can be given positionally (run(['bash', ...])) or through the
                 # public args= keyword (run(args=['bash', ...])), which this analyzer already
@@ -10346,6 +10415,34 @@ try:
                     and _guard_attr_root(_nd.func.value) in _deser
                 ):
                     return True
+                # getattr(os, 'system')(...) / getattr(builtins, 'eval')(...) /
+                # getattr(pickle, 'loads')(...) -- dynamic attribute access is the obfuscated twin
+                # of the direct sink attribute (the name-based checks above never see it). A
+                # constant sink name on a sink-module receiver is refused; a NON-constant name on
+                # such a receiver is refused too (the attribute cannot be proven benign).
+                if (
+                    isinstance(_nd.func, _gast.Name)
+                    and _nd.func.id == "getattr"
+                    and len(_nd.args) >= 2
+                    and isinstance(_nd.args[0], (_gast.Name, _gast.Attribute))
+                ):
+                    _grecv = _guard_attr_root(_nd.args[0])
+                    _gname = (
+                        _nd.args[1].value
+                        if isinstance(_nd.args[1], _gast.Constant)
+                        and isinstance(_nd.args[1].value, str)
+                        else None
+                    )
+                    if _gname is None:
+                        if _grecv in _recv or _grecv in _bi or _grecv in _deser:
+                            return True
+                    else:
+                        if _grecv in _recv and _gname in _GUARD_EXEC_ATTRS:
+                            return True
+                        if _grecv in _bi and _gname in ("eval", "exec", "compile", "__import__"):
+                            return True
+                        if _grecv in _deser and _gname in _GUARD_DESER_ATTRS:
+                            return True
             elif isinstance(_nd, _gast.Attribute):
                 # A sink-named attribute REFERENCE (even uncalled) rooted at os / posix / an
                 # os alias (x = os.system, s = o.system). A same-named attribute on an unrelated

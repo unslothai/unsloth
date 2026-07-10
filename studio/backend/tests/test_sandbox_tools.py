@@ -4564,3 +4564,71 @@ class TestRound44Bypasses:
     )
     def test_shell_keyword_compound_header_still_blocked(self, code):
         assert _check_code_safety(code) is not None, code
+
+
+class TestRound45Bypasses:
+    """Forty-fifth-round Codex findings. The __code__ store gadget, the subprocess cwd= escape, and
+    the GNU env glued -C/-u forms are static; the workdir-module getattr obfuscation item is covered
+    in test_sandbox_runtime_backstop.py."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # fn.__code__ = <code object>; fn() runs that code WITHOUT eval/exec. A code object
+            # from an unvetted producer (codeop / loader.get_code / marshal) runs unanalyzed source.
+            "import codeop\n"
+            "co = codeop.compile_command(\"__import__('os').system('touch /tmp/x')\")\n"
+            "f = lambda: None\nf.__code__ = co\nf()",
+            "import codeop\nf = lambda: None\n"
+            "f.__code__ = codeop.compile_command(\"__import__('os').system('touch /tmp/x')\")\nf()",
+            "import types\nf = lambda: None\n"
+            "f.__code__ = types.FunctionType.__call__  # opaque non-compile code object\nf()",
+        ],
+    )
+    def test_code_attr_store_unvetted_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A compile() result (analyzed at the compile site) or an in-source function's code are
+            # vetted, so binding them to __code__ stays allowed.
+            "c = compile(source='X = 1', filename='<s>', mode='exec')\nf = lambda: None\nf.__code__ = c\nf()",
+            "def g():\n    return 1\nf = lambda: None\nf.__code__ = g.__code__\nf()",
+        ],
+    )
+    def test_code_attr_store_vetted_allowed(self, code):
+        _ok(code)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A literal escaping cwd= sets the child's real working directory, so a relative git
+            # write operand lands outside the workdir (git init repo -> /tmp/repo).
+            "import subprocess\nsubprocess.run(['git', 'init', 'repo'], cwd='/tmp')",
+            "import subprocess\nsubprocess.run(['git', 'clone', 'u', 'repo'], cwd='/var/tmp')",
+        ],
+    )
+    def test_subprocess_escaping_cwd_git_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_subprocess_workdir_cwd_git_allowed(self):
+        # A workdir-relative cwd (or no cwd) keeps a relative git operand in-tree -- still allowed.
+        _ok("import subprocess\nsubprocess.run(['git', 'init', 'repo'], cwd='sub')")
+        _ok("import subprocess\nsubprocess.run(['git', 'init', 'repo'])")
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # GNU env glues the short chdir / unset operand onto the flag; the git cwd / suppression
+            # backscan must parse the glued forms, not only the separated / --long= ones.
+            "import os\nos.system('env -C/tmp git init repo')",
+            "import os\nos.system('env -uGIT_CONFIG_COUNT git init repo')",
+        ],
+    )
+    def test_env_glued_operand_git_blocked(self, cmd):
+        assert _check_code_safety(cmd) is not None, cmd
+
+    def test_env_no_chdir_git_allowed(self):
+        # env with no -C / -u before a workdir-relative git op stays allowed.
+        _ok("import os\nos.system('env git init repo')")
