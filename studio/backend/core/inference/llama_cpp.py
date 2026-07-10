@@ -8084,7 +8084,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _zero_offload_gpu_flag(
-        spawn_cmd: list, detected_gpus: list, env: Optional[Mapping[str, str]] = None
+        spawn_cmd: list,
+        detected_gpus: list,
+        env: Optional[Mapping[str, str]] = None,
     ) -> Optional[bool]:
         """GPU-residency flag for a deliberate manual zero-offload load. The
         main model is CPU-only by construction, but launched companions (mmproj
