@@ -829,10 +829,22 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                     return_value = True,
                 ):
                     canvas_only = self.route._diffusion_guard_gpu_ids(cfg, [1, 0])
+            with patch(
+                "utils.models.gguf_metadata.read_gguf_general_metadata",
+                return_value = {"general.architecture": "diffusion-gemma"},
+            ):
+                # Unpinned: the runner falls back to DG_GPU (else GPU 0), so the
+                # guard sizes that single device, not the whole visible pool.
+                with patch.dict("os.environ", {"DG_GPU": "1"}):
+                    unpinned_dg = self.route._diffusion_guard_gpu_ids(cfg, None)
+                unpinned = self.route._diffusion_guard_gpu_ids(cfg, None)
         self.assertEqual(collapsed, [0])
         self.assertEqual(dense, [1, 0])
         self.assertEqual(canvas_only, [0])
-        # Single pick / no pick pass through without a header read.
+        self.assertEqual(unpinned_dg, [1])
+        self.assertEqual(unpinned, [0])
+        # A single pick passes through without a header read; a non-diffusion
+        # unpinned load keeps the aggregate (file here isn't a real GGUF).
         self.assertEqual(self.route._diffusion_guard_gpu_ids(cfg, [1]), [1])
         self.assertIsNone(self.route._diffusion_guard_gpu_ids(cfg, None))
 
@@ -870,6 +882,27 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 )
         self.assertEqual(local_cpu, 0.0)
         self.assertEqual(hf_cpu, 0.0)
+
+    def test_validate_shaped_request_inherits_same_model_extras(self):
+        # /validate has no llama_extra_args field, so a same-model reload must
+        # inherit the loaded extras for its guard just like /load -- else
+        # validate passes a smaller estimate, the frontend unloads, and the
+        # follow-up /load 409s.
+        backend = SimpleNamespace(
+            extra_args = ["-c", "32768"],
+            extra_args_source = ("owner/repo", "q4_k_m"),
+        )
+        cfg = SimpleNamespace(is_gguf = True, gguf_variant = "Q4_K_M")
+        request = SimpleNamespace(gguf_variant = "Q4_K_M", gpu_memory_mode = "auto")
+        with patch.object(self.route, "get_llama_cpp_backend", return_value = backend):
+            inherited = self.route._resolve_inherited_extra_args(
+                request, cfg, "owner/repo", None
+            )
+            cross = self.route._resolve_inherited_extra_args(
+                request, cfg, "other/model", None
+            )
+        self.assertEqual(inherited, ["-c", "32768"])
+        self.assertEqual(cross, [])
 
     def test_manual_charges_companions_in_full_not_scaled_by_gpu_layers(self):
         # A companion (mmproj / separate MTP drafter) is GPU-resident regardless of

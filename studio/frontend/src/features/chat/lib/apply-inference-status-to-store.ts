@@ -219,29 +219,35 @@ export function applyActiveModelStatusToStore(
     // non-GGUF status leaves their loaded baselines null, so the "unseeded"
     // guard re-fires every refresh -- hold them too while a staged pick's
     // settings are being edited, or the refresh resets the staged edit.
+    // hydratingExistingModel reopens every load-param seed: when the active
+    // model changed underneath this tab (auto-switch, another client), the
+    // old model's baselines are stale and must adopt the new status.
     ...(seedLoadParams &&
       prevState.pendingSelection == null &&
-      prevState.loadedSpeculativeType === null && {
+      (prevState.loadedSpeculativeType === null || hydratingExistingModel) && {
         speculativeType: currentSpecType,
         loadedSpeculativeType: currentSpecType,
       }),
     ...(seedLoadParams &&
+      prevState.pendingSelection == null &&
       status.spec_draft_n_max !== undefined &&
-      prevState.loadedSpecDraftNMax === null &&
-      prevState.specDraftNMax === null && {
+      (hydratingExistingModel ||
+        (prevState.loadedSpecDraftNMax === null &&
+          prevState.specDraftNMax === null)) && {
         specDraftNMax: status.spec_draft_n_max ?? null,
         loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
       }),
     ...(seedLoadParams &&
       prevState.pendingSelection == null &&
       status.cache_type_kv !== undefined &&
-      prevState.loadedKvCacheDtype === null && {
+      (prevState.loadedKvCacheDtype === null || hydratingExistingModel) && {
         kvCacheDtype: status.cache_type_kv,
         loadedKvCacheDtype: status.cache_type_kv,
       }),
     ...(seedLoadParams &&
+      prevState.pendingSelection == null &&
       status.tensor_parallel !== undefined &&
-      prevState.loadedTensorParallel === null && {
+      (prevState.loadedTensorParallel === null || hydratingExistingModel) && {
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
@@ -252,7 +258,7 @@ export function applyActiveModelStatusToStore(
     // clobber mid-edit, so hold the seeding until the staging resolves.
     ...(seedLoadParams &&
       prevState.pendingSelection == null &&
-      prevState.loadedGpuMemoryMode === null &&
+      (prevState.loadedGpuMemoryMode === null || hydratingExistingModel) &&
       loadedGpuMemoryFields(status)),
     ...(status.chat_template_override !== undefined &&
       prevState.loadedChatTemplateOverride === null &&
