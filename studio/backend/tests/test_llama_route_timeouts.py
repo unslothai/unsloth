@@ -205,14 +205,22 @@ def test_preheader_send_cleanup_on_disconnect_and_cancel():
     asyncio.run(_run(True))
 
 
-def test_stream_stall_timeout_callable_re_resolved_each_read():
+def test_stream_stall_timeout_callable_re_resolved_each_read(monkeypatch):
     # The OpenAI passthrough passes a callable so the stall bound can switch to
     # the short post-terminal grace mid-stream; it must be re-resolved per read,
-    # not captured once at generator start.
+    # not captured once at generator start. Enforcement is the in-task
+    # _same_task_timeout wrap around each read, so capture the bound it arms.
+    armed = []
+    real_timeout = inf_mod._same_task_timeout
+
+    def _record(timeout_s):
+        armed.append(timeout_s)
+        return real_timeout(timeout_s)
+
+    monkeypatch.setattr(inf_mod, "_same_task_timeout", _record)
+
     async def _run():
-        response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
         values = iter([100.0, 2.0])
-        seen = []
 
         class _Request:
             async def is_disconnected(self):
@@ -228,36 +236,42 @@ def test_stream_stall_timeout_callable_re_resolved_each_read():
                     raise StopAsyncIteration
                 return "data: {}"
 
-        async for _ in inf_mod._aiter_llama_stream_items(
+        out = []
+        async for item in inf_mod._aiter_llama_stream_items(
             _Items(),
             cancel_event = threading.Event(),
             request = _Request(),
-            response = response,
             first_token_deadline = time.monotonic() + 1,
             post_first_item_read_timeout_s = lambda: next(values, 5.0),
         ):
-            seen.append(response.request.extensions["timeout"].get("read"))
+            out.append(item)
 
-        assert len(seen) == 3
-        # The callable is resolved right after the first item (arming the
-        # post-first window) and again before each later read, consuming
-        # successive values.
-        assert seen[0] == 100.0
-        assert 1.0 <= seen[1] <= 2.0
-        assert 4.0 <= seen[2] <= 5.0
+        assert out == ["data: {}"] * 3
 
     asyncio.run(_run())
 
+    # First read is the first-token wait (~1s remaining). Each of the three
+    # post-first reads re-resolves the callable, consuming 100.0, 2.0, then the
+    # 5.0 default; a once-captured bound would repeat a single value.
+    assert len(armed) == 4
+    assert armed[0] <= 1.0
+    assert armed[1:] == [100.0, 2.0, 5.0]
 
-def test_stream_stall_timeout_disabled_clears_read_timeout():
+
+def test_stream_stall_timeout_disabled_skips_post_first_wrap(monkeypatch):
     # UNSLOTH_OPENAI_COMPAT_STREAM_STALL_TIMEOUT=0 disables the stall guard, so
-    # the callable returns None. Once a chunk has arrived the leftover
-    # first-token read timeout must be cleared, else a long post-first-chunk gap
-    # trips a stale deadline the operator asked to turn off.
-    async def _run():
-        response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
-        seen = []
+    # the callable returns None and post-first reads run unwrapped: only the
+    # first-token wait is bounded, no stall deadline the operator turned off.
+    armed = []
+    real_timeout = inf_mod._same_task_timeout
 
+    def _record(timeout_s):
+        armed.append(timeout_s)
+        return real_timeout(timeout_s)
+
+    monkeypatch.setattr(inf_mod, "_same_task_timeout", _record)
+
+    async def _run():
         class _Request:
             async def is_disconnected(self):
                 return False
@@ -272,18 +286,21 @@ def test_stream_stall_timeout_disabled_clears_read_timeout():
                     raise StopAsyncIteration
                 return "data: {}"
 
-        async for _ in inf_mod._aiter_llama_stream_items(
+        out = []
+        async for item in inf_mod._aiter_llama_stream_items(
             _Items(),
             cancel_event = threading.Event(),
             request = _Request(),
-            response = response,
             first_token_deadline = time.monotonic() + 5,
             post_first_item_read_timeout_s = lambda: None,
         ):
-            seen.append(response.request.extensions["timeout"].get("read"))
+            out.append(item)
 
-        # The first-token path armed a finite read timeout; after the first chunk
-        # with the guard disabled, it is cleared to None on every subsequent read.
-        assert seen == [None, None], seen
+        assert out == ["data: {}"] * 2
 
     asyncio.run(_run())
+
+    # Only the first-token read is wrapped; the disabled guard leaves every
+    # post-first read unwrapped, so exactly one timeout is armed.
+    assert len(armed) == 1
+    assert armed[0] <= 5.0
