@@ -2304,23 +2304,32 @@ def apply_gpu_ids(gpu_ids) -> None:
     # mirror below).
     _is_xpu = DEVICE == DeviceType.XPU
     if DEVICE is None:
-        if os.environ.get("UNSLOTH_FORCE_XPU") == "1":
-            _is_xpu = True
-        else:
-            try:
-                import torch as _torch
-                _ver = _torch.version
+        # version.xpu can be None on a working XPU build, so also accept
+        # torch.xpu._is_compiled() (a pure symbol-presence check, no runtime
+        # init). UNSLOTH_FORCE_XPU counts only on an XPU-capable build:
+        # detect_hardware() falls back to CUDA when XPU is missing, and the
+        # mask target must follow that fallback.
+        try:
+            import torch as _torch
+            _ver = _torch.version
+            _is_comp = getattr(getattr(_torch, "xpu", None), "_is_compiled", None)
+            _xpu_build = (callable(_is_comp) and bool(_is_comp())) or (
+                getattr(_ver, "xpu", None) is not None
+            )
+            if os.environ.get("UNSLOTH_FORCE_XPU") == "1":
+                _is_xpu = _xpu_build
+            else:
                 _is_xpu = (
-                    getattr(_ver, "xpu", None) is not None
+                    _xpu_build
                     and getattr(_ver, "cuda", None) is None
                     and getattr(_ver, "hip", None) is None
                 )
-            except Exception as e:
-                logger.debug(
-                    "apply_gpu_ids: torch XPU probe skipped (%s: %s)",
-                    type(e).__name__,
-                    e,
-                )
+        except Exception as e:
+            logger.debug(
+                "apply_gpu_ids: torch XPU probe skipped (%s: %s)",
+                type(e).__name__,
+                e,
+            )
     if _is_xpu:
         os.environ["ZE_AFFINITY_MASK"] = value
         # Leave inherited CUDA_VISIBLE_DEVICES alone -- clearing it could let

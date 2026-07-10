@@ -241,6 +241,49 @@ def test_apply_gpu_ids_predetect_xpu_build_writes_ze_mask(spoof_xpu, monkeypatch
     assert "CUDA_VISIBLE_DEVICES" not in os.environ
 
 
+def test_apply_gpu_ids_predetect_xpu_compiled_with_null_version(spoof_xpu, monkeypatch):
+    # version.xpu can be None on a working XPU build; torch.xpu._is_compiled()
+    # must be accepted as the build signal so the mask still goes to
+    # ZE_AFFINITY_MASK.
+    import torch
+
+    hw, _ = spoof_xpu(ze_mask = None, cuda_visible = None)
+    assert hw.DEVICE is None
+    monkeypatch.setattr(
+        hw, "detect_hardware", lambda: (_ for _ in ()).throw(AssertionError("detect ran"))
+    )
+    monkeypatch.setattr(torch.version, "cuda", None, raising = False)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch.version, "xpu", None, raising = False)
+    monkeypatch.setattr(torch.xpu, "_is_compiled", lambda: True, raising = False)
+    hw.apply_gpu_ids([0])
+    import os
+
+    assert os.environ["ZE_AFFINITY_MASK"] == "0"
+    assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+
+def test_apply_gpu_ids_predetect_force_on_cuda_build_writes_cvd(spoof_xpu, monkeypatch):
+    # UNSLOTH_FORCE_XPU=1 on a CUDA build (no XPU compiled in): detect falls
+    # back to CUDA, so the pre-detect mask must go to CUDA_VISIBLE_DEVICES,
+    # not ZE_AFFINITY_MASK.
+    import torch
+
+    hw, _ = spoof_xpu(force_xpu = True, ze_mask = None, cuda_visible = None)
+    assert hw.DEVICE is None
+    monkeypatch.setattr(
+        hw, "detect_hardware", lambda: (_ for _ in ()).throw(AssertionError("detect ran"))
+    )
+    monkeypatch.setattr(torch.version, "cuda", "12.8", raising = False)
+    monkeypatch.setattr(torch.version, "xpu", None, raising = False)
+    monkeypatch.setattr(torch.xpu, "_is_compiled", lambda: False, raising = False)
+    hw.apply_gpu_ids([1])
+    import os
+
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
+    assert "ZE_AFFINITY_MASK" not in os.environ
+
+
 # ---------- visibility / selection ----------
 
 
