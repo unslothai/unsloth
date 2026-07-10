@@ -1932,16 +1932,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # then fall back to the manual template table if auto-detection raises.
     if config.get("train_on_completions", False):
         _send("status", status_message = "Configuring response-only training...")
-        try:
-            from utils.datasets import apply_completion_masking
-            trainer, _masking_applied = apply_completion_masking(
-                trainer,
-                model_name,
-                train_on_responses_only,
-                notify = lambda level, message: _send("status", status_message = message),
-            )
-        except Exception as e:
-            _send("status", status_message = f"train_on_completions failed: {e}")
+        # No catch: detection failures fall back inside the helper and a double
+        # miss returns applied=False, so an exception here is a real failure
+        # applying the masking and must fail the run instead of silently
+        # training on full sequences.
+        from utils.datasets import apply_completion_masking
+        trainer, _masking_applied = apply_completion_masking(
+            trainer,
+            model_name,
+            train_on_responses_only,
+            notify = lambda level, message: _send("status", status_message = message),
+        )
 
     # ── 8. Setup wandb / tensorboard ──
     wandb_run = None

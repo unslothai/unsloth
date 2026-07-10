@@ -44,8 +44,8 @@ from .model_mappings import (
 )
 
 from .completion_masking import (
-    apply_completion_masking,
-    lookup_manual_markers,
+    apply_completion_masking as apply_completion_masking,
+    lookup_manual_markers as lookup_manual_markers,
 )
 
 # Legacy dataset_utils.py imports kept for backward compat

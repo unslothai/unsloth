@@ -3491,17 +3491,17 @@ class UnslothTrainer:
                     else:
                         logger.info(f"{message}\n")
 
-                masking_applied = False
-                try:
-                    self.trainer, masking_applied = apply_completion_masking(
-                        self.trainer,
-                        self.model_name,
-                        train_on_responses_only,
-                        num_proc = config_args["dataset_num_proc"],
-                        notify = _notify,
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to apply train on responses only: {e}")
+                # No try/except: the helper handles detection failures (table
+                # fallback) and double misses (returns applied=False) itself, so
+                # an exception here is a real failure applying the masking and
+                # must fail the run rather than silently train on full sequences.
+                self.trainer, masking_applied = apply_completion_masking(
+                    self.trainer,
+                    self.model_name,
+                    train_on_responses_only,
+                    num_proc = config_args["dataset_num_proc"],
+                    notify = _notify,
+                )
 
                 if not masking_applied:
                     train_on_responses_enabled = False
