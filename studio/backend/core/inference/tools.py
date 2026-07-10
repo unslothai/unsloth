@@ -521,6 +521,200 @@ def _expand_ifs(command: str) -> str:
     return _IFS_RE.sub(" ", command)
 
 
+def _iter_unquoted_chars(s):
+    """Yield (index, char) for every character OUTSIDE single / double quotes (a backslash
+    escape and the char it escapes are skipped inside double quotes / unquoted text). Used to
+    locate brace-expansion syntax that bash would act on, ignoring quoted braces."""
+    q = None
+    esc = False
+    for i, ch in enumerate(s):
+        if esc:
+            esc = False
+            continue
+        if q == "'":
+            if ch == "'":
+                q = None
+            continue
+        if q == '"':
+            if ch == "\\":
+                esc = True
+            elif ch == '"':
+                q = None
+            continue
+        if ch == "\\":
+            esc = True
+            yield i, ch
+            continue
+        if ch in ("'", '"'):
+            q = ch
+            continue
+        yield i, ch
+
+
+def _brace_first_comma_group(s):
+    """Return (open, close) indices of the first UNQUOTED ``{...}`` that contains a top-level
+    comma (the shape bash expands), else None. ``{}`` / ``${x}`` / ``{1..5}`` have no top-level
+    comma and are left untouched, as are quoted braces."""
+    idxset = {i: ch for i, ch in _iter_unquoted_chars(s)}
+    for o, ch in list(idxset.items()):
+        if ch != "{":
+            continue
+        depth = 0
+        has_comma = False
+        for i in range(o, len(s)):
+            c = idxset.get(i)
+            if c is None:
+                continue
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    if has_comma:
+                        return o, i
+                    break
+            elif c == "," and depth == 1:
+                has_comma = True
+    return None
+
+
+def _brace_split_top_commas(content):
+    """Split a brace group's inner text on top-level (unnested, unquoted) commas."""
+    parts = []
+    cur = []
+    depth = 0
+    q = None
+    esc = False
+    for ch in content:
+        if esc:
+            cur.append(ch)
+            esc = False
+            continue
+        if q == "'":
+            cur.append(ch)
+            if ch == "'":
+                q = None
+            continue
+        if q == '"':
+            cur.append(ch)
+            if ch == "\\":
+                esc = True
+            elif ch == '"':
+                q = None
+            continue
+        if ch == "\\":
+            cur.append(ch)
+            esc = True
+            continue
+        if ch in ("'", '"'):
+            cur.append(ch)
+            q = ch
+            continue
+        if ch == "{":
+            depth += 1
+            cur.append(ch)
+            continue
+        if ch == "}":
+            depth -= 1
+            cur.append(ch)
+            continue
+        if ch == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+            continue
+        cur.append(ch)
+    parts.append("".join(cur))
+    return parts
+
+
+def _brace_expand_word(word, budget):
+    """Recursively expand a single word's comma brace groups (bash-style, quote-aware,
+    cartesian across multiple groups), returning the list of expansions. Bounded by budget."""
+    grp = _brace_first_comma_group(word)
+    if grp is None:
+        return [word]
+    o, c = grp
+    pre, content, post = word[:o], word[o + 1 : c], word[c + 1 :]
+    out = []
+    for opt in _brace_split_top_commas(content):
+        for opt_exp in _brace_expand_word(opt, budget):
+            for post_exp in _brace_expand_word(post, budget):
+                out.append(pre + opt_exp + post_exp)
+                if len(out) >= budget[0]:
+                    return out
+    return out
+
+
+def _split_words_unquoted_ws(s):
+    """Split ``s`` into words on UNQUOTED space / tab; emit an unquoted newline as its own
+    token so it survives as a command separator. Quotes and their contents stay intact."""
+    words = []
+    cur = []
+    q = None
+    esc = False
+    for ch in s:
+        if esc:
+            cur.append(ch)
+            esc = False
+            continue
+        if q == "'":
+            cur.append(ch)
+            if ch == "'":
+                q = None
+            continue
+        if q == '"':
+            cur.append(ch)
+            if ch == "\\":
+                esc = True
+            elif ch == '"':
+                q = None
+            continue
+        if ch == "\\":
+            cur.append(ch)
+            esc = True
+            continue
+        if ch in ("'", '"'):
+            cur.append(ch)
+            q = ch
+            continue
+        if ch == "\n":
+            if cur:
+                words.append("".join(cur))
+                cur = []
+            words.append("\n")
+            continue
+        if ch in " \t":
+            if cur:
+                words.append("".join(cur))
+                cur = []
+            continue
+        cur.append(ch)
+    if cur:
+        words.append("".join(cur))
+    return words
+
+
+def _expand_braces(command: str) -> str:
+    """Model bash brace expansion (comma lists) before the block / read scans so a payload such
+    as ``{touch,/tmp/escape}`` or ``{python3,-c} '...'`` is seen as the writer / interpreter bash
+    would actually run, instead of a single opaque ``{...}`` token. Only unquoted groups with a
+    top-level comma are expanded; ``{}`` (find -exec), ``${VAR}`` parameter expansion, numeric
+    ``{1..5}`` sequences and quoted braces are left intact. Expansion is bounded to avoid blowup;
+    if the bound is hit the (partial) expansion is still scanned."""
+    if "{" not in command:
+        return command
+    budget = [4096]
+    out = []
+    for w in _split_words_unquoted_ws(command):
+        if "{" in w and "}" in w and "," in w:
+            out.extend(_brace_expand_word(w, budget))
+        else:
+            out.append(w)
+        if len(out) >= 8192:
+            break
+    return " ".join(out)
+
+
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
@@ -544,6 +738,10 @@ def _find_blocked_commands(command: str) -> set[str]:
     # fresh command position; a newline INSIDE quotes stays in its token (shlex honors quotes),
     # so the `;` there is not treated as a separator.
     command = re.sub(r"[\r\n]+", " ; ", command)
+    # bash performs brace expansion before command lookup, so `{touch,/tmp/x}` /
+    # `{python3,-c} '...'` run the writer / interpreter even though the raw string has no
+    # blocked token. Expand comma brace groups so the produced command words are scanned.
+    command = _expand_braces(command)
 
     # punctuation_chars splits separators into their own tokens, so command
     # position is detected even in `echo done; rm -rf x` (no whitespace) or
@@ -3998,22 +4196,37 @@ def _is_sensitive_abs_path(s):
     return any(tok in low for tok in _SANDBOX_SENSITIVE_TOKENS)
 
 
-def _command_reads_sensitive(command: str) -> str | None:
-    """Scan a raw shell command STRING for an embedded host-secret read; return a short reason
-    or None. The terminal tool runs the command in an unguarded shell child (the runtime
-    open() backstop only wraps the Python tool), so a read of an identity/credential file, a
-    ``..`` traversal, a ``~``-rooted path, or an escaping glob / ``$()`` / backtick expansion
-    on a file-reading command is not confined and must be refused statically -- the same
-    policy applied to an os.system('cat /etc/passwd') shell string in the Python tool."""
-    if not command:
+_READ_SCAN_SEPARATORS = (";", "&&", "||", "|", "&", "(", ")", "`", "{", "}", "\n")
+
+
+def _scan_command_string_for_reads(
+    command,
+    *,
+    strict_traversal,
+    _depth = 0,
+):
+    """Scan a shell command STRING for an embedded host-secret read; return a short reason or
+    None. Covers literal sensitive / traversal paths, input redirects, and $ / backtick /
+    escaping-glob expansions on file-reading commands. Reads from a shell child are not
+    runtime-confined, so these are refused statically.
+
+    strict_traversal=True blocks ANY ``..`` / ``~`` read path (the os.system() shell-string
+    policy in the Python tool); False blocks only a traversal that resolves onto a sensitive
+    path, so ordinary terminal relative navigation (``ls ../src``) is not flagged.
+
+    The reader / command word is resolved past leading ``VAR=value`` assignments and command
+    wrappers (env / sudo / nice / timeout / ...), a ``VAR=value`` assignment whose value is a
+    sensitive path is flagged, and a nested ``bash -c '<payload>'`` shell has its payload
+    recursively scanned, so a read hidden behind a normal command-prefix form is still caught."""
+    if not command or _depth > 6:
         return None
-    cmd = _expand_ifs(_normalize_ansi_c_quotes(command))
+    # Model bash brace expansion so a brace-hidden reader / path (`{cat,/etc/passwd}`) is seen.
+    cmd = _expand_braces(_expand_ifs(_normalize_ansi_c_quotes(command)))
 
     def _traversal_hits_sensitive(norm):
         # A relative path that climbs out of the workdir with '..' can name a host secret
         # (../../../../etc/passwd). Resolve the climb and test whether the descent lands on a
-        # sensitive path; a plain in-tree relative path (../sibling/file.txt) is left alone so
-        # ordinary terminal navigation is not blocked.
+        # sensitive path; a plain in-tree relative path (../sibling/file.txt) is left alone.
         if ".." not in norm.split("/"):
             return False
         try:
@@ -4031,7 +4244,10 @@ def _command_reads_sensitive(command: str) -> str | None:
             canon = norm
         if _is_sensitive_abs_path(norm) or _is_sensitive_abs_path(canon):
             return f"{s!r} is a sensitive host identity / credential file"
-        if _traversal_hits_sensitive(norm):
+        if strict_traversal:
+            if s[:1] == "~" or ".." in norm.split("/"):
+                return f"{s!r} escapes the session workdir via path traversal"
+        elif _traversal_hits_sensitive(norm):
             return f"{s!r} reads a sensitive host path via directory traversal"
         return None
 
@@ -4040,6 +4256,17 @@ def _command_reads_sensitive(command: str) -> str | None:
             return False
         tn = tok.replace("\\", "/")
         return tok[:1] == "~" or tn.startswith("/")
+
+    def _check_assignment_rhs(tok):
+        # FOO=/etc/passwd binds a sensitive path into a variable that a later reader dereferences
+        # (P=/etc/passwd cat ${P}); flag the assigned value directly.
+        _rhs = tok.split("=", 1)[1] if "=" in tok else ""
+        for _pc in re.split(r"[;|&<>()`{}]+", _rhs):
+            if _pc and not _pc.startswith("-"):
+                _r = _flag(_pc)
+                if _r is not None:
+                    return _r
+        return None
 
     # Literal-path token scan (absolute-sensitive + traversal), splitting shell punctuation
     # glued to an adjacent word (cat /etc/passwd|wc) so the path piece is still checked.
@@ -4053,6 +4280,10 @@ def _command_reads_sensitive(command: str) -> str | None:
                 _r = _flag(_piece)
                 if _r is not None:
                     return _r
+        if _ASSIGNMENT_RE.match(_t):
+            _r = _check_assignment_rhs(_t)
+            if _r is not None:
+                return _r
 
     # Re-tokenize keeping redirects / separators for the input-redirect + expansion scan.
     try:
@@ -4068,14 +4299,20 @@ def _command_reads_sensitive(command: str) -> str | None:
         if "$" in tgt or "`" in tgt or _escaping_glob(tgt):
             return True
         tn = tgt.replace("\\", "/")
-        return _is_sensitive_abs_path(tgt) or _traversal_hits_sensitive(tn)
+        if _is_sensitive_abs_path(tgt):
+            return True
+        return ".." in tn.split("/") if strict_traversal else _traversal_hits_sensitive(tn)
 
     _at_cmd = True
     _cur_reader = False
+    _wrapper = None
+    _skip_operand = False
     for _pi, _pt in enumerate(ptoks):
-        if _pt in (";", "&&", "||", "|", "&", "(", ")", "`", "{", "}", "\n"):
+        if _pt in _READ_SCAN_SEPARATORS:
             _at_cmd = True
             _cur_reader = False
+            _wrapper = None
+            _skip_operand = False
             continue
         if _pt.startswith("<"):
             _rt = _pt.lstrip("<") or (ptoks[_pi + 1] if _pi + 1 < len(ptoks) else "")
@@ -4085,8 +4322,48 @@ def _command_reads_sensitive(command: str) -> str | None:
         if _pt.startswith(">"):
             continue  # output redirects are handled by _find_blocked_commands
         if _at_cmd:
-            _cur_reader = os.path.basename(_pt).lower() in _SHELL_READ_COMMANDS
+            if _skip_operand:  # a wrapper flag's separated operand (env -u NAME)
+                _skip_operand = False
+                continue
+            if _ASSIGNMENT_RE.match(_pt):
+                _r = _check_assignment_rhs(_pt)
+                if _r is not None:
+                    return _r
+                continue  # assignment prefix; the command word is still ahead
+            if _pt.startswith("-"):
+                if _wrapper and _wrapper_flag_takes_operand(_wrapper, _pt):
+                    _skip_operand = True
+                continue  # wrapper flag; still before the command word
+            _base = os.path.basename(_pt).lower()
+            if _base in _COMMAND_PREFIXES:
+                _wrapper = _base
+                continue  # env / sudo / nice / timeout ...; command word is still ahead
+            if _base in _SHELL_BINARIES:
+                # A nested shell runs its -c payload as fresh shell code; scan it recursively.
+                for _k in range(_pi + 1, len(ptoks)):
+                    _ft = ptoks[_k]
+                    if _ft in _READ_SCAN_SEPARATORS:
+                        break
+                    _fl = _ft.lower()
+                    if _fl == "-c" or (
+                        _fl.startswith("-") and not _fl.startswith("--") and _fl.endswith("c")
+                    ):
+                        if _k + 1 < len(ptoks):
+                            _r = _scan_command_string_for_reads(
+                                ptoks[_k + 1],
+                                strict_traversal = strict_traversal,
+                                _depth = _depth + 1,
+                            )
+                            if _r is not None:
+                                return _r
+                        break
+                _at_cmd = False
+                _cur_reader = False
+                _wrapper = None
+                continue
+            _cur_reader = _base in _SHELL_READ_COMMANDS
             _at_cmd = False
+            _wrapper = None
             continue
         if (
             _cur_reader
@@ -4095,6 +4372,16 @@ def _command_reads_sensitive(command: str) -> str | None:
         ):
             return f"shell read command reads an expanded path {_pt!r}"
     return None
+
+
+def _command_reads_sensitive(command: str) -> str | None:
+    """Scan a raw terminal-tool shell command STRING for an embedded host-secret read; return a
+    short reason or None. The terminal tool runs the command in an unguarded shell child (the
+    runtime open() backstop only wraps the Python tool), so a read of an identity / credential
+    file, a sensitive-target ``..`` traversal, or an escaping glob / ``$()`` / backtick
+    expansion on a file-reading command must be refused statically. Benign in-tree relative
+    navigation is left alone (strict_traversal disabled)."""
+    return _scan_command_string_for_reads(command, strict_traversal = False)
 
 
 # Stage 4: pragmatic aliasing (single-assignment alias + inline literal container).
@@ -5072,6 +5359,17 @@ def _check_signal_escape_patterns(
             if _mc_rewrite is not None:
                 self.visit_Call(_mc_rewrite)
                 return
+            if self._is_unbound_mro_gadget(node):
+                # type.mro(io.FileIO) / type.__getattribute__(io.FileIO, '__mro__') /
+                # getattr(io.FileIO, 'mro'): reaches the unguarded MRO without a .mro / .__mro__
+                # attribute for visit_Attribute to see.
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(node, "lineno", -1),
+                        "description": "unbound MRO access on a file class recovers an unguarded base (gadget)",
+                    }
+                )
             func = node.func
             # A trailing `.__call__` invokes the underlying callable through its bound
             # method: os.system.__call__(cmd), __import__.__call__('os'),
@@ -5911,6 +6209,46 @@ def _check_signal_escape_patterns(
             ``f.__class__``). Ordinary class receivers (``int``, ``cls``, ``type('X', (), {})``)
             are plain Names / Calls and do not match, so benign MRO introspection stays allowed."""
             return isinstance(expr, ast.Attribute) and expr.attr in ("FileIO", "__class__")
+
+        def _is_unbound_mro_gadget(self, node):
+            """True when ``node`` is an UNBOUND MRO / getattribute call that recovers a file
+            class's MRO without spelling ``.mro`` / ``.__mro__`` on the receiver:
+            ``type.mro(io.FileIO)``, ``type.__getattribute__(io.FileIO, '__mro__')``,
+            ``object.__getattribute__(io.FileIO, 'mro')`` or ``getattr(io.FileIO, '__mro__')``.
+            Iterating the result exposes the unguarded ``_io.FileIO`` C base, so treat it as the
+            same recovery gadget as ``io.FileIO.__mro__``."""
+            f = node.func
+            # getattr(<fileclass>, 'mro' | '__mro__')
+            if (
+                isinstance(f, ast.Name)
+                and f.id == "getattr"
+                and len(node.args) >= 2
+                and self._is_fileclass_recovery_expr(node.args[0])
+                and _const_fold(node.args[1], _const_env) in ("mro", "__mro__")
+            ):
+                return True
+            if not isinstance(f, ast.Attribute):
+                return False
+            # type.mro(<fileclass>)
+            if (
+                f.attr == "mro"
+                and isinstance(f.value, ast.Name)
+                and f.value.id == "type"
+                and node.args
+                and self._is_fileclass_recovery_expr(node.args[0])
+            ):
+                return True
+            # type.__getattribute__(<fileclass>, 'mro' | '__mro__') / object.__getattribute__(...)
+            if (
+                f.attr in ("__getattribute__", "__getattr__")
+                and isinstance(f.value, ast.Name)
+                and f.value.id in ("type", "object")
+                and len(node.args) >= 2
+                and self._is_fileclass_recovery_expr(node.args[0])
+                and _const_fold(node.args[1], _const_env) in ("mro", "__mro__")
+            ):
+                return True
+            return False
 
         def visit_Subscript(self, node):
             # An INTEGER-indexed __mro__ (cls.__mro__[1]) or the equivalent method call
@@ -7149,88 +7487,17 @@ def _check_signal_escape_patterns(
                     return _kw.value
             return None
 
-        def _escaping_glob(tok):
-            # A shell glob that can expand OUTSIDE the workdir (absolute or ~ rooted) can
-            # name a host secret the static scanner cannot see (head /etc/shad* -> /etc/shadow);
-            # bash expands it before the reader runs. A relative glob (*.txt) stays in the
-            # workdir cwd and is allowed.
-            if not any(g in tok for g in "*?["):
-                return False
-            tn = tok.replace("\\", "/")
-            return tok[:1] == "~" or tn.startswith("/")
-
         def _scan_one_command(cmd):
-            # Scan a shell command STRING (folded to a literal) for embedded host-secret
-            # reads: literal sensitive / traversal paths, input redirects, and $ / backtick /
-            # escaping-glob expansions on file-reading commands. Reads from a shell child are
-            # not runtime-confined, so these must be blocked statically.
+            # Scan a shell command STRING (folded to a literal) for an embedded host-secret
+            # read and record a violation. Delegates to the shared scanner in strict-traversal
+            # mode (the os.system() shell-string policy blocks ANY .. / ~ read path), which also
+            # resolves the reader past assignment / wrapper prefixes and recurses nested shells.
             if cmd is None:
                 return False
-            # Normalize ANSI-C ($'...') quoting and expand ${IFS} so an obfuscated reader /
-            # path (cat${IFS}/etc/shadow) is seen the way bash runs it.
-            cmd = _expand_ifs(_normalize_ansi_c_quotes(cmd))
-            # Literal-path scan (absolute-sensitive + traversal) on plain whitespace tokens.
-            try:
-                toks = shlex.split(cmd, posix = True)
-            except ValueError:
-                toks = cmd.split()
-            for t in toks:
-                # shlex.split leaves shell punctuation glued to an adjacent word
-                # (`/etc/passwd;`, `/etc/passwd|wc`), so split each token on shell separators
-                # and check every piece, else the sensitive path is missed (cat /etc/passwd;
-                # echo ok / cat /etc/passwd|wc).
-                for _piece in re.split(r"[;|&<>()`{}]+", t):
-                    if (
-                        _piece
-                        and not _piece.startswith("-")
-                        and _flag_read_path(node, _piece, True)
-                    ):
-                        return True
-            # Re-tokenize keeping redirects / separators for the expansion scan.
-            try:
-                _lx = shlex.shlex(cmd, posix = True, punctuation_chars = ";&|()`<>")
-                _lx.whitespace_split = True
-                ptoks = list(_lx)
-            except ValueError:
-                ptoks = cmd.split()
-
-            def _risky_read_target(tgt):
-                if not tgt:
-                    return False
-                if "$" in tgt or "`" in tgt or _escaping_glob(tgt):
-                    return True
-                tn = tgt.replace("\\", "/")
-                return _is_sensitive_abs_path(tgt) or ".." in tn.split("/")
-
-            _at_cmd = True
-            _cur_reader = False
-            for _pi, _pt in enumerate(ptoks):
-                if _pt in (";", "&&", "||", "|", "&", "(", ")", "`", "{", "}", "\n"):
-                    _at_cmd = True
-                    _cur_reader = False
-                    continue
-                if _pt.startswith("<"):
-                    _rt = _pt.lstrip("<") or (ptoks[_pi + 1] if _pi + 1 < len(ptoks) else "")
-                    if _risky_read_target(_rt):
-                        _fs_block(
-                            node,
-                            f"shell input redirect from a non-literal / sensitive path {_rt!r}",
-                        )
-                        return True
-                    continue
-                if _pt.startswith(">"):
-                    continue  # output redirects are handled by _find_blocked_commands
-                if _at_cmd:
-                    _cur_reader = os.path.basename(_pt).lower() in _SHELL_READ_COMMANDS
-                    _at_cmd = False
-                    continue
-                if (
-                    _cur_reader
-                    and not _pt.startswith("-")
-                    and ("$" in _pt or "`" in _pt or _escaping_glob(_pt))
-                ):
-                    _fs_block(node, f"shell read command reads an expanded path {_pt!r}")
-                    return True
+            _r = _scan_command_string_for_reads(cmd, strict_traversal = True)
+            if _r is not None:
+                _fs_block(node, _r)
+                return True
             return False
 
         # A subprocess argv that invokes a shell with -c runs the payload in an unguarded

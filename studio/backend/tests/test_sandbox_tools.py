@@ -2938,3 +2938,65 @@ class TestRound24Bypasses:
     )
     def test_round24_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound25Bypasses:
+    """Twenty-fifth-round Codex findings: bash brace-expanded command words, sensitive reads
+    hidden behind shell command-prefix / assignment / nested-shell forms, and unbound MRO /
+    getattribute access recovering the guarded FileIO base."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Brace expansion produces the writer / interpreter bash actually runs.
+            "import os\nos.system('{touch,/tmp/escape}')",
+            "import os\nos.system('{rm,-rf,/tmp/x}')",
+            "import os\nos.system('{python3,-c} \"import os\"')",
+            "import os\nos.system('{cat,/etc/passwd}')",
+        ],
+    )
+    def test_brace_expanded_command_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Sensitive read behind an assignment prefix, a wrapper, a nested shell, or a
+            # parameter-default expansion.
+            "import os\nos.system('P=/etc/passwd cat ${P-/etc/passwd}')",
+            "import os\nos.system('X=1 cat ${SECRET-/etc/passwd}')",
+            "import os\nos.system(\"bash -c 'cat /etc/passwd'\")",
+            "import subprocess\nsubprocess.getoutput(\"bash -c 'head -1 /etc/shadow'\")",
+        ],
+    )
+    def test_prefixed_shell_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import io\nfor c in type.mro(io.FileIO):\n    pass",
+            "import io\ntype.__getattribute__(io.FileIO, '__mro__')",
+            "import io\ntype.__getattribute__(io.FileIO, 'mro')",
+            "import io\nobject.__getattribute__(io.FileIO, '__mro__')",
+            "import io\ngetattr(io.FileIO, '__mro__')",
+            "o = open\ngetattr(o.__class__, 'mro')",
+        ],
+    )
+    def test_unbound_mro_gadget_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign brace / prefix / MRO forms must still pass.
+            "import os\nos.system('echo done{1,2}')",
+            "import os\nos.system('echo {a,b,c}')",
+            "import os\nos.system('env FOO=bar make build')",
+            "print(type.mro(int))",
+            "import io\ngetattr(io.FileIO, 'name')",
+            "class X:\n    pass\nprint(getattr(X, '__mro__'))",
+        ],
+    )
+    def test_round25_benign_allowed(self, code):
+        _ok(code)

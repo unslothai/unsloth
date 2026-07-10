@@ -1222,3 +1222,47 @@ def test_bash_benign_read_scan_allows(command):
 def test_bash_bypass_permissions_skips_read_scan():
     # Bypass Permissions intentionally disables the static command scans.
     assert _command_reads_sensitive("cat /etc/passwd") is not None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Sensitive reads hidden behind an assignment / wrapper / nested-shell prefix, and
+        # brace-expanded readers, must be refused before the unguarded bash child runs.
+        "P=/etc/passwd cat ${P-/etc/passwd}",
+        "bash -c 'cat /etc/passwd'",
+        "sh -c 'cat ../../../../etc/passwd'",
+        "bash -c 'sh -c \"cat /etc/passwd\"'",
+        "{cat,/etc/passwd}",
+    ],
+)
+def test_bash_prefixed_and_brace_read_blocked(command):
+    out = _bash_exec(command, None, 30, "bash-read-prefix", disable_sandbox = False)
+    assert "sensitive file read" in out, out
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Brace expansion of a writer / interpreter must still be caught by the command scan.
+        "{touch,/tmp/escape}",
+        "{rm,-rf,/tmp/x}",
+    ],
+)
+def test_bash_brace_expanded_writer_blocked(command):
+    out = _bash_exec(command, None, 30, "bash-brace-writer", disable_sandbox = False)
+    assert "Blocked command" in out, out
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Benign prefixed / brace forms are not flagged as sensitive reads.
+        "env FOO=bar grep pattern src/app.py",
+        "bash -c 'ls -la'",
+        "echo {a,b,c}",
+        "X=1 cat notes.txt",
+    ],
+)
+def test_bash_benign_prefixed_read_scan_allows(command):
+    assert _command_reads_sensitive(command) is None, command
