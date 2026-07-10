@@ -4754,3 +4754,80 @@ class TestRound47Bypasses:
     )
     def test_round47_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound48Bypasses:
+    """Forty-eighth-round Codex findings: process substitution <(...) hiding a sensitive read,
+    a variable-prefix path operand escaping the workdir, openssl -in reading a host file, and a
+    find -exec reader over an absolute/sensitive search root. (The sqlite3.connect filesystem
+    escape is enforced by the runtime guard -- see test_sandbox_runtime_backstop.py -- and the
+    old .connect() network misclassification of benign local DB opens is removed here.)"""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A process substitution <(cmd) / >(cmd) runs cmd in a child shell; the read of a
+            # host secret inside it was invisible to the command-word scanner.
+            "import os\nos.system('echo <(cat /etc/passwd >&2)')",
+            "import os\nos.system('diff <(cat /etc/shadow) /dev/null')",
+            "import os\nos.system('tee >(cat /etc/passwd) < in')",
+        ],
+    )
+    def test_process_substitution_sensitive_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A leading $VAR / ${VAR} that expands to an absolute prefix escapes the workdir
+            # even when the operand appends a further path segment.
+            "import os\nos.system('P=/tmp; git init $P/repo')",
+            "import os\nos.system('OUT=/tmp; git init ${OUT}/repo')",
+            "import os\nos.system('P=/tmp; openssl rand -out $P/key 4')",
+        ],
+    )
+    def test_variable_prefix_path_operand_escape_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # openssl -in reads its input file; a host secret path leaks through base64/enc.
+            "import os\nos.system('openssl base64 -in /etc/passwd')",
+            "import os\nos.system('P=/etc; openssl base64 -in $P/passwd')",
+        ],
+    )
+    def test_openssl_in_sensitive_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # find <ABS/sensitive ROOT> -exec READER {} ; reads host files the {} placeholder
+            # hides from the -exec segment scan.
+            "import os\nos.system(\"find /etc -maxdepth 1 -name passwd -exec cat {} ';'\")",
+            "import os\nos.system(\"find / -name id_rsa -exec head {} ';'\")",
+        ],
+    )
+    def test_find_exec_reader_over_escaping_root_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A benign process substitution, a workdir-relative var-prefix operand, a local
+            # openssl input, a workdir-scoped find -exec, and -- the network FP fix -- opening
+            # a local / in-memory sqlite database are all allowed by the STATIC layer. (The
+            # sqlite filesystem confinement now lives in the runtime guard.)
+            "import os\nos.system('cat <(echo hi)')",
+            "import os\nos.system('P=sub; git init $P/repo')",
+            "import os\nos.system('git init repo')",
+            "import os\nos.system('openssl base64 -in data.txt')",
+            "import os\nos.system(\"find . -name '*.py' -exec cat {} ';'\")",
+            "import sqlite3\nsqlite3.connect('local.db')",
+            "import sqlite3\nsqlite3.connect(':memory:')",
+            "import sqlite3\nsqlite3.connect('data/app.db')",
+        ],
+    )
+    def test_round48_benign_allowed(self, code):
+        _ok(code)

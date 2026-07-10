@@ -214,6 +214,72 @@ def test_sandboxed_pathlib_open_write_escape_denied(tmp_path):
 
 
 @_POSIX_ONLY
+def test_sandboxed_sqlite3_connect_escape_denied(tmp_path):
+    # sqlite3.connect opens/creates the DB via the native _sqlite3 C extension (not
+    # builtins.open), so the open-like backstop never sees it; the dedicated sqlite guard
+    # must confine the database path to the workdir.
+    target = tmp_path / "sqlite_escape.db"
+    out = _python_exec(
+        f"import sqlite3; sqlite3.connect({str(target)!r}); print('OPENED')",
+        None,
+        30,
+        "backstop-sqlite-escape",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_sqlite3_connect_dynamic_escape_denied():
+    # A dynamically built absolute path (os.sep + 'tmp/...') has no literal for the static
+    # scanner; the runtime guard resolves and denies it.
+    probe = os.path.join(os.sep, "tmp", "studio_sqlite_dyn_escape.db")
+    if os.path.exists(probe):
+        os.remove(probe)
+    out = _python_exec(
+        "import sqlite3, os; sqlite3.connect(os.sep + 'tmp/studio_sqlite_dyn_escape.db')",
+        None,
+        30,
+        "backstop-sqlite-dyn",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not os.path.exists(probe)
+
+
+def test_sandboxed_sqlite3_connect_local_allowed():
+    # A workdir-relative database opens and is usable; the guard confines but does not block
+    # benign local DB work.
+    out = _python_exec(
+        "import sqlite3\n"
+        "c = sqlite3.connect('backstop_local.db')\n"
+        "c.execute('create table if not exists t(x)'); c.close(); print('DB_OK')",
+        None,
+        30,
+        "backstop-sqlite-local",
+        disable_sandbox = False,
+    )
+    assert "DB_OK" in out
+    assert "sandbox:" not in out
+
+
+def test_sandboxed_sqlite3_connect_memory_allowed():
+    # :memory: never touches the filesystem, so it is allowed.
+    out = _python_exec(
+        "import sqlite3\n"
+        "c = sqlite3.connect(':memory:')\n"
+        "c.execute('create table t(x)'); c.close(); print('MEM_OK')",
+        None,
+        30,
+        "backstop-sqlite-mem",
+        disable_sandbox = False,
+    )
+    assert "MEM_OK" in out
+    assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
 def test_sandboxed_os_rename_dir_fd_denied(tmp_path):
     # os.rename / os.replace with src_dir_fd / dst_dir_fd is fd-relative; a string
     # realpath against cwd cannot confine it (the relative names look local), so the

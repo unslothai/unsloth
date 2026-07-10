@@ -427,12 +427,13 @@ def _arg_escapes_workdir(tok: str) -> bool:
 
 
 def _git_operand_escapes(tok: str, assigns = None) -> bool:
-    """As _arg_escapes_workdir, but resolves a ``$VAR`` / ``${VAR}`` operand bound to an escaping
-    value earlier in the SAME command (``OUT=/tmp/repo; git init $OUT``). An unknown external
+    """As _arg_escapes_workdir, but resolves a ``$VAR`` / ``${VAR}`` bound to an escaping value
+    earlier in the SAME command, as the WHOLE token (``OUT=/tmp/repo; git init $OUT``) OR as a
+    PREFIX (``P=/tmp; git init $P/repo``, ``openssl rand -out $P/key``). An unknown external
     expansion is left to the literal check (so ``git clone $REPO_URL`` is not a false positive)."""
-    m = re.fullmatch(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", tok)
+    m = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(.*)$", tok)
     if m and assigns and m.group(1) in assigns:
-        return _arg_escapes_workdir(assigns[m.group(1)])
+        return _arg_escapes_workdir(assigns[m.group(1)] + m.group(2))
     return _arg_escapes_workdir(tok)
 
 
@@ -553,6 +554,11 @@ _SHELL_READ_COMMANDS = frozenset(
         # expansion and stay allowed; only a $ / backtick / escaping-glob operand fails closed.
         "find",
         "ls",
+        # openssl can READ + print a file's contents (openssl base64 -in SECRET, openssl enc -d
+        # -in SECRET, openssl x509 -in SECRET), so an EXPANDED / sensitive -in path exfiltrates a
+        # host secret. Literal in-workdir input (openssl base64 -in data.txt) carries no expansion
+        # and stays allowed; only a $ / backtick / escaping-glob / sensitive operand fails closed.
+        "openssl",
     }
 )
 # Wrappers whose next non-flag argument is the command Bash will exec.
@@ -5253,6 +5259,21 @@ def _extract_command_subs(s):
                 k += 1
             subs.append(s[i + 2 : k - 1] if depth == 0 else s[i + 2 : k])
             i = k
+        elif c in "<>" and not in_double and i + 1 < n and s[i + 1] == "(":
+            # Process substitution <(cmd) / >(cmd): bash runs cmd in a child even when the OUTER
+            # command is a non-reader (echo <(cat /etc/passwd >&2) leaks the file), so scan the
+            # inner payload too. It is a word-level construct (not performed inside quotes), so
+            # single-quoted spans are already skipped and double-quoted text is left literal.
+            depth = 1
+            k = i + 2
+            while k < n and depth:
+                if s[k] == "(":
+                    depth += 1
+                elif s[k] == ")":
+                    depth -= 1
+                k += 1
+            subs.append(s[i + 2 : k - 1] if depth == 0 else s[i + 2 : k])
+            i = k
         else:
             i += 1
     return subs
@@ -5473,6 +5494,30 @@ def _scan_command_string_for_reads(
                 if _r is not None:
                     return _r
 
+    # find <ROOT...> ... -exec READER {} \; loses the search ROOT in the -exec segment, so a reader
+    # over an ABSOLUTE / sensitive root (find /etc -name passwd -exec cat {} ;) reads a host secret
+    # the segment scan alone cannot see ({} carries no path). Compute the find roots (the leading
+    # operands before the first predicate) and note whether any escapes the workdir.
+    _find_roots = []
+    for _fi2, _ft2 in enumerate(ptoks):
+        if os.path.basename(_ft2).lower() == "find":
+            _rj = _fi2 + 1
+            while _rj < len(ptoks):
+                _rt = ptoks[_rj]
+                if (
+                    _rt.startswith("-")
+                    or _rt in ("(", "!", ",")
+                    or _rt in _READ_SCAN_SEPARATORS
+                ):
+                    break
+                _find_roots.append(_rt)
+                _rj += 1
+            break
+    _find_escaping_root = any(
+        _arg_escapes_workdir(_r) or _is_sensitive_abs_path(_r.replace("\\", "/"))
+        for _r in _find_roots
+    )
+
     # find ... -exec CMD ... ; runs CMD directly on each match; CMD may be a nested shell
     # (sh -c 'cat /etc/passwd') or a reader, so scan each -exec segment through this scanner
     # (mirrors the blocked-command find -exec handling). The main command-word loop below only
@@ -5486,6 +5531,21 @@ def _scan_command_string_for_reads(
                 _seg.append(ptoks[_fj])
                 _fj += 1
             if _seg:
+                # A reader -exec that references {} over an escaping find root reads host files.
+                if _find_escaping_root and "{}" in _seg:
+                    _si = 0
+                    while _si < len(_seg) and (
+                        _seg[_si].startswith("-")
+                        or os.path.basename(_seg[_si]).lower() in _COMMAND_PREFIXES
+                        or _ASSIGNMENT_RE.match(_seg[_si])
+                    ):
+                        _si += 1
+                    _segcmd = os.path.basename(_seg[_si]).lower() if _si < len(_seg) else ""
+                    if _segcmd in _SHELL_READ_COMMANDS:
+                        return (
+                            f"find -exec {_segcmd} {{}} over an escaping search root "
+                            f"reads a host file the {{}} placeholder hides"
+                        )
                 _r = _scan_command_string_for_reads(
                     shlex.join(_seg),
                     strict_traversal = strict_traversal,
@@ -8802,7 +8862,12 @@ def _check_signal_escape_patterns(
                         }
                     )
 
-            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch.
+            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch. Only the
+            # (host, port) TUPLE form is an AF_INET network connect; a bare-string arg to
+            # .connect() is an AF_UNIX socket PATH or a DB connector path (sqlite3.connect(
+            # 'local.db'), duckdb.connect(':memory:')), not a network host, so restrict host
+            # classification to the tuple form (the bare-string branch only mis-flagged benign
+            # local database opens; filesystem escape for those is enforced at runtime instead).
             if isinstance(node.func, ast.Attribute) and node.func.attr == "connect":
                 a0 = node.args[0] if node.args else None
                 if a0 is None:
@@ -8815,8 +8880,6 @@ def _check_signal_escape_patterns(
                     e0 = a0.elts[0]
                     if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
                         host_lit = e0.value
-                elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    host_lit = a0.value
                 if host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(
@@ -10352,6 +10415,66 @@ try:
     _wrap2(_sh, "move", True)
     for _n in ("copy", "copy2", "copyfile", "copytree", "copymode", "copystat"):
         _wrap2(_sh, _n, False)
+except Exception:
+    pass
+
+try:
+    # sqlite3.connect(database) CREATES / opens the DB file via the native _sqlite3 C
+    # extension, not builtins.open, so the open-like realpath backstop never sees it and an
+    # absolute / traversal / dynamically built path (sqlite3.connect(os.sep+'tmp/x.db'))
+    # would write a persistent database outside the session workdir. Confine the database
+    # path to the workdir at runtime; :memory: / an empty (private temp) / an in-memory URI
+    # stay allowed. Both public bindings (sqlite3.connect and sqlite3.dbapi2.connect) are the
+    # same re-exported _sqlite3.connect, so wrap once and reassign every reachable attribute.
+    import sqlite3 as _sq3
+
+    def _sqlite_path_ok(_db, _uri):
+        if isinstance(_db, str):
+            if _db == ":memory:" or _db == "":
+                return True
+            if _uri and _db[:5].lower() == "file:":
+                _rest = _db[5:]
+                _pth, _, _params = _rest.partition("?")
+                if _pth == ":memory:" or _pth == "" or "mode=memory" in _params.lower():
+                    return True
+                # file://host/path -> /path (an empty authority is local); a bare file:path
+                # keeps _pth as-is. The realpath check then confines the concrete file.
+                if _pth.startswith("//"):
+                    _slash = _pth.find("/", 2)
+                    _pth = _pth[_slash:] if _slash != -1 else ""
+                return _within(_pth)
+        return _within(_db)
+
+    def _guard_sqlite_connect(_orig):
+        @_gwraps(_orig)
+        def w(*a, **k):
+            if a:
+                _db = a[0]
+            elif "database" in k:
+                _db = k["database"]
+            else:
+                return _orig(*a, **k)  # let sqlite3 raise its own TypeError
+            _uri = bool(k.get("uri", False))
+            # Materialize a path-like once so a stateful __fspath__ cannot pass the check
+            # with an in-workdir value and then hand sqlite a different outside path.
+            if not isinstance(_db, (str, bytes)):
+                _db = _fspath1(_db)
+            if not _sqlite_path_ok(_db, _uri):
+                _deny(_db, "sqlite3.connect")
+            if a:
+                return _orig(_db, *a[1:], **k)
+            k = dict(k)
+            k["database"] = _db
+            return _orig(**k)
+        return w
+
+    _sq3_orig_connect = _sq3.connect
+    _sq3_guarded_connect = _guard_sqlite_connect(_sq3_orig_connect)
+    _sq3.connect = _sq3_guarded_connect
+    try:
+        _sq3.dbapi2.connect = _sq3_guarded_connect
+    except Exception:
+        pass
 except Exception:
     pass
 
