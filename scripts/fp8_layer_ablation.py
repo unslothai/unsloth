@@ -45,7 +45,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 os.environ.setdefault("BITSANDBYTES_NOWELCOME", "1")
-os.environ.setdefault("HF_HOME", "/mnt/disks/unslothai/ubuntu/workspace_81/BACKUP_05/temp/hf_cache")
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _BACKEND_ROOT = _REPO_ROOT / "studio" / "backend"

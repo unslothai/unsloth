@@ -22,7 +22,6 @@ import time
 from pathlib import Path
 
 os.environ.setdefault("BITSANDBYTES_NOWELCOME", "1")
-os.environ.setdefault("HF_HOME", "/mnt/disks/unslothai/ubuntu/workspace_81/BACKUP_05/temp/hf_cache")
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 for _p in (str(_REPO_ROOT / "studio" / "backend"), str(_REPO_ROOT / "scripts")):

@@ -42,7 +42,6 @@ from typing import Any, Optional
 # diffusers lazily imports its bnb quantiser. We never use bnb here (quant is torchao / layerwise),
 # so tell diffusers bnb is unavailable BEFORE any VAE class import, and silence the bnb welcome.
 os.environ.setdefault("BITSANDBYTES_NOWELCOME", "1")
-os.environ.setdefault("HF_HOME", "/mnt/disks/unslothai/ubuntu/workspace_81/hf_cache")
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _BACKEND_ROOT = _REPO_ROOT / "studio" / "backend"

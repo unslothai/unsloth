@@ -1760,12 +1760,13 @@ class DiffusionLoadRequest(BaseModel):
     )
     vae_quant: Optional[Literal["auto", "none", "off", "fp8", "fp8_dynamic"]] = Field(
         None,
-        description = "Quantise the VAE (image decoder). auto (the default when unset) picks the "
-        "best accurate scheme for this GPU + family: fp8_dynamic (torchao PER-TENSOR fp8 COMPUTE "
-        "on the conv tensor cores, cc >= 8.9, resident only) where a conv probe passes, else "
-        "layerwise fp8 (diffusers 8-bit storage, cc >= 8.9, survives offload), else dense. The "
-        "3-channel RGB head + output norms always stay dense. There is no int8 (no Conv3d int8 "
-        "kernel). none/off keeps the VAE dense bf16; an explicit scheme forces it.",
+        description = "Quantise the VAE (image decoder). auto (the default when unset) engages "
+        "layerwise fp8 (diffusers 8-bit storage, cc >= 8.9, survives offload) where the family "
+        "qualifies, else stays dense; fp8_dynamic (torchao PER-TENSOR fp8 COMPUTE on the conv "
+        "tensor cores, cc >= 8.9, resident only, conv-probe gated) is an EXPLICIT opt-in, never "
+        "picked by auto. The 3-channel RGB head + output norms always stay dense. There is no "
+        "int8 (no Conv3d int8 kernel). none/off keeps the VAE dense bf16; an explicit scheme "
+        "forces it.",
     )
     transformer_quant: Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]] = (
         Field(
@@ -2378,12 +2379,13 @@ class VideoLoadRequest(BaseModel):
     )
     vae_quant: Optional[Literal["auto", "none", "off", "fp8", "fp8_dynamic"]] = Field(
         None,
-        description = "Quantise the VAE (video decoder). auto (the default when unset) picks the "
-        "best accurate scheme for this GPU + family: fp8_dynamic (torchao PER-TENSOR fp8 COMPUTE "
-        "on the Conv2d/Conv3d tensor cores, cc >= 8.9, resident only), else layerwise fp8 "
-        "(diffusers 8-bit storage, cc >= 8.9, survives offload), else dense. The fp32-VAE families "
-        "(Wan) always stay dense. No int8 (no Conv3d int8 kernel). none/off keeps it dense; an "
-        "explicit scheme forces it. Mirrors the image backend's field.",
+        description = "Quantise the VAE (video decoder). auto (the default when unset) engages "
+        "layerwise fp8 (diffusers 8-bit storage, cc >= 8.9, survives offload) where the family "
+        "qualifies, else stays dense; fp8_dynamic (torchao PER-TENSOR fp8 COMPUTE on the "
+        "Conv2d/Conv3d tensor cores, cc >= 8.9, resident only, conv-probe gated) is an EXPLICIT "
+        "opt-in, never picked by auto. The fp32-VAE families (Wan) always stay dense. No int8 "
+        "(no Conv3d int8 kernel). none/off keeps it dense; an explicit scheme forces it. Mirrors "
+        "the image backend's field.",
     )
 
     @field_validator("attention_backend", mode = "before")

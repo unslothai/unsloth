@@ -307,6 +307,21 @@ def test_te_scheme_probe_nvfp4_uses_weightonly_kernel(monkeypatch):
     assert dp._te_scheme_probe(TE_QUANT_FP8_DYNAMIC, "cuda") is False
 
 
+def test_quantize_explicit_denied_scheme_stays_dense(monkeypatch):
+    # _TE_FAMILY_SCHEME_DENY's contract: a denied scheme is refused even when requested
+    # explicitly (mirroring the VAE module), gating the FINAL concrete mode so an
+    # int8 -> fp8 fallback is re-checked too.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    recorder: list = []
+    _stub_casters(monkeypatch, recorder)
+    monkeypatch.setitem(dp._TE_FAMILY_SCHEME_DENY, "z-image", frozenset({TE_QUANT_FP8_DYNAMIC}))
+    pipe = types.SimpleNamespace(text_encoder = object())
+    assert (
+        quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic", family = "z-image") is None
+    )
+    assert recorder == []  # denied before any cast
+
+
 def test_quantize_int8_unsupported_hw_is_noop(monkeypatch):
     # int8 on pre-Ampere silicon (no int8 tensor cores) applies nothing.
     _stub_torch(monkeypatch, cc = (7, 5))

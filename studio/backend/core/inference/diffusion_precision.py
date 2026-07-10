@@ -279,6 +279,15 @@ def quantize_text_encoders(
         if skip is None:
             _note(logger, f"int8 has no keep-bf16 schedule for family '{family}'; using fp8")
             mode = TE_QUANT_FP8
+    # The deny table's contract (_TE_FAMILY_SCHEME_DENY) is that a denied scheme is refused even
+    # when requested explicitly, mirroring the VAE module. Gate the FINAL concrete mode so an
+    # int8 -> fp8 fallback is re-checked too (auto already filtered in select_te_quant_scheme).
+    if _te_family_denied(family, mode):
+        _note(
+            logger,
+            f"text-encoder '{mode}' denied for family '{family}' (out-of-bar; staying dense)",
+        )
+        return None
     # The torchao modes (int8 with a schedule, fp8_dynamic, nvfp4) produce tensor subclasses that
     # reject Module.to(); an offload placement moves the encoder that way and hard-crashes -- the
     # DiT path skips torchao quant under offload for exactly this reason. Layerwise fp8 is not

@@ -198,7 +198,8 @@ def select_vae_quant_scheme(
 
     An explicit scheme is returned as-is unless family-denied (``quantize_vae`` re-gates it).
     ``force_fp32`` (a family that runs its VAE in fp32) always stays dense. ``auto`` walks
-    (fp8_dynamic, fp8) and returns the first that: survives the active offload policy (torchao
+    ``_VAE_AUTO_LADDER`` (layerwise fp8 ONLY; fp8_dynamic is an explicit opt-in, see the ladder
+    comment) and returns the first scheme that: survives the active offload policy (torchao
     fp8_dynamic tensors reject the Module.to() an offload hook uses -> only layerwise fp8 under
     offload), is not family-denied, is hardware-supported, and (fp8_dynamic only) passes a real
     conv smoke probe. Returns None when nothing qualifies (e.g. no CUDA / pre-Ada)."""

@@ -1230,8 +1230,8 @@ class DiffusionBackend:
         # encoder dense; an explicit scheme forces it. So the shipped default is auto (dense under off).
         if text_encoder_quant is None or str(text_encoder_quant).strip().lower() in ("", "auto"):
             text_encoder_quant = "off" if speed_off else TE_QUANT_AUTO
-        # vae_quant tri-state, same contract: UNSET or "auto" -> auto (fp8_dynamic conv compute on
-        # resident fp8-GEMM silicon that passes the conv probe, else layerwise fp8, else dense);
+        # vae_quant tri-state, same contract: UNSET or "auto" -> auto (layerwise fp8 where the
+        # family qualifies, else dense; fp8_dynamic is an explicit opt-in, never picked by auto);
         # none/off -> dense; an explicit scheme forces it. Also pinned dense under Speed="off".
         if vae_quant is None or str(vae_quant).strip().lower() in ("", "auto"):
             vae_quant = "off" if speed_off else VAE_QUANT_AUTO
