@@ -1057,6 +1057,7 @@ let _lmStudioCache: LocalModelInfo[] = [];
 let _localDirCache: LocalModelInfo[] = [];
 let _customFolderCache: LocalModelInfo[] = [];
 let _scanFoldersCache: ScanFolderInfo[] = [];
+let _downloadedCachesReady = false;
 
 /** True when any on-device model (downloaded GGUF, cached repo, LM Studio, or
  * custom-folder model) is known. Reads the module caches, which persist across
@@ -1454,7 +1455,9 @@ export function HubModelPicker({
   const [cachedModels, setCachedModels] =
     useState<CachedModelRepo[]>(_cachedModelsCache);
   const alreadyCached =
-    _cachedGgufCache.length > 0 || _cachedModelsCache.length > 0;
+    _downloadedCachesReady ||
+    _cachedGgufCache.length > 0 ||
+    _cachedModelsCache.length > 0;
   const [cachedReady, setCachedReady] = useState(alreadyCached);
   const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
     null,
@@ -1648,7 +1651,10 @@ export function HubModelPicker({
     // so the background refresh is invisible when we already had data.
     let done = 0;
     const check = () => {
-      if (++done >= 2) setCachedReady(true);
+      if (++done >= 2) {
+        _downloadedCachesReady = true;
+        setCachedReady(true);
+      }
     };
     listCachedGguf()
       .then((v) => {
