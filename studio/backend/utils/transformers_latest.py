@@ -338,8 +338,7 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         # sub-configs through CONFIG_MAPPING); otherwise the load still fails.
         supports = [latest_transformers_supports(candidate) for candidate in missing]
         if any(
-            s is None or not (s["supported_in_pypi"] or s["supported_in_main"])
-            for s in supports
+            s is None or not (s["supported_in_pypi"] or s["supported_in_main"]) for s in supports
         ):
             return None
         model_type, support = missing[0], supports[0]

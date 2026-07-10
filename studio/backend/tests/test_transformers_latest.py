@@ -923,7 +923,7 @@ def test_vision_subprocess_unions_sidecar_registry():
     # import and the config fetch, against a stubbed sidecar registry.
     body = script.split("from transformers import AutoConfig", 1)[1]
     body = body.split("kwargs = {", 1)[0]
-    helpers = script.split('sys.path.insert(0, backend_dir)', 1)[1]
+    helpers = script.split("sys.path.insert(0, backend_dir)", 1)[1]
     helpers = helpers.split("try:", 1)[0]
     exec(helpers, ns)
 
