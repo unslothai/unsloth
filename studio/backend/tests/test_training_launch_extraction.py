@@ -159,9 +159,7 @@ def test_yaml_trust_applies_only_for_trusted_org():
     captured = {}
     backend = SimpleNamespace(start_training = lambda **kw: captured.update(kw) or True)
 
-    with patch(
-        "utils.security.trusted_org.is_trusted_org_repo", return_value = True
-    ) as trusted:
+    with patch("utils.security.trusted_org.is_trusted_org_repo", return_value = True) as trusted:
         launch.launch_training(
             job_id = "job_x",
             request = _request(),
