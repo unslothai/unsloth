@@ -3068,3 +3068,61 @@ class TestRound26Bypasses:
     )
     def test_round26_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound27Bypasses:
+    """Twenty-seventh-round Codex findings (static portion): local executable scripts with an
+    unsafe shebang, dynamic subprocess cwd for a child reader, env -> BASH_ENV / ENV shell
+    startup scripts, and the quoted-newline false positive. (The runtime-guard items -- exact
+    /root and pathlib glob / rglob enumeration -- are covered in test_sandbox_runtime_backstop.)"""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['./evil'])",
+            "import subprocess\nsubprocess.run(['bin/evil'])",
+            "import subprocess\nsubprocess.Popen(['../tools/evil', 'arg'])",
+            "import os\nos.system('./evil')",
+        ],
+    )
+    def test_local_executable_script_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nP = compute_dir()\nsubprocess.check_output(['cat', 'passwd'], cwd=P)",
+            "import subprocess\nsubprocess.run(['head', '-1', 'secret'], cwd=get_dir())",
+        ],
+    )
+    def test_dynamic_cwd_child_reader_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['bash', '-c', 'echo OK'], env={'BASH_ENV': 'env.sh'})",
+            "import subprocess\nsubprocess.run(['sh', '-c', 'echo OK'], env={'ENV': 'e.sh'})",
+        ],
+    )
+    def test_shell_startup_env_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A quoted separator / newline is data, not a command boundary, so these benign
+            # print/generate-text commands must NOT be blocked (round-27 P2 false positive).
+            "import os\nos.system('echo \"ok\\nrm -rf /\"')",
+            "import os\nos.system(\"echo 'a;rm -rf x'\")",
+            "import os\nos.system('printf \"line1\\ntouch x\\n\"')",
+            # Benign local relative navigation / system binaries / dynamic cwd non-reader.
+            "import subprocess\nsubprocess.run(['ls', '-la'])",
+            "import subprocess\nsubprocess.run(['/bin/ls'])",
+            "import subprocess\nsubprocess.run(['make'], cwd=get_dir())",
+            "import subprocess\nsubprocess.run(['bash', '-c', 'echo OK'], env={'BASH_ENV': ''})",
+            "import subprocess\nsubprocess.run(['cat', 'data.txt'], cwd='logs')",
+        ],
+    )
+    def test_round27_benign_allowed(self, code):
+        _ok(code)

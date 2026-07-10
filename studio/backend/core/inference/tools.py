@@ -229,6 +229,23 @@ def _is_versioned_interpreter(base: str) -> bool:
     return stem != base and stem in _INTERPRETER_COMMANDS
 
 
+# Absolute paths under a standard system bin dir are trusted as real system commands (their
+# basename is still interpreter-checked separately); every OTHER explicit path is a local file.
+_SYSTEM_BIN_PREFIXES = ("/bin/", "/usr/bin/", "/usr/local/bin/", "/sbin/", "/usr/sbin/")
+
+
+def _is_local_executable_path(tok: str) -> bool:
+    """True when a command word is an explicit path to a LOCAL executable file (./evil, ../x,
+    subdir/tool, /tmp/x). Running such a file executes whatever its shebang names in an
+    UNGUARDED child -- a sandboxed snippet can create + chmod ./evil with `#!/usr/bin/python3`
+    and run it, starting an interpreter the argv basename scan never sees. A bare command name
+    resolved via PATH (no slash) and an absolute system-bin path are not treated as local."""
+    t = tok.replace("\\", "/")
+    if "/" not in t:
+        return False
+    return not t.startswith(_SYSTEM_BIN_PREFIXES)
+
+
 # The only shell redirection targets trusted without a realpath check: standard device
 # sinks that cannot escape the workdir. Every other target (relative or absolute) fails
 # closed, because the unguarded child follows symlinks and resolves relative names against a
@@ -521,6 +538,115 @@ def _expand_ifs(command: str) -> str:
     return _IFS_RE.sub(" ", command)
 
 
+def _rewrite_unquoted_newlines(command: str) -> str:
+    """Rewrite only UNQUOTED newline runs to ` ; ` (a bash command separator). A newline INSIDE
+    quotes is data (echo "ok\\nrm" is one argument), so a blanket regex would split a quoted
+    multiline string into a spurious command position and mis-block the later line."""
+    out = []
+    q = None
+    esc = False
+    prev_nl = False
+    for ch in command:
+        if esc:
+            out.append(ch)
+            esc = False
+            prev_nl = False
+            continue
+        if q == "'":
+            out.append(ch)
+            if ch == "'":
+                q = None
+            prev_nl = False
+            continue
+        if q == '"':
+            out.append(ch)
+            if ch == "\\":
+                esc = True
+            elif ch == '"':
+                q = None
+            prev_nl = False
+            continue
+        if ch == "\\":
+            out.append(ch)
+            esc = True
+            prev_nl = False
+            continue
+        if ch in ("'", '"'):
+            out.append(ch)
+            q = ch
+            prev_nl = False
+            continue
+        if ch in ("\r", "\n"):
+            if not prev_nl:
+                out.append(" ; ")
+            prev_nl = True
+            continue
+        out.append(ch)
+        prev_nl = False
+    return "".join(out)
+
+
+def _mask_quoted_separators(command: str) -> str:
+    """Neutralize command-boundary characters that are DATA inside quotes (blank them to a
+    space) so the regex command-position scan does not treat a quoted separator -- echo
+    "ok\\nrm" or 'a;rm' -- as a fresh command word. Command substitution ($(...) / backticks)
+    still runs inside DOUBLE quotes, so those are preserved; single-quoted text is fully
+    literal. The result is used only for the boundary regex, not for tokenization."""
+    out = []
+    q = None
+    esc = False
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if esc:
+            out.append(ch)
+            esc = False
+            i += 1
+            continue
+        if q == "'":
+            out.append(" " if ch in ";&|(\n\r`$" else ch)
+            if ch == "'":
+                q = None
+            i += 1
+            continue
+        if q == '"':
+            if ch == "\\":
+                out.append(ch)
+                esc = True
+                i += 1
+                continue
+            if ch == '"':
+                out.append(ch)
+                q = None
+                i += 1
+                continue
+            if ch == "$" and i + 1 < n and command[i + 1] == "(":
+                out.append("$(")  # command substitution runs inside double quotes; keep it
+                i += 2
+                continue
+            if ch == "`":
+                out.append("`")
+                i += 1
+                continue
+            out.append(" " if ch in ";&|(\n\r" else ch)
+            i += 1
+            continue
+        if ch == "\\":
+            out.append(ch)
+            esc = True
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            out.append(ch)
+            q = ch
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _iter_unquoted_chars(s):
     """Yield (index, char) for every character OUTSIDE single / double quotes (a backslash
     escape and the char it escapes are skipped inside double quotes / unquoted text). Used to
@@ -734,10 +860,10 @@ def _find_blocked_commands(command: str) -> set[str]:
     command = _expand_ifs(_normalize_ansi_c_quotes(command))
     # bash treats an unquoted newline as a command separator, but shlex's whitespace_split
     # folds it into ordinary whitespace, so `echo ok\nsed -i ...` would read `sed` as an
-    # argument of `echo` and miss the write. Rewrite newlines to `;` so each line starts a
-    # fresh command position; a newline INSIDE quotes stays in its token (shlex honors quotes),
-    # so the `;` there is not treated as a separator.
-    command = re.sub(r"[\r\n]+", " ; ", command)
+    # argument of `echo` and miss the write. Rewrite UNQUOTED newlines to `;` so each line
+    # starts a fresh command position; a newline inside quotes stays data (echo "ok\nrm" is one
+    # argument), so it is not turned into a spurious `; rm` command position.
+    command = _rewrite_unquoted_newlines(command)
     # bash performs brace expansion before command lookup, so `{touch,/tmp/x}` /
     # `{python3,-c} '...'` run the writer / interpreter even though the raw string has no
     # blocked token. Expand comma brace groups so the produced command words are scanned.
@@ -830,6 +956,10 @@ def _find_blocked_commands(command: str) -> set[str]:
         # shell, the same escape as `source`, but its basename is not a blocklist word.
         if base == ".":
             blocked.add("source")
+        # An explicit path to a LOCAL executable at command position (./evil, subdir/tool) runs
+        # whatever its shebang names in an unguarded child, so treat it like a blocked command.
+        if _is_local_executable_path(token):
+            blocked.add("local-exec:" + base)
         # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag,
         # non-numeric token is the real command. sudo is also in _BLOCKED_COMMANDS.
         if base in _COMMAND_PREFIXES:
@@ -856,8 +986,9 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # Regex catches blocked words at command boundaries shlex misses: inside
     # $(rm -rf), <(rm), backtick chains, or "foo;rm". Anchored to command-position
-    # delimiters, so it doesn't match in argument position.
-    lowered = command.lower()
+    # delimiters, so it doesn't match in argument position. Quoted separators are neutralized
+    # first so a quoted multiline string (echo "ok\nrm") is not read as a command boundary.
+    lowered = _mask_quoted_separators(command).lower()
     if _BLOCKED_COMMANDS:
         words_alt = "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
         pattern = (
@@ -1223,6 +1354,8 @@ def _blocked_in_argv(str_elts: list[str | None]) -> tuple[set[str], int | None]:
             cur_wrapper = base
             idx += 1
             continue  # wrapper consumes one command; the next word is the real one
+        if _is_local_executable_path(tok):
+            blocked.add("local-exec:" + base)  # runs an unguarded shebang interpreter
         return blocked, idx  # reached the executed command word
     return blocked, None
 
@@ -5549,6 +5682,17 @@ def _check_signal_escape_patterns(
                 )
                 blocked_in_args = _check_args_for_blocked(all_call_args, _shell_maybe_true)
 
+                # A shell startup variable (BASH_ENV / ENV) in an explicit env= dict names a
+                # script bash / sh SOURCES before the -c payload runs, executing unscanned code
+                # (subprocess.run(['bash','-c','echo OK'], env={'BASH_ENV':'env.sh'})). Flag a
+                # non-empty (or non-literal) value; an empty string is inert.
+                _env_node = expanded_kwargs.get("env")
+                if isinstance(_env_node, ast.Dict):
+                    for _ek, _ev in zip(_env_node.keys, _env_node.values):
+                        _ekey = _extract_string_from_node(_ek) if _ek is not None else None
+                        if _ekey in ("BASH_ENV", "ENV") and _extract_string_from_node(_ev) != "":
+                            blocked_in_args = blocked_in_args | {"shell-startup-env:" + _ekey}
+
                 # os.execl(path, a0, a1, ...) / os.execv(path, [a0, ...]) / os.spawnl(mode,
                 # path, a0, ...) spread the child's argv across separate positional args (or a
                 # single list), so scanning each string alone misses a mutating tail like
@@ -7623,15 +7767,49 @@ def _check_signal_escape_patterns(
             )
             # subprocess.run(['cat', 'passwd'], cwd='/etc') reads /etc/passwd in an unguarded
             # child: the argv entry is relative and /etc alone is not sensitive, so combine a
-            # literal cwd= with each relative argv path before the sensitivity check.
+            # literal cwd= with each relative argv path before the sensitivity check. A
+            # NON-literal cwd (cwd=P) cannot be proven sandbox-local, so a relative read under
+            # it fails closed (handled below).
             _sub_cwd = None
+            _sub_cwd_dynamic = False
             if _is_child_exec:
                 for kw in node.keywords or []:
                     if kw.arg == "cwd":
                         _cv = _fold_read_arg(kw.value)
                         if isinstance(_cv, str):
                             _sub_cwd = _cv
+                        elif not (isinstance(kw.value, ast.Constant) and kw.value.value is None):
+                            _sub_cwd_dynamic = True
                         break
+            # A file-reading child (cat / head / ...) with a relative argv path under a
+            # non-literal cwd could read a host secret (cwd=P; P evaluates to /etc); the child
+            # is unguarded, so fail closed unless the cwd is proven sandbox-local.
+            if _sub_cwd_dynamic:
+                _argv0 = None
+                if node.args and isinstance(node.args[0], (ast.List, ast.Tuple)):
+                    _av = node.args[0].elts
+                    _p0 = _fold_read_arg(_av[0]) if _av else None
+                    if (
+                        isinstance(_p0, str)
+                        and os.path.basename(_p0).lower() in _SHELL_READ_COMMANDS
+                    ):
+                        for _ae in _av[1:]:
+                            _av_s = _fold_read_arg(_ae)
+                            if (
+                                isinstance(_av_s, str)
+                                and _av_s
+                                and not _av_s.startswith("-")
+                                and not _av_s.startswith("/")
+                                and not _av_s.startswith("~")
+                            ):
+                                _fs_block(
+                                    node,
+                                    "child reader with a relative path under a non-literal cwd",
+                                )
+                                _argv0 = True
+                                break
+                if _argv0:
+                    return
             # Pathlib read on a Path(...) / join receiver: check the resolved path.
             if isinstance(f, ast.Attribute) and f.attr in _PATHLIB_READ_METHODS:
                 rp = _pathlib_receiver_path(f.value)
@@ -7972,9 +8150,10 @@ def _is_sensitive_read(rp):
         return True
     # Dotfiles / caches under a root home hold credentials (/root/.bashrc, /root/.cache/...);
     # an opaque path the static /root/ rule cannot fold could read them at runtime. Restore
-    # the /root/ protection here, but carve out package / library trees so importing a library
+    # the /root/ protection here (including the root home ITSELF, /root, which a directory
+    # reader would enumerate), but carve out package / library trees so importing a library
     # installed under a root home (site-packages, the stdlib) is not broken.
-    if n.startswith("/root/") and not any(
+    if (n == "/root" or n.startswith("/root/")) and not any(
         _seg in n
         for _seg in ("/site-packages/", "/dist-packages/", "/lib/python", "/lib64/python")
     ):
@@ -8367,17 +8546,21 @@ try:
     for _n in ("rename", "replace", "symlink_to", "hardlink_to"):
         _wrapp(_n, True)
 
-    # Path.iterdir enumerates a directory; a dynamically built receiver
-    # (Path(globals()['P']).iterdir()) has no literal path for the static scanner and, on
-    # some CPython versions, routes through pathlib's captured original os.scandir rather
-    # than the patched one, so screen the directory read here too.
-    _real_iterdir = getattr(_pl.Path, "iterdir", None)
-    if _real_iterdir is not None:
-        @_gwraps(_real_iterdir)
-        def _guarded_iterdir(self, *a, **k):
+    # Path.iterdir / glob / rglob enumerate a directory; a dynamically built receiver
+    # (Path(globals()['P']).iterdir(), Path(P).glob('*')) has no literal path for the static
+    # scanner and, on some CPython versions, routes through pathlib's captured original
+    # os.scandir rather than the patched one, so screen the directory read on the RECEIVER dir.
+    def _guard_path_dir_reader(_name):
+        _real = getattr(_pl.Path, _name, None)
+        if _real is None:
+            return
+        @_gwraps(_real)
+        def w(self, *a, **k):
             _deny_sensitive_read(self)
-            return _real_iterdir(self, *a, **k)
-        _pl.Path.iterdir = _guarded_iterdir
+            return _real(self, *a, **k)
+        setattr(_pl.Path, _name, w)
+    for _n in ("iterdir", "glob", "rglob"):
+        _guard_path_dir_reader(_n)
 except Exception:
     pass
 

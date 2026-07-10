@@ -1329,3 +1329,45 @@ def test_runtime_is_sensitive_read_covers_root_home():
     assert f("/root/.local/lib/python3.13/site-packages/certifi/cacert.pem") is False
     assert f("/root/miniconda3/lib/python3.13/os.py") is False
     assert f("/home/ubuntu/project/data.txt") is False
+
+
+def test_runtime_is_sensitive_read_covers_exact_root():
+    # os.listdir('/root') (P = '/root' computed dynamically) enumerates the root home itself;
+    # the runtime backstop must treat the exact /root path as sensitive, not only /root/*.
+    import re as _re
+
+    ns = {"_re": _re}
+    block = _SANDBOX_GUARD_SRC[
+        _SANDBOX_GUARD_SRC.index("_SENS_EXACT = ") : _SANDBOX_GUARD_SRC.index("def _read_realpath")
+    ]
+    exec(block, ns)
+    f = ns["_is_sensitive_read"]
+    assert f("/root") is True
+    assert f("/root/") is True
+    assert f("/root/.local/lib/python3.13/site-packages/x.py") is False
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("meth", ["glob", "rglob"])
+def test_sandboxed_pathlib_glob_sensitive_dir_denied(meth):
+    # Path(P).glob('*') / rglob enumerate a directory through pathlib internals; a dynamically
+    # built receiver pointing (via an in-workdir symlink) at a sensitive dir must be screened
+    # the same way Path.iterdir is.
+    session = "backstop-glob-" + meth
+    workdir = get_sandbox_workdir(session)
+    link = os.path.join(workdir, "ssh_link_" + meth)
+    if os.path.islink(link) or os.path.exists(link):
+        os.remove(link)
+    os.symlink("/etc/ssh", link)  # /etc/ssh/ is a sensitive directory
+    try:
+        out = _python_exec(
+            "from pathlib import Path\n"
+            f"print('N', len(list(Path('ssh_link_{meth}').{meth}('*'))))\n",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "sandbox:" in out or "PermissionError" in out
+    finally:
+        os.remove(link)
