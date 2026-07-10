@@ -58,6 +58,7 @@ export function StudioPage(): ReactElement {
   const dialogOpen = useDatasetPreviewDialogStore((s) => s.open);
   const dialogMode = useDatasetPreviewDialogStore((s) => s.mode);
   const dialogInitial = useDatasetPreviewDialogStore((s) => s.initialData);
+  const dialogStartIntent = useDatasetPreviewDialogStore((s) => s.startIntent);
   const closeDialog = useDatasetPreviewDialogStore((s) => s.close);
 
   const [requestedTab, setRequestedTab] = useState("configure");
@@ -72,8 +73,8 @@ export function StudioPage(): ReactElement {
     return () => setSelectedHistoryRunId(null);
   }, [setSelectedHistoryRunId]);
 
-  // Honour the user's clicked tab; the edge effect below switches to
-  // "current-run" once per run start. If "current-run" has nothing to show,
+  // Honour the user's clicked tab; the run-id effect below switches to
+  // "current-run" once per run. If "current-run" has nothing to show,
   // use "configure".
   const activeTab =
     requestedTab === "current-run" && !showTrainingView
@@ -112,17 +113,22 @@ export function StudioPage(): ReactElement {
     setTourOpen(false);
   }, [activeTab, setTourOpen]);
 
-  // Edge-triggered so the user can navigate back to Configure mid-run
-  // (e.g. to build the next queue item) without being snapped away.
-  const wasTrainingRunning = useRef(false);
+  // Key this to a job id change so back-to-back queued runs each switch once,
+  // while the user can still navigate back to Configure during a given run.
+  const lastStartedRunJobId = useRef<string | null>(null);
   useEffect(() => {
-    const startedRunning = isTrainingRunning && !wasTrainingRunning.current;
-    wasTrainingRunning.current = isTrainingRunning;
+    const startedRunning =
+      isTrainingRunning &&
+      currentJobId !== null &&
+      currentJobId !== lastStartedRunJobId.current;
+    if (startedRunning) {
+      lastStartedRunJobId.current = currentJobId;
+    }
     if (startedRunning && requestedTab !== "history" && requestedTab !== "current-run") {
       setRequestedTab("current-run");
       setSelectedHistoryRunId(null);
     }
-  }, [isTrainingRunning, requestedTab]);
+  }, [currentJobId, isTrainingRunning, requestedTab, setSelectedHistoryRunId]);
 
   // Selecting a run from the sidebar only sets selectedHistoryRunId; auto-switch
   // to the History tab so the main panel reflects the selection.
@@ -173,6 +179,7 @@ export function StudioPage(): ReactElement {
           datasetSplit={config.datasetSplit}
           mode={dialogMode}
           initialData={dialogInitial}
+          startIntent={dialogStartIntent}
           isVlm={config.isVisionModel && config.isDatasetImage === true}
         />
 

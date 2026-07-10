@@ -124,34 +124,47 @@ function applyQueueState(state: TrainingQueueState): void {
   const previousActiveJobId = useTrainingQueueStore.getState().activeJobId;
   useTrainingQueueStore.getState().applyState(state);
 
-  if (state.active_job_id && state.active_job_id !== previousActiveJobId) {
-    emitTrainingRunsChanged();
-    // Queue-started runs never pass through the start form, so label the
-    // live view from the queue item instead of whatever the form currently
-    // holds. Applied only once the runtime has adopted the job, because
-    // applyStatus clears the start labels on a job change.
+  if (state.active_job_id) {
+    const activeJobChanged = state.active_job_id !== previousActiveJobId;
     const activeItem = state.items.find(
       (item) => item.job_id === state.active_job_id,
     );
+
+    if (activeJobChanged) {
+      emitTrainingRunsChanged();
+    }
+
+    // A queue snapshot can observe the backend's new job id before the queue
+    // row has been updated with that id. Keep the runtime sync on the id edge,
+    // then apply the labels on a later snapshot once that row is available.
+    const runtime = useTrainingRuntimeStore.getState();
+    if (!activeItem) {
+      if (activeJobChanged && runtime.jobId !== state.active_job_id) {
+        void syncTrainingRuntimeFromBackend().catch(() => undefined);
+      }
+      return;
+    }
+
     const applyLabels = () => {
+      const current = useTrainingRuntimeStore.getState();
+      if (current.jobId !== state.active_job_id) return;
       if (
-        activeItem &&
-        useTrainingRuntimeStore.getState().jobId === state.active_job_id
+        current.startModelName !== activeItem.model_name ||
+        current.startDatasetName !== activeItem.dataset_summary ||
+        current.startProjectName !== activeItem.project_name ||
+        current.startFromResume
       ) {
-        useTrainingRuntimeStore
-          .getState()
-          .setStartResources(
-            activeItem.model_name,
-            activeItem.dataset_summary,
-            false,
-            activeItem.project_name,
-          );
+        current.setStartResources(
+          activeItem.model_name,
+          activeItem.dataset_summary,
+          false,
+          activeItem.project_name,
+        );
       }
     };
-    if (state.active_job_id !== useTrainingRuntimeStore.getState().jobId) {
-      void syncTrainingRuntimeFromBackend()
-        .then(applyLabels)
-        .catch(() => undefined);
+
+    if (runtime.jobId !== state.active_job_id) {
+      void syncTrainingRuntimeFromBackend().then(applyLabels).catch(() => undefined);
     } else {
       applyLabels();
     }

@@ -13,7 +13,10 @@ import {
 import { DataTable } from "@/components/ui/data-table";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
-import { useTrainingActions, useTrainingConfigStore } from "@/features/training";
+import {
+  useTrainingActions,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { checkDatasetFormat } from "@/features/training/api/datasets-api";
 import { isRawTextDatasetFormat } from "@/features/training/lib/training-methods";
 import type { CheckFormatResponse } from "@/features/training/types/datasets";
@@ -52,6 +55,7 @@ type DatasetPreviewDialogProps = {
   datasetSplit?: string | null;
   mode?: "preview" | "mapping";
   initialData?: CheckFormatResponse | null;
+  startIntent?: "start" | "enqueue";
   isVlm?: boolean;
 };
 
@@ -65,6 +69,7 @@ export function DatasetPreviewDialog({
   datasetSplit,
   mode = "preview",
   initialData,
+  startIntent = "start",
   isVlm = false,
 }: DatasetPreviewDialogProps) {
   const [data, setData] = useState<CheckFormatResponse | null>(null);
@@ -89,7 +94,8 @@ export function DatasetPreviewDialog({
       modelType: s.modelType,
     })),
   );
-  const { isStarting, startError, startTrainingRun } = useTrainingActions();
+  const { isStarting, isEnqueueing, startError, startTrainingRun, enqueueTrainingRun } =
+    useTrainingActions();
 
   // Treat backend-reported image data as VLM even if the prop hasn't caught up.
   const effectiveIsAudio = !!data?.is_audio;
@@ -509,11 +515,14 @@ export function DatasetPreviewDialog({
                 {showMappingFooter && (
                   <DatasetMappingFooter
                     mappingOk={mappingOk}
-                    isStarting={isStarting}
+                    isStarting={isStarting || isEnqueueing}
                     startError={startError}
                     onCancel={() => onOpenChange(false)}
                     onStartTraining={async () => {
-                      const ok = await startTrainingRun();
+                      const ok =
+                        startIntent === "enqueue"
+                          ? await enqueueTrainingRun()
+                          : await startTrainingRun();
                       if (ok) onOpenChange(false);
                     }}
                   />

@@ -48,8 +48,12 @@ export function useTrainingActions() {
   // Shared pre-flight for starting or enqueueing a run. markStarting drives
   // the start-overlay state; enqueueing skips it.
   const prepareTrainingStartPayload = useCallback(
-    async (options?: { markStarting?: boolean }): Promise<TrainingStartRequest | null> => {
+    async (options?: {
+      markStarting?: boolean;
+      intent?: "start" | "enqueue";
+    }): Promise<TrainingStartRequest | null> => {
       const markStarting = options?.markStarting ?? true;
+      const intent = options?.intent ?? "start";
       const config = useTrainingConfigStore.getState();
       const runtimeStore = useTrainingRuntimeStore.getState();
       const dialogStore = useDatasetPreviewDialogStore.getState();
@@ -136,7 +140,7 @@ export function useTrainingActions() {
             useTrainingConfigStore.getState().setDatasetManualMapping(hint);
           }
 
-          dialogStore.openMapping(check);
+          dialogStore.openMapping(check, intent);
           return abortPrepare();
         }
       }
@@ -174,7 +178,10 @@ export function useTrainingActions() {
     const runtimeStore = useTrainingRuntimeStore.getState();
 
     try {
-      const payload = await prepareTrainingStartPayload({ markStarting: true });
+      const payload = await prepareTrainingStartPayload({
+        markStarting: true,
+        intent: "start",
+      });
       if (!payload) {
         return false;
       }
@@ -214,7 +221,10 @@ export function useTrainingActions() {
     setIsEnqueueing(true);
 
     try {
-      const payload = await prepareTrainingStartPayload({ markStarting: false });
+      const payload = await prepareTrainingStartPayload({
+        markStarting: false,
+        intent: "enqueue",
+      });
       if (!payload) {
         return false;
       }
