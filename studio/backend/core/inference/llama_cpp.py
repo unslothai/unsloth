@@ -2514,7 +2514,6 @@ class LlamaCppBackend:
         order = None
         try:
             from utils.hardware import get_backend_visible_gpu_info
-
             info = get_backend_visible_gpu_info()
             if info.get("available") and info.get("index_kind") == "physical":
                 reported = [d["index"] for d in info.get("devices", [])]
@@ -7144,9 +7143,7 @@ class LlamaCppBackend:
                     # default FASTEST_FIRST order (#5025).
                     if gpu_ids:
                         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-                    self._emit_child_gpu_visibility(
-                        env, ",".join(str(i) for i in gpu_indices)
-                    )
+                    self._emit_child_gpu_visibility(env, ",".join(str(i) for i in gpu_indices))
                 elif manual_tensor_split_emitted and not is_vulkan_backend:
                     # A manual per-GPU ratio across ALL GPUs (no explicit pick, so
                     # no CUDA_VISIBLE_DEVICES mask above): the UI built the
