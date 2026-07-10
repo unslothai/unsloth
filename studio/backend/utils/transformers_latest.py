@@ -49,6 +49,7 @@ from utils.transformers_version import (
     _config_model_types,
     _NESTED_CONFIG_KEYS,
     _TIER_RANK,
+    _model_types_from_config,
     _TRANSFORMERS_510_MODEL_TYPES,
     _TRANSFORMERS_530_MODEL_TYPES,
     _TRANSFORMERS_550_MODEL_TYPES,
@@ -286,26 +287,7 @@ def latest_transformers_supports(model_type: str) -> dict | None:
     }
 
 
-def _model_types_from_config(cfg: dict) -> list[str]:
-    """All model_types in the config: top-level first, then every nested
-    sub-config (text_config, vision_config, ...). A supported wrapper can
-    carry a brand-new backbone, and the wrapper instantiates sub-configs
-    through CONFIG_MAPPING, so nested types must be checked too."""
-    seen: list[str] = []
 
-    def add(value):
-        if isinstance(value, str) and value and value not in seen:
-            seen.append(value)
-
-    add(cfg.get("model_type"))
-    for key in _NESTED_CONFIG_KEYS:
-        sub = cfg.get(key)
-        if isinstance(sub, dict):
-            add(sub.get("model_type"))
-    for value in cfg.values():
-        if isinstance(value, dict):
-            add(value.get("model_type"))
-    return seen
 
 
 # model_types the hardcoded per-tier tables already route; these must never trigger the

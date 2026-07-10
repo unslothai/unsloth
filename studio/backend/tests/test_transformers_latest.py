@@ -483,10 +483,31 @@ class TestLatestVenvProvisioning:
         monkeypatch.setattr(tv, "_ensure_venv_dir", _fake_ensure)
         _config_mapping_cache["latest"] = frozenset({"stale"})
         assert ensure_latest_transformers_venv("5.13.0") is True
-        assert recorded["dir"] == str(venv_dir)
+        # Stage-and-swap: pip installs into the staging dir, the live dir is the swap result.
+        assert recorded["dir"] == str(venv_dir) + ".staging"
         assert "transformers==5.13.0" in recorded["packages"]
+        assert venv_dir.is_dir()
+        assert not Path(str(venv_dir) + ".staging").exists()
         assert latest_venv_pinned_version() == "5.13.0"
         assert "latest" not in _config_mapping_cache
+
+    def test_ensure_latest_upgrade_failure_keeps_old_sidecar(self, tmp_path: Path, monkeypatch):
+        venv_dir = tmp_path / ".venv_t5_latest"
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
+        # A working pinned sidecar exists.
+        venv_dir.mkdir(parents = True)
+        (venv_dir / tv._LATEST_PIN_MARKER).write_text(
+            json.dumps({"version": "5.12.0", "packages": ["transformers==5.12.0"]})
+        )
+        (venv_dir / "transformers").mkdir()
+        monkeypatch.setattr(tv, "_venv_dir_is_valid", lambda *a, **k: True)
+        # The new install fails mid-flight.
+        monkeypatch.setattr(tv, "_ensure_venv_dir", lambda *a, **k: False)
+        assert ensure_latest_transformers_venv("5.13.0") is False
+        # The previous sidecar and its pin survive untouched.
+        assert latest_venv_pinned_version() == "5.12.0"
+        assert (venv_dir / "transformers").is_dir()
+        assert not Path(str(venv_dir) + ".staging").exists()
 
     def test_ensure_latest_rejects_bad_version(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))

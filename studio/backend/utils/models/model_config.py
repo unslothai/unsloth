@@ -886,6 +886,20 @@ def _is_vision_model_uncached(
         model_name, hf_token = hf_token, local_files_only = local_files_only
     )
     if raw is not None:
+        if raw is False and not local_files_only:
+            # A latest-only architecture is invisible to the raw heuristics
+            # (built from older transformers); when the model routes to the
+            # pinned latest tier, trust the AutoConfig probe under that
+            # sidecar instead of the heuristic False.
+            try:
+                from utils.transformers_version import get_transformers_tier
+
+                if get_transformers_tier(model_name, hf_token, probe = False) == "latest":
+                    sub = _is_vision_model_subprocess(model_name, hf_token = hf_token)
+                    if sub is not None:
+                        return sub
+            except Exception:
+                pass
         return raw
 
     # Raw read failed transiently: fall back to AutoConfig (remote code DISABLED), via a

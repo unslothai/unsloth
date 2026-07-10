@@ -1021,21 +1021,51 @@ def _config_model_types(tier: str) -> frozenset[str]:
     return result
 
 
-def _tier_from_config_mapping(cfg: dict) -> str | None:
-    """Lowest tier whose transformers ships cfg's model_type, or None if unknown."""
-    model_type = cfg.get("model_type")
-    if not isinstance(model_type, str):
-        for key in _NESTED_CONFIG_KEYS:
-            sub = cfg.get(key)
-            if isinstance(sub, dict) and isinstance(sub.get("model_type"), str):
-                model_type = sub["model_type"]
-                break
-    if not isinstance(model_type, str):
-        return None
+def _model_types_from_config(cfg: dict) -> list[str]:
+    """All model_types in the config: the primary (top-level, else first nested)
+    first, then every other nested sub-config. Wrappers instantiate sub-configs
+    through CONFIG_MAPPING, so nested types matter for routing too."""
+    seen: list[str] = []
+
+    def add(value):
+        if isinstance(value, str) and value and value not in seen:
+            seen.append(value)
+
+    add(cfg.get("model_type"))
+    for key in _NESTED_CONFIG_KEYS:
+        sub = cfg.get(key)
+        if isinstance(sub, dict):
+            add(sub.get("model_type"))
+    for value in cfg.values():
+        if isinstance(value, dict):
+            add(value.get("model_type"))
+    return seen
+
+
+def _lowest_tier_for(model_type: str) -> str | None:
     for tier in sorted(_TIER_RANK, key = _TIER_RANK.get):
         if model_type in _config_model_types(tier):
             return tier
     return None
+
+
+def _tier_from_config_mapping(cfg: dict) -> str | None:
+    """Lowest tier able to load every model_type in cfg, or None when the
+    primary type is unknown everywhere. A nested type can raise the tier (its
+    sub-config is built through CONFIG_MAPPING); an unknown nested type never
+    vetoes, since no installed tier could load it either way (the latest
+    checker handles surfacing the install prompt for it)."""
+    types = _model_types_from_config(cfg)
+    if not types:
+        return None
+    best = _lowest_tier_for(types[0])
+    if best is None:
+        return None
+    for model_type in types[1:]:
+        tier = _lowest_tier_for(model_type)
+        if tier is not None and _TIER_RANK[tier] > _TIER_RANK[best]:
+            best = tier
+    return best
 
 
 # --- AutoConfig probe: general tier resolution for ambiguous models ----------
@@ -1849,17 +1879,33 @@ def ensure_latest_transformers_venv(version: str, extra_packages: tuple[str, ...
         and _venv_dir_is_valid(_VENV_T5_LATEST_DIR, packages)
     ):
         return True
-    if not _ensure_venv_dir(_VENV_T5_LATEST_DIR, packages, f"transformers {version} (latest)"):
-        return False
+    # Stage-and-swap: build the new sidecar next to the live one and swap only
+    # once complete, so a failed install or marker write never destroys a
+    # previously working .venv_t5_latest.
+    staging = _VENV_T5_LATEST_DIR + ".staging"
+    retired = _VENV_T5_LATEST_DIR + ".old"
+    shutil.rmtree(staging, ignore_errors = True)
     try:
-        (Path(_VENV_T5_LATEST_DIR) / _LATEST_PIN_MARKER).write_text(
+        if not _ensure_venv_dir(staging, packages, f"transformers {version} (latest)"):
+            return False
+        (Path(staging) / _LATEST_PIN_MARKER).write_text(
             json.dumps({"version": version, "packages": list(packages)}), encoding = "utf-8"
         )
+        shutil.rmtree(retired, ignore_errors = True)
+        if os.path.isdir(_VENV_T5_LATEST_DIR):
+            os.rename(_VENV_T5_LATEST_DIR, retired)
+        try:
+            os.rename(staging, _VENV_T5_LATEST_DIR)
+        except OSError:
+            # Restore the previous sidecar if the final swap fails.
+            if not os.path.isdir(_VENV_T5_LATEST_DIR) and os.path.isdir(retired):
+                os.rename(retired, _VENV_T5_LATEST_DIR)
+            raise
     except Exception as exc:
-        logger.error(
-            "Installed transformers %s but could not write the pin marker: %s", version, exc
-        )
+        logger.error("Could not provision transformers %s into .venv_t5_latest: %s", version, exc)
+        shutil.rmtree(staging, ignore_errors = True)
         return False
+    shutil.rmtree(retired, ignore_errors = True)
     # The overlay's CONFIG_MAPPING_NAMES may have changed (fresh install/upgrade): drop the
     # cached key set so the next routing decision re-reads the new mapping.
     _config_mapping_cache.pop("latest", None)
