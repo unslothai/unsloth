@@ -531,3 +531,85 @@ def test_fp16_accum_allowed_on_fp16_dtype_under_max(monkeypatch):
     )
     assert applied["fp16_accum"] is True
     assert torch.backends.cuda.matmul.allow_fp16_accumulation is True
+
+
+# ── inductor precision-cast emulation (compile-vs-eager numeric parity) ─────────
+
+
+def _stub_inductor_config(
+    monkeypatch,
+    torch,
+    *,
+    emulate = False,
+):
+    """Attach a fake ``_inductor.config`` to the stubbed torch module (diffusion_speed
+    resolves it as attributes off the imported torch, never via sys.modules -- so the
+    real torch._inductor lingering in sys.modules cannot leak into stubbed tests)."""
+    cfg = types.SimpleNamespace(emulate_precision_casts = emulate)
+    torch._inductor = types.SimpleNamespace(config = cfg)
+    return cfg
+
+
+def test_regional_compile_enables_emulate_precision_casts(monkeypatch):
+    # Inductor's fused pointwise kernels keep intermediates in fp32 where eager rounds
+    # to bf16 between ops; over a multi-step denoise that compounds to a visible drift.
+    # emulate_precision_casts restores eager's rounding at zero measured speed cost, so
+    # the regional compile path must switch it on.
+    torch = _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    cfg = _stub_inductor_config(monkeypatch, torch, emulate = False)
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True
+    assert cfg.emulate_precision_casts is True
+
+
+def test_snapshot_restores_emulate_precision_casts(monkeypatch):
+    # The flag is process-global, so the unload path must restore the pre-load value
+    # exactly like the TF32 / cudnn.benchmark globals.
+    torch = _stub_torch(monkeypatch)
+    cfg = _stub_inductor_config(monkeypatch, torch, emulate = False)
+    snap = snapshot_backend_flags()
+    assert snap["inductor_emulate_precision_casts"] is False
+    cfg.emulate_precision_casts = True
+    restore_backend_flags(snap)
+    assert cfg.emulate_precision_casts is False
+
+
+def test_missing_inductor_config_is_tolerated(monkeypatch):
+    # A build without torch._inductor (or with the flag renamed) must neither break the
+    # snapshot nor the compile path.
+    _stub_torch(monkeypatch)  # the stub torch has no _inductor attribute
+    _stub_gguf_accel(monkeypatch)
+    snap = snapshot_backend_flags()
+    assert "inductor_emulate_precision_casts" not in snap
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True
+
+
+def test_regional_compile_arms_cache_hook_inners(monkeypatch):
+    # The production load order engages the step cache BEFORE compile, so the regional
+    # compile pass must re-arm the already-installed cache hooks with compiled inner
+    # forwards (otherwise every computed step runs eager under the hook's
+    # torch.compiler.disable and forfeits the regional compile).
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    from core.inference import diffusion_cache as dc_mod
+
+    armed = []
+    monkeypatch.setattr(
+        dc_mod,
+        "_compile_hooked_block_inners",
+        lambda transformer, logger = None: armed.append(transformer) or 1,
+    )
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True
+    assert armed == [pipe.transformer]

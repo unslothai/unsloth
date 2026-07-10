@@ -356,3 +356,206 @@ def test_toggle_noop_without_cache_support(monkeypatch):
 
 def test_toggle_noop_without_transformer():
     assert maybe_toggle_step_cache(types.SimpleNamespace(), steps = 28) is None
+
+
+# ── compiled cache-hook inners (regional compile x step cache composition) ──────────
+import functools  # noqa: E402
+
+from core.inference.diffusion_cache import (  # noqa: E402
+    _compile_hooked_block_inners,
+    _invalidate_child_registry_cache,
+    _restore_hooked_block_inners,
+)
+
+
+class _BoundInner:
+    """Provides a plain bound method for fn_ref.original_forward (__self__ present)."""
+
+    def forward(self, *args, **kwargs):
+        return "eager"
+
+
+def _hooked_block(
+    *,
+    compiled = True,
+    hook_name = "fbc_block_hook",
+    bound = True,
+):
+    inner = _BoundInner()
+    orig = inner.forward if bound else functools.partial(_BoundInner.forward, inner)
+    hook = types.SimpleNamespace(fn_ref = types.SimpleNamespace(original_forward = orig))
+    block = types.SimpleNamespace(
+        _diffusers_hook = types.SimpleNamespace(hooks = {hook_name: hook}),
+        _compiled_call_impl = object() if compiled else None,
+    )
+    return block, hook, orig
+
+
+def _fake_dit(blocks):
+    return types.SimpleNamespace(modules = lambda: [types.SimpleNamespace()] + blocks)
+
+
+def _stub_torch_compile(monkeypatch):
+    compiled_calls = []
+
+    def _compile(fn, **kwargs):
+        compiled_calls.append((fn, kwargs))
+        wrapper = lambda *a, **k: fn(*a, **k)  # noqa: E731
+        wrapper._unsloth_test_compiled_of = fn
+        return wrapper
+
+    torch = types.ModuleType("torch")
+    torch.compile = _compile
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    return compiled_calls
+
+
+def test_arming_swaps_inner_for_compiled_wrapper(monkeypatch):
+    calls = _stub_torch_compile(monkeypatch)
+    block, hook, orig = _hooked_block()
+    assert _compile_hooked_block_inners(_fake_dit([block])) == 1
+    assert hook.fn_ref.original_forward is not orig
+    assert hook.fn_ref.original_forward._unsloth_test_compiled_of is orig
+    assert hook._unsloth_orig_inner is orig
+    # The inner compile must match the cache-active tier: graph-breakable + dynamic.
+    assert calls[0][1] == {"fullgraph": False, "dynamic": True}
+
+
+def test_arming_is_idempotent(monkeypatch):
+    _stub_torch_compile(monkeypatch)
+    block, hook, _ = _hooked_block()
+    dit = _fake_dit([block])
+    assert _compile_hooked_block_inners(dit) == 1
+    once = hook.fn_ref.original_forward
+    assert _compile_hooked_block_inners(dit) == 0  # marker short-circuits
+    assert hook.fn_ref.original_forward is once
+
+
+def test_arming_skips_uncompiled_blocks(monkeypatch):
+    # An eager-tier load has no _compiled_call_impl: the hook must stay untouched
+    # (compiling the inner would ADD compile where the user chose eager).
+    _stub_torch_compile(monkeypatch)
+    block, hook, orig = _hooked_block(compiled = False)
+    assert _compile_hooked_block_inners(_fake_dit([block])) == 0
+    assert hook.fn_ref.original_forward is orig
+
+
+def test_arming_skips_partial_captured_inner(monkeypatch):
+    # A stacked hook chain (e.g. group offload) captures a functools.partial, not the
+    # plain bound method; arming would compile the wrong layer of the chain.
+    _stub_torch_compile(monkeypatch)
+    block, hook, orig = _hooked_block(bound = False)
+    assert _compile_hooked_block_inners(_fake_dit([block])) == 0
+    assert hook.fn_ref.original_forward is orig
+
+
+def test_arming_covers_every_cache_hook_family(monkeypatch):
+    # FBCache is the image cache today, but the hook-name table already covers the
+    # MagCache layout too (same fn_ref shape), so a future mode arms for free.
+    _stub_torch_compile(monkeypatch)
+    names = (
+        "mag_cache_leader_block_hook",
+        "mag_cache_block_hook",
+        "fbc_leader_block_hook",
+        "fbc_block_hook",
+    )
+    blocks = [_hooked_block(hook_name = n)[0] for n in names]
+    assert _compile_hooked_block_inners(_fake_dit(blocks)) == len(names)
+
+
+def test_restore_puts_the_exact_original_back(monkeypatch):
+    _stub_torch_compile(monkeypatch)
+    block, hook, orig = _hooked_block()
+    dit = _fake_dit([block])
+    _compile_hooked_block_inners(dit)
+    _restore_hooked_block_inners(dit)
+    assert hook.fn_ref.original_forward is orig
+    assert hook._unsloth_orig_inner is None
+
+
+def test_restore_tolerates_fakes_without_modules():
+    _restore_hooked_block_inners(_MixinTransformer())  # no .modules(): no-op
+
+
+def test_apply_step_cache_arms_compiled_blocks_on_toggle(monkeypatch):
+    # The generation-time toggle engages the cache AFTER the load already compiled the
+    # blocks; apply_step_cache must arm the fresh hooks itself.
+    _stub_diffusers(monkeypatch)
+    _stub_torch_compile(monkeypatch)
+    block, hook, orig = _hooked_block()
+
+    class _T(_MixinTransformer):
+        def modules(self):
+            return [block]
+
+    t = _T()
+    engaged = apply_step_cache(_pipe(t), mode = "fbcache")
+    assert engaged == TC_FBCACHE
+    assert hook.fn_ref.original_forward is not orig
+    assert hook._unsloth_orig_inner is orig
+
+
+def test_toggle_disable_restores_inners_before_disable(monkeypatch):
+    # remove_hook splices fn_ref.original_forward back into module.forward, so the
+    # compiled wrapper must be swapped out BEFORE disable_cache runs.
+    _stub_diffusers(monkeypatch)
+    order = []
+
+    class _T(_ToggleTransformer):
+        def disable_cache(self):
+            super().disable_cache()
+            order.append("disable")
+
+        def modules(self):
+            order.append("restore-walk")
+            return []
+
+    t = _T()
+    maybe_toggle_step_cache(_pipe(t), steps = 28)
+    mode = maybe_toggle_step_cache(_pipe(t), steps = 8)
+    assert mode is None and t.disables == 1
+    assert order[-2:] == ["restore-walk", "disable"]
+
+
+def test_enable_failure_restores_inners_before_partial_disable(monkeypatch):
+    # enable_cache can fail after hooking (and arming) some blocks; the partial-hook
+    # cleanup must un-arm them before disable_cache splices original_forward back.
+    _stub_diffusers(monkeypatch)
+    order = []
+
+    class _T(_ToggleTransformer):
+        def enable_cache(self, config):
+            raise RuntimeError("block signature not recognised")
+
+        def disable_cache(self):
+            super().disable_cache()
+            order.append("disable")
+
+        def modules(self):
+            order.append("restore-walk")
+            return []
+
+    t = _T()
+    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert order == ["restore-walk", "disable"]
+
+
+# ── stale child-registry cache invalidation (mid-session enable) ────────────────────
+
+
+def test_enable_invalidates_stale_child_registry_cache(monkeypatch):
+    # diffusers 0.39 caches the child-registry list on first cache_context use; an
+    # UNCACHED generation already populates it (empty), so a later toggle-time
+    # enable_cache would install hooks the context never reaches ("No context is set").
+    _stub_diffusers(monkeypatch)
+    t = _MixinTransformer()
+    t._diffusers_hook = types.SimpleNamespace(_child_registries_cache = ["stale"])
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert t._diffusers_hook._child_registries_cache is None
+
+
+def test_invalidate_child_registry_cache_tolerates_absence():
+    _invalidate_child_registry_cache(types.SimpleNamespace())  # no registry: no-op
+    reg = types.SimpleNamespace(_child_registries_cache = None)
+    _invalidate_child_registry_cache(types.SimpleNamespace(_diffusers_hook = reg))
+    assert reg._child_registries_cache is None

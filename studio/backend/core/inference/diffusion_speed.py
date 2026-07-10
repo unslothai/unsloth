@@ -77,6 +77,9 @@ def snapshot_backend_flags() -> Optional[dict]:
             state["cudnn_tf32"] = bool(cudnn.allow_tf32)
         if hasattr(cudnn, "benchmark"):
             state["cudnn_benchmark"] = bool(cudnn.benchmark)
+    inductor_cfg = _inductor_config()
+    if inductor_cfg is not None and hasattr(inductor_cfg, "emulate_precision_casts"):
+        state["inductor_emulate_precision_casts"] = bool(inductor_cfg.emulate_precision_casts)
     return state
 
 
@@ -103,6 +106,19 @@ def restore_backend_flags(state: Optional[dict]) -> None:
     cudnn = getattr(torch.backends, "cudnn", None)
     _set(cudnn, "allow_tf32", "cudnn_tf32")
     _set(cudnn, "benchmark", "cudnn_benchmark")
+    _set(_inductor_config(), "emulate_precision_casts", "inductor_emulate_precision_casts")
+
+
+def _inductor_config() -> Any:
+    """``torch._inductor.config`` or None. Resolved as attributes off the imported torch
+    module (real torch exposes ``_inductor`` directly after ``import torch``) rather
+    than a submodule import, so a stubbed/partial torch (tests, exotic builds) cleanly
+    reports None instead of picking a stale real module out of ``sys.modules``."""
+    try:
+        import torch
+        return getattr(getattr(torch, "_inductor", None), "config", None)
+    except Exception:  # noqa: BLE001 — no inductor -> nothing to snapshot/set
+        return None
 
 
 def normalize_speed_mode(value: Optional[str]) -> str:
@@ -342,6 +358,19 @@ def _compile_repeated_blocks(
             for _limit_attr in ("recompile_limit", "cache_size_limit"):  # name varies by torch ver
                 if hasattr(dynamo_cfg, _limit_attr):
                     setattr(dynamo_cfg, _limit_attr, max(getattr(dynamo_cfg, _limit_attr) or 0, 64))
+        # Match eager's intermediate rounding inside inductor's fused pointwise kernels:
+        # by default they keep chains in fp32 where eager materialises bf16 between ops,
+        # a per-forward rounding delta that a multi-step denoise amplifies chaotically.
+        # Measured (B200, scripts/image_speedmem_bench.py, pairwise LPIPS of the
+        # compiled tier vs the same-stack eager tier): Qwen-Image 0.019 -> 0.006 at
+        # identical speed, FLUX.1-dev 0.046 -> 0.029 at +2% step time, FLUX.2-klein
+        # 0.018 -> 0.017 at identical speed; on the video DiT (HunyuanVideo-1.5-720p)
+        # full-clip LPIPS vs bit-exact drops 0.221 -> 0.052 at zero cost. Process-
+        # global, so snapshot_backend_flags carries it and unload restores the prior
+        # value.
+        inductor_cfg = _inductor_config()
+        if inductor_cfg is not None and hasattr(inductor_cfg, "emulate_precision_casts"):
+            inductor_cfg.emulate_precision_casts = True
     except Exception as exc:  # noqa: BLE001 — optimisation only
         _warn(logger, "compile_repeated_blocks", exc)
         return False
@@ -354,6 +383,20 @@ def _compile_repeated_blocks(
             engaged = True
         except Exception as exc:  # noqa: BLE001 — optimisation only
             _warn(logger, "compile_repeated_blocks", exc)
+            continue
+        # A step cache engaged BEFORE this compile (the production load order) has
+        # already wrapped each block's forward in a @torch.compiler.disable'd hook, so
+        # the compute branch would run eager on every non-skipped step and forfeit the
+        # regional compile entirely. Re-point the hooks' inner forward at compiled
+        # wrappers; no-op when no cache hooks are installed. The toggle path (cache
+        # engaged after load) is armed by apply_step_cache instead. Lazy import:
+        # diffusion_cache imports nothing from this module, but keep the dependency
+        # one-directional at import time.
+        try:
+            from .diffusion_cache import _compile_hooked_block_inners
+            _compile_hooked_block_inners(transformer, logger)
+        except Exception as exc:  # noqa: BLE001 — optimisation only
+            _warn(logger, "cache-hook inner compile", exc)
     return engaged
 
 

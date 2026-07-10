@@ -64,6 +64,126 @@ def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
+def _invalidate_child_registry_cache(transformer: Any) -> None:
+    """Drop the HookRegistry's cached child-registry list after (un)installing hooks.
+
+    ``cache_context`` propagates the state context through ``_get_child_registries``,
+    which diffusers 0.39 caches on first use. An UNCACHED generation already calls
+    ``cache_context`` (the pipeline wraps every denoise call), creating the
+    transformer-level registry with an EMPTY cached child list -- so a later
+    ``enable_cache`` (the auto step-count toggle engaging FBCache mid-session) installs
+    block hooks that ``_set_context`` never reaches, and the first cached forward dies
+    with "No context is set". Invalidate the stale cache so the next ``cache_context``
+    rebuilds it over the freshly hooked blocks. Best-effort and cheap (one attribute)."""
+    registry = getattr(transformer, "_diffusers_hook", None)
+    if registry is not None and getattr(registry, "_child_registries_cache", None) is not None:
+        try:
+            registry._child_registries_cache = None
+        except Exception:  # noqa: BLE001 -- diffusers internals moved; leave as-is
+            pass
+
+
+# diffusers' cache hook registry names whose compute branch we re-point at a compiled
+# inner forward (leader = the measuring first block, block = the remaining ones); both
+# hook families share the fn_ref layout.
+_CACHE_HOOK_NAMES = (
+    "mag_cache_leader_block_hook",
+    "mag_cache_block_hook",
+    "fbc_leader_block_hook",
+    "fbc_block_hook",
+)
+
+
+def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
+    """Restore the regional compile on cache-hooked blocks' COMPUTED steps.
+
+    ``enable_cache`` replaces each block's ``forward`` with the hook's ``new_forward``
+    (stashing the pre-hook bound method in ``fn_ref.original_forward``), whose skip
+    decision is data-dependent Python: MagCache ``@torch.compiler.disable``s the whole
+    ``new_forward`` (recursive -- the compute branch runs EAGER), and even FBCache's
+    traceable ``new_forward`` graph-breaks around its disabled threshold decision,
+    which on some archs (measured: Qwen-Image) drops the compute branch's call into
+    ``original_forward`` out of the compiled region -- the block's regional compile
+    artifact (``_compiled_call_impl``) is never reached and the cache forfeits the
+    compile win on every non-skipped step. An explicitly ``torch.compile``d callable
+    re-enables
+    dynamo for its own extent even inside a disabled frame, so re-pointing
+    ``fn_ref.original_forward`` at a compiled wrapper of the same bound method restores
+    compiled compute steps while the skip decision stays eager exactly as designed.
+    Measured (B200, scripts/image_speedmem_bench.py): Qwen-Image FBCache computed steps
+    91.8 -> 71.2 ms (= the uncached compiled rate), 1.21x end to end; FLUX.1-dev is
+    neutral (its FBCache ``new_forward`` happens to trace, so computed steps were
+    already compiled -- same-process armed vs unarmed latents bit-identical); on the
+    video DiT balanced MagCache went 39.4 -> 26.9 s at 50 steps.
+
+    Only blocks the speed layer actually compiled are armed (``_compiled_call_impl``
+    guard -- eager tiers stay untouched), and only when ``original_forward`` is a plain
+    bound method (a stacked hook chain, e.g. offload, captures a partial and is
+    skipped). Idempotent via the ``_unsloth_orig_inner`` marker; best-effort. Returns
+    the number of hooks armed."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001 -- no torch, nothing to arm
+        return 0
+    armed = 0
+    try:
+        for module in transformer.modules():
+            registry = getattr(module, "_diffusers_hook", None)
+            if registry is None or getattr(module, "_compiled_call_impl", None) is None:
+                continue
+            hooks = getattr(registry, "hooks", None) or {}
+            for name in _CACHE_HOOK_NAMES:
+                hook = hooks.get(name)
+                fn_ref = getattr(hook, "fn_ref", None) if hook is not None else None
+                orig = getattr(fn_ref, "original_forward", None)
+                if orig is None or getattr(hook, "_unsloth_orig_inner", None) is not None:
+                    continue
+                if getattr(orig, "__self__", None) is None:
+                    continue  # not the plain bound method; arming would miss the block
+                # fullgraph=False / dynamic=True: a cache is active by definition (its
+                # decision points graph-break) and this matches the default tier the
+                # regional compile used. Dynamo caches per code object, so re-arming
+                # after a toggle is effectively free (~0.03 s).
+                fn_ref.original_forward = torch.compile(orig, fullgraph = False, dynamic = True)
+                hook._unsloth_orig_inner = orig
+                armed += 1
+    except Exception as exc:  # noqa: BLE001 -- best-effort: the cache still works eager
+        _warn(logger, "cache-hook inner compile", exc)
+        return armed
+    if armed and logger is not None:
+        logger.info(
+            "diffusion.cache: %d cache-hooked block(s) armed with compiled inner forwards",
+            armed,
+        )
+    return armed
+
+
+def _restore_hooked_block_inners(transformer: Any) -> None:
+    """Undo ``_compile_hooked_block_inners``: put the plain bound methods back and clear
+    the markers. MUST run before ``disable_cache`` -- ``remove_hook`` splices
+    ``fn_ref.original_forward`` back into ``module.forward``, and leaving the compiled
+    wrapper there would pin a stale compiled callable onto the uncached path."""
+    try:
+        modules = list(transformer.modules())
+    except Exception:  # noqa: BLE001 -- not a torch module (tests/fakes): nothing armed
+        return
+    for module in modules:
+        registry = getattr(module, "_diffusers_hook", None)
+        if registry is None:
+            continue
+        hooks = getattr(registry, "hooks", None) or {}
+        for name in _CACHE_HOOK_NAMES:
+            hook = hooks.get(name)
+            orig = getattr(hook, "_unsloth_orig_inner", None) if hook is not None else None
+            if orig is None:
+                continue
+            try:
+                hook.fn_ref.original_forward = orig
+                hook._unsloth_orig_inner = None
+            except Exception:  # noqa: BLE001 -- per-hook best-effort
+                pass
+
+
 def _pipeline_opens_cache_context(pipe: Any) -> bool:
     """Whether the pipeline enters ``transformer.cache_context(...)`` in its denoise loop.
     The First-Block-Cache hook requires it at run time, and a CacheMixin transformer alone
@@ -137,6 +257,15 @@ def apply_step_cache(
 
         config = FirstBlockCacheConfig(threshold = thr)
         enable_cache(config)
+        # enable_cache AFTER the pipe has already run leaves a stale cached child-registry
+        # list on the transformer's HookRegistry; the block hooks just installed would then
+        # never receive the cache context. Must follow every enable_cache.
+        _invalidate_child_registry_cache(transformer)
+        # If the blocks are already regionally compiled (the generation-time toggle
+        # path: compile ran at load), re-point the fresh hooks' compute branch at
+        # compiled inners; the load path (cache before compile) is armed by
+        # _compile_repeated_blocks instead. No-op when nothing is compiled.
+        _compile_hooked_block_inners(transformer, logger)
         try:
             transformer._unsloth_step_cache = f"{mode}@{thr}"
         except Exception:  # noqa: BLE001 — marker is best-effort
@@ -146,7 +275,10 @@ def apply_step_cache(
         return mode
     except Exception as exc:  # noqa: BLE001 — incompatible model -> run uncached
         # enable_cache can fail after hooking some blocks; drop any partial hooks so
-        # the reported-uncached model doesn't actually run half-cached.
+        # the reported-uncached model doesn't actually run half-cached. Any armed
+        # compiled inners must be restored FIRST (remove_hook splices original_forward
+        # back into module.forward).
+        _restore_hooked_block_inners(transformer)
         try:
             transformer.disable_cache()
         except Exception:  # noqa: BLE001
@@ -225,6 +357,10 @@ def maybe_toggle_step_cache(
         disable_cache = getattr(transformer, "disable_cache", None)
         if callable(disable_cache):
             try:
+                # Before remove_hook splices fn_ref.original_forward back into
+                # module.forward: the compiled inner wrappers must not leak onto the
+                # uncached path.
+                _restore_hooked_block_inners(transformer)
                 disable_cache()
                 transformer._unsloth_step_cache = None
                 if logger is not None:
