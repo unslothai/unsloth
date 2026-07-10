@@ -4089,6 +4089,7 @@ def _reexport_dangerous_module_name(expr):
     Covers ``getattr(<mod>, 'os')``, ``vars(<mod>)['os']`` and ``<mod>.__dict__['os']`` -- the
     call / subscript twins of the plain ``<mod>.os`` attribute form (pathlib.os.system), which
     stay reachable off a call-returned module (``getattr(__import__('pathlib'), 'os').system``)."""
+
     def _str_const(n):
         return n.value if isinstance(n, ast.Constant) and isinstance(n.value, str) else None
 
