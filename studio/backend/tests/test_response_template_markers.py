@@ -135,7 +135,10 @@ def _load_tokenizer(repo):
             from huggingface_hub import hf_hub_download
             from transformers import PreTrainedTokenizerFast
 
-            cfg = _json.load(open(hf_hub_download(repo, "tokenizer_config.json")))
+            with open(
+                hf_hub_download(repo, "tokenizer_config.json"), encoding = "utf-8"
+            ) as f:
+                cfg = _json.load(f)
             tok_file = hf_hub_download(repo, "tokenizer.json")
 
             def _tokval(v):
