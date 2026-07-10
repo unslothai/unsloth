@@ -1693,6 +1693,9 @@ from models.inference import (
     CompletionUsage,
     ValidateModelRequest,
     ValidateModelResponse,
+    TransformersUpgradeInfo,
+    InstallLatestTransformersRequest,
+    InstallLatestTransformersResponse,
     TextContentPart,
     ImageContentPart,
     ImageUrl,
@@ -4637,6 +4640,20 @@ async def validate_model(
             requires_security_review = any(
                 _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
             )
+        # Brand-new architecture check: does a newer transformers ship this model_type?
+        # Cheap for every currently supported model (static overlay lookup, no network);
+        # only a model_type unknown to ALL installed overlays consults the cached PyPI /
+        # GitHub-main snapshot. Best-effort: never fails validation (returns None on any
+        # error, offline, or when UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS is set).
+        transformers_upgrade: Optional[TransformersUpgradeInfo] = None
+        if not is_gguf:
+            from utils.transformers_latest import check_upgrade_for_model
+
+            _upgrade = await asyncio.to_thread(
+                check_upgrade_for_model, config.identifier, request.hf_token
+            )
+            if _upgrade is not None:
+                transformers_upgrade = TransformersUpgradeInfo(**_upgrade)
         # Native context length, read from the local GGUF header when present.
         # Lets the staged ("Load on selection" off) flow populate the context
         # slider before the GPU load; None until the file is downloaded.
@@ -4676,6 +4693,8 @@ async def validate_model(
             requires_trust_remote_code = requires_trust_remote_code,
             requires_security_review = requires_security_review,
             context_length = context_length,
+            requires_transformers_upgrade = transformers_upgrade is not None,
+            transformers_upgrade = transformers_upgrade,
         )
 
     except HTTPException:
@@ -4718,6 +4737,28 @@ async def validate_model(
             status_code = 400,
             detail = "Invalid model",
         )
+
+
+@router.post("/install-latest-transformers", response_model = InstallLatestTransformersResponse)
+async def install_latest_transformers_route(
+    request: InstallLatestTransformersRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """
+    Consented install of the latest transformers release into the persistent
+    .venv_t5_latest sidecar.
+
+    Called after the user confirms the transformers-upgrade dialog raised by /validate
+    (requires_transformers_upgrade). The requested version must match the current latest
+    PyPI release (re-verified server-side); the sidecar then participates in routing on
+    this and every future start. A pip install runs off-loop, so this can take a minute.
+    """
+    from utils.transformers_latest import install_latest_transformers
+
+    result = await asyncio.to_thread(install_latest_transformers, request.version)
+    if not result["success"]:
+        raise HTTPException(status_code = 400, detail = result["message"])
+    return InstallLatestTransformersResponse(**result)
 
 
 @router.post("/unload", response_model = UnloadResponse)

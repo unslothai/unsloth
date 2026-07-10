@@ -235,8 +235,16 @@ _VENV_T5_DIR = _VENV_T5_550_DIR
 # reuses the workspace torch (torch-agnostic).
 _VENV_LLMCOMPRESSOR_DIR = str(_studio_root() / ".venv_llmcompressor")
 
-# Tier precedence: higher rank wins in _higher_tier.
-_TIER_RANK = {"default": 0, "530": 1, "550": 2, "510": 3}
+# User-consented "latest transformers" sidecar for brand-new architectures that no
+# pre-provisioned overlay ships. Unlike the fixed-version sidecars above it is created only
+# after the user confirms the install popup (see utils/transformers_latest.py); the exact
+# pinned version is recorded in a marker file inside the dir so restarts revalidate it.
+_VENV_T5_LATEST_DIR = str(_studio_root() / ".venv_t5_latest")
+_LATEST_PIN_MARKER = ".unsloth_pinned_transformers"
+
+# Tier precedence: higher rank wins in _higher_tier. "latest" (the user-consented
+# newest-release sidecar) outranks every fixed tier.
+_TIER_RANK = {"default": 0, "530": 1, "550": 2, "510": 3, "latest": 4}
 
 
 def _higher_tier(a: str, b: str) -> str:
@@ -267,7 +275,25 @@ def activate_transformers_for_subprocess(model_name: str, hf_token: str | None =
         # surface, but path names alone must not upgrade a plain adapter.
         tier = _higher_tier(tier, get_transformers_tier(model_name, hf_token))
 
-    if tier == "510":
+    if tier == "latest":
+        pinned = latest_venv_pinned_version()
+        if pinned is None or not _ensure_venv_t5_latest_exists():
+            raise RuntimeError(
+                f"Cannot activate the latest-transformers sidecar: "
+                f".venv_t5_latest missing or unpinned at {_VENV_T5_LATEST_DIR}"
+            )
+        if _VENV_T5_LATEST_DIR not in sys.path:
+            sys.path.insert(0, _VENV_T5_LATEST_DIR)
+        logger.info(
+            "Prepended transformers %s venv to sys.path from %s "
+            "(path only; the loaded version is confirmed later by "
+            "'Subprocess loaded transformers ...' on first import)",
+            pinned,
+            _VENV_T5_LATEST_DIR,
+        )
+        _pp = os.environ.get("PYTHONPATH", "")
+        os.environ["PYTHONPATH"] = _VENV_T5_LATEST_DIR + (os.pathsep + _pp if _pp else "")
+    elif tier == "510":
         if not _ensure_venv_t5_510_exists():
             raise RuntimeError(
                 f"Cannot activate transformers {TRANSFORMERS_510_VERSION}: "
@@ -884,14 +910,25 @@ _config_mapping_cache: dict[str, frozenset[str]] = {}
 def _overlay_transformers_dir(tier: str) -> str | None:
     """transformers source dir for a tier, located without importing it."""
     if tier != "default":
-        root = {"530": _VENV_T5_530_DIR, "550": _VENV_T5_550_DIR, "510": _VENV_T5_510_DIR}.get(tier)
+        root = {
+            "530": _VENV_T5_530_DIR,
+            "550": _VENV_T5_550_DIR,
+            "510": _VENV_T5_510_DIR,
+            "latest": _VENV_T5_LATEST_DIR,
+        }.get(tier)
         src = os.path.join(root, "transformers") if root else None
         return src if src and _safe_is_dir(Path(src)) else None
     # default: the base 4.x transformers. find_spec resolves to a 5.x sidecar if one
     # is already on sys.path, so skip any .venv_t5_* / llmcompressor overlay dir.
     sidecars = tuple(
         os.path.abspath(d) + os.sep
-        for d in (_VENV_T5_530_DIR, _VENV_T5_550_DIR, _VENV_T5_510_DIR, _VENV_LLMCOMPRESSOR_DIR)
+        for d in (
+            _VENV_T5_530_DIR,
+            _VENV_T5_550_DIR,
+            _VENV_T5_510_DIR,
+            _VENV_T5_LATEST_DIR,
+            _VENV_LLMCOMPRESSOR_DIR,
+        )
     )
     candidates = []
     try:
@@ -930,6 +967,34 @@ def _mapping_first_keys(value: ast.AST) -> set[str]:
     return {n.value for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str)}
 
 
+def _model_types_from_source(source: str) -> set[str]:
+    """model_type keys of CONFIG_MAPPING_NAMES in *source* (AST only, no execution).
+
+    Handles the direct ``CONFIG_MAPPING_NAMES = ...`` binding (dict literal or
+    OrderedDict/dict call over 2-tuple lists and **{...} unpacking) and any
+    ``CONFIG_MAPPING_NAMES.update({...})`` mutation. Shared by the on-disk overlay
+    reader below and the remote latest-release checker (utils/transformers_latest.py).
+    """
+    keys: set[str] = set()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        # direct binding, or a CONFIG_MAPPING_NAMES.update({...}) mutation
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "CONFIG_MAPPING_NAMES" for t in node.targets
+        ):
+            keys |= _mapping_first_keys(node.value)
+        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            fn = node.value.func
+            if (
+                isinstance(fn, ast.Attribute)
+                and fn.attr == "update"
+                and isinstance(fn.value, ast.Name)
+                and fn.value.id == "CONFIG_MAPPING_NAMES"
+            ):
+                keys |= _mapping_first_keys(node.value)
+    return keys
+
+
 def _config_model_types(tier: str) -> frozenset[str]:
     """model_type keys in a tier's CONFIG_MAPPING_NAMES (5.10 moved it to auto_mappings.py)."""
     cached = _config_mapping_cache.get(tier)
@@ -944,22 +1009,7 @@ def _config_model_types(tier: str) -> frozenset[str]:
         if not _safe_is_file(path):
             continue
         try:
-            tree = ast.parse(path.read_text(encoding = "utf-8"))
-            for node in ast.walk(tree):
-                # direct binding, or a CONFIG_MAPPING_NAMES.update({...}) mutation
-                if isinstance(node, ast.Assign) and any(
-                    isinstance(t, ast.Name) and t.id == "CONFIG_MAPPING_NAMES" for t in node.targets
-                ):
-                    keys |= _mapping_first_keys(node.value)
-                elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
-                    fn = node.value.func
-                    if (
-                        isinstance(fn, ast.Attribute)
-                        and fn.attr == "update"
-                        and isinstance(fn.value, ast.Name)
-                        and fn.value.id == "CONFIG_MAPPING_NAMES"
-                    ):
-                        keys |= _mapping_first_keys(node.value)
+            keys |= _model_types_from_source(path.read_text(encoding = "utf-8"))
         except Exception:
             continue
     result = frozenset(keys)
@@ -1039,7 +1089,17 @@ def _probe_tier_venvs():
         "530": (_VENV_T5_530_DIR, _ensure_venv_t5_530_exists),
         "550": (_VENV_T5_550_DIR, _ensure_venv_t5_550_exists),
         "510": (_VENV_T5_510_DIR, _ensure_venv_t5_510_exists),
+        "latest": (_VENV_T5_LATEST_DIR, _ensure_venv_t5_latest_exists),
     }
+
+
+def _probe_tier_order() -> tuple[str, ...]:
+    """Sidecar probe order. The consented "latest" sidecar joins only once it is
+    provisioned (pin marker present): an absent optional tier must not flip the probe's
+    skipped-tier bookkeeping, keeping pre-latest behavior byte-identical."""
+    if latest_venv_pinned_version() is not None:
+        return _PROBE_TIER_ORDER + ("latest",)
+    return _PROBE_TIER_ORDER
 
 
 def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) -> bool | None:
@@ -1137,7 +1197,8 @@ def _probe_tier(
         return tier
 
     venvs = _probe_tier_venvs()
-    order = (("default",) + _PROBE_TIER_ORDER) if include_default else _PROBE_TIER_ORDER
+    sidecar_order = _probe_tier_order()
+    order = (("default",) + sidecar_order) if include_default else sidecar_order
     probed_count = 0
     skipped_any = False
     for tier in order:
@@ -1657,6 +1718,150 @@ def _ensure_venv_t5_exists() -> bool:
     return _ensure_venv_t5_550_exists()
 
 
+# --- User-consented "latest transformers" sidecar (.venv_t5_latest) --------------------------
+# Provisioned only via ensure_latest_transformers_venv() after the user confirms the upgrade
+# popup (see utils/transformers_latest.py). The exact pip version is pinned in a marker file
+# inside the dir, so restarts revalidate the same version and routing picks the tier up
+# automatically (it is just a --target dir like the other sidecars).
+
+# PEP 440-ish release strings only (guards the pip install spec against injection).
+_LATEST_VERSION_RE = r"[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?"
+
+
+def _is_valid_version_string(version: str) -> bool:
+    import re
+
+    return isinstance(version, str) and re.fullmatch(_LATEST_VERSION_RE, version) is not None
+
+
+def _latest_pin_data() -> dict | None:
+    """Parsed pin marker: {"version": str, "packages": [specs...]}, or None.
+
+    The marker is JSON; a plain version string (older/simpler writers) is tolerated and
+    expanded with the default package set.
+    """
+    marker = Path(_VENV_T5_LATEST_DIR) / _LATEST_PIN_MARKER
+    try:
+        if not marker.is_file():
+            return None
+        raw = marker.read_text(encoding = "utf-8").strip()
+    except Exception:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = raw
+    if isinstance(data, str):
+        if not _is_valid_version_string(data):
+            return None
+        return {"version": data, "packages": list(_venv_t5_latest_packages(data))}
+    if not isinstance(data, dict):
+        return None
+    version = data.get("version")
+    if not _is_valid_version_string(version):
+        return None
+    packages = data.get("packages")
+    if not (isinstance(packages, list) and all(isinstance(p, str) for p in packages)):
+        packages = list(_venv_t5_latest_packages(version))
+    return {"version": version, "packages": packages}
+
+
+def latest_venv_pinned_version() -> str | None:
+    """Exact transformers version pinned in .venv_t5_latest's marker, or None if the
+    sidecar was never provisioned (or the marker is unreadable/invalid)."""
+    data = _latest_pin_data()
+    return data["version"] if data else None
+
+
+def _venv_t5_latest_packages(version: str, extra_packages: tuple[str, ...] = ()) -> tuple[str, ...]:
+    """Package set for the latest sidecar; mirrors the fixed .venv_t5_* sidecars.
+    *extra_packages* carries dep-compat shadows (e.g. a newer tokenizers) computed by
+    utils.transformers_latest before install."""
+    return (
+        f"transformers=={version}",
+        "huggingface_hub==1.8.0",
+        "hf_xet==1.4.2",
+        "tiktoken",
+    ) + tuple(extra_packages)
+
+
+def _ensure_venv_t5_latest_exists() -> bool:
+    """Ensure .venv_t5_latest/ holds its pinned transformers version.
+
+    Never installs without a pin: an unprovisioned sidecar (no marker) returns False so
+    routing and probing behave exactly as before the feature existed. With a pin present
+    it repairs a broken dir the same way the fixed sidecars do.
+    """
+    pin = _latest_pin_data()
+    if pin is None:
+        return False
+    version = pin["version"]
+    packages = tuple(pin["packages"])
+    if _venv_dir_is_valid(_VENV_T5_LATEST_DIR, packages):
+        return True
+    if _env_offline():
+        logger.warning(
+            ".venv_t5_latest (transformers %s) is incomplete and offline mode is set; "
+            "cannot repair it.",
+            version,
+        )
+        return False
+    marker_text = json.dumps({"version": version, "packages": list(packages)})
+    ok = _ensure_venv_dir(_VENV_T5_LATEST_DIR, packages, f"transformers {version} (latest)")
+    if ok:
+        # _ensure_venv_dir wipes the dir before reinstalling, so restore the pin marker.
+        try:
+            (Path(_VENV_T5_LATEST_DIR) / _LATEST_PIN_MARKER).write_text(
+                marker_text, encoding = "utf-8"
+            )
+        except Exception as exc:
+            logger.warning("Could not rewrite .venv_t5_latest pin marker: %s", exc)
+            return False
+    return ok
+
+
+def ensure_latest_transformers_venv(version: str, extra_packages: tuple[str, ...] = ()) -> bool:
+    """Provision .venv_t5_latest/ pinned to *version* (user-consented install path).
+
+    Reuses the same --target/--no-deps installer as the fixed sidecars, then writes the pin
+    marker (version + full package set) so the venv persists across restarts and
+    :func:`latest_venv_pinned_version` / routing pick it up automatically.
+    *extra_packages* carries dep-compat shadows (see utils.transformers_latest).
+    Returns True on success.
+    """
+    if not _is_valid_version_string(version):
+        logger.error("Refusing to install invalid transformers version %r", version)
+        return False
+    if _env_offline():
+        logger.warning(
+            "Cannot install transformers %s: HF/transformers offline mode is set.", version
+        )
+        return False
+    packages = _venv_t5_latest_packages(version, extra_packages)
+    pin = _latest_pin_data()
+    if (
+        pin is not None
+        and pin["version"] == version
+        and tuple(pin["packages"]) == packages
+        and _venv_dir_is_valid(_VENV_T5_LATEST_DIR, packages)
+    ):
+        return True
+    if not _ensure_venv_dir(_VENV_T5_LATEST_DIR, packages, f"transformers {version} (latest)"):
+        return False
+    try:
+        (Path(_VENV_T5_LATEST_DIR) / _LATEST_PIN_MARKER).write_text(
+            json.dumps({"version": version, "packages": list(packages)}), encoding = "utf-8"
+        )
+    except Exception as exc:
+        logger.error("Installed transformers %s but could not write the pin marker: %s", version, exc)
+        return False
+    # The overlay's CONFIG_MAPPING_NAMES may have changed (fresh install/upgrade): drop the
+    # cached key set so the next routing decision re-reads the new mapping.
+    _config_mapping_cache.pop("latest", None)
+    logger.info("Provisioned .venv_t5_latest with transformers %s", version)
+    return True
+
+
 # --- llm-compressor-main shadow (FP8/FP4 export of newer-transformers models) ---------------------
 # Exact, reproducible pins (bump deliberately in review). Full 40-char SHA validated to FP8-quantize
 # Qwen3.5 / Gemma-4 / Llama.
@@ -1819,7 +2024,7 @@ def _activate_venv(venv_dir: str, label: str) -> None:
 
 def _deactivate_5x() -> None:
     """Remove all .venv_t5_*/ dirs from sys.path, purge stale modules, reimport."""
-    for d in (_VENV_T5_530_DIR, _VENV_T5_550_DIR, _VENV_T5_510_DIR):
+    for d in (_VENV_T5_530_DIR, _VENV_T5_550_DIR, _VENV_T5_510_DIR, _VENV_T5_LATEST_DIR):
         while d in sys.path:
             sys.path.remove(d)
     logger.info("Removed venv_t5 dirs from sys.path")
@@ -1860,7 +2065,17 @@ def ensure_transformers_version(model_name: str) -> None:
         # surface, but path names alone must not upgrade a plain adapter.
         tier = _higher_tier(tier, get_transformers_tier(model_name))
 
-    if tier == "510":
+    if tier == "latest":
+        pinned = latest_venv_pinned_version()
+        if pinned is None:
+            raise RuntimeError(
+                f"Cannot activate the latest-transformers sidecar: "
+                f"no pin marker at {_VENV_T5_LATEST_DIR}"
+            )
+        target_version = pinned
+        venv_dir = _VENV_T5_LATEST_DIR
+        ensure_fn = _ensure_venv_t5_latest_exists
+    elif tier == "510":
         target_version = TRANSFORMERS_510_VERSION
         venv_dir = _VENV_T5_510_DIR
         ensure_fn = _ensure_venv_t5_510_exists

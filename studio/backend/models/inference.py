@@ -140,6 +140,27 @@ class ValidateModelRequest(BaseModel):
     )
 
 
+class TransformersUpgradeInfo(BaseModel):
+    """A model architecture no installed transformers ships, but a newer release does."""
+
+    model_type: str = Field(
+        ..., description = "config.json model_type unknown to every installed transformers"
+    )
+    pypi_version: Optional[str] = Field(
+        None, description = "Latest transformers release on PyPI at check time"
+    )
+    supported_in_pypi: bool = Field(
+        False,
+        description = "True if the latest PyPI release ships this model_type; Studio can "
+        "install it into a persistent sidecar after user consent.",
+    )
+    supported_in_main: bool = Field(
+        False,
+        description = "True if transformers GitHub main ships this model_type (dev-only; "
+        "not installable through Studio yet).",
+    )
+
+
 class ValidateModelResponse(BaseModel):
     """Result of model validation.
 
@@ -167,6 +188,37 @@ class ValidateModelResponse(BaseModel):
         description = "Native training context length, read from the GGUF header when the file "
         "is already downloaded locally; None for non-GGUF, gated, or not-yet-downloaded models.",
     )
+    requires_transformers_upgrade: bool = Field(
+        False,
+        description = "True when the model's architecture is unknown to every installed "
+        "transformers but a newer transformers ships it; the UI should offer the "
+        "install-latest-transformers consent dialog (or the dev-only notice).",
+    )
+    transformers_upgrade: Optional[TransformersUpgradeInfo] = Field(
+        None,
+        description = "Details for the transformers-upgrade dialog; set only when "
+        "requires_transformers_upgrade is true.",
+    )
+
+
+class InstallLatestTransformersRequest(BaseModel):
+    """Consented request to install the latest transformers release into a sidecar."""
+
+    version: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 64,
+        description = "Exact transformers version to install; must match the current "
+        "latest PyPI release reported by /validate.",
+    )
+
+
+class InstallLatestTransformersResponse(BaseModel):
+    """Result of the consented latest-transformers sidecar install."""
+
+    success: bool = Field(..., description = "Whether the sidecar was provisioned")
+    version: str = Field(..., description = "The requested transformers version")
+    message: str = Field(..., description = "Human-readable result")
 
 
 class GenerateRequest(BaseModel):
