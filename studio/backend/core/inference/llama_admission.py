@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
-import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Optional
@@ -146,7 +145,6 @@ class LlamaAdmissionLease:
         self._queue = queue
         self._released = False
         self._release_lock = threading.Lock()
-        self.acquired_at = time.monotonic()
 
     def release(self) -> None:
         queue = None
@@ -178,10 +176,6 @@ class LlamaAdmissionReservation:
         self._lease = lease
         self._waiter = waiter
         self.snapshot = snapshot
-
-    @property
-    def acquired(self) -> bool:
-        return self._lease is not None
 
     @property
     def is_cancelled(self) -> bool:
@@ -306,6 +300,11 @@ class LlamaAdmissionQueue:
             self._prune_waiters_locked()
             return self._snapshot_locked()
 
+    def is_idle(self) -> bool:
+        with self._lock:
+            self._prune_waiters_locked()
+            return self._active == 0 and not self._waiters
+
     def _grant_waiters_locked(self) -> None:
         self._prune_waiters_locked()
         while self._waiters and self._active < self._capacity:
@@ -355,6 +354,14 @@ def get_llama_admission_queue(key: str) -> LlamaAdmissionQueue:
         if queue is None:
             queue = LlamaAdmissionQueue(key)
             _QUEUES[key] = queue
+            # base_url carries a fresh ephemeral port on every model load, so
+            # each load registers a new key. Drop the now-idle queues from prior
+            # loads so the registry can't grow without bound on a long-running
+            # server. Queues with in-flight requests are kept until they drain.
+            for stale_key in [
+                k for k in _QUEUES if k != key and _QUEUES[k].is_idle()
+            ]:
+                del _QUEUES[stale_key]
         return queue
 
 

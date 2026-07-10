@@ -11,6 +11,7 @@ import pytest
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
+from core.inference import llama_admission
 from core.inference.llama_admission import (
     ADMISSION_CONTROL_ENV,
     ADMISSION_KEEPALIVE_INTERVAL_ENV,
@@ -283,5 +284,40 @@ def test_lease_release_is_idempotent_under_concurrent_calls():
         snapshot = queue.snapshot()
         assert snapshot.active == 0
         assert snapshot.queued == 0
+
+    asyncio.run(_run())
+
+
+def test_new_key_evicts_idle_prior_load_queues():
+    # Each model load carries a fresh ephemeral port, so a new base_url key must
+    # not leave the drained queues from earlier loads accumulating forever.
+    get_llama_admission_queue("http://127.0.0.1:1001")
+    get_llama_admission_queue("http://127.0.0.1:1002")
+    assert set(llama_admission._QUEUES) == {"http://127.0.0.1:1002"}
+
+    get_llama_admission_queue("http://127.0.0.1:1003")
+    assert set(llama_admission._QUEUES) == {"http://127.0.0.1:1003"}
+
+
+def test_new_key_retains_in_flight_prior_load_queue():
+    config = LlamaAdmissionConfig()
+    busy = get_llama_admission_queue("http://127.0.0.1:2001")
+
+    async def _run():
+        reservation = busy.reserve(capacity = 1, config = config)
+        lease = reservation.lease_nowait()
+        assert lease is not None
+
+        # A new load must not drop a queue that still has an in-flight request.
+        get_llama_admission_queue("http://127.0.0.1:2002")
+        assert set(llama_admission._QUEUES) == {
+            "http://127.0.0.1:2001",
+            "http://127.0.0.1:2002",
+        }
+
+        # Once it drains, the next load reclaims it.
+        lease.release()
+        get_llama_admission_queue("http://127.0.0.1:2003")
+        assert set(llama_admission._QUEUES) == {"http://127.0.0.1:2003"}
 
     asyncio.run(_run())
