@@ -749,18 +749,21 @@ export function useChatModelRuntime() {
               loadSplitRatio = null;
             }
 
-            // Leaving Auto layers on the SAME model keeps the context the fit
+            // Pinning layers on the SAME model keeps the context currently
             // resolved: with no explicit pin, a manual+pinned reload would send
-            // 0, which the backend treats as the NATIVE context -- far larger
-            // than the length the sheet displayed (and a likely OOM).
+            // 0, which the backend's --fit off branch treats as the NATIVE
+            // context -- far larger than the length the sheet shows when the
+            // loaded model was fit-sized (Default mode, or Manual + Auto layers,
+            // either of which may have auto-reduced context to fit VRAM), and a
+            // likely OOM. ggufContextLength is that loaded resolved value; a
+            // model already at native reloads unchanged, so this is safe for any
+            // prior mode.
             if (
               isGguf &&
               !switchingModelOrVariant &&
               loadGpuMemoryMode === "manual" &&
               loadGpuLayers >= 0 &&
               loadCustomContextLength == null &&
-              stateBeforeUnload.loadedGpuMemoryMode === "manual" &&
-              (stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO) < 0 &&
               (loadGgufContextLength ?? 0) > 0
             ) {
               loadCustomContextLength = loadGgufContextLength;

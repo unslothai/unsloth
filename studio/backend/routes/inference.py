@@ -3705,6 +3705,7 @@ def _guard_chat_load_against_training(
     gguf_main_gb = None
     gguf_companion_gb = 0.0
     gguf_single_device = False
+    gguf_split_max_share = None
     if is_gguf:
         parts = _estimate_gguf_required_gb(
             config,
@@ -3717,11 +3718,17 @@ def _guard_chat_load_against_training(
         )
         if parts is not None:
             gguf_main_gb, gguf_companion_gb = parts
-        # Diffusion runs on one device (see _start_diffusion_server); a manual
-        # per-GPU split can pile the model on one card too. Either way the main
-        # model doesn't distribute, so the guard checks it single-device.
-        manual_split = bool(tensor_split) and gpu_memory_mode == "manual" and gpu_layers >= 0
-        gguf_single_device = _is_diffusion_gguf(config) or manual_split
+        # Diffusion runs the whole model on one device (see _start_diffusion_server).
+        gguf_single_device = _is_diffusion_gguf(config)
+        # A manual per-GPU split distributes the main model by fixed shares, so
+        # the guard checks the largest normalized share against the tightest
+        # device rather than the whole model. Emitted only under manual + pinned
+        # layers (see load_model), matching when the loader appends --tensor-split.
+        if tensor_split and gpu_memory_mode == "manual" and gpu_layers >= 0:
+            shares = [max(float(s), 0.0) for s in tensor_split]
+            total = sum(shares)
+            if total > 0:
+                gguf_split_max_share = max(shares) / total
 
     ok, info = can_load_chat_during_training(
         model_name = model_identifier,
@@ -3733,6 +3740,7 @@ def _guard_chat_load_against_training(
         gguf_main_gb = gguf_main_gb,
         gguf_companion_gb = gguf_companion_gb,
         gguf_single_device = gguf_single_device,
+        gguf_split_max_share = gguf_split_max_share,
     )
     if ok:
         return

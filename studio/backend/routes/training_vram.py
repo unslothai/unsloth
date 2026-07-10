@@ -199,6 +199,7 @@ def can_load_chat_during_training(
     gguf_main_gb: Optional[float] = None,
     gguf_companion_gb: float = 0.0,
     gguf_single_device: bool = False,
+    gguf_split_max_share: Optional[float] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Decide if a NEW chat model can load without OOMing active training (inverse
     of can_keep_chat_during_training: training is already resident, so size the
@@ -211,8 +212,13 @@ def can_load_chat_during_training(
     the caller: ``gguf_main_gb`` (weights + KV, offload-scaled) DISTRIBUTES
     across the allowed GPUs (aggregate check), ``gguf_companion_gb`` (mmproj /
     drafter) lands whole on ONE device (min-free-device check, order-independent
-    so no first/physical-id guessing), and ``gguf_single_device`` (diffusion or
-    a manual per-GPU split) requires the whole footprint on one device."""
+    so no first/physical-id guessing). ``gguf_single_device`` (diffusion)
+    requires the whole footprint on one device. ``gguf_split_max_share`` is the
+    largest normalized share of a manual per-GPU ``--tensor-split`` (max/sum):
+    the split concentrates up to that fraction of the main model on one card, so
+    the tightest device must hold that share (not the whole model, which would
+    over-refuse a valid even split, nor just the aggregate, which a fixed split
+    can overrun on a busy card)."""
     try:
         from utils.hardware import (
             DeviceType,
@@ -287,17 +293,23 @@ def can_load_chat_during_training(
                 return True, {"mode": mode, "reason": "cpu_only"}
             needed_main = gguf_main_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
             if gguf_single_device:
-                # Diffusion / manual split: everything on one device.
+                # Diffusion: the whole footprint runs on one device.
                 needed = (gguf_main_gb + gguf_companion_gb) * SAFETY_MARGIN + KEEP_FLOOR_GB
                 fits = min_free_gb >= needed
             else:
-                # Main distributes (aggregate); companions land on one device.
-                fits = usable_gb >= needed_main and min_free_gb >= gguf_companion_gb * SAFETY_MARGIN
+                # Main distributes (aggregate). A manual split concentrates up to
+                # max_share of it on one card; free placement pins only the
+                # companion. Either way the tightest device must hold its share.
+                per_device_main = gguf_main_gb * gguf_split_max_share if gguf_split_max_share else 0.0
+                fits = usable_gb >= needed_main and min_free_gb >= (
+                    per_device_main + gguf_companion_gb
+                ) * SAFETY_MARGIN
             return fits, {
                 "mode": mode,
                 "required_gb": round(gguf_main_gb + gguf_companion_gb, 3),
                 "companion_gb": round(gguf_companion_gb, 3),
                 "single_device": gguf_single_device,
+                "split_max_share": gguf_split_max_share,
                 "usable_gb": round(usable_gb, 3),
                 "needed_gb": round(needed_main, 3),
                 "min_free_gb": round(min_free_gb, 3),
