@@ -1647,12 +1647,41 @@ class AnthropicToolResultBlock(BaseModel):
     tool_use_id: str
     content: Union[str, list] = ""
 
+    @field_validator("content", mode = "before")
+    @classmethod
+    def _coerce_null_content(cls, v):
+        # Some clients send null content for an empty tool result; the str|list
+        # union would 400 on it, so treat null as "".
+        return "" if v is None else v
+
+
+# Block types the converter translates explicitly. Anything else (thinking /
+# redacted_thinking, a provider block a resumed session replays, or a future type)
+# is accepted as an unknown block and dropped by the converter, rather than 400-ing
+# the whole request on strict validation.
+_KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result"})
+
+
+class AnthropicUnknownBlock(BaseModel):
+    type: str
+    model_config = {"extra": "allow"}
+
+    @field_validator("type")
+    @classmethod
+    def _only_unknown_types(cls, v):
+        # Known types parse as their typed models above (so a malformed known block
+        # still fails cleanly); this fallback only catches the rest.
+        if v in _KNOWN_ANTHROPIC_BLOCK_TYPES:
+            raise ValueError("known block type handled by its typed model")
+        return v
+
 
 AnthropicContentBlock = Union[
     AnthropicTextBlock,
     AnthropicImageBlock,
     AnthropicToolUseBlock,
     AnthropicToolResultBlock,
+    AnthropicUnknownBlock,
 ]
 
 
@@ -1696,6 +1725,40 @@ def _merge_anthropic_system(system: Any, additions: list[str]) -> Any:
 class AnthropicMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: Union[str, list[AnthropicContentBlock]]
+
+    @model_validator(mode = "before")
+    @classmethod
+    def _normalize_content(cls, data):
+        # Role-aware leniency that never silently drops real user input:
+        #  - assistant: a resumed tool-only turn's null content -> "" (str|list would
+        #    400 on null; "" keeps the converter's `for block in content` safe).
+        #    Unknown blocks (thinking / future types) validate via
+        #    AnthropicUnknownBlock and are dropped by the converter.
+        #  - user: keep strict. Null user content stays None so str|list rejects it
+        #    (400) rather than forwarding an empty prompt; and reject block types the
+        #    converter cannot translate, since it silently skips unknown user blocks
+        #    -- a user turn made only of them would validate yet send no content
+        #    (silent data loss).
+        if not isinstance(data, dict):
+            return data
+        content = data.get("content")
+        if data.get("role") == "assistant":
+            # Coerce only an explicit null (resumed tool-only turn). A missing
+            # content key stays malformed so the required-field check still 400s.
+            if "content" in data and content is None:
+                return {**data, "content": ""}
+            return data
+        if isinstance(content, list):
+            for block in content:
+                btype = (
+                    block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+                )
+                # Guard the value: a non-string type is unsupported too, and a
+                # membership test on an unhashable value would raise TypeError
+                # (escaping as a 500 instead of a clean 400).
+                if not isinstance(btype, str) or btype not in _KNOWN_ANTHROPIC_BLOCK_TYPES:
+                    raise ValueError(f"unsupported content block type {btype!r} in a user message")
+        return data
 
 
 class AnthropicTool(BaseModel):

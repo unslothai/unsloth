@@ -7,6 +7,7 @@ export {
   savePersonalization,
 } from "./api/personalization";
 export { setTheme, useTheme } from "./stores/theme-store";
+export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export type {
   Personalization,
   PersonalizationAppearance,
