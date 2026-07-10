@@ -1855,7 +1855,7 @@ def auto_select_gpu_ids(
     metadata: Dict[str, Any] = {"selection_mode": "auto"}
 
     # Auto-selection needs per-device free-VRAM telemetry, available on CUDA
-    # (nvidia-smi) and XPU (torch.xpu + xpu-smi) but not MLX/CPU, which fall
+    # (nvidia-smi) and XPU (torch.xpu) but not MLX/CPU, which fall
     # through to inheriting parent visibility.
     if get_device() not in (DeviceType.CUDA, DeviceType.XPU):
         metadata["selection_mode"] = "non_accelerator"
