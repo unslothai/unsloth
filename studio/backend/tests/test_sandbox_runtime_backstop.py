@@ -975,14 +975,15 @@ def test_sandboxed_pathlib_local_read_allowed():
 @_POSIX_ONLY
 def test_sandboxed_workdir_module_shadowing_neutralized(tmp_path):
     # The exec script lives in the workdir, so Python prepends the workdir to sys.path[0].
-    # A malicious re.py / pathlib.py / os.py / io.py dropped in the workdir must NOT shadow
-    # the guard's own imports (which would run unguarded at import time before any patch).
+    # A malicious re.py / pathlib.py / os.py / io.py / shutil.py dropped in the workdir must
+    # NOT shadow the guard's own imports (which would run unguarded at import time before any
+    # patch). shutil is imported late in the prelude, so sys.path stays stripped throughout.
     session = "backstop-shadow"
     workdir = get_sandbox_workdir(session)
     marker = os.path.join(str(tmp_path), "shadow_ran.marker")
     evil = "import builtins as _b\n_b.open(%r, 'w').write('pwned')\nraise SystemExit\n" % marker
     written = []
-    for name in ("re.py", "pathlib.py", "os.py", "io.py"):
+    for name in ("re.py", "pathlib.py", "os.py", "io.py", "shutil.py"):
         p = os.path.join(workdir, name)
         with open(p, "w") as fh:
             fh.write(evil)

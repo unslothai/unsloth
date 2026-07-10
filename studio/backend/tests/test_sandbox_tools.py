@@ -2331,3 +2331,105 @@ class TestRound17Bypasses:
         _ok("import os\nos.system('echo hi > /dev/null')")
         _ok("import os\nos.system('ls 2>&1')")
         _ok("import os\nos.system('echo hi >> /dev/null 2>&1')")
+
+
+class TestRound18Bypasses:
+    """Eighteenth-round Codex findings: command-position command substitution, direct
+    imports of process-capable modules (posix/pty), unbound sys.modules mutation, mutating
+    flags of read utilities, os re-exported through stdlib modules, instance-attribute exec
+    aliases, and network calls via import aliases / keyword hosts."""
+
+    _SH = r"import os\nos.system('touch /tmp/x')"
+    _META = "http://169.254.169" + ".254/latest/"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('$(printf touch) /tmp/x')",
+            "import os\nos.system('`printf touch` /tmp/x')",
+            "import os\nos.system('cat f && $(echo rm) -rf /')",
+        ],
+    )
+    def test_command_position_substitution_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_argument_position_substitution_allowed(self):
+        _ok("import os\nos.system('echo $(date)')")
+        _ok("import os\nos.system('x=$(date); echo done')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import posix\nposix.system('touch /tmp/x')",
+            "import posix as p\np.system('rm -rf /')",
+            "import pty\npty.spawn(['/bin/sh'])",
+            "import pty as t\nt.fork()",
+        ],
+    )
+    def test_process_capable_module_import_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import sys\ndict.pop(sys.modules, '_io')\nimport _io\n_io.open('/tmp/x', 'w')",
+            "import sys\ntype(sys.modules).__delitem__(sys.modules, '_io')",
+        ],
+    )
+    def test_unbound_sys_modules_mutation_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system(\"sed -i 's/a/b/' /tmp/file\")",
+            "import os\nos.system('sort -o /tmp/file /tmp/file')",
+            "import os\nos.system('find /tmp/file -delete')",
+            "import os\nos.system('dd if=/dev/zero of=/tmp/x')",
+            "import os\nos.system('echo x | tee /tmp/out')",
+        ],
+    )
+    def test_mutating_read_utility_flags_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_read_utility_nonmutating_allowed(self):
+        _ok("import os\nos.system(\"sed 's/a/b/' input.txt\")")
+        _ok("import os\nos.system('sort data.txt')")
+        _ok("import os\nos.system('find . -name \\'*.py\\'')")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import pathlib\npathlib.os.system('touch /tmp/x')",
+            "import tempfile\ntempfile.os.system('touch /tmp/x')",
+            "import subprocess\nsubprocess.os.system('touch /tmp/x')",
+        ],
+    )
+    def test_os_reexported_through_module_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_instance_attribute_exec_alias_blocked(self):
+        code = 'class C: pass\nc = C()\nc.e = exec\nc.e("' + self._SH + '")'
+        assert _check_code_safety(code) is not None, code
+        code2 = "class C: pass\nc = C()\nc.s = __import__('os').system\nc.s('rm -rf /')"
+        assert _check_code_safety(code2) is not None, code2
+
+    def test_instance_attribute_benign_allowed(self):
+        _ok("class C: pass\nc = C()\nc.e = 5\nprint(c.e)")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import requests as r\nr.get('" + _META + "')",
+            "import socket as s\ns.create_connection(('169.254.169.254', 80))",
+            "import requests\nrequests.get(url='" + _META + "')",
+            "import urllib.request\nurllib.request.urlopen(url='" + _META + "')",
+            "import socket\nsocket.create_connection(address=('169.254.169.254', 80))",
+        ],
+    )
+    def test_network_alias_and_keyword_host_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_network_alias_trusted_allowed(self):
+        _ok("import requests as r\nr.get('https://huggingface.co/x')")
+        _ok("import requests\nrequests.get(url='https://huggingface.co/x')")

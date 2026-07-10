@@ -696,6 +696,58 @@ def _find_blocked_commands(command: str) -> set[str]:
         if not tok.startswith("-"):
             _at_cmd = False
 
+    # A command substitution in COMMAND POSITION ($(cmd) / `cmd` as the command word) runs
+    # whatever it expands to as the command name; the inner command may be benign (printf
+    # touch) while the expansion is a writer/interpreter (touch). The scanner cannot prove
+    # the expansion safe, so fail closed. (An argument-position substitution -- echo $(date),
+    # x=$(cmd) -- is not command-position and stays allowed.)
+    if re.search(r"(?:^|[\n;&|(])\s*(?:\$\(|`)", command):
+        blocked.add("command-substitution")
+
+    # Some normally read-only utilities MUTATE files with certain flags (sed -i, sort -o
+    # FILE, find ... -delete, dd of=FILE, tee FILE, truncate), writing/deleting OUTSIDE the
+    # workdir in an unguarded child that no redirect token exposes. Treat the mutating
+    # invocation as a child writer.
+    _at_cmd = True
+    for i, tok in enumerate(tokens):
+        if tok in _SHELL_SEPARATORS or tok in _SHELL_KEYWORDS_AS_SEP:
+            _at_cmd = True
+            continue
+        if not _at_cmd:
+            continue
+        _at_cmd = False
+        _base = _token_basename(tok)
+        if _base not in ("sed", "gsed", "ssed", "perl", "sort", "find", "dd", "tee", "truncate"):
+            continue
+        if _base == "truncate":
+            blocked.add("mutating:truncate")
+            continue
+        for k in range(i + 1, len(tokens)):
+            a = tokens[k]
+            if a in _SHELL_SEPARATORS or a in _SHELL_KEYWORDS_AS_SEP:
+                break
+            al = a.lower()
+            _short = al.startswith("-") and not al.startswith("--")
+            if _base in ("sed", "gsed", "ssed", "perl"):
+                if al.startswith("--in-place") or (_short and "i" in al[1:]):
+                    blocked.add("mutating:" + _base)
+                    break
+            elif _base == "sort":
+                if al.startswith("--output") or (_short and "o" in al[1:]):
+                    blocked.add("mutating:sort")
+                    break
+            elif _base == "find":
+                if al == "-delete" or al.startswith("-fprint"):
+                    blocked.add("mutating:find")
+                    break
+            elif _base == "dd":
+                if al.startswith("of="):
+                    blocked.add("mutating:dd")
+                    break
+            elif _base == "tee" and not a.startswith("-"):
+                blocked.add("mutating:tee")
+                break
+
     return blocked
 
 
@@ -2947,6 +2999,9 @@ class _ScopeAliasIndex:
         "class_shell",
         "class_execb",
         "class_deser",
+        "instance_shell",
+        "instance_execb",
+        "instance_deser",
     )
 
     def __init__(self, tree):
@@ -2969,12 +3024,22 @@ class _ScopeAliasIndex:
         self.class_shell: dict = {}
         self.class_execb: dict = {}
         self.class_deser: dict = {}
+        # (receiver_name, attr) -> sink: a simple instance-attribute alias assigned a
+        # dangerous callable (c.e = exec; c.e(payload) / obj.s = os.system; obj.s('rm -rf /')).
+        # Tracked tree-wide as a fail-closed over-approximation (attribute values are not
+        # lexically scoped), so a call through the same receiver name + attr is analyzed.
+        self.instance_shell: dict = {}
+        self.instance_execb: dict = {}
+        self.instance_deser: dict = {}
 
     def resolve_class_attr(self, cname, attr, kind):
         m = getattr(self, "class_" + kind).get(cname)
         if m:
             return m.get(attr)
         return None
+
+    def resolve_instance_attr(self, recv, attr, kind):
+        return getattr(self, "instance_" + kind).get((recv, attr))
 
     def _chain(self, node):
         s = self.node_scope.get(node, self.tree)
@@ -3315,6 +3380,29 @@ def _build_scope_alias_index(tree, const_env):
                 idx.class_execb[scope.name] = dict(emap)
             if dmap:
                 idx.class_deser[scope.name] = dict(dmap)
+    # Instance-attribute sink aliases (c.e = exec; c.e(payload) / obj.s = os.system;
+    # obj.s('rm -rf /')): a simple `Name.attr = <sink>` store binds the attribute to a
+    # dangerous callable. Tracked tree-wide by (receiver_name, attr) as a fail-closed
+    # over-approximation, so a later call through the same receiver name gets analyzed.
+    for n in ast.walk(tree):
+        if not (
+            isinstance(n, ast.Assign)
+            and len(n.targets) == 1
+            and isinstance(n.targets[0], ast.Attribute)
+            and isinstance(n.targets[0].value, ast.Name)
+        ):
+            continue
+        key = (n.targets[0].value.id, n.targets[0].attr)
+        rhs_eff = _unwrap_container_index(n.value)
+        _fq = _resolve_static_shell_sink(rhs_eff, os_aliases, subprocess_aliases, from_aliases)
+        if _fq:
+            idx.instance_shell[key] = _fq
+        _eb = _rhs_exec_builtin(rhs_eff)
+        if _eb is not None:
+            idx.instance_execb[key] = _eb
+        _dfq = _rhs_deserializer(rhs_eff)
+        if _dfq is not None:
+            idx.instance_deser[key] = _dfq
     return idx
 
 
@@ -3971,6 +4059,9 @@ def _check_signal_escape_patterns(
             self.gc_aliases = {"gc"}
             # from gc import get_referents as gr -> {"gr"}.
             self.gc_walk_aliases: set[str] = set()
+            # import pty as p -> {"pty", "p"}. pty.spawn([...]) / pty.fork() run an unguarded
+            # child process (a shell) outside the sandbox.
+            self.pty_aliases: set[str] = set()
             self.loop_depth = 0
 
         def visit_Import(self, node):
@@ -3981,8 +4072,16 @@ def _check_signal_escape_patterns(
                         self.signal_aliases.add(alias.asname)
                 elif alias.name == "os":
                     self.os_aliases.add(alias.asname or "os")
+                elif alias.name in ("posix", "nt"):
+                    # posix / nt are the C backend os wraps: posix.system(...) == os.system,
+                    # and posix.exec*/spawn*/popen mirror os. Model them as os aliases so a
+                    # direct `import posix; posix.system('...')` resolves to an os shell sink.
+                    self.os_aliases.add(alias.asname or alias.name)
                 elif alias.name == "subprocess":
                     self.subprocess_aliases.add(alias.asname or "subprocess")
+                elif alias.name == "pty":
+                    # pty.spawn([...]) / pty.fork() run an unguarded child process.
+                    self.pty_aliases.add(alias.asname or "pty")
                 elif alias.name == "importlib":
                     self.importlib_aliases.add(alias.asname or "importlib")
                 elif alias.name == "sys":
@@ -4385,11 +4484,20 @@ def _check_signal_escape_patterns(
                     elif _ecf.value.id in self.subprocess_aliases:
                         shell_func = f"subprocess.{_ecf.attr}"
                     # class-body alias reached as ClassName.attr (class C: f = os.system;
-                    # C.f('rm -rf /')).
+                    # C.f('rm -rf /')), or an instance-attribute alias (obj.s = os.system;
+                    # obj.s('rm -rf /')).
                     elif _analyzer_on:
                         shell_func = _scope_idx.resolve_class_attr(
                             _ecf.value.id, _ecf.attr, "shell"
-                        )
+                        ) or _scope_idx.resolve_instance_attr(_ecf.value.id, _ecf.attr, "shell")
+                elif isinstance(_ecf.value, ast.Attribute) and _ecf.value.attr in ("os", "posix"):
+                    # A stdlib module that re-exports os as an attribute (pathlib.os.system,
+                    # tempfile.os.system, subprocess.os.system): the `.os` attribute IS the os
+                    # module, so treat the chain as an os.* sink.
+                    shell_func = f"os.{_ecf.attr}"
+                elif isinstance(_ecf.value, ast.Attribute) and _ecf.value.attr == "subprocess":
+                    # ...and *.subprocess.run (a module re-exporting subprocess).
+                    shell_func = f"subprocess.{_ecf.attr}"
             elif isinstance(_ecf, ast.Name):
                 # from-import aliases: from os import system; system(...)
                 shell_func = self.shell_exec_aliases.get(_ecf.id)
@@ -4526,8 +4634,13 @@ def _check_signal_escape_patterns(
                 and isinstance(func, ast.Attribute)
                 and isinstance(func.value, ast.Name)
             ):
-                # class-body alias reached as ClassName.attr (class C: e = eval; C.e('...')).
+                # class-body alias reached as ClassName.attr (class C: e = eval; C.e('...')),
+                # or an instance-attribute alias (c.e = exec; c.e('...')).
                 exec_func_id = _scope_idx.resolve_class_attr(func.value.id, func.attr, "execb")
+                if exec_func_id is None:
+                    exec_func_id = _scope_idx.resolve_instance_attr(
+                        func.value.id, func.attr, "execb"
+                    )
             elif isinstance(func, ast.Subscript):
                 # ({'e': exec}['e'])(...) / [exec][0](...): an inline container hides the
                 # sink from the bare-name / attribute checks above.
@@ -4807,6 +4920,39 @@ def _check_signal_escape_patterns(
                         "(can drop a guarded module for reimport)"
                     )
                 elif (
+                    # The same loader-table mutation through an UNBOUND dict method:
+                    # dict.pop(sys.modules, '_io') / type(sys.modules).__delitem__(sys.modules,
+                    # ...). The receiver is `dict` / `type(sys.modules)`, not `sys.modules`
+                    # itself, so the check above misses it; here sys.modules is the first arg.
+                    isinstance(func, ast.Attribute)
+                    and func.attr
+                    in (
+                        "pop",
+                        "popitem",
+                        "clear",
+                        "setdefault",
+                        "update",
+                        "__setitem__",
+                        "__delitem__",
+                    )
+                    and node.args
+                    and isinstance(node.args[0], ast.Attribute)
+                    and node.args[0].attr == "modules"
+                    and _ast_name_matches(node.args[0].value, self.sys_aliases)
+                    and (
+                        (isinstance(func.value, ast.Name) and func.value.id == "dict")
+                        or (
+                            isinstance(func.value, ast.Call)
+                            and isinstance(func.value.func, ast.Name)
+                            and func.value.func.id == "type"
+                        )
+                    )
+                ):
+                    dynamic_desc = (
+                        f"unbound dict.{func.attr}(sys.modules, ...) mutates the loader table "
+                        "(can drop a guarded module for reimport)"
+                    )
+                elif (
                     # globals().get('__builtins__') / locals().get(...) / vars().get(...)
                     # -- the .get() twin of the globals()['__builtins__'] subscript form.
                     isinstance(func, ast.Attribute)
@@ -4877,6 +5023,14 @@ def _check_signal_escape_patterns(
                 ):
                     _rn = func.attr if isinstance(func, ast.Attribute) else func.id
                     dynamic_desc = f"runpy.{_rn}() executes a file/module without static analysis"
+                elif (
+                    # pty.spawn([...]) / pty.fork() run an unguarded child process (typically a
+                    # shell) outside the sandbox, the same escape as subprocess / os.system.
+                    isinstance(func, ast.Attribute)
+                    and func.attr in ("spawn", "fork")
+                    and _ast_name_matches(func.value, self.pty_aliases)
+                ):
+                    dynamic_desc = f"pty.{func.attr}() spawns an unguarded child process"
                 elif (
                     # inspect.getclosurevars(open).nonlocals['real'] recovers the original
                     # unguarded callable a guard wrapper closes over, without spelling
@@ -5563,6 +5717,29 @@ def _check_signal_escape_patterns(
             )
         return None
 
+    # Network-module import aliases so the FQ prefix match sees the canonical module even
+    # when it is renamed: import requests as r -> {"r": "requests"}, import urllib.request as
+    # u -> {"u": "urllib.request"}, from urllib import request as req -> {"req":
+    # "urllib.request"}. Without this, r.get('http://169.254.169.254/') builds fq="r.get"
+    # and skips every metadata / allowlist / upload check.
+    _NET_TOP_MODULES = ("socket", "urllib", "urllib3", "requests", "http", "httpx", "aiohttp")
+    _net_aliases: dict[str, str] = {}
+    for _n in ast.walk(tree):
+        if isinstance(_n, ast.Import):
+            for _a in _n.names:
+                if _a.asname and _a.name.split(".")[0] in _NET_TOP_MODULES:
+                    _net_aliases[_a.asname] = _a.name
+        elif isinstance(_n, ast.ImportFrom) and _n.module:
+            if _n.module.split(".")[0] in _NET_TOP_MODULES:
+                for _a in _n.names:
+                    _net_aliases[_a.asname or _a.name] = f"{_n.module}.{_a.name}"
+
+    # The URL / address keyword arguments the stdlib + common HTTP clients accept, so a
+    # keyword host (requests.get(url=...), urlopen(url=...), create_connection(address=...))
+    # is extracted the same as a positional one.
+    _NET_URL_KWARGS = ("url",)
+    _NET_ADDR_KWARGS = ("address", "sock_addr")
+
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def visit_Call(self, node):
             parts: list[str] = []
@@ -5572,6 +5749,10 @@ def _check_signal_escape_patterns(
                 cur = cur.value
             if isinstance(cur, ast.Name):
                 parts.insert(0, cur.id)
+            # Resolve a renamed network module (import requests as r) to its canonical name
+            # so the FQ-prefix match below still fires.
+            if parts and parts[0] in _net_aliases:
+                parts = _net_aliases[parts[0]].split(".") + parts[1:]
             fq = ".".join(parts) if parts else ""
 
             hf_upload_name = _method_call_hf_upload_name(node)
@@ -5587,8 +5768,13 @@ def _check_signal_escape_patterns(
                     )
 
             # Direct sock.connect((host, port)) bypasses the FQ-prefix branch.
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "connect" and node.args:
-                a0 = node.args[0]
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "connect":
+                a0 = node.args[0] if node.args else None
+                if a0 is None:
+                    for _kw in node.keywords or []:
+                        if _kw.arg == "address":
+                            a0 = _kw.value
+                            break
                 host_lit = None
                 if isinstance(a0, ast.Tuple) and a0.elts:
                     e0 = a0.elts[0]
@@ -5628,11 +5814,21 @@ def _check_signal_escape_patterns(
                         }
                     )
 
-                # 2) Extract literal host (URL string or (host, port) tuple).
+                # 2) Extract literal host (URL string or (host, port) tuple). The host may be
+                # a positional first arg OR a keyword (requests.get(url=...),
+                # urlopen(url=...), create_connection(address=(host, port))).
                 host_arg = None
                 url_arg = None
-                if node.args:
-                    a0 = node.args[0]
+                a0 = node.args[0] if node.args else None
+                if a0 is None:
+                    for _kw in node.keywords or []:
+                        if _kw.arg in _NET_URL_KWARGS:
+                            a0 = _kw.value
+                            break
+                        if _kw.arg in _NET_ADDR_KWARGS:
+                            a0 = _kw.value
+                            break
+                if a0 is not None:
                     if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
                         url_arg = a0.value
                     elif isinstance(a0, ast.Tuple) and a0.elts:
@@ -6421,7 +6617,9 @@ import sys as _sys
 _saved_path = list(_sys.path)
 _sys.path = [_p for _p in _sys.path if _p not in ("", ".", __WORKDIR__, __WORKDIR__ + "/")]
 import os as _os, builtins as _bi, io as _io, pathlib as _pl, re as _re
-_sys.path = _saved_path
+# NOTE: sys.path stays stripped for the WHOLE guard setup below (it also imports shutil,
+# which is pure-Python and equally shadowable); it is restored at the very END of this
+# prelude, just before user code runs, so ordinary user imports still resolve.
 # io + pathlib are imported BEFORE any patching on purpose: on Python <= 3.11
 # pathlib._NormalAccessor captures io.open / os.* into class attributes at import
 # time. A C builtin captured there does not bind on instance access, but a Python
@@ -6839,6 +7037,11 @@ try:
         _wrapp(_n, True)
 except Exception:
     pass
+
+# All guard dependencies are now imported (and cached as the real, patched modules) with the
+# workdir kept off sys.path, so no workdir/*.py could shadow them. Restore the original path
+# for user code so ordinary sibling imports still resolve.
+_sys.path = _saved_path
 """
 
 
