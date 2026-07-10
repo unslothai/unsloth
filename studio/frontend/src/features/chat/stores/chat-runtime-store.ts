@@ -548,10 +548,13 @@ export function loadedGpuMemoryFields(resp: {
     // Clear the GPU pick / offload baseline a prior GGUF load may have left, so it
     // reflects the non-GGUF model (no pin). Else a stale loadedGpuIds reads as
     // dirty (gpuIdsDirty is ungated) and Reset restores it, both while the picker
-    // is hidden. gpuMemoryMode (the standing preference) is kept.
+    // is hidden. gpuMemoryMode (the standing preference) is kept; its loaded
+    // baseline clears to null (no applicable mode for a non-GGUF model), so Reset
+    // preserves the preference instead of restoring a prior GGUF's stale mode.
     return {
       selectedGpuIds: null,
       loadedGpuIds: null,
+      loadedGpuMemoryMode: null,
       gpuLayers: GPU_LAYERS_AUTO,
       loadedGpuLayers: null,
       nCpuMoe: 0,
@@ -1250,14 +1253,14 @@ function loadedBaselineSettings(s: ChatRuntimeStore) {
     // GPU memory mode is a standing preference; revert to the loaded model's
     // mode (or the persisted default when nothing is loaded). The manual knobs
     // and GPU pick are per-model and revert to their loaded baseline. A loaded
-    // diffusion model has no applicable mode (its baseline is "auto"); keep the
-    // live preference so Reset doesn't silently drop the user's manual choice
-    // for the next chat load.
+    // model with no applicable mode -- diffusion (its baseline is "auto") or
+    // non-GGUF (its baseline is null) -- keeps the live preference so Reset
+    // doesn't silently drop the user's manual choice for the next chat load.
     gpuMemoryMode: !hasLoadedModel
       ? readPersistedGpuMemoryMode()
       : s.loadedIsDiffusion
         ? s.gpuMemoryMode
-        : (s.loadedGpuMemoryMode ?? "auto"),
+        : (s.loadedGpuMemoryMode ?? s.gpuMemoryMode),
     gpuLayers: s.loadedGpuLayers ?? GPU_LAYERS_AUTO,
     nCpuMoe: s.loadedNCpuMoe ?? 0,
     splitRatio: s.loadedSplitRatio ?? null,

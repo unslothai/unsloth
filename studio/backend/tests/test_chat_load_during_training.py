@@ -169,6 +169,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         required_override = None,
         estimate = None,
         gpu_ids = None,
+        tensor_split = None,
     ):
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
@@ -185,6 +186,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
                 requested_gpu_ids = gpu_ids,
                 is_gguf = True,
                 required_override_gb = required_override,
+                tensor_split = tensor_split,
             )
         return ok, info, auto_mock
 
@@ -211,6 +213,60 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         )
         self.assertTrue(ok)
         self.assertEqual(info["mode"], "explicit")
+
+    def test_manual_even_split_reenables_per_gpu_check(self):
+        # A manual --tensor-split overrides free-VRAM placement: [1, 1] puts half
+        # (13.5 of needed 27) on the 10 GB-free GPU even though the aggregate
+        # fits -> refuse, would OOM training.
+        ok, _, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70)),
+            required_override = 20.0,
+            tensor_split = [1, 1],
+        )
+        self.assertFalse(ok)
+
+    def test_manual_weighted_split_that_fits_passes(self):
+        # [4, 1] charges each GPU its actual share (21.6 / 5.4 of needed 27);
+        # both fit their free VRAM (45 / 10) -> allow.
+        ok, _, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70)),
+            required_override = 20.0,
+            tensor_split = [4, 1],
+        )
+        self.assertTrue(ok)
+
+    def test_manual_split_with_explicit_pick_checks_shares(self):
+        # The split check also covers picks routed through the explicit branch.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70)),
+            required_override = 20.0,
+            gpu_ids = [0, 1],
+            tensor_split = [1, 1],
+        )
+        self.assertFalse(ok)
+        self.assertEqual(info["mode"], "explicit")
+
+    def test_manual_split_maps_shares_to_sorted_pick(self):
+        # llama-server pins CUDA to the SORTED pick, so with gpu_ids [1, 0] the
+        # split [1, 4] puts the big share on GPU 1 (10 GB free -> needs 21.6).
+        # Zipping in request order would wrongly allow it.
+        ok, _, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70)),
+            required_override = 20.0,
+            gpu_ids = [1, 0],
+            tensor_split = [1, 4],
+        )
+        self.assertFalse(ok)
+
+    def test_manual_split_length_mismatch_falls_back_to_even_floor(self):
+        # A split that doesn't match the GPU count aborts llama-server at launch;
+        # meanwhile the guard keeps the conservative even-share floor.
+        ok, _, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70)),
+            required_override = 20.0,
+            tensor_split = [1, 1, 1],
+        )
+        self.assertFalse(ok)
 
     def test_estimate_unavailable_refuses(self):
         # No override and the estimator can't size it -> default-deny.

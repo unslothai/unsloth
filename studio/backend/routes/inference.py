@@ -3543,12 +3543,15 @@ def _guard_chat_load_against_training(
     n_parallel: int = 1,
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
     gpu_layers: int = -1,
+    tensor_split: Optional[List[float]] = None,
 ) -> None:
     """Refuse loading a local chat model that would OOM an active training run.
     No-op when training is inactive or unknown. `load_in_4bit` must be the
     effective quantization (see _effective_load_in_4bit). Raises HTTP 409 when the
     model would not fit alongside training. Manual GGUF offload (gpu_memory_mode /
-    gpu_layers) shrinks the GGUF estimate so a CPU-heavy pick isn't over-blocked."""
+    gpu_layers) shrinks the GGUF estimate so a CPU-heavy pick isn't over-blocked;
+    a manual tensor_split re-enables the per-GPU check, since its fixed shares
+    override llama.cpp's free-VRAM placement."""
     from core.training import get_training_backend
     from routes.training_vram import can_load_chat_during_training
 
@@ -3582,6 +3585,11 @@ def _guard_chat_load_against_training(
         requested_gpu_ids = requested_gpu_ids,
         is_gguf = is_gguf,
         required_override_gb = required_override_gb,
+        # Emitted only under manual + pinned layers (see load_model); the guard
+        # mirrors that so a stale split from another mode can't fire the check.
+        tensor_split = (
+            tensor_split if gpu_memory_mode == "manual" and gpu_layers >= 0 else None
+        ),
     )
     if ok:
         return
@@ -3880,6 +3888,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
             gpu_memory_mode = request.gpu_memory_mode,
             gpu_layers = request.gpu_layers,
+            tensor_split = request.tensor_split,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -4461,6 +4470,7 @@ async def validate_model(
             requested_gpu_ids = effective_gpu_ids,
             gpu_memory_mode = request.gpu_memory_mode,
             gpu_layers = request.gpu_layers,
+            tensor_split = request.tensor_split,
         )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):

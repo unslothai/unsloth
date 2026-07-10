@@ -655,9 +655,13 @@ export function useChatModelRuntime() {
               gpu_ids: validateGpuIds ?? undefined,
               // Mirror /load's manual offload so the guard credits a low
               // gpu_layers pick (most weights on CPU), like validateGpuLayers
-              // re-baselines the layer count above.
+              // re-baselines the layer count above. The split re-baselines the
+              // same way (the reset below nulls it), so the guard re-checks the
+              // exact per-GPU shares /load will pin.
               gpu_memory_mode: loadGpuMemoryMode,
               gpu_layers: validateGpuLayers,
+              tensor_split:
+                (resetsPerModelSettings ? null : loadSplitRatio) ?? undefined,
             });
             // Open the consent dialog when the model needs custom-code consent or has a
             // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the

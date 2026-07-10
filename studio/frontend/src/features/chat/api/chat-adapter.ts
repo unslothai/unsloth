@@ -1575,6 +1575,16 @@ async function autoLoadSmallestModel(): Promise<{
       store.setModels([...store.models, autoModel]);
     }
     if (candidate.kind === "gguf") {
+      // Keep an explicit Manual+Auto context pin the load just applied (so a
+      // later Apply doesn't silently revert it to auto-fit sizing), mirroring
+      // the interactive path's keepCustomCtx; other cases baseline on
+      // ggufContextLength.
+      const keepCustomCtx =
+        effectiveGpuMemoryMode === "manual" &&
+        effectiveGpuLayers < 0 &&
+        (remembered?.contextLength ?? 0) > 0
+          ? (remembered?.contextLength ?? null)
+          : null;
       useChatRuntimeStore.setState({
         ggufContextLength: loadResp.context_length ?? 131072,
         ggufMaxContextLength:
@@ -1591,6 +1601,8 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        customContextLength: keepCustomCtx,
+        loadedCustomContextLength: keepCustomCtx,
         ...loadedGpuMemoryFields(loadResp),
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,

@@ -178,9 +178,11 @@ class ValidateModelRequest(BaseModel):
     gpu_ids: Optional[List[int]] = Field(None)
     # Manual GGUF offload, so validate's training-coexistence guard sizes the same
     # GPU-resident footprint /load will (a low gpu_layers keeps most weights on
-    # CPU). Defaults preserve old behavior for callers that omit them.
+    # CPU, a manual tensor_split re-enables the per-GPU check). Defaults preserve
+    # old behavior for callers that omit them.
     gpu_memory_mode: Literal["auto", "manual"] = Field("auto")
     gpu_layers: int = Field(-1, ge = -1)
+    tensor_split: Optional[List[float]] = Field(None)
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "

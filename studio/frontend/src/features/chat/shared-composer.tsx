@@ -969,10 +969,11 @@ export function SharedComposer({
           chat_template_override: effectiveChatTemplateOverride,
           // Size the guard against the GPUs the compare load will use.
           gpu_ids: currentStore.selectedGpuIds ?? undefined,
-          // Manual offload too, so the guard credits a low gpu_layers pick the
-          // same way the compare load (resolveFitMaxSeqLength above) does.
+          // Manual offload too, so the guard credits a low gpu_layers pick and
+          // re-checks the per-GPU split the same way the compare load does.
           gpu_memory_mode: currentStore.gpuMemoryMode,
           gpu_layers: currentStore.gpuLayers,
+          tensor_split: currentStore.splitRatio ?? undefined,
         });
         if (
           validation.requires_trust_remote_code ||

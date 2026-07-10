@@ -197,6 +197,7 @@ def can_load_chat_during_training(
     requested_gpu_ids: Optional[List[int]],
     is_gguf: bool = False,
     required_override_gb: Optional[float] = None,
+    tensor_split: Optional[List[float]] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Decide if a NEW chat model can load without OOMing active training (inverse
     of can_keep_chat_during_training: training is already resident, so size the
@@ -266,10 +267,15 @@ def can_load_chat_during_training(
             except ValueError:
                 return True, {"mode": "explicit", "reason": "invalid_gpu_ids"}
             free_vals = [free_by_index.get(i, 0.0) for i in resolved]
+            # llama-server pins CUDA_VISIBLE_DEVICES to the SORTED pick, so a
+            # manual --tensor-split maps positionally to ascending GPU ids --
+            # not to the request order free_vals follows.
+            split_order_free = [free_by_index.get(i, 0.0) for i in sorted(resolved)]
             mode = "explicit"
         else:
             # GGUF: llama.cpp picks the GPU(s); any visible GPU is a candidate.
             free_vals = list(free_by_index.values())
+            split_order_free = free_vals
             mode = "gguf"
 
         if not free_vals:
@@ -283,11 +289,25 @@ def can_load_chat_during_training(
         # device_map="balanced" shards across GPUs: an even-share floor stops one
         # near-full GPU hiding behind aggregate capacity. GGUF self-places (llama.cpp
         # splits by free VRAM within the allowed set), so no floor even when the
-        # request pins explicit gpu_ids.
+        # request pins explicit gpu_ids -- UNLESS it also pins a manual
+        # --tensor-split, which overrides free-VRAM placement with fixed shares
+        # that can land on a nearly full GPU.
         min_free_gb = min(free_vals)
         per_gpu_fits = True
         if mode == "explicit" and not is_gguf and len(free_vals) > 1:
             per_gpu_fits = min_free_gb >= needed_gb / len(free_vals)
+        elif is_gguf and tensor_split and len(free_vals) > 1:
+            shares = [max(float(s), 0.0) for s in tensor_split]
+            total = sum(shares)
+            if len(shares) == len(split_order_free) and total > 0:
+                per_gpu_fits = all(
+                    free >= needed_gb * share / total
+                    for free, share in zip(split_order_free, shares)
+                )
+            else:
+                # A split that doesn't match the GPUs aborts llama-server at
+                # launch; until then keep the conservative even-share floor.
+                per_gpu_fits = min_free_gb >= needed_gb / len(free_vals)
 
         return aggregate_fits and per_gpu_fits, {
             "mode": mode,
