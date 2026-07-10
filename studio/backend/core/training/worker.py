@@ -1930,7 +1930,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # ── 7. Apply train_on_responses_only if requested ──
     # Auto-detect instruction/response markers from the chat template first,
     # then fall back to the manual template table if auto-detection raises.
-    if config.get("train_on_completions", False):
+    # Mirror the CUDA path's skips: raw/CPT text has no chat turns to mask and
+    # Alpaca-rendered text does not contain the tokenizer's chat markers.
+    if (
+        config.get("train_on_completions", False)
+        and not raw_text_mode
+        and format_type != "alpaca"
+    ):
         _send("status", status_message = "Configuring response-only training...")
         # No catch: detection failures fall back inside the helper and a double
         # miss returns applied=False, so an exception here is a real failure

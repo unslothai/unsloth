@@ -68,8 +68,16 @@ def apply_completion_masking(
 
     # gpt-oss keeps its manual markers: with them, non-final assistant <|end|>
     # tokens stay trained, whereas auto-detection would mask them. Preserve
-    # the current trained behavior.
-    if not is_gpt_oss_model_name(model_name):
+    # the current trained behavior. Renamed/private gpt-oss checkpoints miss
+    # the exact-name table, so default them to the gpt-oss template markers.
+    if is_gpt_oss_model_name(model_name):
+        if not (instruction_part and response_part):
+            markers = TEMPLATE_TO_RESPONSES_MAPPER.get("gpt-oss")
+            if markers:
+                template = "gpt-oss"
+                instruction_part = markers["instruction"]
+                response_part = markers["response"]
+    else:
         processor = getattr(trainer, "processing_class", None) or getattr(
             trainer, "tokenizer", None
         )

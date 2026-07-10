@@ -224,3 +224,22 @@ def test_lookup_manual_markers():
 
     template, instruction, response = lookup_manual_markers(None)
     assert (template, instruction, response) == (None, None, None)
+
+
+def test_renamed_gpt_oss_gets_template_markers():
+    # Not in the exact-name table, but name-detected as gpt-oss: must use the
+    # gpt-oss template markers, not fall through to full-sequence training.
+    trainer = _Trainer()
+    train_fn = _Recorder()
+
+    _, applied = apply_completion_masking(
+        trainer, "some-org/gpt-oss-20b-sft", train_fn, detect_fn = _detect_fail
+    )
+    assert applied is True
+    expected = TEMPLATE_TO_RESPONSES_MAPPER["gpt-oss"]
+    assert train_fn.calls == [
+        {
+            "instruction_part": expected["instruction"],
+            "response_part": expected["response"],
+        }
+    ]
