@@ -356,3 +356,273 @@ def test_toggle_noop_without_cache_support(monkeypatch):
 
 def test_toggle_noop_without_transformer():
     assert maybe_toggle_step_cache(types.SimpleNamespace(), steps = 28) is None
+
+
+# ── FBCache block-metadata registration (HunyuanVideo-1.5) ─────────────────────────
+from core.inference.diffusion_cache import (  # noqa: E402
+    _ensure_block_metadata_registered,
+    _invalidate_child_registry_cache,
+)
+
+
+def _stub_hunyuan15_registry(monkeypatch):
+    """Stub the two diffusers modules the registration helper imports: the FBCache
+    metadata registry (diffusers.hooks._helpers) and the HunyuanVideo-1.5 transformer
+    module carrying the block class. Returns (registry_cls, block_cls)."""
+
+    class _Metadata:
+        def __init__(
+            self,
+            return_hidden_states_index = None,
+            return_encoder_hidden_states_index = None,
+        ):
+            self.return_hidden_states_index = return_hidden_states_index
+            self.return_encoder_hidden_states_index = return_encoder_hidden_states_index
+
+    class _Registry:
+        registry: dict = {}
+
+        @classmethod
+        def get(cls, model_class):
+            if model_class not in cls.registry:
+                raise ValueError(f"Model class {model_class} not registered.")
+            return cls.registry[model_class]
+
+        @classmethod
+        def register(cls, model_class, metadata):
+            cls.registry[model_class] = metadata
+
+    class HunyuanVideo15TransformerBlock:  # the sentinel block class
+        pass
+
+    helpers = types.ModuleType("diffusers.hooks._helpers")
+    helpers.TransformerBlockMetadata = _Metadata
+    helpers.TransformerBlockRegistry = _Registry
+    monkeypatch.setitem(sys.modules, "diffusers.hooks._helpers", helpers)
+
+    blocks = types.ModuleType(
+        "diffusers.models.transformers.transformer_hunyuan_video15"
+    )
+    blocks.HunyuanVideo15TransformerBlock = HunyuanVideo15TransformerBlock
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers.models.transformers.transformer_hunyuan_video15",
+        blocks,
+    )
+    return _Registry, HunyuanVideo15TransformerBlock
+
+
+class HunyuanVideo15Transformer3DModel(_MixinTransformer):
+    """A CacheMixin-style fake whose CLASS NAME keys the extra-metadata table."""
+
+
+def test_hunyuan15_block_metadata_is_registered(monkeypatch):
+    registry, block_cls = _stub_hunyuan15_registry(monkeypatch)
+    _ensure_block_metadata_registered(HunyuanVideo15Transformer3DModel())
+    meta = registry.registry[block_cls]
+    # The 1.5 dual-stream block returns (hidden_states, encoder_hidden_states) -- the
+    # same layout as the natively registered HunyuanVideo 1.0 block.
+    assert meta.return_hidden_states_index == 0
+    assert meta.return_encoder_hidden_states_index == 1
+
+
+def test_hunyuan15_registration_defers_to_a_native_one(monkeypatch):
+    # A diffusers release that ships the registration natively must win: the helper
+    # probes TransformerBlockRegistry.get first and never overwrites.
+    registry, block_cls = _stub_hunyuan15_registry(monkeypatch)
+    native = object()
+    registry.registry[block_cls] = native
+    _ensure_block_metadata_registered(HunyuanVideo15Transformer3DModel())
+    assert registry.registry[block_cls] is native
+
+
+def test_registration_noop_for_other_families(monkeypatch):
+    registry, _ = _stub_hunyuan15_registry(monkeypatch)
+    _ensure_block_metadata_registered(_MixinTransformer())
+    assert registry.registry == {}
+
+
+def test_registration_failure_is_swallowed(monkeypatch):
+    # diffusers internals moved / import fails -> best-effort no-op; enable_cache then
+    # surfaces its own error and the load runs uncached, exactly as before the patch.
+    monkeypatch.setitem(sys.modules, "diffusers.hooks._helpers", None)
+    _ensure_block_metadata_registered(HunyuanVideo15Transformer3DModel())  # no raise
+
+
+# ── stale child-registry invalidation after enable_cache ───────────────────────────
+def test_invalidate_child_registry_cache_clears_stale_list():
+    # An UNCACHED generation's cache_context call froze an EMPTY child list on the
+    # transformer's HookRegistry; enable_cache installs block hooks _set_context would
+    # then never reach ("No context is set" on the first cached forward). The helper
+    # drops the stale cache so the next cache_context rebuilds it over the new hooks.
+    t = _MixinTransformer()
+    t._diffusers_hook = types.SimpleNamespace(_child_registries_cache = [])
+    _invalidate_child_registry_cache(t)
+    assert t._diffusers_hook._child_registries_cache is None
+
+
+def test_invalidate_child_registry_cache_noops():
+    _invalidate_child_registry_cache(_MixinTransformer())  # no _diffusers_hook
+    t = _MixinTransformer()
+    t._diffusers_hook = types.SimpleNamespace(_child_registries_cache = None)
+    _invalidate_child_registry_cache(t)  # nothing cached yet
+    assert t._diffusers_hook._child_registries_cache is None
+
+
+def test_apply_step_cache_registers_and_invalidates_for_hunyuan15(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    registry, block_cls = _stub_hunyuan15_registry(monkeypatch)
+    t = HunyuanVideo15Transformer3DModel()
+    t._diffusers_hook = types.SimpleNamespace(_child_registries_cache = [])
+    engaged = apply_step_cache(_pipe(t), mode = "fbcache")
+    assert engaged == TC_FBCACHE
+    assert t.enabled_with.threshold == DEFAULT_FBCACHE_THRESHOLD
+    assert block_cls in registry.registry  # metadata registered before enable_cache
+    assert t._diffusers_hook._child_registries_cache is None  # stale cache dropped
+
+
+# ── magcache mode (per-family auto cache) ──────────────────────────────────────────
+from core.inference.diffusion_cache import (  # noqa: E402
+    DEFAULT_MAGCACHE_THRESHOLD,
+    MAGCACHE_MAX_SKIP_STEPS,
+    MAGCACHE_RETENTION_RATIO,
+    TC_MAGCACHE,
+    _MAGCACHE_FAMILY_RATIOS,
+    auto_cache_mode,
+)
+
+
+class _MagConfig:
+    def __init__(
+        self,
+        threshold,
+        max_skip_steps,
+        retention_ratio,
+        num_inference_steps,
+        mag_ratios,
+    ):
+        self.threshold = threshold
+        self.max_skip_steps = max_skip_steps
+        self.retention_ratio = retention_ratio
+        self.num_inference_steps = num_inference_steps
+        self.mag_ratios = mag_ratios
+
+
+def _stub_diffusers_with_magcache(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    hooks = sys.modules["diffusers.hooks"]
+    hooks.MagCacheConfig = _MagConfig
+
+
+def test_normalize_accepts_magcache():
+    assert normalize_transformer_cache("magcache") == TC_MAGCACHE
+    assert normalize_transformer_cache("MagCache") == TC_MAGCACHE
+
+
+def test_auto_cache_mode_per_family():
+    # HunyuanVideo-1.5: FBCache free-runs (no cap / no error budget) and derails the
+    # trajectory (measured LPIPS 0.54 at its default threshold), so auto engages the
+    # bounded MagCache there; every other family keeps the measured FBCache default.
+    assert auto_cache_mode("hunyuanvideo-1.5") == TC_MAGCACHE
+    assert auto_cache_mode("hunyuanvideo-1.5-720p") == TC_MAGCACHE
+    assert auto_cache_mode("HunyuanVideo-1.5-720p") == TC_MAGCACHE
+    for other in (None, "", "flux", "wan2.2-ti2v-5b", "ltx-2", "z-image"):
+        assert auto_cache_mode(other) == TC_FBCACHE
+
+
+def test_magcache_families_have_calibrated_ratios():
+    # Every family the auto policy routes to magcache must ship a calibrated curve, or
+    # the auto default silently runs uncached (apply_step_cache checks the table).
+    from core.inference.diffusion_cache import _FAMILY_AUTO_CACHE_MODE
+
+    for fam, mode in _FAMILY_AUTO_CACHE_MODE.items():
+        if mode == TC_MAGCACHE:
+            ratios = _MAGCACHE_FAMILY_RATIOS[fam]
+            assert len(ratios) == 50  # the default 50-step schedule they were calibrated on
+            assert all(0.5 < r < 1.5 for r in ratios)
+
+
+def test_magcache_engages_with_family_curve(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _MixinTransformer()
+    engaged = apply_step_cache(
+        _pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p", steps = 50
+    )
+    assert engaged == TC_MAGCACHE
+    cfg = t.enabled_with
+    assert cfg.threshold == DEFAULT_MAGCACHE_THRESHOLD
+    assert cfg.max_skip_steps == MAGCACHE_MAX_SKIP_STEPS
+    assert cfg.retention_ratio == MAGCACHE_RETENTION_RATIO
+    assert cfg.num_inference_steps == 50
+    assert cfg.mag_ratios == list(_MAGCACHE_FAMILY_RATIOS["hunyuanvideo-1.5-720p"])
+    # The marker carries the step count so the auto toggle re-engages on a change.
+    assert t._unsloth_step_cache == f"magcache@{DEFAULT_MAGCACHE_THRESHOLD}#s50"
+
+
+def test_magcache_without_calibration_runs_uncached(monkeypatch):
+    # No silent FBCache fallback: the family was routed to magcache exactly because
+    # FBCache derails it, so an uncalibrated family must run uncached instead.
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _MixinTransformer()
+    assert apply_step_cache(_pipe(t), mode = "magcache", family = "flux", steps = 50) is None
+    assert t.enabled_with is None
+
+
+def test_magcache_without_steps_runs_uncached(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _MixinTransformer()
+    assert (
+        apply_step_cache(_pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p") is None
+    )
+    assert t.enabled_with is None
+
+
+def test_magcache_explicit_threshold_wins(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _MixinTransformer()
+    apply_step_cache(
+        _pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p", steps = 30,
+        threshold = 0.24,
+    )
+    assert t.enabled_with.threshold == 0.24
+
+
+def test_toggle_engages_family_magcache(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _ToggleTransformer()
+    mode = maybe_toggle_step_cache(
+        _pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
+    )
+    assert mode == TC_MAGCACHE and t.enables == 1
+    assert t.enabled_with.num_inference_steps == 30
+
+
+def test_toggle_magcache_reengages_on_step_change(monkeypatch):
+    # MagCache interpolates its calibrated curve over the CONFIGURED step count, so a
+    # step-count change must disable + re-enable; the same count stays idempotent.
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _ToggleTransformer()
+    maybe_toggle_step_cache(
+        _pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
+    )
+    maybe_toggle_step_cache(
+        _pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
+    )
+    assert t.enables == 1 and t.disables == 0  # idempotent at the same count
+    mode = maybe_toggle_step_cache(
+        _pipe(t), steps = 50, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
+    )
+    assert mode == TC_MAGCACHE and t.disables == 1 and t.enables == 2
+    assert t.enabled_with.num_inference_steps == 50
+
+
+def test_toggle_magcache_disengages_below_bar(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _ToggleTransformer()
+    maybe_toggle_step_cache(
+        _pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
+    )
+    mode = maybe_toggle_step_cache(
+        _pipe(t), steps = 8, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
+    )
+    assert mode is None and t.disables == 1

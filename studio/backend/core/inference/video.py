@@ -50,8 +50,8 @@ from .diffusion_attention import (
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
-    TC_FBCACHE,
     apply_step_cache,
+    auto_cache_mode,
     maybe_toggle_step_cache,
     normalize_transformer_cache,
 )
@@ -1317,10 +1317,16 @@ class VideoBackend:
         # GGUF checkpoints and torchao-quantised DiTs both need the higher quantised
         # threshold for the cache to still trigger over the quant noise.
         cache_quant_active = kind == "gguf" or transformer_quant_engaged is not None
-        default_cache_steps: Optional[int] = None
+        # Computed for every request: the auto step-count policy keys on it, and an
+        # explicit magcache request needs it too (the ratio curve is interpolated over
+        # the configured step count).
+        default_cache_steps, _ = default_video_generation_params(gguf_filename, repo_id, base)
         if cache_auto:
-            default_cache_steps, _ = default_video_generation_params(gguf_filename, repo_id, base)
-            cache_request = TC_FBCACHE if default_cache_steps >= FBCACHE_MIN_STEPS else None
+            # The engaged CACHE MODE is per-family: MagCache where FBCache's uncapped
+            # skipping derails the trajectory (HunyuanVideo-1.5), FBCache elsewhere.
+            cache_request = (
+                auto_cache_mode(fam.name) if default_cache_steps >= FBCACHE_MIN_STEPS else None
+            )
         cache_engaged = None
         for view in views:
             engaged = apply_step_cache(
@@ -1332,6 +1338,8 @@ class VideoBackend:
                 # (diffusion.py): both an engaged transformer_quant AND a GGUF checkpoint
                 # (quantized weights) count as quant-active here (cache_quant_active, L1172).
                 quant_active = cache_quant_active,
+                family = fam.name,
+                steps = default_cache_steps,
                 logger = logger,
             )
             if view is pipe:
@@ -1715,6 +1723,8 @@ class VideoBackend:
                             steps = steps,
                             quant_active = state.cache_quant_active,
                             threshold = state.cache_threshold,
+                            mode = auto_cache_mode(fam.name),
+                            family = fam.name,
                             logger = logger,
                         )
                     if toggled != state.transformer_cache:

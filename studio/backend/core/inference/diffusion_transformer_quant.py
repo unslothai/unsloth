@@ -82,6 +82,33 @@ _INT8_EXCLUDE_NAME_TOKENS = (
     "time_embed",
 )
 
+# int8 PER-FAMILY name exclusions, on top of _INT8_EXCLUDE_NAME_TOKENS. The attention trim
+# (diffusion_attention's pre-hook) shrinks HunyuanVideo-1.5's text streams from their padded
+# lengths to the VALID token counts, so every text-stream Linear runs at a tiny M the int8
+# dynamic path cannot handle (both failures measured on B200):
+#   - M = 0 (the t2v byt5 / image streams trim to zero tokens): torchao returns the input
+#     UNPROJECTED (a quantized 1472->2048 Linear maps [1, 0, 1472] to [1, 0, 1472]), so the
+#     2048-wide cond-type add crashes -> context_embedder_2 / image_embedder;
+#   - M <= 16 (a short prompt, or the empty negative prompt's ~6 tokens): torch._int_mm
+#     requires M > 16 and raises -> the TokenRefiner (context_embedder.*) and every block's
+#     context-stream projections (add_q/k/v_proj, to_add_out, ff_context).
+# All of these run at M = text tokens (tens) vs the video stream's M ~ 32k+, so keeping
+# them bf16 costs nothing measurable; the attention/FFN video-stream linears keep the full
+# int8 coverage. "context_embedder" also matches "context_embedder_2" (substring check).
+_HUNYUAN15_INT8_EXCLUDES = (
+    "context_embedder",
+    "image_embedder",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+    "ff_context",
+)
+_INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
+    "hunyuanvideo-1.5": _HUNYUAN15_INT8_EXCLUDES,
+    "hunyuanvideo-1.5-720p": _HUNYUAN15_INT8_EXCLUDES,
+}
+
 
 # fp8 (and the other per-row scaled_mm schemes) PER-FAMILY name exclusions. Per-row fp8 scales
 # each activation ROW by row_amax / 448; a row whose amax is 0 -- a PADDING token in a
@@ -111,7 +138,9 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     """Name tokens to exclude from quantisation for ``scheme`` (optionally family-specific).
 
     int8 (torch._int_mm, M>16) skips the M=1 modulation / conditioning-embedder projections (see
-    _INT8_EXCLUDE_NAME_TOKENS) on every family. The per-row scaled_mm schemes (fp8 / mxfp8 / nvfp4)
+    _INT8_EXCLUDE_NAME_TOKENS) on every family, plus the per-family zero-token embedders whose
+    M=0 input torchao passes through unprojected (_INT8_FAMILY_EXCLUDE_NAME_TOKENS, HunyuanVideo
+    -1.5 under the attention trim). The per-row scaled_mm schemes (fp8 / mxfp8 / nvfp4)
     exclude nothing by default, but on families whose zero-padded conditioning sequence would divide
     by a zero row scale they skip the offending input embedder (see _FP8_FAMILY_EXCLUDE_NAME_TOKENS).
     ``family=None`` preserves the historical behaviour (int8 tokens, or () otherwise). Shared by the
@@ -120,7 +149,9 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     that then crashes (int8 M=1 -> _int_mm) or infs (fp8 padding row -> scaled_mm) at the first
     denoise step."""
     if scheme == TQ_INT8:
-        return _INT8_EXCLUDE_NAME_TOKENS
+        return _INT8_EXCLUDE_NAME_TOKENS + _INT8_FAMILY_EXCLUDE_NAME_TOKENS.get(
+            str(family or "").strip().lower(), ()
+        )
     return _FP8_FAMILY_EXCLUDE_NAME_TOKENS.get(str(family or "").strip().lower(), ())
 
 

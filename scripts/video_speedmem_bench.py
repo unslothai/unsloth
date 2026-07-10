@@ -268,6 +268,29 @@ _CONFIGS: dict[str, dict[str, Any]] = {
     "ditint8_nocache": dict(
         te = "none", vae = "none", dit = "int8", speed = "default", attn = "native", cache = "off"
     ),
+    # Hunyuan padded-text trim isolation: "cudnn" above is the same stack WITH the trim
+    # (it auto-engages under any active speed tier), so trim_off isolates its win. The
+    # trim key defaults True everywhere else; only this row forces it off.
+    "trim_off": dict(
+        te = "none", vae = "none", dit = "none", speed = "default", attn = "auto", cache = "off",
+        trim = False,
+    ),
+    # Compile isolation at matched attention/trim: eager tier (channels_last + cudnn
+    # benchmark, NO compile) vs the "cudnn" row (default tier = regional compile).
+    "eager_trim": dict(
+        te = "none", vae = "none", dit = "none", speed = "eager", attn = "auto", cache = "off"
+    ),
+    # int8 DiT baseline at the production attention stack (cudnn + trim), cache off,
+    # directly comparable to the "cudnn" dense row.
+    "int8_cudnn": dict(
+        te = "none", vae = "none", dit = "int8", speed = "default", attn = "auto", cache = "off"
+    ),
+    # The full companion-quant stack WITHOUT step caching: te/vae auto + dit auto (dense
+    # -fit skip on Hunyuan) + compile + cudnn + trim. The stacked-best candidate default
+    # when the family's auto cache policy stays off.
+    "shipped_nocache": dict(
+        te = "auto", vae = "auto", dit = "auto", speed = "default", attn = "auto", cache = "off"
+    ),
 }
 
 
@@ -335,6 +358,7 @@ def _apply_levers(
     fam_obj,
     force_fp32_vae: bool,
     default_steps: int,
+    cache_threshold: Optional[float] = None,
     logger = None,
 ) -> dict:
     """Apply the configured levers with the loader's own argument values, in the loader's order:
@@ -355,7 +379,7 @@ def _apply_levers(
     )
     from core.inference.diffusion_cache import (
         apply_step_cache,
-        TC_FBCACHE,
+        auto_cache_mode,
         FBCACHE_MIN_STEPS,
     )
 
@@ -436,14 +460,18 @@ def _apply_levers(
     # Step cache FIRST (compile keys fullgraph off an active cache); per expert.
     cache_active = False
     if cfg["cache"] == "auto":
-        cache_request = TC_FBCACHE if default_steps >= FBCACHE_MIN_STEPS else None
+        # Per-family auto mode, exactly like the loader (video.py): MagCache for the
+        # HunyuanVideo-1.5 families, FBCache elsewhere.
+        cache_request = auto_cache_mode(fam_name) if default_steps >= FBCACHE_MIN_STEPS else None
         if cache_request is not None:
             for v in views:
                 engaged["cache"] = apply_step_cache(
                     v,
                     mode = cache_request,
-                    threshold = None,
+                    threshold = cache_threshold,
                     quant_active = dit_quant_active,
+                    family = fam_name,
+                    steps = default_steps,
                     logger = logger,
                 )
             cache_active = engaged["cache"] not in (None, "off")
@@ -453,7 +481,7 @@ def _apply_levers(
     # text tokens so the fused SDPA kernel runs (~18x/DiT-forward, cosine ~1.0). A speed lever, so
     # gated on an active tier like the loader; no-op for every non-Hunyuan family.
     trim_engaged = False
-    if speed_active:
+    if speed_active and cfg.get("trim", True):
         for v in views:
             trim_engaged = install_hunyuan_attention_trim(v, fam_obj, logger = logger) or trim_engaged
     engaged["attn_trim"] = trim_engaged
@@ -493,13 +521,15 @@ def _timed_video(
     dit_quant_active,
     default_steps,
     guidance_via_guider = False,
+    cache_threshold = None,
+    family = None,
     logger = None,
 ):
-    """One clip generation. Re-checks FBCache per generation (maybe_toggle_step_cache) exactly
-    like the loader, then times total + per-step. Returns (output, total_s, [per_step_ms])."""
+    """One clip generation. Re-checks the step cache per generation (maybe_toggle_step_cache)
+    exactly like the loader, then times total + per-step. Returns (output, total_s, [per_step_ms])."""
     import torch
 
-    from core.inference.diffusion_cache import maybe_toggle_step_cache, FBCACHE_MIN_STEPS
+    from core.inference.diffusion_cache import auto_cache_mode, maybe_toggle_step_cache
 
     if cache_mode == "auto":
         # Toggle on EVERY expert view, exactly like the loader's per-view recheck
@@ -512,7 +542,13 @@ def _timed_video(
         for v in views:
             try:
                 maybe_toggle_step_cache(
-                    v, steps = steps, quant_active = dit_quant_active, threshold = None, logger = logger
+                    v,
+                    steps = steps,
+                    quant_active = dit_quant_active,
+                    threshold = cache_threshold,
+                    mode = auto_cache_mode(family),
+                    family = family,
+                    logger = logger,
                 )
             except Exception:
                 pass
@@ -592,6 +628,7 @@ def _run_config(
     seed: int,
     iters: int,
     out: Path,
+    cache_threshold: Optional[float] = None,
     logger = None,
 ):
     import numpy as np
@@ -627,6 +664,7 @@ def _run_config(
         fam_obj = fam_obj,
         force_fp32_vae = force_fp32,
         default_steps = default_steps,
+        cache_threshold = cache_threshold,
         logger = logger,
     )
     pipe = pipe.to("cuda")
@@ -638,6 +676,7 @@ def _run_config(
     cache_mode = cfg["cache"]
 
     # warmup (pays the one-time compile / autotune)
+    warmup_t0 = time.perf_counter()
     _timed_video(
         pipe,
         steps = steps,
@@ -650,8 +689,11 @@ def _run_config(
         dit_quant_active = dit_active,
         default_steps = default_steps,
         guidance_via_guider = gvg,
+        cache_threshold = cache_threshold,
+        family = family,
         logger = logger,
     )
+    warmup_s = time.perf_counter() - warmup_t0
     _reset_peak()
     dts, steps_ms = [], []
     last_out = None
@@ -668,6 +710,8 @@ def _run_config(
             dit_quant_active = dit_active,
             default_steps = default_steps,
             guidance_via_guider = gvg,
+            cache_threshold = cache_threshold,
+            family = family,
             logger = logger,
         )
         dts.append(dt)
@@ -700,6 +744,14 @@ def _run_config(
             )
         except Exception:
             pass
+    # Persist EVERY config's frames too, so a row generated before the reference exists
+    # (parallel per-GPU processes) can be LPIPS-rescored offline instead of publishing null.
+    if arrs:
+        try:
+            import numpy as _np
+            _np.savez_compressed(out / f"frames_{family}_{name}.npz", *arrs)
+        except Exception:
+            pass
 
     row = {
         "config": name,
@@ -713,9 +765,13 @@ def _run_config(
         "cache": engaged["cache"] or "off",
         "effective_speed": engaged.get("_effective_speed"),
         "speed_optims": engaged["speed_optims"],
+        "attn_trim": engaged.get("attn_trim", False),
+        "cache_threshold": cache_threshold,
+        "cache_marker": getattr(getattr(pipe, "transformer", None), "_unsloth_step_cache", None),
         "load_peak_gb": round(load_peak, 2),
         "weights_gb": round(weights_gb, 2),
         "gen_peak_gb": round(gen_peak, 2),
+        "warmup_s": round(warmup_s, 3),
         "gen_latency_s": round(_median(dts), 3),
         "per_step_ms": round(_median(steps_ms), 1),
         "n_frames": len(arrs),
@@ -739,6 +795,12 @@ def main(argv = None) -> int:
     ap.add_argument("--seed", type = int, default = 42)
     ap.add_argument("--iters", type = int, default = 3)
     ap.add_argument("--out", default = "outputs/video_speedmem")
+    ap.add_argument(
+        "--cache-threshold",
+        type = float,
+        default = None,
+        help = "FBCache residual-diff threshold override (None -> the production default)",
+    )
     args = ap.parse_args(argv)
 
     import logging
@@ -793,6 +855,7 @@ def main(argv = None) -> int:
             seed = args.seed,
             iters = args.iters,
             out = out,
+            cache_threshold = args.cache_threshold,
             logger = logger,
         )
         if n == "reference":

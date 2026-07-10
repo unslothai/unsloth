@@ -461,8 +461,22 @@ def test_exclude_tokens_for_scheme_family():
     # Hunyuan is not localisable (fp8 stays denied), and an unknown family gets nothing.
     assert exclude_tokens_for_scheme(TQ_FP8, "hunyuanvideo-1.5") == ()
     assert exclude_tokens_for_scheme(TQ_FP8, "z-image") == ()
-    # int8 is family-independent (its zero-row handling needs no per-family skip).
+    # int8 tolerates zero ROWS (per-token; no divide), so most families need no extra skip...
     assert exclude_tokens_for_scheme(TQ_INT8, "wan2.2-ti2v-5b") == _INT8_EXCLUDE_NAME_TOKENS
+    # ...but the attention trim shrinks HunyuanVideo-1.5's text streams to their VALID token
+    # counts, where the int8 dynamic path fails two ways (both measured): a zero-token (M=0)
+    # input passes through UNPROJECTED (byt5/image embedders on t2v -> cond-type add crash),
+    # and torch._int_mm requires M > 16 (the ~6-token empty negative prompt crashes the
+    # TokenRefiner and the blocks' context-stream projections). All the text-stream linears
+    # must stay bf16; the M ~ 32k video-stream linears keep the int8 coverage.
+    from core.inference.diffusion_transformer_quant import _HUNYUAN15_INT8_EXCLUDES
+
+    for fam in ("hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
+        assert (
+            exclude_tokens_for_scheme(TQ_INT8, fam)
+            == _INT8_EXCLUDE_NAME_TOKENS + _HUNYUAN15_INT8_EXCLUDES
+        )
+        assert "context_embedder" in _HUNYUAN15_INT8_EXCLUDES  # covers context_embedder_2 too
 
 
 # ── apply ───────────────────────────────────────────────────────────────────────
