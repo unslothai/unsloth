@@ -37,6 +37,10 @@ def backend():
 def manager(backend):
     m = TrainingQueueManager(backend = backend)
     m.settle_delay = 0  # no 3s sleeps in tests
+    # enqueue()/resume() revive the runner; a real background thread would
+    # race the explicit _tick() calls these tests make, so stub it out here.
+    # Runner lifecycle is covered by the dedicated tests below.
+    m.start_runner = lambda: None
     return m
 
 
@@ -425,15 +429,39 @@ def test_ui_queued_item_launches_despite_inference(manager, backend, monkeypatch
 # -- wake / notify ----------------------------------------------------------------
 
 
-def test_start_runner_registers_wake_callback(manager, backend):
-    manager.start_runner()
+def test_start_runner_registers_wake_callback(backend):
+    m = TrainingQueueManager(backend = backend)
+    m.start_runner()
     try:
         assert backend.on_job_finished is not None
-        manager._wake.clear()
+        m._wake.clear()
         backend.on_job_finished()
-        assert manager._wake.is_set()
+        assert m._wake.is_set()
     finally:
-        manager.stop_runner()
+        m.stop_runner()
+
+
+def test_enqueue_and_resume_revive_dead_runner(backend, monkeypatch):
+    # Startup restore can fail transiently (the lifespan logs and continues,
+    # leaving no runner thread); accepting new work must start the runner
+    # idempotently, not just set a wake event nobody waits on.
+    m = TrainingQueueManager(backend = backend)
+    m.settle_delay = 0
+    monkeypatch.setattr(queue_module, "validate_training_request", lambda req: None)
+    _patch_launch(monkeypatch)
+    try:
+        assert m._runner_thread is None
+        m.enqueue(_request(), subject = "tester")
+        assert m._runner_thread is not None and m._runner_thread.is_alive()
+
+        m.stop_runner()
+        m._runner_thread.join(timeout = 5)
+        assert not m._runner_thread.is_alive()
+
+        m.resume()  # un-pausing accepts queued work too
+        assert m._runner_thread is not None and m._runner_thread.is_alive()
+    finally:
+        m.stop_runner()
 
 
 def test_enqueue_sets_wake(manager, backend, monkeypatch):

@@ -30,6 +30,9 @@ def _isolated(tmp_path, monkeypatch):
     backend = FakeBackend()
     manager = TrainingQueueManager(backend = backend)
     manager.settle_delay = 0
+    # enqueue()/resume() revive the runner; keep these route tests synchronous
+    # (runner lifecycle is covered in test_training_queue_manager.py).
+    manager.start_runner = lambda: None
     monkeypatch.setattr(queue_module, "_queue_manager", manager)
     # Route-level validation: dataset/streaming checks are covered by
     # test_training_launch_extraction.py; here they pass by default.

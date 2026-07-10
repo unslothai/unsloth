@@ -124,6 +124,11 @@ class TrainingQueueManager:
         if item is None:
             raise self._queue_full_error()
         logger.info("Enqueued training job %s (%s)", item["id"], request.model_name)
+        # A successful enqueue proves the DB is usable, so revive the runner if
+        # startup restore failed transiently (lifespan logs and continues);
+        # without a waiter the wake below is a no-op and accepted work would
+        # sit pending until the next restart. start_runner() is idempotent.
+        self.start_runner()
         self._wake.set()
         return item
 
@@ -140,6 +145,9 @@ class TrainingQueueManager:
     def resume(self) -> None:
         studio_db.set_queue_paused(False)
         logger.info("Training queue resumed")
+        # Same revival as enqueue: un-pausing accepts queued work, so the
+        # runner must exist for the wake to mean anything.
+        self.start_runner()
         self._wake.set()
 
     def state(self) -> Dict[str, Any]:
