@@ -785,14 +785,16 @@ export function ChatSettingsPanel({
   // the total passes through low values or Auto. No saved split: free-VRAM-
   // weighted default (llama.cpp's unset default splits by free VRAM, so the
   // first slider edit starts from the placement the default would have used,
-  // not a total-VRAM ratio that can land layers on a busy GPU); total is the
-  // fallback when the utilization probe had no data. Not yet sent.
+  // not a total-VRAM ratio that can land layers on a busy GPU). A genuine 0
+  // (a full GPU) is a real weight, not missing data -- the probe's no-data
+  // case already degrades to the total server-side, and an all-zero list
+  // falls back to an even split inside distributeByWeight. Not yet sent.
   const splitCounts =
     splitRatio && splitRatio.length === gpusInUse.length
       ? distributeByWeight(splitTotal, splitRatio)
       : distributeByWeight(
           splitTotal,
-          gpusInUseDevices.map((d) => d?.memoryFreeGb || d?.memoryTotalGb || 1),
+          gpusInUseDevices.map((d) => d?.memoryFreeGb ?? d?.memoryTotalGb ?? 1),
         );
   const setSplitCount = (k: number, v: number) =>
     setSplitRatio(rebalanceSplit(splitTotal, splitCounts, k, v));

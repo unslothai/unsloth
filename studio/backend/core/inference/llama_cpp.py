@@ -1119,6 +1119,19 @@ def _mla_mtp_auto_enabled() -> bool:
     )
 
 
+def _cmd_forces_tensor_split_mode(cmd: "Iterable[str]") -> bool:
+    """True when the argv's LAST -sm/--split-mode value is "tensor" (last-wins,
+    matching llama-server's CLI parse). Non-tensor modes are inert with zero
+    offloaded layers, so only tensor forces GPU visibility."""
+    args = [str(a) for a in cmd] if cmd else []
+    last: Optional[str] = None
+    for i, raw in enumerate(args):
+        flag, eq, inline = raw.partition("=")
+        if flag in ("-sm", "--split-mode"):
+            last = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+    return (last or "").strip().lower() == "tensor"
+
+
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     """User passed --spec-type / --spec-default? llama-server takes one
     --spec-type (comma-separated to chain), so suppress auto-emit."""
@@ -6866,7 +6879,15 @@ class LlamaCppBackend:
                         except (TypeError, ValueError):
                             _split_total = 0.0
                         if len(tensor_split) == _split_gpus and _split_total > 0:
-                            cmd.extend(["--tensor-split", ",".join(f"{x:g}" for x in tensor_split)])
+                            # Emit the same clamped-non-negative shares the
+                            # training guard validated, so a negative entry from
+                            # a direct caller can't launch a different placement
+                            # than the one the guard approved.
+                            _sanitized_split = [max(float(x), 0.0) for x in tensor_split]
+                            cmd.extend(
+                                ["--tensor-split", ",".join(f"{x:g}" for x in _sanitized_split)]
+                            )
+                            self._tensor_split = _sanitized_split
                             manual_tensor_split_emitted = True
                         else:
                             logger.warning(
@@ -7184,10 +7205,12 @@ class LlamaCppBackend:
                     and gpu_layers == 0
                     and not is_vulkan_backend
                     and not any(
-                        a in ("--device", "-sm", "--split-mode")
-                        or str(a).startswith(("--device=", "--split-mode="))
-                        for a in cmd
+                        a == "--device" or str(a).startswith("--device=") for a in cmd
                     )
+                    # Only a user-forced TENSOR split keeps the GPUs visible (it
+                    # aborts under zero devices); row/layer modes are inert with
+                    # nothing offloaded, so they don't defeat the zero-VRAM mask.
+                    and not _cmd_forces_tensor_split_mode(cmd)
                     and not self._cmd_has_gpu_companion(cmd, env)
                 )
                 if _cpu_only_zero_offload:

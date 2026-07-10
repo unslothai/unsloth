@@ -719,3 +719,14 @@ def test_cmd_companion_ignores_cpu_forced_drafter():
     # mmproj still counts even alongside a CPU drafter.
     cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-ngl", "0", "--mmproj", "p.gguf"]
     assert has(cmd, {}) is True
+
+
+def test_cmd_forces_tensor_split_mode_scan():
+    # Only a last-wins "tensor" value defeats the zero-VRAM mask; row/layer
+    # modes are inert at zero offloaded layers.
+    scan = llama_cpp_module._cmd_forces_tensor_split_mode
+    assert scan(["llama-server", "--split-mode", "tensor"]) is True
+    assert scan(["llama-server", "-sm", "tensor"]) is True
+    assert scan(["llama-server", "--split-mode=row"]) is False
+    assert scan(["llama-server", "--split-mode", "tensor", "-sm", "row"]) is False
+    assert scan(["llama-server"]) is False
