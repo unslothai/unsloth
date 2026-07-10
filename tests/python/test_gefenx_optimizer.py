@@ -16,9 +16,7 @@ from typing import List, Optional
 import pytest
 
 # --- Load unsloth/optimizers/gefenx.py standalone (no unsloth package import) ---
-_MODULE_PATH = (
-    pathlib.Path(__file__).resolve().parents[2] / "unsloth" / "optimizers" / "gefenx.py"
-)
+_MODULE_PATH = pathlib.Path(__file__).resolve().parents[2] / "unsloth" / "optimizers" / "gefenx.py"
 _spec = importlib.util.spec_from_file_location("_unsloth_gefenx_under_test", _MODULE_PATH)
 gefenx = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gefenx)
@@ -37,7 +35,7 @@ class _GefenXConfig:
     capturable: bool = False
     betas: Optional[tuple] = None
     eps: Optional[float] = None
-    extra_kwargs: dict = field(default_factory=dict)
+    extra_kwargs: dict = field(default_factory = dict)
 
 
 @dataclass
@@ -64,13 +62,13 @@ class _GefenXMuonConfig:
     backup_substrings: Optional[List[str]] = None
     betas: Optional[tuple] = None
     eps: Optional[float] = None
-    extra_kwargs: dict = field(default_factory=dict)
+    extra_kwargs: dict = field(default_factory = dict)
 
 
 class _FakeParam:
     """Enough of an nn.Parameter for make_gefenx_param_groups / grouping."""
 
-    def __init__(self, requires_grad=True):
+    def __init__(self, requires_grad = True):
         self.requires_grad = requires_grad
 
 
@@ -93,7 +91,12 @@ def fake_gefen(monkeypatch):
             # Mimic torch.optim.Optimizer.param_groups shape for downstream code.
             self.param_groups = params
 
-    def _from_model(model, *, backup_substrings=None, **kwargs):
+    def _from_model(
+        model,
+        *,
+        backup_substrings = None,
+        **kwargs,
+    ):
         captured["muon"] = {
             "model": model,
             "backup_substrings": backup_substrings,
@@ -124,7 +127,7 @@ def fake_gefen(monkeypatch):
         ("5", 5),
         ("6.0e-6", 6.0e-6),
         ("match_rms_adamw", "match_rms_adamw"),
-        (True, True),      # non-strings pass through unchanged
+        (True, True),  # non-strings pass through unchanged
         (0.5, 0.5),
         (None, None),
     ],
@@ -141,10 +144,10 @@ def test_param_groups_single_group_without_embedding_lr():
         [
             ("model.layers.0.self_attn.q_proj.weight", _FakeParam()),
             ("model.embed_tokens.modules_to_save.default.weight", _FakeParam()),
-            ("model.layers.0.frozen.weight", _FakeParam(requires_grad=False)),
+            ("model.layers.0.frozen.weight", _FakeParam(requires_grad = False)),
         ]
     )
-    groups = gefenx.make_gefenx_param_groups(model, lr=1e-4, weight_decay=0.01)
+    groups = gefenx.make_gefenx_param_groups(model, lr = 1e-4, weight_decay = 0.01)
     # No embedding_lr => one group; frozen params excluded.
     assert len(groups) == 1
     assert len(groups[0]["params"]) == 2
@@ -159,9 +162,7 @@ def test_param_groups_splits_embedding_lr():
             ("model.embed_tokens.modules_to_save.default.weight", _FakeParam()),
         ]
     )
-    groups = gefenx.make_gefenx_param_groups(
-        model, lr=1e-4, weight_decay=0.0, embedding_lr=5e-6
-    )
+    groups = gefenx.make_gefenx_param_groups(model, lr = 1e-4, weight_decay = 0.0, embedding_lr = 5e-6)
     assert len(groups) == 2
     non_embed, embed = groups
     assert non_embed["lr"] == 1e-4 and len(non_embed["params"]) == 1
@@ -173,10 +174,14 @@ def test_param_groups_splits_embedding_lr():
 # --------------------------------------------------------------------------- #
 def test_build_gefenx_forwards_config_and_falls_back_to_trainer_betas(fake_gefen):
     model = _FakeModel([("w", _FakeParam())])
-    config = _GefenXConfig(fused=True, factored_v_2d=False, stochastic_round=True)
+    config = _GefenXConfig(fused = True, factored_v_2d = False, stochastic_round = True)
     opt = gefenx.build_gefenx_optimizer(
-        model, config, lr=1e-4, weight_decay=0.01,
-        betas=(0.9, 0.95), eps=1e-8,
+        model,
+        config,
+        lr = 1e-4,
+        weight_decay = 0.01,
+        betas = (0.9, 0.95),
+        eps = 1e-8,
     )
     kw = fake_gefen["gefen"]["kwargs"]
     assert kw["fused"] is True
@@ -195,28 +200,36 @@ def test_extra_kwargs_reserved_keys_are_dropped(fake_gefen):
     # are dropped from extra_kwargs with a warning; non-reserved keys pass through.
     model = _FakeModel([("w", _FakeParam())])
     config = _GefenXConfig(
-        extra_kwargs={"lr": 9.9, "weight_decay": 9.9, "codebook_refresh_every": "50"}
+        extra_kwargs = {"lr": 9.9, "weight_decay": 9.9, "codebook_refresh_every": "50"}
     )
-    with pytest.warns(UserWarning, match="reserved key"):
+    with pytest.warns(UserWarning, match = "reserved key"):
         gefenx.build_gefenx_optimizer(
-            model, config, lr=1e-4, weight_decay=0.01,
-            betas=(0.9, 0.999), eps=1e-8,
+            model,
+            config,
+            lr = 1e-4,
+            weight_decay = 0.01,
+            betas = (0.9, 0.999),
+            eps = 1e-8,
         )
     kw = fake_gefen["gefen"]["kwargs"]
     # Build succeeds (no duplicate-keyword TypeError) and the reserved extra_kwargs
     # values did NOT override the real builder args (9.9 dropped, 1e-4 / 0.01 win).
     assert kw["lr"] == 1e-4
     assert kw["weight_decay"] == 0.01
-    assert kw["codebook_refresh_every"] == 50            # allowed key -> coerced
+    assert kw["codebook_refresh_every"] == 50  # allowed key -> coerced
 
 
 def test_muon_extra_kwargs_reserved_backup_substrings_dropped(fake_gefen):
     model = _FakeModel([("w", _FakeParam())])
-    config = _GefenXMuonConfig(extra_kwargs={"backup_substrings": ["x"], "ns_steps": "7"})
-    with pytest.warns(UserWarning, match="reserved key"):
+    config = _GefenXMuonConfig(extra_kwargs = {"backup_substrings": ["x"], "ns_steps": "7"})
+    with pytest.warns(UserWarning, match = "reserved key"):
         gefenx.build_gefenx_muon_optimizer(
-            model, config, lr=1e-4, weight_decay=0.0,
-            betas=(0.9, 0.999), eps=1e-8,
+            model,
+            config,
+            lr = 1e-4,
+            weight_decay = 0.0,
+            betas = (0.9, 0.999),
+            eps = 1e-8,
         )
     kw = fake_gefen["muon"]["kwargs"]
     # backup_substrings is passed as an explicit arg, not via **kwargs.
@@ -228,12 +241,18 @@ def test_muon_extra_kwargs_reserved_backup_substrings_dropped(fake_gefen):
 def test_build_gefenx_config_betas_override_and_extra_kwargs(fake_gefen):
     model = _FakeModel([("w", _FakeParam())])
     config = _GefenXConfig(
-        betas=(0.8, 0.9), eps=1e-6,
-        period_one_substrings=("embed", "lm_head"),
-        extra_kwargs={"codebook_refresh_every": "100"},  # string coerced to int
+        betas = (0.8, 0.9),
+        eps = 1e-6,
+        period_one_substrings = ("embed", "lm_head"),
+        extra_kwargs = {"codebook_refresh_every": "100"},  # string coerced to int
     )
     gefenx.build_gefenx_optimizer(
-        model, config, lr=1e-4, weight_decay=0.0, betas=(0.9, 0.999), eps=1e-8,
+        model,
+        config,
+        lr = 1e-4,
+        weight_decay = 0.0,
+        betas = (0.9, 0.999),
+        eps = 1e-8,
     )
     kw = fake_gefen["gefen"]["kwargs"]
     assert kw["betas"] == (0.8, 0.9)
@@ -249,7 +268,12 @@ def test_build_gefenx_muon_applies_recommended_recipe(fake_gefen):
     model = _FakeModel([("w", _FakeParam())])
     config = _GefenXMuonConfig()  # defaults encode the recipe
     opt = gefenx.build_gefenx_muon_optimizer(
-        model, config, lr=1e-4, weight_decay=0.0, betas=(0.9, 0.999), eps=1e-8,
+        model,
+        config,
+        lr = 1e-4,
+        weight_decay = 0.0,
+        betas = (0.9, 0.999),
+        eps = 1e-8,
     )
     assert opt == "MUON_OPTIMIZER"
     call = fake_gefen["muon"]
@@ -265,18 +289,28 @@ def test_build_gefenx_muon_applies_recommended_recipe(fake_gefen):
 
 def test_build_gefenx_muon_explicit_backup_lr_wins(fake_gefen):
     model = _FakeModel([("w", _FakeParam())])
-    config = _GefenXMuonConfig(backup_lr=3e-5, backup_lr_scale=0.5)
+    config = _GefenXMuonConfig(backup_lr = 3e-5, backup_lr_scale = 0.5)
     gefenx.build_gefenx_muon_optimizer(
-        model, config, lr=1e-4, weight_decay=0.0, betas=(0.9, 0.999), eps=1e-8,
+        model,
+        config,
+        lr = 1e-4,
+        weight_decay = 0.0,
+        betas = (0.9, 0.999),
+        eps = 1e-8,
     )
     assert fake_gefen["muon"]["kwargs"]["backup_lr"] == 3e-5
 
 
 def test_build_gefenx_muon_backup_lr_scale_none_leaves_backup_lr_unset(fake_gefen):
     model = _FakeModel([("w", _FakeParam())])
-    config = _GefenXMuonConfig(backup_lr_scale=None)
+    config = _GefenXMuonConfig(backup_lr_scale = None)
     gefenx.build_gefenx_muon_optimizer(
-        model, config, lr=1e-4, weight_decay=0.0, betas=(0.9, 0.999), eps=1e-8,
+        model,
+        config,
+        lr = 1e-4,
+        weight_decay = 0.0,
+        betas = (0.9, 0.999),
+        eps = 1e-8,
     )
     # No scale and no explicit backup_lr => gefen uses its own default (None).
     assert fake_gefen["muon"]["kwargs"].get("backup_lr") is None
@@ -284,9 +318,14 @@ def test_build_gefenx_muon_backup_lr_scale_none_leaves_backup_lr_unset(fake_gefe
 
 def test_build_gefenx_muon_passes_lr_weight_decay_and_backup_substrings(fake_gefen):
     model = _FakeModel([("w", _FakeParam())])
-    config = _GefenXMuonConfig(backup_substrings=["router", "gate"])
+    config = _GefenXMuonConfig(backup_substrings = ["router", "gate"])
     gefenx.build_gefenx_muon_optimizer(
-        model, config, lr=2e-4, weight_decay=0.05, betas=(0.9, 0.999), eps=1e-8,
+        model,
+        config,
+        lr = 2e-4,
+        weight_decay = 0.05,
+        betas = (0.9, 0.999),
+        eps = 1e-8,
     )
     call = fake_gefen["muon"]
     assert call["backup_substrings"] == ["router", "gate"]
@@ -300,17 +339,25 @@ def test_build_gefenx_muon_passes_lr_weight_decay_and_backup_substrings(fake_gef
 def test_gate_rejects_rocm_hip_build(fake_gefen, monkeypatch):
     torch = pytest.importorskip("torch")
     # Simulate an AMD/ROCm PyTorch build by tagging torch.version.hip.
-    monkeypatch.setattr(torch.version, "hip", "6.0.0", raising=False)
+    monkeypatch.setattr(torch.version, "hip", "6.0.0", raising = False)
     model = _FakeModel([("w", _FakeParam())])
-    with pytest.raises(RuntimeError, match="ROCm|HIP|CUDA"):
+    with pytest.raises(RuntimeError, match = "ROCm|HIP|CUDA"):
         gefenx.build_gefenx_optimizer(
-            model, _GefenXConfig(), lr=1e-4, weight_decay=0.0,
-            betas=(0.9, 0.999), eps=1e-8,
+            model,
+            _GefenXConfig(),
+            lr = 1e-4,
+            weight_decay = 0.0,
+            betas = (0.9, 0.999),
+            eps = 1e-8,
         )
-    with pytest.raises(RuntimeError, match="ROCm|HIP|CUDA"):
+    with pytest.raises(RuntimeError, match = "ROCm|HIP|CUDA"):
         gefenx.build_gefenx_muon_optimizer(
-            model, _GefenXMuonConfig(), lr=1e-4, weight_decay=0.0,
-            betas=(0.9, 0.999), eps=1e-8,
+            model,
+            _GefenXMuonConfig(),
+            lr = 1e-4,
+            weight_decay = 0.0,
+            betas = (0.9, 0.999),
+            eps = 1e-8,
         )
     # The gate fires before gefen is even imported/constructed.
     assert "gefen" not in fake_gefen and "muon" not in fake_gefen
@@ -319,7 +366,7 @@ def test_gate_rejects_rocm_hip_build(fake_gefen, monkeypatch):
 def test_gate_allows_non_hip(monkeypatch):
     torch = pytest.importorskip("torch")
     # A normal (non-HIP) build must pass the gate without raising.
-    monkeypatch.setattr(torch.version, "hip", None, raising=False)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
     gefenx._require_nvidia_cuda()  # should not raise
 
 
@@ -344,7 +391,7 @@ def _cuda_available():
 _CUDA = _cuda_available()
 
 
-def _tiny_model(torch, device="cpu"):
+def _tiny_model(torch, device = "cpu"):
     # Embedding + 2D Linears + LayerNorm exercises all of gefen's routing buckets:
     # 2D hidden weights (Muon half), embedding/1D norm/bias (Gefen backup half).
     return torch.nn.Sequential(
@@ -355,8 +402,12 @@ def _tiny_model(torch, device="cpu"):
     ).to(device)
 
 
-def _forward_backward(torch, model, device="cpu"):
-    ids = torch.arange(4, device=device)
+def _forward_backward(
+    torch,
+    model,
+    device = "cpu",
+):
+    ids = torch.arange(4, device = device)
     out = model[0](ids)
     out = model[1](out)
     out = model[2](out)
@@ -376,8 +427,12 @@ def test_real_gefenx_updates_all_params_cpu():
     model = _tiny_model(torch)
     before = [p.detach().clone() for p in model.parameters()]
     opt = gefenx.build_gefenx_optimizer(
-        model, _GefenXConfig(fused=False),
-        lr=1e-3, weight_decay=0.0, betas=(0.9, 0.999), eps=1e-8,
+        model,
+        _GefenXConfig(fused = False),
+        lr = 1e-3,
+        weight_decay = 0.0,
+        betas = (0.9, 0.999),
+        eps = 1e-8,
     )
     assert isinstance(opt, Gefen)
     _forward_backward(torch, model)
@@ -394,8 +449,12 @@ def test_real_gefenx_muon_updates_all_params_cpu():
     model = _tiny_model(torch)
     before = [p.detach().clone() for p in model.parameters()]
     opt = gefenx.build_gefenx_muon_optimizer(
-        model, _GefenXMuonConfig(fused=False),
-        lr=1e-3, weight_decay=0.0, betas=(0.9, 0.999), eps=1e-8,
+        model,
+        _GefenXMuonConfig(fused = False),
+        lr = 1e-3,
+        weight_decay = 0.0,
+        betas = (0.9, 0.999),
+        eps = 1e-8,
     )
     assert isinstance(opt, GefenMuonHybrid)
     _forward_backward(torch, model)
@@ -404,16 +463,21 @@ def test_real_gefenx_muon_updates_all_params_cpu():
     assert _num_changed(torch, before, model) == len(before)
 
 
-@pytest.mark.skipif(not _CUDA, reason="requires NVIDIA CUDA for the fused gefen kernels")
+@pytest.mark.skipif(not _CUDA, reason = "requires NVIDIA CUDA for the fused gefen kernels")
 def test_real_gefenx_cuda_fused_updates_all_params():
     import torch
+
     pytest.importorskip("gefen")
 
     model = _tiny_model(torch, "cuda")
     before = [p.detach().clone() for p in model.parameters()]
     opt = gefenx.build_gefenx_optimizer(
-        model, _GefenXConfig(fused=True),
-        lr=1e-3, weight_decay=0.0, betas=(0.9, 0.999), eps=1e-8,
+        model,
+        _GefenXConfig(fused = True),
+        lr = 1e-3,
+        weight_decay = 0.0,
+        betas = (0.9, 0.999),
+        eps = 1e-8,
     )
     _forward_backward(torch, model, "cuda")
     opt.step()
@@ -422,16 +486,21 @@ def test_real_gefenx_cuda_fused_updates_all_params():
     assert _num_changed(torch, before, model) == len(before)
 
 
-@pytest.mark.skipif(not _CUDA, reason="requires NVIDIA CUDA for the fused gefen kernels")
+@pytest.mark.skipif(not _CUDA, reason = "requires NVIDIA CUDA for the fused gefen kernels")
 def test_real_gefenx_muon_cuda_fused_updates_all_params():
     import torch
+
     pytest.importorskip("gefen")
 
     model = _tiny_model(torch, "cuda")
     before = [p.detach().clone() for p in model.parameters()]
     opt = gefenx.build_gefenx_muon_optimizer(
-        model, _GefenXMuonConfig(fused=True),
-        lr=1e-3, weight_decay=0.0, betas=(0.9, 0.999), eps=1e-8,
+        model,
+        _GefenXMuonConfig(fused = True),
+        lr = 1e-3,
+        weight_decay = 0.0,
+        betas = (0.9, 0.999),
+        eps = 1e-8,
     )
     _forward_backward(torch, model, "cuda")
     opt.step()
@@ -454,9 +523,11 @@ def test_trainer_create_optimizer_dispatches_gefenx(tmp_path):
     from gefen import Gefen
 
     args = UnslothTrainingArguments(
-        output_dir=str(tmp_path / "gx"),
-        gefenx_config=GefenXConfig(fused=False),
-        learning_rate=1e-3, weight_decay=0.0, report_to="none",
+        output_dir = str(tmp_path / "gx"),
+        gefenx_config = GefenXConfig(fused = False),
+        learning_rate = 1e-3,
+        weight_decay = 0.0,
+        report_to = "none",
     )
     # Config plumbing on the real dataclass-typed argument.
     assert args.gefenx_config is not None
@@ -485,9 +556,11 @@ def test_trainer_create_optimizer_dispatches_gefenx_muon(tmp_path):
     from gefen import GefenMuonHybrid
 
     args = UnslothTrainingArguments(
-        output_dir=str(tmp_path / "gm"),
-        gefenx_muon_config=GefenXMuonConfig(fused=False),
-        learning_rate=1e-3, weight_decay=0.0, report_to="none",
+        output_dir = str(tmp_path / "gm"),
+        gefenx_muon_config = GefenXMuonConfig(fused = False),
+        learning_rate = 1e-3,
+        weight_decay = 0.0,
+        report_to = "none",
     )
     assert args.gefenx_muon_config is not None
 
@@ -511,10 +584,10 @@ def test_conflicting_optimizer_configs_raise(tmp_path):
     from unsloth.trainer import UnslothTrainingArguments
 
     # Setting both Gefen-X configs is ambiguous (dispatch would silently pick one).
-    with pytest.raises(ValueError, match="mutually exclusive"):
+    with pytest.raises(ValueError, match = "mutually exclusive"):
         UnslothTrainingArguments(
-            output_dir=str(tmp_path / "conflict"),
-            gefenx_config=GefenXConfig(),
-            gefenx_muon_config=GefenXMuonConfig(),
-            report_to="none",
+            output_dir = str(tmp_path / "conflict"),
+            gefenx_config = GefenXConfig(),
+            gefenx_muon_config = GefenXMuonConfig(),
+            report_to = "none",
         )

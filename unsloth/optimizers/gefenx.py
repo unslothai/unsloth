@@ -215,17 +215,11 @@ def build_gefenx_optimizer(
     kwargs.setdefault("eps", config_eps if config_eps is not None else eps)
 
     param_groups = make_gefenx_param_groups(model, lr, weight_decay, embedding_lr)
-    return Gefen(param_groups, lr=lr, weight_decay=weight_decay, **kwargs)
+    return Gefen(param_groups, lr = lr, weight_decay = weight_decay, **kwargs)
 
 
 def build_gefenx_muon_optimizer(
-    model,
-    config,
-    *,
-    lr: float,
-    weight_decay: float,
-    betas: Tuple[float, float],
-    eps: float,
+    model, config, *, lr: float, weight_decay: float, betas: Tuple[float, float], eps: float
 ):
     """Construct ``gefen.GefenMuonHybrid`` from a ``GefenXMuonConfig``.
 
@@ -268,8 +262,8 @@ def build_gefenx_muon_optimizer(
 
     return GefenMuonHybrid.from_model(
         model,
-        lr=lr,
-        weight_decay=weight_decay,
-        backup_substrings=backup_substrings,
+        lr = lr,
+        weight_decay = weight_decay,
+        backup_substrings = backup_substrings,
         **kwargs,
     )

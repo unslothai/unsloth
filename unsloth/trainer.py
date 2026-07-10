@@ -216,7 +216,7 @@ class GefenXConfig:
     # None → fall back to the trainer's adam_beta1/2 and adam_epsilon.
     betas: Optional[tuple] = None
     eps: Optional[float] = None
-    extra_kwargs: dict = field(default_factory=dict)
+    extra_kwargs: dict = field(default_factory = dict)
 
 
 @dataclass
@@ -256,7 +256,7 @@ class GefenXMuonConfig:
     # None → fall back to the trainer's adam_beta1/2 and adam_epsilon.
     betas: Optional[tuple] = None
     eps: Optional[float] = None
-    extra_kwargs: dict = field(default_factory=dict)
+    extra_kwargs: dict = field(default_factory = dict)
 
 
 class UnslothTrainingArguments(TrainingArguments):
@@ -486,9 +486,7 @@ class UnslothTrainer(SFTTrainer):
             eps = self.args.adam_epsilon,
             embedding_lr = embedding_lr,
         )
-        n_params = sum(
-            p.numel() for g in self.optimizer.param_groups for p in g["params"]
-        )
+        n_params = sum(p.numel() for g in self.optimizer.param_groups for p in g["params"])
         print(
             f"🦥 Unsloth: Gefen-X optimizer enabled — "
             f"{n_params} trainable params at ≈1 byte/param optimizer state."
