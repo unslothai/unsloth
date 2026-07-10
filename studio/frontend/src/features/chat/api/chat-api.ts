@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+// These helpers are deliberately API-layer-only and are not part of their
+// features' React-facing public barrels.
+// eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
+// eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
@@ -421,12 +425,31 @@ export interface ChatAttachmentRecord {
   createdAt?: number | null;
 }
 
-export async function listChatAttachments(): Promise<ChatAttachmentRecord[]> {
-  const response = await authFetch("/api/chat/attachments");
-  const data = await parseJsonOrThrow<{ attachments: ChatAttachmentRecord[] }>(
-    response,
-  );
-  return Array.isArray(data.attachments) ? data.attachments : [];
+export interface ChatAttachmentPage {
+  attachments: ChatAttachmentRecord[];
+  nextOffset: number | null;
+}
+
+export async function listChatAttachments(
+  offset = 0,
+  limit = 50,
+): Promise<ChatAttachmentPage> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+  const response = await authFetch(`/api/chat/attachments?${params}`);
+  const data = await parseJsonOrThrow<{
+    attachments: ChatAttachmentRecord[];
+    nextOffset: number | null;
+  }>(response);
+  return {
+    attachments: Array.isArray(data.attachments) ? data.attachments : [],
+    nextOffset:
+      typeof data.nextOffset === "number" && Number.isFinite(data.nextOffset)
+        ? data.nextOffset
+        : null,
+  };
 }
 
 /** Stored attachment content (image bytes or extracted text) as a Blob. */
@@ -967,7 +990,8 @@ export async function* streamChatCompletions(
           parsed.type === "reasoning_summary"
         ) {
           yield {
-            _reasoningDurationMs: (parsed as { duration_ms?: number }).duration_ms,
+            _reasoningDurationMs: (parsed as { duration_ms?: number })
+              .duration_ms,
           } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;

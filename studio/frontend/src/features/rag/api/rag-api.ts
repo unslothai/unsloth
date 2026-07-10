@@ -202,10 +202,18 @@ export async function listAllDocuments(): Promise<UploadedDocument[]> {
   return data.documents ?? [];
 }
 
-export function deleteDocument(documentId: string): Promise<{ ok: boolean }> {
-  return ragRequest(`/documents/${encodeURIComponent(documentId)}`, {
-    method: "DELETE",
-  });
+export async function deleteDocument(
+  documentId: string,
+  projectId?: string | null,
+): Promise<{ ok: boolean }> {
+  const result = await ragRequest<{ ok: boolean }>(
+    `/documents/${encodeURIComponent(documentId)}`,
+    {
+      method: "DELETE",
+    },
+  );
+  if (projectId) invalidateProjectSources(projectId);
+  return result;
 }
 
 export function getJob(jobId: string): Promise<IndexJob> {
@@ -245,7 +253,8 @@ export async function* streamJobEvents(
 
         const dataLines: string[] = [];
         for (const line of rawEvent.split(/\r?\n/)) {
-          if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+          if (line.startsWith("data:"))
+            dataLines.push(line.slice(5).trimStart());
         }
         if (dataLines.length > 0) {
           const dataText = dataLines.join("\n");

@@ -167,7 +167,7 @@ export function SettingsDialog() {
           <DialogDescription className="sr-only">
             {t("settings.dialog.description")}
           </DialogDescription>
-          <div className="flex h-full min-h-0 max-sm:flex-col">
+          <div className="flex h-full min-h-0 min-w-0 w-full max-sm:flex-col">
             <aside className="font-heading flex w-[216px] shrink-0 flex-col border-r border-sidebar-border bg-muted/20 p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
               <h2 className="pl-3 pr-2.5 pt-3.5 pb-3.5 text-[19px] font-semibold text-foreground max-sm:hidden">
                 {t("settings.dialog.title")}

@@ -15,18 +15,16 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   type ChatAttachmentRecord,
   deleteChatAttachment,
+  emitChatAttachmentDeleted,
   fetchChatAttachmentBlob,
   listChatAttachments,
-} from "@/features/chat/api/chat-api";
-import { emitChatAttachmentDeleted } from "@/features/chat/utils/chat-attachment-events";
+} from "@/features/chat";
 import {
   deleteDocument,
   getDocumentFileUrl,
-  invalidateProjectSources,
   listAllDocuments,
-} from "@/features/rag/api/rag-api";
-import type { UploadedDocument } from "@/features/rag/types/rag";
-import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+  type UploadedDocument,
+} from "@/features/rag";
 import { toast } from "@/lib/toast";
 import {
   ArrowUpRight01Icon,
@@ -35,13 +33,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 function formatUploadedAt(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === "") return "-";
@@ -110,7 +103,6 @@ function ChatImageThumb({
     const el = holderRef.current;
     if (!el) return;
     if (typeof IntersectionObserver === "undefined") {
-      setVisible(true);
       return;
     }
     const observer = new IntersectionObserver((entries) => {
@@ -168,6 +160,7 @@ function FileIconThumb() {
 /** One display row: a RAG document or a chat message attachment. */
 interface UploadedFileRow {
   key: string;
+  source: "rag" | "chat";
   name: string;
   location: string;
   sizeBytes?: number | null;
@@ -193,24 +186,30 @@ function toSortTime(value: string | number | null | undefined): number {
 
 // Safari and Firefox block window.open after an await (the user gesture is
 // gone), so open a blank tab synchronously and point it at the URL once
-// resolved. Falls back to a direct open if the sync open was blocked.
+// resolved. A blocked synchronous open is surfaced instead of silently losing
+// the file after the asynchronous URL lookup.
 async function openResolvedUrl(resolve: () => Promise<string>): Promise<void> {
   const win = window.open("", "_blank");
-  if (win) win.opener = null;
+  if (!win) {
+    throw new Error(
+      "Your browser blocked the new tab. Allow popups and retry.",
+    );
+  }
+  win.opener = null;
   let url: string;
   try {
     url = await resolve();
   } catch (err) {
-    win?.close();
+    win.close();
     throw err;
   }
-  if (win) win.location.replace(url);
-  else window.open(url, "_blank", "noopener");
+  win.location.replace(url);
 }
 
 function ragRow(doc: UploadedDocument): UploadedFileRow {
   return {
     key: `rag-${doc.id}`,
+    source: "rag",
     name: doc.filename,
     location: ragLocationLabel(doc),
     sizeBytes: doc.sizeBytes,
@@ -222,10 +221,7 @@ function ragRow(doc: UploadedDocument): UploadedFileRow {
     thumb: <FileIconThumb />,
     open: () => openResolvedUrl(() => getDocumentFileUrl(doc.id)),
     remove: async () => {
-      await deleteDocument(doc.id);
-      // Match the project sources panel: drop the cached "has sources" probe
-      // so project chats stop auto-enabling the docs tool on a stale entry.
-      if (doc.projectId) invalidateProjectSources(doc.projectId);
+      await deleteDocument(doc.id, doc.projectId);
     },
     deleteDescription:
       "The file and its indexed content are removed. This cannot be undone.",
@@ -237,6 +233,7 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
     att.type === "image" || Boolean(att.contentType?.startsWith("image/"));
   return {
     key: `chat-${att.messageId}-${att.id}`,
+    source: "chat",
     name: att.name,
     location: att.threadTitle ? `Chat · ${att.threadTitle}` : "Chat",
     sizeBytes: att.sizeBytes,
@@ -271,13 +268,36 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
   };
 }
 
-/** Inline settings page listing every uploaded file (Data tab subpage). */
+type SourceLoad<T> = {
+  status: "loading" | "ready" | "error";
+  data: T;
+  error: string | null;
+};
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+/** Inline settings page listing uploaded files from each available source. */
 export function UploadedFilesView() {
-  const [rows, setRows] = useState<UploadedFileRow[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [ragFiles, setRagFiles] = useState<SourceLoad<UploadedDocument[]>>({
+    status: "loading",
+    data: [],
+    error: null,
+  });
+  const [chatFiles, setChatFiles] = useState<
+    SourceLoad<ChatAttachmentRecord[]>
+  >({ status: "loading", data: [], error: null });
+  const [chatNextOffset, setChatNextOffset] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [confirmingDelete, setConfirmingDelete] =
     useState<UploadedFileRow | null>(null);
   const navigate = useNavigate();
+
+  const rows = [
+    ...ragFiles.data.map(ragRow),
+    ...chatFiles.data.map(chatAttachmentRow),
+  ].sort((a, b) => b.sortTime - a.sortTime);
 
   // Jump to the chat thread the attachment lives in, closing the settings
   // dialog so the thread is actually visible.
@@ -286,43 +306,99 @@ export function UploadedFilesView() {
     void navigate({ to: "/chat", search: { thread: threadId } });
   }
 
-  // Shared by the mount effect and post-delete refreshes; `isCancelled` lets
-  // the unmount cleanup drop a late response.
-  const reload = useCallback(async (isCancelled?: () => boolean) => {
-    setLoadError(null);
-    // Load both sources independently: RAG being unavailable (no sqlite-vec)
-    // must not hide chat attachments, and vice versa.
-    const [ragResult, chatResult] = await Promise.allSettled([
-      listAllDocuments(),
-      listChatAttachments(),
-    ]);
-    if (isCancelled?.()) return;
-    const next: UploadedFileRow[] = [];
-    if (ragResult.status === "fulfilled") {
-      next.push(...ragResult.value.map(ragRow));
-    }
-    if (chatResult.status === "fulfilled") {
-      next.push(...chatResult.value.map(chatAttachmentRow));
-    }
-    next.sort((a, b) => b.sortTime - a.sortTime);
-    setRows(next);
-    if (ragResult.status === "rejected" && chatResult.status === "rejected") {
-      const reason = ragResult.reason;
-      setLoadError(
-        reason instanceof Error
-          ? reason.message
-          : "Failed to load uploaded files",
-      );
-    }
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
-    void reload(() => cancelled);
+    void listAllDocuments().then(
+      (data) => {
+        if (!cancelled) setRagFiles({ status: "ready", data, error: null });
+      },
+      (error: unknown) => {
+        if (!cancelled) {
+          setRagFiles({
+            status: "error",
+            data: [],
+            error: errorMessage(error, "Failed to load RAG documents"),
+          });
+        }
+      },
+    );
+    void listChatAttachments().then(
+      (page) => {
+        if (!cancelled) {
+          setChatFiles({
+            status: "ready",
+            data: page.attachments,
+            error: null,
+          });
+          setChatNextOffset(page.nextOffset);
+        }
+      },
+      (error: unknown) => {
+        if (!cancelled) {
+          setChatFiles({
+            status: "error",
+            data: [],
+            error: errorMessage(error, "Failed to load chat attachments"),
+          });
+        }
+      },
+    );
     return () => {
       cancelled = true;
     };
-  }, [reload]);
+  }, []);
+
+  function retryRagFiles() {
+    setRagFiles((current) => ({ ...current, status: "loading", error: null }));
+    void listAllDocuments().then(
+      (data) => setRagFiles({ status: "ready", data, error: null }),
+      (error: unknown) =>
+        setRagFiles((current) => ({
+          ...current,
+          status: "error",
+          error: errorMessage(error, "Failed to load RAG documents"),
+        })),
+    );
+  }
+
+  async function loadChatPage(offset: number, append: boolean) {
+    setLoadingMore(true);
+    setChatFiles((current) => ({ ...current, status: "loading", error: null }));
+    try {
+      const page = await listChatAttachments(offset);
+      setChatFiles((current) => ({
+        status: "ready",
+        data: append
+          ? [
+              ...current.data,
+              ...page.attachments.filter(
+                (incoming) =>
+                  !current.data.some(
+                    (existing) =>
+                      existing.id === incoming.id &&
+                      existing.messageId === incoming.messageId,
+                  ),
+              ),
+            ]
+          : page.attachments,
+        error: null,
+      }));
+      setChatNextOffset(page.nextOffset);
+    } catch (error) {
+      setChatFiles((current) => ({
+        ...current,
+        status: "error",
+        error: errorMessage(error, "Failed to load chat attachments"),
+      }));
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  function retryChatFiles() {
+    const append = chatFiles.data.length > 0 && chatNextOffset !== null;
+    void loadChatPage(append ? chatNextOffset : 0, append);
+  }
 
   async function handleOpen(row: UploadedFileRow) {
     try {
@@ -335,15 +411,28 @@ export function UploadedFilesView() {
   }
 
   async function handleDelete(row: UploadedFileRow) {
+    // Offset pages and destructive mutations must not race: a deletion shifts
+    // the boundary used by an in-flight page request.
+    if (loadingMore) return;
     try {
       await row.remove();
-      // Content-part ids are index-derived, so deleting one re-indexes the
-      // message's remaining parts; refetch so sibling rows get current ids.
-      if (row.key.includes("-content-part-")) {
-        await reload();
+      if (row.source === "rag") {
+        setRagFiles((current) => ({
+          ...current,
+          data: current.data.filter((doc) => `rag-${doc.id}` !== row.key),
+        }));
       } else {
-        setRows(
-          (prev) => prev?.filter((r) => r.key !== row.key) ?? prev ?? null,
+        setChatFiles((current) => ({
+          ...current,
+          data: current.data.filter(
+            (attachment) =>
+              `chat-${attachment.messageId}-${attachment.id}` !== row.key,
+          ),
+        }));
+        // Offset pagination is relative to the current server inventory. A
+        // deletion before the next page shifts every later row back by one.
+        setChatNextOffset((current) =>
+          current === null ? null : Math.max(0, current - 1),
         );
       }
       toast.success("File deleted");
@@ -356,21 +445,45 @@ export function UploadedFilesView() {
 
   return (
     <div className="flex flex-col gap-4">
-      {rows === null ? (
+      {ragFiles.status === "error" ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
+          <span>RAG documents unavailable: {ragFiles.error}</span>
+          <button
+            type="button"
+            onClick={retryRagFiles}
+            className="font-medium underline underline-offset-2"
+          >
+            Retry
+          </button>
+        </div>
+      ) : null}
+      {chatFiles.status === "error" ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
+          <span>Chat attachments unavailable: {chatFiles.error}</span>
+          <button
+            type="button"
+            onClick={retryChatFiles}
+            className="font-medium underline underline-offset-2"
+          >
+            Retry
+          </button>
+        </div>
+      ) : null}
+
+      {rows.length === 0 &&
+      (ragFiles.status === "loading" || chatFiles.status === "loading") ? (
         <div className="flex justify-center py-8">
           <Spinner className="size-5 text-muted-foreground" />
         </div>
-      ) : loadError ? (
-        <p className="py-8 text-center text-sm text-muted-foreground">
-          {loadError}
-        </p>
-      ) : rows.length === 0 ? (
+      ) : rows.length === 0 &&
+        ragFiles.status !== "error" &&
+        chatFiles.status !== "error" ? (
         <p className="py-8 text-center text-sm text-muted-foreground">
           No uploaded files.
         </p>
-      ) : (
+      ) : rows.length > 0 ? (
         <div>
-          <div className="flex items-center gap-3 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
+          <div className="hidden items-center gap-3 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground sm:flex">
             <span className="flex-1">Name</span>
             <span className="w-36 shrink-0">Location</span>
             <span className="w-24 shrink-0">Uploaded</span>
@@ -379,7 +492,7 @@ export function UploadedFilesView() {
           {rows.map((row) => (
             <div
               key={row.key}
-              className="group flex items-center gap-3 border-b border-border/40 px-1 py-2.5 text-sm last:border-0"
+              className="group flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/40 px-1 py-2.5 text-sm last:border-0 sm:flex-nowrap"
             >
               {/* Clicking the file jumps to its chat; files without one
                 open directly. The theme scales rounded-md up to a near
@@ -392,7 +505,7 @@ export function UploadedFilesView() {
                 title={
                   row.threadId ? `Go to ${row.location}` : `Open ${row.name}`
                 }
-                className="group/name flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden text-left"
+                className="group/name flex min-w-0 flex-1 basis-[calc(100%-5rem)] items-center gap-2.5 overflow-hidden text-left sm:basis-auto"
               >
                 <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-[7px] border border-border/50 bg-muted/40">
                   {row.thumb}
@@ -425,26 +538,26 @@ export function UploadedFilesView() {
                   type="button"
                   onClick={() => goToThread(row.threadId as string)}
                   title={`Go to ${row.location}`}
-                  className="w-36 shrink-0 truncate text-left text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                  className="order-3 w-full truncate pl-10 text-left text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline sm:order-none sm:w-36 sm:pl-0"
                 >
                   {row.location}
                 </button>
               ) : (
                 <span
-                  className="w-36 shrink-0 truncate text-muted-foreground"
+                  className="order-3 w-full truncate pl-10 text-muted-foreground sm:order-none sm:w-36 sm:pl-0"
                   title={row.location}
                 >
                   {row.location}
                 </span>
               )}
-              <span className="w-24 shrink-0 text-muted-foreground tabular-nums">
+              <span className="order-4 w-full pl-10 text-muted-foreground tabular-nums sm:order-none sm:w-24 sm:pl-0">
                 {formatUploadedAt(row.createdAt)}
               </span>
               <span className="flex w-16 shrink-0 items-center justify-end gap-1">
                 <button
                   type="button"
                   onClick={() => void handleOpen(row)}
-                  aria-label="Open file"
+                  aria-label={`Open ${row.name}`}
                   title="Open"
                   className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
@@ -456,10 +569,11 @@ export function UploadedFilesView() {
                 </button>
                 <button
                   type="button"
+                  disabled={loadingMore}
                   onClick={() => setConfirmingDelete(row)}
-                  aria-label="Delete file"
+                  aria-label={`Delete ${row.name}`}
                   title="Delete"
-                  className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                  className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:cursor-wait disabled:opacity-50"
                 >
                   <HugeiconsIcon
                     icon={Delete02Icon}
@@ -470,8 +584,20 @@ export function UploadedFilesView() {
               </span>
             </div>
           ))}
+          {chatNextOffset !== null ? (
+            <div className="flex justify-center pt-3">
+              <button
+                type="button"
+                disabled={loadingMore}
+                onClick={() => void loadChatPage(chatNextOffset, true)}
+                className="rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-wait disabled:opacity-60"
+              >
+                {loadingMore ? "Loading..." : "Load more chat attachments"}
+              </button>
+            </div>
+          ) : null}
         </div>
-      )}
+      ) : null}
 
       <AlertDialog
         open={confirmingDelete !== null}

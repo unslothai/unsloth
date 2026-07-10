@@ -391,10 +391,64 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
   );
 }
 
+function normalizeModelIdForPicker(modelId: string): string {
+  const trimmed = modelId.trim();
+  const slashPath = trimmed.replace(/\\/g, "/").replace(/\/+$/, "");
+  const caseInsensitive =
+    !/^(\/|\.{1,2}\/|~\/)/.test(slashPath) ||
+    /^[A-Za-z]:\//.test(slashPath) ||
+    slashPath.startsWith("//") ||
+    /^\/mnt\/[A-Za-z](?:\/|$)/.test(slashPath);
+  return caseInsensitive ? slashPath.toLowerCase() : slashPath;
+}
+
+function modelIdsMatchForPicker(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  return Boolean(
+    left &&
+      right &&
+      normalizeModelIdForPicker(left) === normalizeModelIdForPicker(right),
+  );
+}
+
+function normalizeGgufVariantForPicker(variant: string | null | undefined) {
+  return variant?.trim().toLowerCase() ?? "";
+}
+
+function ggufVariantsMatchForPicker(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  return (
+    normalizeGgufVariantForPicker(left) ===
+    normalizeGgufVariantForPicker(right)
+  );
+}
+
+function isRuntimeLoadedModel(
+  loadedModelId: string | undefined,
+  activeGgufVariant: string | null | undefined,
+  modelId: string,
+  variantPolicy: "none" | "required" | "ignore",
+): boolean {
+  if (!modelIdsMatchForPicker(loadedModelId, modelId)) return false;
+  if (variantPolicy === "ignore") return true;
+  const hasActiveGgufVariant = !ggufVariantsMatchForPicker(
+    activeGgufVariant,
+    null,
+  );
+  return variantPolicy === "required"
+    ? hasActiveGgufVariant
+    : !hasActiveGgufVariant;
+}
+
 function ModelRow({
   label,
   meta,
   selected,
+  loaded = false,
   onClick,
   vramStatus,
   vramEst,
@@ -412,6 +466,8 @@ function ModelRow({
   label: string;
   meta?: string | null;
   selected?: boolean;
+  /** Override badge state when authoritative runtime state is available. */
+  loaded?: boolean;
   onClick: () => void;
   vramStatus?: VramFitStatus | null;
   vramEst?: number;
@@ -501,7 +557,7 @@ function ModelRow({
             </TooltipContent>
           </Tooltip>
         )}
-        {selected && (
+        {loaded && (
           <DotTag
             tone="success"
             label="Loaded"
@@ -509,7 +565,7 @@ function ModelRow({
             dotClassName="size-[5px]"
           />
         )}
-        {downloaded && !selected && (
+        {downloaded && !loaded && (
           <span
             title="Already downloaded"
             aria-label="Already downloaded"
@@ -2647,6 +2703,10 @@ export function HubModelPicker({
     );
     const { owner, name } = splitRepoLabel(entry.repoId);
     const isSelected = value === entry.repoId && activeGgufVariant === entry.quant;
+    const isLoaded =
+      modelIdsMatchForPicker(loadedModelId, entry.repoId) &&
+      !ggufVariantsMatchForPicker(activeGgufVariant, null) &&
+      ggufVariantsMatchForPicker(activeGgufVariant, entry.quant);
     return (
       <div
         key={optionKey}
@@ -2681,7 +2741,7 @@ export function HubModelPicker({
           <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px font-mono text-[10px] text-muted-foreground dark:bg-white/[0.1]">
             {entry.quant}
           </span>
-          {isSelected && (
+          {isLoaded && (
             <DotTag
               tone="success"
               label="Loaded"
@@ -2738,6 +2798,12 @@ export function HubModelPicker({
               meta="GGUF"
               showVision={c.has_vision ?? visionByRepo[c.repo_id]}
               selected={isSelected}
+              loaded={isRuntimeLoadedModel(
+                loadedModelId,
+                activeGgufVariant,
+                c.repo_id,
+                "required",
+              )}
               optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
               onClick={() => toggleGgufExpanded(c.repo_id)}
               onArrowDownIntoChildren={
@@ -2796,6 +2862,12 @@ export function HubModelPicker({
               c.size_bytes,
             )}`}
             selected={isSelected}
+            loaded={isRuntimeLoadedModel(
+              loadedModelId,
+              activeGgufVariant,
+              c.repo_id,
+              "none",
+            )}
             optionProps={hubModelList.getOptionProps(
               optionKey,
               isSelected,
@@ -3170,6 +3242,8 @@ export function HubModelPicker({
                     <FineTunedRows
                       adapters={fineTunedRows}
                       value={value}
+                      loadedModelId={loadedModelId}
+                      activeGgufVariant={activeGgufVariant}
                       onSelect={onSelect}
                       onModelsChange={onModelsChange}
                       deleteDisabled={deleteDisabled}
@@ -3422,6 +3496,16 @@ export function HubModelPicker({
                               m.path,
                             )}
                             selected={value === m.id}
+                            loaded={isRuntimeLoadedModel(
+                              loadedModelId,
+                              activeGgufVariant,
+                              m.id,
+                              isGgufFile
+                                ? "ignore"
+                                : isGguf
+                                  ? "required"
+                                  : "none",
+                            )}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
                               value === m.id,
@@ -3515,6 +3599,16 @@ export function HubModelPicker({
                               m.path,
                             )}
                             selected={value === m.id}
+                            loaded={isRuntimeLoadedModel(
+                              loadedModelId,
+                              activeGgufVariant,
+                              m.id,
+                              isGgufFile
+                                ? "ignore"
+                                : isGguf
+                                  ? "required"
+                                  : "none",
+                            )}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
                               value === m.id,
@@ -3600,6 +3694,16 @@ export function HubModelPicker({
                               m.path,
                             )}
                             selected={value === m.id}
+                            loaded={isRuntimeLoadedModel(
+                              loadedModelId,
+                              activeGgufVariant,
+                              m.id,
+                              isGgufFile
+                                ? "ignore"
+                                : isGguf
+                                  ? "required"
+                                  : "none",
+                            )}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
                               value === m.id,
@@ -3686,6 +3790,12 @@ export function HubModelPicker({
                               (isG ? "GGUF" : extractParamLabel(id))
                             }
                             selected={value === id}
+                            loaded={isRuntimeLoadedModel(
+                              loadedModelId,
+                              activeGgufVariant,
+                              id,
+                              isG ? "required" : "none",
+                            )}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
                               value === id,
@@ -3771,6 +3881,12 @@ export function HubModelPicker({
                               : (vram?.detail ?? extractParamLabel(id))
                           }
                           selected={value === id}
+                          loaded={isRuntimeLoadedModel(
+                            loadedModelId,
+                            activeGgufVariant,
+                            id,
+                            isKnownGgufRepo(id) ? "required" : "none",
+                          )}
                           optionProps={hubModelList.getOptionProps(
                             optionKey,
                             value === id,
@@ -3860,6 +3976,12 @@ export function HubModelPicker({
                                     .join(" · ")
                             }
                             selected={value === id}
+                            loaded={isRuntimeLoadedModel(
+                              loadedModelId,
+                              activeGgufVariant,
+                              id,
+                              isSearchGguf ? "required" : "none",
+                            )}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
                               value === id,
@@ -3961,6 +4083,8 @@ export function HubModelPicker({
 function FineTunedRows({
   adapters,
   value,
+  loadedModelId,
+  activeGgufVariant,
   onSelect,
   onModelsChange,
   deleteDisabled = false,
@@ -3971,6 +4095,8 @@ function FineTunedRows({
 }: {
   adapters: LoraModelOption[];
   value?: string;
+  loadedModelId?: string;
+  activeGgufVariant?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -4027,6 +4153,12 @@ function FineTunedRows({
                   label={adapter.name}
                   meta={meta}
                   selected={value === adapter.id}
+                  loaded={isRuntimeLoadedModel(
+                    loadedModelId,
+                    activeGgufVariant,
+                    adapter.id,
+                    isLocalGgufDir || isExportedGguf ? "required" : "none",
+                  )}
                   optionProps={loraModelList.getOptionProps(
                     optionKey,
                     value === adapter.id,

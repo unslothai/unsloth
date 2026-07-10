@@ -5,7 +5,7 @@
 Chat history API routes backed by studio.db.
 """
 
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -28,7 +28,7 @@ from storage.studio_db import (
     get_chat_project,
     get_chat_thread,
     get_chat_message,
-    list_chat_attachments,
+    list_chat_attachments_page,
     list_chat_projects,
     list_chat_legacy_imports,
     list_chat_settings,
@@ -283,9 +283,14 @@ async def delete_threads(
 
 
 @router.get("/attachments")
-async def list_attachments(current_subject: str = Depends(get_current_subject)) -> dict:
-    """Every chat message attachment (settings Data tab uploaded-files list)."""
-    return {"attachments": list_chat_attachments()}
+def list_attachments(
+    limit: Annotated[int, Query(ge = 1, le = 100)] = 50,
+    offset: Annotated[int, Query(ge = 0)] = 0,
+    current_subject: str = Depends(get_current_subject),
+) -> dict:
+    """One bounded page of chat uploads for the settings Data tab."""
+    attachments, next_offset = list_chat_attachments_page(limit = limit, offset = offset)
+    return {"attachments": attachments, "nextOffset": next_offset}
 
 
 def _decode_attachment_base64(payload: str) -> bytes:
@@ -329,7 +334,7 @@ def _safe_image_media_type(media_type: str) -> str:
 
 
 @router.get("/attachments/{message_id}/{attachment_id}/file")
-async def get_attachment_file(
+def get_attachment_file(
     message_id: str,
     attachment_id: str,
     current_subject: str = Depends(get_current_subject),
@@ -350,12 +355,12 @@ async def get_attachment_file(
         if not isinstance(part, dict):
             continue
         image = part.get("image")
-        if isinstance(image, str) and image.startswith("data:"):
+        if isinstance(image, str) and image[:5].lower() == "data:":
             header, _, payload = image.partition(",")
             media_type = _safe_image_media_type(
                 header[5:].split(";", 1)[0] or "application/octet-stream"
             )
-            if "base64" not in header:
+            if "base64" not in header.lower():
                 # RFC 2397 non-base64 form stores percent-encoded bytes.
                 data = urllib.parse.unquote_to_bytes(payload)
                 return Response(content = data, media_type = media_type)
@@ -391,7 +396,7 @@ async def get_attachment_file(
 
 
 @router.delete("/attachments/{message_id}/{attachment_id}")
-async def delete_attachment(
+def delete_attachment(
     message_id: str,
     attachment_id: str,
     current_subject: str = Depends(get_current_subject),
@@ -532,7 +537,7 @@ async def get_thread_message(
 
 
 @router.put("/threads/{thread_id}/messages/{message_id}", response_model = ChatMessage)
-async def save_thread_message(
+def save_thread_message(
     thread_id: str,
     message_id: str,
     payload: ChatMessage,
@@ -555,7 +560,7 @@ async def save_thread_message(
 
 
 @router.put("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
-async def replace_thread_messages(
+def replace_thread_messages(
     thread_id: str,
     payload: ChatMessageSyncRequest,
     current_subject: str = Depends(get_current_subject),
