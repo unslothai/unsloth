@@ -286,30 +286,90 @@ def _is_local_executable_path(tok: str) -> bool:
     return not norm.startswith(_SYSTEM_BIN_PREFIXES)
 
 
-def _path_value_is_unsafe(value: str) -> bool:
+def _split_path_entries(value: str):
+    """Split a PATH value on ':' separators, but NOT on a ':' inside a ${...} expansion (so a
+    ${VAR:-default} default operator is not mistaken for a list separator)."""
+    entries = []
+    cur = []
+    depth = 0
+    i = 0
+    v = value.replace("\\", "/")
+    while i < len(v):
+        c = v[i]
+        if c == "$" and i + 1 < len(v) and v[i + 1] == "{":
+            depth += 1
+            cur.append("${")
+            i += 2
+            continue
+        if c == "}" and depth > 0:
+            depth -= 1
+            cur.append(c)
+            i += 1
+            continue
+        if c == ":" and depth == 0:
+            entries.append("".join(cur))
+            cur = []
+            i += 1
+            continue
+        cur.append(c)
+        i += 1
+    entries.append("".join(cur))
+    return entries
+
+
+def _path_var_resolves_unsafe(var, assignments):
+    """Whether a PATH component expanded from shell variable ``var`` can resolve to the workdir.
+    HOME / PWD are the session workdir; PATH is the trusted search list; a var assigned a
+    relative / cwd value earlier in the same command (P=.; PATH=$P) is unsafe; an unknown
+    external var (CONDA_PREFIX) is assumed to expand to a trusted absolute path."""
+    if var in ("HOME", "PWD"):
+        return True
+    if var == "PATH":
+        return False
+    if assignments and var in assignments:
+        return _path_value_is_unsafe(assignments[var], assignments)
+    return False
+
+
+def _path_value_is_unsafe(value: str, assignments = None) -> bool:
     """True when a PATH search list would let a BARE (no-slash) command resolve to a workdir
     executable: any entry that is ``.``, empty (``:`` = cwd), a relative directory, or one that
     expands to the session workdir. In the sandbox ``HOME`` and the child cwd ARE the workdir,
-    so ``~`` / ``~user`` and ``$HOME`` / ``$PWD`` (``${HOME}`` / ``${PWD}``) are unsafe. An
-    absolute (``/...``), ``%VAR%``, or other ``$VAR`` entry (``$PATH``, ``$CONDA_PREFIX/bin``,
-    assumed to expand to a trusted absolute path) is safe. Used so a ``PATH=. evil`` /
-    ``PATH=~/bin evil`` prefix / ``env={'PATH': '~/bin'}`` cannot smuggle an unguarded shebang
-    past the bare-name PATH exemption in _is_local_executable_path."""
-    for entry in value.replace("\\", "/").split(":"):
+    so ``~`` / ``~user``, ``$HOME`` / ``$PWD``, a ``${VAR:-.}`` default that is relative, and a
+    ``$VAR`` bound to a relative value earlier in the same command (``P=.; PATH=$P``) are unsafe.
+    An absolute (``/...``), ``%VAR%``, or unknown external ``$VAR`` entry (``$PATH``,
+    ``$CONDA_PREFIX/bin``, assumed to expand to a trusted absolute path) is safe. ``assignments``
+    maps local shell VAR=value bindings so a locally-controlled expansion can be resolved."""
+    for entry in _split_path_entries(value):
         e = entry.strip()
         if e in ("", "."):
             return True
         # ~ / ~user expand to HOME, which is the session workdir in the sandbox.
         if e.startswith("~"):
             return True
+        if e.startswith("${"):
+            inner = e[2:]
+            if inner.endswith("}"):
+                inner = inner[:-1]
+            # ${VAR-def} / ${VAR:-def} / ${VAR=def} / ${VAR:=def}: def applies when VAR is unset/
+            # empty, so a relative default is unsafe. ${VAR:+alt} / ${VAR:?msg} carry no path.
+            m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)(:?[-=?+])(.*)$", inner)
+            if m:
+                var, op, default = m.group(1), m.group(2), m.group(3)
+                if op in (":-", "-", ":=", "=") and _path_value_is_unsafe(default, assignments):
+                    return True
+                if _path_var_resolves_unsafe(var, assignments):
+                    return True
+                continue
+            var = re.split(r"[/}]", inner, maxsplit = 1)[0]
+            if _path_var_resolves_unsafe(var, assignments):
+                return True
+            continue
         if e.startswith("$"):
-            name = e[1:]
-            if name.startswith("{"):
-                name = name[1:]
-            name = re.split(r"[/}]", name, maxsplit = 1)[0]
-            if name in ("HOME", "PWD"):
-                return True  # expands to the session workdir
-            continue  # $PATH / other vars: assume a trusted absolute expansion
+            m = re.match(r"\$([A-Za-z_][A-Za-z0-9_]*)", e)
+            if m and _path_var_resolves_unsafe(m.group(1), assignments):
+                return True
+            continue  # $PATH / $CONDA_PREFIX / $1: assume a trusted absolute expansion
         if e.startswith(("/", "%")):
             continue
         return True  # a relative directory (relbin, ./tools)
@@ -328,11 +388,23 @@ def _arg_escapes_workdir(tok: str) -> bool:
     return ".." in t.split("/")
 
 
-# git subcommands / global options that CREATE files or repositories at an arbitrary path in an
-# unguarded child (the runtime realpath backstop never sees a native git process). A path
-# operand or -C / --git-dir / --work-tree / --separate-git-dir value that escapes the workdir
-# lets git write outside the session (git init /tmp/x, git clone url /tmp/x, git -C /outside ...).
-_GIT_DIR_OPTIONS = frozenset({"--git-dir", "--work-tree", "--separate-git-dir"})
+# git options whose VALUE is a path that a native git child writes to / operates in (the runtime
+# realpath backstop never sees a native git process). A value that escapes the workdir lets git
+# write outside the session: -C / --git-dir / --work-tree / --separate-git-dir (repo location),
+# and -o / --output / -O / --output-directory (git archive / format-patch write their output
+# file there). Handled for `-x val`, `--opt val`, and inline `--opt=val` forms.
+_GIT_PATH_VALUE_OPTIONS = frozenset(
+    {
+        "-C",
+        "--git-dir",
+        "--work-tree",
+        "--separate-git-dir",
+        "-o",
+        "--output",
+        "-O",
+        "--output-directory",
+    }
+)
 
 
 # The only shell redirection targets trusted without a realpath check: standard device
@@ -407,6 +479,9 @@ _COMMAND_PREFIXES = frozenset(
         # chrt [options] <priority> <command> [<arg>...]: util-linux scheduler wrapper that
         # execs the following command, so chrt -o 0 touch /tmp/x must resolve to touch.
         "chrt",
+        # watch [options] command: repeatedly runs command (via sh -c, or exec with -x), so
+        # watch -x touch /tmp/x / watch -n 2 rm -rf / must resolve to the wrapped command.
+        "watch",
     }
 )
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -468,6 +543,7 @@ _WRAPPER_OPERAND_FLAGS = {
     ),
     "time": frozenset({"-f", "--format", "-o", "--output"}),
     "chrt": frozenset({"-T", "--sched-runtime", "-P", "--sched-period", "-D", "--sched-deadline"}),
+    "watch": frozenset({"-n", "--interval"}),
 }
 
 
@@ -1288,6 +1364,14 @@ def _find_blocked_commands(command: str) -> set[str]:
                 if _an in ("BASH_ENV", "ENV") and _av != "":
                     blocked.add("shell-startup-env:" + _an)
 
+    # Local VAR=value bindings in this command, so a PATH component expanded from a locally-set
+    # variable (P=.; PATH=$P evil) can be resolved to its (unsafe) value.
+    _local_assigns = {}
+    for _et in tokens:
+        if _ASSIGNMENT_RE.match(_et):
+            _n, _, _v = _et.partition("=")
+            _local_assigns[_n] = _v
+
     # A BASH_ENV / ENV assignment set in a SEPARATE command (export BASH_ENV=env.sh; bash -c
     # '...', or a standalone BASH_ENV=env.sh) persists for later shells in the same session and
     # is sourced before their -c payload, so the per-shell prefix backscan above misses it.
@@ -1301,7 +1385,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         # PATH=. cmd / export PATH=.:$PATH: a search list with a relative / cwd entry lets a bare
         # command word resolve to a workdir shebang (the bare-name PATH exemption assumes a
         # trusted PATH). Flag an unsafe PATH assignment.
-        elif _an == "PATH" and _path_value_is_unsafe(_av):
+        elif _an == "PATH" and _path_value_is_unsafe(_av, _local_assigns):
             blocked.add("unsafe-path-assign")
 
     # git -c alias.X='!CMD' X / git config alias.X '!CMD': a git alias whose value starts with
@@ -1310,6 +1394,21 @@ def _find_blocked_commands(command: str) -> set[str]:
     for i in _cmd_word_idx:
         if _token_basename(tokens[i]) != "git":
             continue
+        # An env -C DIR / --chdir DIR wrapper BEFORE git changes git's cwd, so even a bare or
+        # relative write subcommand (env -C /tmp git init) resolves under DIR. Scan back to the
+        # previous separator for such a wrapper; if DIR escapes the workdir, git operates outside.
+        _git_cwd_escapes = False
+        for _bk in range(i - 1, -1, -1):
+            _bt = tokens[_bk]
+            if _bt in _SHELL_SEPARATORS or _bt in _SHELL_KEYWORDS_AS_SEP:
+                break
+            if _bt in ("-C", "--chdir") and _bk + 1 < len(tokens):
+                if _arg_escapes_workdir(tokens[_bk + 1]):
+                    _git_cwd_escapes = True
+            elif _bt.startswith("--chdir=") and _arg_escapes_workdir(_bt.split("=", 1)[1]):
+                _git_cwd_escapes = True
+        if _git_cwd_escapes:
+            blocked.add("git-write-outside")
         _seg = []
         for k in range(i + 1, len(tokens)):
             if tokens[k] in _SHELL_SEPARATORS or tokens[k] in _SHELL_KEYWORDS_AS_SEP:
@@ -1331,18 +1430,13 @@ def _find_blocked_commands(command: str) -> set[str]:
         _gk = 0
         while _gk < len(_seg):
             _gt = _seg[_gk]
-            if _gt == "-C" and _gk + 1 < len(_seg):
-                if _arg_escapes_workdir(_seg[_gk + 1]):
-                    blocked.add("git-write-outside")
-                _gk += 2
-                continue
-            if _gt in _GIT_DIR_OPTIONS and _gk + 1 < len(_seg):
+            if _gt in _GIT_PATH_VALUE_OPTIONS and _gk + 1 < len(_seg):
                 if _arg_escapes_workdir(_seg[_gk + 1]):
                     blocked.add("git-write-outside")
                 _gk += 2
                 continue
             _oeq = None
-            for _opt in _GIT_DIR_OPTIONS:
+            for _opt in _GIT_PATH_VALUE_OPTIONS:
                 if _gt.startswith(_opt + "="):
                     _oeq = _gt.split("=", 1)[1]
                     break
@@ -1352,6 +1446,21 @@ def _find_blocked_commands(command: str) -> set[str]:
             elif not _gt.startswith("-") and _arg_escapes_workdir(_gt):
                 blocked.add("git-write-outside")
             _gk += 1
+
+    # hash -p PATHNAME NAME binds the command NAME to PATHNAME in the shell's hash table, so a
+    # later bare `NAME` runs PATHNAME. With a local executable (hash -p ./evil ls; ls) that
+    # launches an unguarded workdir shebang under a benign-looking command word. Block hash -p
+    # when its pathname operand is a local executable path.
+    for i in _cmd_word_idx:
+        if _token_basename(tokens[i]) != "hash":
+            continue
+        for k in range(i + 1, len(tokens)):
+            t = tokens[k]
+            if t in _SHELL_SEPARATORS or t in _SHELL_KEYWORDS_AS_SEP:
+                break
+            if t == "-p" and k + 1 < len(tokens) and _is_local_executable_path(tokens[k + 1]):
+                blocked.add("hash-p-local-exec")
+                break
 
     # alias x='touch /tmp/p'; ...; x (with expand_aliases) runs the alias BODY at execution
     # time, but the command word `x` is unknown to the scanner. Scan the body of each alias
@@ -1491,7 +1600,9 @@ def _find_blocked_commands(command: str) -> set[str]:
                     blocked.add("mutating:sort")
                     break
             elif _base == "find":
-                if al == "-delete" or al.startswith("-fprint"):
+                # -delete removes; -fprint/-fprintf/-fprint0 and -fls write their listing to a
+                # named FILE (find . -fls /tmp/escape truncates/creates it in an unguarded child).
+                if al == "-delete" or al.startswith("-fprint") or al == "-fls":
                     blocked.add("mutating:find")
                     break
             elif _base == "dd":
@@ -1636,6 +1747,14 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         # startup. Disable the per-user site directory here too (belt-and-suspenders with the
         # interpreter's -s flag) so a sandboxed child never imports it.
         "PYTHONNOUSERSITE": "1",
+        # git runs repository hooks (.git/hooks/pre-commit, post-checkout, ...) as executable
+        # files in an UNGUARDED child; a sandboxed snippet could plant one and trigger it via a
+        # benign-looking git commit / merge / checkout. Point core.hooksPath at a non-directory
+        # (via git's env-config mechanism) so NO repository hook runs, for every git subcommand,
+        # without having to block git itself. Neutralizing hooks is the sandbox-correct default.
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.hooksPath",
+        "GIT_CONFIG_VALUE_0": os.devnull,
     }
     if venv:
         env["VIRTUAL_ENV"] = venv
@@ -3613,12 +3732,34 @@ def _kw_present(node, name):
     return any(kw.arg == name for kw in node.keywords)
 
 
+def _numpy_allow_pickle_unsafe(node):
+    """True when numpy.load may unpickle: allow_pickle is a constant truthy, a present-but-non-
+    constant value (flag=True), or hidden in a **kwargs splat we cannot prove absent/False.
+    allow_pickle absent (default False) or a constant False stays safe."""
+    for kw in node.keywords:
+        if kw.arg == "allow_pickle":
+            if isinstance(kw.value, ast.Constant):
+                return bool(kw.value.value)
+            return True  # non-literal value cannot be proven False
+        if kw.arg is None:
+            # **{...} / **var splat: inspect a literal dict, else fail closed.
+            if isinstance(kw.value, ast.Dict):
+                for _k, _v in zip(kw.value.keys, kw.value.values):
+                    if isinstance(_k, ast.Constant) and _k.value == "allow_pickle":
+                        if not isinstance(_v, ast.Constant) or bool(_v.value):
+                            return True
+            else:
+                return True  # opaque **var could carry allow_pickle=True
+    return False
+
+
 def _pickle_loader_is_unsafe(fq, node):
     """True when a torch.load / numpy.load / joblib.load call runs an UNVERIFIED pickle payload:
     joblib.load always does; torch.load when weights_only is EXPLICITLY not-True (torch>=2.6
     defaults it to True, so the bare torch.load(f) form relies on that safe default and stays
-    allowed); numpy.load only when allow_pickle is a constant True. So the safe forms
-    (torch.load(f), torch.load(f, weights_only=True), numpy.load(f)) return False."""
+    allowed); numpy.load when allow_pickle is truthy / non-literal / splatted (see
+    _numpy_allow_pickle_unsafe). So the safe forms (torch.load(f), torch.load(f,
+    weights_only=True), numpy.load(f), numpy.load(f, allow_pickle=False)) return False."""
     if fq == "joblib.load":
         return True
     if fq == "torch.load":
@@ -3627,7 +3768,7 @@ def _pickle_loader_is_unsafe(fq, node):
             and _kw_constant_truthy(node, "weights_only") is not True
         )
     if fq == "numpy.load":
-        return _kw_constant_truthy(node, "allow_pickle") is True
+        return _numpy_allow_pickle_unsafe(node)
     return False
 
 
@@ -3641,11 +3782,15 @@ def _yaml_loader_class_name(value):
 
 
 def _yaml_call_has_safe_loader(node):
-    """True only when a yaml.load(...) call passes an explicit safe Loader= keyword.
+    """True only when a yaml.load(...) call passes an explicit safe loader.
 
-    A missing Loader (older PyYAML defaults to the full, unsafe loader), an unknown/computed
-    loader, or a **kwargs splat all fail closed so the call is treated as an unsafe sink.
+    PyYAML's signature is load(stream, Loader), so the loader may be the SECOND POSITIONAL
+    argument (yaml.load(data, yaml.SafeLoader)) or the Loader= keyword. A missing loader (older
+    PyYAML defaults to the full, unsafe loader), an unknown/computed loader, or a **kwargs splat
+    all fail closed so the call is treated as an unsafe sink.
     """
+    if len(node.args) >= 2:
+        return _yaml_loader_class_name(node.args[1]) in _YAML_SAFE_LOADERS
     for kw in node.keywords:
         if kw.arg == "Loader":
             return _yaml_loader_class_name(kw.value) in _YAML_SAFE_LOADERS
@@ -4915,12 +5060,14 @@ def _scan_command_string_for_reads(
     # overridable per-command by env -C DIR. Resets to the ambient cwd at each separator.
     _chdir = cwd
     _pending_chdir = False
+    _pending_argfile = False
     for _pi, _pt in enumerate(ptoks):
         if _pt in _READ_SCAN_SEPARATORS:
             _at_cmd = True
             _cur_reader = False
             _wrapper = None
             _skip_operand = False
+            _pending_argfile = False
             _chdir = cwd
             _pending_chdir = False
             continue
@@ -4936,6 +5083,10 @@ def _scan_command_string_for_reads(
                 if _pending_chdir:  # ...but env -C DIR's operand is the child cwd
                     _chdir = _join_chdir(_chdir, _pt)
                     _pending_chdir = False
+                elif _pending_argfile:  # ...and xargs -a FILE reads FILE
+                    _pending_argfile = False
+                    if _risky_read_target(_pt):
+                        return f"xargs reads arguments from a sensitive path {_pt!r}"
                 _skip_operand = False
                 continue
             if _ASSIGNMENT_RE.match(_pt):
@@ -4952,6 +5103,16 @@ def _scan_command_string_for_reads(
                     _skip_operand = True
                 elif _wrapper == "env" and _pt.startswith("--chdir="):
                     _chdir = _join_chdir(_chdir, _pt.split("=", 1)[1])
+                # xargs -a FILE / --arg-file[=]FILE reads its argument list FROM that file, so a
+                # sensitive / expanded target is a host-file read even though xargs is a wrapper.
+                elif _wrapper == "xargs" and _pt in ("-a", "--arg-file"):
+                    _pending_argfile = True
+                    _skip_operand = True
+                elif _wrapper == "xargs" and _pt.startswith("--arg-file="):
+                    if _risky_read_target(_pt.split("=", 1)[1]):
+                        return (
+                            f"xargs reads arguments from a sensitive path {_pt.split('=', 1)[1]!r}"
+                        )
                 elif _wrapper and _wrapper_flag_takes_operand(_wrapper, _pt):
                     _skip_operand = True
                 continue  # wrapper flag; still before the command word

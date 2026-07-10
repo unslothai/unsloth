@@ -297,11 +297,18 @@ class TestSandboxEnvIsolation:
             "PYTHONNOUSERSITE",
             "VIRTUAL_ENV",
             "SystemRoot",
+            # git hooks neutralized via git's env-config mechanism (no repository hook runs).
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
         # User site-packages must be disabled so a planted ~/.local usercustomize.py cannot run.
         assert env["PYTHONNOUSERSITE"] == "1"
+        # git repository hooks must be neutralized (core.hooksPath -> a non-directory).
+        assert env["GIT_CONFIG_KEY_0"] == "core.hooksPath"
+        assert env["GIT_CONFIG_VALUE_0"] == os.devnull
 
     def test_home_points_at_sandbox_workdir(self, tmp_path):
         from core.inference.tools import _build_safe_env
@@ -3780,4 +3787,113 @@ class TestRound35Bypasses:
         ],
     )
     def test_round35_benign_allowed(self, code):
+        _ok(code)
+
+
+class TestRound36Bypasses:
+    """Thirty-sixth-round Codex findings: a $VAR PATH component resolving to cwd, hash -p binding
+    a command to a local exec, find -fls, git --output escaping, env -C changing git's cwd, xargs
+    --arg-file reads, the watch wrapper, non-literal/splatted numpy allow_pickle, and the yaml
+    positional-loader false positive. Plus git repository hooks neutralized in the sandbox env."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A $VAR PATH component bound to a relative/cwd value (or a relative ${VAR:-.} default)
+            # lets a bare command resolve to a workdir executable.
+            "import os\nos.system('P=.; PATH=$P evil')",
+            "import os\nos.system('PATH=${P-.} evil')",
+            "import os\nos.system('PATH=${P:-.} evil')",
+        ],
+    )
+    def test_var_expanded_path_cwd_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # hash -p PATH NAME binds NAME to a local executable that then runs unguarded.
+            "import os\nos.system('hash -p ./evil ls; ls')",
+            "import os\nos.system('hash -p ./tools/evil grep; grep x f')",
+        ],
+    )
+    def test_hash_p_local_exec_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # find -fls writes its listing to a file; git --output / env -C git write outside.
+            "import os\nos.system('find . -maxdepth 0 -fls /tmp/escape')",
+            "import os\nos.system('git archive --output=/tmp/out HEAD')",
+            "import subprocess\nsubprocess.run(['git', 'archive', '-o', '/tmp/out', 'HEAD'])",
+            "import os\nos.system('env -C /tmp git init .')",
+            "import os\nos.system('env -C /tmp git init')",
+        ],
+    )
+    def test_find_git_write_outside_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # xargs -a / --arg-file reads its argument list from a sensitive host file.
+            "import os\nos.system('xargs -a /etc/shadow echo')",
+            "import os\nos.system('xargs --arg-file=/etc/shadow echo')",
+        ],
+    )
+    def test_xargs_arg_file_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # watch runs its command argument (via sh -c or exec -x) in an unguarded child.
+            "import os\nos.system('watch -x touch /tmp/x')",
+            "import os\nos.system('watch -n 2 rm -rf /tmp/x')",
+            "import os\nos.system('watch touch /tmp/x')",
+        ],
+    )
+    def test_watch_wrapper_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # numpy.load unpickles when allow_pickle is truthy / non-literal / splatted.
+            "import numpy as np\nflag = True\nnp.load('x.npy', allow_pickle=flag)",
+            "import numpy as np\nnp.load('x.npy', **{'allow_pickle': True})",
+            "import numpy as np\nnp.load('x.npy', **kw)",
+        ],
+    )
+    def test_numpy_allow_pickle_dynamic_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_git_hooks_neutralized_in_sandbox_env(self, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        env = _build_safe_env(str(tmp_path))
+        # core.hooksPath -> a non-directory disables every repository hook for sandboxed git.
+        assert env.get("GIT_CONFIG_COUNT") == "1"
+        assert env.get("GIT_CONFIG_KEY_0") == "core.hooksPath"
+        assert env.get("GIT_CONFIG_VALUE_0") == os.devnull
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # yaml.load with a POSITIONAL safe loader (yaml.load(data, yaml.SafeLoader)) is safe
+            # and must NOT be blocked; other benign forms stay allowed too.
+            "import yaml\nyaml.load(data, yaml.SafeLoader)",
+            "import yaml\nyaml.load(data, Loader=yaml.SafeLoader)",
+            "import yaml\nyaml.safe_load(data)",
+            "import os\nos.system('PATH=$CONDA_PREFIX/bin:$PATH true')",
+            "import os\nos.system('hash -r')",
+            "import os\nos.system('find . -name \"*.py\"')",
+            "import os\nos.system('git archive HEAD')",
+            "import os\nos.system('env -C sub ls')",
+            "import os\nos.system('env -C /app cat readme.md')",
+            "import numpy as np\nnp.load('a.npy', allow_pickle=False)",
+        ],
+    )
+    def test_round36_benign_allowed(self, code):
         _ok(code)
