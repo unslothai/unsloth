@@ -198,6 +198,7 @@ def can_load_chat_during_training(
     is_gguf: bool = False,
     required_override_gb: Optional[float] = None,
     tensor_split: Optional[List[float]] = None,
+    companion_gb: float = 0.0,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Decide if a NEW chat model can load without OOMing active training (inverse
     of can_keep_chat_during_training: training is already resident, so size the
@@ -317,7 +318,16 @@ def can_load_chat_during_training(
             # dropped by the loader before launch, so llama.cpp self-places by
             # free VRAM -- no per-GPU check, like the no-split case.
 
-        return aggregate_fits and per_gpu_fits, {
+        # Companions (mmproj / a drafter) load whole on the FIRST device of the
+        # allowed set (CLIP logs "using CUDA0"; no split support), so that
+        # device must fit them regardless of the aggregate -- a near-full first
+        # GPU can't hide behind a free second one.
+        companion_fits = True
+        if is_gguf and companion_gb > 0 and len(free_vals) > 1:
+            first_free = split_order_free[0]
+            companion_fits = first_free >= companion_gb
+
+        return aggregate_fits and per_gpu_fits and companion_fits, {
             "mode": mode,
             "required_gb": round(required_gb, 3),
             "usable_gb": round(usable_gb, 3),

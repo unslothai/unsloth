@@ -480,7 +480,11 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.isDownloaded ?? false;
       const model = models.find((entry) => entry.id === modelId);
       const lora = loras.find((entry) => entry.id === modelId);
-      const isGguf = explicitIsGguf ?? model?.isGguf ?? false;
+      // A native path-token selection is a local GGUF by construction (the
+      // native model intents only grant .gguf files), but its id is a display
+      // label that need not end in ".gguf" -- without this, Manual + Auto
+      // layers would pin the UI context instead of letting --fit size it.
+      const isGguf = explicitIsGguf ?? model?.isGguf ?? nativePathToken != null;
       const loraIsAdapter = lora?.exportType === "lora";
       const isLora =
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;

@@ -3535,10 +3535,14 @@ def _estimate_gguf_required_gb(
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
     gpu_layers: int = -1,
     speculative_type: Optional[str] = None,
-) -> Optional[float]:
+    return_parts: bool = False,
+) -> Optional[Any]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
-    resolves so the caller default-denies.
+    resolves so the caller default-denies. ``return_parts`` returns
+    ``(total_gb, companion_gb)`` instead -- companions (mmproj / a drafter) load
+    on the FIRST device of the allowed set (verified live: CLIP logs "using
+    CUDA0"), so the guard checks them against that device, not the aggregate.
 
     Manual mode with a pinned ``gpu_layers`` keeps only that fraction of the main
     model's layers (weights + their KV) on the GPU and spills the rest to system
@@ -3615,7 +3619,9 @@ def _estimate_gguf_required_gb(
                 frac = _manual_gpu_layer_fraction(str(main), gpu_layers)
                 if frac is not None:
                     main_gb *= frac
-            return main_gb + (companion_bytes + extras_draft_bytes) / (1024**3)
+            companion_gb = (companion_bytes + extras_draft_bytes) / (1024**3)
+            total_gb = main_gb + companion_gb
+            return (total_gb, companion_gb) if return_parts else total_gb
 
         repo = getattr(config, "gguf_hf_repo", None)
         variant = getattr(config, "gguf_variant", None)
@@ -3638,23 +3644,31 @@ def _estimate_gguf_required_gb(
             # A repo-id GGUF already downloaded in the HF cache is local in all but
             # name (ModelConfig leaves gguf_file unset for repo ids). Credit the
             # manual offload fraction from the cached header, mirroring the local
-            # branch above -- otherwise a CPU-heavy manual load (gpu_layers=0 or a
-            # small count) is wrongly blocked as full GPU residency during
-            # training. A not-yet-downloaded GGUF has no local header to read, so
-            # it keeps the full remote size (the safe over-estimate).
+            # branch above -- otherwise a CPU-heavy manual load (a small layer
+            # count) is wrongly blocked as full GPU residency during training. A
+            # not-yet-downloaded GGUF has no local header to read, so it keeps the
+            # full remote size (the safe over-estimate) -- EXCEPT zero offload,
+            # which needs no header: the main model and its KV are CPU-only
+            # whether or not the file is downloaded yet.
             if gpu_memory_mode == "manual" and gpu_layers >= 0:
-                from hub.utils.gguf import resolve_local_gguf_path
-                cached_main = resolve_local_gguf_path(repo, variant)
-                if cached_main:
-                    frac = _manual_gpu_layer_fraction(cached_main, gpu_layers)
-                    if frac is not None:
-                        main_gb = (
-                            LlamaCppBackend._get_gguf_size_bytes(cached_main) / (1024**3)
-                            + _estimate_gguf_kv_gb(
-                                cached_main, max_seq_length, llama_extra_args, n_parallel
-                            )
-                        ) * frac
-            return main_gb + (companions + extras_draft_bytes) / (1024**3)
+                if gpu_layers == 0:
+                    main_gb = 0.0
+                else:
+                    from hub.utils.gguf import resolve_local_gguf_path
+
+                    cached_main = resolve_local_gguf_path(repo, variant)
+                    if cached_main:
+                        frac = _manual_gpu_layer_fraction(cached_main, gpu_layers)
+                        if frac is not None:
+                            main_gb = (
+                                LlamaCppBackend._get_gguf_size_bytes(cached_main) / (1024**3)
+                                + _estimate_gguf_kv_gb(
+                                    cached_main, max_seq_length, llama_extra_args, n_parallel
+                                )
+                            ) * frac
+            companion_gb = (companions + extras_draft_bytes) / (1024**3)
+            total_gb = main_gb + companion_gb
+            return (total_gb, companion_gb) if return_parts else total_gb
         return None
     except Exception as e:
         logger.warning(f"Could not size GGUF model for training guard: {e}")
@@ -3794,8 +3808,10 @@ def _guard_chat_load_against_training(
         return
 
     is_gguf = bool(getattr(config, "is_gguf", False))
-    required_override_gb = (
-        _estimate_gguf_required_gb(
+    required_override_gb = None
+    companion_gb = 0.0
+    if is_gguf:
+        parts = _estimate_gguf_required_gb(
             config,
             hf_token = hf_token,
             max_seq_length = max_seq_length,
@@ -3804,10 +3820,10 @@ def _guard_chat_load_against_training(
             gpu_memory_mode = gpu_memory_mode,
             gpu_layers = gpu_layers,
             speculative_type = speculative_type,
+            return_parts = True,
         )
-        if is_gguf
-        else None
-    )
+        if parts is not None:
+            required_override_gb, companion_gb = parts
 
     ok, info = can_load_chat_during_training(
         model_name = model_identifier,
@@ -3817,6 +3833,7 @@ def _guard_chat_load_against_training(
         requested_gpu_ids = requested_gpu_ids,
         is_gguf = is_gguf,
         required_override_gb = required_override_gb,
+        companion_gb = companion_gb,
         # Emitted only under manual + pinned layers (see load_model); the guard
         # mirrors that so a stale split from another mode can't fire the check.
         tensor_split = (tensor_split if gpu_memory_mode == "manual" and gpu_layers >= 0 else None),

@@ -170,6 +170,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         estimate = None,
         gpu_ids = None,
         tensor_split = None,
+        companion_gb = 0.0,
     ):
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
@@ -187,6 +188,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
                 is_gguf = True,
                 required_override_gb = required_override,
                 tensor_split = tensor_split,
+                companion_gb = companion_gb,
             )
         return ok, info, auto_mock
 
@@ -268,6 +270,23 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
             tensor_split = [1, 1, 1],
         )
         self.assertTrue(ok)
+
+    def test_companion_must_fit_first_device(self):
+        # Companions (mmproj / a drafter) load whole on the FIRST device of the
+        # allowed set (CLIP logs "using CUDA0"), so a near-full first GPU must
+        # refuse even when the aggregate passes -- and pass when it fits.
+        ok_full_first, _, _ = self._run(
+            devices = _devices((0, 80, 79), (1, 80, 35)),
+            required_override = 20.0,
+            companion_gb = 2.0,
+        )
+        ok_free_first, _, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70)),
+            required_override = 20.0,
+            companion_gb = 2.0,
+        )
+        self.assertFalse(ok_full_first)
+        self.assertTrue(ok_free_first)
 
     def test_zero_estimate_bypasses_floor(self):
         # Deliberate zero-offload (manual gpu_layers=0, no companions): estimate
@@ -439,7 +458,11 @@ class TestChatLoadGuardRoute(unittest.TestCase):
     def test_gguf_config_passes_is_gguf_and_override(self):
         captured = []
         config = SimpleNamespace(is_gguf = True)
-        with patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5):
+        # The estimator returns (total, companion) parts for the guard, so the
+        # companion share can be checked against the first device.
+        with patch.object(
+            self.route, "_estimate_gguf_required_gb", return_value = (12.5, 1.5)
+        ):
             self._guard(
                 config = config,
                 captured = captured,
@@ -448,6 +471,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             )
         self.assertEqual(captured[0]["is_gguf"], True)
         self.assertEqual(captured[0]["required_override_gb"], 12.5)
+        self.assertEqual(captured[0]["companion_gb"], 1.5)
 
 
 class TestEffectiveLoadIn4bit(unittest.TestCase):
@@ -931,6 +955,31 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             cross = self.route._resolve_inherited_extra_args(request, cfg, "other/model", None)
         self.assertEqual(inherited, ["-c", "32768"])
         self.assertEqual(cross, [])
+
+    def test_remote_zero_layer_load_credited_before_download(self):
+        # Zero offload needs no header: an uncached remote GGUF at manual
+        # gpu_layers=0 must not be held to its full remote size (companions
+        # stay charged).
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+        with (
+            patch.object(mc, "list_gguf_variants", return_value = ([variant], True)),
+            patch.object(
+                self.route, "_remote_gguf_companion_bytes", return_value = 1024**3
+            ),
+        ):
+            gb = self.route._estimate_gguf_required_gb(
+                cfg, gpu_memory_mode = "manual", gpu_layers = 0
+            )
+        self.assertAlmostEqual(gb, 1.0, places = 6)
 
     def test_uncached_diffusion_repo_collapses_by_name(self):
         # A not-yet-downloaded diffusion repo has no header to read; the naming
