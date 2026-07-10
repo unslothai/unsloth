@@ -3842,10 +3842,7 @@ def _guard_chat_load_against_training(
                     gguf_split_max_share = max(shares) / total
             else:
                 from core.inference.llama_server_args import _effective_tensor_parallel
-
-                gguf_tensor_parallel = _effective_tensor_parallel(
-                    llama_extra_args, tensor_parallel
-                )
+                gguf_tensor_parallel = _effective_tensor_parallel(llama_extra_args, tensor_parallel)
 
     ok, info = can_load_chat_during_training(
         model_name = model_identifier,
