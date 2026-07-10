@@ -5504,11 +5504,7 @@ def _scan_command_string_for_reads(
             _rj = _fi2 + 1
             while _rj < len(ptoks):
                 _rt = ptoks[_rj]
-                if (
-                    _rt.startswith("-")
-                    or _rt in ("(", "!", ",")
-                    or _rt in _READ_SCAN_SEPARATORS
-                ):
+                if _rt.startswith("-") or _rt in ("(", "!", ",") or _rt in _READ_SCAN_SEPARATORS:
                     break
                 _find_roots.append(_rt)
                 _rj += 1
