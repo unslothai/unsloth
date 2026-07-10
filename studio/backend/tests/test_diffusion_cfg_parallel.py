@@ -475,9 +475,7 @@ def test_install_failure_after_cudnn_patch_restores_it(monkeypatch):
         "_install_threadsafe_cudnn_attention",
         lambda logger = None: (calls.append("install"), True)[1],
     )
-    monkeypatch.setattr(
-        cp, "_restore_threadsafe_cudnn_attention", lambda: calls.append("restore")
-    )
+    monkeypatch.setattr(cp, "_restore_threadsafe_cudnn_attention", lambda: calls.append("restore"))
 
     class _LoadableDiT(_FakeDiT):
         @classmethod
@@ -492,9 +490,7 @@ def test_install_failure_after_cudnn_patch_restores_it(monkeypatch):
 
     pipe = _CtxPipe(_LoadableDiT())
     pipe.guider = None  # raises AFTER the patch install
-    proxy, reason = _gate(
-        monkeypatch, pipe, _fam(), speed_active = False, attention_backend = None
-    )
+    proxy, reason = _gate(monkeypatch, pipe, _fam(), speed_active = False, attention_backend = None)
     assert proxy is None and reason == "replica install failed"
     assert calls == ["install", "restore"]
 

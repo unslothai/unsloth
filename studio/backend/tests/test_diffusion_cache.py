@@ -631,8 +631,7 @@ def test_magcache_ratio_key_primary_and_expert():
     assert _magcache_ratio_key("wan2.2-t2v-a14b", None) == "wan2.2-t2v-a14b"
     assert _magcache_ratio_key("wan2.2-t2v-a14b", "transformer") == "wan2.2-t2v-a14b"
     assert (
-        _magcache_ratio_key("Wan2.2-T2V-A14B", "transformer_2")
-        == "wan2.2-t2v-a14b::transformer_2"
+        _magcache_ratio_key("Wan2.2-T2V-A14B", "transformer_2") == "wan2.2-t2v-a14b::transformer_2"
     )
 
 
@@ -643,12 +642,13 @@ def test_magcache_expert_resolves_its_own_curve(monkeypatch):
     primary_curve = tuple([1.0] * 15)
     expert_curve = tuple([0.99] * 35)
     monkeypatch.setitem(dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe", primary_curve)
-    monkeypatch.setitem(
-        dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe::transformer_2", expert_curve
-    )
+    monkeypatch.setitem(dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe::transformer_2", expert_curve)
     t = _MixinTransformer()
     engaged = apply_step_cache(
-        _pipe(t), mode = "magcache", family = "fam-moe", steps = 50,
+        _pipe(t),
+        mode = "magcache",
+        family = "fam-moe",
+        steps = 50,
         expert = "transformer_2",
     )
     assert engaged == TC_MAGCACHE
@@ -664,20 +664,24 @@ def test_magcache_expert_subcurve_scales_step_count(monkeypatch):
     from core.inference import diffusion_cache as dc_mod
 
     expert_curve = tuple([0.99] * 35)
-    monkeypatch.setitem(
-        dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe::transformer_2", expert_curve
-    )
+    monkeypatch.setitem(dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe::transformer_2", expert_curve)
     t = _MixinTransformer()
     apply_step_cache(
-        _pipe(t), mode = "magcache", family = "fam-moe", steps = 30,
+        _pipe(t),
+        mode = "magcache",
+        family = "fam-moe",
+        steps = 30,
         expert = "transformer_2",
     )
     assert t.enabled_with.num_inference_steps == round(35 * 30 / _MAGCACHE_CALIBRATION_STEPS)
     # At the calibration step count itself the sub-curve maps 1:1.
     t2 = _MixinTransformer()
     apply_step_cache(
-        _pipe(t2), mode = "magcache", family = "fam-moe",
-        steps = _MAGCACHE_CALIBRATION_STEPS, expert = "transformer_2",
+        _pipe(t2),
+        mode = "magcache",
+        family = "fam-moe",
+        steps = _MAGCACHE_CALIBRATION_STEPS,
+        expert = "transformer_2",
     )
     assert t2.enabled_with.num_inference_steps == 35
 
@@ -688,7 +692,10 @@ def test_magcache_full_curve_keeps_requested_steps(monkeypatch):
     _stub_diffusers_with_magcache(monkeypatch)
     t = _MixinTransformer()
     apply_step_cache(
-        _pipe(t), mode = "magcache", family = "wan2.2-ti2v-5b", steps = 30,
+        _pipe(t),
+        mode = "magcache",
+        family = "wan2.2-ti2v-5b",
+        steps = 30,
         expert = "transformer",
     )
     assert t.enabled_with.num_inference_steps == 30
@@ -705,7 +712,10 @@ def test_magcache_expert_without_curve_runs_uncached(monkeypatch):
     t = _MixinTransformer()
     assert (
         apply_step_cache(
-            _pipe(t), mode = "magcache", family = "fam-moe", steps = 50,
+            _pipe(t),
+            mode = "magcache",
+            family = "fam-moe",
+            steps = 50,
             expert = "transformer_2",
         )
         is None
@@ -718,12 +728,13 @@ def test_toggle_threads_expert_through(monkeypatch):
     from core.inference import diffusion_cache as dc_mod
 
     expert_curve = tuple([0.98] * 35)
-    monkeypatch.setitem(
-        dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe::transformer_2", expert_curve
-    )
+    monkeypatch.setitem(dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe::transformer_2", expert_curve)
     t = _ToggleTransformer()
     mode = maybe_toggle_step_cache(
-        _pipe(t), steps = 50, mode = TC_MAGCACHE, family = "fam-moe",
+        _pipe(t),
+        steps = 50,
+        mode = TC_MAGCACHE,
+        family = "fam-moe",
         expert = "transformer_2",
     )
     assert mode == TC_MAGCACHE

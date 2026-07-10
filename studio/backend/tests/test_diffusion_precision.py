@@ -603,8 +603,7 @@ def test_select_te_auto_resolves_dense_for_wan_a14b_but_not_wan_5b(monkeypatch):
     assert select_te_quant_scheme(_target(), "auto", family = "wan2.2-t2v-a14b") is None
     assert select_te_quant_scheme(_target(), "auto", family = "Wan2.2-T2V-A14B") is None
     assert (
-        select_te_quant_scheme(_target(), "auto", family = "wan2.2-ti2v-5b")
-        == TE_QUANT_FP8_DYNAMIC
+        select_te_quant_scheme(_target(), "auto", family = "wan2.2-ti2v-5b") == TE_QUANT_FP8_DYNAMIC
     )
     # The auto-dense table steers only the DEFAULT; an explicit request stays verbatim.
     assert (
@@ -642,10 +641,7 @@ def test_quantize_explicit_fp8_dynamic_refused_for_ltx2(monkeypatch):
     calls: list = []
     monkeypatch.setattr(dp, "_cast_fp8_dynamic", lambda enc, tgt: calls.append(enc))
     pipe = types.SimpleNamespace(text_encoder = object())
-    assert (
-        quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic", family = "ltx-2")
-        is None
-    )
+    assert quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic", family = "ltx-2") is None
     assert calls == []
 
 

@@ -614,8 +614,7 @@ def _timed_video(
                     threshold = cache_threshold,
                     mode = auto_cache_mode(family),
                     family = family,
-                    quality = normalize_cache_quality(cache_quality)
-                    or auto_cache_quality(family),
+                    quality = normalize_cache_quality(cache_quality) or auto_cache_quality(family),
                     expert = expert,
                     logger = logger,
                 )

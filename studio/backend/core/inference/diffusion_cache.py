@@ -319,6 +319,7 @@ def _magcache_ratio_key(family: Optional[str], expert: Optional[str]) -> str:
         return fam
     return f"{fam}::{exp}"
 
+
 # Families whose AUTO step-cache decision engages MagCache instead of FBCache. On
 # HunyuanVideo-1.5 FBCache free-runs (no skip cap, no error budget) and derails the
 # trajectory (LPIPS 0.54 + a luma shift at its default threshold), while MagCache holds
@@ -667,9 +668,7 @@ def apply_step_cache(
             # the schedule, so the expert runs ~len(ratios) * steps / 50 forwards.
             num_steps = int(steps)
             if len(ratios) != _MAGCACHE_CALIBRATION_STEPS:
-                num_steps = max(
-                    1, round(len(ratios) * int(steps) / _MAGCACHE_CALIBRATION_STEPS)
-                )
+                num_steps = max(1, round(len(ratios) * int(steps) / _MAGCACHE_CALIBRATION_STEPS))
             config: Any = MagCacheConfig(
                 threshold = thr,
                 max_skip_steps = mag_skip,
