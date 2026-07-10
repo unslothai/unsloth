@@ -467,26 +467,28 @@ export function AppSidebar() {
     }
 
     if (completedThreadIds.length > 0 || activeVisibleThreadIdSet.size > 0) {
-      setUnreadThreadIds((current) => {
-        let next: Set<string> | null = null;
-        const mutable = () => {
-          next ??= new Set(current);
-          return next;
-        };
+      queueMicrotask(() => {
+        setUnreadThreadIds((current) => {
+          let next: Set<string> | null = null;
+          const mutable = () => {
+            next ??= new Set(current);
+            return next;
+          };
 
-        for (const threadId of completedThreadIds) {
-          if (!current.has(threadId)) {
-            mutable().add(threadId);
+          for (const threadId of completedThreadIds) {
+            if (!current.has(threadId)) {
+              mutable().add(threadId);
+            }
           }
-        }
 
-        for (const threadId of activeVisibleThreadIdSet) {
-          if (current.has(threadId)) {
-            mutable().delete(threadId);
+          for (const threadId of activeVisibleThreadIdSet) {
+            if (current.has(threadId)) {
+              mutable().delete(threadId);
+            }
           }
-        }
 
-        return next ?? current;
+          return next ?? current;
+        });
       });
     }
     previousRunningByThreadIdRef.current = runningByThreadId;
