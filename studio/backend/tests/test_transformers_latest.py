@@ -548,13 +548,16 @@ class TestLatestVenvProvisioning:
         recorded = {}
 
         def _fake_ensure(dir_, packages, label):
+            recorded["dir"] = dir_
             recorded["packages"] = packages
+            Path(dir_).mkdir(parents = True, exist_ok = True)
             return True
 
         monkeypatch.setattr(tv, "_ensure_venv_dir", _fake_ensure)
         assert tv._ensure_venv_t5_latest_exists() is True
+        # Repair goes through stage-and-swap, never installing into the live dir.
+        assert recorded["dir"] == str(venv_dir) + ".staging"
         assert "transformers==5.13.0" in recorded["packages"]
-        # marker restored after the wipe-and-reinstall
         assert latest_venv_pinned_version() == "5.13.0"
 
 
@@ -1013,3 +1016,23 @@ def test_kill_switch_removes_provisioned_latest_from_routing(tmp_path, monkeypat
     assert tv._overlay_transformers_dir("latest") is None
     assert tv._probe_tier_order() == tv._PROBE_TIER_ORDER
     tv._config_mapping_cache.pop("latest", None)
+
+
+def test_repair_failure_preserves_pin_and_live_dir(tmp_path, monkeypatch):
+    """A failed lazy repair must not delete the incomplete-but-pinned live
+    sidecar: the pin survives so a later attempt can still repair it."""
+    venv_dir = tmp_path / ".venv_t5_latest"
+    venv_dir.mkdir()
+    (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
+    (venv_dir / "partial_file").write_text("x")
+    monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
+    monkeypatch.setattr(tv, "_venv_dir_is_valid", lambda *a: False)
+    monkeypatch.setattr(tv, "_ensure_venv_dir", lambda *a, **k: False)
+
+    from utils.transformers_version import latest_venv_pinned_version
+
+    assert tv._ensure_venv_t5_latest_exists() is False
+    assert venv_dir.is_dir()
+    assert (venv_dir / "partial_file").exists()
+    assert latest_venv_pinned_version() == "5.13.0"
+    assert not (tmp_path / ".venv_t5_latest.staging").exists()

@@ -1830,70 +1830,11 @@ def _venv_t5_latest_packages(version: str, extra_packages: tuple[str, ...] = ())
     ) + tuple(extra_packages)
 
 
-def _ensure_venv_t5_latest_exists() -> bool:
-    """Ensure .venv_t5_latest/ holds its pinned transformers version.
-
-    Never installs without a pin: an unprovisioned sidecar (no marker) returns False so
-    routing and probing behave exactly as before the feature existed. With a pin present
-    it repairs a broken dir the same way the fixed sidecars do.
-    """
-    pin = _latest_pin_data()
-    if pin is None:
-        return False
-    version = pin["version"]
-    packages = tuple(pin["packages"])
-    if _venv_dir_is_valid(_VENV_T5_LATEST_DIR, packages):
-        return True
-    if _env_offline():
-        logger.warning(
-            ".venv_t5_latest (transformers %s) is incomplete and offline mode is set; "
-            "cannot repair it.",
-            version,
-        )
-        return False
-    marker_text = json.dumps({"version": version, "packages": list(packages)})
-    ok = _ensure_venv_dir(_VENV_T5_LATEST_DIR, packages, f"transformers {version} (latest)")
-    if ok:
-        # _ensure_venv_dir wipes the dir before reinstalling, so restore the pin marker.
-        try:
-            (Path(_VENV_T5_LATEST_DIR) / _LATEST_PIN_MARKER).write_text(
-                marker_text, encoding = "utf-8"
-            )
-        except Exception as exc:
-            logger.warning("Could not rewrite .venv_t5_latest pin marker: %s", exc)
-            return False
-    return ok
-
-
-def ensure_latest_transformers_venv(version: str, extra_packages: tuple[str, ...] = ()) -> bool:
-    """Provision .venv_t5_latest/ pinned to *version* (user-consented install path).
-
-    Reuses the same --target/--no-deps installer as the fixed sidecars, then writes the pin
-    marker (version + full package set) so the venv persists across restarts and
-    :func:`latest_venv_pinned_version` / routing pick it up automatically.
-    *extra_packages* carries dep-compat shadows (see utils.transformers_latest).
-    Returns True on success.
-    """
-    if not _is_valid_version_string(version):
-        logger.error("Refusing to install invalid transformers version %r", version)
-        return False
-    if _env_offline():
-        logger.warning(
-            "Cannot install transformers %s: HF/transformers offline mode is set.", version
-        )
-        return False
-    packages = _venv_t5_latest_packages(version, extra_packages)
-    pin = _latest_pin_data()
-    if (
-        pin is not None
-        and pin["version"] == version
-        and tuple(pin["packages"]) == packages
-        and _venv_dir_is_valid(_VENV_T5_LATEST_DIR, packages)
-    ):
-        return True
-    # Stage-and-swap: build the new sidecar next to the live one and swap only
-    # once complete, so a failed install or marker write never destroys a
-    # previously working .venv_t5_latest.
+def _stage_and_swap_latest_venv(version: str, packages: tuple[str, ...]) -> bool:
+    """Stage-and-swap: build the new sidecar next to the live one and swap only
+    once complete, so a failed install or marker write never destroys a
+    previously working .venv_t5_latest or its pin. Shared by the consented
+    install and the lazy repair path."""
     staging = _VENV_T5_LATEST_DIR + ".staging"
     retired = _VENV_T5_LATEST_DIR + ".old"
     shutil.rmtree(staging, ignore_errors = True)
@@ -1923,6 +1864,62 @@ def ensure_latest_transformers_venv(version: str, extra_packages: tuple[str, ...
     _config_mapping_cache.pop("latest", None)
     logger.info("Provisioned .venv_t5_latest with transformers %s", version)
     return True
+
+
+def _ensure_venv_t5_latest_exists() -> bool:
+    """Ensure .venv_t5_latest/ holds its pinned transformers version.
+
+    Never installs without a pin: an unprovisioned sidecar (no marker) returns False so
+    routing and probing behave exactly as before the feature existed. With a pin present
+    it repairs a broken dir the same way the fixed sidecars do.
+    """
+    pin = _latest_pin_data()
+    if pin is None:
+        return False
+    version = pin["version"]
+    packages = tuple(pin["packages"])
+    if _venv_dir_is_valid(_VENV_T5_LATEST_DIR, packages):
+        return True
+    if _env_offline():
+        logger.warning(
+            ".venv_t5_latest (transformers %s) is incomplete and offline mode is set; "
+            "cannot repair it.",
+            version,
+        )
+        return False
+    # Repair through the same stage-and-swap as the consented install: the
+    # incomplete-but-pinned live dir survives a failed repair, so the pin is
+    # never lost and a later attempt can still repair it.
+    return _stage_and_swap_latest_venv(version, packages)
+
+
+def ensure_latest_transformers_venv(version: str, extra_packages: tuple[str, ...] = ()) -> bool:
+    """Provision .venv_t5_latest/ pinned to *version* (user-consented install path).
+
+    Reuses the same --target/--no-deps installer as the fixed sidecars, then writes the pin
+    marker (version + full package set) so the venv persists across restarts and
+    :func:`latest_venv_pinned_version` / routing pick it up automatically.
+    *extra_packages* carries dep-compat shadows (see utils.transformers_latest).
+    Returns True on success.
+    """
+    if not _is_valid_version_string(version):
+        logger.error("Refusing to install invalid transformers version %r", version)
+        return False
+    if _env_offline():
+        logger.warning(
+            "Cannot install transformers %s: HF/transformers offline mode is set.", version
+        )
+        return False
+    packages = _venv_t5_latest_packages(version, extra_packages)
+    pin = _latest_pin_data()
+    if (
+        pin is not None
+        and pin["version"] == version
+        and tuple(pin["packages"]) == packages
+        and _venv_dir_is_valid(_VENV_T5_LATEST_DIR, packages)
+    ):
+        return True
+    return _stage_and_swap_latest_venv(version, packages)
 
 
 # --- llm-compressor-main shadow (FP8/FP4 export of newer-transformers models) ---------------------
