@@ -442,9 +442,9 @@ def _path_value_is_unsafe(value: str, assignments = None) -> bool:
             var = re.split(r"[/}]", inner, maxsplit = 1)[0]
             if _path_var_resolves_unsafe(var, assignments):
                 return True
-            if _path_var_is_unknown_external(var, assignments) and _path_entry_empty_expansion_unsafe(
-                e, var
-            ):
+            if _path_var_is_unknown_external(
+                var, assignments
+            ) and _path_entry_empty_expansion_unsafe(e, var):
                 return True
             continue
         if e.startswith("$"):
@@ -3654,7 +3654,12 @@ class _ConstEnv(dict):
 
     __slots__ = ("shadowed",)
 
-    def __init__(self, *a, shadowed = None, **k):
+    def __init__(
+        self,
+        *a,
+        shadowed = None,
+        **k,
+    ):
         super().__init__(*a, **k)
         self.shadowed = shadowed or frozenset()
 
