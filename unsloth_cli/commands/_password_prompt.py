@@ -62,7 +62,6 @@ class _RestoreTtyOnSignals:
 
     def __exit__(self, *exc) -> None:
         import signal
-
         for sig, previous in self._previous:
             try:
                 signal.signal(sig, previous)
@@ -167,10 +166,7 @@ def read_masked(prompt: str, out: TextIO | None = None) -> str:
     return _read_masked_posix(prompt, out)
 
 
-def prompt_new_password(
-    verify_current: Callable[[str], bool],
-    out: TextIO | None = None,
-) -> str:
+def prompt_new_password(verify_current: Callable[[str], bool], out: TextIO | None = None) -> str:
     """Prompt for a new admin password until a valid, confirmed one is given.
 
     ``verify_current(candidate)`` must return True when the candidate equals
@@ -183,9 +179,7 @@ def prompt_new_password(
     while True:
         password = read_masked("New password: ", out)
         if len(password) < MIN_PASSWORD_LENGTH:
-            out.write(
-                f"Password must be at least {MIN_PASSWORD_LENGTH} characters. Try again.\n"
-            )
+            out.write(f"Password must be at least {MIN_PASSWORD_LENGTH} characters. Try again.\n")
             out.flush()
             continue
         if verify_current(password):

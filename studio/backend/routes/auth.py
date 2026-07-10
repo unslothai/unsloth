@@ -503,9 +503,7 @@ async def change_password(
     # Single transaction: the refresh-token purge must not be separable from
     # the password commit (a failed follow-up delete would leave pre-change
     # refresh tokens able to mint access tokens under the rotated secret).
-    storage.update_password(
-        current_subject, payload.new_password, revoke_refresh_tokens = True
-    )
+    storage.update_password(current_subject, payload.new_password, revoke_refresh_tokens = True)
     try:
         request.app.state.bootstrap_password = None
     except AttributeError:

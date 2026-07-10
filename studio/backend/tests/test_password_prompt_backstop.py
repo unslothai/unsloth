@@ -91,9 +91,7 @@ def _patch_seeded_admin(monkeypatch, *, requires_change: bool) -> None:
     # The gate seeds the admin row itself (it can run before lifespan startup);
     # tests fake both the seeding no-op and the flag.
     monkeypatch.setattr(auth_storage, "ensure_default_admin", lambda: False)
-    monkeypatch.setattr(
-        auth_storage, "requires_password_change", lambda u: requires_change
-    )
+    monkeypatch.setattr(auth_storage, "requires_password_change", lambda u: requires_change)
 
 
 def test_gate_skips_when_tunnel_off(monkeypatch):
@@ -103,9 +101,7 @@ def test_gate_skips_when_tunnel_off(monkeypatch):
 
     monkeypatch.setattr(auth_storage, "requires_password_change", _boom)
     monkeypatch.setattr(auth_storage, "ensure_default_admin", _boom)
-    assert run._terminal_password_gate(
-        tunnel_will_start = False, **_GATE_KWARGS
-    ) == (True, False)
+    assert run._terminal_password_gate(tunnel_will_start = False, **_GATE_KWARGS) == (True, False)
 
 
 def test_gate_skips_when_password_already_changed(monkeypatch):
@@ -116,9 +112,7 @@ def test_gate_skips_when_password_already_changed(monkeypatch):
         "prompt_for_password_change",
         lambda **k: pytest.fail("prompt must not run when no change is required"),
     )
-    assert run._terminal_password_gate(
-        tunnel_will_start = True, **_GATE_KWARGS
-    ) == (True, False)
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, False)
 
 
 def test_gate_warns_and_proceeds_without_tty_when_deadline_arms(monkeypatch):
@@ -131,9 +125,7 @@ def test_gate_warns_and_proceeds_without_tty_when_deadline_arms(monkeypatch):
         lambda **k: pytest.fail("prompt must not run without a tty"),
     )
     # Proceeds, but the public HTML must not auto-fill the default credential.
-    assert run._terminal_password_gate(
-        tunnel_will_start = True, **_GATE_KWARGS
-    ) == (True, True)
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, True)
     out = stderr.getvalue()
     assert "default admin password is still active" in out
     assert "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT" in out
@@ -149,9 +141,7 @@ def test_gate_fails_closed_without_tty_when_deadline_cannot_arm(monkeypatch):
     kwargs = dict(_GATE_KWARGS)
     kwargs["api_only"] = True
     kwargs["frontend_served"] = False
-    assert run._terminal_password_gate(
-        tunnel_will_start = True, **kwargs
-    ) == (False, False)
+    assert run._terminal_password_gate(tunnel_will_start = True, **kwargs) == (False, False)
     assert "Refusing to publish" in stderr.getvalue()
 
 
@@ -159,9 +149,7 @@ def test_gate_fails_closed_without_tty_when_deadline_disabled(monkeypatch):
     stderr = _patch_streams(monkeypatch, tty = False)
     _patch_seeded_admin(monkeypatch, requires_change = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", "0")
-    assert run._terminal_password_gate(
-        tunnel_will_start = True, **_GATE_KWARGS
-    ) == (False, False)
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
     assert "Refusing to publish" in stderr.getvalue()
 
 
@@ -172,18 +160,14 @@ def test_gate_treats_broken_streams_as_non_interactive(monkeypatch):
     monkeypatch.setattr(sys, "stderr", stderr)
     _patch_seeded_admin(monkeypatch, requires_change = True)
     monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
-    assert run._terminal_password_gate(
-        tunnel_will_start = True, **_GATE_KWARGS
-    ) == (True, True)
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, True)
 
 
 def test_gate_refusal_fails_closed(monkeypatch):
     _patch_streams(monkeypatch, tty = True)
     _patch_seeded_admin(monkeypatch, requires_change = True)
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **k: False)
-    assert run._terminal_password_gate(
-        tunnel_will_start = True, **_GATE_KWARGS
-    ) == (False, False)
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
 
 
 def test_gate_success_applies_route_equivalent_change(monkeypatch):
@@ -210,16 +194,12 @@ def test_gate_success_applies_route_equivalent_change(monkeypatch):
         return True
 
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", _fake_prompt)
-    assert run._terminal_password_gate(
-        tunnel_will_start = True, **_GATE_KWARGS
-    ) == (True, True)
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, True)
     admin = auth_storage.DEFAULT_ADMIN_USERNAME
     # One atomic call: refresh tokens revoked in the same transaction as the
     # password commit (a separable follow-up delete can fail and leave a
     # pre-change refresh token able to mint access tokens).
-    assert calls == [
-        ("update", admin, "brand-new-password", {"revoke_refresh_tokens": True})
-    ]
+    assert calls == [("update", admin, "brand-new-password", {"revoke_refresh_tokens": True})]
 
 
 # ── ordering inside run_server (source-level, repo convention) ───────

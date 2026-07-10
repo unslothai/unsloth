@@ -118,7 +118,13 @@ def _auth_state(studio_mod):
         conn.close()
 
 
-def _install_prompt_env(monkeypatch, tmp_path, *, interactive, scripted = _NEW_PW):
+def _install_prompt_env(
+    monkeypatch,
+    tmp_path,
+    *,
+    interactive,
+    scripted = _NEW_PW,
+):
     """Tmp STUDIO_HOME + fake tty + scripted prompt. Returns the event log that
     records prompt calls and re-exec argv in order."""
     studio_mod = _studio()

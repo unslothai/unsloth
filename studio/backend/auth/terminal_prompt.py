@@ -74,7 +74,6 @@ class _RestoreTtyOnSignals:
 
     def __exit__(self, *exc) -> None:
         import signal
-
         for sig, previous in self._previous:
             try:
                 signal.signal(sig, previous)
@@ -102,9 +101,7 @@ def _getch_posix() -> str:  # pragma: no cover - needs a real tty
             # character must not be dropped when its bytes straddle a read
             # boundary (a fixed os.read(fd, 4) with errors="ignore" silently
             # ate characters during fast pastes).
-            decoder = codecs.getincrementaldecoder(sys.stdin.encoding or "utf-8")(
-                "replace"
-            )
+            decoder = codecs.getincrementaldecoder(sys.stdin.encoding or "utf-8")("replace")
             while True:
                 b = os.read(fd, 1)
                 if not b:
@@ -166,11 +163,7 @@ def _read_password(prompt: str, *, out: "TextIO | None" = None) -> str:
 
 
 def should_prompt_password_change(
-    *,
-    tunnel_will_start: bool,
-    requires_change: bool,
-    stdin_isatty: bool,
-    stderr_isatty: bool,
+    *, tunnel_will_start: bool, requires_change: bool, stdin_isatty: bool, stderr_isatty: bool
 ) -> bool:
     """Whether to block startup on an interactive terminal password change.
 
@@ -211,15 +204,12 @@ def prompt_for_password_change(
         while True:
             new_password = _read_password("New password: ", out = out)
             if len(new_password) < min_length:
-                out.write(
-                    f"Password must be at least {min_length} characters; try again.\n"
-                )
+                out.write(f"Password must be at least {min_length} characters; try again.\n")
                 out.flush()
                 continue
             if is_current_password(new_password):
                 out.write(
-                    "New password must differ from the current bootstrap password; "
-                    "try again.\n"
+                    "New password must differ from the current bootstrap password; try again.\n"
                 )
                 out.flush()
                 continue

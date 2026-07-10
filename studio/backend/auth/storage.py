@@ -98,7 +98,6 @@ def clear_bootstrap_password() -> None:
             _BOOTSTRAP_PW_PATH.unlink(missing_ok = True)
         except OSError as e:
             import sys
-
             print(
                 f"Warning: could not delete {_BOOTSTRAP_PW_PATH.name} ({e}); "
                 "the old bootstrap password is already invalid.",
@@ -569,7 +568,10 @@ def ensure_default_admin() -> bool:
 
 
 def update_password(
-    username: str, new_password: str, *, revoke_refresh_tokens: bool = False
+    username: str,
+    new_password: str,
+    *,
+    revoke_refresh_tokens: bool = False,
 ) -> bool:
     """Update password, clear first-login requirement, rotate JWT secret.
 

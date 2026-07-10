@@ -32,7 +32,11 @@ def _fake_getch(keys):
     return getch
 
 
-def _read(monkeypatch, keys, prompt = "P: "):
+def _read(
+    monkeypatch,
+    keys,
+    prompt = "P: ",
+):
     monkeypatch.setattr(tp, "_getch", _fake_getch(keys))
     out = io.StringIO()
     value = tp._read_password(prompt, out = out)
@@ -106,7 +110,13 @@ def test_reader_windows_key_prefix_is_ignored(monkeypatch):
 # ── prompt_for_password_change ───────────────────────────────────────
 
 
-def _run_loop(monkeypatch, keys, *, min_length = 8, current = "bootstrap-pw"):
+def _run_loop(
+    monkeypatch,
+    keys,
+    *,
+    min_length = 8,
+    current = "bootstrap-pw",
+):
     monkeypatch.setattr(tp, "_getch", _fake_getch(keys))
     out = io.StringIO()
     applied = []
@@ -136,9 +146,7 @@ def test_loop_success_applies_once(monkeypatch):
 
 
 def test_loop_short_password_reprompts(monkeypatch):
-    ok, applied, out = _run_loop(
-        monkeypatch, _keys("short", "long-enough-pw", "long-enough-pw")
-    )
+    ok, applied, out = _run_loop(monkeypatch, _keys("short", "long-enough-pw", "long-enough-pw"))
     assert ok is True
     assert applied == ["long-enough-pw"]
     assert "at least 8 characters" in out

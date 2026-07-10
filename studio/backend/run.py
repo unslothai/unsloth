@@ -1196,9 +1196,7 @@ def _terminal_password_gate(
         # Same server-side effects as routes/auth.py change_password: rehash +
         # rotate the JWT secret (invalidates access tokens) and revoke refresh
         # tokens in the SAME transaction so no pre-change token survives.
-        _auth_storage.update_password(
-            _admin, new_password, revoke_refresh_tokens = True
-        )
+        _auth_storage.update_password(_admin, new_password, revoke_refresh_tokens = True)
 
     changed = prompt_for_password_change(
         min_length = _auth_storage.MIN_PASSWORD_LENGTH,
