@@ -337,9 +337,7 @@ class TrainingQueueManager:
             return
 
         if self._stop_runner.is_set():
-            studio_db.update_queue_item_status(
-                item["id"], "pending", expected_status = "starting"
-            )
+            studio_db.update_queue_item_status(item["id"], "pending", expected_status = "starting")
             return
 
         def _skip(reason: str) -> None:
