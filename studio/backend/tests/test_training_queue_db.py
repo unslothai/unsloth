@@ -32,6 +32,19 @@ def test_enqueue_assigns_increasing_positions():
     assert a["position"] < b["position"] < c["position"]
 
 
+def test_enqueue_stores_via_api_key_flag():
+    api_item = studio_db.enqueue_queue_item(
+        id = "q_api",
+        request_json = "{}",
+        model_name = "unsloth/Qwen3-0.6B",
+        dataset_summary = "test_dataset.jsonl",
+        subject = "api",
+        via_api_key = True,
+    )
+    assert api_item["via_api_key"] == 1
+    assert _enqueue("q_ui")["via_api_key"] == 0
+
+
 def test_next_pending_returns_lowest_position():
     _enqueue("q1")
     _enqueue("q2")

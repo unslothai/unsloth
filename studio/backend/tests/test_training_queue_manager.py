@@ -384,6 +384,44 @@ def test_full_cycle_error_run_advances_queue(manager, backend, monkeypatch):
     assert len(record) == 2
 
 
+# -- API-key origin: never unload the chat model mid-stream --------------------
+
+
+def test_api_queued_item_waits_for_inference_to_finish(manager, backend, monkeypatch):
+    import core.inference.llama_keepwarm as keepwarm
+
+    record = []
+    _patch_launch(monkeypatch, record = record)
+    monkeypatch.setattr(queue_module, "validate_training_request", lambda req: None)
+    item = manager.enqueue(_request(), subject = "api", via_api_key = True)
+
+    monkeypatch.setattr(keepwarm, "other_inference_request_count", lambda **kwargs: 2)
+    manager._tick()
+    assert record == []
+    assert studio_db.get_queue_item(item["id"])["status"] == "pending"
+
+    monkeypatch.setattr(keepwarm, "other_inference_request_count", lambda **kwargs: 0)
+    manager._tick()
+    assert len(record) == 1
+    assert studio_db.get_queue_item(item["id"])["status"] == "running"
+
+
+def test_ui_queued_item_launches_despite_inference(manager, backend, monkeypatch):
+    # UI-queued runs keep the UI /start semantics: the VRAM hook decides
+    # whether chat coexists or is freed, so no launch-time defer.
+    import core.inference.llama_keepwarm as keepwarm
+
+    record = []
+    _patch_launch(monkeypatch, record = record)
+    item = _enqueue(manager, monkeypatch)
+    monkeypatch.setattr(keepwarm, "other_inference_request_count", lambda **kwargs: 2)
+
+    manager._tick()
+
+    assert len(record) == 1
+    assert studio_db.get_queue_item(item["id"])["status"] == "running"
+
+
 # -- wake / notify ----------------------------------------------------------------
 
 

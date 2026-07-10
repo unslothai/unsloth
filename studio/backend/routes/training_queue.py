@@ -101,7 +101,11 @@ async def enqueue_item(
                 ),
             )
     try:
-        item = get_training_queue_manager().enqueue(request, subject = current_subject)
+        # Origin is persisted so the queue runner can defer API-queued launches
+        # while an inference request is in flight (see _api_item_must_wait).
+        item = get_training_queue_manager().enqueue(
+            request, subject = current_subject, via_api_key = via_api_key is True
+        )
         return _item_model(item)
     except HTTPException:
         raise

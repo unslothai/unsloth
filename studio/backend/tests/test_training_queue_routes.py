@@ -104,6 +104,12 @@ def test_enqueue_via_api_key_allowed_when_inference_idle(monkeypatch):
         routes_module.enqueue_item(_request(), current_subject = "api", via_api_key = True)
     )
     assert item.status == "pending"
+    # Origin is persisted so the runner can defer the launch if an inference
+    # request is in flight by the time this item reaches the head.
+    assert studio_db.get_queue_item(item.id)["via_api_key"] == 1
+
+    ui_item = _enqueue()
+    assert studio_db.get_queue_item(ui_item.id)["via_api_key"] == 0
 
 
 def test_enqueue_validation_400(monkeypatch):

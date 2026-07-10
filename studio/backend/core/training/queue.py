@@ -96,7 +96,12 @@ class TrainingQueueManager:
             "Remove an item or wait for a job to start.",
         )
 
-    def enqueue(self, request: TrainingStartRequest, subject: str) -> dict:
+    def enqueue(
+        self,
+        request: TrainingStartRequest,
+        subject: str,
+        via_api_key: bool = False,
+    ) -> dict:
         # Fast fail before validation; the insert re-checks the cap atomically.
         if studio_db.count_pending_queue_items() >= self.max_pending:
             raise self._queue_full_error()
@@ -113,6 +118,7 @@ class TrainingQueueManager:
             model_name = request.model_name,
             dataset_summary = _dataset_summary(request),
             subject = subject,
+            via_api_key = via_api_key,
             max_pending = self.max_pending,
         )
         if item is None:
@@ -229,8 +235,32 @@ class TrainingQueueManager:
                 return
         if backend.is_training_active():
             return
+        if self._api_item_must_wait(item):
+            return
 
         self._launch_item(backend, item)
+
+    def _api_item_must_wait(self, item: dict) -> bool:
+        # POST /start refuses API-key starts while an inference request is in
+        # flight (the training VRAM hook may unload the chat model mid-stream).
+        # Items queued over the API keep that guarantee at launch time too;
+        # the item stays pending and the next tick retries. UI-queued items
+        # keep the UI semantics (coexist with chat or free VRAM).
+        if not item.get("via_api_key"):
+            return False
+        try:
+            from core.inference.llama_keepwarm import other_inference_request_count
+            in_flight = other_inference_request_count(current_request_counted = False)
+        except Exception:
+            return False
+        if in_flight > 0:
+            logger.debug(
+                "Queue item %s waiting: %d inference request(s) in flight",
+                item["id"],
+                in_flight,
+            )
+            return True
+        return False
 
     def _reconcile_running_items(self, backend) -> None:
         for item in studio_db.list_queue_items(statuses = ("starting", "running")):

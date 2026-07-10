@@ -211,10 +211,14 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             error_message TEXT,
             created_at TEXT NOT NULL,
             started_at TEXT,
-            finished_at TEXT
+            finished_at TEXT,
+            via_api_key INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+    queue_cols = {row[1] for row in conn.execute("PRAGMA table_info(training_queue)").fetchall()}
+    if "via_api_key" not in queue_cols:
+        conn.execute("ALTER TABLE training_queue ADD COLUMN via_api_key INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_training_queue_status_position"
         " ON training_queue(status, position)"
@@ -934,6 +938,7 @@ def enqueue_queue_item(
     model_name: str,
     dataset_summary: str,
     subject: Optional[str],
+    via_api_key: bool = False,
     max_pending: Optional[int] = None,
 ) -> Optional[dict]:
     """Insert a pending queue item; returns None if max_pending is reached.
@@ -958,10 +963,20 @@ def enqueue_queue_item(
         conn.execute(
             """
             INSERT INTO training_queue
-                (id, position, status, request_json, model_name, dataset_summary, subject, created_at)
-            VALUES (?, ?, 'pending', ?, ?, ?, ?, ?)
+                (id, position, status, request_json, model_name, dataset_summary,
+                 subject, via_api_key, created_at)
+            VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
             """,
-            (id, position, request_json, model_name, dataset_summary, subject, now),
+            (
+                id,
+                position,
+                request_json,
+                model_name,
+                dataset_summary,
+                subject,
+                1 if via_api_key else 0,
+                now,
+            ),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM training_queue WHERE id = ?", (id,)).fetchone()
@@ -1050,10 +1065,15 @@ def move_queue_item(item_id: str, direction: str) -> bool:
         raise ValueError(f"direction must be 'up' or 'down', got {direction!r}")
     conn = get_connection()
     try:
+        # BEGIN IMMEDIATE takes the write lock before the position reads, so
+        # overlapping moves serialize instead of both swapping against the same
+        # stale positions (which could leave two rows sharing one position).
+        conn.execute("BEGIN IMMEDIATE")
         item = conn.execute(
             "SELECT id, position, status FROM training_queue WHERE id = ?", (item_id,)
         ).fetchone()
         if item is None or item["status"] != "pending":
+            conn.rollback()
             return False
         if direction == "up":
             neighbor = conn.execute(
@@ -1074,8 +1094,8 @@ def move_queue_item(item_id: str, direction: str) -> bool:
                 (item["position"],),
             ).fetchone()
         if neighbor is None:
+            conn.rollback()
             return False
-        # Both updates share one implicit transaction; commit makes the swap atomic.
         conn.execute(
             "UPDATE training_queue SET position = ? WHERE id = ?",
             (neighbor["position"], item["id"]),
