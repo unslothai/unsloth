@@ -444,6 +444,8 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import time
+          import urllib.error
           import urllib.request
 
           BASE = os.environ["BASE_URL"]
@@ -464,8 +466,19 @@ jobs:
                       "Content-Type": "application/json",
                   },
               )
-              with urllib.request.urlopen(req, timeout = timeout) as resp:
-                  return resp.status, json.loads(resp.read().decode())
+              # Shared CI runners stall sporadically, so retry transport-level
+              # failures only; HTTP status errors surface immediately.
+              for attempt in range(3):
+                  try:
+                      with urllib.request.urlopen(req, timeout = timeout) as resp:
+                          return resp.status, json.loads(resp.read().decode())
+                  except urllib.error.HTTPError:
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      if attempt == 2:
+                          raise
+                      print(f"[retry] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
 
           def post_sse(path, body, *, timeout = 600):
               """POST a streaming request and accumulate the assistant
@@ -938,6 +951,8 @@ jobs:
           import base64
           import json
           import os
+          import time
+          import urllib.error
           import urllib.request
           from openai import OpenAI
           from anthropic import Anthropic
@@ -956,8 +971,19 @@ jobs:
                       "Content-Type":  "application/json",
                   },
               )
-              with urllib.request.urlopen(req, timeout = timeout) as resp:
-                  return resp.status, json.loads(resp.read().decode())
+              # Shared CI runners stall sporadically, so retry transport-level
+              # failures only; HTTP status errors surface immediately.
+              for attempt in range(3):
+                  try:
+                      with urllib.request.urlopen(req, timeout = timeout) as resp:
+                          return resp.status, json.loads(resp.read().decode())
+                  except urllib.error.HTTPError:
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      if attempt == 2:
+                          raise
+                      print(f"[retry] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
 
           # ── 1. response_format = json_object (JSON mode) ─────────────
           # llama.cpp's HTTP server supports OpenAI-compatible JSON
