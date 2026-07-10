@@ -697,5 +697,3 @@ def test_cmd_companion_ignores_cpu_forced_drafter():
     # mmproj still counts even alongside a CPU drafter.
     cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-ngl", "0", "--mmproj", "p.gguf"]
     assert has(cmd, {}) is True
-
-

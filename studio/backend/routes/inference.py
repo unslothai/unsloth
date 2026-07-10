@@ -4424,8 +4424,7 @@ def _requires_security_review_for_model(
 
 @router.post("/validate", response_model = ValidateModelResponse)
 async def validate_model(
-    request: ValidateModelRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: ValidateModelRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
     Lightweight validation endpoint for model identifiers.
