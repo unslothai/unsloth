@@ -7204,9 +7204,7 @@ class LlamaCppBackend:
                     gpu_memory_mode == "manual"
                     and gpu_layers == 0
                     and not is_vulkan_backend
-                    and not any(
-                        a == "--device" or str(a).startswith("--device=") for a in cmd
-                    )
+                    and not any(a == "--device" or str(a).startswith("--device=") for a in cmd)
                     # Only a user-forced TENSOR split keeps the GPUs visible (it
                     # aborts under zero devices); row/layer modes are inert with
                     # nothing offloaded, so they don't defeat the zero-VRAM mask.
