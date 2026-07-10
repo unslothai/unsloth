@@ -3827,6 +3827,46 @@ def _too_wide(n):
     return isinstance(n, int) and not isinstance(n, bool) and n > _FOLD_MAXLEN
 
 
+def _fold_repr_len_exceeds(value, budget = _FOLD_MAXLEN):
+    """A cheap upper-bound walk of the str()/repr() length of an already-folded value, returning
+    True as soon as the estimate exceeds ``budget``. str(container) builds the WHOLE repr before
+    _fold_cap can reject it -- e.g. str(['x' * 65536] * 4096) is a list of 4096 refs to one 64KB
+    string (cheap) whose repr is ~256MB -- so estimate the size WITHOUT materializing it, which is
+    exactly the allocation the fold caps exist to prevent. A scalar (str/bytes/int/float/bool/None)
+    is already bounded by the input caps and never trips this."""
+    _stack = [value]
+    _total = 0
+    _seen = 0
+    while _stack:
+        _v = _stack.pop()
+        _seen += 1
+        if _seen > _FOLD_OPS:
+            return True
+        if isinstance(_v, (str, bytes, bytearray)):
+            _total += len(_v) + 3  # quotes / b'' overhead
+        elif isinstance(_v, bool):
+            _total += 5
+        elif isinstance(_v, int):
+            _total += 20 if abs(_v) <= _FOLD_MAXINT else budget + 1
+        elif isinstance(_v, float):
+            _total += 24
+        elif _v is None:
+            _total += 4
+        elif isinstance(_v, (list, tuple, set, frozenset)):
+            _total += 2 + 2 * len(_v)  # brackets + ", " separators
+            _stack.extend(_v)
+        elif isinstance(_v, dict):
+            _total += 2 + 4 * len(_v)  # braces + ": " / ", " separators
+            for _dk, _dv in _v.items():
+                _stack.append(_dk)
+                _stack.append(_dv)
+        else:
+            _total += 16
+        if _total > budget:
+            return True
+    return False
+
+
 # Format-spec mini-language: reject an oversized width or precision BEFORE format()
 # allocates the padded string. format()/str.format()/f-strings all run in the Studio
 # process during static analysis, ahead of the child-subprocess rlimits.
@@ -4226,6 +4266,12 @@ def _fold_call(node, _state, _depth):
                     and args[0] > _FOLD_MAXLEN
                 ):
                     return None
+            if name == "str" and len(args) == 1 and _fold_repr_len_exceeds(args[0]):
+                # str(container) materializes the ENTIRE repr before _fold_cap sees its length;
+                # a small aliased container (['x' * 65536] * 4096) expands to hundreds of MB and
+                # OOMs the Studio process ahead of the child rlimits. Estimate the size first and
+                # refuse (leaving the payload opaque, which already fails closed) if it exceeds cap.
+                return None
             return _fold_cap(fn(*args))
         except Exception:
             return None
@@ -6928,7 +6974,15 @@ def _check_signal_escape_patterns(
             # Names bound to os.environ / os.environb (bare, from-imported as X, or e = os.environ),
             # so an aliased env mutation (e['BASH_ENV'] = ...) is still recognized.
             self.environ_aliases = {"environ", "environb"}
+            # from os import putenv as p -> {"putenv", "p"}: os.putenv(key, value) sets an
+            # inherited env var through the C-level setter (not os.environ), a later-child escape.
+            self.putenv_aliases: set[str] = set()
             self.subprocess_aliases = {"subprocess"}
+            # import asyncio as aio -> {"asyncio", "aio"}. asyncio.create_subprocess_shell /
+            # create_subprocess_exec start the SAME unguarded child as subprocess.run/Popen.
+            self.asyncio_aliases = {"asyncio"}
+            # from asyncio import create_subprocess_shell as s -> {"s": "create_subprocess_shell"}.
+            self.asyncio_subprocess_from_aliases: dict[str, str] = {}
             self.importlib_aliases = {"importlib"}
             self.sys_aliases = {"sys"}
             # __builtins__ is the builtins *module* in __main__ (how the sandbox runs
@@ -7008,6 +7062,8 @@ def _check_signal_escape_patterns(
                     self.os_aliases.add(alias.asname or alias.name)
                 elif alias.name == "subprocess":
                     self.subprocess_aliases.add(alias.asname or "subprocess")
+                elif alias.name == "asyncio":
+                    self.asyncio_aliases.add(alias.asname or "asyncio")
                 elif alias.name == "pty":
                     # pty.spawn([...]) / pty.fork() run an unguarded child process.
                     self.pty_aliases.add(alias.asname or "pty")
@@ -7068,6 +7124,15 @@ def _check_signal_escape_patterns(
                     # from os import environ as e / from os import environb as eb.
                     if _eff_mod == "os" and alias.name in ("environ", "environb"):
                         self.environ_aliases.add(alias.asname or alias.name)
+                    # from os import putenv as p.
+                    if _eff_mod == "os" and alias.name == "putenv":
+                        self.putenv_aliases.add(alias.asname or alias.name)
+            elif node.module == "asyncio":
+                for alias in node.names:
+                    if alias.name in ("create_subprocess_shell", "create_subprocess_exec"):
+                        self.asyncio_subprocess_from_aliases[alias.asname or alias.name] = (
+                            alias.name
+                        )
             elif node.module == "importlib":
                 for alias in node.names:
                     if alias.name in ("import_module", "reload", "__import__"):
@@ -7345,6 +7410,56 @@ def _check_signal_escape_patterns(
             ast.copy_location(synth, node)
             ast.fix_missing_locations(synth)
             return synth
+
+        def _asyncio_subprocess_rewrite(self, node):
+            """Rewrite ``asyncio.create_subprocess_shell(cmd, ...)`` /
+            ``asyncio.create_subprocess_exec(prog, *args, ...)`` into the equivalent
+            ``subprocess.run(cmd, shell=True)`` / ``subprocess.run([prog, *args])`` Call, so the
+            SAME child-process command analysis (blocked commands, shell payload, argv / cwd / env
+            escape) applies -- asyncio starts the same unguarded child the runtime open/os guards
+            never see. Covers the module-attribute form and a `from asyncio import
+            create_subprocess_shell` bare alias. Returns the synthetic Call or None."""
+            _fn = node.func
+            while isinstance(_fn, ast.Attribute) and _fn.attr == "__call__":
+                _fn = _fn.value
+            _kind = None
+            if (
+                isinstance(_fn, ast.Attribute)
+                and _fn.attr in ("create_subprocess_shell", "create_subprocess_exec")
+                and isinstance(_fn.value, ast.Name)
+                and _fn.value.id in self.asyncio_aliases
+            ):
+                _kind = "shell" if _fn.attr == "create_subprocess_shell" else "exec"
+            elif isinstance(_fn, ast.Name) and _fn.id in self.asyncio_subprocess_from_aliases:
+                _kind = (
+                    "shell"
+                    if self.asyncio_subprocess_from_aliases[_fn.id] == "create_subprocess_shell"
+                    else "exec"
+                )
+            if _kind is None or not node.args:
+                return None
+            # Carry cwd= / env= so the cwd-escape and startup-env (BASH_ENV / PATH) analysis fires.
+            _carry = [_kw for _kw in node.keywords if _kw.arg in ("cwd", "env")]
+            if _kind == "shell":
+                # create_subprocess_shell(cmd) runs cmd via /bin/sh -c, i.e. shell=True.
+                _sargs = [node.args[0]]
+                _skw = [ast.keyword(arg = "shell", value = ast.Constant(value = True))] + _carry
+            else:
+                # create_subprocess_exec(prog, *args) is the argv vector (shell=False).
+                _sargs = [ast.List(elts = list(node.args), ctx = ast.Load())]
+                _skw = list(_carry)
+            _synth = ast.Call(
+                func = ast.Attribute(
+                    value = ast.Name(id = "subprocess", ctx = ast.Load()),
+                    attr = "run",
+                    ctx = ast.Load(),
+                ),
+                args = _sargs,
+                keywords = _skw,
+            )
+            ast.copy_location(_synth, node)
+            ast.fix_missing_locations(_synth)
+            return _synth
 
         def _sink_ref_desc(self, n):
             """Describe ``n`` when it is a bare reference to a dangerous callable used as a
@@ -7751,6 +7866,12 @@ def _check_signal_escape_patterns(
             if _mc_rewrite is not None:
                 self.visit_Call(_mc_rewrite)
                 return
+            # asyncio.create_subprocess_shell / create_subprocess_exec start the same unguarded
+            # child as subprocess.run/Popen; rewrite to the subprocess form and analyze that.
+            _aio_rewrite = self._asyncio_subprocess_rewrite(node)
+            if _aio_rewrite is not None:
+                self.visit_Call(_aio_rewrite)
+                return
             # os.environ.update({'PATH': '.:...'}) / .update(PATH='...') / .setdefault('PATH', ...)
             # (and the os.environb byte forms) mutate the inherited environment WITHOUT a subscript
             # assignment, the same child escape as os.environ['PATH'] = ...; run each (key, value)
@@ -7785,6 +7906,29 @@ def _check_signal_escape_patterns(
                                     ),
                                 }
                             )
+            # os.putenv(key, value) sets an inherited env var through the C-level setter (NOT via
+            # os.environ), so the subscript / update checks miss it; a later child still inherits it
+            # (os.putenv('BASH_ENV', 'evil.sh') then subprocess.run(['bash','-c',...])). Run the
+            # (key, value) pair through the same mutation policy. Cover os.putenv (os alias) and a
+            # bare `putenv` from `from os import putenv`.
+            _is_putenv = (
+                isinstance(_mf, ast.Attribute)
+                and _mf.attr == "putenv"
+                and isinstance(_mf.value, ast.Name)
+                and _mf.value.id in self.os_aliases
+            ) or (isinstance(_mf, ast.Name) and _mf.id in self.putenv_aliases)
+            if _is_putenv and len(node.args) >= 2:
+                _uk = _extract_env_scalar(node.args[0])
+                if _uk is not None:
+                    _ureason = self._env_mutation_escape(_uk, node.args[1])
+                    if _ureason is not None:
+                        shell_escapes.append(
+                            {
+                                "type": "shell_escape",
+                                "line": getattr(node, "lineno", -1),
+                                "description": f"os.putenv({_uk!r}) mutation: {_ureason}",
+                            }
+                        )
             if self._is_unbound_mro_gadget(node):
                 # type.mro(io.FileIO) / type.__getattribute__(io.FileIO, '__mro__') /
                 # getattr(io.FileIO, 'mro'): reaches the unguarded MRO without a .mro / .__mro__
@@ -9587,7 +9731,9 @@ def _check_signal_escape_patterns(
             # 'local.db'), duckdb.connect(':memory:')), not a network host, so restrict host
             # classification to the tuple form (the bare-string branch only mis-flagged benign
             # local database opens; filesystem escape for those is enforced at runtime instead).
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "connect":
+            # connect_ex((host, port)) opens the SAME outbound connection but returns an errno
+            # instead of raising, so classify it identically.
+            if isinstance(node.func, ast.Attribute) and node.func.attr in ("connect", "connect_ex"):
                 a0 = node.args[0] if node.args else None
                 if a0 is None:
                     for _kw in node.keywords or []:
@@ -11172,31 +11318,47 @@ try:
     # same re-exported _sqlite3.connect, so wrap once and reassign every reachable attribute.
     import sqlite3 as _sq3
 
-    def _sqlite_path_ok(_db, _uri):
+    def _sqlite_uri_path(_body):
+        # Resolve a file: URI body (already stripped of the 'file:' prefix) to the concrete path
+        # SQLite opens, or None for an in-memory / private target. Strips a //authority and
+        # percent-decodes the filename (SQLite decodes file:%2Ftmp%2Fx -> /tmp/x itself), using
+        # the captured _bi.chr / _bi.int so a sandboxed rebind of chr/int cannot skew the decode.
+        _pth, _, _params = _body.partition("?")
+        if _pth == ":memory:" or _pth == "" or "mode=memory" in _params.lower():
+            return None
+        if _pth.startswith("//"):
+            _slash = _pth.find("/", 2)
+            _pth = _pth[_slash:] if _slash != -1 else ""
+        return _re.sub("%([0-9A-Fa-f]{2})", lambda _m: _bi.chr(_bi.int(_m.group(1), 16)), _pth)
+
+    def _sqlite_target_path(_db, _uri):
+        # The concrete filesystem path to confine for a sqlite database argument, or None when it
+        # never touches disk (:memory: / '' private temp / in-memory URI). A file: filename is
+        # URI-decoded ONLY when uri mode is on; otherwise it is a literal filename.
         if isinstance(_db, str):
             if _db == ":memory:" or _db == "":
-                return True
+                return None
             if _uri and _db[:5].lower() == "file:":
-                _rest = _db[5:]
-                _pth, _, _params = _rest.partition("?")
-                if _pth == ":memory:" or _pth == "" or "mode=memory" in _params.lower():
-                    return True
-                # file://host/path -> /path (an empty authority is local); a bare file:path
-                # keeps _pth as-is. The realpath check then confines the concrete file.
-                if _pth.startswith("//"):
-                    _slash = _pth.find("/", 2)
-                    _pth = _pth[_slash:] if _slash != -1 else ""
-                # SQLite percent-decodes the URI filename (file:%2Ftmp%2Fx -> /tmp/x), so decode
-                # BEFORE the workdir check -- otherwise an encoded absolute path passes _within()
-                # as a relative-looking string while SQLite opens the escaping path. Use the
-                # captured _bi.chr / _bi.int so a sandboxed rebind of chr/int cannot skew the decode.
-                _pth = _re.sub(
-                    "%([0-9A-Fa-f]{2})",
-                    lambda _m: _bi.chr(_bi.int(_m.group(1), 16)),
-                    _pth,
-                )
-                return _within(_pth)
-        return _within(_db)
+                return _sqlite_uri_path(_db[5:])
+            return _db
+        return _db
+
+    def _sqlite_path_ok(_db, _uri):
+        _p = _sqlite_target_path(_db, _uri)
+        return True if _p is None else _within(_p)
+
+    def _make_sqlite_authorizer(_uri_on):
+        # ATTACH DATABASE '<file>' and VACUUM ... INTO '<file>' create/open a file via the native
+        # extension (NOT the wrapped connect / open), and both fire the SQLITE_ATTACH authorizer
+        # action (24) with the target filename as arg1. Deny a target that escapes the workdir; an
+        # in-workdir / :memory: / '' (temp) attach and every other action stay allowed.
+        def _auth(_action, _a1, _a2, _dbname, _source):
+            if _action == 24 and isinstance(_a1, str):
+                _p = _sqlite_target_path(_a1, _uri_on)
+                if _p is not None and not _within(_p):
+                    return 1  # SQLITE_DENY
+            return 0  # SQLITE_OK
+        return _auth
 
     def _guard_sqlite_connect(_orig):
         @_gwraps(_orig)
@@ -11215,10 +11377,18 @@ try:
             if not _sqlite_path_ok(_db, _uri):
                 _deny(_db, "sqlite3.connect")
             if a:
-                return _orig(_db, *a[1:], **k)
-            k = dict(k)
-            k["database"] = _db
-            return _orig(**k)
+                _conn = _orig(_db, *a[1:], **k)
+            else:
+                k = dict(k)
+                k["database"] = _db
+                _conn = _orig(**k)
+            # Confine ATTACH / VACUUM INTO targets on the live connection too. Best-effort: a
+            # build without set_authorizer simply lacks this extra confinement.
+            try:
+                _conn.set_authorizer(_make_sqlite_authorizer(_uri))
+            except Exception:
+                pass
+            return _conn
         return w
 
     _sq3_orig_connect = _sq3.connect

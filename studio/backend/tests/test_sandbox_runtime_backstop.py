@@ -327,6 +327,61 @@ def test_sandboxed_sqlite3_uri_local_allowed():
     assert "sandbox:" not in out
 
 
+def test_sandboxed_sqlite3_attach_escape_denied(tmp_path):
+    # ATTACH DATABASE '<outside>' creates/opens that file via the native extension, bypassing the
+    # wrapped connect; the connection authorizer must deny an escaping ATTACH target.
+    target = tmp_path / "attach_escape.db"
+    out = _python_exec(
+        "import sqlite3\n"
+        "c = sqlite3.connect('backstop_attach.db')\n"
+        f"c.execute(\"ATTACH DATABASE '{target}' AS ext\")\n"
+        "print('ATTACHED_OK')",
+        None,
+        30,
+        "backstop-sqlite-attach-escape",
+        disable_sandbox = False,
+    )
+    assert "ATTACHED_OK" not in out
+    assert not target.exists()
+
+
+def test_sandboxed_sqlite3_vacuum_into_escape_denied(tmp_path):
+    # VACUUM ... INTO '<outside>' writes a fresh database file outside the workdir via the native
+    # extension; it fires the same SQLITE_ATTACH authorizer action and must be denied.
+    target = tmp_path / "vacuum_escape.db"
+    out = _python_exec(
+        "import sqlite3\n"
+        "c = sqlite3.connect('backstop_vacuum.db')\n"
+        "c.execute('create table t(x)')\n"
+        f"c.execute(\"VACUUM main INTO '{target}'\")\n"
+        "print('VACUUMED_OK')",
+        None,
+        30,
+        "backstop-sqlite-vacuum-escape",
+        disable_sandbox = False,
+    )
+    assert "VACUUMED_OK" not in out
+    assert not target.exists()
+
+
+def test_sandboxed_sqlite3_attach_local_allowed():
+    # A workdir-local ATTACH (and ordinary queries) stay allowed; the authorizer confines only
+    # escaping targets, so benign multi-database work is not blocked.
+    out = _python_exec(
+        "import sqlite3\n"
+        "c = sqlite3.connect('backstop_attach_main.db')\n"
+        "c.execute(\"ATTACH DATABASE 'backstop_attach_side.db' AS ext\")\n"
+        "c.execute('create table if not exists ext.t(x)')\n"
+        "c.close(); print('ATTACH_LOCAL_OK')",
+        None,
+        30,
+        "backstop-sqlite-attach-local",
+        disable_sandbox = False,
+    )
+    assert "ATTACH_LOCAL_OK" in out
+    assert "sandbox:" not in out
+
+
 @_POSIX_ONLY
 def test_sandboxed_getattr_gadget_dunder_workdir_module_denied():
     # A workdir helper recovering the guard wrapper's original open via a getattr gadget dunder

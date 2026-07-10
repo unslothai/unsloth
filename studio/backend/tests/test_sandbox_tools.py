@@ -5167,3 +5167,69 @@ class TestRound52Bypasses:
     )
     def test_round52_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound53Bypasses:
+    """Fifty-third-round Codex findings: asyncio subprocess creators, os.putenv startup escapes,
+    a str()-of-container fold DoS, and socket.connect_ex. (The sqlite ATTACH / VACUUM INTO
+    confinement is a runtime concern, covered in test_sandbox_runtime_backstop.py.)"""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # asyncio.create_subprocess_shell / _exec start the same unguarded child as
+            # subprocess.run/Popen; the shell payload and argv escape must be analyzed.
+            "import asyncio\nasyncio.create_subprocess_shell('touch /tmp/x')",
+            "import asyncio\nasyncio.create_subprocess_exec('touch', '/tmp/x')",
+            "import asyncio as aio\naio.create_subprocess_shell('rm -rf /tmp/y')",
+            "async def m():\n    import asyncio\n    await asyncio.create_subprocess_shell('rm -rf /tmp/z')",
+            "from asyncio import create_subprocess_shell as s\nimport asyncio\nasyncio.run(s('rm -rf /tmp/w'))",
+        ],
+    )
+    def test_asyncio_subprocess_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # os.putenv sets an inherited env var via the C setter (not os.environ), a later-child
+            # startup / PATH escape the subscript / update checks miss.
+            "import os, subprocess\nos.putenv('BASH_ENV', 'evil.sh')\nsubprocess.run(['bash','-c','echo ok'])",
+            "import os, subprocess\nos.putenv('PATH', '.:/usr/bin')\nsubprocess.run(['evil'])",
+            "from os import putenv as p\nimport subprocess\np('BASH_ENV', 'evil.sh')\nsubprocess.run(['bash','-c','echo ok'])",
+        ],
+    )
+    def test_putenv_startup_escape_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # connect_ex((host, port)) opens the same outbound connection as connect and must
+            # honor the metadata / untrusted-host allowlist.
+            "import socket\ns = socket.socket()\ns.connect_ex(('169.254.169.254', 80))",
+            "import socket\ns = socket.socket()\ns.connect_ex(('evil.example.com', 80))",
+        ],
+    )
+    def test_connect_ex_host_classified(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_str_container_fold_dos_still_blocked(self):
+        # str(['x' * 65536] * 4096) folds a huge repr; the fold must refuse it (leaving the
+        # payload opaque) so the eval stays blocked WITHOUT materializing hundreds of MB.
+        assert _check_code_safety("eval(str(['x' * 65536] * 4096))") is not None
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A benign asyncio child (echo), a benign putenv var, a small str() fold, and a
+            # connect_ex to a trusted host all stay allowed.
+            "import asyncio\nasyncio.create_subprocess_exec('echo', 'hi')",
+            "import asyncio\nasyncio.create_subprocess_shell('echo hi')",
+            "import os\nos.putenv('MYVAR', 'x')",
+            "eval(str([1, 2, 3]))",
+            "import socket\ns = socket.socket()\ns.connect_ex(('huggingface.co', 443))",
+        ],
+    )
+    def test_round53_benign_allowed(self, code):
+        _ok(code)
