@@ -926,6 +926,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             continue
         if not expect_command:
             continue
+        # A leading `!` negates the pipeline exit status, but the following word is still the
+        # command bash executes (`! touch x`, `! python3 -c ...`). Keep command position so the
+        # real command is scanned, rather than mistaking `!` for the command and its command for
+        # an argument.
+        if token == "!":
+            continue
         # FOO=bar assignment prefix; next non-assignment token is the command.
         if _ASSIGNMENT_RE.match(token):
             continue
@@ -1082,6 +1088,8 @@ def _find_blocked_commands(command: str) -> set[str]:
                 continue
             if not expect:
                 continue
+            if _tok == "!":
+                continue  # pipeline negation keeps command position (! bash s.sh)
             if _ASSIGNMENT_RE.match(_tok):
                 continue
             if pending and _is_wrapper_numeric_arg(_tok):
@@ -4900,12 +4908,14 @@ def _check_signal_escape_patterns(
                         ),
                     }
                 )
-            elif func_id != "compile":
+            else:
                 # An opaque, non-recoverable payload for an executing sink (eval/exec/
                 # runpy) is a universal ACE bypass: it can synthesize any shell/network/
-                # filesystem escape at runtime, invisibly to every static check. Block it
-                # (compile() alone does not run, so it stays allowed -- the exec/eval of its
-                # result is caught at that call). ast.literal_eval / json.loads cover data.
+                # filesystem escape at runtime, invisibly to every static check. compile()
+                # does not itself run, but its CODE OBJECT can be executed without exec/eval
+                # (fn.__code__ = compile(src, '<p>', 'exec'); fn()), so an opaque compile
+                # source is equally unverifiable and is blocked too. A literal source is
+                # analyzed recursively above; ast.literal_eval / json.loads cover data.
                 dynamic_exec.append(
                     {
                         "type": "dynamic_exec",
@@ -5007,6 +5017,28 @@ def _check_signal_escape_patterns(
             "__builtins__",
             "__closure__",
             "cell_contents",
+            # Frame / traceback introspection recovers a runtime-guard wrapper's ORIGINAL
+            # unguarded callable: it is a free variable (`real`) in the wrapper's frame, so a
+            # snippet that triggers a denied open() can read it back via a trace hook or the
+            # caught exception's traceback (frame.f_locals['real'], tb.tb_frame.f_locals) and
+            # call it directly, escaping the filesystem boundary. __closure__ / cell_contents
+            # are already blocked, so the frame path is the remaining channel; close it by
+            # flagging frame acquisition (settrace / _getframe / currentframe / tb_frame) and
+            # the f_locals / f_globals value read for ANY receiver.
+            "f_locals",
+            "f_globals",
+            "f_back",
+            "f_builtins",
+            "tb_frame",
+            "tb_next",
+            "gi_frame",
+            "cr_frame",
+            "ag_frame",
+            "settrace",
+            "setprofile",
+            "_getframe",
+            "_current_frames",
+            "currentframe",
         }
     )
 

