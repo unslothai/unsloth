@@ -516,6 +516,12 @@ _SHELL_READ_COMMANDS = frozenset(
         "diff3",
         "colordiff",
         "cmp",
+        # directory / file enumerators: an EXPANDED root (find ${P:-/root/.ssh} -exec cat {} \;,
+        # ls $SECRET) enumerates a host path the static scan cannot resolve, and find's -exec
+        # can then read every match. Literal find / ls (find . -name '*.py', ls -la) carry no
+        # expansion and stay allowed; only a $ / backtick / escaping-glob operand fails closed.
+        "find",
+        "ls",
     }
 )
 # Wrappers whose next non-flag argument is the command Bash will exec.
@@ -1550,6 +1556,15 @@ def _find_blocked_commands(command: str) -> set[str]:
                 if _git_operand_escapes(_seg[_gk + 1], _local_assigns):
                     blocked.add("git-write-outside")
                 _gk += 2
+                continue
+            # Stuck short form: git archive -o/tmp/x (and -O.. / -C/outside) glue the path value
+            # directly onto the short option with no space, which the separated / --opt=val scans
+            # above miss. Only the path-valued SHORT options take a glued value; a non-escaping
+            # value (-oout.tar, -C90 for find-copies) is left alone by _git_operand_escapes.
+            if len(_gt) > 2 and _gt[:2] in ("-C", "-o", "-O"):
+                if _git_operand_escapes(_gt[2:], _local_assigns):
+                    blocked.add("git-write-outside")
+                _gk += 1
                 continue
             _oeq = None
             for _opt in _GIT_PATH_VALUE_OPTIONS:
@@ -4067,6 +4082,39 @@ class _AnalyzerBudget:
         self.nodes = 0
 
 
+def _reexport_dangerous_module_name(expr):
+    """For a re-export gadget that fetches a submodule by NAME off some object and then calls a
+    sink on it, return the fetched module name normalized to 'os' / 'subprocess' (or None).
+
+    Covers ``getattr(<mod>, 'os')``, ``vars(<mod>)['os']`` and ``<mod>.__dict__['os']`` -- the
+    call / subscript twins of the plain ``<mod>.os`` attribute form (pathlib.os.system), which
+    stay reachable off a call-returned module (``getattr(__import__('pathlib'), 'os').system``)."""
+    def _str_const(n):
+        return n.value if isinstance(n, ast.Constant) and isinstance(n.value, str) else None
+
+    key = None
+    if (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Name)
+        and expr.func.id == "getattr"
+        and len(expr.args) >= 2
+    ):
+        key = _str_const(expr.args[1])
+    elif isinstance(expr, ast.Subscript):
+        base = expr.value
+        if (
+            isinstance(base, ast.Call)
+            and isinstance(base.func, ast.Name)
+            and base.func.id == "vars"
+        ) or (isinstance(base, ast.Attribute) and base.attr == "__dict__"):
+            key = _str_const(expr.slice)
+    if key in ("os", "posix"):
+        return "os"
+    if key == "subprocess":
+        return "subprocess"
+    return None
+
+
 def _fq_attr_name(node):
     """Return the dotted name for a Name/Attribute chain, else ''."""
     parts = []
@@ -4657,6 +4705,20 @@ def _build_scope_alias_index(tree, const_env):
         # nothing. Target scopes are processed before nested scopes, so setdefault preserves
         # any alias they already hold.
         if global_names or nonlocal_names:
+
+            def _chain_lookup(nm, table, local_map):
+                # Resolve a bare-name RHS alias (global t; t = s) against this scope's just-built
+                # local map, then the already-indexed enclosing / module scopes -- so a
+                # `s = os.system` at module scope copied into a `global t; t = s` is propagated,
+                # matching the chained-alias resolution the local pass does via smap[rhs.id].
+                _sc = scope
+                while _sc is not None:
+                    _m = local_map if _sc is scope else table.get(_sc, {})
+                    if nm in _m:
+                        return _m[nm]
+                    _sc = idx.enclosing.get(_sc)
+                return None
+
             for name, rhs in assigns:
                 if name in global_names:
                     _target = tree
@@ -4670,12 +4732,18 @@ def _build_scope_alias_index(tree, const_env):
                 _gfq = _resolve_static_shell_sink(
                     _rhs_eff, os_aliases, subprocess_aliases, from_aliases
                 )
+                if _gfq is None and isinstance(_rhs_eff, ast.Name):
+                    _gfq = _chain_lookup(_rhs_eff.id, idx.shell, smap)
                 if _gfq:
                     idx.shell.setdefault(_target, {}).setdefault(name, _gfq)
                 _geb = _rhs_exec_builtin(_rhs_eff)
+                if _geb is None and isinstance(_rhs_eff, ast.Name):
+                    _geb = _chain_lookup(_rhs_eff.id, idx.execb, emap)
                 if _geb is not None:
                     idx.execb.setdefault(_target, {}).setdefault(name, _geb)
                 _gdfq = _rhs_deserializer(_rhs_eff)
+                if _gdfq is None and isinstance(_rhs_eff, ast.Name):
+                    _gdfq = _chain_lookup(_rhs_eff.id, idx.deser, dmap)
                 if _gdfq is not None:
                     idx.deser.setdefault(_target, {}).setdefault(name, _gdfq)
         if smap:
@@ -5021,6 +5089,24 @@ def _extract_command_subs(s):
     return subs
 
 
+def _resolve_read_chdir(operand, assigns):
+    """Resolve an ``env -C DIR`` operand for the read scanner. Returns ``(dir, dynamic)``:
+
+    - a ``$VAR`` / ``${VAR}`` that a preceding assignment in the same command bound (``P=/etc;
+      env -C $P cat passwd``) resolves to that value so the read is combined and caught;
+    - any other operand carrying ``$`` / backtick is an UNKNOWN expansion that the unguarded
+      child can point outside the workdir, so ``dynamic=True`` (fail closed for relative reads);
+    - a plain literal DIR resolves to itself."""
+    m = re.fullmatch(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", operand)
+    if m:
+        if assigns and m.group(1) in assigns:
+            return assigns[m.group(1)], False
+        return None, True
+    if "$" in operand or "`" in operand:
+        return None, True
+    return operand, False
+
+
 def _argv_env_chdir(str_elts):
     """Extract an ``env -C DIR`` / ``--chdir[=DIR]`` target from a folded argv vector.
 
@@ -5043,9 +5129,11 @@ def _argv_env_chdir(str_elts):
                     return str_elts[i + 1] if i + 1 < n else None
                 if tok.startswith("--chdir="):
                     return tok.split("=", 1)[1]
-                if _wrapper_flag_takes_operand("env", tok):
-                    i += 2
-                    continue
+            # A wrapper flag that consumes the NEXT token (env -u NAME, sudo -u user, nice -n 5,
+            # timeout -k 5): skip both so the operand is not mistaken for the command word.
+            if wrapper is not None and _wrapper_flag_takes_operand(wrapper, tok):
+                i += 2
+                continue
             i += 1
             continue
         base = os.path.basename(tok).lower()
@@ -5053,7 +5141,46 @@ def _argv_env_chdir(str_elts):
             wrapper = base
             i += 1
             continue
+        # A wrapper's numeric / duration operand (timeout 1, nice 5): skip it and keep scanning
+        # for a following env -C, rather than stopping at it as the executed command word. Without
+        # this, `env -C` hidden behind `timeout 1 env -C /etc ...` was never reached.
+        if wrapper is not None and _is_wrapper_numeric_arg(tok):
+            i += 1
+            continue
         return None  # reached the executed command word before any env -C
+    return None
+
+
+def _argv_command_word_index(str_elts):
+    """Index of the EXECUTED command word in a folded argv vector, skipping VAR=value
+    assignments and command wrappers (env / sudo / nice / timeout / ...) with their flags and
+    numeric / separated operands. None if a token is unresolved (None) or no command word is
+    reached. Lets a wrapper-hidden reader (['timeout', '1', 'cat', 'x']) be found at its real
+    position instead of stopping at argv[0]."""
+    i, n = 0, len(str_elts)
+    wrapper = None
+    while i < n:
+        tok = str_elts[i]
+        if tok is None:
+            return None
+        if _ASSIGNMENT_RE.match(tok):
+            i += 1
+            continue
+        if tok.startswith("-"):
+            if wrapper is not None and _wrapper_flag_takes_operand(wrapper, tok):
+                i += 2
+                continue
+            i += 1
+            continue
+        base = os.path.basename(tok).lower()
+        if base in _COMMAND_PREFIXES:
+            wrapper = base
+            i += 1
+            continue
+        if wrapper is not None and _is_wrapper_numeric_arg(tok):
+            i += 1
+            continue
+        return i
     return None
 
 
@@ -5264,6 +5391,12 @@ def _scan_command_string_for_reads(
     _chdir = cwd
     _pending_chdir = False
     _pending_argfile = False
+    # env -C DIR whose DIR is an unknown expansion ($UNRESOLVED / backtick): the child's cwd is
+    # unprovable, so a later relative reader arg fails closed. Reset per command, like _chdir.
+    _chdir_dynamic = False
+    # Shell VAR=value bindings seen so far (P=/etc; env -C $P ...), so an env -C $P operand
+    # resolves to /etc and the read is combined + caught. Persists across separators.
+    _local_assigns = {}
     for _pi, _pt in enumerate(ptoks):
         if _pt in _READ_SCAN_SEPARATORS:
             _at_cmd = True
@@ -5272,6 +5405,7 @@ def _scan_command_string_for_reads(
             _skip_operand = False
             _pending_argfile = False
             _chdir = cwd
+            _chdir_dynamic = False
             _pending_chdir = False
             continue
         if _pt.startswith("<"):
@@ -5284,7 +5418,11 @@ def _scan_command_string_for_reads(
         if _at_cmd:
             if _skip_operand:  # a wrapper flag's separated operand (env -u NAME)
                 if _pending_chdir:  # ...but env -C DIR's operand is the child cwd
-                    _chdir = _join_chdir(_chdir, _pt)
+                    _rdir, _rdyn = _resolve_read_chdir(_pt, _local_assigns)
+                    if _rdyn:
+                        _chdir_dynamic = True
+                    else:
+                        _chdir = _join_chdir(_chdir, _rdir)
                     _pending_chdir = False
                 elif _pending_argfile:  # ...and xargs -a FILE reads FILE
                     _pending_argfile = False
@@ -5296,6 +5434,8 @@ def _scan_command_string_for_reads(
                 _r = _check_assignment_rhs(_pt)
                 if _r is not None:
                     return _r
+                _an, _, _av = _pt.partition("=")
+                _local_assigns[_an.rstrip("+")] = _av
                 continue  # assignment prefix; the command word is still ahead
             if _pt.startswith("-"):
                 # env -C DIR / --chdir DIR changes the child's cwd before the command runs, so
@@ -5305,7 +5445,11 @@ def _scan_command_string_for_reads(
                     _pending_chdir = True
                     _skip_operand = True
                 elif _wrapper == "env" and _pt.startswith("--chdir="):
-                    _chdir = _join_chdir(_chdir, _pt.split("=", 1)[1])
+                    _rdir, _rdyn = _resolve_read_chdir(_pt.split("=", 1)[1], _local_assigns)
+                    if _rdyn:
+                        _chdir_dynamic = True
+                    else:
+                        _chdir = _join_chdir(_chdir, _rdir)
                 # xargs -a FILE / --arg-file[=]FILE reads its argument list FROM that file, so a
                 # sensitive / expanded target is a host-file read even though xargs is a wrapper.
                 elif _wrapper == "xargs" and _pt in ("-a", "--arg-file"):
@@ -5360,6 +5504,10 @@ def _scan_command_string_for_reads(
             if "$" in _pt or "`" in _pt or _escaping_glob(_pt):
                 return f"shell read command reads an expanded path {_pt!r}"
             _rel = not _pt.startswith("/") and not _pt.startswith("~")
+            # A relative reader arg under an env -C whose DIR was an UNKNOWN expansion (env -C
+            # $UNRESOLVED cat passwd) cannot be proven sandbox-local, so fail closed.
+            if _chdir_dynamic and _rel:
+                return f"shell read command reads {_pt!r} under an expanded chdir"
             # Under a known chdir (env -C DIR or an ambient subprocess cwd=), a relative reader
             # arg resolves against DIR (cat passwd + cwd=/etc -> /etc/passwd).
             if _chdir and _rel:
@@ -6615,6 +6763,15 @@ def _check_signal_escape_patterns(
                 elif isinstance(_ecf.value, ast.Attribute) and _ecf.value.attr == "subprocess":
                     # ...and *.subprocess.run (a module re-exporting subprocess).
                     shell_func = f"subprocess.{_ecf.attr}"
+                if shell_func is None:
+                    # getattr(<mod>, 'os').system(...) / vars(<mod>)['os'].system(...) /
+                    # <mod>.__dict__['subprocess'].run(...): a re-export fetched by NAME -- the
+                    # call / subscript twin of the <mod>.os.system attribute form, and reachable
+                    # off a call-returned module (getattr(__import__('pathlib'), 'os')). Map the
+                    # fetched os / posix / subprocess to the sink module so the chain is a sink.
+                    _rx = _reexport_dangerous_module_name(_ecf.value)
+                    if _rx:
+                        shell_func = f"{_rx}.{_ecf.attr}"
             elif isinstance(_ecf, ast.Name):
                 # from-import aliases: from os import system; system(...)
                 shell_func = self.shell_exec_aliases.get(_ecf.id)
@@ -7263,6 +7420,13 @@ def _check_signal_escape_patterns(
                             and isinstance(func.value.func, ast.Name)
                             and func.value.func.id == "type"
                         )
+                        # sys.modules.__class__.pop(sys.modules, ...): the receiver is the dict
+                        # TYPE reached via .__class__, not the bare `dict` name / type(...) call.
+                        or (
+                            isinstance(func.value, ast.Attribute)
+                            and func.value.attr == "__class__"
+                            and self._is_sys_modules(func.value.value)
+                        )
                     )
                 ):
                     dynamic_desc = (
@@ -7323,6 +7487,13 @@ def _check_signal_escape_patterns(
                             isinstance(func.value, ast.Call)
                             and isinstance(func.value.func, ast.Name)
                             and func.value.func.id == "type"
+                        )
+                        # sys.meta_path.__class__.pop(sys.meta_path, 0): the receiver is the list
+                        # TYPE reached via .__class__, not the bare `list` name / type(...) call.
+                        or (
+                            isinstance(func.value, ast.Attribute)
+                            and func.value.attr == "__class__"
+                            and self._is_sys_meta_path(func.value.value)
                         )
                     )
                 ):
@@ -9083,12 +9254,17 @@ def _check_signal_escape_patterns(
                             break
                 if isinstance(_argv_node, (ast.List, ast.Tuple)):
                     _av = _argv_node.elts
-                    _p0 = _fold_read_arg(_av[0]) if _av else None
+                    # Resolve the real command word past wrappers (timeout / env / nice / ...), so
+                    # a wrapper-hidden reader (['timeout', '1', 'cat', 'passwd']) is checked, not
+                    # just argv[0]. Then scan the reader's own relative args for a host read.
+                    _folded = [_fold_read_arg(_e) for _e in _av]
+                    _ci = _argv_command_word_index(_folded)
+                    _p0 = _folded[_ci] if _ci is not None else None
                     if (
                         isinstance(_p0, str)
                         and os.path.basename(_p0).lower() in _SHELL_READ_COMMANDS
                     ):
-                        for _ae in _av[1:]:
+                        for _ae in _av[_ci + 1 :]:
                             _av_s = _fold_read_arg(_ae)
                             if (
                                 isinstance(_av_s, str)

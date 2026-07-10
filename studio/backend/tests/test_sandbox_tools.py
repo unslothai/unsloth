@@ -4189,3 +4189,129 @@ class TestRound39Bypasses:
     )
     def test_round39_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound40Bypasses:
+    """Fortieth-round Codex findings: a global/nonlocal name rebound from an existing sink alias,
+    env -C hidden behind a wrapper operand in argv, an env -C shell operand with an expansion, a
+    wrapper-hidden reader under a dynamic cwd, sys.meta_path.__class__ list-method mutation, a
+    re-export fetched via getattr / vars on a call-returned module, a git stuck short path option
+    (-o/tmp/x), and find / ls enumerators on an expanded path operand."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # global/nonlocal name rebound from an EXISTING alias (s = os.system; t = s), not the
+            # sink directly: the target-scope alias must inherit the chained sink identity.
+            "import os\ns = os.system\ndef f():\n    global t\n    t = s\n    t('touch /tmp/x')\nf()",
+            "import os\ndef outer():\n    s = os.system\n    t = None\n    def f():\n        nonlocal t\n        t = s\n        t('touch /tmp/x')\n    f()",
+        ],
+    )
+    def test_global_nonlocal_chained_alias_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # env -C hidden behind a wrapper's operand (timeout 1 env -C /etc ...): the argv env-C
+            # scan must skip the wrapper operand to reach env.
+            "import subprocess\nsubprocess.run(['timeout', '1', 'env', '-C', '/etc', 'cat', 'passwd'])",
+            "import subprocess\nsubprocess.run(['nice', '5', 'env', '-C', '/etc', 'cat', 'passwd'])",
+        ],
+    )
+    def test_argv_env_c_behind_wrapper_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A shell env -C operand with an expansion: a locally-assigned $P resolves to /etc, and
+            # an unknown expansion fails closed.
+            "import os\nos.system('P=/etc; env -C $P cat passwd')",
+            "import os\nos.system('env -C $UNKNOWN cat passwd')",
+        ],
+    )
+    def test_shell_env_c_expansion_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A wrapper-hidden reader under a NON-literal cwd (timeout 1 cat passwd, cwd=P): resolve
+            # the command word past the wrapper before the relative-arg fail-closed decision.
+            "import subprocess\ndef f(P):\n    subprocess.run(['timeout', '1', 'cat', 'passwd'], cwd=P)",
+        ],
+    )
+    def test_wrapped_reader_dynamic_cwd_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # sys.meta_path.__class__.pop(sys.meta_path, 0): the receiver is the list type reached
+            # via .__class__, not the bare `list` name / type(...) call.
+            "import sys\nsys.meta_path.__class__.pop(sys.meta_path, 0)",
+            "import sys\nsys.modules.__class__.pop(sys.modules, '_io')",
+        ],
+    )
+    def test_class_unbound_method_mutation_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A dangerous re-export fetched by NAME off a call-returned module, then a sink call.
+            "getattr(__import__('pathlib'), 'os').system('touch /tmp/x')",
+            "vars(__import__('pathlib'))['os'].system('touch /tmp/x')",
+            "__import__('pathlib').__dict__['os'].system('touch /tmp/x')",
+            "import importlib\ngetattr(importlib.import_module('pathlib'), 'subprocess').run(['rm', '-rf', '/tmp/x'])",
+        ],
+    )
+    def test_reexport_getattr_vars_module_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # git stuck short path option: git archive -o/tmp/x glues the escaping output path onto
+            # the short flag with no space.
+            "import os\nos.system('git archive -o/tmp/x HEAD')",
+            "import os\nos.system('git archive -O/tmp/outdir HEAD')",
+        ],
+    )
+    def test_git_stuck_short_output_option_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # find / ls enumerators on an EXPANDED path operand: the root the child enumerates
+            # cannot be resolved statically (find ${P:-/root/.ssh} ..., ls $SECRET).
+            "import os\nos.system('find ${P:-/root/.ssh} -type f')",
+            "import os\nos.system('ls $SECRET')",
+            "import os\nos.system('find $DIR -type f')",
+        ],
+    )
+    def test_find_ls_expanded_path_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A benign global reassignment, a benign alias, literal find / ls (no expansion), a
+            # relative git output path, benign git archive, a wrapped enumerator under a dynamic
+            # cwd, and a benign getattr on a non-module object must all still pass.
+            "def f():\n    global t\n    t = 5\n    return t",
+            "def f():\n    global t\n    t = print\n    t('hi')\nf()",
+            "import os\nos.system('find . -name \"*.py\"')",
+            "import os\nos.system('ls -la')",
+            "import os\nos.system('ls data/')",
+            "import os\nos.system('find build -type f -name \"*.o\"')",
+            "import os\nos.system('git archive -oout.tar HEAD')",
+            "import os\nos.system('git archive HEAD')",
+            "import subprocess\ndef f(P):\n    subprocess.run(['timeout', '1', 'echo', 'hi'], cwd=P)",
+            "obj = Foo()\ngetattr(obj, 'run')()",
+        ],
+    )
+    def test_round40_benign_allowed(self, code):
+        _ok(code)
