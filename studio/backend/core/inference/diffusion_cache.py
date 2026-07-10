@@ -119,6 +119,7 @@ def auto_cache_quality(family: Optional[str]) -> str:
     """The cache quality preset an UNSET request resolves to for ``family``."""
     return _FAMILY_AUTO_CACHE_QUALITY.get(str(family or "").strip().lower(), CQ_BALANCED)
 
+
 # The auto policy's step-count bar: FBCache's win scales with step count (each skipped
 # step is a larger quality hit on a short trajectory), so auto engages it only at 20+
 # steps -- full "dev"-style schedules (28+) qualify, distilled turbo models (4-9) never do.

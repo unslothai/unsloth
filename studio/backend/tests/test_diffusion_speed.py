@@ -536,7 +536,12 @@ def test_fp16_accum_allowed_on_fp16_dtype_under_max(monkeypatch):
 # ── inductor precision-cast emulation (compile-vs-eager numeric parity) ─────────
 
 
-def _stub_inductor_config(monkeypatch, torch, *, emulate = False):
+def _stub_inductor_config(
+    monkeypatch,
+    torch,
+    *,
+    emulate = False,
+):
     """Attach a fake ``_inductor.config`` to the stubbed torch module (diffusion_speed
     resolves it as attributes off the imported torch, never via sys.modules -- so the
     real torch._inductor lingering in sys.modules cannot leak into stubbed tests)."""

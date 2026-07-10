@@ -135,9 +135,7 @@ _TE_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {}
 # measured out-of-bar trajectory drift for zero speed win on the video families below.
 # Unlike the deny table this only steers the AUTO default; an explicit scheme request
 # (text_encoder_quant="fp8_dynamic") is still honored verbatim.
-_TE_AUTO_DENSE_FAMILIES: frozenset[str] = frozenset(
-    {"hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"}
-)
+_TE_AUTO_DENSE_FAMILIES: frozenset[str] = frozenset({"hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"})
 
 # Map a TE torchao scheme to the transformer smoke-probe scheme (same torchao GEMM), so ``auto``
 # degrades gracefully when a build lacks a kernel. Layerwise fp8 has no torchao GEMM to probe.

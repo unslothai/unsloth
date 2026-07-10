@@ -47,7 +47,11 @@ def test_normalize_rejects_unknown():
 
 # ── fakes ─────────────────────────────────────────────────────────────────────────
 class _FakeDevice:
-    def __init__(self, type_ = "cuda", index = 0):
+    def __init__(
+        self,
+        type_ = "cuda",
+        index = 0,
+    ):
         self.type = type_
         self.index = index
 
@@ -55,7 +59,12 @@ class _FakeDevice:
 class _FakeTensor:
     """Just enough tensor for the proxy's _move / guider resolve paths."""
 
-    def __init__(self, device, tag = "t", nbytes = 8):
+    def __init__(
+        self,
+        device,
+        tag = "t",
+        nbytes = 8,
+    ):
         self.device = device
         self.tag = tag
         self._nbytes = nbytes
@@ -66,12 +75,20 @@ class _FakeTensor:
     def element_size(self):
         return 1
 
-    def to(self, device, non_blocking = False):
+    def to(
+        self,
+        device,
+        non_blocking = False,
+    ):
         return _FakeTensor(device, tag = self.tag, nbytes = self._nbytes)
 
 
 class _FakeDiT:
-    def __init__(self, device_index = 0, fail_enable = False):
+    def __init__(
+        self,
+        device_index = 0,
+        fail_enable = False,
+    ):
         self._device = _FakeDevice(index = device_index)
         self.fail_enable = fail_enable
         self.enabled_with = None
@@ -82,9 +99,9 @@ class _FakeDiT:
         self._mods = [self, types.SimpleNamespace(name = f"block{device_index}")]
 
     def parameters(self):
-        return iter([types.SimpleNamespace(
-            numel = lambda: 100, element_size = lambda: 2, device = self._device
-        )])
+        return iter(
+            [types.SimpleNamespace(numel = lambda: 100, element_size = lambda: 2, device = self._device)]
+        )
 
     def modules(self):
         return list(self._mods)
@@ -110,7 +127,12 @@ class _FakeDiT:
         return (_FakeTensor(self._device, tag = "pred"),)
 
 
-def _stub_torch(monkeypatch, *, device_count = 2, free = None):
+def _stub_torch(
+    monkeypatch,
+    *,
+    device_count = 2,
+    free = None,
+):
     torch = types.ModuleType("torch")
     torch.Tensor = _FakeTensor
     free = free if free is not None else {}
@@ -129,14 +151,18 @@ def _stub_torch(monkeypatch, *, device_count = 2, free = None):
     return torch
 
 
-def _make_proxy(monkeypatch, *, compiled = False, explicit_on = False, fail_enable = False):
+def _make_proxy(
+    monkeypatch,
+    *,
+    compiled = False,
+    explicit_on = False,
+    fail_enable = False,
+):
     _stub_torch(monkeypatch)
     primary = _FakeDiT(device_index = 0)
     replica = _FakeDiT(device_index = 1, fail_enable = fail_enable)
     guider = types.SimpleNamespace(forward = lambda *a, **k: ("combined", a, k), num_conditions = 2)
-    proxy = CFGParallelProxy(
-        primary, replica, guider, compiled = compiled, explicit_on = explicit_on
-    )
+    proxy = CFGParallelProxy(primary, replica, guider, compiled = compiled, explicit_on = explicit_on)
     return proxy, primary, replica, guider
 
 
@@ -294,9 +320,7 @@ def test_replica_enable_failure_reraises_and_breaks(monkeypatch):
     with pytest.raises(RuntimeError):
         proxy.enable_cache({})
     assert primary.enabled_with == {}  # primary was hooked before the replica failed
-    plan = proxy.plan_generation(
-        cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33
-    )
+    plan = proxy.plan_generation(cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33)
     assert plan["enabled"] is False
     proxy.shutdown()
 
@@ -358,14 +382,10 @@ def test_thread_dispatch_resolves_through_guider(monkeypatch):
 # ── per-generation dispatch policy ──────────────────────────────────────────────────
 def test_plan_parallel_on_eager_settles_to_thread(monkeypatch):
     proxy, _, _, _ = _make_proxy(monkeypatch, compiled = False)
-    plan = proxy.plan_generation(
-        cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33
-    )
+    plan = proxy.plan_generation(cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33)
     assert plan["enabled"] is True and plan["dispatch"] == "inline"  # first run: compile-safe
     proxy.note_generation_done()
-    plan = proxy.plan_generation(
-        cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33
-    )
+    plan = proxy.plan_generation(cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33)
     assert plan["dispatch"] == "thread"  # settled key: full overlap
     proxy.shutdown()
 
@@ -391,9 +411,7 @@ def test_plan_sequential_for_compiled_stack_even_with_cache(monkeypatch):
 
 def test_plan_parallel_for_eager_stack(monkeypatch):
     proxy, _, _, _ = _make_proxy(monkeypatch, compiled = False)
-    plan = proxy.plan_generation(
-        cache_engaged = False, steps = 10, width = 1280, height = 720, frames = 33
-    )
+    plan = proxy.plan_generation(cache_engaged = False, steps = 10, width = 1280, height = 720, frames = 33)
     assert plan["enabled"] is True and plan["lossless"] is True
     proxy.shutdown()
 
@@ -402,9 +420,7 @@ def test_plan_requires_cfg_conditions(monkeypatch):
     # guidance ~1 collapses the guider to one condition: nothing to overlap.
     proxy, _, _, guider = _make_proxy(monkeypatch)
     guider.num_conditions = 1
-    plan = proxy.plan_generation(
-        cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33
-    )
+    plan = proxy.plan_generation(cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33)
     assert plan["enabled"] is False
     proxy.shutdown()
 
@@ -413,9 +429,7 @@ def test_shape_change_forces_inline_once(monkeypatch):
     proxy, _, _, _ = _make_proxy(monkeypatch)
     proxy.plan_generation(cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33)
     proxy.note_generation_done()
-    plan = proxy.plan_generation(
-        cache_engaged = True, steps = 30, width = 960, height = 544, frames = 33
-    )
+    plan = proxy.plan_generation(cache_engaged = True, steps = 30, width = 960, height = 544, frames = 33)
     assert plan["dispatch"] == "inline"  # new shape may recompile: serialize
     proxy.shutdown()
 
@@ -424,9 +438,7 @@ def test_cancelled_generation_stays_inline(monkeypatch):
     proxy, _, _, _ = _make_proxy(monkeypatch)
     proxy.plan_generation(cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33)
     # No note_generation_done (cancel/failure): the same key must stay inline.
-    plan = proxy.plan_generation(
-        cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33
-    )
+    plan = proxy.plan_generation(cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33)
     assert plan["dispatch"] == "inline"
     proxy.shutdown()
 

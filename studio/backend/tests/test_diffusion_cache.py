@@ -666,7 +666,10 @@ def test_magcache_quality_preset_engages_conservative_params(monkeypatch):
     _stub_diffusers_with_magcache(monkeypatch)
     t = _MixinTransformer()
     engaged = apply_step_cache(
-        _pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p", steps = 50,
+        _pipe(t),
+        mode = "magcache",
+        family = "hunyuanvideo-1.5-720p",
+        steps = 50,
         quality = "quality",
     )
     assert engaged == TC_MAGCACHE
@@ -682,8 +685,12 @@ def test_magcache_explicit_threshold_beats_the_preset(monkeypatch):
     _stub_diffusers_with_magcache(monkeypatch)
     t = _MixinTransformer()
     apply_step_cache(
-        _pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p", steps = 50,
-        quality = "fast", threshold = 0.05,
+        _pipe(t),
+        mode = "magcache",
+        family = "hunyuanvideo-1.5-720p",
+        steps = 50,
+        quality = "fast",
+        threshold = 0.05,
     )
     assert t.enabled_with.threshold == 0.05
     assert t.enabled_with.max_skip_steps == _MAGCACHE_QUALITY_PRESETS[CQ_FAST][1]
@@ -710,7 +717,10 @@ def test_toggle_threads_quality_through(monkeypatch):
     _stub_diffusers_with_magcache(monkeypatch)
     t = _ToggleTransformer()
     maybe_toggle_step_cache(
-        _pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p",
+        _pipe(t),
+        steps = 30,
+        mode = TC_MAGCACHE,
+        family = "hunyuanvideo-1.5-720p",
         quality = "quality",
     )
     assert t.enabled_with.threshold == _MAGCACHE_QUALITY_PRESETS[CQ_QUALITY][0]
@@ -741,7 +751,12 @@ class _BoundInner:
         return "eager"
 
 
-def _hooked_block(*, compiled = True, hook_name = "mag_cache_block_hook", bound = True):
+def _hooked_block(
+    *,
+    compiled = True,
+    hook_name = "mag_cache_block_hook",
+    bound = True,
+):
     inner = _BoundInner()
     orig = inner.forward if bound else functools.partial(_BoundInner.forward, inner)
     hook = types.SimpleNamespace(fn_ref = types.SimpleNamespace(original_forward = orig))
@@ -869,9 +884,7 @@ def test_apply_step_cache_arms_compiled_blocks_on_toggle(monkeypatch):
             return [block]
 
     t = _T()
-    engaged = apply_step_cache(
-        _pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p", steps = 50
-    )
+    engaged = apply_step_cache(_pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p", steps = 50)
     assert engaged == TC_MAGCACHE
     assert hook.fn_ref.original_forward is not orig
     assert hook._unsloth_orig_inner is orig

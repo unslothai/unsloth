@@ -197,7 +197,11 @@ class CFGParallelProxy:
 
         orig_forward = self._orig_guider_forward
 
-        def _device_homogenising_forward(pred_cond, pred_uncond = None, **kw):
+        def _device_homogenising_forward(
+            pred_cond,
+            pred_uncond = None,
+            **kw,
+        ):
             return orig_forward(_resolve(pred_cond), _resolve(pred_uncond), **kw)
 
         guider.forward = _device_homogenising_forward
@@ -321,7 +325,6 @@ class CFGParallelProxy:
 
     def _worker_loop(self) -> None:
         import torch
-
         while True:
             job = self._jobs.get()
             if job is None:  # shutdown sentinel
@@ -372,16 +375,31 @@ def _install_threadsafe_cudnn_attention(logger: Any = None) -> bool:
         orig = ad._native_cudnn_attention
 
         def _threadsafe_cudnn_attention(
-            query, key, value, attn_mask = None, dropout_p = 0.0, is_causal = False,
-            scale = None, enable_gqa = False, return_lse = False, _parallel_config = None,
+            query,
+            key,
+            value,
+            attn_mask = None,
+            dropout_p = 0.0,
+            is_causal = False,
+            scale = None,
+            enable_gqa = False,
+            return_lse = False,
+            _parallel_config = None,
         ):
             # Fall back to the stock (context-managed) path for the shapes/options the
             # direct op does not cover; the video DiT hot path never takes them.
             if _parallel_config is not None or return_lse or enable_gqa or dropout_p:
                 return orig(
-                    query, key, value, attn_mask = attn_mask, dropout_p = dropout_p,
-                    is_causal = is_causal, scale = scale, enable_gqa = enable_gqa,
-                    return_lse = return_lse, _parallel_config = _parallel_config,
+                    query,
+                    key,
+                    value,
+                    attn_mask = attn_mask,
+                    dropout_p = dropout_p,
+                    is_causal = is_causal,
+                    scale = scale,
+                    enable_gqa = enable_gqa,
+                    return_lse = return_lse,
+                    _parallel_config = _parallel_config,
                 )
             q, k, v = (x.permute(0, 2, 1, 3).contiguous() for x in (query, key, value))
             out = torch.ops.aten._scaled_dot_product_cudnn_attention(
@@ -513,12 +531,16 @@ def maybe_enable_cfg_parallel(
 
     # ── build the replica and mirror the primary's levers ──
     try:
-        replica = type(primary).from_pretrained(
-            transformer_source,
-            subfolder = "transformer",
-            torch_dtype = dtype,
-            token = hf_token or None,
-        ).to(f"cuda:{secondary}")
+        replica = (
+            type(primary)
+            .from_pretrained(
+                transformer_source,
+                subfolder = "transformer",
+                torch_dtype = dtype,
+                token = hf_token or None,
+            )
+            .to(f"cuda:{secondary}")
+        )
         replica.eval()
     except Exception as exc:  # noqa: BLE001 -- download/VRAM race: stay single-device
         _warn(logger, "cfg-parallel replica load", exc)
@@ -571,7 +593,11 @@ def maybe_enable_cfg_parallel(
     return proxy, f"engaged: DiT replica on cuda:{secondary}"
 
 
-def teardown_cfg_parallel(pipe: Any, proxy: Any, logger: Any = None) -> None:
+def teardown_cfg_parallel(
+    pipe: Any,
+    proxy: Any,
+    logger: Any = None,
+) -> None:
     """Restore the pipe to its single-device shape and free the replica's VRAM.
     Safe to call with a half-built or foreign object; never raises."""
     try:
@@ -601,10 +627,11 @@ def teardown_cfg_parallel(pipe: Any, proxy: Any, logger: Any = None) -> None:
 
 def _invalidate_registry(module: Any) -> None:
     from .diffusion_cache import _invalidate_child_registry_cache
-
     _invalidate_child_registry_cache(module)
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:
     if logger is not None:
-        logger.warning("diffusion.cfg_parallel: %s unavailable (%s); running single-device", what, exc)
+        logger.warning(
+            "diffusion.cfg_parallel: %s unavailable (%s); running single-device", what, exc
+        )

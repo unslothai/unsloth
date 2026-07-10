@@ -116,7 +116,6 @@ def _inductor_config() -> Any:
     reports None instead of picking a stale real module out of ``sys.modules``."""
     try:
         import torch
-
         return getattr(getattr(torch, "_inductor", None), "config", None)
     except Exception:  # noqa: BLE001 — no inductor -> nothing to snapshot/set
         return None
@@ -392,7 +391,6 @@ def _compile_repeated_blocks(
         # this module, but keep the dependency one-directional at import time.
         try:
             from .diffusion_cache import _compile_hooked_block_inners
-
             _compile_hooked_block_inners(transformer, logger)
         except Exception as exc:  # noqa: BLE001 — optimisation only
             _warn(logger, "cache-hook inner compile", exc)
