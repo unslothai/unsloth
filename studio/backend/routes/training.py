@@ -131,9 +131,7 @@ async def start_training(
             return TrainingJobResponse(
                 job_id = existing_job_id or "",
                 status = "error",
-                message = (
-                    "Training is already in progress. Stop it or add this run to the queue."
-                ),
+                message = ("Training is already in progress. Stop it or add this run to the queue."),
                 error = "Training already active",
             )
 
