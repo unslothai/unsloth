@@ -206,6 +206,14 @@ def test_gate_disabled_by_request(monkeypatch):
     assert proxy is None and reason == "disabled by request"
 
 
+def test_gate_auto_respects_speed_off(monkeypatch):
+    # Speed=off is the reference contract: auto must not reserve a second GPU for a
+    # speed lever. Only an explicit cfg_parallel=on overrides (covered by the
+    # install-failure test below, which runs speed_active=False with requested="on").
+    proxy, reason = _gate(monkeypatch, _CtxPipe(_FakeDiT()), _fam(), speed_active = False)
+    assert proxy is None and "speed=off" in reason
+
+
 def test_gate_family_allowlist(monkeypatch):
     _stub_torch(monkeypatch)
     proxy, reason = _gate(monkeypatch, _CtxPipe(_FakeDiT()), _fam(name = "wan2.2-ti2v-5b"))
@@ -490,7 +498,10 @@ def test_install_failure_after_cudnn_patch_restores_it(monkeypatch):
 
     pipe = _CtxPipe(_LoadableDiT())
     pipe.guider = None  # raises AFTER the patch install
-    proxy, reason = _gate(monkeypatch, pipe, _fam(), speed_active = False, attention_backend = None)
+    # requested="on" also proves the explicit override passes the speed=off auto gate.
+    proxy, reason = _gate(
+        monkeypatch, pipe, _fam(), requested = "on", speed_active = False, attention_backend = None
+    )
     assert proxy is None and reason == "replica install failed"
     assert calls == ["install", "restore"]
 

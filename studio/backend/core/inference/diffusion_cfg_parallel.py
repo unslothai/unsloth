@@ -487,6 +487,12 @@ def maybe_enable_cfg_parallel(
     if mode == CFG_PARALLEL_OFF:
         return None, "disabled by request"
     explicit_on = mode == CFG_PARALLEL_ON
+    if not explicit_on and not speed_active:
+        # Speed=off is the reference contract: every auto speed lever resolves off (the
+        # loader pins the quant tri-states to "off" the same way), and CFG parallel both
+        # reserves a second GPU and is a speed lever. Auto therefore never engages it;
+        # an explicit cfg_parallel=on stays honored as a deliberate override.
+        return None, "speed=off keeps auto CFG parallel off; request cfg_parallel=on to override"
     fam_name = str(getattr(fam, "name", "") or "").strip().lower()
     if not explicit_on and fam_name not in _CFG_PARALLEL_FAMILY_ALLOW:
         return None, "family not in the measured allowlist"
