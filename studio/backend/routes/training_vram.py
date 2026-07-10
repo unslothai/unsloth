@@ -196,18 +196,23 @@ def can_load_chat_during_training(
     max_seq_length: int,
     requested_gpu_ids: Optional[List[int]],
     is_gguf: bool = False,
-    required_override_gb: Optional[float] = None,
-    tensor_split: Optional[List[float]] = None,
-    companion_gb: float = 0.0,
+    gguf_main_gb: Optional[float] = None,
+    gguf_companion_gb: float = 0.0,
+    gguf_single_device: bool = False,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Decide if a NEW chat model can load without OOMing active training (inverse
     of can_keep_chat_during_training: training is already resident, so size the
-    chat model against the free VRAM that remains). Sizes/places it the same way
-    the loader will: HF auto reuses auto_select_gpu_ids; HF explicit requires an
-    even-share per-GPU floor for device_map="balanced"; GGUF sizes from
-    required_override_gb over the visible pool. `load_in_4bit` must be effective
-    (LoRA can flip 4-bit -> 16-bit). Non-CUDA allows the load; default-deny on any
-    CUDA case it can't size, so a load never OOMs training."""
+    chat model against the free VRAM that remains). `load_in_4bit` must be
+    effective (LoRA can flip 4-bit -> 16-bit). Non-CUDA allows; default-deny on
+    any CUDA case it can't size, so a load never OOMs training.
+
+    HF paths reuse the loader's own sizing (auto selector, or the balanced
+    per-GPU floor for explicit picks). GGUF uses a conservative upper bound from
+    the caller: ``gguf_main_gb`` (weights + KV, offload-scaled) DISTRIBUTES
+    across the allowed GPUs (aggregate check), ``gguf_companion_gb`` (mmproj /
+    drafter) lands whole on ONE device (min-free-device check, order-independent
+    so no first/physical-id guessing), and ``gguf_single_device`` (diffusion or
+    a manual per-GPU split) requires the whole footprint on one device."""
     try:
         from utils.hardware import (
             DeviceType,
@@ -252,23 +257,6 @@ def can_load_chat_during_training(
                 "needed_gb": needed_gb,
             }
 
-        # Explicit GPUs, or GGUF: size directly and check live free VRAM.
-        required_gb = required_override_gb
-        if required_gb is None:
-            required_gb, _meta = estimate_required_model_memory_gb(model_name, **est_kwargs)
-        if required_gb is None:
-            mode = "explicit" if requested_gpu_ids else "gguf"
-            return False, {"mode": mode, "reason": "estimate_unavailable"}
-
-        if is_gguf and required_gb <= 0:
-            # Deliberate zero-offload (manual gpu_layers=0, no companions): the
-            # server holds no model/KV VRAM -- the same load the unload path
-            # skips as CPU-only -- so don't hold it to the safety floor a GPU
-            # load needs; that would 409 exactly when the GPUs are busy, the
-            # one case gpu_layers=0 exists for.
-            mode = "explicit" if requested_gpu_ids else "gguf"
-            return True, {"mode": mode, "reason": "cpu_only", "required_gb": 0.0}
-
         free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
         if requested_gpu_ids:
             # Invalid ids -> load_model 400s first, so don't block; missing id = 0.
@@ -277,58 +265,56 @@ def can_load_chat_during_training(
             except ValueError:
                 return True, {"mode": "explicit", "reason": "invalid_gpu_ids"}
             free_vals = [free_by_index.get(i, 0.0) for i in resolved]
-            # llama-server pins CUDA_VISIBLE_DEVICES to the SORTED pick, so a
-            # manual --tensor-split maps positionally to ascending GPU ids --
-            # not to the request order free_vals follows.
-            split_order_free = [free_by_index.get(i, 0.0) for i in sorted(resolved)]
             mode = "explicit"
         else:
-            # GGUF: llama.cpp picks the GPU(s); any visible GPU is a candidate.
             free_vals = list(free_by_index.values())
-            split_order_free = free_vals
-            mode = "gguf"
+            mode = "gguf" if is_gguf else "explicit"
 
         if not free_vals:
             return False, {"mode": mode, "reason": "no_visible_gpus"}
 
         ranked = sorted(free_vals, reverse = True)
         usable_gb = ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:])
+        min_free_gb = min(free_vals)
+
+        if is_gguf:
+            if gguf_main_gb is None:
+                return False, {"mode": mode, "reason": "estimate_unavailable"}
+            if gguf_main_gb <= 0 and gguf_companion_gb <= 0:
+                # Deliberate zero-offload (CPU-only): holds no VRAM, so don't
+                # hold it to the safety floor a GPU load needs -- that would 409
+                # exactly when the GPUs are busy, the case gpu_layers=0 exists for.
+                return True, {"mode": mode, "reason": "cpu_only"}
+            needed_main = gguf_main_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
+            if gguf_single_device:
+                # Diffusion / manual split: everything on one device.
+                needed = (gguf_main_gb + gguf_companion_gb) * SAFETY_MARGIN + KEEP_FLOOR_GB
+                fits = min_free_gb >= needed
+            else:
+                # Main distributes (aggregate); companions land on one device.
+                fits = usable_gb >= needed_main and min_free_gb >= gguf_companion_gb * SAFETY_MARGIN
+            return fits, {
+                "mode": mode,
+                "required_gb": round(gguf_main_gb + gguf_companion_gb, 3),
+                "companion_gb": round(gguf_companion_gb, 3),
+                "single_device": gguf_single_device,
+                "usable_gb": round(usable_gb, 3),
+                "needed_gb": round(needed_main, 3),
+                "min_free_gb": round(min_free_gb, 3),
+            }
+
+        # HF explicit: device_map="balanced" shards, so an even-share floor stops
+        # one near-full GPU hiding behind aggregate capacity.
+        required_gb, _meta = estimate_required_model_memory_gb(model_name, **est_kwargs)
+        if required_gb is None:
+            return False, {"mode": "explicit", "reason": "estimate_unavailable"}
         needed_gb = required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
         aggregate_fits = usable_gb >= needed_gb
-
-        # device_map="balanced" shards across GPUs: an even-share floor stops one
-        # near-full GPU hiding behind aggregate capacity. GGUF self-places (llama.cpp
-        # splits by free VRAM within the allowed set), so no floor even when the
-        # request pins explicit gpu_ids -- UNLESS it also pins a manual
-        # --tensor-split, which overrides free-VRAM placement with fixed shares
-        # that can land on a nearly full GPU.
-        min_free_gb = min(free_vals)
         per_gpu_fits = True
-        if mode == "explicit" and not is_gguf and len(free_vals) > 1:
+        if len(free_vals) > 1:
             per_gpu_fits = min_free_gb >= needed_gb / len(free_vals)
-        elif is_gguf and tensor_split and len(free_vals) > 1:
-            shares = [max(float(s), 0.0) for s in tensor_split]
-            total = sum(shares)
-            if len(shares) == len(split_order_free) and total > 0:
-                per_gpu_fits = all(
-                    free >= needed_gb * share / total
-                    for free, share in zip(split_order_free, shares)
-                )
-            # A split that doesn't match the GPU count (or is all-zero) is
-            # dropped by the loader before launch, so llama.cpp self-places by
-            # free VRAM -- no per-GPU check, like the no-split case.
-
-        # Companions (mmproj / a drafter) load whole on the FIRST device of the
-        # allowed set (CLIP logs "using CUDA0"; no split support), so that
-        # device must fit them regardless of the aggregate -- a near-full first
-        # GPU can't hide behind a free second one.
-        companion_fits = True
-        if is_gguf and companion_gb > 0 and len(free_vals) > 1:
-            first_free = split_order_free[0]
-            companion_fits = first_free >= companion_gb
-
-        return aggregate_fits and per_gpu_fits and companion_fits, {
-            "mode": mode,
+        return aggregate_fits and per_gpu_fits, {
+            "mode": "explicit",
             "required_gb": round(required_gb, 3),
             "usable_gb": round(usable_gb, 3),
             "needed_gb": round(needed_gb, 3),

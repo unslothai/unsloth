@@ -162,19 +162,22 @@ class TestCanLoadExplicitHF(_GpuCacheResetMixin, unittest.TestCase):
 
 
 class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
+    # Conservative upper bound: main_gb (weights + KV, offload-scaled)
+    # DISTRIBUTES across the allowed GPUs; companion_gb lands whole on ONE
+    # device (min-free check); single_device (diffusion / manual split) needs
+    # the whole footprint on one device. SAFETY_MARGIN 1.15, KEEP_FLOOR 4.0,
+    # multi-GPU aggregate = best + 0.85 * rest.
     def _run(
         self,
         *,
         devices,
-        required_override = None,
-        estimate = None,
-        gpu_ids = None,
-        tensor_split = None,
+        main_gb = None,
         companion_gb = 0.0,
+        single_device = False,
+        gpu_ids = None,
     ):
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
-            patch("utils.hardware.estimate_required_model_memory_gb", return_value = (estimate, {})),
             patch("utils.hardware.get_visible_gpu_utilization", return_value = {"devices": devices}),
             patch("utils.hardware.resolve_requested_gpu_ids", return_value = list(gpu_ids or [])),
             patch("utils.hardware.auto_select_gpu_ids") as auto_mock,
@@ -186,128 +189,93 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
                 max_seq_length = 0,
                 requested_gpu_ids = gpu_ids,
                 is_gguf = True,
-                required_override_gb = required_override,
-                tensor_split = tensor_split,
-                companion_gb = companion_gb,
+                gguf_main_gb = main_gb,
+                gguf_companion_gb = companion_gb,
+                gguf_single_device = single_device,
             )
         return ok, info, auto_mock
 
-    def test_override_fits(self):
-        ok, info, auto_mock = self._run(devices = _devices((0, 80, 20)), required_override = 10.0)
+    def test_main_fits_aggregate(self):
+        # free [45, 10]; main 20 -> needed 27, aggregate 45 + 10*0.85 = 53.5 -> fit.
+        ok, info, auto_mock = self._run(devices = _devices((0, 80, 35), (1, 80, 70)), main_gb = 20.0)
         self.assertTrue(ok)
         self.assertEqual(info["mode"], "gguf")
         auto_mock.assert_not_called()  # GGUF never uses the HF auto selector
 
-    def test_no_per_gpu_floor_for_gguf(self):
-        # free [45, 10], override 20 -> needed 27, aggregate 53.5 >= 27. GGUF self-
-        # places, so the per-GPU floor that would block HF doesn't apply -> allow.
-        ok, _, _ = self._run(devices = _devices((0, 80, 35), (1, 80, 70)), required_override = 20.0)
-        self.assertTrue(ok)
-
-    def test_no_per_gpu_floor_for_gguf_explicit_pick(self):
-        # Same free [45, 10] shape, but with the GPUs pinned via gpu_ids. llama.cpp
-        # still self-places by free VRAM within the allowed set, so the HF
-        # balanced-shard floor (27/2 = 13.5 > 10) must not fire -> allow.
-        ok, info, _ = self._run(
-            devices = _devices((0, 80, 35), (1, 80, 70)),
-            required_override = 20.0,
-            gpu_ids = [0, 1],
-        )
-        self.assertTrue(ok)
-        self.assertEqual(info["mode"], "explicit")
-
-    def test_manual_even_split_reenables_per_gpu_check(self):
-        # A manual --tensor-split overrides free-VRAM placement: [1, 1] puts half
-        # (13.5 of needed 27) on the 10 GB-free GPU even though the aggregate
-        # fits -> refuse, would OOM training.
-        ok, _, _ = self._run(
-            devices = _devices((0, 80, 35), (1, 80, 70)),
-            required_override = 20.0,
-            tensor_split = [1, 1],
-        )
+    def test_main_over_aggregate_refuses(self):
+        # free [10, 10]; main 30 -> needed 38.5, aggregate 18.5 -> refuse.
+        ok, _, _ = self._run(devices = _devices((0, 80, 70), (1, 80, 70)), main_gb = 30.0)
         self.assertFalse(ok)
 
-    def test_manual_weighted_split_that_fits_passes(self):
-        # [4, 1] charges each GPU its actual share (21.6 / 5.4 of needed 27);
-        # both fit their free VRAM (45 / 10) -> allow.
-        ok, _, _ = self._run(
-            devices = _devices((0, 80, 35), (1, 80, 70)),
-            required_override = 20.0,
-            tensor_split = [4, 1],
+    def test_companion_checked_against_min_free_device(self):
+        # Main 20 fits the aggregate, but a companion lands whole on one device.
+        # min free = 10; companion 2 -> 2.3 <= 10 (allow); companion 10 -> 11.5 > 10.
+        ok_small, _, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70)), main_gb = 20.0, companion_gb = 2.0
         )
-        self.assertTrue(ok)
-
-    def test_manual_split_with_explicit_pick_checks_shares(self):
-        # The split check also covers picks routed through the explicit branch.
-        ok, info, _ = self._run(
-            devices = _devices((0, 80, 35), (1, 80, 70)),
-            required_override = 20.0,
-            gpu_ids = [0, 1],
-            tensor_split = [1, 1],
+        ok_big, _, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70)), main_gb = 20.0, companion_gb = 10.0
         )
-        self.assertFalse(ok)
-        self.assertEqual(info["mode"], "explicit")
+        self.assertTrue(ok_small)
+        self.assertFalse(ok_big)
 
-    def test_manual_split_maps_shares_to_sorted_pick(self):
-        # llama-server pins CUDA to the SORTED pick, so with gpu_ids [1, 0] the
-        # split [1, 4] puts the big share on GPU 1 (10 GB free -> needs 21.6).
-        # Zipping in request order would wrongly allow it.
-        ok, _, _ = self._run(
-            devices = _devices((0, 80, 35), (1, 80, 70)),
-            required_override = 20.0,
-            gpu_ids = [1, 0],
-            tensor_split = [1, 4],
+    def test_companion_check_is_order_independent(self):
+        # min-free is the same whichever GPU is full, so no first/physical-id
+        # guessing: the tight GPU first or last gives the same verdict.
+        first_full, _, _ = self._run(
+            devices = _devices((0, 80, 78), (1, 80, 35)), main_gb = 5.0, companion_gb = 8.0
         )
-        self.assertFalse(ok)
-
-    def test_manual_split_length_mismatch_treated_as_no_split(self):
-        # A split that doesn't match the GPU count is dropped by the loader
-        # before launch, so llama.cpp self-places by free VRAM: the guard sizes
-        # it like the no-split case (aggregate only, no floor) -> allow.
-        ok, _, _ = self._run(
-            devices = _devices((0, 80, 35), (1, 80, 70)),
-            required_override = 20.0,
-            tensor_split = [1, 1, 1],
+        last_full, _, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 78)), main_gb = 5.0, companion_gb = 8.0
         )
-        self.assertTrue(ok)
+        self.assertEqual(first_full, last_full)
+        self.assertFalse(first_full)  # min free 2 < 8*1.15
 
-    def test_companion_must_fit_first_device(self):
-        # Companions (mmproj / a drafter) load whole on the FIRST device of the
-        # allowed set (CLIP logs "using CUDA0"), so a near-full first GPU must
-        # refuse even when the aggregate passes -- and pass when it fits.
-        ok_full_first, _, _ = self._run(
-            devices = _devices((0, 80, 79), (1, 80, 35)),
-            required_override = 20.0,
+    def test_single_device_requires_one_gpu_holds_all(self):
+        # Diffusion / manual split: no distribution. main 20 + companion 2 ->
+        # needed 29.3. free [45, 10] aggregate is huge but min free 10 -> refuse;
+        # [45, 45] -> allow.
+        refuse, _, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70)),
+            main_gb = 20.0,
             companion_gb = 2.0,
+            single_device = True,
         )
-        ok_free_first, _, _ = self._run(
-            devices = _devices((0, 80, 35), (1, 80, 70)),
-            required_override = 20.0,
+        allow, _, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 35)),
+            main_gb = 20.0,
             companion_gb = 2.0,
+            single_device = True,
         )
-        self.assertFalse(ok_full_first)
-        self.assertTrue(ok_free_first)
+        self.assertFalse(refuse)
+        self.assertTrue(allow)
 
-    def test_zero_estimate_bypasses_floor(self):
-        # Deliberate zero-offload (manual gpu_layers=0, no companions): estimate
-        # 0 means no VRAM held, so even near-full GPUs (free 1 GB < the 4 GB
-        # safety floor) must not 409 the load.
-        ok, info, _ = self._run(devices = _devices((0, 80, 79)), required_override = 0.0)
+    def test_zero_estimate_is_cpu_only(self):
+        # Deliberate zero-offload (gpu_layers=0, no companions): holds no VRAM,
+        # so near-full GPUs (free 1 GB < the 4 GB floor) must not 409 the load.
+        ok, info, _ = self._run(devices = _devices((0, 80, 79)), main_gb = 0.0)
         self.assertTrue(ok)
         self.assertEqual(info["reason"], "cpu_only")
 
-    def test_zero_estimate_bypasses_floor_with_explicit_pick(self):
+    def test_zero_main_still_checks_companion(self):
+        # gpu_layers=0 with a vision projector: main 0 but the companion still
+        # lands on the GPU. free 2 < 3*1.15 -> refuse; free 4 -> allow.
+        refuse, _, _ = self._run(devices = _devices((0, 80, 78)), main_gb = 0.0, companion_gb = 3.0)
+        allow, _, _ = self._run(devices = _devices((0, 80, 76)), main_gb = 0.0, companion_gb = 3.0)
+        self.assertFalse(refuse)
+        self.assertTrue(allow)
+
+    def test_explicit_pick_scopes_to_picked_free(self):
+        # gpu_ids=[0] considers only GPU 0's free (5), not the free GPU 1.
         ok, info, _ = self._run(
-            devices = _devices((0, 80, 79), (1, 80, 79)),
-            required_override = 0.0,
-            gpu_ids = [0, 1],
+            devices = _devices((0, 80, 75), (1, 80, 0)), main_gb = 10.0, gpu_ids = [0]
         )
-        self.assertTrue(ok)
+        self.assertFalse(ok)
         self.assertEqual(info["mode"], "explicit")
 
     def test_estimate_unavailable_refuses(self):
-        # No override and the estimator can't size it -> default-deny.
-        ok, info, _ = self._run(devices = _devices((0, 80, 0)), required_override = None, estimate = None)
+        # main_gb None (the estimator couldn't size it) -> default-deny.
+        ok, info, _ = self._run(devices = _devices((0, 80, 0)), main_gb = None)
         self.assertFalse(ok)
         self.assertEqual(info["reason"], "estimate_unavailable")
 
@@ -342,7 +310,7 @@ class TestCanLoadMisc(_GpuCacheResetMixin, unittest.TestCase):
                 max_seq_length = 0,
                 requested_gpu_ids = None,
                 is_gguf = True,
-                required_override_gb = 8.0,
+                gguf_main_gb = 8.0,
             )
         self.assertFalse(ok)
         self.assertEqual(info["reason"], "no_visible_gpus")
@@ -455,12 +423,14 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         self.assertEqual(exc.exception.status_code, 409)
         self.assertIn("could not be verified", exc.exception.detail)
 
-    def test_gguf_config_passes_is_gguf_and_override(self):
+    def test_gguf_config_passes_main_and_companion_parts(self):
         captured = []
-        config = SimpleNamespace(is_gguf = True)
-        # The estimator returns (total, companion) parts for the guard, so the
-        # companion share can be checked against the first device.
-        with patch.object(self.route, "_estimate_gguf_required_gb", return_value = (12.5, 1.5)):
+        config = SimpleNamespace(is_gguf = True, identifier = "org/repo-GGUF")
+        # The estimator returns (main, companion) parts: main distributes, the
+        # companion lands on one device, so the guard receives them separately.
+        with patch.object(
+            self.route, "_estimate_gguf_required_gb", return_value = (12.5, 1.5)
+        ):
             self._guard(
                 config = config,
                 captured = captured,
@@ -468,8 +438,20 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 decision = (True, {}),
             )
         self.assertEqual(captured[0]["is_gguf"], True)
-        self.assertEqual(captured[0]["required_override_gb"], 12.5)
-        self.assertEqual(captured[0]["companion_gb"], 1.5)
+        self.assertEqual(captured[0]["gguf_main_gb"], 12.5)
+        self.assertEqual(captured[0]["gguf_companion_gb"], 1.5)
+        self.assertFalse(captured[0]["gguf_single_device"])
+
+    def test_gguf_diffusion_marks_single_device(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True, identifier = "unsloth/DiffusionGemma-GGUF")
+        with patch.object(
+            self.route, "_estimate_gguf_required_gb", return_value = (12.5, 0.0)
+        ):
+            self._guard(
+                config = config, captured = captured, training_active = True, decision = (True, {})
+            )
+        self.assertTrue(captured[0]["gguf_single_device"])
 
 
 class TestEffectiveLoadIn4bit(unittest.TestCase):
@@ -624,27 +606,52 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
 
 
 class TestEstimateGgufRequiredGb(unittest.TestCase):
+    """The conservative upper bound: (main_gb, companion_gb). main is weights +
+    KV scaled by the manual offload fraction (gpu_layers=0 -> 0, no header);
+    companions (mmproj + any MTP/draft model) are always charged in full so the
+    guard never under-estimates. An unsizable size returns None (default-deny)."""
+
     @classmethod
     def setUpClass(cls):
         cls.route = _load_inference_route()
 
-    def test_local_sums_split_shards(self):
+    def _local_gguf_cfg(self, path):
+        return SimpleNamespace(
+            gguf_file = str(path),
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = None,
+            gguf_variant = None,
+        )
+
+    def test_local_sums_split_shards_no_companion(self):
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
             (p / "model-00001-of-00002.gguf").write_bytes(b"x" * 1000)
             (p / "model-00002-of-00002.gguf").write_bytes(b"y" * 2000)
-            cfg = SimpleNamespace(
-                gguf_file = str(p / "model-00001-of-00002.gguf"),
-                gguf_mmproj_file = None,
-                gguf_mtp_file = None,
-                gguf_hf_repo = None,
-                gguf_variant = None,
-            )
-            gb = self.route._estimate_gguf_required_gb(cfg)
-        self.assertAlmostEqual(gb, 3000 / (1024**3), places = 9)  # both shards
+            cfg = self._local_gguf_cfg(p / "model-00001-of-00002.gguf")
+            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
+                main_gb, companion_gb = self.route._estimate_gguf_required_gb(cfg)
+        self.assertAlmostEqual(main_gb, 3000 / (1024**3), places = 9)  # both shards
+        self.assertEqual(companion_gb, 0.0)
 
-    def test_remote_threads_token_and_adds_companions(self):
+    def test_local_adds_kv_to_main(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.gguf"
+            p.write_bytes(b"x" * 1000)
+            cfg = self._local_gguf_cfg(p)
+            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 2.0):
+                main_gb, companion_gb = self.route._estimate_gguf_required_gb(
+                    cfg, max_seq_length = 8192
+                )
+        self.assertAlmostEqual(main_gb, 1000 / (1024**3) + 2.0, places = 6)
+        self.assertEqual(companion_gb, 0.0)
+
+    def test_remote_threads_token_and_charges_companions(self):
         import utils.models.model_config as mc
 
         cfg = SimpleNamespace(
@@ -663,17 +670,17 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
         with (
             patch.object(mc, "list_gguf_variants", fake_list),
-            patch.object(
-                self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3
-            ) as comp,
+            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3) as comp,
         ):
-            gb = self.route._estimate_gguf_required_gb(cfg, hf_token = "tok")
+            main_gb, companion_gb = self.route._estimate_gguf_required_gb(cfg, hf_token = "tok")
         self.assertEqual(captured["token"], "tok")  # token threaded for gated repos
-        self.assertAlmostEqual(gb, 12.0, places = 6)  # 10 GB variant + 2 GB companions
+        self.assertAlmostEqual(main_gb, 10.0, places = 6)  # full remote (not downloaded)
+        self.assertAlmostEqual(companion_gb, 2.0, places = 6)
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
 
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
+
         cfg = SimpleNamespace(
             gguf_file = None,
             gguf_mmproj_file = None,
@@ -688,35 +695,9 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         ):
             self.assertIsNone(self.route._estimate_gguf_required_gb(cfg))
 
-    def test_local_adds_kv_cache(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "model.gguf"
-            p.write_bytes(b"x" * 1000)
-            cfg = SimpleNamespace(
-                gguf_file = str(p),
-                gguf_mmproj_file = None,
-                gguf_mtp_file = None,
-                gguf_hf_repo = None,
-                gguf_variant = None,
-            )
-            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 2.0):
-                gb = self.route._estimate_gguf_required_gb(cfg, max_seq_length = 8192)
-        self.assertAlmostEqual(gb, 1000 / (1024**3) + 2.0, places = 6)  # weights + KV
-
-    def _local_gguf_cfg(self, path):
-        return SimpleNamespace(
-            gguf_file = str(path),
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_hf_repo = None,
-            gguf_variant = None,
-        )
-
-    def test_manual_scales_estimate_by_gpu_layer_fraction(self):
-        # Manual offload keeps only gpu_layers/total of the model (weights + KV)
-        # on the GPU; the guard estimate scales down so a CPU-heavy pick isn't
-        # over-blocked. auto mode (the default) must not scale.
+    def test_manual_scales_main_by_gpu_layer_fraction(self):
+        # Manual offload keeps only gpu_layers/total of the main model (weights +
+        # KV) on the GPU; auto (the default) never scales.
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
@@ -728,17 +709,18 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.25),
             ):
                 resident = 1000 / (1024**3) + 2.0
-                manual = self.route._estimate_gguf_required_gb(
+                manual, _ = self.route._estimate_gguf_required_gb(
                     cfg, gpu_memory_mode = "manual", gpu_layers = 8
                 )
-                auto = self.route._estimate_gguf_required_gb(cfg)
+                auto, _ = self.route._estimate_gguf_required_gb(cfg)
         self.assertAlmostEqual(manual, resident * 0.25, places = 6)
-        self.assertAlmostEqual(auto, resident, places = 6)  # default never scales
+        self.assertAlmostEqual(auto, resident, places = 6)
 
-    def test_manual_keeps_full_estimate_when_layer_count_unreadable(self):
-        # _manual_gpu_layer_fraction returns None (can't read layers) -> no scale,
-        # the conservative full estimate stands so training can't be OOM'd.
+    def test_manual_keeps_full_main_when_layer_count_unreadable(self):
+        # Fraction None (can't read layers) -> no scale; the full estimate stands
+        # so training can't be OOM'd.
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "model.gguf"
             p.write_bytes(b"x" * 1000)
@@ -747,217 +729,77 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
                 patch.object(self.route, "_manual_gpu_layer_fraction", return_value = None),
             ):
-                gb = self.route._estimate_gguf_required_gb(
+                main_gb, _ = self.route._estimate_gguf_required_gb(
                     cfg, gpu_memory_mode = "manual", gpu_layers = 4
                 )
-        self.assertAlmostEqual(gb, 1000 / (1024**3), places = 9)
+        self.assertAlmostEqual(main_gb, 1000 / (1024**3), places = 9)
 
-    def test_extras_drafter_charged_in_full(self):
-        # An explicit pass-through drafter is a GPU companion too: charge its
-        # file size unscaled, even when the manual fraction zeroes the main
-        # model -- else a gpu_layers=0 load with a drafter takes the guard's
-        # CPU-only bypass while the drafter still lands on the GPU.
+    def test_zero_offload_zeroes_main_keeps_companions(self):
+        # gpu_layers=0: main is CPU-only (0, no header read), but every declared
+        # and extras companion is still charged in full -- they land on the GPU.
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "model.gguf"
-            p.write_bytes(b"x" * 1000)
+            main = Path(d) / "model.gguf"
+            main.write_bytes(b"x" * 1000)
+            mtp = Path(d) / "mtp-model.gguf"
+            mtp.write_bytes(b"m" * 3000)
             draft = Path(d) / "draft.gguf"
             draft.write_bytes(b"y" * 500)
-            cfg = self._local_gguf_cfg(p)
+            cfg = self._local_gguf_cfg(main)
+            cfg.gguf_mtp_file = str(mtp)
+            main_gb, companion_gb = self.route._estimate_gguf_required_gb(
+                cfg,
+                llama_extra_args = ["--model-draft", str(draft)],
+                gpu_memory_mode = "manual",
+                gpu_layers = 0,
+            )
+        self.assertEqual(main_gb, 0.0)  # CPU-only main
+        # config MTP (3000) + extras drafter (500), both charged in full.
+        self.assertAlmostEqual(companion_gb, 3500 / (1024**3), places = 9)
+
+    def test_companions_charged_in_full_regardless_of_mode(self):
+        # A projector / drafter is GPU-resident no matter the spec mode or CPU
+        # flags -- the conservative bound charges it, over-refusing at worst.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            main = Path(d) / "model.gguf"
+            main.write_bytes(b"x" * 1000)
+            proj = Path(d) / "mmproj.gguf"
+            proj.write_bytes(b"p" * 600)
+            cfg = self._local_gguf_cfg(main)
+            cfg.gguf_mmproj_file = str(proj)
             with (
                 patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
                 patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
             ):
-                gb = self.route._estimate_gguf_required_gb(
+                # --no-mmproj / spec off do NOT change the charge (upper bound).
+                _, companion_off = self.route._estimate_gguf_required_gb(
                     cfg,
-                    llama_extra_args = ["--model-draft", str(draft)],
+                    llama_extra_args = ["--no-mmproj"],
                     gpu_memory_mode = "manual",
                     gpu_layers = 0,
                 )
-        self.assertAlmostEqual(gb, 500 / (1024**3), places = 9)
+        self.assertAlmostEqual(companion_off, 600 / (1024**3), places = 9)
 
     def test_unsizable_extras_drafter_denies(self):
-        # An HF-repo drafter can't be sized pre-download: return None so the
-        # guard default-denies instead of under-estimating.
-        import tempfile
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "model.gguf"
-            p.write_bytes(b"x" * 1000)
-            cfg = self._local_gguf_cfg(p)
-            gb = self.route._estimate_gguf_required_gb(
-                cfg, llama_extra_args = ["-hfd", "org/draft-repo"]
-            )
-        self.assertIsNone(gb)
-
-    def test_mtp_companion_skipped_when_spec_mode_never_emits_it(self):
-        # "off"/"ngram" never launch the separate drafter, so it must not count
-        # toward the estimate (an unused drafter would push a CPU-only load over
-        # the guard floor). Default/auto keeps charging it (may emit).
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "model.gguf"
-            p.write_bytes(b"x" * 1000)
-            mtp = Path(d) / "mtp-draft.gguf"
-            mtp.write_bytes(b"y" * 400)
-            cfg = SimpleNamespace(
-                gguf_file = str(p),
-                gguf_mmproj_file = None,
-                gguf_mtp_file = str(mtp),
-                gguf_hf_repo = None,
-                gguf_variant = None,
-            )
-            with (
-                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
-                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
-            ):
-                kwargs = dict(gpu_memory_mode = "manual", gpu_layers = 0)
-                off = self.route._estimate_gguf_required_gb(cfg, speculative_type = "off", **kwargs)
-                ngram = self.route._estimate_gguf_required_gb(
-                    cfg, speculative_type = "ngram", **kwargs
-                )
-                auto = self.route._estimate_gguf_required_gb(cfg, **kwargs)
-                extras_own_spec = self.route._estimate_gguf_required_gb(
-                    cfg, llama_extra_args = ["--spec-type", "ngram-mod"], **kwargs
-                )
-        self.assertEqual(off, 0.0)
-        self.assertEqual(ngram, 0.0)
-        self.assertAlmostEqual(auto, 400 / (1024**3), places = 9)
-        self.assertEqual(extras_own_spec, 0.0)
-
-    def test_diffusion_pick_collapses_to_lowest_gpu(self):
-        # The diffusion runner uses a single device (the lowest of the pick), so
-        # the guard must size that GPU only -- aggregating [0, 1] could pass on
-        # GPU 1's free VRAM and OOM GPU 0, the one actually used.
+        # An HF-repo drafter can't be sized pre-download -> None (default-deny).
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "model.gguf"
             p.write_bytes(b"x" * 1000)
             cfg = self._local_gguf_cfg(p)
-            with patch(
-                "utils.models.gguf_metadata.read_gguf_general_metadata",
-                return_value = {"general.architecture": "diffusion-gemma"},
-            ):
-                collapsed = self.route._diffusion_guard_gpu_ids(cfg, [1, 0])
-            with patch(
-                "utils.models.gguf_metadata.read_gguf_general_metadata",
-                return_value = {"general.architecture": "gemma3"},
-            ):
-                dense = self.route._diffusion_guard_gpu_ids(cfg, [1, 0])
-                # Canvas-only block diffusion (arch doesn't say "diffusion")
-                # must collapse too, mirroring load_model's OR canvas_seen.
-                with patch(
-                    "utils.models.gguf_metadata.gguf_header_has_key",
-                    return_value = True,
-                ):
-                    canvas_only = self.route._diffusion_guard_gpu_ids(cfg, [1, 0])
-            with patch(
-                "utils.models.gguf_metadata.read_gguf_general_metadata",
-                return_value = {"general.architecture": "diffusion-gemma"},
-            ):
-                # Unpinned: the runner falls back to DG_GPU (else GPU 0), so the
-                # guard sizes that single device, not the whole visible pool.
-                with patch.dict("os.environ", {"DG_GPU": "1"}):
-                    unpinned_dg = self.route._diffusion_guard_gpu_ids(cfg, None)
-                unpinned = self.route._diffusion_guard_gpu_ids(cfg, None)
-        self.assertEqual(collapsed, [0])
-        self.assertEqual(dense, [1, 0])
-        self.assertEqual(canvas_only, [0])
-        self.assertEqual(unpinned_dg, [1])
-        self.assertEqual(unpinned, [0])
-        # A single pick passes through without a header read; a non-diffusion
-        # unpinned load keeps the aggregate (file here isn't a real GGUF).
-        self.assertEqual(self.route._diffusion_guard_gpu_ids(cfg, [1]), [1])
-        self.assertIsNone(self.route._diffusion_guard_gpu_ids(cfg, None))
-
-    def test_extras_drafter_overrides_config_drafter_charge(self):
-        # extras --model-draft wins last-wins at launch, so only ONE drafter is
-        # resident; charging the config-owned MTP file too would double-count
-        # and over-block a low-layer load during training.
-        import tempfile
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "model.gguf"
-            p.write_bytes(b"x" * 1000)
-            mtp = Path(d) / "mtp-config.gguf"
-            mtp.write_bytes(b"m" * 400)
-            draft = Path(d) / "draft-extras.gguf"
-            draft.write_bytes(b"y" * 500)
-            cfg = SimpleNamespace(
-                gguf_file = str(p),
-                gguf_mmproj_file = None,
-                gguf_mtp_file = str(mtp),
-                gguf_hf_repo = None,
-                gguf_variant = None,
+            self.assertIsNone(
+                self.route._estimate_gguf_required_gb(
+                    cfg, llama_extra_args = ["-hfd", "org/draft-repo"]
+                )
             )
-            with (
-                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
-                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
-            ):
-                gb = self.route._estimate_gguf_required_gb(
-                    cfg,
-                    llama_extra_args = ["--model-draft", str(draft)],
-                    gpu_memory_mode = "manual",
-                    gpu_layers = 0,
-                )
-        self.assertAlmostEqual(gb, 500 / (1024**3), places = 9)
 
-    def test_cpu_forced_drafter_not_charged(self):
-        # --spec-draft-ngl 0 keeps the drafter off the GPU (the loader's own
-        # budget skips it too), so the guard must not charge it or deny an HF
-        # form -- else a valid CPU-only load is rejected for VRAM never used.
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "model.gguf"
-            p.write_bytes(b"x" * 1000)
-            draft = Path(d) / "draft.gguf"
-            draft.write_bytes(b"y" * 500)
-            cfg = self._local_gguf_cfg(p)
-            with (
-                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
-                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
-            ):
-                kwargs = dict(gpu_memory_mode = "manual", gpu_layers = 0)
-                local_cpu = self.route._estimate_gguf_required_gb(
-                    cfg,
-                    llama_extra_args = [
-                        "--model-draft",
-                        str(draft),
-                        "--spec-draft-ngl",
-                        "0",
-                    ],
-                    **kwargs,
-                )
-                hf_cpu = self.route._estimate_gguf_required_gb(
-                    cfg,
-                    llama_extra_args = ["-hfd", "org/draft", "--spec-draft-ngl", "0"],
-                    **kwargs,
-                )
-        self.assertEqual(local_cpu, 0.0)
-        self.assertEqual(hf_cpu, 0.0)
-
-    def test_validate_shaped_request_inherits_same_model_extras(self):
-        # /validate has no llama_extra_args field, so a same-model reload must
-        # inherit the loaded extras for its guard just like /load -- else
-        # validate passes a smaller estimate, the frontend unloads, and the
-        # follow-up /load 409s.
-        backend = SimpleNamespace(
-            extra_args = ["-c", "32768"],
-            extra_args_source = ("owner/repo", "q4_k_m"),
-        )
-        cfg = SimpleNamespace(is_gguf = True, gguf_variant = "Q4_K_M")
-        request = SimpleNamespace(gguf_variant = "Q4_K_M", gpu_memory_mode = "auto")
-        with patch.object(self.route, "get_llama_cpp_backend", return_value = backend):
-            inherited = self.route._resolve_inherited_extra_args(request, cfg, "owner/repo", None)
-            cross = self.route._resolve_inherited_extra_args(request, cfg, "other/model", None)
-        self.assertEqual(inherited, ["-c", "32768"])
-        self.assertEqual(cross, [])
-
-    def test_remote_zero_layer_load_credited_before_download(self):
-        # Zero offload needs no header: an uncached remote GGUF at manual
-        # gpu_layers=0 must not be held to its full remote size (companions
-        # stay charged).
+    def test_remote_zero_layer_credited_before_download(self):
+        # Zero offload needs no header: an uncached remote GGUF at gpu_layers=0
+        # zeroes main; companions stay charged.
         import utils.models.model_config as mc
 
         cfg = SimpleNamespace(
@@ -972,82 +814,15 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             patch.object(mc, "list_gguf_variants", return_value = ([variant], True)),
             patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 1024**3),
         ):
-            gb = self.route._estimate_gguf_required_gb(cfg, gpu_memory_mode = "manual", gpu_layers = 0)
-        self.assertAlmostEqual(gb, 1.0, places = 6)
-
-    def test_uncached_diffusion_repo_collapses_by_name(self):
-        # A not-yet-downloaded diffusion repo has no header to read; the naming
-        # catches it so the guard sizes the single device the runner will use.
-        cfg = SimpleNamespace(
-            identifier = "unsloth/DiffusionGemma-4B-GGUF",
-            gguf_file = None,
-            gguf_hf_repo = "unsloth/DiffusionGemma-4B-GGUF",
-            gguf_variant = "Q4_K_M",
-        )
-        self.assertEqual(self.route._diffusion_guard_gpu_ids(cfg, [1, 0]), [0])
-        self.assertEqual(self.route._diffusion_guard_gpu_ids(cfg, None), [0])
-
-    def test_text_only_extras_skip_mmproj_charge(self):
-        # --no-mmproj runs text-only: the launcher never resolves a projector,
-        # so the guard must not charge one (at gpu_layers=0 it could be the
-        # only positive VRAM and spuriously deny a CPU-only load).
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "model.gguf"
-            p.write_bytes(b"x" * 1000)
-            proj = Path(d) / "mmproj.gguf"
-            proj.write_bytes(b"p" * 600)
-            cfg = SimpleNamespace(
-                gguf_file = str(p),
-                gguf_mmproj_file = str(proj),
-                gguf_mtp_file = None,
-                gguf_hf_repo = None,
-                gguf_variant = None,
+            main_gb, companion_gb = self.route._estimate_gguf_required_gb(
+                cfg, gpu_memory_mode = "manual", gpu_layers = 0
             )
-            with (
-                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
-                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
-            ):
-                kwargs = dict(gpu_memory_mode = "manual", gpu_layers = 0)
-                text_only = self.route._estimate_gguf_required_gb(
-                    cfg, llama_extra_args = ["--no-mmproj"], **kwargs
-                )
-                with_proj = self.route._estimate_gguf_required_gb(cfg, **kwargs)
-        self.assertEqual(text_only, 0.0)
-        self.assertAlmostEqual(with_proj, 600 / (1024**3), places = 9)
-
-    def test_manual_charges_companions_in_full_not_scaled_by_gpu_layers(self):
-        # A companion (mmproj / separate MTP drafter) is GPU-resident regardless of
-        # the main --gpu-layers, so it must not be scaled by the fraction. At
-        # gpu_layers=0 the old code scaled the whole sum to ~0 GB (an OOM risk); now
-        # only the main term zeros out.
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as d:
-            main = Path(d) / "model.gguf"
-            main.write_bytes(b"x" * 1000)
-            drafter = Path(d) / "mtp-model.gguf"
-            drafter.write_bytes(b"y" * 3000)
-            cfg = self._local_gguf_cfg(main)
-            cfg.gguf_mtp_file = str(drafter)
-            with (
-                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 5.0),
-                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
-            ):
-                gb = self.route._estimate_gguf_required_gb(
-                    cfg, gpu_memory_mode = "manual", gpu_layers = 0
-                )
-        # main (weights + KV) scaled to 0; the 3000-byte companion stands in full.
-        self.assertAlmostEqual(gb, 3000 / (1024**3), places = 9)
-        self.assertGreater(gb, 0.0)  # regression guard: not silently ~0
+        self.assertEqual(main_gb, 0.0)
+        self.assertAlmostEqual(companion_gb, 1.0, places = 6)
 
     def test_manual_scales_cached_hf_repo_by_gpu_layer_fraction(self):
-        # A repo-id GGUF that's already in the HF cache is local in all but name
-        # (ModelConfig leaves gguf_file unset for repo ids). The manual offload
-        # fraction must be credited from the cached header, not left at the full
-        # remote size -- else a CPU-heavy load is over-blocked during training.
-        # A not-yet-cached repo (resolve returns None) keeps the full size.
+        # A cached repo id is local in all but name; scale its main from the
+        # cached header. A not-yet-cached repo keeps the full remote size.
         import hub.utils.gguf as gguf_mod
         import utils.models.model_config as mc
 
@@ -1069,17 +844,86 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.25),
         ):
             with patch.object(gguf_mod, "resolve_local_gguf_path", return_value = "/cache/m.gguf"):
-                cached = self.route._estimate_gguf_required_gb(
+                cached, _ = self.route._estimate_gguf_required_gb(
                     cfg, gpu_memory_mode = "manual", gpu_layers = 8
                 )
             with patch.object(gguf_mod, "resolve_local_gguf_path", return_value = None):
-                not_cached = self.route._estimate_gguf_required_gb(
+                not_cached, _ = self.route._estimate_gguf_required_gb(
                     cfg, gpu_memory_mode = "manual", gpu_layers = 8
                 )
-            auto = self.route._estimate_gguf_required_gb(cfg)  # auto never scales
+            auto, _ = self.route._estimate_gguf_required_gb(cfg)  # auto never scales
         self.assertAlmostEqual(cached, (8.0 + 2.0) * 0.25, places = 6)  # cached header, scaled
         self.assertAlmostEqual(not_cached, 10.0, places = 6)  # no local header -> full remote
-        self.assertAlmostEqual(auto, 10.0, places = 6)  # default never scales
+        self.assertAlmostEqual(auto, 10.0, places = 6)
+
+    def test_is_diffusion_gguf_by_name(self):
+        # Name match catches DiffusionGemma pre-download (no header needed); a
+        # plainly-named dense model with no local file is not diffusion.
+        diff = SimpleNamespace(
+            identifier = "unsloth/DiffusionGemma-4B-GGUF", gguf_hf_repo = None,
+            gguf_file = None, gguf_variant = None,
+        )
+        dense = SimpleNamespace(
+            identifier = "unsloth/gemma-4-E2B-it-GGUF", gguf_hf_repo = None,
+            gguf_file = None, gguf_variant = None,
+        )
+        self.assertTrue(self.route._is_diffusion_gguf(diff))
+        self.assertFalse(self.route._is_diffusion_gguf(dense))
+
+    def test_is_diffusion_gguf_by_header_when_name_lacks_it(self):
+        # A locally-renamed DiffusionGemma file (generic path, no "diffusion" in
+        # the name) must still be caught via the on-disk header, or the guard
+        # would size it multi-GPU and OOM the single device it runs on.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.gguf"
+            p.write_bytes(b"x" * 100)
+            cfg = SimpleNamespace(
+                identifier = "/models/model.gguf", gguf_hf_repo = None,
+                gguf_file = str(p), gguf_variant = None,
+            )
+            with (
+                patch(
+                    "utils.models.gguf_metadata.read_gguf_general_metadata",
+                    return_value = {"general.architecture": "diffusion-gemma"},
+                ),
+                patch("utils.models.gguf_metadata.gguf_header_has_key", return_value = False),
+            ):
+                self.assertTrue(self.route._is_diffusion_gguf(cfg))
+            with (
+                patch(
+                    "utils.models.gguf_metadata.read_gguf_general_metadata",
+                    return_value = {"general.architecture": "gemma3"},
+                ),
+                patch("utils.models.gguf_metadata.gguf_header_has_key", return_value = True),
+            ):
+                self.assertTrue(self.route._is_diffusion_gguf(cfg))  # canvas marker only
+            with (
+                patch(
+                    "utils.models.gguf_metadata.read_gguf_general_metadata",
+                    return_value = {"general.architecture": "gemma3"},
+                ),
+                patch("utils.models.gguf_metadata.gguf_header_has_key", return_value = False),
+            ):
+                self.assertFalse(self.route._is_diffusion_gguf(cfg))  # genuine dense
+
+    def test_validate_shaped_request_inherits_same_model_extras(self):
+        # /validate has no llama_extra_args field, so a same-model reload must
+        # inherit the loaded extras for its guard just like /load -- else
+        # validate passes a smaller estimate, the frontend unloads, and the
+        # follow-up /load 409s.
+        backend = SimpleNamespace(
+            extra_args = ["-c", "32768"],
+            extra_args_source = ("owner/repo", "q4_k_m"),
+        )
+        cfg = SimpleNamespace(is_gguf = True, gguf_variant = "Q4_K_M")
+        request = SimpleNamespace(gguf_variant = "Q4_K_M", gpu_memory_mode = "auto")
+        with patch.object(self.route, "get_llama_cpp_backend", return_value = backend):
+            inherited = self.route._resolve_inherited_extra_args(request, cfg, "owner/repo", None)
+            cross = self.route._resolve_inherited_extra_args(request, cfg, "other/model", None)
+        self.assertEqual(inherited, ["-c", "32768"])
+        self.assertEqual(cross, [])
 
     def test_manual_gpu_layer_fraction_clamps_and_reads_layers(self):
         # _manual_gpu_layer_fraction imports read_gguf_staged_dims lazily, so
@@ -1091,8 +935,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self.assertAlmostEqual(frac("x.gguf", 8), 0.25, places = 9)
             self.assertEqual(frac("x.gguf", 0), 0.0)  # all on CPU
             self.assertEqual(frac("x.gguf", 999), 1.0)  # clamps above layer count
-        # Unreadable / non-GGUF (None dims, or a None/zero layer_count) -> None so
-        # the caller keeps the full estimate.
         with patch.object(gm, "read_gguf_staged_dims", return_value = None):
             self.assertIsNone(frac("x.gguf", 8))
         with patch.object(gm, "read_gguf_staged_dims", return_value = {"layer_count": None}):
@@ -1100,6 +942,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
     def test_kv_helper_graceful_on_non_gguf(self):
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "not-a.gguf"
             p.write_bytes(b"not a gguf")
@@ -1118,34 +961,24 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             def _can_estimate_kv(self):
                 return True
 
-            def _estimate_kv_cache_bytes(
-                self,
-                ctx,
-                n_parallel = 1,
-            ):
+            def _estimate_kv_cache_bytes(self, ctx, n_parallel = 1):
                 seen["ctx"] = ctx
                 seen["n_parallel"] = n_parallel
                 return ctx * n_parallel * (1024**2)  # 1 MiB per ctx unit per slot
 
         with patch.object(self.route, "LlamaCppBackend", _FakeBackend):
             r = self.route
-            # --ctx-size override above max_seq_length -> override wins
-            self.assertAlmostEqual(
-                r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "131072"]), 128.0
-            )
+            self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "131072"]), 128.0)
             self.assertEqual(seen["ctx"], 131072)
             self.assertEqual(seen["n_parallel"], 1)  # default single slot
-            # override below max_seq_length -> larger (max_seq_length) wins
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "1024"]), 4.0)
             self.assertEqual(seen["ctx"], 4096)
-            # no override, no max_seq_length -> native context fallback
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 0, None), 2.0)
             self.assertEqual(seen["ctx"], 2048)
-            # malformed extras are ignored (fall back to max_seq_length)
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "oops"]), 4.0)
-            # --parallel slots scale the cache the same way the launcher does
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, None, 4), 16.0)
             self.assertEqual(seen["n_parallel"], 4)
+
 
 
 # ── load_model integration: authoritative 409, and no unload before refusal ──
