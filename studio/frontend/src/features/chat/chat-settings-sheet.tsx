@@ -716,10 +716,14 @@ export function ChatSettingsPanel({
   // multi-GPU gate on the GPU picker / Split ratio. (Under Auto layers the whole
   // TP control is hidden -- llama.cpp's --fit aborts under --split-mode tensor.)
   const tpDisabled = gpusInUse.length <= 1;
-  // Manual gpu-layers ceiling = model layer count (else a safe fallback). While
-  // staging, use the staged model's layer count (read from its header).
+  // Manual gpu-layers ceiling = model layer count + 1 (else a safe fallback):
+  // llama.cpp counts the output layer as one more offloadable layer past the
+  // repeating blocks ("offloaded 33/33" needs -ngl 33 on a 32-block model), so
+  // the slider max must reach it or full offload is unreachable. While staging,
+  // use the staged model's layer count (read from its header).
   const stagedLayerCount = pendingSelection?.layerCount ?? null;
-  const gpuLayersMax = (pendingIsGguf ? stagedLayerCount : ggufLayerCount) ?? 256;
+  const modelLayerCount = pendingIsGguf ? stagedLayerCount : ggufLayerCount;
+  const gpuLayersMax = modelLayerCount != null ? modelLayerCount + 1 : 256;
   // MoE-offload slider: shown only for MoE models, capped at their MoE-layer
   // count. While staging, use the staged model's count (read from its header);
   // otherwise the loaded model's.

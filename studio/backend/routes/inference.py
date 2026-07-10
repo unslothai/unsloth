@@ -3471,6 +3471,23 @@ def _estimate_gguf_required_gb(
     still more VRAM, but that isn't credited here: the guard must not
     *under*-estimate and OOM the training run."""
     try:
+        # An explicit pass-through drafter (extras --model-draft/-md/HF forms,
+        # or the LLAMA_ARG_SPEC_DRAFT_* env) launches on the GPU like the
+        # config-owned companions, so charge it in full too -- else a manual
+        # gpu_layers=0 load with a drafter scales to zero and takes the guard's
+        # CPU-only bypass while the drafter still lands on the GPU. A drafter
+        # that isn't a readable local file (an HF repo form) can't be sized:
+        # return None so the caller default-denies rather than under-estimates.
+        from core.inference.llama_cpp import _extra_args_mtp_draft_path
+
+        extras_draft_bytes = 0
+        draft_path = _extra_args_mtp_draft_path(llama_extra_args)
+        if draft_path:
+            if Path(draft_path).is_file():
+                extras_draft_bytes = Path(draft_path).stat().st_size
+            else:
+                return None
+
         main = getattr(config, "gguf_file", None)
         main_bytes = 0
         if main and Path(main).is_file():
@@ -3488,7 +3505,7 @@ def _estimate_gguf_required_gb(
                 frac = _manual_gpu_layer_fraction(str(main), gpu_layers)
                 if frac is not None:
                     main_gb *= frac
-            return main_gb + companion_bytes / (1024**3)
+            return main_gb + (companion_bytes + extras_draft_bytes) / (1024**3)
 
         repo = getattr(config, "gguf_hf_repo", None)
         variant = getattr(config, "gguf_variant", None)
@@ -3524,7 +3541,7 @@ def _estimate_gguf_required_gb(
                                 cached_main, max_seq_length, llama_extra_args, n_parallel
                             )
                         ) * frac
-            return main_gb + companions / (1024**3)
+            return main_gb + (companions + extras_draft_bytes) / (1024**3)
         return None
     except Exception as e:
         logger.warning(f"Could not size GGUF model for training guard: {e}")

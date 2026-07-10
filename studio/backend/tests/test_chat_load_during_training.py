@@ -729,6 +729,45 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 )
         self.assertAlmostEqual(gb, 1000 / (1024**3), places = 9)
 
+    def test_extras_drafter_charged_in_full(self):
+        # An explicit pass-through drafter is a GPU companion too: charge its
+        # file size unscaled, even when the manual fraction zeroes the main
+        # model -- else a gpu_layers=0 load with a drafter takes the guard's
+        # CPU-only bypass while the drafter still lands on the GPU.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.gguf"
+            p.write_bytes(b"x" * 1000)
+            draft = Path(d) / "draft.gguf"
+            draft.write_bytes(b"y" * 500)
+            cfg = self._local_gguf_cfg(p)
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
+            ):
+                gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    llama_extra_args = ["--model-draft", str(draft)],
+                    gpu_memory_mode = "manual",
+                    gpu_layers = 0,
+                )
+        self.assertAlmostEqual(gb, 500 / (1024**3), places = 9)
+
+    def test_unsizable_extras_drafter_denies(self):
+        # An HF-repo drafter can't be sized pre-download: return None so the
+        # guard default-denies instead of under-estimating.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.gguf"
+            p.write_bytes(b"x" * 1000)
+            cfg = self._local_gguf_cfg(p)
+            gb = self.route._estimate_gguf_required_gb(
+                cfg, llama_extra_args = ["-hfd", "org/draft-repo"]
+            )
+        self.assertIsNone(gb)
+
     def test_manual_charges_companions_in_full_not_scaled_by_gpu_layers(self):
         # A companion (mmproj / separate MTP drafter) is GPU-resident regardless of
         # the main --gpu-layers, so it must not be scaled by the fraction. At

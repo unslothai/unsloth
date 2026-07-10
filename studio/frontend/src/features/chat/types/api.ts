@@ -92,7 +92,8 @@ export interface ValidateModelResponse {
   requires_security_review?: boolean;
   /** Native context length from the local GGUF header; null until downloaded. */
   context_length?: number | null;
-  /** Total layer count (GGUF block_count), the manual gpu-layers ceiling; null
+  /** Total layer count (GGUF block_count); the manual gpu-layers ceiling is
+   * this + 1 (llama.cpp counts the output layer as offloadable too); null
    *  until downloaded. */
   layer_count?: number | null;
   /** MoE expert-layer count from the GGUF header (manual --n-cpu-moe ceiling);

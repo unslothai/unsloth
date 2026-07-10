@@ -639,7 +639,8 @@ export type PendingModelSelection = {
    *  Scoped here (not the shared `ggufContextLength`) so a staged model's
    *  metadata never pollutes the currently-loaded model's context display. */
   contextLength?: number | null;
-  /** Total layer count (GGUF block_count), the manual gpu-layers ceiling;
+  /** Total layer count (GGUF block_count); the manual gpu-layers ceiling is
+   * this + 1 (llama.cpp counts the output layer as offloadable too);
    *  scoped here like contextLength. */
   layerCount?: number | null;
   /** MoE expert-layer count from the GGUF header (manual --n-cpu-moe ceiling);
@@ -873,7 +874,8 @@ type ChatRuntimeStore = {
   splitRatio: number[] | null;
   /** Backend-reported per-GPU split ratio (--tensor-split); null = unset. */
   loadedSplitRatio: number[] | null;
-  /** Model layer count (GGUF block_count); the manual gpu-layers ceiling. */
+  /** Model layer count (GGUF block_count); the manual gpu-layers ceiling is
+   * this + 1 (the output layer is offloadable too). */
   ggufLayerCount: number | null;
   /** MoE expert-layer count: the nCpuMoe slider max; 0/null hides the slider. */
   moeLayerCount: number | null;
