@@ -212,14 +212,20 @@ _SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif"})
 # POSIX / common shell binaries. A shell without an inline `-c` payload runs unscanned
 # code (a script file, -s / stdin, or a bare stdin-reading shell), so it is denied.
 _SHELL_BINARIES = frozenset({"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"})
-# `env` options that take NO operand (the next word is the command, not the flag's value),
-# so the argv scanner must not skip the following token as an operand. `-S` / --split-string
-# is handled separately (its operand is a command line to scan).
-_ENV_NOARG_FLAGS = frozenset({"-i", "--ignore-environment", "-", "-0", "--null", "-v", "--debug"})
 # Utilities whose LATER argv elements are actions / write flags, not inert arguments
 # (find -exec/-delete, sed -i / w, sort -o). A non-shell argv resolving to one of these is
 # re-scanned as a reconstructed command line so those dangerous flags are caught.
 _ARGV_TAIL_SCAN_COMMANDS = frozenset({"find", "sed", "gsed", "ssed", "perl", "sort"})
+
+
+def _is_versioned_interpreter(base: str) -> bool:
+    """True when ``base`` is a version-suffixed interpreter name (python3.14, python3.11,
+    perl5.36, ruby3.0) whose unversioned stem is a blocked interpreter. Those binaries are
+    commonly on the sandbox PATH and start the same unguarded child as the bare name."""
+    stem = re.sub(r"[0-9][0-9.]*$", "", base)
+    return stem != base and stem in _INTERPRETER_COMMANDS
+
+
 # The only shell redirection targets trusted without a realpath check: standard device
 # sinks that cannot escape the workdir. Every other target (relative or absolute) fails
 # closed, because the unguarded child follows symlinks and resolves relative names against a
@@ -284,6 +290,79 @@ _COMMAND_PREFIXES = frozenset(
     }
 )
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Per-wrapper option flags that take a SEPARATED operand (the NEXT token is the flag's value,
+# not the command). Anything not listed -- a no-operand flag (env -i, xargs -0), a GLUED short
+# flag (stdbuf -oL), or a --long=value -- does NOT consume the next token, so the real command
+# after it is still analysed. Wrappers absent from the map default to no operand-taking flags
+# (their numeric args, nice -n 5 / timeout 5, are skipped separately).
+_WRAPPER_OPERAND_FLAGS = {
+    "env": frozenset({"-u", "--unset", "-C", "--chdir"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
+    "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
+    "ionice": frozenset({"-c", "--class", "-n", "--classdata", "-p", "--pid"}),
+    "sudo": frozenset(
+        {
+            "-u",
+            "--user",
+            "-g",
+            "--group",
+            "-C",
+            "--close-from",
+            "-h",
+            "--host",
+            "-p",
+            "--prompt",
+            "-r",
+            "--role",
+            "-t",
+            "--type",
+            "-U",
+            "--other-user",
+            "-T",
+            "--command-timeout",
+            "-R",
+            "--chroot",
+            "-D",
+            "--chdir",
+        }
+    ),
+    "xargs": frozenset(
+        {
+            "-n",
+            "--max-args",
+            "-P",
+            "--max-procs",
+            "-L",
+            "--max-lines",
+            "-s",
+            "--max-chars",
+            "-I",
+            "--replace",
+            "-E",
+            "-d",
+            "--delimiter",
+            "-a",
+            "--arg-file",
+        }
+    ),
+    "time": frozenset({"-f", "--format", "-o", "--output"}),
+    "chrt": frozenset({"-T", "--sched-runtime", "-P", "--sched-period", "-D", "--sched-deadline"}),
+}
+
+
+def _wrapper_flag_takes_operand(wrapper, flag: str) -> bool:
+    """True when a wrapper option FLAG consumes the NEXT token as a separated operand
+    (env -u NAME, nice -n 5, stdbuf -o L). A glued short flag (-oL), a --long=value, or any
+    flag not listed for the wrapper does NOT, so the command word after it is still analysed
+    (stdbuf -oL sed -i ..., xargs -0 sed ...)."""
+    if "=" in flag:
+        return False
+    if not flag.startswith("--") and len(flag) > 2:
+        return False  # glued short flag: -oL already carries its value
+    return flag in _WRAPPER_OPERAND_FLAGS.get(wrapper, frozenset())
+
+
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # find's -exec / -ok command runs up to a `;` or `+` terminator; everything between
 # is a full command line (may itself begin with a wrapper like env/timeout or sh -c).
@@ -447,6 +526,12 @@ def _find_blocked_commands(command: str) -> set[str]:
     # never match the blocklist even though bash decodes and runs it. Then expand ${IFS} to
     # whitespace so a separator-obfuscated command (rm${IFS}-rf${IFS}/) is tokenized.
     command = _expand_ifs(_normalize_ansi_c_quotes(command))
+    # bash treats an unquoted newline as a command separator, but shlex's whitespace_split
+    # folds it into ordinary whitespace, so `echo ok\nsed -i ...` would read `sed` as an
+    # argument of `echo` and miss the write. Rewrite newlines to `;` so each line starts a
+    # fresh command position; a newline INSIDE quotes stays in its token (shlex honors quotes),
+    # so the `;` there is not treated as a separator.
+    command = re.sub(r"[\r\n]+", " ; ", command)
 
     # punctuation_chars splits separators into their own tokens, so command
     # position is detected even in `echo done; rm -rf x` (no whitespace) or
@@ -472,19 +557,24 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     expect_command = True  # start of string is a command position
     prefix_pending = False  # last cmd-position token was a wrapper (env/time/xargs/...)
-    prev_was_flag = False  # previous token (while a wrapper is pending) was an option flag
+    prev_was_flag = False  # previous token (while a wrapper is pending) takes an operand
+    cur_wrapper = None  # the active wrapper's basename (drives per-wrapper option arity)
     for token in tokens:
         if token in _SHELL_SEPARATORS or token in _SHELL_KEYWORDS_AS_SEP:
             expect_command = True
             prefix_pending = False
             prev_was_flag = False
+            cur_wrapper = None
             continue
         if token.startswith("-"):
             # Flags belong to the active command, but keep expect_command while a
-            # wrapper prefix awaits its command (`stdbuf -oL cmd`, `xargs -- cmd`).
+            # wrapper prefix awaits its command. Only a flag that actually takes a SEPARATED
+            # operand (env -u NAME) marks the next token as its value; a glued / no-operand
+            # flag (stdbuf -oL sed, xargs -0 sed) does not, so the command that follows is
+            # still analysed.
             if not prefix_pending:
                 expect_command = False
-            else:
+            elif _wrapper_flag_takes_operand(cur_wrapper, token):
                 prev_was_flag = True
             continue
         if not expect_command:
@@ -521,7 +611,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         # regex below misses the wrapper case because $CMD is not right after a separator.
         if "$" in token or "`" in token:
             blocked.add("command-expansion")
-        if base in _BLOCKED_COMMANDS:
+        if base in _BLOCKED_COMMANDS or _is_versioned_interpreter(base):
             blocked.add(base)
         # The `.` builtin is bash's `source`: `. evil.sh` runs an unscanned script in the
         # shell, the same escape as `source`, but its basename is not a blocklist word.
@@ -531,9 +621,11 @@ def _find_blocked_commands(command: str) -> set[str]:
         # non-numeric token is the real command. sudo is also in _BLOCKED_COMMANDS.
         if base in _COMMAND_PREFIXES:
             prefix_pending = True
+            cur_wrapper = base
             continue
         expect_command = False
         prefix_pending = False
+        cur_wrapper = None
 
     # `find ... -exec CMD ... ;` / `-execdir CMD ... +` invoke CMD directly. CMD may
     # itself be a wrapper (`env rm`, `timeout 5 rm`) or a nested shell (`sh -c '...'`),
@@ -622,16 +714,18 @@ def _find_blocked_commands(command: str) -> set[str]:
         expect = True
         pending = False
         prev_flag = False
+        wrapper = None
         for _i, _tok in enumerate(tokens):
             if _tok in _SHELL_SEPARATORS or _tok in _SHELL_KEYWORDS_AS_SEP:
                 expect = True
                 pending = False
                 prev_flag = False
+                wrapper = None
                 continue
             if _tok.startswith("-"):
                 if not pending:
                     expect = False
-                else:
+                elif _wrapper_flag_takes_operand(wrapper, _tok):
                     prev_flag = True
                 continue
             if not expect:
@@ -653,10 +747,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             prev_flag = False
             if _base in _COMMAND_PREFIXES:
                 pending = True
+                wrapper = _base
                 continue
             out.append(_i)
             expect = False
             pending = False
+            wrapper = None
         return out
 
     _cmd_word_idx = _command_word_indices()
@@ -860,14 +956,10 @@ def _blocked_in_argv(str_elts: list[str | None]) -> tuple[set[str], int | None]:
                 if tok.startswith("-S") and len(tok) > 2:
                     blocked |= _find_blocked_commands(tok[2:])
                     return blocked, None
-                # env's no-operand flags (-i, --ignore-environment, ...) do NOT consume the
-                # next token, which is the real command (env -i bash -c ...); do not skip it.
-                if tok in _ENV_NOARG_FLAGS:
-                    idx += 1
-                    continue
-            # A wrapper option flag that may take a separated operand (env -u FOO cmd,
-            # nice -n 5 cmd): keep prefix_pending and remember a flag is active.
-            prev_was_flag = True
+            # Only a flag that takes a SEPARATED operand (env -u NAME, nice -n 5) marks the
+            # next token as its value; a no-operand flag (env -i, xargs -0) or a glued short
+            # flag (stdbuf -oL) does not, so the real command after it is still analysed.
+            prev_was_flag = _wrapper_flag_takes_operand(cur_wrapper, tok)
             idx += 1
             continue
         # A wrapper's numeric arg (`timeout 5 cmd`).
@@ -894,7 +986,7 @@ def _blocked_in_argv(str_elts: list[str | None]) -> tuple[set[str], int | None]:
             idx += 1
             continue
         prev_was_flag = False
-        if base in _BLOCKED_COMMANDS:
+        if base in _BLOCKED_COMMANDS or _is_versioned_interpreter(base):
             blocked.add(base)
         if base in _COMMAND_PREFIXES:
             prefix_pending = True
@@ -3158,6 +3250,7 @@ class _ScopeAliasIndex:
         "class_shell",
         "class_execb",
         "class_deser",
+        "class_bases",
         "instance_shell",
         "instance_execb",
         "instance_deser",
@@ -3183,6 +3276,9 @@ class _ScopeAliasIndex:
         self.class_shell: dict = {}
         self.class_execb: dict = {}
         self.class_deser: dict = {}
+        # class NAME -> [base class names]: literal Name bases, so a subclass access
+        # (class D(C): pass; D.s) can follow inheritance to a base's class-body sink alias.
+        self.class_bases: dict = {}
         # (receiver_name, attr) -> sink: a simple instance-attribute alias assigned a
         # dangerous callable (c.e = exec; c.e(payload) / obj.s = os.system; obj.s('rm -rf /')).
         # Tracked tree-wide as a fail-closed over-approximation (attribute values are not
@@ -3191,10 +3287,28 @@ class _ScopeAliasIndex:
         self.instance_execb: dict = {}
         self.instance_deser: dict = {}
 
-    def resolve_class_attr(self, cname, attr, kind):
-        m = getattr(self, "class_" + kind).get(cname)
-        if m:
-            return m.get(attr)
+    def resolve_class_attr(
+        self,
+        cname,
+        attr,
+        kind,
+        _seen = None,
+    ):
+        table = getattr(self, "class_" + kind)
+        m = table.get(cname)
+        if m and attr in m:
+            return m[attr]
+        # Follow literal base classes so an inherited alias (class C: s = os.system;
+        # class D(C): pass; D.s(...)) resolves through C. Cycle-guarded.
+        if _seen is None:
+            _seen = set()
+        if cname in _seen:
+            return None
+        _seen.add(cname)
+        for _base in self.class_bases.get(cname, ()):
+            hit = self.resolve_class_attr(_base, attr, kind, _seen)
+            if hit is not None:
+                return hit
         return None
 
     def resolve_instance_attr(self, recv, attr, kind):
@@ -3276,6 +3390,10 @@ def _build_scope_alias_index(tree, const_env):
             for a in n.names:
                 if a.name == "os":
                     os_aliases.add(a.asname or "os")
+                elif a.name in ("posix", "nt"):
+                    # posix / nt are the C backend os wraps (posix.system == os.system), so a
+                    # single-assignment alias s = posix.system resolves to an os shell sink.
+                    os_aliases.add(a.asname or a.name)
                 elif a.name == "subprocess":
                     subprocess_aliases.add(a.asname or "subprocess")
                 elif a.name == "builtins":
@@ -3284,9 +3402,10 @@ def _build_scope_alias_index(tree, const_env):
                     importlib_aliases.add(a.asname or "importlib")
                 if a.name in _DESERIALIZE_MODULES:
                     deser_module_aliases[a.asname or a.name] = a.name
-        elif isinstance(n, ast.ImportFrom) and n.module in ("os", "subprocess"):
+        elif isinstance(n, ast.ImportFrom) and n.module in ("os", "subprocess", "posix", "nt"):
+            _eff = "subprocess" if n.module == "subprocess" else "os"
             for a in n.names:
-                fq = f"{n.module}.{a.name}"
+                fq = f"{_eff}.{a.name}"
                 if fq in _SHELL_SINK_FUNCS:
                     from_aliases[a.asname or a.name] = fq
         elif isinstance(n, ast.ImportFrom) and n.module == "builtins":
@@ -3576,6 +3695,9 @@ def _build_scope_alias_index(tree, const_env):
                 idx.class_execb[scope.name] = dict(emap)
             if dmap:
                 idx.class_deser[scope.name] = dict(dmap)
+            _bases = [b.id for b in scope.bases if isinstance(b, ast.Name)]
+            if _bases:
+                idx.class_bases[scope.name] = _bases
     # Instance-attribute sink aliases (c.e = exec; c.e(payload) / obj.s = os.system;
     # obj.s('rm -rf /')): a simple `Name.attr = <sink>` store binds the attribute to a
     # dangerous callable. Tracked tree-wide by (receiver_name, attr) as a fail-closed
@@ -3856,12 +3978,21 @@ _SHELL_SINK_FUNCS = frozenset(
 
 def _resolve_static_shell_sink(node, os_aliases, subprocess_aliases, from_aliases):
     """Resolve an expression to a shell-sink fully-qualified name, else None."""
-    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-        if node.value.id in os_aliases:
+    if isinstance(node, ast.Attribute):
+        v = node.value
+        # os / posix / nt receiver as a simple name (os.system, posix.system) or a re-exported
+        # module reached as an attribute (pathlib.os.system, tempfile.os.system).
+        is_os = (isinstance(v, ast.Name) and v.id in os_aliases) or (
+            isinstance(v, ast.Attribute) and v.attr in ("os", "posix", "nt")
+        )
+        is_sp = (isinstance(v, ast.Name) and v.id in subprocess_aliases) or (
+            isinstance(v, ast.Attribute) and v.attr == "subprocess"
+        )
+        if is_os:
             fq = f"os.{node.attr}"
             if fq in _SHELL_SINK_FUNCS:
                 return fq
-        if node.value.id in subprocess_aliases:
+        if is_sp:
             fq = f"subprocess.{node.attr}"
             if fq in _SHELL_SINK_FUNCS:
                 return fq
@@ -4856,6 +4987,34 @@ def _check_signal_escape_patterns(
                     or (isinstance(_shell_node, ast.Constant) and _shell_node.value is False)
                 )
                 blocked_in_args = _check_args_for_blocked(all_call_args, _shell_maybe_true)
+
+                # os.execl(path, a0, a1, ...) / os.execv(path, [a0, ...]) / os.spawnl(mode,
+                # path, a0, ...) spread the child's argv across separate positional args (or a
+                # single list), so scanning each string alone misses a mutating tail like
+                # `sed -i ...`. Reconstruct the executed command line (program path + argv[1:],
+                # since argv[0] is the cosmetic name) and run the full scanner over it.
+                if shell_func.startswith("os.exec") or shell_func.startswith("os.spawn"):
+                    _name = shell_func.split(".", 1)[1]
+                    if _name.startswith("spawn"):  # spawn*(mode, path, ...)
+                        _path_node = node.args[1] if len(node.args) > 1 else None
+                        _tail = node.args[2:]
+                    else:  # exec*(path, ...) / posix_spawn(path, argv, env)
+                        _path_node = node.args[0] if node.args else None
+                        _tail = node.args[1:]
+                    _is_v = "execv" in _name or "spawnv" in _name or _name.startswith("posix_spawn")
+                    if _is_v:
+                        _argv = (
+                            [_extract_string_from_node(e) for e in _tail[0].elts]
+                            if _tail and isinstance(_tail[0], (ast.List, ast.Tuple))
+                            else []
+                        )
+                    else:
+                        _argv = [_extract_string_from_node(a) for a in _tail]
+                    _parts = [p for p in ([_extract_string_from_node(_path_node)] + _argv[1:]) if p]
+                    if _parts:
+                        blocked_in_args = blocked_in_args | _find_blocked_commands(
+                            " ".join(shlex.quote(p) for p in _parts)
+                        )
 
                 if has_opaque_kwargs:
                     # Can't inspect dynamic **kwargs; flag as unsafe.
@@ -6401,6 +6560,10 @@ def _check_signal_escape_patterns(
                     _shutil_aliases.add(_a.asname or "shutil")
                 elif _a.name == "os":
                     _os_mod_aliases.add(_a.asname or "os")
+                elif _a.name in ("posix", "nt"):
+                    # posix / nt are the os C backend (posix.system == os.system), so a shell
+                    # string passed to them must be scanned for embedded secret reads too.
+                    _os_mod_aliases.add(_a.asname or _a.name)
                 elif _a.name == "subprocess":
                     _subprocess_mod_aliases.add(_a.asname or "subprocess")
 
@@ -6671,10 +6834,17 @@ def _check_signal_escape_patterns(
     def _shell_string_sink_fq(f):
         # Resolve a callee to its fq shell-sink name honoring os/subprocess module aliases
         # and from-import name aliases (from subprocess import getoutput as g), else None.
-        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
-            if f.value.id in _os_mod_aliases:
+        if isinstance(f, ast.Attribute):
+            v = f.value
+            # os / posix / nt receiver as a simple name (posix.system) or a module that
+            # re-exports os as an attribute (pathlib.os.system, tempfile.os.system).
+            if (isinstance(v, ast.Name) and v.id in _os_mod_aliases) or (
+                isinstance(v, ast.Attribute) and v.attr in ("os", "posix", "nt")
+            ):
                 cand = f"os.{f.attr}"
-            elif f.value.id in _subprocess_mod_aliases:
+            elif (isinstance(v, ast.Name) and v.id in _subprocess_mod_aliases) or (
+                isinstance(v, ast.Attribute) and v.attr == "subprocess"
+            ):
                 cand = f"subprocess.{f.attr}"
             else:
                 cand = None
@@ -6683,6 +6853,16 @@ def _check_signal_escape_patterns(
         elif isinstance(f, ast.Name):
             return _shell_name_aliases.get(f.id)
         return None
+
+    def _is_exec_family_callee(f):
+        # os.execv / os.execl / os.spawnv / os.posix_spawn ... replace or fork the guarded
+        # process with an unguarded program, so a `..` traversal in their argv reads a host
+        # secret the same way subprocess argv does (os.execv('/bin/cat', ['cat',
+        # '../../etc/shadow'])). Treat them as read callees for the traversal check.
+        while isinstance(f, ast.Attribute) and f.attr == "__call__":
+            f = f.value
+        fq = _shell_string_sink_fq(f)
+        return fq is not None and (fq.startswith("os.exec") or fq.startswith("os.spawn"))
 
     def _scan_shell_string_reads(node, f):
         # os.system('cat /etc/passwd') / subprocess.run('cat /etc/passwd', shell=True): the
@@ -6844,6 +7024,7 @@ def _check_signal_escape_patterns(
                 or _is_shutil_copy_callee(f)
                 or (isinstance(f, ast.Name) and f.id in _shutil_copy_from_aliases)
                 or _is_subprocess_exec_callee(f)
+                or _is_exec_family_callee(f)
                 or method in _READ_METHODS
             )
             # Pathlib read on a Path(...) / join receiver: check the resolved path.
@@ -7298,9 +7479,14 @@ def _guard_dir_reader(name):
         return
     @_gwraps(orig)
     def w(path=".", *a, **k):
-        if not isinstance(path, int):
-            _deny_sensitive_read(_fspath1(path))
-        return orig(path, *a, **k)
+        if isinstance(path, int):
+            return orig(path, *a, **k)
+        # Materialize the path ONCE and pass that same value to the real call, so a stateful
+        # __fspath__ cannot return an in-workdir path for the check and a sensitive outside
+        # directory for the real listdir/scandir.
+        p = _fspath1(path)
+        _deny_sensitive_read(p)
+        return orig(p, *a, **k)
     setattr(_os, name, w)
 
 for _n in ("listdir", "scandir"):

@@ -2782,3 +2782,73 @@ class TestRound22Bypasses:
     )
     def test_round22_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound23Bypasses:
+    """Twenty-third-round Codex findings: versioned interpreters in argv, glued/no-arg wrapper
+    flags, low-level os (posix/nt/pathlib.os) alias + shell-string reads, exec-family varargs
+    reconstruction + traversal reads, inherited class sinks, and newline command separators."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['python3.14', '-c', 'x'])",
+            "import subprocess\nsubprocess.run(['python3.11', '-c', 'x'])",
+            "import os\nos.system('perl5.36 -e \"x\"')",
+        ],
+    )
+    def test_versioned_interpreter_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['stdbuf', '-oL', 'sed', '-i', 's/a/b/', '/tmp/v'])",
+            "import subprocess\nsubprocess.run(['xargs', '-0', 'sed', '-i', 's/a/b/', '/tmp/v'])",
+            "import os\nos.system('stdbuf -oL sed -i s/a/b/ /tmp/v')",
+        ],
+    )
+    def test_glued_noarg_wrapper_flag_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import posix\ns = posix.system\ns('touch /tmp/x')",
+            "import posix\nposix.system('head -1 /etc/passwd')",
+            "import pathlib\npathlib.os.system('cat /etc/passwd')",
+        ],
+    )
+    def test_low_level_os_alias_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.execl('/usr/bin/sed', 'sed', '-i', 's/a/b/', '/tmp/file')",
+            "import os\nos.execv('/bin/cat', ['cat', '../../../etc/shadow'])",
+            "import os\nos.spawnl(os.P_WAIT, '/usr/bin/sed', 'sed', '-i', 's/a/b/', '/tmp/v')",
+        ],
+    )
+    def test_exec_family_argv_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_inherited_class_sink_blocked(self):
+        code = "import os\nclass C:\n    s = os.system\nclass D(C):\n    pass\nD.s('touch /tmp/x')"
+        assert _check_code_safety(code) is not None, code
+
+    def test_newline_command_separator_mutator_blocked(self):
+        code = "import os\nos.system('echo ok\\nsed -i s/a/b/ /tmp/file')"
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['echo', 'python3.14'])",
+            "import subprocess\nsubprocess.run(['stdbuf', '-oL', 'echo', 'hi'])",
+            "import os\nos.execl('/bin/echo', 'echo', 'hi')",
+            "import posix\nx = posix.getpid()\nprint(x)",
+        ],
+    )
+    def test_round23_benign_allowed(self, code):
+        _ok(code)

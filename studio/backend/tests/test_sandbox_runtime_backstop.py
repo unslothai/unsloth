@@ -1158,3 +1158,25 @@ def test_sandboxed_user_site_usercustomize_not_run():
         shutil.rmtree(os.path.join(workdir, ".local"), ignore_errors = True)
         if os.path.exists(marker):
             os.remove(marker)
+
+
+@_POSIX_ONLY
+def test_sandboxed_dir_reader_stateful_fspath_confined(tmp_path):
+    # A stateful __fspath__ returns an in-workdir path for the guard's check, then a sensitive
+    # outside directory for the real listdir (a TOCTOU). The guard materializes the path ONCE
+    # and passes that same value to listdir, so the second (outside) resolution never reaches
+    # the real call: the workdir is listed, not the outside directory.
+    secret = tmp_path / "SECRET_MARKER_FILE.txt"
+    secret.write_text("x")
+    code = (
+        "import os\n"
+        "class Evil:\n"
+        "    def __init__(self):\n        self.n = 0\n"
+        "    def __fspath__(self):\n"
+        "        self.n += 1\n"
+        f"        return '.' if self.n == 1 else {str(tmp_path)!r}\n"
+        "print('LIST', os.listdir(Evil()))\n"
+    )
+    out = _python_exec(code, None, 30, "backstop-dir-toctou", disable_sandbox = False)
+    # The outside directory's contents must not leak through the re-resolving path object.
+    assert "SECRET_MARKER_FILE.txt" not in out
