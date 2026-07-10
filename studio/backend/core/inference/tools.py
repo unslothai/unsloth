@@ -546,6 +546,45 @@ def _git_operand_escapes(tok: str, assigns = None) -> bool:
     return _arg_escapes_workdir(tok)
 
 
+def _cwd_wrapper_escapes(tokens, cmd_idx) -> bool:
+    """True when an ``env -C DIR`` / ``--chdir DIR`` / ``--chdir=DIR`` / glued ``-CDIR`` wrapper
+    in the SAME command segment BEFORE ``cmd_idx`` changes the child's cwd to a directory that
+    escapes the workdir (a literal escaping ``cwd=`` on a subprocess call reaches here as the same
+    synthetic ``env -C <dir>`` prefix). Under such a cwd even a workdir-RELATIVE write operand
+    (openssl -out key, sqlite3 db.sqlite) lands outside the session. Scans back to the previous
+    shell separator; a workdir-local chdir (env -C sub) returns False."""
+    for _bk in range(cmd_idx - 1, -1, -1):
+        _bt = tokens[_bk]
+        if _bt in _SHELL_SEPARATORS or _bt in _SHELL_KEYWORDS_AS_SEP:
+            break
+        if _bt in ("-C", "--chdir") and _bk + 1 < len(tokens):
+            if _arg_escapes_workdir(tokens[_bk + 1]):
+                return True
+        elif _bt.startswith("--chdir=") and _arg_escapes_workdir(_bt.split("=", 1)[1]):
+            return True
+        elif _bt.startswith("-C") and len(_bt) > 2 and _arg_escapes_workdir(_bt[2:]):
+            return True
+    return False
+
+
+def _operand_relative_local(tok: str) -> bool:
+    """A literal RELATIVE path operand that resolves under the child cwd, so it escapes the workdir
+    when the cwd itself escapes (paired with _cwd_wrapper_escapes). Absolute (``/x``), home (``~``),
+    ``$``/backtick expansions (unknown -- left to _git_operand_escapes), option flags, empty, and
+    the sqlite in-memory forms return False so they are handled by their own checks."""
+    if not tok:
+        return False
+    _u = tok
+    if len(_u) >= 2 and _u[0] == _u[-1] and _u[0] in ("'", '"'):
+        _u = _u[1:-1]
+    if not _u or _u[0] in ("/", "~", "-") or "$" in _u or "`" in _u:
+        return False
+    _ul = _u.lower()
+    if _u == ":memory:" or _ul.startswith("file::memory:") or "mode=memory" in _ul:
+        return False
+    return True
+
+
 # git options whose VALUE is a path that a native git child writes to / operates in (the runtime
 # realpath backstop never sees a native git process). A value that escapes the workdir lets git
 # write outside the session: -C / --git-dir / --work-tree / --separate-git-dir (repo location),
@@ -1697,6 +1736,18 @@ def _find_blocked_commands(command: str) -> set[str]:
     # git path / config environment variables -- GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE point
     # git's writes outside the workdir, and GIT_CONFIG_* override the sandbox's env-based hook
     # suppression. Handle both NAME=value and NAME+=value (append).
+    _GIT_EXEC_ENV_VARS = frozenset(
+        {
+            "GIT_EXTERNAL_DIFF",
+            "GIT_ASKPASS",
+            "GIT_SSH",
+            "GIT_SSH_COMMAND",
+            "GIT_PROXY_COMMAND",
+            "GIT_EDITOR",
+            "GIT_SEQUENCE_EDITOR",
+            "GIT_PAGER",
+        }
+    )
     for _ei, _et in enumerate(tokens):
         if not _ASSIGNMENT_RE.match(_et):
             continue
@@ -1721,6 +1772,20 @@ def _find_blocked_commands(command: str) -> set[str]:
         # .git/hooks/* in an unguarded git child.
         elif _an == "GIT_CONFIG" or _an.startswith("GIT_CONFIG_"):
             blocked.add("git-config-env-override")
+        # git runs the program named by these env vars (GIT_EXTERNAL_DIFF / GIT_ASKPASS /
+        # GIT_SSH[_COMMAND] / GIT_PROXY_COMMAND / GIT_EDITOR / GIT_PAGER); a value pointing at a
+        # WORKDIR executable (GIT_EXTERNAL_DIFF=./evil git diff) runs a planted helper in an
+        # unguarded git child. A bare command name (GIT_PAGER=cat) or a system tool stays allowed.
+        elif _an in _GIT_EXEC_ENV_VARS:
+            _gev = _av
+            if len(_gev) >= 2 and _gev[0] == _gev[-1] and _gev[0] in ("'", '"'):
+                _gev = _gev[1:-1]
+            _gecmd = _gev.split()[0] if _gev.split() else ""
+            # A workdir-reachable helper: a local / relative executable (./evil, sub/evil) or a ~
+            # (HOME == workdir) path. An absolute system tool (/usr/bin/ssh) and a bare PATH name
+            # (cat) stay allowed -- the attacker cannot plant a file outside the workdir.
+            if _is_local_executable_path(_gecmd) or _gecmd.startswith("~"):
+                blocked.add("git-exec-env")
 
     # git -c alias.X='!CMD' X / git config alias.X '!CMD': a git alias whose value starts with
     # `!` runs CMD through an unguarded shell, but the scanner sees only `git`. Flag the shell-
@@ -1942,16 +2007,19 @@ def _find_blocked_commands(command: str) -> set[str]:
     for i in _cmd_word_idx:
         if _token_basename(tokens[i]) != "openssl":
             continue
+        # An env -C DIR / subprocess cwd= (reconstructed as env -C DIR) that escapes the workdir
+        # makes even a RELATIVE -out operand (openssl rand -out key, cwd=/tmp) land outside.
+        _ossl_cwd_escapes = _cwd_wrapper_escapes(tokens, i)
         for k in range(i + 1, len(tokens)):
             t = tokens[k]
             if t in _SHELL_SEPARATORS or t in _SHELL_KEYWORDS_AS_SEP:
                 break
-            if (
-                t in _OPENSSL_WRITE_FLAGS
-                and k + 1 < len(tokens)
-                and _git_operand_escapes(tokens[k + 1], _local_assigns)
-            ):
-                blocked.add("openssl-write-outside")
+            if t in _OPENSSL_WRITE_FLAGS and k + 1 < len(tokens):
+                _op = tokens[k + 1]
+                if _git_operand_escapes(_op, _local_assigns) or (
+                    _ossl_cwd_escapes and _operand_relative_local(_op)
+                ):
+                    blocked.add("openssl-write-outside")
 
     # sqlite3 <DBFILE> creates / opens a database in an unguarded child (no realpath guard), and
     # its dot-commands (.output / .backup / .dump / .read ...) read + write arbitrary files. Flag
@@ -1961,6 +2029,10 @@ def _find_blocked_commands(command: str) -> set[str]:
     for i in _cmd_word_idx:
         if _token_basename(tokens[i]) != "sqlite3":
             continue
+        # env -C DIR / subprocess cwd= (reconstructed as env -C DIR) that escapes the workdir makes
+        # even a RELATIVE DBFILE / dot-file / -init operand (sqlite3 db.sqlite ..., cwd=/tmp) land
+        # outside; combine the escaping cwd with a relative operand below.
+        _sqlite_cwd_escapes = _cwd_wrapper_escapes(tokens, i)
         _seen_db = False
         _sk = i + 1
         while _sk < len(tokens):
@@ -1970,12 +2042,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             # sqlite3 options that consume a SEPARATED operand; skip the value so it is not
             # mistaken for the DBFILE (only -init reads a file, checked via its own value here).
             if t in _SQLITE_OPERAND_OPTS:
-                if (
-                    t == "-init"
-                    and _sk + 1 < len(tokens)
-                    and _git_operand_escapes(tokens[_sk + 1], _local_assigns)
-                ):
-                    blocked.add("sqlite3-write-outside")
+                if t == "-init" and _sk + 1 < len(tokens):
+                    _iv = tokens[_sk + 1]
+                    if _git_operand_escapes(_iv, _local_assigns) or (
+                        _sqlite_cwd_escapes and _operand_relative_local(_iv)
+                    ):
+                        blocked.add("sqlite3-write-outside")
                 _sk += 2
                 continue
             # Any dot-command file target that escapes the workdir (.output /tmp/leak, .backup
@@ -1994,8 +2066,9 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # .output |CMD / .once |CMD open CMD as a PIPE (a shell command), not a file.
                 if _dot_f.startswith("|"):
                     blocked.add("sqlite3-shell")
-                elif _dot_f not in ("stdout", "stderr", "off") and _git_operand_escapes(
-                    _dot_f, _local_assigns
+                elif _dot_f not in ("stdout", "stderr", "off") and (
+                    _git_operand_escapes(_dot_f, _local_assigns)
+                    or (_sqlite_cwd_escapes and _operand_relative_local(_dot_f))
                 ):
                     blocked.add("sqlite3-write-outside")
             if t.startswith("-"):
@@ -2013,7 +2086,10 @@ def _find_blocked_commands(command: str) -> set[str]:
                     or _dblow.startswith("file::memory:")
                     or "mode=memory" in _dblow
                 )
-                if not _is_mem and _git_operand_escapes(_dbn, _local_assigns):
+                if not _is_mem and (
+                    _git_operand_escapes(_dbn, _local_assigns)
+                    or (_sqlite_cwd_escapes and _operand_relative_local(_dbn))
+                ):
                     blocked.add("sqlite3-write-outside")
             _sk += 1
 
@@ -6684,6 +6760,46 @@ def _check_signal_escape_patterns(
                     return None
         return None
 
+    def _env_mapping_pairs(node):
+        """Flatten a subprocess env= mapping (a literal dict, a dict(...) call, or a nested
+        ``**{...}`` splat) into ([(key_str, value_node), ...], opaque). ``opaque`` is True when
+        any entry's KEY cannot be resolved to a constant string -- a computed key, or a
+        non-literal ``**mapping`` splat -- since such an entry could carry BASH_ENV / ENV /
+        GIT_CONFIG_COUNT. Only literal-keyed entries appear in the pair list."""
+        pairs = []
+        opaque = False
+        if isinstance(node, ast.Dict):
+            for _k, _v in zip(node.keys, node.values):
+                if _k is None:  # **mapping splat
+                    if isinstance(_v, ast.Dict):
+                        _ip, _io = _env_mapping_pairs(_v)
+                        pairs.extend(_ip)
+                        opaque = opaque or _io
+                    else:
+                        opaque = True
+                else:
+                    _ks = _extract_string_from_node(_k)
+                    if _ks is None:
+                        opaque = True
+                    else:
+                        pairs.append((_ks, _v))
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "dict"
+        ):
+            for _kw in node.keywords:
+                if _kw.arg is None:  # dict(**mapping)
+                    if isinstance(_kw.value, ast.Dict):
+                        _ip, _io = _env_mapping_pairs(_kw.value)
+                        pairs.extend(_ip)
+                        opaque = opaque or _io
+                    else:
+                        opaque = True
+                else:
+                    pairs.append((_kw.arg, _kw.value))
+        return pairs, opaque
+
     def _extract_strings_from_list(node):
         """Extract string elements from an AST List or Tuple node."""
         if isinstance(node, (ast.List, ast.Tuple)):
@@ -6809,6 +6925,9 @@ def _check_signal_escape_patterns(
             self.imports_signal = False
             self.signal_aliases = {"signal"}
             self.os_aliases = {"os"}
+            # Names bound to os.environ / os.environb (bare, from-imported as X, or e = os.environ),
+            # so an aliased env mutation (e['BASH_ENV'] = ...) is still recognized.
+            self.environ_aliases = {"environ", "environb"}
             self.subprocess_aliases = {"subprocess"}
             self.importlib_aliases = {"importlib"}
             self.sys_aliases = {"sys"}
@@ -6946,6 +7065,9 @@ def _check_signal_escape_patterns(
                     fq = f"{_eff_mod}.{alias.name}"
                     if fq in _SHELL_EXEC_FUNCS:
                         self.shell_exec_aliases[alias.asname or alias.name] = fq
+                    # from os import environ as e / from os import environb as eb.
+                    if _eff_mod == "os" and alias.name in ("environ", "environb"):
+                        self.environ_aliases.add(alias.asname or alias.name)
             elif node.module == "importlib":
                 for alias in node.names:
                     if alias.name in ("import_module", "reload", "__import__"):
@@ -7495,14 +7617,29 @@ def _check_signal_escape_patterns(
             return False
 
         def _is_environ_receiver(self, _v):
-            # os.environ / os.environb (or a bare `environ` / `environb` from `from os import ...`).
-            # environb is the SAME inherited process environment via byte keys/values.
-            return (
+            # os.environ / os.environb (or a bare `environ` / `environb`, a `from os import environ
+            # as e` alias, or a single-assignment `e = os.environ`). environb is the SAME inherited
+            # process environment via byte keys/values.
+            if (
                 isinstance(_v, ast.Attribute)
                 and _v.attr in ("environ", "environb")
                 and isinstance(_v.value, ast.Name)
                 and _v.value.id in self.os_aliases
-            ) or (isinstance(_v, ast.Name) and _v.id in ("environ", "environb"))
+            ):
+                return True
+            if isinstance(_v, ast.Name):
+                if _v.id in self.environ_aliases:
+                    return True
+                if _analyzer_on:
+                    _rhs = _scope_idx.resolve(_v.id, _v, "rhsnode")
+                    if (
+                        isinstance(_rhs, ast.Attribute)
+                        and _rhs.attr in ("environ", "environb")
+                        and isinstance(_rhs.value, ast.Name)
+                        and _rhs.value.id in self.os_aliases
+                    ):
+                        return True
+            return False
 
         def _environ_subscript_key(self, target):
             # The literal key of an os.environ[...] / os.environb[...] (or a bare environ[...] /
@@ -7539,6 +7676,19 @@ def _check_signal_escape_patterns(
             return None
 
         def visit_Assign(self, node):
+            # e = os.environ (or os.environb) binds a NEW name to the same inherited-env mapping, so
+            # a later e['BASH_ENV'] = ... escape reads as a plain-name subscript. Record the alias
+            # (source order puts this assignment before the mutation) so _is_environ_receiver treats
+            # `e` as the environ mapping. A bare `environ` RHS (from-import alias) is covered too.
+            if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                _rv = node.value
+                if (
+                    isinstance(_rv, ast.Attribute)
+                    and _rv.attr in ("environ", "environb")
+                    and isinstance(_rv.value, ast.Name)
+                    and _rv.value.id in self.os_aliases
+                ) or (isinstance(_rv, ast.Name) and _rv.id in self.environ_aliases):
+                    self.environ_aliases.add(node.targets[0].id)
             # os.environ['PATH'] = '.' (or BASH_ENV / ENV / GIT_CONFIG* / GIT_DIR) mutates the
             # INHERITED environment a later unguarded subprocess child reads, the same escape as
             # passing env={...} to the child: a bare-argv workdir exec via PATH='.', a sourced
@@ -7844,10 +7994,18 @@ def _check_signal_escape_patterns(
                             if not _is_shell_child:
                                 _is_shell_child = _cw0 in _SHELL_BINARIES
                             _is_git_child = _cw0 == "git"
-                    if isinstance(_env_node, ast.Dict):
-                        _opaque_key = False
-                        for _ek, _ev in zip(_env_node.keys, _env_node.values):
-                            _ekey = _extract_string_from_node(_ek) if _ek is not None else None
+                    _is_env_mapping = isinstance(_env_node, ast.Dict) or (
+                        isinstance(_env_node, ast.Call)
+                        and isinstance(_env_node.func, ast.Name)
+                        and _env_node.func.id == "dict"
+                    )
+                    if _is_env_mapping:
+                        # A literal dict, a dict(...) call, and any nested **{...} splat are
+                        # flattened together so the BASH_ENV / PATH / GIT_* checks (and the git
+                        # hook-suppression check) apply uniformly; a computed / non-literal-**
+                        # key marks the mapping opaque (fail closed for a shell child).
+                        _epairs, _opaque_key = _env_mapping_pairs(_env_node)
+                        for _ekey, _ev in _epairs:
                             _evstr = _extract_string_from_node(_ev)
                             if _ekey in ("BASH_ENV", "ENV") and _evstr != "":
                                 blocked_in_args = blocked_in_args | {"shell-startup-env:" + _ekey}
@@ -7873,43 +8031,18 @@ def _check_signal_escape_patterns(
                             ):
                                 # env={'GIT_CONFIG_COUNT': '0'} drops the sandbox hook suppression.
                                 blocked_in_args = blocked_in_args | {"git-config-env-override"}
-                            elif _ek is not None and _ekey is None:
-                                _opaque_key = True  # a computed key could be BASH_ENV / ENV
                         if _opaque_key and _is_shell_child:
                             blocked_in_args = blocked_in_args | {"shell-startup-env:opaque"}
-                        # A git child whose literal env drops the sandbox's GIT_CONFIG_COUNT hook
-                        # suppression (env={} / any dict without it and without a ** splat that
-                        # could carry it) re-enables a planted .git/hooks/* in the unguarded child.
+                        # A git child whose replaced env drops the sandbox's GIT_CONFIG_COUNT hook
+                        # suppression (env={} / dict(PATH=...) / any mapping without it and without
+                        # an opaque ** that could carry it) re-enables a planted .git/hooks/* in the
+                        # unguarded child. Applies to the literal-dict AND dict(...) forms.
                         if (
                             _is_git_child
                             and not _opaque_key
-                            and not any(
-                                _extract_string_from_node(_k) == "GIT_CONFIG_COUNT"
-                                for _k in _env_node.keys
-                                if _k is not None
-                            )
+                            and not any(_k == "GIT_CONFIG_COUNT" for _k, _ in _epairs)
                         ):
                             blocked_in_args = blocked_in_args | {"git-config-env-override"}
-                    elif (
-                        isinstance(_env_node, ast.Call)
-                        and isinstance(_env_node.func, ast.Name)
-                        and _env_node.func.id == "dict"
-                    ):
-                        for _kw2 in _env_node.keywords:
-                            if _kw2.arg in ("BASH_ENV", "ENV") and (
-                                _extract_string_from_node(_kw2.value) != ""
-                            ):
-                                blocked_in_args = blocked_in_args | {
-                                    "shell-startup-env:" + _kw2.arg
-                                }
-                            elif (
-                                _kw2.arg == "PATH"
-                                and isinstance(_extract_string_from_node(_kw2.value), str)
-                                and _path_value_is_unsafe(_extract_string_from_node(_kw2.value))
-                            ):
-                                blocked_in_args = blocked_in_args | {"unsafe-path-assign"}
-                            elif _kw2.arg is None and _is_shell_child:
-                                blocked_in_args = blocked_in_args | {"shell-startup-env:opaque"}
                     elif _is_shell_child:
                         # A non-literal env mapping (env=e, a comprehension) for a shell child
                         # cannot be proven free of BASH_ENV / ENV, so fail closed.

@@ -5082,3 +5082,88 @@ class TestRound51Bypasses:
     )
     def test_round51_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound52Bypasses:
+    """Fifty-second-round Codex findings: env=dict(...) / env={**mapping} child-env mappings,
+    aliased os.environ mutations, git helper-command env vars, and a relative native output
+    operand (openssl -out / sqlite3 DBFILE) under an escaping env -C / subprocess cwd=."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # env=dict(PATH=...) on a git child still drops the injected hook suppression, the same
+            # as env={...}; the dict() call form must flatten to the same (key, value) analysis.
+            "import subprocess\nsubprocess.run(['git','commit'], env=dict(PATH='/usr/bin'))",
+            "import subprocess\nsubprocess.run(['git','status'], env=dict(HOME='/x'))",
+        ],
+    )
+    def test_env_dict_call_git_override_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # env={**mapping} unpacks BASH_ENV into the child env; the ** splat must be flattened.
+            "import subprocess\nsubprocess.run(['bash','-c','echo ok'], env={**{'BASH_ENV':'env.sh'}})",
+            "import subprocess\nsubprocess.run(['git','commit'], env={**{'GIT_CONFIG_COUNT':'0'}, 'PATH':'/usr/bin'})",
+        ],
+    )
+    def test_env_splat_mapping_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # e = os.environ / from os import environ as e alias the inherited env, so a later
+            # e['BASH_ENV'] = ... subscript escape reads as a plain-name mutation.
+            "import os, subprocess\ne = os.environ\ne['BASH_ENV'] = 'env.sh'\nsubprocess.run(['bash','-c','echo hi'])",
+            "from os import environ as e\nimport subprocess\ne['BASH_ENV'] = 'env.sh'\nsubprocess.run(['bash','-c','echo hi'])",
+            "import os, subprocess\ne = os.environ\ne['PATH'] = '.:/usr/bin'\nsubprocess.run(['evil'])",
+        ],
+    )
+    def test_aliased_environ_mutation_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # GIT_EXTERNAL_DIFF / GIT_SSH_COMMAND / GIT_ASKPASS name a helper program git executes;
+            # a workdir-local / ~ target runs unreviewed code in the unguarded git child.
+            "import os\nos.system('GIT_EXTERNAL_DIFF=./evil git diff')",
+            "import os\nos.system('GIT_SSH_COMMAND=./evil git fetch')",
+            "import os\nos.system('GIT_ASKPASS=./evil git push')",
+        ],
+    )
+    def test_git_exec_env_var_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A RELATIVE -out / DBFILE operand resolves under an escaping env -C / subprocess cwd=,
+            # so the native openssl / sqlite3 child writes OUTSIDE the session workdir.
+            "import os\nos.system('env -C /tmp openssl rand -out key 4')",
+            "import subprocess\nsubprocess.run(['openssl','rand','-out','key','4'], cwd='/tmp')",
+            "import subprocess\nsubprocess.run(['sqlite3','db.sqlite','create table t(x);'], cwd='/tmp')",
+        ],
+    )
+    def test_relative_native_output_under_escaping_cwd_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A non-git child with env=dict(PATH=...), a benign ** splat var, an aliased-env benign
+            # var, a benign GIT_PAGER, and a relative native output with NO escaping cwd (or a
+            # workdir-subdir env -C) all stay allowed.
+            "import subprocess\nsubprocess.run(['ls'], env=dict(PATH='/usr/bin'))",
+            "import subprocess\nsubprocess.run(['ls'], env={**{'MYVAR':'x'}})",
+            "import os, subprocess\ne = os.environ\ne['MYVAR'] = 'x'\nsubprocess.run(['ls'])",
+            "import os\nos.system('GIT_PAGER=cat git log')",
+            "import subprocess\nsubprocess.run(['openssl','rand','-out','key','4'])",
+            "import os\nos.system('env -C sub openssl rand -out key 4')",
+        ],
+    )
+    def test_round52_benign_allowed(self, code):
+        _ok(code)
