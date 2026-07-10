@@ -163,6 +163,10 @@ _CHILD_WRITE_COMMANDS = frozenset(
         "mknod",
         "shred",
         "unlink",
+        # split / csplit slice a file into PREFIXaa, PREFIXab, ... at an arbitrary prefix
+        # path, creating files outside the workdir in an unguarded child.
+        "split",
+        "csplit",
         # Archive / compression tools create files in an unguarded child (tar -cf out,
         # zip out, unzip extracts, gzip file). In-workdir archiving should go through the
         # guarded Python APIs.
@@ -208,6 +212,14 @@ _SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif"})
 # POSIX / common shell binaries. A shell without an inline `-c` payload runs unscanned
 # code (a script file, -s / stdin, or a bare stdin-reading shell), so it is denied.
 _SHELL_BINARIES = frozenset({"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"})
+# `env` options that take NO operand (the next word is the command, not the flag's value),
+# so the argv scanner must not skip the following token as an operand. `-S` / --split-string
+# is handled separately (its operand is a command line to scan).
+_ENV_NOARG_FLAGS = frozenset({"-i", "--ignore-environment", "-", "-0", "--null", "-v", "--debug"})
+# Utilities whose LATER argv elements are actions / write flags, not inert arguments
+# (find -exec/-delete, sed -i / w, sort -o). A non-shell argv resolving to one of these is
+# re-scanned as a reconstructed command line so those dangerous flags are caught.
+_ARGV_TAIL_SCAN_COMMANDS = frozenset({"find", "sed", "gsed", "ssed", "perl", "sort"})
 # The only shell redirection targets trusted without a realpath check: standard device
 # sinks that cannot escape the workdir. Every other target (relative or absolute) fails
 # closed, because the unguarded child follows symlinks and resolves relative names against a
@@ -511,6 +523,10 @@ def _find_blocked_commands(command: str) -> set[str]:
             blocked.add("command-expansion")
         if base in _BLOCKED_COMMANDS:
             blocked.add(base)
+        # The `.` builtin is bash's `source`: `. evil.sh` runs an unscanned script in the
+        # shell, the same escape as `source`, but its basename is not a blocklist word.
+        if base == ".":
+            blocked.add("source")
         # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag,
         # non-numeric token is the real command. sudo is also in _BLOCKED_COMMANDS.
         if base in _COMMAND_PREFIXES:
@@ -820,6 +836,7 @@ def _blocked_in_argv(str_elts: list[str | None]) -> tuple[set[str], int | None]:
     idx, n = 0, len(str_elts)
     prefix_pending = False  # a wrapper is awaiting its real command word
     prev_was_flag = False  # last token (under a wrapper) was an option flag with an operand
+    cur_wrapper = None  # the active wrapper's basename (env / nice / timeout / ...)
     while idx < n:
         tok = str_elts[idx]
         if tok is None:
@@ -828,9 +845,28 @@ def _blocked_in_argv(str_elts: list[str | None]) -> tuple[set[str], int | None]:
         if _ASSIGNMENT_RE.match(tok):
             idx += 1
             continue
-        # A wrapper's option flag (`env -u FOO cmd`, `nice -n 5 cmd`): keep prefix_pending
-        # and remember a flag is active so its separated operand is skipped below.
         if prefix_pending and tok.startswith("-"):
+            # env -S CMD / --split-string=CMD splits its operand into a command line, so
+            # scan that operand with the full command scanner (env -S 'bash -c ...').
+            if cur_wrapper == "env":
+                if tok in ("-S", "--split-string"):
+                    _nxt = str_elts[idx + 1] if idx + 1 < n else None
+                    if _nxt is not None:
+                        blocked |= _find_blocked_commands(_nxt)
+                    return blocked, None
+                if tok.startswith("--split-string="):
+                    blocked |= _find_blocked_commands(tok[len("--split-string=") :])
+                    return blocked, None
+                if tok.startswith("-S") and len(tok) > 2:
+                    blocked |= _find_blocked_commands(tok[2:])
+                    return blocked, None
+                # env's no-operand flags (-i, --ignore-environment, ...) do NOT consume the
+                # next token, which is the real command (env -i bash -c ...); do not skip it.
+                if tok in _ENV_NOARG_FLAGS:
+                    idx += 1
+                    continue
+            # A wrapper option flag that may take a separated operand (env -u FOO cmd,
+            # nice -n 5 cmd): keep prefix_pending and remember a flag is active.
             prev_was_flag = True
             idx += 1
             continue
@@ -844,14 +880,15 @@ def _blocked_in_argv(str_elts: list[str | None]) -> tuple[set[str], int | None]:
         if ext in {".exe", ".com", ".bat", ".cmd"}:
             base = stem
         # A wrapper flag's SEPARATED operand (`env -u FOO python3`, `env -C DIR cmd`): the
-        # token after a wrapper option flag that is not itself a blocked command / prefix is
-        # the flag's value -- skip it and keep scanning so the real command (python3) is not
-        # missed. If it IS a blocked command / prefix (`env -i rm`) it is handled below.
+        # token after a wrapper option flag that is not itself a blocked command / prefix /
+        # shell is the flag's value -- skip it and keep scanning so the real command (python3,
+        # bash) is not missed. A blocked command / prefix / shell is treated as the command.
         if (
             prefix_pending
             and prev_was_flag
             and base not in _BLOCKED_COMMANDS
             and base not in _COMMAND_PREFIXES
+            and base not in _SHELL_BINARIES
         ):
             prev_was_flag = False
             idx += 1
@@ -861,6 +898,7 @@ def _blocked_in_argv(str_elts: list[str | None]) -> tuple[set[str], int | None]:
             blocked.add(base)
         if base in _COMMAND_PREFIXES:
             prefix_pending = True
+            cur_wrapper = base
             idx += 1
             continue  # wrapper consumes one command; the next word is the real one
         return blocked, idx  # reached the executed command word
@@ -903,6 +941,11 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
+        # HOME points at the workdir, so a prior run could plant
+        # .local/.../site-packages/usercustomize.py that runs (unguarded) at the next child's
+        # startup. Disable the per-user site directory here too (belt-and-suspenders with the
+        # interpreter's -s flag) so a sandboxed child never imports it.
+        "PYTHONNOUSERSITE": "1",
     }
     if venv:
         env["VIRTUAL_ENV"] = venv
@@ -4167,15 +4210,23 @@ def _check_signal_escape_patterns(
                 else:
                     _argv_blocked, _cmd_idx = _blocked_in_argv(str_elts)
                     found |= _argv_blocked
-                    # A wrapper-hidden shell binary (env bash s.sh, nice sh -c '...') resolves
-                    # to a shell as its command word; analyze the shell + its args (script file
-                    # or -c payload) so the bare-shell / unscanned-script forms are caught.
-                    if (
-                        _cmd_idx is not None
-                        and str_elts[_cmd_idx] is not None
-                        and os.path.basename(str_elts[_cmd_idx]).lower() in _SHELL_BINARIES
-                    ):
-                        found |= _check_shell_argv(arg.elts[_cmd_idx:])
+                    if _cmd_idx is not None and str_elts[_cmd_idx] is not None:
+                        _cmd_base = os.path.basename(str_elts[_cmd_idx]).lower()
+                        # A wrapper-hidden shell binary (env bash s.sh, nice sh -c '...')
+                        # resolves to a shell as its command word; analyze the shell + its args
+                        # (script file or -c payload) so the bare-shell / unscanned-script forms
+                        # are caught.
+                        if _cmd_base in _SHELL_BINARIES:
+                            found |= _check_shell_argv(arg.elts[_cmd_idx:])
+                        # find -exec/-delete, sed -i, sort -o interpret LATER argv elements as
+                        # actions / write flags, so reconstruct a command line from the argv
+                        # tail and reuse the full scanner (which handles those forms).
+                        elif _cmd_base in _ARGV_TAIL_SCAN_COMMANDS:
+                            found |= _find_blocked_commands(
+                                " ".join(
+                                    shlex.quote(s) for s in str_elts[_cmd_idx:] if s is not None
+                                )
+                            )
                 continue
             for s in _extract_strings_from_list(arg):
                 found |= _find_blocked_commands(s)
@@ -4751,6 +4802,16 @@ def _check_signal_escape_patterns(
                         shell_func = _scope_idx.resolve_class_attr(
                             _ecf.value.id, _ecf.attr, "shell"
                         ) or _scope_idx.resolve_instance_attr(_ecf.value.id, _ecf.attr, "shell")
+                elif (
+                    _analyzer_on
+                    and isinstance(_ecf.value, ast.Call)
+                    and isinstance(_ecf.value.func, ast.Name)
+                ):
+                    # An instance built inline, ClassName().attr: instance lookup still returns
+                    # the class-body sink alias. class C: s = os.system; C().s('rm -rf /').
+                    shell_func = _scope_idx.resolve_class_attr(
+                        _ecf.value.func.id, _ecf.attr, "shell"
+                    )
                 elif isinstance(_ecf.value, ast.Attribute) and _ecf.value.attr in ("os", "posix"):
                     # A stdlib module that re-exports os as an attribute (pathlib.os.system,
                     # tempfile.os.system, subprocess.os.system): the `.os` attribute IS the os
@@ -7637,7 +7698,15 @@ def _python_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen([sys.executable, tmp_path], **popen_kwargs)
+        # -s disables the per-user site directory (~/.local/.../site-packages): the guard is
+        # injected into the SCRIPT body and runs after site initialization, so a prior run that
+        # dropped .local/.../site-packages/usercustomize.py (HOME points at the workdir) would
+        # otherwise import it during startup and run writers with unpatched stdlib. Bypass keeps
+        # the host default. The real site-packages stays available for user imports.
+        _py_argv = (
+            [sys.executable, tmp_path] if disable_sandbox else [sys.executable, "-s", tmp_path]
+        )
+        proc = subprocess.Popen(_py_argv, **popen_kwargs)
 
         # Spawn cancel watcher if we have a cancel event
         if cancel_event is not None:

@@ -1131,3 +1131,30 @@ def test_sandboxed_fresh_builtin_local_write_allowed():
     _p = os.path.join(workdir, "fresh_local.txt")
     if os.path.exists(_p):
         os.remove(_p)
+
+
+@_POSIX_ONLY
+def test_sandboxed_user_site_usercustomize_not_run():
+    # HOME points at the workdir, so one run could drop
+    # .local/lib/pythonX.Y/site-packages/usercustomize.py that Python imports at the NEXT
+    # child's startup, before the injected guard runs, executing writers unpatched. The
+    # sandboxed interpreter runs with -s (user site disabled), so it is never imported.
+    session = "backstop-usersite"
+    workdir = get_sandbox_workdir(session)
+    ver = "python%d.%d" % (sys.version_info[0], sys.version_info[1])
+    usdir = os.path.join(workdir, ".local", "lib", ver, "site-packages")
+    os.makedirs(usdir, exist_ok = True)
+    marker = os.path.join(workdir, "usercustomize_ran.marker")
+    if os.path.exists(marker):
+        os.remove(marker)
+    with open(os.path.join(usdir, "usercustomize.py"), "w") as fh:
+        fh.write("open(%r, 'w').write('pwned')\n" % marker)
+    try:
+        out = _python_exec("print('OK', 1 + 1)", None, 30, session, disable_sandbox = False)
+        assert "OK 2" in out
+        assert not os.path.exists(marker), "user-site usercustomize.py ran before the guard"
+    finally:
+        import shutil
+        shutil.rmtree(os.path.join(workdir, ".local"), ignore_errors = True)
+        if os.path.exists(marker):
+            os.remove(marker)

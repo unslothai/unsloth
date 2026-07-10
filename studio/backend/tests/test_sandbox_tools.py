@@ -294,11 +294,14 @@ class TestSandboxEnvIsolation:
             "LANG",
             "TERM",
             "PYTHONIOENCODING",
+            "PYTHONNOUSERSITE",
             "VIRTUAL_ENV",
             "SystemRoot",
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
+        # User site-packages must be disabled so a planted ~/.local usercustomize.py cannot run.
+        assert env["PYTHONNOUSERSITE"] == "1"
 
     def test_home_points_at_sandbox_workdir(self, tmp_path):
         from core.inference.tools import _build_safe_env
@@ -2704,4 +2707,78 @@ class TestRound21Bypasses:
         ],
     )
     def test_round21_benign_allowed(self, code):
+        _ok(code)
+
+
+class TestRound22Bypasses:
+    """Twenty-second-round Codex findings: env option arity + hidden shells in argv, find/sed
+    actions inside argv vectors, split child-writer, class sinks reached through instances, and
+    the `.` source builtin."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['env', '-i', 'bash', '-c', 'touch /tmp/x'])",
+            "import subprocess\nsubprocess.run(['env', '-S', 'bash -c \"touch /tmp/x\"'])",
+            "import subprocess\nsubprocess.run(['env', '-i', 'rm', '-rf', '/tmp/x'])",
+        ],
+    )
+    def test_env_option_arity_argv_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['find', '.', '-exec', 'rm', '-rf', '/tmp/v', ';'])",
+            "import subprocess\nsubprocess.run(['find', '/tmp/v', '-delete'])",
+            "import subprocess\nsubprocess.run(['sed', '-i', 's/a/b/', '/tmp/v'])",
+            "import subprocess\nsubprocess.run(['sort', '-o', '/tmp/v', '/tmp/v'])",
+        ],
+    )
+    def test_find_sed_argv_actions_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['split', 'input', '/tmp/out'])",
+            "import os\nos.system('split input /tmp/out')",
+            "import subprocess\nsubprocess.run(['csplit', 'input', '10'])",
+        ],
+    )
+    def test_split_child_writer_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nclass C:\n    s = os.system\nC().s('touch /tmp/x')",
+            "import os\nclass C:\n    s = os.system\nC().s('rm -rf /tmp/x')",
+        ],
+    )
+    def test_class_sink_through_instance_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('. evil.sh')",
+            "import os\nos.system('bash -c \". evil.sh\"')",
+            "import os\nos.system('echo hi; . ./setup.sh')",
+        ],
+    )
+    def test_dot_source_builtin_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['env', '-u', 'FOO', 'echo', 'hi'])",
+            "import subprocess\nsubprocess.run(['find', '.', '-name', '*.py'])",
+            "import subprocess\nsubprocess.run(['sed', 's/a/b/', 'in.txt'])",
+            "import subprocess\nsubprocess.run(['env', '-i', 'echo', 'hi'])",
+            "import os\nos.system('ls .')",
+        ],
+    )
+    def test_round22_benign_allowed(self, code):
         _ok(code)
