@@ -227,6 +227,11 @@ class CFGParallelProxy:
 
     # ── cache fan-out (keeps per-branch cache state identical to single-GPU) ──
     def enable_cache(self, config: Any) -> None:
+        # The primary needs no explicit registry invalidation here: the caller
+        # (apply_step_cache) runs _invalidate_child_registry_cache on the object it
+        # enabled, and this proxy's __getattr__ forwards _diffusers_hook to _primary,
+        # so that call nulls the PRIMARY's cached child list. Only the replica is
+        # unreachable through delegation, hence its explicit _invalidate_registry.
         self._primary.enable_cache(config)
         try:
             self._replica.enable_cache(config)
