@@ -120,6 +120,10 @@ function ensureActiveModelInStoreList(
 
 export type ApplyInferenceStatusOptions = {
   previousCheckpoint?: string;
+  /** activeGgufVariant BEFORE the caller's setCheckpoint synced it to the
+   * status -- without it a variant-only switch underneath the tab reads as
+   * steady state and the hydration reseed keeps the old quant's baselines. */
+  previousGgufVariant?: string | null;
 };
 
 /** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
@@ -145,9 +149,13 @@ export function applyActiveModelStatusToStore(
     );
   }
 
+  const previousGgufVariant =
+    options.previousGgufVariant !== undefined
+      ? options.previousGgufVariant
+      : store.activeGgufVariant;
   const hydratingExistingModel =
     previousCheckpoint !== checkpointId ||
-    store.activeGgufVariant !== (status.gguf_variant ?? null);
+    previousGgufVariant !== (status.gguf_variant ?? null);
   const supportsReasoning = status.supports_reasoning ?? false;
   const reasoningAlwaysOn = status.reasoning_always_on ?? false;
   const reasoningStyle = status.reasoning_style ?? "enable_thinking";
@@ -342,7 +350,8 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
   if (previousCheckpoint) {
     return true;
   }
+  const previousGgufVariant = useChatRuntimeStore.getState().activeGgufVariant;
   store.setCheckpoint(checkpointId, status.gguf_variant);
-  applyActiveModelStatusToStore(status, { previousCheckpoint });
+  applyActiveModelStatusToStore(status, { previousCheckpoint, previousGgufVariant });
   return true;
 }

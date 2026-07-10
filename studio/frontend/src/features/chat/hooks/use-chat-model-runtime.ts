@@ -347,9 +347,12 @@ export function useChatModelRuntime() {
       if (statusRes.active_model && !isExternalSelectionActive) {
         const checkpointId = resolveInferenceCheckpointId(statusRes);
         if (checkpointId) {
+          const previousGgufVariant =
+            useChatRuntimeStore.getState().activeGgufVariant;
           setCheckpoint(checkpointId, statusRes.gguf_variant);
           applyActiveModelStatusToStore(statusRes, {
             previousCheckpoint: selectedCheckpoint,
+            previousGgufVariant,
           });
           // setModels(listRes...) above used catalog data, which omits audio
           // capability. Re-apply live status so attach gates survive a refresh.

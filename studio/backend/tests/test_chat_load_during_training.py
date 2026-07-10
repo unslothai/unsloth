@@ -932,6 +932,48 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertEqual(inherited, ["-c", "32768"])
         self.assertEqual(cross, [])
 
+    def test_uncached_diffusion_repo_collapses_by_name(self):
+        # A not-yet-downloaded diffusion repo has no header to read; the naming
+        # catches it so the guard sizes the single device the runner will use.
+        cfg = SimpleNamespace(
+            identifier = "unsloth/DiffusionGemma-4B-GGUF",
+            gguf_file = None,
+            gguf_hf_repo = "unsloth/DiffusionGemma-4B-GGUF",
+            gguf_variant = "Q4_K_M",
+        )
+        self.assertEqual(self.route._diffusion_guard_gpu_ids(cfg, [1, 0]), [0])
+        self.assertEqual(self.route._diffusion_guard_gpu_ids(cfg, None), [0])
+
+    def test_text_only_extras_skip_mmproj_charge(self):
+        # --no-mmproj runs text-only: the launcher never resolves a projector,
+        # so the guard must not charge one (at gpu_layers=0 it could be the
+        # only positive VRAM and spuriously deny a CPU-only load).
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.gguf"
+            p.write_bytes(b"x" * 1000)
+            proj = Path(d) / "mmproj.gguf"
+            proj.write_bytes(b"p" * 600)
+            cfg = SimpleNamespace(
+                gguf_file = str(p),
+                gguf_mmproj_file = str(proj),
+                gguf_mtp_file = None,
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
+            ):
+                kwargs = dict(gpu_memory_mode = "manual", gpu_layers = 0)
+                text_only = self.route._estimate_gguf_required_gb(
+                    cfg, llama_extra_args = ["--no-mmproj"], **kwargs
+                )
+                with_proj = self.route._estimate_gguf_required_gb(cfg, **kwargs)
+        self.assertEqual(text_only, 0.0)
+        self.assertAlmostEqual(with_proj, 600 / (1024**3), places = 9)
+
     def test_manual_charges_companions_in_full_not_scaled_by_gpu_layers(self):
         # A companion (mmproj / separate MTP drafter) is GPU-resident regardless of
         # the main --gpu-layers, so it must not be scaled by the fraction. At

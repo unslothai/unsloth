@@ -3447,7 +3447,27 @@ def _diffusion_guard_gpu_ids(
     llama.cpp's own free-VRAM placement for non-diffusion GGUFs)."""
     if requested_gpu_ids is not None and len(requested_gpu_ids) == 1:
         return requested_gpu_ids
+
+    def _collapse() -> Optional[List[int]]:
+        if requested_gpu_ids:
+            return [min(requested_gpu_ids)]
+        # Unpinned: the runner falls back to DG_GPU, else GPU 0.
+        try:
+            return [int(os.environ.get("DG_GPU", "0"))]
+        except (TypeError, ValueError):
+            return [0]
+
     try:
+        # A not-yet-downloaded diffusion repo has no header to read, so catch
+        # the common naming (DiffusionGemma and friends) up front -- else the
+        # guard sizes the aggregate pool for a load that runs on one device.
+        ident = " ".join(
+            str(getattr(config, attr, "") or "")
+            for attr in ("identifier", "gguf_hf_repo")
+        ).lower()
+        if "diffusion" in ident:
+            return _collapse()
+
         main = getattr(config, "gguf_file", None)
         if not main:
             repo = getattr(config, "gguf_hf_repo", None)
@@ -3470,13 +3490,7 @@ def _diffusion_guard_gpu_ids(
         if arch.startswith("diffusion") or gguf_header_has_key(
             str(main), "diffusion.canvas_length"
         ):
-            if requested_gpu_ids:
-                return [min(requested_gpu_ids)]
-            # Unpinned: the runner falls back to DG_GPU, else GPU 0.
-            try:
-                return [int(os.environ.get("DG_GPU", "0"))]
-            except (TypeError, ValueError):
-                return [0]
+            return _collapse()
     except Exception as e:
         logger.debug("Could not check diffusion arch for the guard pick: %s", e)
     return requested_gpu_ids
@@ -3554,6 +3568,12 @@ def _estimate_gguf_required_gb(
         )
 
         draft_on_cpu = _extra_args_draft_offloaded_to_cpu(llama_extra_args)
+        # Pass-through --no-mmproj / --no-mmproj-auto runs text-only: the
+        # launcher never resolves a projector, so don't charge one (with
+        # gpu_layers=0 it could be the only positive VRAM in the guard).
+        from core.inference.llama_server_args import extra_args_disable_mmproj
+
+        charge_mmproj = not extra_args_disable_mmproj(llama_extra_args)
         extras_draft_bytes = 0
         draft_path = _extra_args_mtp_draft_path(llama_extra_args)
         if draft_path and not draft_on_cpu:
@@ -3583,6 +3603,8 @@ def _estimate_gguf_required_gb(
         for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
             if attr == "gguf_mtp_file" and not charge_mtp:
                 continue
+            if attr == "gguf_mmproj_file" and not charge_mmproj:
+                continue
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
                 companion_bytes += Path(f).stat().st_size
@@ -3610,7 +3632,7 @@ def _estimate_gguf_required_gb(
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,
-                include_mmproj = bool(has_vision),
+                include_mmproj = bool(has_vision) and charge_mmproj,
                 include_mtp = charge_mtp,
             )
             main_gb = main_bytes / (1024**3)
