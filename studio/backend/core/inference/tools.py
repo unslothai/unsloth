@@ -229,7 +229,7 @@ _SHELL_BINARIES = frozenset({"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", 
 # Utilities whose LATER argv elements are actions / write flags, not inert arguments
 # (find -exec/-delete, sed -i / w, sort -o). A non-shell argv resolving to one of these is
 # re-scanned as a reconstructed command line so those dangerous flags are caught.
-_ARGV_TAIL_SCAN_COMMANDS = frozenset({"find", "sed", "gsed", "ssed", "perl", "sort"})
+_ARGV_TAIL_SCAN_COMMANDS = frozenset({"find", "sed", "gsed", "ssed", "perl", "sort", "git"})
 
 
 def _is_versioned_interpreter(base: str) -> bool:
@@ -260,6 +260,22 @@ def _is_local_executable_path(tok: str) -> bool:
     # ran on the original token, so ./evil (has a slash) still reaches here and stays local.
     norm = os.path.normpath(t)
     return not norm.startswith(_SYSTEM_BIN_PREFIXES)
+
+
+def _path_value_is_unsafe(value: str) -> bool:
+    """True when a PATH search list would let a BARE (no-slash) command resolve to a workdir
+    executable: any entry that is ``.``, empty (``:`` = cwd), or a relative directory. An
+    absolute (``/...``), ``~``-rooted, or variable (``$PATH`` / ``%VAR%``) entry is safe. Used
+    so a ``PATH=. evil`` prefix / ``env={'PATH': '.'}`` cannot smuggle an unguarded shebang
+    past the bare-name PATH exemption in _is_local_executable_path."""
+    for entry in value.replace("\\", "/").split(":"):
+        e = entry.strip()
+        if e in ("", "."):
+            return True
+        if e.startswith(("/", "~", "$", "%")):
+            continue
+        return True  # a relative directory (relbin, ./tools)
+    return False
 
 
 # The only shell redirection targets trusted without a realpath check: standard device
@@ -1140,9 +1156,16 @@ def _find_blocked_commands(command: str) -> set[str]:
     # the quoted handler is unscanned shell code. Scan the handler operand of a command-position
     # `trap` recursively; a reset (trap - EXIT) / ignore (trap '' EXIT) has nothing to run.
     for i in _cmd_word_idx:
-        if _token_basename(tokens[i]) != "trap" or i + 1 >= len(tokens):
+        if _token_basename(tokens[i]) != "trap":
             continue
-        _h = tokens[i + 1]
+        # Skip trap options / the -- terminator (trap -- 'CMD' EXIT, trap -p) so the handler
+        # operand is not mistaken for -- and left unscanned.
+        _j = i + 1
+        while _j < len(tokens) and tokens[_j].startswith("-") and len(tokens[_j]) > 1:
+            _j += 1
+        if _j >= len(tokens):
+            continue
+        _h = tokens[_j]
         if _h and _h != "-" and _h not in _SHELL_SEPARATORS and _h not in _SHELL_KEYWORDS_AS_SEP:
             blocked |= _find_blocked_commands(_h)
 
@@ -1158,11 +1181,18 @@ def _find_blocked_commands(command: str) -> set[str]:
             continue
         _has_c = False
         _script = None
+        _interactive = False
         for k in range(i + 1, len(tokens)):
             t = tokens[k]
             if t in _SHELL_SEPARATORS or t in _SHELL_KEYWORDS_AS_SEP:
                 break
             tl = t.lower()
+            # An interactive shell (bash -i, sh -i, or a combined short flag like -ic) SOURCES
+            # the user's rc files (.bashrc / ENV) before running any -c payload, executing
+            # unscanned workdir startup code in the unguarded child. Treat -i as unscanned
+            # startup like BASH_ENV.
+            if tl.startswith("-") and not tl.startswith("--") and "i" in tl[1:]:
+                _interactive = True
             if tl == "-c" or (tl.startswith("-") and not tl.startswith("--") and tl.endswith("c")):
                 _has_c = True
                 break
@@ -1173,6 +1203,8 @@ def _find_blocked_commands(command: str) -> set[str]:
                 continue  # other shell flags: -l, -x, --login, --norc, ...
             _script = t  # first non-flag operand is the script file
             break
+        if _interactive:
+            blocked.add("shell-interactive-rc:" + _token_basename(tok))
         # Any command-position shell WITHOUT an inline `-c` payload runs unscanned code:
         # a script file (bash s.sh), stdin via -s, or a bare shell that reads stdin
         # (`printf 'evil' | bash`). Only the `-c '...'` form is statically analyzable, so
@@ -1191,6 +1223,59 @@ def _find_blocked_commands(command: str) -> set[str]:
                 _an, _, _av = pk.partition("=")
                 if _an in ("BASH_ENV", "ENV") and _av != "":
                     blocked.add("shell-startup-env:" + _an)
+
+    # A BASH_ENV / ENV assignment set in a SEPARATE command (export BASH_ENV=env.sh; bash -c
+    # '...', or a standalone BASH_ENV=env.sh) persists for later shells in the same session and
+    # is sourced before their -c payload, so the per-shell prefix backscan above misses it.
+    # Flag a non-empty BASH_ENV / ENV assignment anywhere it is exported / set.
+    for _ei, _et in enumerate(tokens):
+        if not _ASSIGNMENT_RE.match(_et):
+            continue
+        _an, _, _av = _et.partition("=")
+        if _an in ("BASH_ENV", "ENV") and _av != "":
+            blocked.add("shell-startup-env:" + _an)
+        # PATH=. cmd / export PATH=.:$PATH: a search list with a relative / cwd entry lets a bare
+        # command word resolve to a workdir shebang (the bare-name PATH exemption assumes a
+        # trusted PATH). Flag an unsafe PATH assignment.
+        elif _an == "PATH" and _path_value_is_unsafe(_av):
+            blocked.add("unsafe-path-assign")
+
+    # git -c alias.X='!CMD' X / git config alias.X '!CMD': a git alias whose value starts with
+    # `!` runs CMD through an unguarded shell, but the scanner sees only `git`. Flag the shell-
+    # dispatch alias form (the ! marker) so the aliased writer / reader is not smuggled past.
+    for i in _cmd_word_idx:
+        if _token_basename(tokens[i]) != "git":
+            continue
+        _seg = []
+        for k in range(i + 1, len(tokens)):
+            if tokens[k] in _SHELL_SEPARATORS or tokens[k] in _SHELL_KEYWORDS_AS_SEP:
+                break
+            _seg.append(tokens[k])
+        _joined = " ".join(_seg)
+        if re.search(r"alias\.[^=\s]+=\s*!", _joined):
+            blocked.add("git-shell-alias")
+        else:
+            for _k, _t in enumerate(_seg):
+                if _t.startswith("alias.") and _k + 1 < len(_seg) and _seg[_k + 1].startswith("!"):
+                    blocked.add("git-shell-alias")
+                    break
+
+    # alias x='touch /tmp/p'; ...; x (with expand_aliases) runs the alias BODY at execution
+    # time, but the command word `x` is unknown to the scanner. Scan the body of each alias
+    # definition so a blocked writer / interpreter in it is caught at the definition site.
+    for i in _cmd_word_idx:
+        if _token_basename(tokens[i]) != "alias":
+            continue
+        for k in range(i + 1, len(tokens)):
+            t = tokens[k]
+            if t in _SHELL_SEPARATORS or t in _SHELL_KEYWORDS_AS_SEP:
+                break
+            if t.startswith("-"):
+                continue  # alias -p (print)
+            if "=" in t:
+                _body = t.split("=", 1)[1]
+                if _body:
+                    blocked |= _find_blocked_commands(_body)
 
     # Output redirection (> / >> / &> / N>) runs in an unguarded child shell that follows
     # symlinks before any Python guard, so no filename target can be trusted: a relative
@@ -4645,8 +4730,13 @@ def _scan_command_string_for_reads(
                 if _r is not None:
                     return _r
         # trap 'CMD' SIG: the quoted handler runs as shell code on EXIT / a signal; scan it.
-        if _ft == "trap" and _fi + 1 < len(ptoks):
-            _th = ptoks[_fi + 1]
+        # Skip trap options / the -- terminator (trap -- 'CMD' EXIT, trap -p) so the handler
+        # operand is not mistaken for -- and left unscanned.
+        if _ft == "trap":
+            _tj = _fi + 1
+            while _tj < len(ptoks) and ptoks[_tj].startswith("-") and len(ptoks[_tj]) > 1:
+                _tj += 1
+            _th = ptoks[_tj] if _tj < len(ptoks) else None
             if _th and _th != "-" and _th not in _READ_SCAN_SEPARATORS:
                 _r = _scan_command_string_for_reads(
                     _th,
@@ -5236,8 +5326,9 @@ def _check_signal_escape_patterns(
                         if _cmd_base in _SHELL_BINARIES:
                             found |= _check_shell_argv(arg.elts[_cmd_idx:])
                         # find -exec/-delete, sed -i, sort -o interpret LATER argv elements as
-                        # actions / write flags, so reconstruct a command line from the argv
-                        # tail and reuse the full scanner (which handles those forms).
+                        # actions / write flags, and git -c alias.X=!CMD hides a shell dispatch
+                        # in a config operand, so reconstruct a command line from the argv tail
+                        # and reuse the full scanner (which handles those forms).
                         elif _cmd_base in _ARGV_TAIL_SCAN_COMMANDS:
                             found |= _find_blocked_commands(
                                 " ".join(
@@ -5991,6 +6082,25 @@ def _check_signal_escape_patterns(
                 )
                 blocked_in_args = _check_args_for_blocked(all_call_args, _shell_maybe_true)
 
+                # subprocess(..., executable=PROG) makes PROG the real program while the argv
+                # TAIL still supplies its flags/args, so scanning executable and argv separately
+                # misses run(['x', '-i', 's/a/b/', '/f'], executable='/usr/bin/sed') (child runs
+                # sed -i). Reconstruct PROG + argv[1:] and scan the effective command line.
+                _exe_node = expanded_kwargs.get("executable")
+                _exe = _extract_string_from_node(_exe_node) if _exe_node is not None else None
+                if (
+                    _exe is not None
+                    and not _shell_maybe_true
+                    and node.args
+                    and isinstance(node.args[0], (ast.List, ast.Tuple))
+                ):
+                    _tail = [_extract_string_from_node(e) for e in node.args[0].elts[1:]]
+                    _combined = [_exe] + _tail
+                    if all(_c is not None for _c in _combined):
+                        blocked_in_args = blocked_in_args | _find_blocked_commands(
+                            " ".join(shlex.quote(_c) for _c in _combined)
+                        )
+
                 # A shell startup variable (BASH_ENV / ENV) in the env= mapping names a script
                 # bash / sh SOURCES before the -c payload runs, executing unscanned code
                 # (subprocess.run(['bash','-c','echo OK'], env={'BASH_ENV':'env.sh'})). Flag a
@@ -6020,6 +6130,13 @@ def _check_signal_escape_patterns(
                                 _extract_string_from_node(_ev) != ""
                             ):
                                 blocked_in_args = blocked_in_args | {"shell-startup-env:" + _ekey}
+                            elif (
+                                _ekey == "PATH"
+                                and isinstance(_extract_string_from_node(_ev), str)
+                                and _path_value_is_unsafe(_extract_string_from_node(_ev))
+                            ):
+                                # env={'PATH': '.'} lets a bare argv[0] resolve to a workdir exec.
+                                blocked_in_args = blocked_in_args | {"unsafe-path-assign"}
                             elif _ek is not None and _ekey is None:
                                 _opaque_key = True  # a computed key could be BASH_ENV / ENV
                         if _opaque_key and _is_shell_child:
@@ -6036,6 +6153,12 @@ def _check_signal_escape_patterns(
                                 blocked_in_args = blocked_in_args | {
                                     "shell-startup-env:" + _kw2.arg
                                 }
+                            elif (
+                                _kw2.arg == "PATH"
+                                and isinstance(_extract_string_from_node(_kw2.value), str)
+                                and _path_value_is_unsafe(_extract_string_from_node(_kw2.value))
+                            ):
+                                blocked_in_args = blocked_in_args | {"unsafe-path-assign"}
                             elif _kw2.arg is None and _is_shell_child:
                                 blocked_in_args = blocked_in_args | {"shell-startup-env:opaque"}
                     elif _is_shell_child:

@@ -3579,3 +3579,86 @@ class TestRound33Bypasses:
     )
     def test_round33_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound34Bypasses:
+    """Thirty-fourth-round Codex findings (follow-ups on the round-32/33 shell + startup-env
+    handling): a PATH-controlled bare executable, a git shell-dispatch alias, an executable=
+    override, bash alias expansion, a trap handler after the -- terminator, and shell startup
+    scripts via export BASH_ENV / an interactive shell."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # PATH with a relative / cwd entry lets a bare command resolve to a workdir shebang.
+            "import os\nos.system('PATH=. evil')",
+            "import os\nos.system('PATH=.:$PATH evil')",
+            "import subprocess\nsubprocess.run(['evil'], env={'PATH': '.'})",
+            "import subprocess\nsubprocess.run(['evil'], env=dict(PATH='tools'))",
+        ],
+    )
+    def test_unsafe_path_bare_exec_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A git alias whose value starts with ! runs through an unguarded shell.
+            "import os\nos.system(\"git -c alias.x='!touch /tmp/p' x\")",
+            "import os\nos.system(\"git config alias.x '!rm -rf /'\")",
+            "import subprocess\nsubprocess.run(['git', '-c', 'alias.x=!touch /tmp/p', 'x'])",
+        ],
+    )
+    def test_git_shell_alias_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # executable= is the real program; its dangerous flags still come from the argv tail.
+            "import subprocess\nsubprocess.run(['x', '-i', 's/a/b/', '/tmp/f'], executable='/usr/bin/sed')",
+            "import subprocess\nsubprocess.Popen(['x', 's.sh'], executable='/bin/bash')",
+        ],
+    )
+    def test_executable_override_rescan_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # An alias body runs at expansion time; trap after -- runs on exit; both are scanned.
+            "import os\nos.system('alias x=\"touch /tmp/p\"; x')",
+            "import os\nos.system(\"trap -- 'touch /tmp/p' EXIT\")",
+            "import os\nos.system(\"trap -- 'cat /etc/passwd' EXIT\")",
+        ],
+    )
+    def test_alias_body_and_trap_dashdash_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # export BASH_ENV / an interactive shell source workdir startup code before -c.
+            "import os\nos.system(\"export BASH_ENV=env.sh; bash -c 'echo ok'\")",
+            "import os\nos.system(\"bash -i -c 'echo ok'\")",
+            "import subprocess\nsubprocess.run(\"bash -ic 'echo ok'\", shell=True)",
+        ],
+    )
+    def test_shell_startup_script_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign git / PATH / executable / trap-reset / non-interactive shell must still pass.
+            "import os\nos.system('git status')",
+            "import os\nos.system('git clone https://github.com/x/y')",
+            "import os\nos.system('PATH=/opt/conda/bin:$PATH ls -la')",
+            "import subprocess\nsubprocess.run(['cat', 'notes.txt'], executable='/bin/cat')",
+            "import os\nos.system('trap - EXIT')",
+            "import os\nos.system(\"bash -c 'echo hi'\")",
+            "import os\nos.system('git config user.name me')",
+        ],
+    )
+    def test_round34_benign_allowed(self, code):
+        _ok(code)
