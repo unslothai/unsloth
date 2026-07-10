@@ -960,3 +960,38 @@ def test_vision_subprocess_unions_sidecar_registry():
         model_type = "zz_sidecar_vlm"
 
     assert ns["_is_vlm"](_Cfg()) is True
+
+
+def test_upgrade_check_mixed_pypi_main_reports_dev_only(monkeypatch):
+    """Primary in the PyPI release but a nested type only on main: no install
+    may be offered (CONFIG_MAPPING would fail on the nested sub-config), so the
+    aggregate must read as main-only."""
+    cfg = {
+        "model_type": "zz_new_wrapper",
+        "text_config": {"model_type": "zz_new_llm"},
+    }
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda mt: {
+            "pypi_version": "5.13.0",
+            "supported_in_pypi": mt == "zz_new_wrapper",
+            "supported_in_main": True,
+        },
+    )
+    out = tl.check_upgrade_for_model("some-org/mixed-support")
+    assert out is not None
+    assert out["model_type"] == "zz_new_wrapper"
+    assert out["supported_in_pypi"] is False  # no install offered
+    assert out["supported_in_main"] is True
+
+
+def test_install_endpoint_not_mounted_on_v1():
+    """The consented pip-install endpoint is a Studio admin action; it must live
+    on studio_router (kept off the OpenAI-compatible /v1 mount), not router."""
+    from routes import inference as ri
+
+    path = "/install-latest-transformers"
+    assert path in [r.path for r in ri.studio_router.routes]
+    assert path not in [r.path for r in ri.router.routes]

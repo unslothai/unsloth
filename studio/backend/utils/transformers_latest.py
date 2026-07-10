@@ -341,17 +341,29 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
             s is None or not (s["supported_in_pypi"] or s["supported_in_main"]) for s in supports
         ):
             return None
-        model_type, support = missing[0], supports[0]
+        # Aggregate over ALL missing types: offering the PyPI install requires
+        # every one of them in the release; a mix with a main-only type must
+        # surface as dev-only so no install is offered that would still fail.
+        model_type = missing[0]
+        supported_in_pypi = all(s["supported_in_pypi"] for s in supports)
+        supported_in_main = all(
+            s["supported_in_pypi"] or s["supported_in_main"] for s in supports
+        )
         logger.info(
             "Model %s has model_type=%s unknown to every installed transformers "
             "(latest PyPI %s: %s, main: %s)",
             model_name,
             model_type,
-            support["pypi_version"],
-            "supported" if support["supported_in_pypi"] else "unsupported",
-            "supported" if support["supported_in_main"] else "unsupported",
+            supports[0]["pypi_version"],
+            "supported" if supported_in_pypi else "unsupported",
+            "supported" if supported_in_main else "unsupported",
         )
-        return {"model_type": model_type, **support}
+        return {
+            "model_type": model_type,
+            "pypi_version": supports[0]["pypi_version"],
+            "supported_in_pypi": supported_in_pypi,
+            "supported_in_main": supported_in_main,
+        }
     except Exception as exc:
         logger.debug("Latest-transformers check failed for '%s': %s", model_name, exc)
         return None
