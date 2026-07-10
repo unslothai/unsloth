@@ -248,9 +248,12 @@ class TestMaxBodyMiddleware:
             headers = {"content-type": "application/octet-stream"},
         )
         assert r.status_code == 413
-        assert main_module._get_upload_passthrough_request_max_bytes(
-            "/api/train/diffusion/dataset/import-example/"
-        ) == default_request_body_limit_bytes()
+        assert (
+            main_module._get_upload_passthrough_request_max_bytes(
+                "/api/train/diffusion/dataset/import-example/"
+            )
+            == default_request_body_limit_bytes()
+        )
 
     def test_v1_surface_is_body_protected(self, main_module):
         # /images/generations is mounted at both /api/inference and /v1; the /v1 alias (and every

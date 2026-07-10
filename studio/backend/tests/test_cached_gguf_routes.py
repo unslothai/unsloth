@@ -1102,9 +1102,7 @@ def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_p
     monkeypatch.setattr(
         models_route,
         "_cached_repo_task",
-        lambda repo_info: (
-            "text-to-image" if "Qwen-Image" in repo_info.repo_id else None
-        ),
+        lambda repo_info: ("text-to-image" if "Qwen-Image" in repo_info.repo_id else None),
     )
     monkeypatch.setattr(
         models_route,
