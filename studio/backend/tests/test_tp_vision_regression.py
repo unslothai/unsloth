@@ -137,6 +137,10 @@ _ALLOWED_TP_DROP_GUARDS = {
     "tensor_parallel and gpu_memory_mode == 'manual' and (gpu_layers < 0)",
     # Manual mode, explicit layers: a tensor split still needs >= 2 GPUs in use.
     "tensor_parallel and gpu_memory_mode == 'manual' and (gpu_layers >= 0) and (self._effective_gpu_count(sorted(gpu_ids) if gpu_ids else None) < 2)",
+    # Manual mode, zero layers: nothing to split on the GPU, and a tensor-mode
+    # launch under the CPU-only GPU mask (no visible devices) aborts the server
+    # instead of the intended CPU-only load (#6414).
+    "gpu_memory_mode == 'manual' and gpu_layers == 0",
 }
 
 
