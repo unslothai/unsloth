@@ -1101,6 +1101,105 @@ def test_sandboxed_benign_getattr_workdir_module_allowed():
         os.remove(os.path.join(workdir, "okga.py"))
 
 
+def _assert_workdir_module_denied(session, modname, src, marker):
+    workdir = get_sandbox_workdir(session)
+    path = os.path.join(workdir, modname + ".py")
+    with open(path, "w") as f:
+        f.write(src)
+    try:
+        out = _python_exec(
+            "import %s; print('REACHED_' + 'BODY')" % modname,
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert marker not in out
+        assert "REACHED_BODY" not in out
+        assert "sandbox:" in out or "ImportError" in out
+    finally:
+        os.remove(path)
+
+
+@_POSIX_ONLY
+def test_sandboxed_ctypes_workdir_module_denied():
+    # import ctypes gives a workdir helper UNGUARDED native libc, bypassing the patched open/os.open.
+    _assert_workdir_module_denied(
+        "backstop-workdir-ctypes",
+        "evilct",
+        "print('CT_REACHED')\nimport ctypes\nctypes.CDLL(None)\n",
+        "CT_REACHED",
+    )
+
+
+@_POSIX_ONLY
+def test_sandboxed_dynamic_import_workdir_module_denied():
+    # importlib.import_module('subprocess') re-obtains a denied module without a literal import.
+    _assert_workdir_module_denied(
+        "backstop-workdir-dynimp",
+        "evildi",
+        "import importlib\nprint('DI_REACHED')\n"
+        "sp = importlib.import_module('subprocess')\nsp.run(['echo', 'x'])\n",
+        "DI_REACHED",
+    )
+
+
+@_POSIX_ONLY
+def test_sandboxed_closure_gadget_workdir_module_denied():
+    # __closure__ / cell_contents recover a guard wrapper's original unguarded callable.
+    _assert_workdir_module_denied(
+        "backstop-workdir-clo",
+        "evilclo",
+        "import builtins\nprint('CLO_REACHED')\nc = builtins.open.__closure__\n",
+        "CLO_REACHED",
+    )
+
+
+@_POSIX_ONLY
+def test_sandboxed_indirect_metapath_workdir_module_denied():
+    # vars(sys)['meta_path'] reaches the import machinery without the literal .meta_path attribute.
+    _assert_workdir_module_denied(
+        "backstop-workdir-meta",
+        "evilmeta",
+        "import sys\nprint('META_REACHED')\nmp = vars(sys)['meta_' + 'path']\nmp[:] = []\n",
+        "META_REACHED",
+    )
+
+
+@_POSIX_ONLY
+def test_sandboxed_subscripted_builtins_workdir_module_denied():
+    # __builtins__['eval'] reaches the execution builtins via the module's builtins dict.
+    _assert_workdir_module_denied(
+        "backstop-workdir-subbi",
+        "evilsub",
+        "print('SUB_REACHED')\n__builtins__['ev' + 'al'](\"__import__('os').system('echo x')\")\n",
+        "SUB_REACHED",
+    )
+
+
+@_POSIX_ONLY
+def test_sandboxed_benign_dynamic_import_workdir_module_allowed():
+    # importlib.import_module of a NON-denied module (json) stays allowed.
+    session = "backstop-workdir-okdi"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "okdi.py"), "w") as f:
+        f.write("import importlib\nm = importlib.import_module('json')\n"
+                "VALUE = m.dumps({'a': 1})\nprint('DI_OK')\n")
+    try:
+        out = _python_exec(
+            "import okdi; print('REACHED', okdi.VALUE)",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "DI_OK" in out
+        assert '{"a": 1}' in out
+        assert "sandbox:" not in out
+    finally:
+        os.remove(os.path.join(workdir, "okdi.py"))
+
+
 @_POSIX_ONLY
 def test_sandboxed_realpath_monkeypatch_write_escape_denied(tmp_path):
     # Sandboxed code reassigns os.path.realpath to a lambda that echoes an in-workdir

@@ -4632,3 +4632,34 @@ class TestRound45Bypasses:
     def test_env_no_chdir_git_allowed(self):
         # env with no -C / -u before a workdir-relative git op stays allowed.
         _ok("import os\nos.system('env git init repo')")
+
+
+class TestRound46Bypasses:
+    """Forty-sixth-round Codex findings. The openssl output-file item is static; the five
+    workdir-module vetter items (ctypes / dynamic import / closure gadget / indirect meta_path /
+    subscripted builtins) are covered in test_sandbox_runtime_backstop.py."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # openssl writes -out FILE in an unguarded child; an escaping path lands on the host.
+            "import os\nos.system('openssl rand -out /tmp/p 4')",
+            "import os\nos.system('openssl rand -writerand /tmp/r')",
+            "import os\nos.system('openssl req -newkey rsa:2048 -keyout ../k.pem -out ../c.pem')",
+            "import subprocess\nsubprocess.run(['openssl', 'rand', '-out', '/tmp/p', '4'])",
+        ],
+    )
+    def test_openssl_escaping_output_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # No output file (rand -hex, dgst) or a workdir-local -out stays allowed.
+            "import os\nos.system('openssl rand -hex 16')",
+            "import os\nos.system('openssl dgst -sha256 file.txt')",
+            "import os\nos.system('openssl rand -out key.bin 32')",
+        ],
+    )
+    def test_openssl_benign_allowed(self, code):
+        _ok(code)

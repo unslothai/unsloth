@@ -283,7 +283,15 @@ _SHELL_BINARIES = frozenset({"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", 
 # Utilities whose LATER argv elements are actions / write flags, not inert arguments
 # (find -exec/-delete, sed -i / w, sort -o). A non-shell argv resolving to one of these is
 # re-scanned as a reconstructed command line so those dangerous flags are caught.
-_ARGV_TAIL_SCAN_COMMANDS = frozenset({"find", "sed", "gsed", "ssed", "perl", "sort", "git"})
+_ARGV_TAIL_SCAN_COMMANDS = frozenset(
+    {"find", "sed", "gsed", "ssed", "perl", "sort", "git", "openssl"}
+)
+# openssl option flags whose VALUE is an output file the unguarded openssl child writes (rand
+# -out, req -keyout, ca -CAout / -CAserial, ...). A value that escapes the workdir writes a host
+# file the realpath guard never sees; a workdir-local -out and the no-output forms stay allowed.
+_OPENSSL_WRITE_FLAGS = frozenset(
+    {"-out", "-writerand", "-keyout", "-CAout", "-CAkeyout", "-CAserial"}
+)
 
 
 def _is_versioned_interpreter(base: str) -> bool:
@@ -1685,6 +1693,24 @@ def _find_blocked_commands(command: str) -> set[str]:
                 _body = t.split("=", 1)[1]
                 if _body:
                     blocked |= _find_blocked_commands(_body)
+
+    # openssl <subcmd> ... -out FILE writes FILE in an unguarded openssl child (openssl rand
+    # -out /tmp/p 4), which the realpath guard never sees. Block when an output-file flag names a
+    # path that escapes the workdir; a workdir-local -out (openssl rand -out key.bin) and the
+    # no-output forms (openssl rand -hex 16, openssl dgst file) stay allowed.
+    for i in _cmd_word_idx:
+        if _token_basename(tokens[i]) != "openssl":
+            continue
+        for k in range(i + 1, len(tokens)):
+            t = tokens[k]
+            if t in _SHELL_SEPARATORS or t in _SHELL_KEYWORDS_AS_SEP:
+                break
+            if (
+                t in _OPENSSL_WRITE_FLAGS
+                and k + 1 < len(tokens)
+                and _git_operand_escapes(tokens[k + 1], _local_assigns)
+            ):
+                blocked.add("openssl-write-outside")
 
     # Output redirection (> / >> / &> / N>) runs in an unguarded child shell that follows
     # symlinks before any Python guard, so no filename target can be trusted: a relative
@@ -10330,11 +10356,48 @@ try:
         {"pickle", "_pickle", "cpickle", "marshal", "dill", "cloudpickle", "jsonpickle"}
     )
     _GUARD_DESER_ATTRS = frozenset({"loads", "load", "Unpickler", "decode"})
+    # Native-code / dynamic-execution modules: a workdir helper importing one gets UNGUARDED native
+    # syscalls (ctypes libc write bypassing the patched open/os.open) or runs source / files outside
+    # the recursive analysis (runpy / code / codeop), so the import is refused too.
+    _GUARD_NATIVE_MODS = frozenset({"ctypes", "_ctypes", "cffi", "runpy", "code", "codeop"})
+    # Modules whose DYNAMIC import (importlib.import_module('subprocess')) re-obtains an otherwise
+    # denied module without a literal `import` statement.
+    _GUARD_IMPORT_DENIED = (
+        _GUARD_EXEC_MODS
+        | _GUARD_NET_MODS
+        | _GUARD_NATIVE_MODS
+        | _GUARD_EXEC_RECEIVERS
+        | {"sys", "builtins", "importlib"}
+    )
+    # Introspection / frame gadget attributes that recover a runtime guard wrapper's ORIGINAL
+    # unguarded callable (open.__closure__[0].cell_contents, frame.f_locals['real']) or walk to
+    # os / builtins. Mirrors the top-level _GADGET_DUNDERS; refuse them in a workdir helper too.
+    _GUARD_GADGET_ATTRS = frozenset({
+        "__subclasses__", "__bases__", "__base__", "__globals__", "__builtins__",
+        "__closure__", "cell_contents", "f_locals", "f_globals", "f_back", "f_builtins",
+        "tb_frame", "tb_next", "gi_frame", "cr_frame", "ag_frame",
+        "settrace", "setprofile", "_getframe", "_current_frames", "currentframe",
+    })
+    # sys attributes that reach the import machinery: mutating them removes the guard's import
+    # vetter so a sibling `import evil` loads unscanned.
+    _GUARD_IMPORT_MACHINERY = frozenset({"meta_path", "path_hooks", "path_importer_cache"})
     def _guard_attr_root(_v):
         # Base Name id of an attribute chain (os.path -> 'os'); None if not Name-rooted.
         while isinstance(_v, _gast.Attribute):
             _v = _v.value
         return _v.id if isinstance(_v, _gast.Name) else None
+    def _guard_str_fold(_n):
+        # A statically foldable string: a literal or a concatenation of literals ('ev' + 'al').
+        if isinstance(_n, _gast.Constant) and isinstance(_n.value, str):
+            return _n.value
+        if isinstance(_n, _gast.BinOp) and isinstance(_n.op, _gast.Add):
+            _l = _guard_str_fold(_n.left)
+            _r = _guard_str_fold(_n.right)
+            if _l is not None and _r is not None:
+                return _l + _r
+        return None
+    def _guard_subscript_key(_sub):
+        return _guard_str_fold(_sub.slice)
     def _guard_module_src_unsafe(_src):
         try:
             _tree = _gast.parse(_src)
@@ -10347,6 +10410,8 @@ try:
         _recv = set(_GUARD_EXEC_RECEIVERS)
         _bi = {"builtins", "__builtins__"}
         _deser = set(_GUARD_DESER_MODS)
+        _sysmod = {"sys"}
+        _implib = {"importlib"}
         for _nd in _gast.walk(_tree):
             if isinstance(_nd, _gast.Import):
                 for _al in _nd.names:
@@ -10356,11 +10421,21 @@ try:
                         _bi.add(_al.asname or _al.name)
                     elif _al.name in _GUARD_DESER_MODS:
                         _deser.add(_al.asname or _al.name)
+                    elif _al.name == "sys":
+                        _sysmod.add(_al.asname or _al.name)
+                    elif _al.name == "importlib":
+                        _implib.add(_al.asname or _al.name)
+        # Modules whose dynamic attribute / namespace-dict access (getattr / vars) is obfuscation.
+        _obf = _recv | _bi | _deser | _sysmod | _implib
         for _nd in _gast.walk(_tree):
             if isinstance(_nd, _gast.Import):
                 for _al in _nd.names:
                     _top = _al.name.split(".")[0]
-                    if _top in _GUARD_EXEC_MODS or _top in _GUARD_NET_MODS:
+                    if (
+                        _top in _GUARD_EXEC_MODS
+                        or _top in _GUARD_NET_MODS
+                        or _top in _GUARD_NATIVE_MODS
+                    ):
                         return True
                     # import urllib.request / import http.client -- benign top, network submodule.
                     if _al.name in _GUARD_NET_DOTTED:
@@ -10368,7 +10443,11 @@ try:
             elif isinstance(_nd, _gast.ImportFrom):
                 _mod = _nd.module or ""
                 _mroot = _mod.split(".")[0]
-                if _mroot in _GUARD_EXEC_MODS or _mroot in _GUARD_NET_MODS:
+                if (
+                    _mroot in _GUARD_EXEC_MODS
+                    or _mroot in _GUARD_NET_MODS
+                    or _mroot in _GUARD_NATIVE_MODS
+                ):
                     return True
                 # from urllib.request import urlopen -- the module itself is a network submodule.
                 if _mod in _GUARD_NET_DOTTED:
@@ -10419,11 +10498,29 @@ try:
                     and _guard_attr_root(_nd.func.value) in _deser
                 ):
                     return True
-                # getattr(os, 'system')(...) / getattr(builtins, 'eval')(...) /
-                # getattr(pickle, 'loads')(...) -- dynamic attribute access is the obfuscated twin
-                # of the direct sink attribute (the name-based checks above never see it). A
-                # constant sink name on a sink-module receiver is refused; a NON-constant name on
-                # such a receiver is refused too (the attribute cannot be proven benign).
+                # importlib.import_module('subprocess') / importlib.reload(subprocess) dynamically
+                # re-obtain a denied module without a literal `import`. Refuse when the target is a
+                # denied module (constant name or module Name); a dynamic import_module target
+                # (non-constant) fails closed.
+                if (
+                    isinstance(_nd.func, _gast.Attribute)
+                    and _nd.func.attr in ("import_module", "reload")
+                    and _guard_attr_root(_nd.func.value) in _implib
+                    and _nd.args
+                ):
+                    _a0 = _nd.args[0]
+                    if isinstance(_a0, _gast.Constant) and isinstance(_a0.value, str):
+                        if _a0.value.split(".")[0] in _GUARD_IMPORT_DENIED:
+                            return True
+                    elif isinstance(_a0, _gast.Name) and _a0.id in _GUARD_IMPORT_DENIED:
+                        return True
+                    elif _nd.func.attr == "import_module":
+                        return True  # dynamic import target -> fail closed
+                # getattr(os, 'system')(...) / getattr(sys, 'meta_path') / vars(sys)['meta_path']
+                # -- dynamic attribute / namespace-dict access is the obfuscated twin of the direct
+                # sink (the name-based checks above never see it). A constant sink name on a sink
+                # receiver is refused; a NON-constant name on such a receiver, and vars() of one,
+                # are refused too (the attribute cannot be proven benign).
                 if (
                     isinstance(_nd.func, _gast.Name)
                     and _nd.func.id == "getattr"
@@ -10438,7 +10535,7 @@ try:
                         else None
                     )
                     if _gname is None:
-                        if _grecv in _recv or _grecv in _bi or _grecv in _deser:
+                        if _grecv in _obf:
                             return True
                     else:
                         if _grecv in _recv and _gname in _GUARD_EXEC_ATTRS:
@@ -10447,7 +10544,40 @@ try:
                             return True
                         if _grecv in _deser and _gname in _GUARD_DESER_ATTRS:
                             return True
+                        if _grecv in _sysmod and _gname in _GUARD_IMPORT_MACHINERY:
+                            return True
+                        if _grecv in _implib and _gname in (
+                            "import_module", "reload", "__import__"):
+                            return True
+                # vars(sys) / vars(os) / vars(builtins) exposes the module namespace dict for
+                # indirect access (vars(sys)['meta_path'][:] = [...], vars(os)['system']).
+                if (
+                    isinstance(_nd.func, _gast.Name)
+                    and _nd.func.id == "vars"
+                    and len(_nd.args) == 1
+                    and isinstance(_nd.args[0], (_gast.Name, _gast.Attribute))
+                    and _guard_attr_root(_nd.args[0]) in _obf
+                ):
+                    return True
+            elif isinstance(_nd, _gast.Subscript):
+                # __builtins__['eval'] / builtins.__dict__['exec'] -- imported helpers run with
+                # __builtins__ as a dict, so subscript access reaches the execution builtins the
+                # attribute checks miss. A constant exec-builtin key is refused; a NON-constant key
+                # on a builtins receiver fails closed.
+                _sroot = _guard_attr_root(_nd.value)
+                if _sroot in _bi:
+                    _skey = _guard_subscript_key(_nd)
+                    if _skey is None:
+                        return True
+                    if _skey in ("eval", "exec", "compile", "__import__"):
+                        return True
             elif isinstance(_nd, _gast.Attribute):
+                # An introspection / frame gadget attribute (open.__closure__[0].cell_contents,
+                # frame.f_locals['real'], ().__class__.__bases__[0].__subclasses__()) recovers a
+                # runtime guard wrapper's original unguarded callable or walks to os / builtins.
+                # These reach an escape on ANY receiver, so flag the attribute itself.
+                if _nd.attr in _GUARD_GADGET_ATTRS:
+                    return True
                 # A sink-named attribute REFERENCE (even uncalled) rooted at os / posix / an
                 # os alias (x = os.system, s = o.system). A same-named attribute on an unrelated
                 # object (p.system = 'linux') is NOT a sink, so require a sink-module receiver.
