@@ -1418,3 +1418,71 @@ def test_sandboxed_device_sink_str_subclass_escape_denied(tmp_path):
     out = _python_exec(code, None, 30, "backstop-devsink-subclass", disable_sandbox = False)
     assert "sandbox:" in out or "PermissionError" in out
     assert not target.exists()
+
+
+# '/root' assembled from chr() codepoints so the static scanner cannot const-fold it, proving
+# the RUNTIME guard on the low-level posix module (not the static layer).
+_OPAQUE_ROOT = "P=''.join(chr(c) for c in [47,114,111,111,116])\n"
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize(
+    "reader",
+    [
+        "import posix\nposix.listdir(P)",
+        "import posix\nlist(posix.scandir(P))",
+    ],
+)
+def test_sandboxed_low_level_posix_dir_read_denied(reader):
+    # posix.listdir / posix.scandir re-export the ORIGINAL enumerators, so the os.* dir guard
+    # left them reachable for an opaque sensitive path; the runtime guard now confines them too.
+    out = _python_exec(_OPAQUE_ROOT + reader, None, 30, "backstop-posixdir", disable_sandbox = False)
+    assert "sandbox:" in out or "PermissionError" in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_fresh_posix_module_fd_denier_reapplied():
+    # A fresh posix module built via _imp.create_builtin re-exposes the original fd metadata
+    # mutators; _reguard_created must reapply the fchmod/fchown deniers so a read-only open of an
+    # outside file cannot be reused to mutate host metadata.
+    code = (
+        "import _imp, posix\n"
+        "m = _imp.create_builtin(posix.__spec__)\n"
+        "try:\n"
+        "    fd = m.open('/etc/hostname', 0)\n"
+        "    m.fchmod(fd, 0o777)\n"
+        "    print('MUTATED')\n"
+        "except Exception as e:\n"
+        "    print(repr(e))"
+    )
+    out = _python_exec(code, None, 30, "backstop-freshfchmod", disable_sandbox = False)
+    assert "MUTATED" not in out
+    assert "sandbox:" in out or "PermissionError" in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_fresh_posix_module_dir_read_denied():
+    # The fresh posix module's directory readers are guarded too (opaque sensitive path).
+    code = (
+        "import _imp, posix\n" + _OPAQUE_ROOT + "m = _imp.create_builtin(posix.__spec__)\n"
+        "try:\n"
+        "    print(m.listdir(P))\n"
+        "except Exception as e:\n"
+        "    print(repr(e))"
+    )
+    out = _python_exec(code, None, 30, "backstop-freshlistdir", disable_sandbox = False)
+    assert "sandbox:" in out or "PermissionError" in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_low_level_posix_workdir_read_allowed():
+    # Enumerating the sandbox's own workdir through the low-level module stays allowed.
+    out = _python_exec(
+        "import posix, os\nos.makedirs('subd', exist_ok=True)\nprint('LS', posix.listdir('subd'))",
+        None,
+        30,
+        "backstop-posixdir-ok",
+        disable_sandbox = False,
+    )
+    assert "LS" in out
+    assert "sandbox:" not in out

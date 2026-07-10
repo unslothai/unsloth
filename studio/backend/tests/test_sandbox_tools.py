@@ -3519,3 +3519,63 @@ class TestRound32Bypasses:
     )
     def test_round32_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound33Bypasses:
+    """Thirty-third-round Codex findings: quoted command substitutions unscanned when the outer
+    command is not a reader, a system-bin path escaped via .., and the flock wrapper / coproc
+    keyword / trap handler slipping past the command scan. (The low-level posix directory-reader
+    and fresh-module fd-denier gaps are covered in test_sandbox_runtime_backstop.)"""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # $()/backtick run regardless of quotes; the payload reads a host secret.
+            "import os\nos.system('echo \"$(head -1 /etc/passwd)\"')",
+            "import os\nos.system('echo `cat /etc/shadow`')",
+            "import subprocess\nsubprocess.run('printf %s \"$(cat /etc/passwd)\"', shell=True)",
+        ],
+    )
+    def test_quoted_command_sub_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # /usr/bin/../..<workdir>/evil must normalize before the system-bin exemption.
+            "import os\nos.system('/usr/bin/../../tmp/evil.sh')",
+            "import subprocess\nsubprocess.run(['/usr/bin/../../tmp/evil.sh'])",
+        ],
+    )
+    def test_system_bin_dotdot_escape_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # flock runs a command in an unguarded child; coproc / trap execute their operands.
+            "import os\nos.system('flock lockfile touch /tmp/escape')",
+            "import os\nos.system(\"flock /tmp/l -c 'rm -rf /'\")",
+            "import subprocess\nsubprocess.run(['flock', 'lock', 'touch', '/tmp/x'])",
+            "import os\nos.system('coproc touch /tmp/escape')",
+            "import os\nos.system('coproc rm -rf /')",
+            "import os\nos.system(\"trap 'touch /tmp/escape' EXIT\")",
+            "import os\nos.system(\"trap 'rm -rf /' EXIT\")",
+        ],
+    )
+    def test_flock_coproc_trap_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign quoted subs (no read), trap reset, compound headers, scheduler view.
+            "import os\nos.system('echo \"$(date)\"')",
+            "import os\nos.system('echo $(ls data)')",
+            "import os\nos.system('trap - EXIT')",
+            "import os\nos.system('if ls data; then echo ok; fi')",
+            "import os\nos.system('chrt -p 1234')",
+        ],
+    )
+    def test_round33_benign_allowed(self, code):
+        _ok(code)

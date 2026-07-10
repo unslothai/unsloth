@@ -111,6 +111,10 @@ _BLOCKED_COMMANDS_COMMON = frozenset(
         "eval",
         "source",
         "ln",
+        # flock [options] <file>|<fd> <command> (or flock -c <command>) runs an arbitrary
+        # command in an unguarded child while holding a lock; its file/fd operand + -c forms
+        # make the command word hard to resolve, so block the wrapper outright.
+        "flock",
     }
 )
 # Language interpreters that run inline / file / stdin code in a FRESH child process.
@@ -218,7 +222,7 @@ _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "
 # (then / do / else). `if touch x; then :; fi` executes `touch` as the condition command, so
 # these must reset command position -- otherwise the header word is mistaken for the command
 # and the real command it precedes is skipped as an argument.
-_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif", "if", "while", "until"})
+_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif", "if", "while", "until", "coproc"})
 # POSIX / common shell binaries. A shell without an inline `-c` payload runs unscanned
 # code (a script file, -s / stdin, or a bare stdin-reading shell), so it is denied.
 _SHELL_BINARIES = frozenset({"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"})
@@ -250,7 +254,12 @@ def _is_local_executable_path(tok: str) -> bool:
     t = tok.replace("\\", "/")
     if "/" not in t:
         return False
-    return not t.startswith(_SYSTEM_BIN_PREFIXES)
+    # Collapse .. before the system-bin exemption so a workdir shebang cannot masquerade as a
+    # trusted binary via /usr/bin/../../<workdir>/evil (normpath -> /<workdir>/evil, not exempt).
+    # normpath keeps the leading ./ -> bare-name collapse harmless: the "/" check above already
+    # ran on the original token, so ./evil (has a slash) still reaches here and stays local.
+    norm = os.path.normpath(t)
+    return not norm.startswith(_SYSTEM_BIN_PREFIXES)
 
 
 # The only shell redirection targets trusted without a realpath check: standard device
@@ -1126,6 +1135,16 @@ def _find_blocked_commands(command: str) -> set[str]:
         return out
 
     _cmd_word_idx = _command_word_indices()
+
+    # trap 'CMD' SIGSPEC registers CMD to run (in the unguarded shell) on EXIT / a signal, so
+    # the quoted handler is unscanned shell code. Scan the handler operand of a command-position
+    # `trap` recursively; a reset (trap - EXIT) / ignore (trap '' EXIT) has nothing to run.
+    for i in _cmd_word_idx:
+        if _token_basename(tokens[i]) != "trap" or i + 1 >= len(tokens):
+            continue
+        _h = tokens[i + 1]
+        if _h and _h != "-" and _h not in _SHELL_SEPARATORS and _h not in _SHELL_KEYWORDS_AS_SEP:
+            blocked |= _find_blocked_commands(_h)
 
     # A shell binary invoked with a SCRIPT FILE (`bash s.sh`) or `-s` (read the script from
     # stdin) runs unscanned shell code in the same unguarded environment; only the inline
@@ -4439,6 +4458,38 @@ def _join_chdir(base, newdir):
     return os.path.join(base, newdir) if base else newdir
 
 
+def _extract_command_subs(s):
+    """Extract the inner payloads of ``$(...)`` and backtick command substitutions from a
+    shell string, INCLUDING those inside double quotes (bash runs a substitution regardless
+    of surrounding quotes: ``echo "$(head /etc/passwd)"``). Returns a list of inner command
+    strings for recursive read scanning. ``$((arith))`` yields a harmless ``(arith)`` payload
+    that scans clean."""
+    subs = []
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c == "`":
+            j = s.find("`", i + 1)
+            if j == -1:
+                break
+            subs.append(s[i + 1 : j])
+            i = j + 1
+        elif c == "$" and i + 1 < n and s[i + 1] == "(":
+            depth = 1
+            k = i + 2
+            while k < n and depth:
+                if s[k] == "(":
+                    depth += 1
+                elif s[k] == ")":
+                    depth -= 1
+                k += 1
+            subs.append(s[i + 2 : k - 1] if depth == 0 else s[i + 2 : k])
+            i = k
+        else:
+            i += 1
+    return subs
+
+
 def _argv_env_chdir(str_elts):
     """Extract an ``env -C DIR`` / ``--chdir[=DIR]`` target from a folded argv vector.
 
@@ -4593,6 +4644,35 @@ def _scan_command_string_for_reads(
                 )
                 if _r is not None:
                     return _r
+        # trap 'CMD' SIG: the quoted handler runs as shell code on EXIT / a signal; scan it.
+        if _ft == "trap" and _fi + 1 < len(ptoks):
+            _th = ptoks[_fi + 1]
+            if _th and _th != "-" and _th not in _READ_SCAN_SEPARATORS:
+                _r = _scan_command_string_for_reads(
+                    _th,
+                    strict_traversal = strict_traversal,
+                    cwd = cwd,
+                    cwd_dynamic = cwd_dynamic,
+                    _depth = _depth + 1,
+                )
+                if _r is not None:
+                    return _r
+
+    # A command substitution ($(...) / `...`) runs its payload as a shell command regardless of
+    # surrounding quotes, so `echo "$(head /etc/passwd)"` reads the file even though the outer
+    # command is not a reader and the tokenizer keeps the quoted substitution as one argument.
+    # Scan each substitution payload recursively, independent of the outer command word.
+    for _cs in _extract_command_subs(cmd):
+        if _cs.strip():
+            _r = _scan_command_string_for_reads(
+                _cs,
+                strict_traversal = strict_traversal,
+                cwd = cwd,
+                cwd_dynamic = cwd_dynamic,
+                _depth = _depth + 1,
+            )
+            if _r is not None:
+                return _r
 
     def _risky_read_target(tgt):
         if not tgt:
@@ -8659,8 +8739,8 @@ for _n in _OS_MUTATORS1:
 # open-like backstop. Apply the same sensitive-read check to the directory path. A bare
 # call (cwd), in-workdir paths, and an fd argument (os.open already screens the fd's read)
 # stay allowed.
-def _guard_dir_reader(name):
-    orig = getattr(_os, name, None)
+def _guard_dir_reader(name, mod=_os):
+    orig = getattr(mod, name, None)
     if orig is None:
         return
     @_gwraps(orig)
@@ -8673,7 +8753,7 @@ def _guard_dir_reader(name):
         p = _fspath1(path)
         _deny_sensitive_read(p)
         return orig(p, *a, **k)
-    setattr(_os, name, w)
+    setattr(mod, name, w)
 
 for _n in ("listdir", "scandir"):
     _guard_dir_reader(_n)
@@ -8777,6 +8857,17 @@ def _reguard_created(m):
                 _wrap1(m, _rn, _nm + "." + _rn)
             for _rn in ("rename", "renames", "replace", "link", "symlink"):
                 _wrap2(m, _rn, True)
+            # A fresh posix/nt module also re-exposes the ORIGINAL fd metadata mutators and
+            # directory readers; reapply the same fd deniers + read confinement applied to the
+            # already-loaded module (else fresh fchmod(fd, ...) / fresh listdir('/root') slip).
+            if hasattr(m, "chdir"):
+                _wrap1(m, "chdir", _nm + ".chdir")
+            for _rn in ("fchmod", "fchown"):
+                if hasattr(m, _rn):
+                    setattr(m, _rn, _make_fd_denier(_nm + "." + _rn, getattr(m, _rn)))
+            for _rn in ("listdir", "scandir"):
+                if hasattr(m, _rn):
+                    _guard_dir_reader(_rn, m)
         elif _nm in ("_io", "io"):
             if hasattr(m, "open"):
                 m.open = _guard_open_like(m.open)
@@ -8848,6 +8939,12 @@ for _lowosname in ("posix", "nt"):
         for _n in ("fchmod", "fchown"):
             if hasattr(_lowos, _n):
                 setattr(_lowos, _n, _make_fd_denier(_lowosname + "." + _n, getattr(_lowos, _n)))
+        # posix.listdir / posix.scandir re-export the ORIGINAL enumerators, so the os.* dir
+        # guard leaves them reachable (posix.listdir('/root')); apply the same sensitive-read
+        # confinement to the low-level module.
+        for _n in ("listdir", "scandir"):
+            if hasattr(_lowos, _n):
+                _guard_dir_reader(_n, _lowos)
     except Exception:
         pass
 
