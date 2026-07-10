@@ -46,11 +46,14 @@ export function useStagedModelPreparation(opts?: {
   const pendingDownloaded = useChatRuntimeStore(
     (s) => s.pendingSelection?.isDownloaded ?? false,
   );
-  // The probe fills the header dims together; any being set means the staged
-  // header has already been read (don't re-probe).
+  // "Already probed" must key off layerCount / moeLayerCount, which only the
+  // full header probe fills (it sets all three together, so either is a
+  // reliable marker). contextLength alone can be list-seeded from
+  // /gguf-variants, which returns no layer/MoE counts -- treating it as
+  // complete would skip the probe and leave the GPU Layers slider at its 256
+  // fallback and the MoE slider hidden until the model loads.
   const pendingHasMetadata = useChatRuntimeStore(
     (s) =>
-      s.pendingSelection?.contextLength != null ||
       s.pendingSelection?.layerCount != null ||
       s.pendingSelection?.moeLayerCount != null,
   );

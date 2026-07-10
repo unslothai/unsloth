@@ -278,9 +278,13 @@ export function applyActiveModelStatusToStore(
     ...(seedLoadParams &&
       prevState.pendingSelection == null &&
       (prevState.loadedGpuMemoryMode === null || hydratingExistingModel) &&
-      status.is_gguf &&
       (() => {
+        // Baseline unconditionally (even for a non-GGUF status): a pin only
+        // applies to a Manual + Auto-layers GGUF, so anything else clears it --
+        // otherwise a previous GGUF's pin survives a model change underneath
+        // and reloads the new model at the old length.
         const pin =
+          status.is_gguf &&
           status.gpu_memory_mode === "manual" &&
           (status.gpu_layers ?? -1) < 0 &&
           (status.requested_context_length ?? 0) > 0
