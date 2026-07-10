@@ -1730,7 +1730,6 @@ _LATEST_VERSION_RE = r"[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0
 
 def _is_valid_version_string(version: str) -> bool:
     import re
-
     return isinstance(version, str) and re.fullmatch(_LATEST_VERSION_RE, version) is not None
 
 
@@ -1853,7 +1852,9 @@ def ensure_latest_transformers_venv(version: str, extra_packages: tuple[str, ...
             json.dumps({"version": version, "packages": list(packages)}), encoding = "utf-8"
         )
     except Exception as exc:
-        logger.error("Installed transformers %s but could not write the pin marker: %s", version, exc)
+        logger.error(
+            "Installed transformers %s but could not write the pin marker: %s", version, exc
+        )
         return False
     # The overlay's CONFIG_MAPPING_NAMES may have changed (fresh install/upgrade): drop the
     # cached key set so the next routing decision re-reads the new mapping.

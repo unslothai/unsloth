@@ -374,20 +374,22 @@ class TestCheckUpgradeForModel:
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
         d = tmp_path / "nested"
         d.mkdir()
-        (d / "config.json").write_text(
-            json.dumps({"text_config": {"model_type": "brandnew_arch"}})
-        )
+        (d / "config.json").write_text(json.dumps({"text_config": {"model_type": "brandnew_arch"}}))
         result = check_upgrade_for_model(str(d))
         assert result is not None and result["model_type"] == "brandnew_arch"
 
     def test_never_raises_on_internal_error(self, monkeypatch):
-        monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(
+            tl, "_load_config_json", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
         assert check_upgrade_for_model("some/model") is None
 
 
 class TestNestedModelTypeExtraction:
     def test_top_level_wins(self):
-        assert _model_type_from_config({"model_type": "a", "text_config": {"model_type": "b"}}) == "a"
+        assert (
+            _model_type_from_config({"model_type": "a", "text_config": {"model_type": "b"}}) == "a"
+        )
 
     def test_nested_fallback(self):
         assert _model_type_from_config({"llm_config": {"model_type": "b"}}) == "b"
@@ -403,15 +405,17 @@ class TestNestedModelTypeExtraction:
 
 
 class TestRoutingParity:
-    def test_all_overlay_types_route_identically_and_never_check(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_all_overlay_types_route_identically_and_never_check(self, tmp_path: Path, monkeypatch):
         _fake_overlays(monkeypatch)
         calls = _no_network(monkeypatch)
         expected_tier = {
-            "llama": "default", "bert": "default", "gpt2": "default",
-            "qwen3_moe": "530", "qwen3_next": "530",
-            "gemma4": "550", "gemma4_unified": "510",
+            "llama": "default",
+            "bert": "default",
+            "gpt2": "default",
+            "qwen3_moe": "530",
+            "qwen3_next": "530",
+            "gemma4": "550",
+            "gemma4_unified": "510",
         }
         for model_type, tier in expected_tier.items():
             cfg = {"model_type": model_type}
@@ -487,7 +491,9 @@ class TestLatestVenvProvisioning:
     def test_ensure_latest_rejects_bad_version(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))
         monkeypatch.setattr(
-            tv, "_ensure_venv_dir", lambda *a: (_ for _ in ()).throw(AssertionError("must not install"))
+            tv,
+            "_ensure_venv_dir",
+            lambda *a: (_ for _ in ()).throw(AssertionError("must not install")),
         )
         assert ensure_latest_transformers_venv("5.13.0 && curl evil") is False
 
@@ -495,14 +501,18 @@ class TestLatestVenvProvisioning:
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         monkeypatch.setattr(
-            tv, "_ensure_venv_dir", lambda *a: (_ for _ in ()).throw(AssertionError("must not install"))
+            tv,
+            "_ensure_venv_dir",
+            lambda *a: (_ for _ in ()).throw(AssertionError("must not install")),
         )
         assert ensure_latest_transformers_venv("5.13.0") is False
 
     def test_unpinned_sidecar_never_installs(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / ".venv_t5_latest"))
         monkeypatch.setattr(
-            tv, "_ensure_venv_dir", lambda *a: (_ for _ in ()).throw(AssertionError("must not install"))
+            tv,
+            "_ensure_venv_dir",
+            lambda *a: (_ for _ in ()).throw(AssertionError("must not install")),
         )
         assert tv._ensure_venv_t5_latest_exists() is False
 
@@ -628,7 +638,9 @@ class TestInstallLatestTransformers:
     def test_install_failure_reported(self, monkeypatch):
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
         monkeypatch.setattr(tl, "compat_plan", lambda v: ((), []))
-        monkeypatch.setattr(tl, "ensure_latest_transformers_venv", lambda v, extra_packages = (): False)
+        monkeypatch.setattr(
+            tl, "ensure_latest_transformers_venv", lambda v, extra_packages = (): False
+        )
         result = install_latest_transformers("5.13.0")
         assert result["success"] is False and "failed" in result["message"]
 

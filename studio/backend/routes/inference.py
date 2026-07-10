@@ -4648,7 +4648,6 @@ async def validate_model(
         transformers_upgrade: Optional[TransformersUpgradeInfo] = None
         if not is_gguf:
             from utils.transformers_latest import check_upgrade_for_model
-
             _upgrade = await asyncio.to_thread(
                 check_upgrade_for_model, config.identifier, request.hf_token
             )
@@ -4741,8 +4740,7 @@ async def validate_model(
 
 @router.post("/install-latest-transformers", response_model = InstallLatestTransformersResponse)
 async def install_latest_transformers_route(
-    request: InstallLatestTransformersRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: InstallLatestTransformersRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
     Consented install of the latest transformers release into the persistent
