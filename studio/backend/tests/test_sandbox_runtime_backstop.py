@@ -790,6 +790,145 @@ def test_sandboxed_workdir_module_meta_path_mutation_denied():
 
 
 @_POSIX_ONLY
+def test_sandboxed_utf7_encoded_workdir_module_denied():
+    # A `# coding: utf_7` module hides os.system in what a UTF-8 scan reads as a comment (the raw
+    # +AAo- bytes are a newline under UTF-7). The vetter must decode with PEP 263 like the loader
+    # will, so the real os.system is seen and refused.
+    session = "backstop-workdir-utf7"
+    workdir = get_sandbox_workdir(session)
+    data = b"# coding: utf_7\nimport os\npass  #+AAo-os.system('echo PWNED_UTF7')\n"
+    with open(os.path.join(workdir, "evilenc.py"), "wb") as f:
+        f.write(data)
+    try:
+        out = _python_exec(
+            "import evilenc; print('REACHED_' + 'BODY')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "PWNED_UTF7" not in out
+        assert "REACHED_BODY" not in out
+        assert "sandbox:" in out or "ImportError" in out
+    finally:
+        os.remove(os.path.join(workdir, "evilenc.py"))
+
+
+@_POSIX_ONLY
+def test_sandboxed_forged_pyc_workdir_module_ignored():
+    # A harmless source plus a planted __pycache__ .pyc whose header matches it but whose body is
+    # malicious: the vetter scans the safe source, but the module must run the VETTED SOURCE
+    # (not the cached bytecode), so the planted payload never executes.
+    import importlib.util
+    import marshal
+    import struct
+
+    session = "backstop-workdir-forgedpyc"
+    workdir = get_sandbox_workdir(session)
+    src_path = os.path.join(workdir, "forged.py")
+    with open(src_path, "w") as f:
+        f.write("VALUE = 7\nprint('SOURCE_RAN')\n")
+    st = os.stat(src_path)
+    mal = compile("import os\nos.system('echo PWNED_FORGEDPYC')\n", "forged.py", "exec")
+    pyc_dir = os.path.join(workdir, "__pycache__")
+    os.makedirs(pyc_dir, exist_ok = True)
+    pyc_path = os.path.join(pyc_dir, f"forged.{sys.implementation.cache_tag}.pyc")
+    with open(pyc_path, "wb") as f:
+        f.write(importlib.util.MAGIC_NUMBER)
+        f.write(struct.pack("<I", 0))
+        f.write(struct.pack("<I", int(st.st_mtime) & 0xFFFFFFFF))
+        f.write(struct.pack("<I", st.st_size & 0xFFFFFFFF))
+        f.write(marshal.dumps(mal))
+    try:
+        out = _python_exec(
+            "import forged; print('REACHED', forged.VALUE)",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "PWNED_FORGEDPYC" not in out  # the cached malicious bytecode never runs
+        assert "SOURCE_RAN" in out and "REACHED 7" in out  # the vetted source runs
+    finally:
+        os.remove(src_path)
+        if os.path.exists(pyc_path):
+            os.remove(pyc_path)
+
+
+@_POSIX_ONLY
+def test_sandboxed_symlinked_workdir_module_denied(tmp_path):
+    # A workdir module that is a symlink to a file OUTSIDE the workdir: its realpath escapes, so
+    # the vetter must fail closed rather than hand the outside file to the default loader unvetted.
+    session = "backstop-workdir-symlinkmod"
+    workdir = get_sandbox_workdir(session)
+    outside = tmp_path / "outside_evil.py"
+    outside.write_text("import os\nos.system('echo PWNED_SYMLINKMOD')\n")
+    link = os.path.join(workdir, "evillink.py")
+    if os.path.islink(link) or os.path.exists(link):
+        os.remove(link)
+    os.symlink(str(outside), link)
+    try:
+        out = _python_exec(
+            "import evillink; print('REACHED_' + 'BODY')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "PWNED_SYMLINKMOD" not in out
+        assert "REACHED_BODY" not in out
+        assert "sandbox:" in out or "ImportError" in out
+    finally:
+        os.remove(link)
+
+
+@_POSIX_ONLY
+def test_sandboxed_network_workdir_module_denied():
+    # A workdir helper that opens a socket bypasses the static network policy (no runtime network
+    # backstop), so the vetter refuses a module importing a network primitive.
+    session = "backstop-workdir-net"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "evilnet.py"), "w") as f:
+        f.write("print('NET_REACHED')\nimport socket\ns = socket.socket()\ns.close()\n")
+    try:
+        out = _python_exec(
+            "import evilnet; print('REACHED_' + 'BODY')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "NET_REACHED" not in out
+        assert "REACHED_BODY" not in out
+        assert "sandbox:" in out or "ImportError" in out
+    finally:
+        os.remove(os.path.join(workdir, "evilnet.py"))
+
+
+@_POSIX_ONLY
+def test_sandboxed_os_alias_workdir_module_denied():
+    # import os as o; s = o.system; s(...) -- an os import ALIAS whose sink is only assigned (not
+    # directly called) must be recognized: record the alias before checking sink references.
+    session = "backstop-workdir-osalias"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "evilalias.py"), "w") as f:
+        f.write("import os as o\ns = o.system\ns('echo PWNED_OSALIAS')\n")
+    try:
+        out = _python_exec(
+            "import evilalias; print('REACHED_' + 'BODY')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "PWNED_OSALIAS" not in out
+        assert "REACHED_BODY" not in out
+        assert "sandbox:" in out or "ImportError" in out
+    finally:
+        os.remove(os.path.join(workdir, "evilalias.py"))
+
+
+@_POSIX_ONLY
 def test_sandboxed_realpath_monkeypatch_write_escape_denied(tmp_path):
     # Sandboxed code reassigns os.path.realpath to a lambda that echoes an in-workdir
     # path, then writes to an absolute path outside the workdir. If the guard read

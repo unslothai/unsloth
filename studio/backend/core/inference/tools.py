@@ -4227,6 +4227,18 @@ def _recovered_source(v):
     return _to_text(v)
 
 
+def _compile_source_node(node):
+    """The SOURCE argument of a compile() call: the 1st positional arg or the ``source=``
+    keyword. compile() accepts its payload either way, so a keyword-only call
+    (compile(source='...', filename='<p>', mode='exec')) must still be recovered."""
+    if node.args:
+        return node.args[0]
+    for kw in node.keywords or []:
+        if kw.arg == "source":
+            return kw.value
+    return None
+
+
 def _compile_mode(node, const_env):
     """Recover a compile()'s literal mode= (3rd positional or keyword), else 'exec'."""
     mode_node = None
@@ -4678,12 +4690,13 @@ def _build_scope_alias_index(tree, const_env):
                     and isinstance(rhs_eff.func, ast.Name)
                     and emap.get(rhs_eff.func.id) == "compile"
                 )
-            ) and rhs_eff.args:
+            ) and _compile_source_node(rhs_eff) is not None:
                 # Any `c = compile(...)` (bare / builtins.compile / from-import alias)
                 # binds a code object, tracked for the types.FunctionType(c) execution
-                # gadget below (dynamic or foldable payload).
+                # gadget below (dynamic or foldable payload). The source may be positional
+                # OR the source= keyword.
                 camap[name] = True
-                v = _const_fold(rhs_eff.args[0], const_env)
+                v = _const_fold(_compile_source_node(rhs_eff), const_env)
                 if isinstance(v, (str, bytes, bytearray)):
                     cmap[name] = (
                         _recovered_source(v),
@@ -4949,14 +4962,15 @@ def _recover_exec_payload(node, func_id, const_env, compiled_env):
     arg0 = node.args[0]
     base_mode = "eval" if func_id == "eval" else "exec"
 
-    # exec(compile("...", ...)) / eval(compile("...", "<s>", "eval"))
+    # exec(compile("...", ...)) / eval(compile("...", "<s>", "eval")) -- the compile source may be
+    # positional or the source= keyword.
     if (
         isinstance(arg0, ast.Call)
         and isinstance(arg0.func, ast.Name)
         and arg0.func.id == "compile"
-        and arg0.args
+        and _compile_source_node(arg0) is not None
     ):
-        v = _const_fold(arg0.args[0], const_env)
+        v = _const_fold(_compile_source_node(arg0), const_env)
         if isinstance(v, (str, bytes, bytearray)):
             return (
                 "RECOVERED",
@@ -10168,7 +10182,16 @@ except Exception:
 try:
     import ast as _gast
     import importlib.machinery as _gimach
+    import importlib.util as _gimportutil
     _GUARD_WORKDIR_REAL = _os.path.realpath(__WORKDIR__)
+    # Network-capable modules: a workdir helper that opens a socket / HTTP client bypasses the
+    # static network policy (there is no runtime network backstop), so refuse importing one.
+    # (urllib / http bare tops are left out -- urllib.parse etc. are benign, OS isolation remains
+    # the boundary for the dotted network submodules.)
+    _GUARD_NET_MODS = frozenset({
+        "socket", "ssl", "ftplib", "smtplib", "telnetlib", "poplib", "imaplib", "nntplib",
+        "requests", "httpx", "aiohttp", "urllib3", "pycurl", "websocket", "websockets", "paramiko",
+    })
     _GUARD_EXEC_ATTRS = frozenset({
         "system", "popen", "popen2", "popen3", "popen4", "startfile",
         "execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe",
@@ -10189,14 +10212,23 @@ try:
             _tree = _gast.parse(_src)
         except _bi.BaseException:
             return True  # unparseable workdir module -> fail closed
+        # Pre-pass: record os / posix import ALIASES (import os as o) so an aliased sink reference
+        # that is only assigned (s = o.system) -- not directly called -- is still recognized.
+        _recv = set(_GUARD_EXEC_RECEIVERS)
         for _nd in _gast.walk(_tree):
             if isinstance(_nd, _gast.Import):
                 for _al in _nd.names:
-                    if _al.name.split(".")[0] in _GUARD_EXEC_MODS:
+                    if _al.name in ("os", "posix"):
+                        _recv.add(_al.asname or _al.name)
+        for _nd in _gast.walk(_tree):
+            if isinstance(_nd, _gast.Import):
+                for _al in _nd.names:
+                    _top = _al.name.split(".")[0]
+                    if _top in _GUARD_EXEC_MODS or _top in _GUARD_NET_MODS:
                         return True
             elif isinstance(_nd, _gast.ImportFrom):
                 _mroot = (_nd.module or "").split(".")[0]
-                if _mroot in _GUARD_EXEC_MODS:
+                if _mroot in _GUARD_EXEC_MODS or _mroot in _GUARD_NET_MODS:
                     return True
                 # `from os import system` / `from os import *` binds a BARE sink name into the
                 # module namespace; a later bare system('id') call has no os. attribute to catch.
@@ -10213,10 +10245,10 @@ try:
                     "eval", "exec", "compile", "__import__"):
                     return True
             elif isinstance(_nd, _gast.Attribute):
-                # A sink-named attribute REFERENCE (even uncalled) rooted at os / posix
-                # (x = os.system). A same-named attribute on an unrelated object
-                # (p.system = 'linux') is NOT a sink, so require a sink-module receiver root.
-                if _nd.attr in _GUARD_EXEC_ATTRS and _guard_attr_root(_nd.value) in _GUARD_EXEC_RECEIVERS:
+                # A sink-named attribute REFERENCE (even uncalled) rooted at os / posix / an
+                # os alias (x = os.system, s = o.system). A same-named attribute on an unrelated
+                # object (p.system = 'linux') is NOT a sink, so require a sink-module receiver.
+                if _nd.attr in _GUARD_EXEC_ATTRS and _guard_attr_root(_nd.value) in _recv:
                     return True
                 # A workdir module that touches the import machinery (sys.meta_path /
                 # sys.path_hooks / sys.path_importer_cache) can remove THIS vetter, then a
@@ -10225,6 +10257,34 @@ try:
                 if _nd.attr in ("meta_path", "path_hooks", "path_importer_cache"):
                     return True
         return False
+    def _guard_under_workdir(_p):
+        return _p == _GUARD_WORKDIR_REAL or _p.startswith(_GUARD_WORKDIR_REAL + _os.sep)
+
+    class _GuardVettedSourceLoader:
+        # Executes the EXACT source string the vetter scanned, so the loader can never satisfy
+        # the import from a planted bytecode cache (.pyc) or re-decode the file differently than
+        # it was vetted. __path__ for a package still comes from the spec's search locations.
+        def __init__(self, _name, _path, _src, _is_pkg):
+            self._n = _name
+            self._p = _path
+            self._s = _src
+            self._pkg = _is_pkg
+
+        def create_module(self, _spec):
+            return None
+
+        def exec_module(self, _module):
+            exec(compile(self._s, self._p, "exec"), _module.__dict__)
+
+        def get_filename(self, _name=None):
+            return self._p
+
+        def is_package(self, _name=None):
+            return self._pkg
+
+        def get_source(self, _name=None):
+            return self._s
+
     class _GuardWorkdirImportVetter:
         def find_spec(self, _name, _path=None, _target=None):
             try:
@@ -10235,11 +10295,21 @@ try:
             if not _orig:
                 return None  # namespace / builtin / frozen: no file to vet, not workdir-sourced
             try:
+                _abs = _os.path.abspath(_orig)
                 _rp = _os.path.realpath(_orig)
             except _bi.BaseException:
                 return None
-            if not (_rp == _GUARD_WORKDIR_REAL or _rp.startswith(_GUARD_WORKDIR_REAL + _os.sep)):
-                return None  # not a workdir module; let the default finders load it
+            _orig_in_wd = _guard_under_workdir(_abs) or _guard_under_workdir(
+                _os.path.dirname(_abs)
+            )
+            _rp_in_wd = _guard_under_workdir(_rp)
+            if not _orig_in_wd and not _rp_in_wd:
+                return None  # genuinely not a workdir module; let the default finders load it
+            # A workdir-sourced origin whose REALPATH escapes the workdir (a symlink to an outside
+            # file) must fail closed, not be handed to the default loader unvetted.
+            if not _rp_in_wd:
+                raise _bi.ImportError(
+                    "sandbox: refusing symlinked workdir module " + _name)
             # A workdir module must be a .py we can read + scan. A sourceless .pyc / native .so /
             # any other non-source file under the workdir cannot be statically vetted, so refuse
             # it: a planted legacy evil.pyc would otherwise run its bytecode via the default
@@ -10247,17 +10317,28 @@ try:
             if not _orig.endswith(".py"):
                 raise _bi.ImportError(
                     "sandbox: refusing to import non-source workdir module " + _name)
+            # Decode with Python's PEP 263 source encoding (importlib.util.decode_source), NOT a
+            # fixed utf-8: a `# coding: utf_7` module the loader would decode as UTF-7 must be
+            # vetted as UTF-7, or a payload hidden in what a UTF-8 scan sees as a comment runs.
             try:
-                _fh = _io.open(_orig, "r", encoding="utf-8", errors="replace")
+                _fb = _io.open(_orig, "rb")
                 try:
-                    _msrc = _fh.read()
+                    _raw = _fb.read()
                 finally:
-                    _fh.close()
+                    _fb.close()
+                _msrc = _gimportutil.decode_source(_raw)
             except _bi.BaseException:
                 raise _bi.ImportError("sandbox: cannot vet workdir module " + _name)
             if _guard_module_src_unsafe(_msrc):
                 raise _bi.ImportError(
                     "sandbox: refusing to import unvetted workdir module " + _name)
+            # Run the EXACT vetted source via our loader so a planted matching .pyc can never be
+            # executed instead (the default SourceFileLoader would satisfy the import from a
+            # __pycache__ .pyc whose header matches the harmless source).
+            _is_pkg = _spec.submodule_search_locations is not None or _os.path.basename(
+                _orig
+            ) == "__init__.py"
+            _spec.loader = _GuardVettedSourceLoader(_name, _orig, _msrc, _is_pkg)
             return _spec
     _sys.meta_path.insert(0, _GuardWorkdirImportVetter())
 except _bi.BaseException:

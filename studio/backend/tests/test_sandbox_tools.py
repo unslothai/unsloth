@@ -4416,3 +4416,29 @@ class TestRound41Bypasses:
     )
     def test_round41_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound42Bypasses:
+    """Forty-second-round Codex findings. The compile(source=...) keyword payload is static; the
+    five workdir-module import-vetter items (utf-7 source encoding, forged bytecode cache,
+    symlinked module, network sink, os import alias) are covered in
+    test_sandbox_runtime_backstop.py."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # compile() accepts its payload as source=..., so a keyword-only compile feeding the
+            # types.FunctionType(code)() execution gadget must still be recovered and analyzed.
+            "import types\n"
+            "c = compile(source='import os\\nos.system(\"touch /tmp/x\")', filename='<p>', mode='exec')\n"
+            "types.FunctionType(c, {})()",
+            # positional control (already caught) -- same gadget, positional source.
+            "import types\n"
+            "c = compile('import os\\nos.system(\"touch /tmp/x\")', '<p>', 'exec')\n"
+            "types.FunctionType(c, {})()",
+            # exec(compile(source=...)) keyword form.
+            "exec(compile(source='import os\\nos.system(\"touch /tmp/x\")', filename='<p>', mode='exec'))",
+        ],
+    )
+    def test_compile_source_keyword_payload_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
