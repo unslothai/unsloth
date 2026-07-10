@@ -64,18 +64,108 @@ FBCACHE_MIN_STEPS = 20
 # enough -- diffusers interpolates it to the actual step count. Conditional-branch curve
 # per the MagCache calibration guidance.
 _MAGCACHE_720P_RATIOS = (
-    1.0, 1.0226, 1.0093, 1.001, 1.0008, 1.0001, 0.9995, 1.0003, 0.9998, 0.9993, 0.9994, 0.9993,
-    0.9997, 1.0002, 0.9994, 0.9985, 0.9987, 0.9997, 0.9979, 0.9987, 0.9985, 0.9982, 0.9977, 0.998,
-    0.9979, 0.9971, 0.9968, 0.9967, 0.9964, 0.9965, 0.9959, 0.9954, 0.995, 0.9938, 0.9942, 0.9924,
-    0.9924, 0.9907, 0.9905, 0.9878, 0.9867, 0.9845, 0.9808, 0.9773, 0.9715, 0.9652, 0.9529,
-    0.9347, 0.9011, 0.83,
+    1.0,
+    1.0226,
+    1.0093,
+    1.001,
+    1.0008,
+    1.0001,
+    0.9995,
+    1.0003,
+    0.9998,
+    0.9993,
+    0.9994,
+    0.9993,
+    0.9997,
+    1.0002,
+    0.9994,
+    0.9985,
+    0.9987,
+    0.9997,
+    0.9979,
+    0.9987,
+    0.9985,
+    0.9982,
+    0.9977,
+    0.998,
+    0.9979,
+    0.9971,
+    0.9968,
+    0.9967,
+    0.9964,
+    0.9965,
+    0.9959,
+    0.9954,
+    0.995,
+    0.9938,
+    0.9942,
+    0.9924,
+    0.9924,
+    0.9907,
+    0.9905,
+    0.9878,
+    0.9867,
+    0.9845,
+    0.9808,
+    0.9773,
+    0.9715,
+    0.9652,
+    0.9529,
+    0.9347,
+    0.9011,
+    0.83,
 )
 _MAGCACHE_480P_RATIOS = (
-    1.0, 1.0077, 1.0138, 1.0043, 1.0029, 0.9986, 0.9966, 1.0, 1.0006, 0.9996, 0.9993, 0.9986, 1.0,
-    0.9993, 0.9966, 0.9986, 0.9988, 0.9991, 0.998, 0.9977, 0.9976, 0.9971, 0.9973, 0.9969, 0.996,
-    0.9961, 0.9949, 0.9958, 0.9933, 0.9942, 0.9941, 0.9926, 0.9929, 0.9916, 0.9923, 0.9887, 0.99,
-    0.9882, 0.9865, 0.9833, 0.9827, 0.9791, 0.9763, 0.9718, 0.9657, 0.9563, 0.9454, 0.9264,
-    0.8967, 0.8382,
+    1.0,
+    1.0077,
+    1.0138,
+    1.0043,
+    1.0029,
+    0.9986,
+    0.9966,
+    1.0,
+    1.0006,
+    0.9996,
+    0.9993,
+    0.9986,
+    1.0,
+    0.9993,
+    0.9966,
+    0.9986,
+    0.9988,
+    0.9991,
+    0.998,
+    0.9977,
+    0.9976,
+    0.9971,
+    0.9973,
+    0.9969,
+    0.996,
+    0.9961,
+    0.9949,
+    0.9958,
+    0.9933,
+    0.9942,
+    0.9941,
+    0.9926,
+    0.9929,
+    0.9916,
+    0.9923,
+    0.9887,
+    0.99,
+    0.9882,
+    0.9865,
+    0.9833,
+    0.9827,
+    0.9791,
+    0.9763,
+    0.9718,
+    0.9657,
+    0.9563,
+    0.9454,
+    0.9264,
+    0.8967,
+    0.8382,
 )
 _MAGCACHE_FAMILY_RATIOS: dict[str, tuple[float, ...]] = {
     "hunyuanvideo-1.5": _MAGCACHE_480P_RATIOS,
@@ -156,7 +246,6 @@ def _ensure_block_metadata_registered(transformer: Any, logger: Any = None) -> N
         import importlib
 
         from diffusers.hooks._helpers import TransformerBlockMetadata, TransformerBlockRegistry
-
         for module_name, cls_name, hs_index, ehs_index in specs:
             block_cls = getattr(importlib.import_module(module_name), cls_name)
             try:
@@ -280,7 +369,8 @@ def apply_step_cache(
                 # No silent FBCache fallback: the family was routed to magcache exactly
                 # because FBCache derails it, so an uncalibrated checkpoint runs uncached.
                 _warn(
-                    logger, mode,
+                    logger,
+                    mode,
                     RuntimeError(f"no calibrated mag_ratios for family '{family}'"),
                 )
                 return None
@@ -370,7 +460,12 @@ def effective_request_strength(
     return pipe_default_strength if isinstance(pipe_default_strength, (int, float)) else None
 
 
-def _disengage_step_cache(transformer: Any, *, reason: str, logger: Any = None) -> bool:
+def _disengage_step_cache(
+    transformer: Any,
+    *,
+    reason: str,
+    logger: Any = None,
+) -> bool:
     """disable_cache + clear the marker; True when the transformer is now uncached."""
     disable_cache = getattr(transformer, "disable_cache", None)
     if not callable(disable_cache):

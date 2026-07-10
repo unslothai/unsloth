@@ -400,9 +400,7 @@ def _stub_hunyuan15_registry(monkeypatch):
     helpers.TransformerBlockRegistry = _Registry
     monkeypatch.setitem(sys.modules, "diffusers.hooks._helpers", helpers)
 
-    blocks = types.ModuleType(
-        "diffusers.models.transformers.transformer_hunyuan_video15"
-    )
+    blocks = types.ModuleType("diffusers.models.transformers.transformer_hunyuan_video15")
     blocks.HunyuanVideo15TransformerBlock = HunyuanVideo15TransformerBlock
     monkeypatch.setitem(
         sys.modules,
@@ -493,14 +491,7 @@ from core.inference.diffusion_cache import (  # noqa: E402
 
 
 class _MagConfig:
-    def __init__(
-        self,
-        threshold,
-        max_skip_steps,
-        retention_ratio,
-        num_inference_steps,
-        mag_ratios,
-    ):
+    def __init__(self, threshold, max_skip_steps, retention_ratio, num_inference_steps, mag_ratios):
         self.threshold = threshold
         self.max_skip_steps = max_skip_steps
         self.retention_ratio = retention_ratio
@@ -534,7 +525,6 @@ def test_magcache_families_have_calibrated_ratios():
     # Every family the auto policy routes to magcache must ship a calibrated curve, or
     # the auto default silently runs uncached (apply_step_cache checks the table).
     from core.inference.diffusion_cache import _FAMILY_AUTO_CACHE_MODE
-
     for fam, mode in _FAMILY_AUTO_CACHE_MODE.items():
         if mode == TC_MAGCACHE:
             ratios = _MAGCACHE_FAMILY_RATIOS[fam]
@@ -545,9 +535,7 @@ def test_magcache_families_have_calibrated_ratios():
 def test_magcache_engages_with_family_curve(monkeypatch):
     _stub_diffusers_with_magcache(monkeypatch)
     t = _MixinTransformer()
-    engaged = apply_step_cache(
-        _pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p", steps = 50
-    )
+    engaged = apply_step_cache(_pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p", steps = 50)
     assert engaged == TC_MAGCACHE
     cfg = t.enabled_with
     assert cfg.threshold == DEFAULT_MAGCACHE_THRESHOLD
@@ -571,9 +559,7 @@ def test_magcache_without_calibration_runs_uncached(monkeypatch):
 def test_magcache_without_steps_runs_uncached(monkeypatch):
     _stub_diffusers_with_magcache(monkeypatch)
     t = _MixinTransformer()
-    assert (
-        apply_step_cache(_pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p") is None
-    )
+    assert apply_step_cache(_pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p") is None
     assert t.enabled_with is None
 
 
@@ -581,7 +567,10 @@ def test_magcache_explicit_threshold_wins(monkeypatch):
     _stub_diffusers_with_magcache(monkeypatch)
     t = _MixinTransformer()
     apply_step_cache(
-        _pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p", steps = 30,
+        _pipe(t),
+        mode = "magcache",
+        family = "hunyuanvideo-1.5-720p",
+        steps = 30,
         threshold = 0.24,
     )
     assert t.enabled_with.threshold == 0.24
@@ -602,12 +591,8 @@ def test_toggle_magcache_reengages_on_step_change(monkeypatch):
     # step-count change must disable + re-enable; the same count stays idempotent.
     _stub_diffusers_with_magcache(monkeypatch)
     t = _ToggleTransformer()
-    maybe_toggle_step_cache(
-        _pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
-    )
-    maybe_toggle_step_cache(
-        _pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
-    )
+    maybe_toggle_step_cache(_pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p")
+    maybe_toggle_step_cache(_pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p")
     assert t.enables == 1 and t.disables == 0  # idempotent at the same count
     mode = maybe_toggle_step_cache(
         _pipe(t), steps = 50, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
@@ -619,9 +604,7 @@ def test_toggle_magcache_reengages_on_step_change(monkeypatch):
 def test_toggle_magcache_disengages_below_bar(monkeypatch):
     _stub_diffusers_with_magcache(monkeypatch)
     t = _ToggleTransformer()
-    maybe_toggle_step_cache(
-        _pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
-    )
+    maybe_toggle_step_cache(_pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p")
     mode = maybe_toggle_step_cache(
         _pipe(t), steps = 8, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
     )

@@ -272,14 +272,17 @@ _CONFIGS: dict[str, dict[str, Any]] = {
     # (it auto-engages under any active speed tier), so trim_off isolates its win. The
     # trim key defaults True everywhere else; only this row forces it off.
     "trim_off": dict(
-        te = "none", vae = "none", dit = "none", speed = "default", attn = "auto", cache = "off",
+        te = "none",
+        vae = "none",
+        dit = "none",
+        speed = "default",
+        attn = "auto",
+        cache = "off",
         trim = False,
     ),
     # Compile isolation at matched attention/trim: eager tier (channels_last + cudnn
     # benchmark, NO compile) vs the "cudnn" row (default tier = regional compile).
-    "eager_trim": dict(
-        te = "none", vae = "none", dit = "none", speed = "eager", attn = "auto", cache = "off"
-    ),
+    "eager_trim": dict(te = "none", vae = "none", dit = "none", speed = "eager", attn = "auto", cache = "off"),
     # int8 DiT baseline at the production attention stack (cudnn + trim), cache off,
     # directly comparable to the "cudnn" dense row.
     "int8_cudnn": dict(
