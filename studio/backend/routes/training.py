@@ -1686,31 +1686,33 @@ async def upload_diffusion_dataset(
             # (case-insensitive filesystems) two images whose stems differ only by case
             # (sample.png vs Sample.jpg) resolve to the SAME <stem>.txt caption sidecar, so a
             # case-sensitive check would let both through and silently share -- and corrupt --
-            # one caption. Casefolding the name guard too keeps a same-name case variant
-            # (sample.png vs Sample.png, one file / an overwrite on those filesystems) exempt.
+            # one caption. A same-name case variant is exempt ONLY when its stem also differs
+            # in case (sample.png vs Sample.png): one file / an overwrite on case-insensitive
+            # filesystems, and on Linux the two files write SEPARATE sidecars (sample.txt vs
+            # Sample.txt). An EXTENSION-case variant (cat.PNG vs cat.png) has exactly equal
+            # stems, so on Linux both files land and both resolve to ONE cat.txt -- the very
+            # collision this guard exists for -- and is rejected like any other stem clash.
             stem_cf = stem.casefold()
+
+            def _shares_sidecar(other_name: str) -> bool:
+                other = Path(other_name)
+                if (
+                    other_name == filename
+                    or other.suffix.lower() not in _DIFFUSION_DATASET_IMAGE_EXTS
+                    or other.stem.casefold() != stem_cf
+                ):
+                    return False
+                # A casefold-equal full name is exempt unless the stems match EXACTLY
+                # (extension-case variants collide on one sidecar on case-sensitive
+                # filesystems).
+                return other.stem == stem or other_name.casefold() != fname_cf
+
             clash = next(
-                (
-                    p.name
-                    for p in folder.iterdir()
-                    if p.is_file()
-                    and p.name.casefold() != fname_cf
-                    and p.suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS
-                    and p.stem.casefold() == stem_cf
-                ),
+                (p.name for p in folder.iterdir() if p.is_file() and _shares_sidecar(p.name)),
                 None,
             )
             if clash is None:
-                clash = next(
-                    (
-                        n
-                        for n in names
-                        if n.casefold() != fname_cf
-                        and Path(n).suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS
-                        and Path(n).stem.casefold() == stem_cf
-                    ),
-                    None,
-                )
+                clash = next((n for n in names if _shares_sidecar(n)), None)
             if clash is not None:
                 raise HTTPException(
                     status_code = 400,

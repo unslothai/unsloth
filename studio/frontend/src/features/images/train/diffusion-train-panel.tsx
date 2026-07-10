@@ -195,11 +195,22 @@ export function DiffusionTrainPanel({
   // sdxl trains the U-Net in mixed precision (no quantised base), so it uses the
   // mixed_precision control instead of base_precision. Everything else is a DiT family.
   const isDiT = familyName !== "sdxl";
+  // An EMPTY precision_modes list on a DiT family is the backend's deliberate signal that
+  // this host cannot train it at all (a non-bf16 CUDA GPU fails the trainer's preflight for
+  // every mode, so /info advertises no precision rather than a start that always 400s; the
+  // human-readable reason rides in vram_note). Only an ABSENT field means an older backend
+  // and falls back to the default mode list. SDXL reports [] too but is not precision-gated
+  // (it keeps its mixed_precision lever), hence the isDiT scope.
+  const familyUntrainable =
+    isDiT &&
+    reportedFamily?.precision_modes != null &&
+    reportedFamily.precision_modes.length === 0;
   // The quantised base precisions this family can train in, with a stable fallback when the
   // backend does not report them (older backend, or a preset-only family).
   const precisionModes = useMemo<
     Array<"nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto">
   >(() => {
+    if (familyUntrainable) return [];
     const reported = reportedFamily?.precision_modes?.filter(
       (m): m is "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" =>
         m === "nf4" || m === "bf16" || m === "int8" || m === "fp8" || m === "mxfp8",
@@ -208,7 +219,7 @@ export function DiffusionTrainPanel({
     // Fallback without a backend report: the GPU-independent modes only (mxfp8 needs a
     // Blackwell probe, so it is offered strictly when the backend advertises it).
     return ["auto", "nf4", "bf16", "int8", "fp8"];
-  }, [reportedFamily?.precision_modes]);
+  }, [reportedFamily?.precision_modes, familyUntrainable]);
   // Whether to show the torch.compile control. The backend advertises this per family
   // (the SDXL U-Net path compiles regionally too now); default on for DiT families when
   // an older backend does not report it.
@@ -911,6 +922,7 @@ export function DiffusionTrainPanel({
               }}
               className={selectClass}
               aria-label="Base precision"
+              disabled={familyUntrainable}
             >
               {precisionModes.map((m) => (
                 <option
@@ -923,10 +935,18 @@ export function DiffusionTrainPanel({
               ))}
             </select>
             <p className="text-[11px] leading-snug text-muted-foreground">
-              How the base model is stored while training. Auto picks the best fit for
-              your GPU.
-              {basePrequantized && (
-                <> This base is already 4-bit, so only nf4/auto apply.</>
+              {familyUntrainable ? (
+                // The reason itself (the backend's bf16-preflight text) already shows in
+                // the family picker's vram_note line above.
+                <>This GPU cannot train this model family.</>
+              ) : (
+                <>
+                  How the base model is stored while training. Auto picks the best fit
+                  for your GPU.
+                  {basePrequantized && (
+                    <> This base is already 4-bit, so only nf4/auto apply.</>
+                  )}
+                </>
               )}
             </p>
           </div>
@@ -1184,9 +1204,15 @@ export function DiffusionTrainPanel({
             type="button"
             className="w-full"
             onClick={onStart}
-            disabled={starting || uploading || running}
+            disabled={starting || uploading || running || familyUntrainable}
           >
-            {starting ? "Starting..." : running ? "Training in progress" : "Start training"}
+            {starting
+              ? "Starting..."
+              : running
+                ? "Training in progress"
+                : familyUntrainable
+                  ? "Not supported on this GPU"
+                  : "Start training"}
           </Button>
         </div>
       </div>

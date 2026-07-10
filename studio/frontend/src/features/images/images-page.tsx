@@ -1034,6 +1034,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
     null,
   );
+  // Render-safe mirror of "lastLoad.current was set by a user-initiated load": a resident
+  // GGUF/single_file model discovered by refresh carries no checkpoint filename in status,
+  // so lastLoad stays null for it and Reapply would be a dead control. Set only from event
+  // handlers; the resident-pipeline case (which the effect below CAN wire) is derived from
+  // status at render time instead (mirrors the video page's canReapply).
+  const [canReapply, setCanReapply] = useState(false);
   // Repo id whose defaults we've already seeded from a discovered resident model, so
   // we seed the sliders once per resident model and never clobber a later manual edit.
   const seededResident = useRef<string | null>(null);
@@ -1510,8 +1516,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // without re-picking it from the dropdown. Only a full pipeline load needs no
     // checkpoint filename; a resident GGUF *and* single_file carry no filename in status,
     // and the backend rejects a gguf/single_file load without one (400 before it evicts),
-    // so leave lastLoad null for those (Reapply stays a no-op) rather than wire a reload
-    // that can never complete.
+    // so leave lastLoad null for those (the Reapply button stays hidden for them)
+    // rather than wire a reload that can never complete.
     const kind = status?.model_kind;
     if (kind === "pipeline") {
       lastLoad.current = { repoId, kind };
@@ -1541,6 +1547,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // resident-default seeding must keep pointing at it, not at the failed pick.
       const prevLastLoad = lastLoad.current;
       lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
+      setCanReapply(true);
       try {
         // Returns immediately — the load runs in the background; we poll for it.
         // The backend infers the family + base diffusers repo from the repo id.
@@ -1562,6 +1569,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         });
       } catch (err) {
         lastLoad.current = prevLastLoad;
+        setCanReapply(prevLastLoad != null);
         dismissLoadToast();
         toast.error(err instanceof Error ? err.message : "Failed to start load");
         setBusy(null);
@@ -2094,7 +2102,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         </span>
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>
-      {status?.loaded && (
+      {/* A resident full pipeline is reloadable by repo id alone (the resident effect
+          wires lastLoad for it), so it keeps Reapply even before any user-initiated
+          load; GGUF/single_file residents have no reload target and hide the button. */}
+      {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
         <Button
           variant="secondary"
           size="sm"
