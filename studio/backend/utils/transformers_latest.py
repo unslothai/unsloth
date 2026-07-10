@@ -507,7 +507,16 @@ def _install_latest_transformers_locked(version: str) -> dict:
             "version": version,
             "message": "Cannot install: Studio is in offline mode.",
         }
-    snapshot = _get_snapshot()
+    # Re-verify against a LIVE snapshot so a release published inside the
+    # cache TTL is not missed; fall back to the cached one on fetch failure.
+    global _memory_snapshot
+    snapshot = _refresh_snapshot()
+    if snapshot is not None:
+        with _lock:
+            _memory_snapshot = snapshot
+        _save_snapshot_file(snapshot)
+    else:
+        snapshot = _get_snapshot()
     if snapshot is None:
         return {
             "success": False,

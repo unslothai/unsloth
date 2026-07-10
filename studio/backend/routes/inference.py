@@ -4648,11 +4648,15 @@ async def validate_model(
         transformers_upgrade: Optional[TransformersUpgradeInfo] = None
         if not is_gguf:
             from utils.transformers_latest import check_upgrade_for_model
-            _upgrade = await asyncio.to_thread(
-                check_upgrade_for_model, config.identifier, request.hf_token
-            )
-            if _upgrade is not None:
-                transformers_upgrade = TransformersUpgradeInfo(**_upgrade)
+            # Cover the [adapter, base] set: a LoRA adapter's base model is what
+            # the worker actually activates transformers for.
+            for _target in security_targets:
+                _upgrade = await asyncio.to_thread(
+                    check_upgrade_for_model, _target, request.hf_token
+                )
+                if _upgrade is not None:
+                    transformers_upgrade = TransformersUpgradeInfo(**_upgrade)
+                    break
         # Native context length, read from the local GGUF header when present.
         # Lets the staged ("Load on selection" off) flow populate the context
         # slider before the GPU load; None until the file is downloaded.

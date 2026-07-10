@@ -910,6 +910,10 @@ _config_mapping_cache: dict[str, frozenset[str]] = {}
 def _overlay_transformers_dir(tier: str) -> str | None:
     """transformers source dir for a tier, located without importing it."""
     if tier != "default":
+        # latest participates only with a valid pin (activation refuses unpinned,
+        # so mapping from a partial/manual dir would route to a dead tier).
+        if tier == "latest" and latest_venv_pinned_version() is None:
+            return None
         root = {
             "530": _VENV_T5_530_DIR,
             "550": _VENV_T5_550_DIR,

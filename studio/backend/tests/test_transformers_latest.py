@@ -552,6 +552,10 @@ class TestLatestTierRouting:
         venv_dir = tmp_path / ".venv_t5_latest"
         (venv_dir / "transformers").mkdir(parents = True)
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
+        # Unpinned (partial/manual dir): mapping must ignore it, since
+        # activation refuses an unpinned sidecar.
+        assert tv._overlay_transformers_dir("latest") is None
+        (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
         assert tv._overlay_transformers_dir("latest") == str(venv_dir / "transformers")
 
     def test_probe_order_excludes_unprovisioned_latest(self, tmp_path: Path, monkeypatch):
