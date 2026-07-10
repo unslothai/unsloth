@@ -1183,8 +1183,10 @@ def test_sandboxed_benign_dynamic_import_workdir_module_allowed():
     session = "backstop-workdir-okdi"
     workdir = get_sandbox_workdir(session)
     with open(os.path.join(workdir, "okdi.py"), "w") as f:
-        f.write("import importlib\nm = importlib.import_module('json')\n"
-                "VALUE = m.dumps({'a': 1})\nprint('DI_OK')\n")
+        f.write(
+            "import importlib\nm = importlib.import_module('json')\n"
+            "VALUE = m.dumps({'a': 1})\nprint('DI_OK')\n"
+        )
     try:
         out = _python_exec(
             "import okdi; print('REACHED', okdi.VALUE)",
