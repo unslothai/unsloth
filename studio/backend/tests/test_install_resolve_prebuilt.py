@@ -690,3 +690,30 @@ def test_detect_host_cim_fallback_fires_on_registry_miss(monkeypatch):
     )
     assert host.has_intel_gpu is True
     assert "powershell" in captured
+
+
+def test_windows_intel_registry_unexpected_error_is_false(monkeypatch):
+    # The probe is advisory: even a non-OSError bug in the walk must return
+    # False (deferring to the CIM fallback), never crash detect_host.
+    class _ExplodingWinreg:
+        HKEY_LOCAL_MACHINE = object()
+
+        def OpenKey(self, parent, name):
+            raise TypeError(name)
+
+    monkeypatch.setitem(sys.modules, "winreg", _ExplodingWinreg())
+    assert ilp.windows_intel_gpu_in_registry() is False
+
+
+def test_detect_host_cim_rescues_exploding_registry(monkeypatch):
+    class _ExplodingWinreg:
+        HKEY_LOCAL_MACHINE = object()
+
+        def OpenKey(self, parent, name):
+            raise TypeError(name)
+
+    host, captured = _detect_windows_host(
+        monkeypatch, _ExplodingWinreg(), powershell_stdout = "Intel(R) Arc(TM) A770 Graphics"
+    )
+    assert host.has_intel_gpu is True
+    assert "powershell" in captured

@@ -2812,7 +2812,10 @@ def windows_intel_gpu_in_registry() -> bool:
                                 return True
                 except OSError:
                     continue
-    except OSError:
+    except Exception:
+        # Advisory probe: any unexpected failure must degrade to the CIM
+        # fallback, never crash the installer (mirrors detect_host's own
+        # swallow around the CIM probe).
         return False
     return False
 
