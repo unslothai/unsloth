@@ -1009,6 +1009,7 @@ export function SharedComposer({
             : {}),
           // Decides whether the guard charges the separate MTP drafter.
           speculative_type: specSettings.speculativeType,
+          tensor_parallel: compareLoadKnobs.tensorParallel,
         });
         if (
           validation.requires_trust_remote_code ||

@@ -1426,6 +1426,7 @@ async function autoLoadSmallestModel(): Promise<{
     // Decides whether the guard charges the separate MTP drafter.
     speculative_type?: string | null;
     cache_type_kv?: string | null;
+    tensor_parallel?: boolean;
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
@@ -1520,6 +1521,7 @@ async function autoLoadSmallestModel(): Promise<{
               gpu_layers: effectiveGpuLayers,
               speculative_type: effectiveSpeculativeType,
               cache_type_kv: remembered?.kvCacheDtype ?? null,
+              tensor_parallel: remembered?.tensorParallel ?? false,
             }
           : {}),
       }))

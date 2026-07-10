@@ -200,6 +200,7 @@ def can_load_chat_during_training(
     gguf_companion_gb: float = 0.0,
     gguf_single_device: bool = False,
     gguf_split_max_share: Optional[float] = None,
+    gguf_tensor_parallel: bool = False,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Decide if a NEW chat model can load without OOMing active training (inverse
     of can_keep_chat_during_training: training is already resident, so size the
@@ -300,9 +301,10 @@ def can_load_chat_during_training(
                 # Main distributes (aggregate). A manual split concentrates up to
                 # max_share of it on one card; free placement pins only the
                 # companion. Either way the tightest device must hold its share.
-                per_device_main = (
-                    gguf_main_gb * gguf_split_max_share if gguf_split_max_share else 0.0
-                )
+                effective_share = gguf_split_max_share
+                if effective_share is None and gguf_tensor_parallel and len(free_vals) > 1:
+                    effective_share = 1.0 / len(free_vals)
+                per_device_main = gguf_main_gb * effective_share if effective_share else 0.0
                 fits = (
                     usable_gb >= needed_main
                     and min_free_gb >= (per_device_main + gguf_companion_gb) * SAFETY_MARGIN

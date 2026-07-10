@@ -175,6 +175,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         companion_gb = 0.0,
         single_device = False,
         split_max_share = None,
+        tensor_parallel = False,
         gpu_ids = None,
     ):
         with (
@@ -194,6 +195,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
                 gguf_companion_gb = companion_gb,
                 gguf_single_device = single_device,
                 gguf_split_max_share = split_max_share,
+                gguf_tensor_parallel = tensor_parallel,
             )
         return ok, info, auto_mock
 
@@ -263,6 +265,20 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         )
         refuse, _, _ = self._run(
             devices = _devices((0, 80, 35), (1, 80, 72)), main_gb = 20.0, split_max_share = 0.5
+        )
+        self.assertTrue(allow)
+        self.assertFalse(refuse)
+
+    def test_tensor_parallel_even_share_without_explicit_split(self):
+        # TP with no explicit ratio shards every layer evenly (1/N per card), so
+        # the tightest device needs main/N -- like an even split, but derived
+        # from the TP flag rather than a tensor_split. main 20 over 2 GPUs ->
+        # per-device 10. free [45, 25] min 25 >= 11.5 -> allow; [45, 8] refuse.
+        allow, _, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 55)), main_gb = 20.0, tensor_parallel = True
+        )
+        refuse, _, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 72)), main_gb = 20.0, tensor_parallel = True
         )
         self.assertTrue(allow)
         self.assertFalse(refuse)

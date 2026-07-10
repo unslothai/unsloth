@@ -3788,6 +3788,7 @@ def _guard_chat_load_against_training(
     tensor_split: Optional[List[float]] = None,
     cache_type_kv: Optional[str] = None,
     speculative_type: Optional[str] = None,
+    tensor_parallel: bool = False,
 ) -> None:
     """Refuse loading a local chat model that would OOM an active training run.
     No-op when training is inactive or unknown. `load_in_4bit` must be the
@@ -3811,6 +3812,7 @@ def _guard_chat_load_against_training(
     gguf_companion_gb = 0.0
     gguf_single_device = False
     gguf_split_max_share = None
+    gguf_tensor_parallel = False
     if is_gguf:
         parts = _estimate_gguf_required_gb(
             config,
@@ -3827,15 +3829,23 @@ def _guard_chat_load_against_training(
             gguf_main_gb, gguf_companion_gb = parts
         # Diffusion runs the whole model on one device (see _start_diffusion_server).
         gguf_single_device = _is_diffusion_gguf(config)
-        # A manual per-GPU split distributes the main model by fixed shares, so
-        # the guard checks the largest normalized share against the tightest
-        # device rather than the whole model. Emitted only under manual + pinned
-        # layers (see load_model), matching when the loader appends --tensor-split.
-        if tensor_split and gpu_memory_mode == "manual" and gpu_layers >= 0:
-            shares = [max(float(s), 0.0) for s in tensor_split]
-            total = sum(shares)
-            if total > 0:
-                gguf_split_max_share = max(shares) / total
+        # Manual + pinned layers may distribute the main model per device: a
+        # per-GPU split concentrates up to its largest normalized share on one
+        # card, and tensor parallelism (--split-mode tensor) with no explicit
+        # ratio shards every layer evenly (1/N). The guard checks the tightest
+        # device against that share instead of the whole model.
+        if gpu_memory_mode == "manual" and gpu_layers >= 0:
+            if tensor_split:
+                shares = [max(float(s), 0.0) for s in tensor_split]
+                total = sum(shares)
+                if total > 0:
+                    gguf_split_max_share = max(shares) / total
+            else:
+                from core.inference.llama_server_args import _effective_tensor_parallel
+
+                gguf_tensor_parallel = _effective_tensor_parallel(
+                    llama_extra_args, tensor_parallel
+                )
 
     ok, info = can_load_chat_during_training(
         model_name = model_identifier,
@@ -3848,6 +3858,7 @@ def _guard_chat_load_against_training(
         gguf_companion_gb = gguf_companion_gb,
         gguf_single_device = gguf_single_device,
         gguf_split_max_share = gguf_split_max_share,
+        gguf_tensor_parallel = gguf_tensor_parallel,
     )
     if ok:
         return
@@ -4213,6 +4224,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             tensor_split = request.tensor_split,
             cache_type_kv = request.cache_type_kv,
             speculative_type = request.speculative_type,
+            tensor_parallel = request.tensor_parallel,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -4744,6 +4756,7 @@ async def validate_model(
             tensor_split = request.tensor_split,
             cache_type_kv = request.cache_type_kv,
             speculative_type = request.speculative_type,
+            tensor_parallel = request.tensor_parallel,
         )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
