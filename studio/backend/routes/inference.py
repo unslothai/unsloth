@@ -3453,7 +3453,6 @@ def _diffusion_guard_gpu_ids(
             variant = getattr(config, "gguf_variant", None)
             if repo and variant:
                 from hub.utils.gguf import resolve_local_gguf_path
-
                 main = resolve_local_gguf_path(repo, variant)
         if not main or not Path(main).is_file():
             return requested_gpu_ids
@@ -3971,6 +3970,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         if config.is_gguf and effective_gpu_ids is not None:
             from utils.hardware import DeviceType, get_device
             from utils.hardware.hardware import resolve_requested_gpu_ids
+
             if get_device() == DeviceType.XPU:
                 raise HTTPException(
                     status_code = 400,
@@ -4590,6 +4590,7 @@ async def validate_model(
         if config.is_gguf and effective_gpu_ids is not None:
             from utils.hardware import DeviceType, get_device
             from utils.hardware.hardware import resolve_requested_gpu_ids
+
             if get_device() == DeviceType.XPU:
                 raise HTTPException(
                     status_code = 400,
