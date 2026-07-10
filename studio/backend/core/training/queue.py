@@ -26,6 +26,7 @@ logger = get_logger(__name__)
 POLL_INTERVAL = 5.0
 SETTLE_DELAY = 3.0
 MAX_PENDING = 5
+MAX_START_DEFERRALS = 3
 RESTART_SKIP_REASON = "Server restarted while this job was running"
 
 
@@ -73,10 +74,14 @@ class TrainingQueueManager:
         self._stop_runner = threading.Event()
         self._runner_thread: Optional[threading.Thread] = None
         self._runner_lock = threading.Lock()
+        # Consecutive no-error start failures per item id (transient cleanup
+        # races); in-memory only, a restart resets the count.
+        self._start_deferrals: Dict[str, int] = {}
         # Overridable for tests.
         self.poll_interval = POLL_INTERVAL
         self.settle_delay = SETTLE_DELAY
         self.max_pending = MAX_PENDING
+        self.max_start_deferrals = MAX_START_DEFERRALS
 
     def _get_backend(self):
         if self._backend is None:
@@ -218,6 +223,10 @@ class TrainingQueueManager:
             paused, _reason = studio_db.get_queue_paused()
             if paused:
                 return
+            # The head may have changed while we slept (reorder/remove).
+            item = studio_db.next_pending_queue_item()
+            if item is None:
+                return
         if backend.is_training_active():
             return
 
@@ -261,6 +270,7 @@ class TrainingQueueManager:
             return
 
         def _skip(reason: str) -> None:
+            self._start_deferrals.pop(item["id"], None)
             studio_db.update_queue_item_status(
                 item["id"],
                 "skipped",
@@ -312,15 +322,18 @@ class TrainingQueueManager:
                     item["id"], "pending", expected_status = "starting"
                 )
                 logger.info("Queue item %s deferred: backend busy with a manual start", item["id"])
-            else:
-                error = None
-                try:
-                    error = backend.trainer.training_progress.error
-                except Exception:
-                    pass
-                _skip(error or "Training subprocess failed to start")
+                return
+            error = None
+            try:
+                error = backend.trainer.training_progress.error
+            except Exception:
+                pass
+            if not error and self._defer_start(item):
+                return
+            _skip(error or "Training subprocess failed to start")
             return
 
+        self._start_deferrals.pop(item["id"], None)
         studio_db.update_queue_item_status(
             item["id"],
             "running",
@@ -329,6 +342,25 @@ class TrainingQueueManager:
             started_at = _now(),
         )
         logger.info("Queue item %s launched as run %s", item["id"], job_id)
+
+    def _defer_start(self, item: dict) -> bool:
+        # start_training can return False with the backend already inactive
+        # while the previous pump thread is still finalizing (worker exited,
+        # join timed out, run row being written). No progress error means the
+        # request itself was never at fault, so put the item back at the head
+        # for the next tick -- bounded, in case the backend is truly wedged.
+        attempts = self._start_deferrals.get(item["id"], 0) + 1
+        if attempts > self.max_start_deferrals:
+            return False
+        self._start_deferrals[item["id"]] = attempts
+        studio_db.update_queue_item_status(item["id"], "pending", expected_status = "starting")
+        logger.info(
+            "Queue item %s deferred (%d/%d): backend still cleaning up",
+            item["id"],
+            attempts,
+            self.max_start_deferrals,
+        )
+        return True
 
 
 _queue_manager: Optional[TrainingQueueManager] = None

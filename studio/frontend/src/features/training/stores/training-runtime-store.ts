@@ -200,6 +200,13 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
       const state = isNewJob
         ? {
             ...prev,
+            // Start labels describe the previous run; clear them so the live
+            // view doesn't title a queued run with the old model/project.
+            // The queue poll re-populates them from the active queue item.
+            startModelName: null,
+            startDatasetName: null,
+            startProjectName: null,
+            startFromResume: false,
             sseConnected: false,
             firstStepReceived: false,
             lastEventId: null,

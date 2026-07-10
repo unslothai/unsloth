@@ -551,6 +551,9 @@ class TrainingQueueItem(BaseModel):
     )
     model_name: str = Field(..., description = "Model the queued run trains")
     dataset_summary: str = Field(..., description = "Short dataset label for display")
+    project_name: Optional[str] = Field(
+        None, description = "Project the queued run logs under, for display"
+    )
     job_id: Optional[str] = Field(None, description = "training_runs id once launched")
     result_status: Optional[str] = Field(
         None, description = "Final run status (completed/error/stopped) for done items"

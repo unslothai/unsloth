@@ -3,6 +3,9 @@
 
 """Training queue API routes."""
 
+import json
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
@@ -20,6 +23,19 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+# Only the display-safe project name leaves the stored request; the rest of
+# the payload may carry credentials (hf_token) and must never leave the backend.
+def _project_name(request_json) -> Optional[str]:
+    try:
+        data = json.loads(request_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get("project_name")
+    return value if isinstance(value, str) and value.strip() else None
+
+
 # TrainingQueueItem has no request payload field: the stored request may carry
 # credentials (hf_token) and must never leave the backend.
 def _item_model(item: dict) -> TrainingQueueItem:
@@ -29,6 +45,7 @@ def _item_model(item: dict) -> TrainingQueueItem:
         status = item["status"],
         model_name = item["model_name"],
         dataset_summary = item["dataset_summary"],
+        project_name = _project_name(item.get("request_json")),
         job_id = item.get("job_id"),
         result_status = item.get("result_status"),
         error_message = item.get("error_message"),

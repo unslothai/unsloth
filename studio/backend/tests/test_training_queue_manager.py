@@ -150,6 +150,29 @@ def test_pause_during_settle_delay_prevents_launch(manager, backend, monkeypatch
     assert studio_db.get_queue_item(item["id"])["status"] == "pending"
 
 
+def test_reorder_during_settle_delay_launches_new_head(manager, backend, monkeypatch):
+    # The head is re-read after the settle sleep so a reorder made during the
+    # delay wins over the stale pre-sleep pick.
+    record = []
+    _patch_launch(monkeypatch, record = record)
+    item1 = _enqueue(manager, monkeypatch)
+    item2 = _enqueue(manager, monkeypatch, model_name = "unsloth/other")
+    manager.settle_delay = 3.0
+
+    def _reorder_while_settling(timeout):
+        assert studio_db.move_queue_item(item2["id"], "up")
+        return False  # not stopping, just done waiting
+
+    monkeypatch.setattr(manager._stop_runner, "wait", _reorder_while_settling)
+
+    manager._tick()
+
+    assert len(record) == 1
+    assert record[0]["request"].model_name == "unsloth/other"
+    assert studio_db.get_queue_item(item2["id"])["status"] == "running"
+    assert studio_db.get_queue_item(item1["id"])["status"] == "pending"
+
+
 def test_launch_validation_failure_skips_and_advances(manager, backend, monkeypatch):
     item1 = _enqueue(manager, monkeypatch)
     item2 = _enqueue(manager, monkeypatch)
@@ -205,15 +228,40 @@ def test_launch_false_reverts_to_pending_when_backend_busy(manager, backend, mon
     assert studio_db.get_queue_item(item["id"])["status"] == "pending"
 
 
-def test_launch_false_skips_when_backend_inactive(manager, backend, monkeypatch):
+def test_launch_false_without_error_defers_then_skips(manager, backend, monkeypatch):
+    # start_training can return False while the previous pump is still
+    # finalizing (backend inactive, no progress error): transient, so the item
+    # goes back to pending -- but only max_start_deferrals times.
     item = _enqueue(manager, monkeypatch)
     _patch_launch(monkeypatch, result = False)
+    manager.max_start_deferrals = 2
+
+    manager._tick()
+    assert studio_db.get_queue_item(item["id"])["status"] == "pending"
+    manager._tick()
+    assert studio_db.get_queue_item(item["id"])["status"] == "pending"
+
+    manager._tick()  # third no-error failure exceeds the bound
+
+    stored = studio_db.get_queue_item(item["id"])
+    assert stored["status"] == "skipped"
+    assert "failed to start" in stored["error_message"].lower()
+    assert manager._start_deferrals == {}  # counter cleaned up on skip
+
+
+def test_launch_false_with_progress_error_skips_immediately(manager, backend, monkeypatch):
+    # A recorded progress error means the request itself failed; no deferral.
+    from types import SimpleNamespace
+
+    item = _enqueue(manager, monkeypatch)
+    _patch_launch(monkeypatch, result = False)
+    backend.trainer = SimpleNamespace(training_progress = SimpleNamespace(error = "CUDA out of memory"))
 
     manager._tick()
 
     stored = studio_db.get_queue_item(item["id"])
     assert stored["status"] == "skipped"
-    assert "failed to start" in stored["error_message"].lower()
+    assert "CUDA out of memory" in stored["error_message"]
 
 
 def test_launch_exception_skips(manager, backend, monkeypatch):

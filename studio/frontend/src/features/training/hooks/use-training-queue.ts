@@ -126,8 +126,34 @@ function applyQueueState(state: TrainingQueueState): void {
 
   if (state.active_job_id && state.active_job_id !== previousActiveJobId) {
     emitTrainingRunsChanged();
+    // Queue-started runs never pass through the start form, so label the
+    // live view from the queue item instead of whatever the form currently
+    // holds. Applied only once the runtime has adopted the job, because
+    // applyStatus clears the start labels on a job change.
+    const activeItem = state.items.find(
+      (item) => item.job_id === state.active_job_id,
+    );
+    const applyLabels = () => {
+      if (
+        activeItem &&
+        useTrainingRuntimeStore.getState().jobId === state.active_job_id
+      ) {
+        useTrainingRuntimeStore
+          .getState()
+          .setStartResources(
+            activeItem.model_name,
+            activeItem.dataset_summary,
+            false,
+            activeItem.project_name,
+          );
+      }
+    };
     if (state.active_job_id !== useTrainingRuntimeStore.getState().jobId) {
-      void syncTrainingRuntimeFromBackend().catch(() => undefined);
+      void syncTrainingRuntimeFromBackend()
+        .then(applyLabels)
+        .catch(() => undefined);
+    } else {
+      applyLabels();
     }
   }
 }

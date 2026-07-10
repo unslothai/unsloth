@@ -62,6 +62,19 @@ def test_enqueue_returns_item():
     assert item.job_id is None
 
 
+def test_item_exposes_project_name_but_no_secrets():
+    # project_name is display-safe and needed to label queue-started runs;
+    # it is the ONLY field extracted from the stored request payload.
+    item = _enqueue(project_name = "my-experiment")
+    assert item.project_name == "my-experiment"
+    state = asyncio.run(routes_module.get_queue_state(current_subject = "tester"))
+    assert state.items[0].project_name == "my-experiment"
+    assert "hf_secret_token" not in state.model_dump_json()
+
+    blank = _enqueue(project_name = "  ")
+    assert blank.project_name is None
+
+
 def test_enqueue_cap_409(_isolated):
     _isolated["manager"].max_pending = 2
     _enqueue()

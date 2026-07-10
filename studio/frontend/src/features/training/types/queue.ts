@@ -16,6 +16,7 @@ export interface TrainingQueueItem {
   status: TrainingQueueItemStatus;
   model_name: string;
   dataset_summary: string;
+  project_name: string | null;
   job_id: string | null;
   result_status: string | null;
   error_message: string | null;
