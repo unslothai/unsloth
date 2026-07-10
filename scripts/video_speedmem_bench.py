@@ -921,7 +921,6 @@ def _run_config(
     # flags.
     try:
         from core.inference.diffusion_speed import restore_backend_flags
-
         restore_backend_flags(engaged.get("_flags_snapshot"))
     except Exception:
         pass
