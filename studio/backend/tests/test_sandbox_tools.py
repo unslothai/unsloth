@@ -3990,3 +3990,112 @@ class TestRound37Bypasses:
     )
     def test_round37_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound38Bypasses:
+    """Thirty-eighth-round Codex findings (follow-ups on the round-36/37 git / env work): a
+    GIT_CONFIG_* env override that undoes the hook suppression, GIT_DIR/GIT_WORK_TREE env vars
+    that re-point the repo outside the workdir, argv-level assignments on an env wrapper, a
+    subprocess interactive (-ic) rc shell, sed -e / --expression write scripts, a PATH+=
+    append assignment, and git --exec-path / --config-env / config --file overrides."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A GIT_CONFIG_* env assignment can drop / override the injected hook suppression.
+            "import os\nos.system('GIT_CONFIG_COUNT=0 git commit -m x')",
+            "import os\nos.system('GIT_CONFIG_GLOBAL=/tmp/c git commit -m x')",
+        ],
+    )
+    def test_git_config_env_override_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE re-point the repo target outside the workdir.
+            "import os\nos.system('GIT_DIR=/tmp/sandbox-git-out git init')",
+            "import os\nos.system('GIT_WORK_TREE=/tmp/x git add .')",
+            "import os\nos.system('GIT_INDEX_FILE=/tmp/idx git add .')",
+        ],
+    )
+    def test_git_dir_env_var_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # env NAME=VALUE ... argv assignments were skipped; PATH=. / BASH_ENV run local code.
+            "import subprocess\nsubprocess.run(['env', 'PATH=.', 'evil'])",
+            "import subprocess\nsubprocess.run(['env', 'BASH_ENV=env.sh', 'bash', '-c', 'echo ok'])",
+        ],
+    )
+    def test_env_argv_assignment_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A -ic / -i interactive shell sources rc files from a workdir the user controls.
+            "import subprocess\nsubprocess.run(['bash', '-ic', 'echo ok'])",
+            "import subprocess\nsubprocess.run(['sh', '-i', '-c', 'echo ok'])",
+        ],
+    )
+    def test_interactive_shell_rc_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # sed -e / --expression can carry a w / W / s///w write or e (execute) command.
+            "import os\nos.system(\"sed -e'w /tmp/sedexpr' /dev/null\")",
+            "import os\nos.system(\"sed --expression='w /tmp/sedexpr' /dev/null\")",
+            "import os\nos.system(\"sed -e 's/a/b/w /tmp/out' file\")",
+        ],
+    )
+    def test_sed_expression_write_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # PATH+=:. is an append assignment; +? in the assignment regex must still treat the
+            # bare argv[0] that follows as a command resolved against an unsafe PATH.
+            "import os\nos.system('PATH+=:. evil')",
+        ],
+    )
+    def test_path_append_assignment_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # git --exec-path=DIR runs helpers from DIR; --config-env binds an exec config from an
+            # env var; git config --file=PATH writes a config outside the workdir.
+            "import os\nos.system('git --exec-path=. evil')",
+            "import os\nos.system(\"P='!touch /tmp/x'; git --config-env=alias.x=P x\")",
+            "import os\nos.system('git config --file=/tmp/gitcfg user.name x')",
+        ],
+    )
+    def test_git_exec_path_config_env_file_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # No override / no escaping target: benign git, sed prints and non-write substitution,
+            # a non-shell env with a safe PATH prefix, a non-interactive shell, and a PATH+=
+            # append to an absolute dir before a benign command must all still pass.
+            "import os\nos.system('git commit -m x')",
+            "import os\nos.system('git init')",
+            "import subprocess\nsubprocess.run(['git', 'commit', '-m', 'x'])",
+            "import os\nos.system(\"sed -n '1,5p' file.txt\")",
+            "import os\nos.system(\"sed -e 's/a/b/' file.txt\")",
+            "import os\nos.system('env PATH=/opt/bin:$PATH ls')",
+            "import subprocess\nsubprocess.run(['bash', '-c', 'echo ok'])",
+            "import os\nos.system('PATH+=:/opt/bin ls')",
+            "import os\nos.system('git config user.email me@x.com')",
+        ],
+    )
+    def test_round38_benign_allowed(self, code):
+        _ok(code)

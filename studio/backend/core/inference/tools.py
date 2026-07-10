@@ -540,7 +540,9 @@ _COMMAND_PREFIXES = frozenset(
         "watch",
     }
 )
-_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# A shell assignment prefix: NAME=value or NAME+=value (bash append). The optional `+` is part
+# of the operator, so `PATH+=:. cmd` is recognized as an assignment prefix, not a command word.
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 # Per-wrapper option flags that take a SEPARATED operand (the NEXT token is the flag's value,
 # not the command). Anything not listed -- a no-operand flag (env -i, xargs -0), a GLUED short
 # flag (stdbuf -oL), or a --long=value -- does NOT consume the next token, so the real command
@@ -1426,23 +1428,37 @@ def _find_blocked_commands(command: str) -> set[str]:
     for _et in tokens:
         if _ASSIGNMENT_RE.match(_et):
             _n, _, _v = _et.partition("=")
-            _local_assigns[_n] = _v
+            _local_assigns[_n.rstrip("+")] = _v
 
-    # A BASH_ENV / ENV assignment set in a SEPARATE command (export BASH_ENV=env.sh; bash -c
-    # '...', or a standalone BASH_ENV=env.sh) persists for later shells in the same session and
-    # is sourced before their -c payload, so the per-shell prefix backscan above misses it.
-    # Flag a non-empty BASH_ENV / ENV assignment anywhere it is exported / set.
+    # Assignment prefixes that persist for the command's child: a non-empty BASH_ENV / ENV (sourced
+    # by a later shell), a PATH with a cwd entry (a bare command resolves to a workdir shebang), and
+    # git path / config environment variables -- GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE point
+    # git's writes outside the workdir, and GIT_CONFIG_* override the sandbox's env-based hook
+    # suppression. Handle both NAME=value and NAME+=value (append).
     for _ei, _et in enumerate(tokens):
         if not _ASSIGNMENT_RE.match(_et):
             continue
         _an, _, _av = _et.partition("=")
+        _append = _an.endswith("+")
+        _an = _an.rstrip("+")
         if _an in ("BASH_ENV", "ENV") and _av != "":
             blocked.add("shell-startup-env:" + _an)
-        # PATH=. cmd / export PATH=.:$PATH: a search list with a relative / cwd entry lets a bare
-        # command word resolve to a workdir shebang (the bare-name PATH exemption assumes a
-        # trusted PATH). Flag an unsafe PATH assignment.
-        elif _an == "PATH" and _path_value_is_unsafe(_av, _local_assigns):
-            blocked.add("unsafe-path-assign")
+        # PATH=. cmd / PATH+=:. cmd: a relative / cwd entry lets a bare command word resolve to a
+        # workdir shebang. For += the value is APPENDED to the existing PATH, so evaluate
+        # "$PATH" + value (a trailing / doubled separator or . entry is then the unsafe one).
+        elif _an == "PATH":
+            _pval = ("$PATH" + _av) if _append else _av
+            if _path_value_is_unsafe(_pval, _local_assigns):
+                blocked.add("unsafe-path-assign")
+        # GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE set git's repo / tree / index path directly, so
+        # an escaping value writes outside the workdir (GIT_DIR=/tmp/x git init) with no --git-dir.
+        elif _an in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE") and _arg_escapes_workdir(_av):
+            blocked.add("git-write-outside")
+        # GIT_CONFIG[_GLOBAL/_SYSTEM/_COUNT/_KEY_*/_VALUE_*] re-point git config or drop the
+        # sandbox's env-based hook suppression (GIT_CONFIG_COUNT=0 git ...), re-enabling a planted
+        # .git/hooks/* in an unguarded git child.
+        elif _an == "GIT_CONFIG" or _an.startswith("GIT_CONFIG_"):
+            blocked.add("git-config-env-override")
 
     # git -c alias.X='!CMD' X / git config alias.X '!CMD': a git alias whose value starts with
     # `!` runs CMD through an unguarded shell, but the scanner sees only `git`. Flag the shell-
@@ -1494,6 +1510,21 @@ def _find_blocked_commands(command: str) -> set[str]:
                     blocked.add("git-exec-config")
                 _gk += 2
                 continue
+            # git --exec-path=<path> re-points where git looks for its git-<cmd> helpers, so
+            # `git --exec-path=. evil` runs a workdir git-evil in an unguarded child. Any value
+            # redirects the core path (the no-value form just prints it), so flag it.
+            if _gt.startswith("--exec-path=") and _gt.split("=", 1)[1]:
+                blocked.add("git-exec-config")
+                _gk += 1
+                continue
+            # git --config-env=KEY=ENVVAR sets a config KEY from an env var, so an execution-
+            # capable / alias KEY (git --config-env=alias.x=P with P='!cmd') runs a command.
+            if _gt.startswith("--config-env="):
+                _cekey = _gt.split("=", 1)[1].split("=", 1)[0]
+                if _git_config_key_is_exec(_cekey) or _cekey.startswith("alias."):
+                    blocked.add("git-exec-config")
+                _gk += 1
+                continue
             if _gt in _GIT_PATH_VALUE_OPTIONS and _gk + 1 < len(_seg):
                 if _git_operand_escapes(_seg[_gk + 1], _local_assigns):
                     blocked.add("git-write-outside")
@@ -1511,14 +1542,29 @@ def _find_blocked_commands(command: str) -> set[str]:
                 blocked.add("git-write-outside")
             _gk += 1
         # git config [options] KEY [VALUE]: setting an execution-capable config key (git config
-        # core.pager 'sh -c ...') runs its value on later git operations, like the -c form.
+        # core.pager 'sh -c ...') runs its value on later git operations, like the -c form; and
+        # git config --file <path> / -f <path> writes the config to an arbitrary file, escaping
+        # the workdir (git config --file=/tmp/gitcfg ...).
         for _ci, _ct in enumerate(_seg):
             if _ct == "config":
-                for _cj in range(_ci + 1, len(_seg)):
-                    if not _seg[_cj].startswith("-"):
-                        if _git_config_key_is_exec(_seg[_cj].split("=", 1)[0]):
+                _cj = _ci + 1
+                while _cj < len(_seg):
+                    _cw = _seg[_cj]
+                    if _cw in ("--file", "-f") and _cj + 1 < len(_seg):
+                        if _arg_escapes_workdir(_seg[_cj + 1]):
+                            blocked.add("git-write-outside")
+                        _cj += 2
+                        continue
+                    if _cw.startswith("--file="):
+                        if _arg_escapes_workdir(_cw.split("=", 1)[1]):
+                            blocked.add("git-write-outside")
+                        _cj += 1
+                        continue
+                    if not _cw.startswith("-"):
+                        if _git_config_key_is_exec(_cw.split("=", 1)[0]):
                             blocked.add("git-exec-config")
                         break
+                    _cj += 1
                 break
 
     # hash -p PATHNAME NAME binds the command NAME to PATHNAME in the shell's hash table, so a
@@ -1663,10 +1709,25 @@ def _find_blocked_commands(command: str) -> set[str]:
                     break
                 # A sed SCRIPT can write files (`w FILE` / `W FILE` / `s///w`) or execute shell
                 # commands (`e CMD` / `s///e`) even without -i: sed -n '1w /tmp/escape' file,
-                # sed -n 'w/tmp/probe' file (no space), sed '1e touch /tmp/x' file. Detect the
-                # write / execute commands and flags; a plain s/word/x/ is not matched.
-                if _base in ("sed", "gsed", "ssed") and not a.startswith("-"):
-                    if _SED_WRITE_RE.search(a) or _SED_EXEC_RE.search(a) or _SED_SFLAG_RE.search(a):
+                # sed -n 'w/tmp/probe' file (no space), sed '1e touch /tmp/x' file. The script may
+                # be a bare positional OR provided via -e / --expression (sed -e'w /tmp/x' /dev/null,
+                # sed --expression='w /tmp/x'). Detect the write / execute commands and flags in the
+                # script text; a plain s/word/x/ is not matched.
+                if _base in ("sed", "gsed", "ssed"):
+                    _sed_script = None
+                    if a in ("-e", "--expression") and k + 1 < len(tokens):
+                        _sed_script = tokens[k + 1]  # -e SCRIPT (separated)
+                    elif al.startswith("-e") and not al.startswith("--") and len(a) > 2:
+                        _sed_script = a[2:]  # glued -e'w /tmp/x'
+                    elif a.startswith("--expression="):
+                        _sed_script = a.split("=", 1)[1]
+                    elif not a.startswith("-"):
+                        _sed_script = a  # bare positional script
+                    if _sed_script is not None and (
+                        _SED_WRITE_RE.search(_sed_script)
+                        or _SED_EXEC_RE.search(_sed_script)
+                        or _SED_SFLAG_RE.search(_sed_script)
+                    ):
                         blocked.add("mutating:" + _base)
                         break
             elif _base == "sort":
@@ -5676,6 +5737,11 @@ def _check_signal_escape_patterns(
         i = 1
         while i < len(elts):
             f = _extract_string_from_node(elts[i])
+            # -i / -ic (combined short flag) makes the shell INTERACTIVE, sourcing the user's rc
+            # files (.bashrc, with HOME = the workdir) before any -c payload runs -- unscanned
+            # startup code in the unguarded child. Mirror the shell-string interactive-rc block.
+            if f is not None and f.startswith("-") and not f.startswith("--") and "i" in f[1:]:
+                found.add("shell-interactive-rc:" + os.path.basename(first).lower())
             if f is not None and (
                 f == "-c" or (f.startswith("-") and not f.startswith("--") and f.endswith("c"))
             ):
@@ -5738,6 +5804,16 @@ def _check_signal_escape_patterns(
                             found |= _find_blocked_commands(
                                 " ".join(shlex.quote(s) for s in str_elts if s is not None)
                             )
+                    # An env WRAPPER in the argv applies NAME=value assignments before the command
+                    # (env PATH=. evil, env BASH_ENV=env.sh bash -c ..., env GIT_DIR=/tmp git init);
+                    # the command-word resolution skips those assignment operands, so reconstruct
+                    # the full argv and reuse the unsafe-PATH / startup-env / git-env checks.
+                    if any(
+                        s is not None and os.path.basename(s).lower() == "env" for s in str_elts
+                    ) and any(s is not None and _ASSIGNMENT_RE.match(s) for s in str_elts):
+                        found |= _find_blocked_commands(
+                            " ".join(shlex.quote(s) for s in str_elts if s is not None)
+                        )
                 continue
             for s in _extract_strings_from_list(arg):
                 found |= _find_blocked_commands(s)
@@ -6543,32 +6619,61 @@ def _check_signal_escape_patterns(
                         _env_node = _renv
                 if _env_node is not None:
                     _is_shell_child = _shell_maybe_true
-                    if not _is_shell_child and isinstance(_argv0_node, (ast.List, ast.Tuple)):
+                    _is_git_child = False
+                    if isinstance(_argv0_node, (ast.List, ast.Tuple)):
                         _elts0 = [_extract_string_from_node(_e) for _e in _argv0_node.elts]
                         _ci0 = _blocked_in_argv(_elts0)[1]
                         if _ci0 is not None and _ci0 < len(_elts0) and _elts0[_ci0]:
-                            _is_shell_child = (
-                                os.path.basename(_elts0[_ci0]).lower() in _SHELL_BINARIES
-                            )
+                            _cw0 = os.path.basename(_elts0[_ci0]).lower()
+                            if not _is_shell_child:
+                                _is_shell_child = _cw0 in _SHELL_BINARIES
+                            _is_git_child = _cw0 == "git"
                     if isinstance(_env_node, ast.Dict):
                         _opaque_key = False
                         for _ek, _ev in zip(_env_node.keys, _env_node.values):
                             _ekey = _extract_string_from_node(_ek) if _ek is not None else None
-                            if _ekey in ("BASH_ENV", "ENV") and (
-                                _extract_string_from_node(_ev) != ""
-                            ):
+                            _evstr = _extract_string_from_node(_ev)
+                            if _ekey in ("BASH_ENV", "ENV") and _evstr != "":
                                 blocked_in_args = blocked_in_args | {"shell-startup-env:" + _ekey}
                             elif (
                                 _ekey == "PATH"
-                                and isinstance(_extract_string_from_node(_ev), str)
-                                and _path_value_is_unsafe(_extract_string_from_node(_ev))
+                                and isinstance(_evstr, str)
+                                and _path_value_is_unsafe(_evstr)
                             ):
                                 # env={'PATH': '.'} lets a bare argv[0] resolve to a workdir exec.
                                 blocked_in_args = blocked_in_args | {"unsafe-path-assign"}
+                            elif (
+                                _ekey in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+                                and _is_git_child
+                                and isinstance(_evstr, str)
+                                and _arg_escapes_workdir(_evstr)
+                            ):
+                                # env={'GIT_DIR': '/tmp/x'} points git's repo outside the workdir.
+                                blocked_in_args = blocked_in_args | {"git-write-outside"}
+                            elif (
+                                _ekey is not None
+                                and _ekey.startswith("GIT_CONFIG")
+                                and _is_git_child
+                            ):
+                                # env={'GIT_CONFIG_COUNT': '0'} drops the sandbox hook suppression.
+                                blocked_in_args = blocked_in_args | {"git-config-env-override"}
                             elif _ek is not None and _ekey is None:
                                 _opaque_key = True  # a computed key could be BASH_ENV / ENV
                         if _opaque_key and _is_shell_child:
                             blocked_in_args = blocked_in_args | {"shell-startup-env:opaque"}
+                        # A git child whose literal env drops the sandbox's GIT_CONFIG_COUNT hook
+                        # suppression (env={} / any dict without it and without a ** splat that
+                        # could carry it) re-enables a planted .git/hooks/* in the unguarded child.
+                        if (
+                            _is_git_child
+                            and not _opaque_key
+                            and not any(
+                                _extract_string_from_node(_k) == "GIT_CONFIG_COUNT"
+                                for _k in _env_node.keys
+                                if _k is not None
+                            )
+                        ):
+                            blocked_in_args = blocked_in_args | {"git-config-env-override"}
                     elif (
                         isinstance(_env_node, ast.Call)
                         and isinstance(_env_node.func, ast.Name)
