@@ -87,6 +87,18 @@ assert_contains \
 assert_contains \
     "install.sh: prompt Enter keeps the persisted preference" \
     "$_installer" '*) _STUDIO_OPEN_BROWSER="${_existing_open_browser:-1}"'
+# The WSL Strix Halo reroute must forward an explicit browser choice.
+assert_contains \
+    "install.sh: reroute forwards --no-browser" \
+    "$_installer" '[ "$_STUDIO_OPEN_BROWSER" = "0" ] && _rr_args="$_rr_args --no-browser"'
+# The post-install foreground launch honors the preference too.
+assert_contains \
+    "install.sh: post-install launch opens browser via gated watcher" \
+    "$_installer" "_post_install_browser_watch 8888"
+# The --shortcuts-only early exit must not EPIPE a curl | sh pipeline.
+assert_contains \
+    "install.sh: shortcuts-only exit drains piped stdin" \
+    "$_installer" '[ ! -t 0 ] && cat > /dev/null'
 
 echo ""
 echo "=== install.sh _open_browser gating (functional) ==="
@@ -167,13 +179,20 @@ assert_file_contains \
 assert_file_contains \
     "install.ps1: prompt Enter keeps the baked preference" \
     "$INSTALL_PS1" 'elseif ($_existingPref) { $_existingPref }'
-# All launcher URL opens must route through the gated helper.
-_ps1_direct_open=$(grep -cF 'Start-Process "http://localhost:' "$INSTALL_PS1" || true)
-if [ "$_ps1_direct_open" -eq 0 ]; then
-    echo "  PASS: no ungated Start-Process http://localhost calls remain"
+assert_file_contains \
+    "install.ps1: post-install launch opens browser via gated watcher" \
+    "$INSTALL_PS1" 'Start-Job -ScriptBlock $_browserWatch'
+# All launcher URL opens must route through the gated helper. The one
+# allowed direct call is inside the post-install $_browserWatch scriptblock,
+# whose Start-Job call site is itself gated on the preference.
+_ps1_direct_open=$(grep -cE 'Start-Process "http://localhost:' "$INSTALL_PS1" || true)
+_ps1_watch_open=$(awk '/\$_browserWatch = \{/{f=1} f && /^    \}$/{exit} f' "$INSTALL_PS1" \
+    | grep -cE 'Start-Process "http://localhost:' || true)
+if [ "$_ps1_direct_open" -eq 1 ] && [ "$_ps1_watch_open" -eq 1 ]; then
+    echo "  PASS: only the gated browser watcher opens a URL directly"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL: $_ps1_direct_open ungated Start-Process http://localhost call(s) remain"
+    echo "  FAIL: found $_ps1_direct_open direct URL opens ($_ps1_watch_open in the watcher); all others must route through Open-StudioUrl"
     FAIL=$((FAIL + 1))
 fi
 

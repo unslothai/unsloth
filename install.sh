@@ -1433,6 +1433,10 @@ if [ "$_SHORTCUTS_ONLY" = true ]; then
         fi
         create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
     fi
+    # Drain piped stdin (curl | sh -s -- --shortcuts-only ...) before this
+    # early exit; otherwise curl dies with EPIPE, prints "curl: (23) Failure
+    # writing output to destination", and fails the whole pipeline.
+    [ ! -t 0 ] && cat > /dev/null 2>&1
     exit 0
 fi
 
@@ -1665,6 +1669,10 @@ _maybe_reroute_strixhalo_to_2404() {
     [ -n "$_USER_PYTHON" ] && _rr_args="$_rr_args --python $(_rr_q "$_USER_PYTHON")"
     [ "$_VERBOSE" = true ] && _rr_args="$_rr_args --verbose"
     [ "$TAURI_MODE" = true ] && _rr_args="$_rr_args --tauri"
+    # Forward an explicit browser choice; "" (undecided) forwards nothing so
+    # the rerouted install keeps its own default.
+    [ "$_STUDIO_OPEN_BROWSER" = "0" ] && _rr_args="$_rr_args --no-browser"
+    [ "$_STUDIO_OPEN_BROWSER" = "1" ] && _rr_args="$_rr_args --browser"
     if [ -n "${UNSLOTH_WSL_REROUTE_CMD:-}" ]; then
         _rr_cmd="$UNSLOTH_WSL_REROUTE_CMD"               # user took full control
     elif [ -n "$_rr_args" ]; then
@@ -3277,6 +3285,49 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
+# Background watcher for the post-install foreground launch below: once the
+# server is healthy, open the browser per the persisted preference (mirrors
+# the desktop launcher). Guarded by the per-install root id so a different
+# Studio already on the port is never the one opened.
+_post_install_browser_watch() {
+    _pibw_port="$1"
+    _pibw_url="http://localhost:$_pibw_port"
+    _pibw_id=$(cat "$STUDIO_HOME/share/studio_install_id" 2>/dev/null || true)
+    (
+        _pibw_deadline=$(($(date +%s) + 120))
+        while [ "$(date +%s)" -lt "$_pibw_deadline" ]; do
+            _pibw_resp=$(curl -fsS --max-time 1 "http://127.0.0.1:$_pibw_port/api/health" 2>/dev/null \
+                || wget -qO- --timeout=1 "http://127.0.0.1:$_pibw_port/api/health" 2>/dev/null \
+                || true)
+            case "$_pibw_resp" in
+                *'"Unsloth UI Backend"'*)
+                    if [ -n "$_pibw_id" ]; then
+                        case "$_pibw_resp" in
+                            *"\"studio_root_id\":\"$_pibw_id\""*|*"\"studio_root_id\": \"$_pibw_id\""*) ;;
+                            *) sleep 1; continue ;;
+                        esac
+                    fi
+                    if [ "$(uname)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
+                        open "$_pibw_url" 2>/dev/null
+                    elif grep -qi microsoft /proc/version 2>/dev/null; then
+                        if command -v powershell.exe >/dev/null 2>&1; then
+                            powershell.exe -NoProfile -Command "Start-Process '$_pibw_url'" >/dev/null 2>&1
+                        elif command -v cmd.exe >/dev/null 2>&1; then
+                            cmd.exe /c start "" "$_pibw_url" >/dev/null 2>&1
+                        elif command -v xdg-open >/dev/null 2>&1; then
+                            xdg-open "$_pibw_url" >/dev/null 2>&1
+                        fi
+                    elif command -v xdg-open >/dev/null 2>&1; then
+                        xdg-open "$_pibw_url" >/dev/null 2>&1
+                    fi
+                    exit 0
+                    ;;
+            esac
+            sleep 1
+        done
+    ) &
+}
+
 # In interactive terminals, ask the user before starting Studio.
 # In non-interactive environments (Docker, CI, cloud-init) just print instructions.
 if [ -t 1 ]; then
@@ -3291,6 +3342,11 @@ if [ -t 1 ]; then
     case "${_reply:-y}" in
         [Yy]*|"")
             step "launch" "starting Unsloth Studio..."
+            # Open the browser once the server is up, unless opted out. The
+            # server prints its own URL, so no watcher is needed when off.
+            if [ "${_STUDIO_OPEN_BROWSER:-1}" != "0" ]; then
+                _post_install_browser_watch 8888
+            fi
             # Detach stdin from the `curl | sh` pipe: as a foreground server the
             # studio would otherwise drain the rest of this piped script, leaving
             # the shell to die parsing the now-truncated tail (`unexpected fi`).

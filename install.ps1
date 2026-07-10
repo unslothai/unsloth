@@ -2671,10 +2671,41 @@ exit 0
     # In interactive terminals, ask the user before starting Studio.
     # In non-interactive environments (CI, Docker) just print instructions.
     $IsInteractive = [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
+    # Background watcher for the foreground launch below: once the server is
+    # healthy, open the browser per the persisted preference (mirrors the
+    # desktop launcher). Guarded by the per-install root id so a different
+    # Studio already on the port is never the one opened.
+    $_browserWatch = {
+        param($RootId, $Port)
+        $deadline = (Get-Date).AddSeconds(120)
+        while ((Get-Date) -lt $deadline) {
+            try {
+                $r = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/health" -TimeoutSec 1 -Method Get
+                if ($r.service -eq 'Unsloth UI Backend' -and
+                    ((-not $RootId) -or $r.studio_root_id -eq $RootId)) {
+                    Start-Process "http://localhost:$Port"
+                    break
+                }
+            } catch {}
+            Start-Sleep -Seconds 1
+        }
+    }
     if ($IsInteractive) {
         Write-Host ""
         $reply = Read-Host "  Start Unsloth Studio now? [Y/n]"
         if ([string]::IsNullOrWhiteSpace($reply) -or $reply -match '^[Yy]') {
+            # Open the browser once the server is up, unless opted out. The
+            # server prints its own URL, so no watcher is needed when off.
+            if ($OpenBrowserPref -ne '0') {
+                $_watchRootId = ""
+                $_watchIdFile = Join-Path $StudioHome "share\studio_install_id"
+                if (Test-Path -LiteralPath $_watchIdFile) {
+                    try { $_watchRootId = ([System.IO.File]::ReadAllText($_watchIdFile)).Trim() } catch {}
+                }
+                try {
+                    $null = Start-Job -ScriptBlock $_browserWatch -ArgumentList @($_watchRootId, 8888)
+                } catch {}
+            }
             & $UnslothExe studio -p 8888
         } else {
             step "launch" "to start later, run:"
