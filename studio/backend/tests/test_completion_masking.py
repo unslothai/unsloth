@@ -1,0 +1,189 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Completion-only masking policy: auto-detect first, manual table fallback.
+
+Covers utils.datasets.completion_masking.apply_completion_masking, shared by
+the CUDA trainer (core/training/trainer.py) and the MLX worker
+(core/training/worker.py):
+  - unmapped models use chat template auto-detection (previously masking was
+    silently disabled),
+  - gpt-oss models keep their manual markers (non-final assistant <|end|>
+    tokens stay trained),
+  - an auto-detection failure falls back to the template table markers,
+  - a table miss after an auto failure warns and leaves the trainer unchanged.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from utils.datasets import apply_completion_masking, lookup_manual_markers
+from utils.datasets.model_mappings import TEMPLATE_TO_RESPONSES_MAPPER
+
+
+class _Trainer:
+    """Sentinel trainer; train_fn wraps it in a new object when applied."""
+
+
+class _Recorder:
+    """Fake train_on_responses_only that records calls.
+
+    fail_auto=True raises the loud unsloth_zoo ValueError when called without
+    instruction_part/response_part (the auto-detect call shape).
+    """
+
+    def __init__(self, fail_auto = False):
+        self.calls = []
+        self.fail_auto = fail_auto
+
+    def __call__(self, trainer, **kwargs):
+        self.calls.append(kwargs)
+        if self.fail_auto and "instruction_part" not in kwargs:
+            raise ValueError(
+                "Unsloth: Could not reliably auto-detect response_part - "
+                "pass instruction_part and response_part."
+            )
+        wrapped = _Trainer()
+        wrapped.wrapped_from = trainer
+        return wrapped
+
+
+class _Notes:
+    def __init__(self):
+        self.messages = []
+
+    def __call__(self, level, message):
+        self.messages.append((level, message))
+
+    def warnings(self):
+        return [m for level, m in self.messages if level == "warning"]
+
+
+def test_unmapped_model_uses_auto_detection():
+    # No entry in MODEL_TO_TEMPLATE_MAPPER: previously masking was silently
+    # disabled; now the auto path applies it.
+    trainer = _Trainer()
+    train_fn = _Recorder()
+    notes = _Notes()
+
+    result, applied = apply_completion_masking(
+        trainer, "LiquidAI/LFM2-8B-A1B", train_fn, notify = notes
+    )
+
+    assert applied is True
+    assert result.wrapped_from is trainer
+    assert train_fn.calls == [{}]  # single call, no marker kwargs
+    assert notes.warnings() == []
+
+
+def test_mapped_model_prefers_auto_detection():
+    trainer = _Trainer()
+    train_fn = _Recorder()
+
+    _, applied = apply_completion_masking(trainer, "unsloth/Qwen3-0.6B", train_fn)
+
+    assert applied is True
+    assert train_fn.calls == [{}]
+
+
+def test_gpt_oss_stays_on_manual_markers():
+    # Deliberate exception: auto-detection would mask non-final assistant
+    # <|end|> tokens that the manual markers keep trained.
+    trainer = _Trainer()
+    train_fn = _Recorder()
+
+    _, applied = apply_completion_masking(trainer, "unsloth/gpt-oss-20b", train_fn)
+
+    assert applied is True
+    expected = TEMPLATE_TO_RESPONSES_MAPPER["gpt-oss"]
+    assert train_fn.calls == [
+        {
+            "instruction_part": expected["instruction"],
+            "response_part": expected["response"],
+        }
+    ]
+
+
+def test_auto_failure_falls_back_to_template_table():
+    trainer = _Trainer()
+    train_fn = _Recorder(fail_auto = True)
+    notes = _Notes()
+
+    result, applied = apply_completion_masking(
+        trainer, "unsloth/Qwen3-0.6B", train_fn, notify = notes
+    )
+
+    assert applied is True
+    assert result.wrapped_from is trainer
+    expected = TEMPLATE_TO_RESPONSES_MAPPER["qwen3"]
+    assert train_fn.calls == [
+        {},
+        {
+            "instruction_part": expected["instruction"],
+            "response_part": expected["response"],
+        },
+    ]
+    assert any("falling back to the template table" in m for m in notes.warnings())
+
+
+def test_table_miss_warns_and_disables_without_crashing():
+    trainer = _Trainer()
+    train_fn = _Recorder(fail_auto = True)
+    notes = _Notes()
+
+    result, applied = apply_completion_masking(
+        trainer, "some-org/not-in-any-mapper", train_fn, notify = notes
+    )
+
+    assert applied is False
+    assert result is trainer  # unchanged: full sequence training
+    assert train_fn.calls == [{}]  # only the auto attempt
+    assert any("could not be applied" in m for m in notes.warnings())
+    assert any("full sequences" in m for m in notes.warnings())
+
+
+def test_num_proc_forwarded_only_when_given():
+    # CUDA path passes num_proc; the MLX path omits it.
+    train_fn = _Recorder()
+    apply_completion_masking(_Trainer(), "unsloth/Qwen3-0.6B", train_fn, num_proc = 4)
+    assert train_fn.calls == [{"num_proc": 4}]
+
+    train_fn = _Recorder(fail_auto = True)
+    apply_completion_masking(_Trainer(), "unsloth/Qwen3-0.6B", train_fn, num_proc = 4)
+    assert train_fn.calls[1]["num_proc"] == 4
+
+    train_fn = _Recorder()
+    apply_completion_masking(_Trainer(), "unsloth/Qwen3-0.6B", train_fn)
+    assert train_fn.calls == [{}]
+
+
+def test_manual_fallback_failure_propagates_to_caller():
+    # Both callsites wrap the helper in try/except and disable masking with
+    # their own user-visible message.
+    def train_fn(trainer, **kwargs):
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match = "boom"):
+        apply_completion_masking(_Trainer(), "unsloth/gpt-oss-20b", train_fn)
+
+
+def test_notify_is_optional():
+    train_fn = _Recorder(fail_auto = True)
+    _, applied = apply_completion_masking(
+        _Trainer(), "some-org/not-in-any-mapper", train_fn
+    )
+    assert applied is False
+
+
+def test_lookup_manual_markers():
+    template, instruction, response = lookup_manual_markers("unsloth/Qwen3-0.6B")
+    assert template == "qwen3"
+    assert instruction == TEMPLATE_TO_RESPONSES_MAPPER["qwen3"]["instruction"]
+    assert response == TEMPLATE_TO_RESPONSES_MAPPER["qwen3"]["response"]
+
+    template, instruction, response = lookup_manual_markers("some-org/unknown")
+    assert (template, instruction, response) == (None, None, None)
+
+    template, instruction, response = lookup_manual_markers(None)
+    assert (template, instruction, response) == (None, None, None)

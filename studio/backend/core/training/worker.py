@@ -1928,27 +1928,19 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("eval_configured")
 
     # ── 7. Apply train_on_responses_only if requested ──
+    # Auto-detect instruction/response markers from the chat template first,
+    # then fall back to the manual template table if auto-detection raises.
     if config.get("train_on_completions", False):
         _send("status", status_message = "Configuring response-only training...")
         try:
-            from utils.datasets import (
-                MODEL_TO_TEMPLATE_MAPPER,
-                TEMPLATE_TO_RESPONSES_MAPPER,
-            )
+            from utils.datasets import apply_completion_masking
 
-            template_name = MODEL_TO_TEMPLATE_MAPPER.get(model_name.lower())
-            markers = TEMPLATE_TO_RESPONSES_MAPPER.get(template_name) if template_name else None
-            if markers:
-                trainer = train_on_responses_only(
-                    trainer,
-                    instruction_part = markers["instruction"],
-                    response_part = markers["response"],
-                )
-            else:
-                _send(
-                    "status",
-                    status_message = f"train_on_completions skipped (no template for {model_name})",
-                )
+            trainer, _masking_applied = apply_completion_masking(
+                trainer,
+                model_name,
+                train_on_responses_only,
+                notify = lambda level, message: _send("status", status_message = message),
+            )
         except Exception as e:
             _send("status", status_message = f"train_on_completions failed: {e}")
 
