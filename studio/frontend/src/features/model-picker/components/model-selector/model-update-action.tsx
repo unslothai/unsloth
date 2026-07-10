@@ -8,7 +8,13 @@ import {
 } from "@/features/hub";
 import { cn } from "@/lib/utils";
 import { RefreshCw } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 
 interface ModelUpdateActionProps {
@@ -44,16 +50,20 @@ export function ModelUpdateAction({
 }: ModelUpdateActionProps) {
   const [open, setOpen] = useState(false);
 
+  const onUpdatedRef = useRef(onUpdated);
+  useEffect(() => {
+    onUpdatedRef.current = onUpdated;
+  }, [onUpdated]);
   useEffect(() => {
     return subscribeJobListeners("model", repoId, {
       onComplete: (completedVariant) => {
         const matches = variant
           ? ggufVariantsMatch(completedVariant, variant)
           : !completedVariant;
-        if (matches) onUpdated?.();
+        if (matches) onUpdatedRef.current?.();
       },
     });
-  }, [onUpdated, repoId, variant]);
+  }, [repoId, variant]);
 
   const handleConfirm = useCallback(() => {
     // Start the re-download and close the dialog; the Downloads panel owns progress + cancel.

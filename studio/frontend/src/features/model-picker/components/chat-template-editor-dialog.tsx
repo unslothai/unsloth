@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { validateChatTemplate } from "../api/templates";
 import {
   MAX_CHAT_TEMPLATE_BYTES,
@@ -39,27 +39,26 @@ export function ChatTemplateEditorDialog({
   onSave,
   readOnly = false,
 }: ChatTemplateEditorDialogProps) {
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
-  const initialDraft = value ?? defaultTemplate ?? "";
-  const renderedDraft = useMemo(
-    () =>
-      open && value == null && defaultTemplate != null && draft.length === 0
-        ? defaultTemplate
-        : draft,
-    [open, value, defaultTemplate, draft],
-  );
+  const renderedDraft = draft ?? value ?? defaultTemplate ?? "";
 
   const byteLength = chatTemplateByteLength(renderedDraft);
   const overLimit = !isChatTemplateWithinLimit(renderedDraft);
   const matchesDefault =
     defaultTemplate != null && renderedDraft === defaultTemplate;
 
+  const handleClose = () => {
+    setDraft(null);
+    setError(null);
+    onOpenChange(false);
+  };
+
   const handleSave = async () => {
     if (renderedDraft.trim().length === 0 || matchesDefault) {
       onSave(null);
-      onOpenChange(false);
+      handleClose();
       return;
     }
     if (overLimit) {
@@ -74,7 +73,7 @@ export function ChatTemplateEditorDialog({
         return;
       }
       onSave(renderedDraft);
-      onOpenChange(false);
+      handleClose();
     } catch {
       setError("Could not validate the template.");
     } finally {
@@ -87,10 +86,10 @@ export function ChatTemplateEditorDialog({
       open={open}
       onOpenChange={(nextOpen) => {
         if (nextOpen) {
-          setDraft(initialDraft);
-          setError(null);
+          onOpenChange(true);
+          return;
         }
-        onOpenChange(nextOpen);
+        handleClose();
       }}
     >
       <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-3xl">
@@ -135,7 +134,7 @@ export function ChatTemplateEditorDialog({
         <DialogFooter className="flex-wrap gap-2 sm:justify-between">
           {readOnly ? (
             <div className="flex w-full justify-end">
-              <Button type="button" onClick={() => onOpenChange(false)}>
+              <Button type="button" onClick={handleClose}>
                 Close
               </Button>
             </div>
@@ -157,11 +156,7 @@ export function ChatTemplateEditorDialog({
                 )}
               </Button>
               <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() => onOpenChange(false)}
-                >
+                <Button type="button" variant="ghost" onClick={handleClose}>
                   Cancel
                 </Button>
                 <Button

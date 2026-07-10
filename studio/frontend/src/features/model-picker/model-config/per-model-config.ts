@@ -149,6 +149,11 @@ function deleteOldestEvictableEntry(
   return null;
 }
 
+function isMostRecentEntry(map: StoredMap, key: string): boolean {
+  const keys = Object.keys(map);
+  return keys.length > 0 && keys[keys.length - 1] === key;
+}
+
 function touchEntry(map: StoredMap, key: string): void {
   const value = map[key];
   delete map[key];
@@ -478,7 +483,7 @@ function loadPerModelConfigInternal(
     return null;
   }
   const config = normalize(map[key]);
-  if (touch) {
+  if (touch && !isMostRecentEntry(map, key)) {
     touchEntry(map, key);
     writeMap(map);
   }

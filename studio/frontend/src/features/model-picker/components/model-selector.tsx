@@ -412,6 +412,10 @@ function ModelSelectorContent({
   const effectiveHubSection: HubSection =
     hubSection === "connected" && !hasExternal ? "recommended" : hubSection;
 
+  const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
+    null,
+  );
+
   // The picker below remounts on each open, but this tab state does not, so a
   // persisted selection that lands in lora/external after async load would
   // reopen on Hub. Re-derive the default tab on the open edge.
@@ -422,6 +426,9 @@ function ModelSelectorContent({
       // Connected when an external model is active, else On Device when the
       // user has downloads, else their last section.
       setHubSection(wantsConnectedDefault ? "connected" : defaultHubSection());
+    }
+    if (!open && wasOpen.current) {
+      setConfigTarget(null);
     }
     wasOpen.current = open;
   }, [
@@ -473,9 +480,6 @@ function ModelSelectorContent({
     }
   }
 
-  const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
-    null,
-  );
   const visibleConfigTarget = open ? configTarget : null;
   const openConfigPage = (id: string, meta: ModelSelectorChangeMeta) => {
     const leaf = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;

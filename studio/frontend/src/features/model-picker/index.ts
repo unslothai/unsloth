@@ -4,7 +4,6 @@
 export { ModelSelector } from "./components/model-selector";
 export { FolderBrowser } from "./components/model-selector/folder-browser";
 export { ModelDeleteAction } from "./components/model-selector/model-delete-action";
-export { ModelUpdateAction } from "./components/model-selector/model-update-action";
 export { hfModelFitsDevice } from "./components/model-selector/recommended-fit";
 export {
   NumericValueInput,

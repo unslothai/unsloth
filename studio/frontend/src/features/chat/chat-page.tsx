@@ -1108,6 +1108,11 @@ export function validateChatSearch(search: Record<string, unknown>): ChatSearch 
   };
 }
 
+type PendingHubAutoLoad = {
+  selection: SelectedModelInput;
+  contextKey: string;
+};
+
 // `search` comes from RootLayout (not useSearch) so ChatPage stays mounted off-route
 // (keeping an in-flight generation alive), frozen to the last /chat search. `active`
 // is false off-route: close body-portaled surfaces and stop route-specific listeners
@@ -1680,8 +1685,9 @@ export function ChatPage({
   }, [activeThreadId, closeArtifactSurface, selectedArtifact, view]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
+  const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;
   const [pendingHubAutoLoad, setPendingHubAutoLoad] =
-    useState<SelectedModelInput | null>(null);
+    useState<PendingHubAutoLoad | null>(null);
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
       const store = useChatRuntimeStore.getState();
@@ -1733,7 +1739,7 @@ export function ChatPage({
           hasGgufSource(selection) &&
           !selection.isDownloaded);
       if (wantManagerStage) {
-        setPendingHubAutoLoad(selection);
+        setPendingHubAutoLoad({ selection, contextKey: chatContextKey });
         return;
       }
       const previousConfig = currentRuntimePerModelConfig({
@@ -1748,24 +1754,30 @@ export function ChatPage({
         previousConfig,
       });
     },
-    [selectModel, loadingModel, rememberedConfigFor],
+    [selectModel, loadingModel, rememberedConfigFor, chatContextKey],
   );
   useRepoDownload({
     kind: DOWNLOAD_KIND.MODEL,
-    repoId: pendingHubAutoLoad?.id ?? "__hub_autoload_idle__",
-    activeVariant: pendingHubAutoLoad?.ggufVariant ?? null,
+    repoId: pendingHubAutoLoad?.selection.id ?? "__hub_autoload_idle__",
+    activeVariant: pendingHubAutoLoad?.selection.ggufVariant ?? null,
     onComplete: (variant) => {
       const pending = pendingHubAutoLoad;
-      if (!pending || (pending.ggufVariant ?? null) !== (variant ?? null)) {
+      if (
+        !pending ||
+        (pending.selection.ggufVariant ?? null) !== (variant ?? null)
+      ) {
         return;
       }
       setPendingHubAutoLoad(null);
-      void stageOrLoad({ ...pending, isDownloaded: true });
+      if (!active || pending.contextKey !== chatContextKey) {
+        return;
+      }
+      void stageOrLoad({ ...pending.selection, isDownloaded: true });
     },
     onError: (variant) => {
       if (
         pendingHubAutoLoad &&
-        (pendingHubAutoLoad.ggufVariant ?? null) === (variant ?? null)
+        (pendingHubAutoLoad.selection.ggufVariant ?? null) === (variant ?? null)
       ) {
         setPendingHubAutoLoad(null);
       }
@@ -1773,7 +1785,7 @@ export function ChatPage({
     onCancelled: (variant) => {
       if (
         pendingHubAutoLoad &&
-        (pendingHubAutoLoad.ggufVariant ?? null) === (variant ?? null)
+        (pendingHubAutoLoad.selection.ggufVariant ?? null) === (variant ?? null)
       ) {
         setPendingHubAutoLoad(null);
       }
@@ -1786,9 +1798,9 @@ export function ChatPage({
     void (async () => {
       const outcome = await downloadManager.requestStart({
         kind: DOWNLOAD_KIND.MODEL,
-        repoId: pending.id,
-        variant: pending.ggufVariant ?? null,
-        expectedBytes: pending.expectedBytes ?? 0,
+        repoId: pending.selection.id,
+        variant: pending.selection.ggufVariant ?? null,
+        expectedBytes: pending.selection.expectedBytes ?? 0,
       });
       if (!active) return;
       if (outcome === "started") {

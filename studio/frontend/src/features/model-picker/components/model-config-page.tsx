@@ -18,7 +18,6 @@ import {
   readPersistedSpeculativeType,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { NumericValueInput } from "@/features/model-picker";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
@@ -44,6 +43,7 @@ import {
 } from "../model-config/per-model-config";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import type { ModelPickTarget } from "./model-selector/types";
+import { NumericValueInput } from "./numeric-value-input";
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
