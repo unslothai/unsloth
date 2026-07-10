@@ -104,10 +104,36 @@ def test_chunk_data_rejects_overlap_not_smaller_than_chunk():
         os.unlink(path)
 
 
+def test_chunk_data_uninitialized_error_names_real_class():
+    # Without max_seq_length the guard tells the user which method to call first.
+    # The message must name the real class (SyntheticDataKit) so copying it works;
+    # a misspelling would raise NameError when the user follows it verbatim.
+    kit = SyntheticDataKit.__new__(SyntheticDataKit)
+    kit.tokenizer = _MockTokenizer()  # max_seq_length intentionally unset
+    with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
+        f.write("word " * 50)
+        path = f.name
+    try:
+        try:
+            kit.chunk_data(filename = path)
+            raise AssertionError("expected RuntimeError when max_seq_length is unset")
+        except RuntimeError as e:
+            msg = str(e)
+            assert (
+                "SyntheticDataKit.from_pretrained" in msg
+            ), f"error must name SyntheticDataKit.from_pretrained, got: {msg}"
+            assert (
+                "SynthetidDataKit" not in msg
+            ), f"error must not misspell the class name, got: {msg}"
+    finally:
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     test_chunk_data_keeps_single_chunk_document()
     test_chunk_data_still_splits_long_document()
     test_chunk_data_empty_document_yields_no_chunks()
     test_chunk_data_short_document_is_not_split_into_fragments()
     test_chunk_data_rejects_overlap_not_smaller_than_chunk()
+    test_chunk_data_uninitialized_error_names_real_class()
     print("OK")

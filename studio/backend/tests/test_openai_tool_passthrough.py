@@ -8,6 +8,7 @@ import sys
 import asyncio
 import json
 import threading
+import time
 from types import SimpleNamespace
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
@@ -30,6 +31,7 @@ from core.inference.anthropic_compat import (
 )
 from core.inference.api_monitor import ApiMonitor
 from routes.inference import (
+    _aclose_stream_resources,
     _build_chat_request,
     _build_openai_passthrough_body,
     _build_passthrough_payload,
@@ -38,24 +40,58 @@ from routes.inference import (
     _coalesce_consecutive_user_turns,
     _drop_empty_assistant_sentinels,
     _effective_max_tokens,
+    _effective_openai_max_tokens,
+    _effective_openai_max_tokens_from_values,
     _extract_content_parts,
     _friendly_error,
     _friendly_upstream_error,
     _merge_user_content,
     _monitor_openai_chunk,
     _monitor_openai_sse_event,
+    _normalize_openai_passthrough_sse_line,
+    _openai_compat_stream_stall_timeout,
     _openai_messages_for_gguf_chat,
+    _openai_passthrough_sse_line_terminal_state,
+    _openai_passthrough_upstream_headers,
     _openai_passthrough_non_streaming,
     _openai_passthrough_stream,
+    _openai_stream_error_sse,
     _openai_stream_usage_chunk,
     _proxy_to_external_provider,
     _SameTaskStreamingResponse,
+    _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV,
     _set_or_prepend_system_message,
     openai_completions,
     openai_embeddings,
     openai_chat_completions,
 )
-from state.tool_policy import reset_tool_policy
+from state.tool_policy import reset_tool_policy, set_tool_policy
+
+
+def test_aclose_stream_resources_attempts_remaining_closes_after_cancel():
+    class Closeable:
+        def __init__(self, *, cancel = False):
+            self.cancel = cancel
+            self.closed = False
+
+        async def aclose(self):
+            self.closed = True
+            if self.cancel:
+                raise asyncio.CancelledError()
+
+    async def _run():
+        iterator = Closeable(cancel = True)
+        resp = Closeable()
+        client = Closeable()
+
+        with pytest.raises(asyncio.CancelledError):
+            await _aclose_stream_resources(iterator = iterator, resp = resp, client = client)
+
+        assert iterator.closed
+        assert resp.closed
+        assert client.closed
+
+    asyncio.run(_run())
 
 
 class TestFriendlyUpstreamError:
@@ -548,6 +584,263 @@ class TestChatCompletionRequestToolFields:
         assert "n > 1 is not supported" in entry["error"]
         assert monitor.active_count() == 0
 
+    def test_client_tools_rejected_when_gguf_template_has_no_tool_support(self, monkeypatch):
+        import routes.inference as inference_route
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+
+            def generate_chat_completion(self, **_kwargs):
+                raise AssertionError("client tools must not fall through to the standard GGUF path")
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+            },
+        )
+
+        self._assert_unsupported_param(resp, "tools")
+        assert "does not advertise tools" in resp.json()["error"]["message"]
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "error"
+        assert "does not advertise tools" in entry["error"]
+        assert monitor.active_count() == 0
+
+    def test_client_tools_use_passthrough_capability_when_tool_loop_is_disabled(self, monkeypatch):
+        import routes.inference as inference_route
+
+        captured = {}
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            supports_tool_passthrough = True
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+            base_url = "http://llama.passthrough-capability.test"
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None
+
+            def generate_chat_completion(self, **_kwargs):
+                raise AssertionError("client tools must use passthrough")
+
+            def generate_chat_completion_with_tools(self, **_kwargs):
+                raise AssertionError("Studio tool loop must stay disabled")
+
+        async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
+            captured["body"] = inference_route._build_openai_passthrough_body(
+                payload,
+                backend_ctx = llama_backend.context_length,
+                llama_backend = llama_backend,
+            )
+            inference_route.api_monitor.finish(kwargs.get("monitor_id"))
+            return inference_route.JSONResponse({"ok": True, "model": model_name})
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_openai_passthrough_non_streaming",
+            fake_passthrough,
+        )
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "use client tool"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert captured["body"]["tools"][0]["function"]["name"] == "lookup"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert monitor.active_count() == 0
+
+    def test_enable_tools_on_non_tool_backend_keeps_client_tools_on_passthrough(self, monkeypatch):
+        # DiffusionGemma forces supports_tools off while passthrough stays
+        # available (#6851): enable_tools=True must not steal client tools
+        # from the passthrough into a Studio tool loop that cannot run.
+        import routes.inference as inference_route
+
+        captured = {}
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            supports_tool_passthrough = True
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+            base_url = "http://llama.passthrough-capability.test"
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None
+
+            def generate_chat_completion(self, **_kwargs):
+                raise AssertionError("client tools must use passthrough")
+
+            def generate_chat_completion_with_tools(self, **_kwargs):
+                raise AssertionError("Studio tool loop cannot run on a non-tool backend")
+
+        async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
+            captured["body"] = inference_route._build_openai_passthrough_body(
+                payload,
+                backend_ctx = llama_backend.context_length,
+                llama_backend = llama_backend,
+            )
+            inference_route.api_monitor.finish(kwargs.get("monitor_id"))
+            return inference_route.JSONResponse({"ok": True, "model": model_name})
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_openai_passthrough_non_streaming",
+            fake_passthrough,
+        )
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "use client tool"}],
+                "enable_tools": True,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert captured["body"]["tools"][0]["function"]["name"] == "lookup"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert monitor.active_count() == 0
+
+    def test_tool_choice_none_allows_tool_catalog_without_tool_template(self, monkeypatch):
+        import routes.inference as inference_route
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+
+            def generate_chat_completion(self, **kwargs):
+                assert kwargs["max_tokens"] is None
+                yield "plain response"
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                "tool_choice": "none",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["choices"][0]["message"]["content"] == "plain response"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply"] == "plain response"
+        assert monitor.active_count() == 0
+
+    def test_tool_call_history_rejected_when_gguf_template_has_no_tool_support(self, monkeypatch):
+        import routes.inference as inference_route
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+
+            def generate_chat_completion(self, **_kwargs):
+                raise AssertionError(
+                    "tool-call history must not fall through to the standard GGUF path"
+                )
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {"role": "user", "content": "use a tool"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "lookup", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "call_1", "content": "{}"},
+                ],
+            },
+        )
+
+        self._assert_unsupported_param(resp, "messages")
+        assert "does not advertise tools" in resp.json()["error"]["message"]
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "error"
+        assert "does not advertise tools" in entry["error"]
+        assert monitor.active_count() == 0
+
     def test_n_rejected_for_non_gguf_path(self, monkeypatch):
         class _NoGGUFBackend:
             is_loaded = False
@@ -748,10 +1041,31 @@ class TestBuildPassthroughPayloadToolChoice:
         )
         assert body.get("stream_options") == {"include_usage": False}
 
+    def test_response_format_without_tools_omits_tool_fields(self):
+        args = self._args()
+        args["openai_tools"] = None
+
+        body = _build_passthrough_payload(
+            **args,
+            response_format = {"type": "json_object"},
+        )
+
+        assert body["response_format"] == {"type": "json_object"}
+        assert "tools" not in body
+        assert "tool_choice" not in body
+
     def test_repetition_penalty_renamed(self):
         body = _build_passthrough_payload(**self._args(), repetition_penalty = 1.1)
         assert body.get("repeat_penalty") == 1.1
         assert "repetition_penalty" not in body
+
+    def test_omitted_passthrough_max_tokens_uses_backend_context(self):
+        args = self._args()
+        args["max_tokens"] = None
+
+        body = _build_passthrough_payload(**args, backend_ctx = 4096)
+
+        assert body["max_tokens"] == 4096
 
     def test_passthrough_body_merges_system_and_developer_messages(self):
         payload = ChatCompletionRequest(
@@ -770,6 +1084,74 @@ class TestBuildPassthroughPayloadToolChoice:
             {"role": "system", "content": "original system\n\ndeveloper rules"},
             {"role": "user", "content": "hi"},
         ]
+
+
+class TestOpenAIPassthroughSSETerminalState:
+    def test_done_sentinel(self):
+        assert _openai_passthrough_sse_line_terminal_state("data: [DONE]") == "done"
+
+    def test_finish_reason_with_space(self):
+        line = 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
+        assert _openai_passthrough_sse_line_terminal_state(line) == "finish"
+
+    def test_finish_reason_without_space(self):
+        line = 'data:{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}'
+        assert _openai_passthrough_sse_line_terminal_state(line) == "finish"
+
+    def test_usage_chunk(self):
+        line = 'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2}}'
+        assert _openai_passthrough_sse_line_terminal_state(line) == "usage"
+
+    def test_error_chunk(self):
+        line = 'data: {"error":{"message":"boom"}}'
+        assert _openai_passthrough_sse_line_terminal_state(line) == "error"
+
+    def test_cap_parallel_tool_calls_accepts_no_space_after_data_colon(self):
+        line = (
+            'data:{"choices":[{"delta":{"tool_calls":['
+            '{"index":0,"function":{"name":"a"}},'
+            '{"index":1,"function":{"name":"b"}}]}}]}'
+        )
+
+        capped = _normalize_openai_passthrough_sse_line(line, cap_parallel_tool_calls = True)
+
+        data = json.loads(capped[len("data:") :].lstrip())
+        assert data["choices"][0]["delta"]["tool_calls"] == [
+            {"index": 0, "function": {"name": "a"}}
+        ]
+
+    def test_plain_content_line_is_returned_identically(self):
+        # The relay dispatches terminal classification on `out_line is raw_line`,
+        # so the no-mutation path must return the identical string object.
+        line = 'data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}'
+        assert _normalize_openai_passthrough_sse_line(line) is line
+        assert _normalize_openai_passthrough_sse_line(line, cap_parallel_tool_calls = True) is line
+
+    def test_reasoning_key_inside_content_text_keeps_line_identical(self):
+        # Fast-path substring gate fires, but the parse finds nothing to change:
+        # the original object must come back so the relay stays byte-identical.
+        line = (
+            'data: {"choices":[{"index":0,"delta":{"content":'
+            '"mentions \\"reasoning_content\\" in text"},"finish_reason":null}]}'
+        )
+        assert _normalize_openai_passthrough_sse_line(line) is line
+
+    def test_reasoning_only_delta_gets_empty_content(self):
+        line = (
+            'data: {"choices":[{"index":0,'
+            '"delta":{"reasoning_content":"thinking"},'
+            '"finish_reason":null}]}'
+        )
+
+        normalized = _normalize_openai_passthrough_sse_line(line)
+
+        data = json.loads(normalized[len("data:") :].lstrip())
+        delta = data["choices"][0]["delta"]
+        assert delta["reasoning_content"] == "thinking"
+        assert delta["content"] == ""
+
+    def test_reasoning_normalization_preserves_done_sentinel(self):
+        assert _normalize_openai_passthrough_sse_line("data: [DONE]") == "data: [DONE]"
 
 
 # =====================================================================
@@ -891,6 +1273,98 @@ class TestOpenAICompatibilityHelpers:
     def test_max_completion_tokens_wins_over_deprecated_max_tokens(self):
         payload = SimpleNamespace(max_tokens = 128, max_completion_tokens = 64)
         assert _effective_max_tokens(payload) == 64
+
+    def test_openai_compat_max_tokens_returns_none_when_omitted(self):
+        payload = SimpleNamespace(max_tokens = None, max_completion_tokens = None)
+        assert _effective_openai_max_tokens(payload) is None
+
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            (SimpleNamespace(max_tokens = 8192, max_completion_tokens = None), 8192),
+            (SimpleNamespace(max_tokens = 8192, max_completion_tokens = 256), 256),
+        ],
+    )
+    def test_openai_compat_explicit_values_pass_through(self, payload, expected):
+        assert _effective_openai_max_tokens(payload) == expected
+
+    @pytest.mark.parametrize(
+        ("payload", "param"),
+        [
+            (SimpleNamespace(max_tokens = "128", max_completion_tokens = None), "max_tokens"),
+            (SimpleNamespace(max_tokens = True, max_completion_tokens = None), "max_tokens"),
+            (SimpleNamespace(max_tokens = 12.5, max_completion_tokens = None), "max_tokens"),
+            (
+                SimpleNamespace(max_tokens = None, max_completion_tokens = "128"),
+                "max_completion_tokens",
+            ),
+        ],
+    )
+    def test_openai_compat_max_tokens_rejects_non_integer_explicit_values(self, payload, param):
+        with pytest.raises(HTTPException) as exc:
+            _effective_openai_max_tokens(payload)
+
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["param"] == param
+        assert exc.value.detail["error"]["code"] == "invalid_type"
+
+    def test_openai_compat_max_tokens_zero_is_valid_and_negative_rejected(self):
+        # Legacy completions spec: max_tokens has minimum 0, so 0 must pass
+        # through; only negatives are invalid_value.
+        assert _effective_openai_max_tokens_from_values(0) == 0
+
+        with pytest.raises(HTTPException) as exc:
+            _effective_openai_max_tokens_from_values(-1)
+
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["code"] == "invalid_value"
+        assert exc.value.detail["error"]["param"] == "max_tokens"
+
+    def test_chat_reasoning_chunk_carries_empty_content(self):
+        from routes.inference import _chat_reasoning_chunk
+
+        line = _chat_reasoning_chunk("chatcmpl-test", 123, "gguf", "thinking...")
+        chunk = json.loads(line[len("data: ") :])
+        delta = chunk["choices"][0]["delta"]
+
+        assert delta["reasoning_content"] == "thinking..."
+        assert delta["content"] == ""
+
+    def test_passthrough_upstream_headers_include_backend_auth(self):
+        headers = _openai_passthrough_upstream_headers(
+            llama_backend = SimpleNamespace(_auth_headers = {"Authorization": "Bearer secret"}),
+        )
+
+        assert headers["Authorization"] == "Bearer secret"
+        assert headers["Connection"] == "close"
+
+    def test_openai_compat_stream_stall_timeout_uses_default(self, monkeypatch):
+        monkeypatch.delenv(_OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV, raising = False)
+        assert _openai_compat_stream_stall_timeout() == 120.0
+
+    def test_openai_compat_stream_stall_timeout_uses_env_override(self, monkeypatch):
+        monkeypatch.setenv(_OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV, "4.5")
+        assert _openai_compat_stream_stall_timeout() == 4.5
+
+    @pytest.mark.parametrize("raw_value", ["", "not-a-float"])
+    def test_openai_compat_stream_stall_timeout_invalid_env_uses_default(
+        self, monkeypatch, raw_value
+    ):
+        monkeypatch.setenv(_OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV, raw_value)
+        assert _openai_compat_stream_stall_timeout() == 120.0
+
+    @pytest.mark.parametrize("raw_value", ["0", "-1"])
+    def test_openai_compat_stream_stall_timeout_non_positive_env_disables(
+        self, monkeypatch, raw_value
+    ):
+        monkeypatch.setenv(_OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV, raw_value)
+        assert _openai_compat_stream_stall_timeout() is None
+
+    def test_openai_stream_error_sse_closes_with_done(self):
+        error = {"error": {"message": "boom"}}
+        assert _openai_stream_error_sse(error) == (
+            'data: {"error": {"message": "boom"}}\n\n' "data: [DONE]\n\n"
+        )
 
     @pytest.mark.parametrize(
         "finish_reason",
@@ -1515,8 +1989,329 @@ class TestGgufVisionToolRouting:
         assert "".join(d.get("reasoning_content", "") for d in deltas) == "plan"
         assert "".join(d.get("content", "") for d in deltas) == "visible"
         assert all("<think>" not in d.get("content", "") for d in deltas)
+        assert all("content" in d for d in deltas if "reasoning_content" in d)
         [entry] = result.monitor.snapshot()
         assert entry["reply"] == "visible"
+
+    def test_global_enable_tools_does_not_preempt_response_format_passthrough(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+        set_tool_policy(True)
+        captured = {}
+
+        def _plain(**_kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**_kwargs):
+            raise AssertionError("Studio tool loop should not steal response_format")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            base_url = "http://llama.policy.test",
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+
+        async def fake_passthrough(llama_backend, payload, model_name, **_kwargs):
+            captured["body"] = inf_mod._build_openai_passthrough_body(
+                payload,
+                backend_ctx = llama_backend.context_length,
+                llama_backend = llama_backend,
+            )
+            return inf_mod.JSONResponse({"ok": True, "model": model_name})
+
+        try:
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(
+                inf_mod,
+                "_openai_passthrough_non_streaming",
+                fake_passthrough,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "json"}],
+                response_format = {"type": "json_object"},
+            )
+            response = self._drive(
+                openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+            )
+
+            assert json.loads(response.body)["ok"] is True
+            assert captured["body"]["response_format"] == {"type": "json_object"}
+            assert "tools" not in captured["body"]
+            assert "tool_choice" not in captured["body"]
+        finally:
+            reset_tool_policy()
+
+    def test_global_enable_tools_does_not_replace_client_tools_passthrough(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+        set_tool_policy(True)
+        captured = {}
+        client_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "client_lookup",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+        def _plain(**_kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**_kwargs):
+            raise AssertionError("Studio tool loop should not replace client tools")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            base_url = "http://llama.policy.test",
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+
+        async def fake_passthrough(llama_backend, payload, model_name, **_kwargs):
+            captured["body"] = inf_mod._build_openai_passthrough_body(
+                payload,
+                backend_ctx = llama_backend.context_length,
+                llama_backend = llama_backend,
+            )
+            return inf_mod.JSONResponse({"ok": True, "model": model_name})
+
+        try:
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(
+                inf_mod,
+                "_openai_passthrough_non_streaming",
+                fake_passthrough,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "use client tool"}],
+                tools = client_tools,
+            )
+            response = self._drive(
+                openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+            )
+
+            assert json.loads(response.body)["ok"] is True
+            assert captured["body"]["tools"] == client_tools
+            assert captured["body"]["tool_choice"] == "auto"
+        finally:
+            reset_tool_policy()
+
+    def test_global_enable_tools_honors_client_tool_choice_none(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+        set_tool_policy(True)
+        client_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "client_lookup",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+        def _plain(**kwargs):
+            assert kwargs["max_tokens"] is None
+            yield "plain response"
+
+        def _tools(**_kwargs):
+            raise AssertionError("tool_choice='none' must not start Studio's tool loop")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            base_url = "http://llama.policy.test",
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+
+        try:
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "do not use tools"}],
+                tools = client_tools,
+                tool_choice = "none",
+            )
+            response = self._drive(
+                openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+            )
+
+            assert json.loads(response.body)["choices"][0]["message"]["content"] == "plain response"
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+            assert entry["reply"] == "plain response"
+            assert monitor.active_count() == 0
+        finally:
+            reset_tool_policy()
+
+    def test_enabled_tools_without_enable_tools_keeps_response_format_passthrough(
+        self, monkeypatch
+    ):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+        captured = {}
+
+        def _plain(**_kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**_kwargs):
+            raise AssertionError("enabled_tools alone must not start Studio's tool loop")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            base_url = "http://llama.enabled-tools.test",
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+
+        async def fake_passthrough(llama_backend, payload, model_name, **_kwargs):
+            captured["body"] = inf_mod._build_openai_passthrough_body(
+                payload,
+                backend_ctx = llama_backend.context_length,
+                llama_backend = llama_backend,
+            )
+            return inf_mod.JSONResponse({"ok": True, "model": model_name})
+
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(inf_mod, "_openai_passthrough_non_streaming", fake_passthrough)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "json"}],
+            enabled_tools = ["web_search"],
+            response_format = {"type": "json_object"},
+        )
+        response = self._drive(
+            openai_chat_completions(
+                payload,
+                request = self._Request(),
+                current_subject = "test",
+            )
+        )
+
+        assert json.loads(response.body)["ok"] is True
+        assert captured["body"]["response_format"] == {"type": "json_object"}
+
+    def test_enabled_tools_without_enable_tools_keeps_client_tools_passthrough(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+        captured = {}
+        client_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "client_lookup",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+        def _plain(**_kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**_kwargs):
+            raise AssertionError("enabled_tools alone must not start Studio's tool loop")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            base_url = "http://llama.enabled-tools.test",
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+
+        async def fake_passthrough(llama_backend, payload, model_name, **_kwargs):
+            captured["body"] = inf_mod._build_openai_passthrough_body(
+                payload,
+                backend_ctx = llama_backend.context_length,
+                llama_backend = llama_backend,
+            )
+            return inf_mod.JSONResponse({"ok": True, "model": model_name})
+
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(inf_mod, "_openai_passthrough_non_streaming", fake_passthrough)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "use client tool"}],
+            enabled_tools = ["web_search"],
+            tools = client_tools,
+        )
+        response = self._drive(
+            openai_chat_completions(
+                payload,
+                request = self._Request(),
+                current_subject = "test",
+            )
+        )
+
+        assert json.loads(response.body)["ok"] is True
+        assert captured["body"]["tools"] == client_tools
+        assert captured["body"]["tool_choice"] == "auto"
 
     def test_reasoning_capable_gguf_stream_splits_reasoning_by_default(self, monkeypatch):
         def _generate(**_kwargs):
@@ -1691,6 +2486,58 @@ class TestGgufVisionToolRouting:
         assert entry["completion_tokens"] == 3
         assert monitor.active_count() == 0
 
+    def test_non_streaming_gguf_cancel_drains_worker(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            started = threading.Event()
+            released = threading.Event()
+
+            def _generate(**kwargs):
+                cancel_event = kwargs["cancel_event"]
+                started.set()
+                while not cancel_event.is_set():
+                    time.sleep(0.005)
+                released.set()
+                yield from ()
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = False,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                generate_chat_completion = _generate,
+            )
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "hi"}],
+            )
+            task = asyncio.create_task(
+                openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+            )
+            assert await asyncio.to_thread(started.wait, 1.0)
+
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout = 1.0)
+
+            assert released.is_set()
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
     def test_standard_gguf_merges_system_and_developer_messages(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -1801,7 +2648,12 @@ class TestApiMonitorProviderAndCompletionStreams:
         async def is_disconnected(self):
             return False
 
-    async def _run_passthrough_stream(self, monkeypatch, lines):
+    async def _run_passthrough_stream(
+        self,
+        monkeypatch,
+        lines,
+        stream_options = None,
+    ):
         import routes.inference as inf_mod
 
         class Request:
@@ -1829,6 +2681,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             model = "default",
             messages = [ChatMessage(role = "user", content = "hi")],
             stream = True,
+            stream_options = stream_options,
             tools = [
                 {
                     "type": "function",
@@ -1900,7 +2753,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
 
@@ -1910,6 +2763,134 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async for chunk in response.body_iterator
             ]
             assert "data: [DONE]\n\n" in "".join(chunks)
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_forwards_backend_auth_headers(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            captured_headers = {}
+
+            async def fake_send(_client, req, *_args, **_kwargs):
+                captured_headers.update(dict(req.headers))
+                return httpx.Response(200, content = b"")
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            monitor = ApiMonitor(max_entries = 3)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            )
+            response = await _openai_passthrough_stream(
+                Request(),
+                threading.Event(),
+                SimpleNamespace(
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    _auth_headers = {"Authorization": "Bearer secret"},
+                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                ),
+                payload,
+                "chatcmpl-test",
+                "chatcmpl-test",
+                monitor_id = monitor_id,
+            )
+            chunks = [
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+                async for chunk in response.body_iterator
+            ]
+
+            assert "data: [DONE]\n\n" in "".join(chunks)
+            assert captured_headers["authorization"] == "Bearer secret"
+            assert captured_headers["connection"] == "close"
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_keepalive_while_upstream_headers_are_pending(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            gate = asyncio.Event()
+
+            async def fake_send(*_args, **_kwargs):
+                await gate.wait()
+                return httpx.Response(200, content = b"")
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            monitor = ApiMonitor(max_entries = 3)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+            monkeypatch.setattr(
+                inf_mod,
+                "_OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S",
+                0.01,
+            )
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+            )
+
+            response = await asyncio.wait_for(
+                _openai_passthrough_stream(
+                    Request(),
+                    threading.Event(),
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "chatcmpl-test",
+                    "chatcmpl-test",
+                    monitor_id = monitor_id,
+                ),
+                timeout = 0.2,
+            )
+
+            first = await asyncio.wait_for(response.body_iterator.__anext__(), timeout = 0.2)
+            assert first == ": keep-alive\n\n"
+
+            gate.set()
+            chunks = [
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+                async for chunk in response.body_iterator
+            ]
+            body = "".join(chunks)
+            assert "data: [DONE]\n\n" in body
 
         asyncio.run(_run())
 
@@ -2044,7 +3025,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
             gate.set()
@@ -2055,6 +3036,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             body = "".join(chunks)
             assert "data:" in body
             assert '"error"' in body
+            assert "data: [DONE]" in body
             [entry] = monitor.snapshot()
             assert entry["status"] == "error"
             assert "bad" in entry["error"]
@@ -2107,7 +3089,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
 
@@ -2117,7 +3099,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async for chunk in response.body_iterator
             ]
             body = "".join(chunks)
-            payload = json.loads(body.removeprefix("data: ").strip())
+            events = [
+                line.removeprefix("data: ")
+                for line in body.splitlines()
+                if line.startswith("data: ")
+            ]
+            assert events[-1] == "[DONE]"
+            payload = json.loads(events[0])
             assert payload["error"]["code"] == "context_length_exceeded"
             assert payload["error"]["param"] == "messages"
             assert isinstance(payload["error"], dict)
@@ -2190,7 +3178,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
 
@@ -2200,6 +3188,105 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async for chunk in response.body_iterator
             ]
             assert "data: [DONE]\n\n" in "".join(chunks)
+            assert len(calls) == 2
+            assert len(calls[1]["messages"]) < len(calls[0]["messages"])
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_preheader_immediate_context_retry_adopts_delayed_response(
+        self, monkeypatch
+    ):
+        async def _run():
+            import routes.inference as inf_mod
+
+            gate = asyncio.Event()
+            calls = []
+            err_body = json.dumps(
+                {
+                    "error": {
+                        "message": "request (10000 tokens) exceeds the available context size (2048 tokens)",
+                        "n_prompt_tokens": 10000,
+                        "n_ctx": 2048,
+                    }
+                }
+            ).encode("utf-8")
+            ok_lines = [
+                'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,'
+                '"model":"gguf","choices":[{"index":0,"delta":{"content":"OK"},'
+                '"finish_reason":null}]}',
+                'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,'
+                '"model":"gguf","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+
+            async def fake_send(_client, req, *_args, **_kwargs):
+                calls.append(json.loads(req.content.decode("utf-8")))
+                if len(calls) == 1:
+                    return httpx.Response(400, content = err_body)
+                await gate.wait()
+                return httpx.Response(200, content = b"")
+
+            async def fake_items(*_args, **_kwargs):
+                for line in ok_lines:
+                    yield line
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            monitor = ApiMonitor(max_entries = 3)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+
+            messages = [
+                ChatMessage(role = "system", content = "system"),
+                *[
+                    ChatMessage(role = "user", content = f"turn {idx} " + ("x" * 1000))
+                    for idx in range(8)
+                ],
+            ]
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = messages,
+                stream = True,
+                context_overflow = "truncate_middle",
+            )
+            response = await asyncio.wait_for(
+                _openai_passthrough_stream(
+                    Request(),
+                    threading.Event(),
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 2048,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "chatcmpl-test",
+                    "chatcmpl-test",
+                    monitor_id = monitor_id,
+                ),
+                timeout = 0.2,
+            )
+            assert isinstance(response, _SameTaskStreamingResponse)
+
+            gate.set()
+            chunks = [
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+                async for chunk in response.body_iterator
+            ]
+            body = "".join(chunks)
+
+            assert "OK" in body
+            assert "context_length_exceeded" not in body
             assert len(calls) == 2
             assert len(calls[1]["messages"]) < len(calls[0]["messages"])
             [entry] = monitor.snapshot()
@@ -2252,7 +3339,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
             assert cancel_id in inf_mod._CANCEL_REGISTRY
@@ -2323,13 +3410,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                     monitor_id = monitor_id,
                 )
             )
-            await asyncio.wait_for(entered.wait(), timeout = 0.2)
+            await asyncio.wait_for(entered.wait(), timeout = 5.0)
             assert cancel_id in inf_mod._CANCEL_REGISTRY
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            await asyncio.wait_for(cancelled.wait(), timeout = 0.2)
+            await asyncio.wait_for(cancelled.wait(), timeout = 5.0)
             assert cancel_id not in inf_mod._CANCEL_REGISTRY
 
         asyncio.run(_run())
@@ -2389,13 +3476,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                     "chatcmpl-test",
                     monitor_id = monitor_id,
                 ),
-                timeout = 0.2,
+                timeout = 5.0,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
             assert cancel_id in inf_mod._CANCEL_REGISTRY
 
             gate.set()
-            await asyncio.wait_for(returned.wait(), timeout = 0.2)
+            await asyncio.wait_for(returned.wait(), timeout = 5.0)
             await asyncio.sleep(0)
             await response._unstarted_cleanup()
             assert upstream_response.is_closed
@@ -2647,6 +3734,150 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_completions_omitted_max_tokens_falls_back_to_context(self, monkeypatch):
+        # With no env knobs set, an omitted max_tokens must forward the
+        # backend's context length, exactly as on main.
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = "/v1/completions")
+                method = "POST"
+
+                async def json(self):
+                    return {"prompt": "hi", "stream": False}
+
+            captured = []
+
+            class CapturingClient:
+                async def post(self, _url, *, json, **_kwargs):
+                    captured.append(dict(json))
+                    return httpx.Response(
+                        200,
+                        json = {
+                            "id": "cmpl-test",
+                            "choices": [{"text": "ok"}],
+                            "usage": {
+                                "prompt_tokens": 1,
+                                "completion_tokens": 1,
+                                "total_tokens": 2,
+                            },
+                        },
+                    )
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: CapturingClient())
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
+                ),
+            )
+
+            await openai_completions(Request(), current_subject = "test")
+
+            assert captured[0]["max_tokens"] == 4096
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_completions_forwards_spec_valid_zero_max_tokens(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = "/v1/completions")
+                method = "POST"
+
+                async def json(self):
+                    return {"prompt": "hi", "stream": False, "max_tokens": 0}
+
+            captured = []
+
+            class CapturingClient:
+                async def post(self, _url, *, json, **_kwargs):
+                    captured.append(dict(json))
+                    return httpx.Response(
+                        200,
+                        json = {
+                            "id": "cmpl-test",
+                            "choices": [{"text": "", "finish_reason": "length"}],
+                            "usage": {
+                                "prompt_tokens": 1,
+                                "completion_tokens": 0,
+                                "total_tokens": 1,
+                            },
+                        },
+                    )
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: CapturingClient())
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
+                ),
+            )
+
+            await openai_completions(Request(), current_subject = "test")
+
+            assert captured[0]["max_tokens"] == 0
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_completions_rejects_non_integer_max_tokens_before_forwarding(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = "/v1/completions")
+                method = "POST"
+
+                async def json(self):
+                    return {"prompt": "hi", "stream": False, "max_tokens": "128"}
+
+            class UnusedClient:
+                async def post(self, *_args, **_kwargs):
+                    raise AssertionError("invalid max_tokens must not reach llama-server")
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: UnusedClient())
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
+                ),
+            )
+
+            with pytest.raises(HTTPException) as exc:
+                await openai_completions(Request(), current_subject = "test")
+
+            assert exc.value.status_code == 400
+            assert exc.value.detail["error"]["param"] == "max_tokens"
+            assert exc.value.detail["error"]["code"] == "invalid_type"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
     def test_monitor_openai_chunk_records_all_choice_replies(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -2793,6 +4024,8 @@ class TestApiMonitorProviderAndCompletionStreams:
                 yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
                 await asyncio.sleep(3600)
 
+            cancel_id = "passthrough-stream-delete-cancel"
+
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
@@ -2807,6 +4040,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 model = "default",
                 messages = [ChatMessage(role = "user", content = "hi")],
                 stream = True,
+                cancel_id = cancel_id,
                 tools = [
                     {
                         "type": "function",
@@ -2824,6 +4058,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 SimpleNamespace(
                     base_url = "http://llama.test",
                     context_length = 4096,
+                    _auth_headers = {"Authorization": "Bearer secret"},
                     _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
                 ),
                 payload,
@@ -2835,6 +4070,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             first = await anext(iterator)
             assert "hello" in first
+            assert cancel_id in inf_mod._CANCEL_REGISTRY
 
             pending = asyncio.create_task(anext(iterator))
             await asyncio.sleep(0)
@@ -2846,6 +4082,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert entry["status"] == "cancelled"
             assert entry["reply"] == "hello"
             assert monitor.active_count() == 0
+            assert cancel_id not in inf_mod._CANCEL_REGISTRY
 
         asyncio.run(_run())
 
@@ -2931,6 +4168,27 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_passthrough_usage_done_are_separate_sse_events(self, monkeypatch):
+        async def _run():
+            result = await self._run_passthrough_stream(
+                monkeypatch,
+                [
+                    'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}',
+                    'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+                    'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}',
+                ],
+                stream_options = {"include_usage": True},
+            )
+
+            assert (
+                '"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2' in result.body
+            )
+            assert "data: [DONE]" in result.body
+            assert "}\n\ndata: [DONE]\n\n" in result.body
+            assert "}\ndata: [DONE]\n\n" not in result.body
+
+        asyncio.run(_run())
+
     def test_passthrough_non_streaming_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -2990,6 +4248,407 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_passthrough_non_streaming_cancel_closes_blocked_upstream_post(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class HangingCancelableClient:
+                def __init__(self):
+                    self.started = asyncio.Event()
+                    self.closed = asyncio.Event()
+
+                async def post(self, *_args, **_kwargs):
+                    self.started.set()
+                    await self.closed.wait()
+                    raise httpx.ReadError("client closed")
+
+                async def aclose(self):
+                    self.closed.set()
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            client = HangingCancelableClient()
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "_cancelable_nonstreaming_client",
+                lambda: client,
+            )
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            cancel_event = threading.Event()
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            )
+
+            task = asyncio.create_task(
+                _openai_passthrough_non_streaming(
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "gguf",
+                    monitor_id = monitor_id,
+                    request = Request(),
+                    cancel_event = cancel_event,
+                )
+            )
+            await asyncio.wait_for(client.started.wait(), 0.2)
+            cancel_event.set()
+
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 0.5)
+
+            assert client.closed.is_set()
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_non_streaming_route_registers_cancel_id(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class HangingCancelableClient:
+                def __init__(self):
+                    self.started = asyncio.Event()
+                    self.closed = asyncio.Event()
+
+                async def post(self, *_args, **_kwargs):
+                    self.started.set()
+                    await self.closed.wait()
+                    raise httpx.ReadError("client closed")
+
+                async def aclose(self):
+                    self.closed.set()
+
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = "/v1/chat/completions")
+                method = "POST"
+
+                async def is_disconnected(self):
+                    return False
+
+            cancel_id = "passthrough-nonstream-cancel-id"
+            client = HangingCancelableClient()
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+
+            def _plain(**_kwargs):
+                raise AssertionError("plain GGUF path should not be used")
+
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    is_vision = False,
+                    supports_tools = True,
+                    _is_audio = False,
+                    model_identifier = "test-gguf",
+                    context_length = 4096,
+                    base_url = "http://llama.test",
+                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    generate_chat_completion = _plain,
+                ),
+            )
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                cancel_id = cancel_id,
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            )
+
+            task = asyncio.create_task(
+                openai_chat_completions(
+                    payload,
+                    request = Request(),
+                    current_subject = "test",
+                )
+            )
+            await asyncio.wait_for(client.started.wait(), 0.2)
+            assert cancel_id in inf_mod._CANCEL_REGISTRY
+            assert inf_mod._cancel_by_cancel_id_or_stash(cancel_id) == 1
+
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 0.5)
+
+            assert client.closed.is_set()
+            assert cancel_id not in inf_mod._CANCEL_REGISTRY
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_non_streaming_disconnect_closes_blocked_upstream_post(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class HangingCancelableClient:
+                def __init__(self):
+                    self.started = asyncio.Event()
+                    self.closed = asyncio.Event()
+
+                async def post(self, *_args, **_kwargs):
+                    self.started.set()
+                    await self.closed.wait()
+                    raise httpx.ReadError("client closed")
+
+                async def aclose(self):
+                    self.closed.set()
+
+            class Request:
+                def __init__(self):
+                    self.disconnected = False
+
+                async def is_disconnected(self):
+                    return self.disconnected
+
+            client = HangingCancelableClient()
+            request = Request()
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "_cancelable_nonstreaming_client",
+                lambda: client,
+            )
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            cancel_event = threading.Event()
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            )
+
+            task = asyncio.create_task(
+                _openai_passthrough_non_streaming(
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "gguf",
+                    monitor_id = monitor_id,
+                    request = request,
+                    cancel_event = cancel_event,
+                )
+            )
+            await asyncio.wait_for(client.started.wait(), 0.2)
+            request.disconnected = True
+
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 0.5)
+
+            assert client.closed.is_set()
+            assert cancel_event.is_set()
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_non_streaming_forwards_backend_auth_headers(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            captured = {}
+
+            class FakeNonStreamingClient:
+                async def post(self, *_args, **kwargs):
+                    captured["headers"] = kwargs.get("headers")
+                    return httpx.Response(
+                        200,
+                        json = {
+                            "id": "chatcmpl-test",
+                            "object": "chat.completion",
+                            "created": 123,
+                            "model": "gguf",
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "message": {"role": "assistant", "content": "OK"},
+                                    "finish_reason": "stop",
+                                }
+                            ],
+                        },
+                    )
+
+            monitor = ApiMonitor(max_entries = 3)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "nonstreaming_client",
+                lambda: FakeNonStreamingClient(),
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            )
+
+            response = await _openai_passthrough_non_streaming(
+                SimpleNamespace(
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    _auth_headers = {"Authorization": "Bearer secret"},
+                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                ),
+                payload,
+                "gguf",
+                monitor_id = monitor_id,
+            )
+
+            assert json.loads(response.body)["choices"][0]["message"]["content"] == "OK"
+            assert captured["headers"]["Authorization"] == "Bearer secret"
+            assert captured["headers"]["Connection"] == "close"
+
+        asyncio.run(_run())
+
+    def test_passthrough_non_streaming_forces_upstream_stream_false(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            captured = {}
+
+            class FakeNonStreamingClient:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_args):
+                    return False
+
+                async def post(self, *_args, **kwargs):
+                    captured["json"] = kwargs.get("json")
+                    return httpx.Response(
+                        200,
+                        json = {
+                            "id": "chatcmpl-test",
+                            "object": "chat.completion",
+                            "created": 123,
+                            "model": "gguf",
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "message": {"role": "assistant", "content": "OK"},
+                                    "finish_reason": "stop",
+                                }
+                            ],
+                            "usage": {
+                                "prompt_tokens": 1,
+                                "completion_tokens": 1,
+                                "total_tokens": 2,
+                            },
+                        },
+                    )
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "nonstreaming_client",
+                lambda: FakeNonStreamingClient(),
+            )
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+                stream_options = {"include_usage": True},
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            )
+
+            await _openai_passthrough_non_streaming(
+                SimpleNamespace(
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                ),
+                payload,
+                "gguf",
+                monitor_id = monitor_id,
+            )
+
+            assert captured["json"]["stream"] is False
+            assert "stream_options" not in captured["json"]
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+
+        asyncio.run(_run())
+
     def test_passthrough_clean_eof_finalizes_monitor(self, monkeypatch):
         async def _run():
             result = await self._run_passthrough_stream(
@@ -3006,6 +4665,216 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert entry["status"] == "completed"
             assert entry["reply"] == "hello"
             assert result.monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_finish_without_done_closes_stream_early(self, monkeypatch):
+        # Some llama-server builds emit the finish chunk and then hold the HTTP
+        # stream open without sending [DONE]; the terminal classifier must end
+        # the client stream promptly instead of hanging on the open socket.
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            async def fake_send(*_args, **_kwargs):
+                return httpx.Response(200, content = b"")
+
+            async def fake_items(*_args, **_kwargs):
+                yield 'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}'
+                yield 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
+                await asyncio.Event().wait()  # upstream never closes
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            )
+
+            response = await _openai_passthrough_stream(
+                Request(),
+                threading.Event(),
+                SimpleNamespace(
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                ),
+                payload,
+                "gguf",
+                "chatcmpl-test",
+                monitor_id = monitor_id,
+            )
+
+            async def _consume():
+                return [chunk async for chunk in response.body_iterator]
+
+            chunks = await asyncio.wait_for(_consume(), timeout = 2)
+            body = "".join(chunks)
+
+            assert '"finish_reason":"stop"' in body.replace(" ", "")
+            assert body.endswith("data: [DONE]\n\n")
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_stall_after_finish_closes_cleanly(self, monkeypatch):
+        # include_usage keeps the stream open past the finish chunk waiting for
+        # the usage chunk; if that never arrives, the post-terminal grace path
+        # must close with a clean [DONE], not an in-band error.
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            async def fake_send(*_args, **_kwargs):
+                return httpx.Response(200, content = b"")
+
+            async def fake_items(*_args, **_kwargs):
+                yield 'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}'
+                yield 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
+                raise httpx.ReadTimeout("usage chunk never arrived")
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+                stream_options = {"include_usage": True},
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            )
+
+            response = await _openai_passthrough_stream(
+                Request(),
+                threading.Event(),
+                SimpleNamespace(
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                ),
+                payload,
+                "gguf",
+                "chatcmpl-test",
+                monitor_id = monitor_id,
+            )
+            chunks = [chunk async for chunk in response.body_iterator]
+            body = "".join(chunks)
+
+            assert '"type":"api_error"' not in body.replace(" ", "")
+            assert body.endswith("data: [DONE]\n\n")
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_stall_after_data_emits_error(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            async def fake_send(*_args, **_kwargs):
+                return httpx.Response(200, content = b"")
+
+            async def fake_items(*_args, **_kwargs):
+                yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
+                raise httpx.ReadTimeout("upstream went silent")
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            )
+
+            response = await _openai_passthrough_stream(
+                Request(),
+                threading.Event(),
+                SimpleNamespace(
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                ),
+                payload,
+                "gguf",
+                "chatcmpl-test",
+                monitor_id = monitor_id,
+            )
+            chunks = [chunk async for chunk in response.body_iterator]
+            body = "".join(chunks)
+
+            assert 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n' in body
+            assert '"finish_reason"' not in body.replace(" ", "")
+            assert '"type":"api_error"' in body.replace(" ", "")
+            assert "still processing the prompt" in body
+            assert body.endswith("data: [DONE]\n\n")
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "still processing the prompt" in entry["error"]
+            assert entry["reply"] == "hello"
+            assert monitor.active_count() == 0
 
         asyncio.run(_run())
 
