@@ -2765,8 +2765,7 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
 # Display-adapter device class: one NNNN subkey per installed display driver
 # config, each carrying the driver's DriverDesc and PCI MatchingDeviceId.
 _WINDOWS_DISPLAY_CLASS_KEY = (
-    r"SYSTEM\CurrentControlSet\Control\Class"
-    r"\{4d36e968-e325-11ce-bfc1-08002be10318}"
+    r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 )
 
 
@@ -2793,9 +2792,7 @@ def windows_intel_gpu_in_registry() -> bool:
     except ImportError:
         return False
     try:
-        with winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DISPLAY_CLASS_KEY
-        ) as class_key:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DISPLAY_CLASS_KEY) as class_key:
             for index in range(winreg.QueryInfoKey(class_key)[0]):
                 try:
                     name = winreg.EnumKey(class_key, index)

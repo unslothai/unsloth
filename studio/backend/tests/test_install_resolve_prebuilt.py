@@ -490,8 +490,14 @@ def test_resolve_prebuilt_intel_host_routes_to_upstream(monkeypatch, capsys):
 # winreg module stands in for the real registry so the walk runs anywhere.
 # ---------------------------------------------------------------------------
 
+
 class _FakeRegKey:
-    def __init__(self, subkeys = None, values = None, denied = False):
+    def __init__(
+        self,
+        subkeys = None,
+        values = None,
+        denied = False,
+    ):
         self.subkeys = subkeys or {}
         self.values = values or {}
         self.denied = denied
@@ -546,43 +552,75 @@ def _probe_with_display_class(monkeypatch, adapters):
 
 
 def test_windows_intel_registry_matches_vendor_id(monkeypatch):
-    assert _probe_with_display_class(monkeypatch, {
-        "0000": _FakeRegKey(values = {
-            "MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0&SUBSYS_12345678",
-            "DriverDesc": "Intel(R) Arc(TM) A770 Graphics",
-        }),
-    }) is True
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "0000": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0&SUBSYS_12345678",
+                        "DriverDesc": "Intel(R) Arc(TM) A770 Graphics",
+                    }
+                ),
+            },
+        )
+        is True
+    )
 
 
 def test_windows_intel_registry_matches_driver_desc_without_device_id(monkeypatch):
-    assert _probe_with_display_class(monkeypatch, {
-        "0000": _FakeRegKey(values = {"DriverDesc": "Intel(R) UHD Graphics 630"}),
-    }) is True
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "0000": _FakeRegKey(values = {"DriverDesc": "Intel(R) UHD Graphics 630"}),
+            },
+        )
+        is True
+    )
 
 
 def test_windows_intel_registry_ignores_non_intel_adapters(monkeypatch):
-    assert _probe_with_display_class(monkeypatch, {
-        "0000": _FakeRegKey(values = {
-            "MatchingDeviceId": r"PCI\VEN_10DE&DEV_2684",
-            "DriverDesc": "NVIDIA GeForce RTX 4090",
-        }),
-        "0001": _FakeRegKey(values = {
-            "MatchingDeviceId": r"PCI\VEN_1002&DEV_744C",
-            "DriverDesc": "AMD Radeon RX 7900 XTX",
-        }),
-    }) is False
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "0000": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_10DE&DEV_2684",
+                        "DriverDesc": "NVIDIA GeForce RTX 4090",
+                    }
+                ),
+                "0001": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_1002&DEV_744C",
+                        "DriverDesc": "AMD Radeon RX 7900 XTX",
+                    }
+                ),
+            },
+        )
+        is False
+    )
 
 
 def test_windows_intel_registry_skips_restricted_properties_subkey(monkeypatch):
     # The real class key carries an ACL-restricted "Properties" subkey and can
     # deny access to individual adapter keys; neither may abort the walk.
-    assert _probe_with_display_class(monkeypatch, {
-        "Properties": _FakeRegKey(denied = True),
-        "0000": _FakeRegKey(denied = True),
-        "0001": _FakeRegKey(values = {
-            "MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0",
-        }),
-    }) is True
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "Properties": _FakeRegKey(denied = True),
+                "0000": _FakeRegKey(denied = True),
+                "0001": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0",
+                    }
+                ),
+            },
+        )
+        is True
+    )
 
 
 def test_windows_intel_registry_missing_class_key_is_false(monkeypatch):
@@ -590,7 +628,11 @@ def test_windows_intel_registry_missing_class_key_is_false(monkeypatch):
     assert ilp.windows_intel_gpu_in_registry() is False
 
 
-def _detect_windows_host(monkeypatch, winreg_fake, powershell_stdout = ""):
+def _detect_windows_host(
+    monkeypatch,
+    winreg_fake,
+    powershell_stdout = "",
+):
     """Drive the real detect_host() as a GPU-less Windows host with a fake
     registry, recording every run_capture invocation. Pins the wiring the
     unit tests above cannot see: registry-first, CIM only on a registry miss."""
@@ -598,8 +640,11 @@ def _detect_windows_host(monkeypatch, winreg_fake, powershell_stdout = ""):
     monkeypatch.setattr(ilp.platform, "system", lambda: "Windows")
     monkeypatch.setattr(ilp.platform, "machine", lambda: "AMD64")
     for _env in (
-        "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES",
-        "HIP_PATH", "ROCM_PATH",
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "HIP_PATH",
+        "ROCM_PATH",
     ):
         monkeypatch.delenv(_env, raising = False)
     monkeypatch.setattr(
@@ -620,18 +665,26 @@ def _detect_windows_host(monkeypatch, winreg_fake, powershell_stdout = ""):
 
 
 def test_detect_host_registry_intel_skips_cim_probe(monkeypatch):
-    winreg = _FakeWinreg(_FakeRegKey(subkeys = {
-        "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0"}),
-    }))
+    winreg = _FakeWinreg(
+        _FakeRegKey(
+            subkeys = {
+                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0"}),
+            }
+        )
+    )
     host, captured = _detect_windows_host(monkeypatch, winreg)
     assert host.has_intel_gpu is True
     assert "powershell" not in captured
 
 
 def test_detect_host_cim_fallback_fires_on_registry_miss(monkeypatch):
-    winreg = _FakeWinreg(_FakeRegKey(subkeys = {
-        "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_10DE&DEV_2684"}),
-    }))
+    winreg = _FakeWinreg(
+        _FakeRegKey(
+            subkeys = {
+                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_10DE&DEV_2684"}),
+            }
+        )
+    )
     host, captured = _detect_windows_host(
         monkeypatch, winreg, powershell_stdout = "Intel(R) Arc(TM) A770 Graphics"
     )
