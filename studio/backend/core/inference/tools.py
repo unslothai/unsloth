@@ -503,6 +503,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             prev_was_flag = False
             continue
         prev_was_flag = False
+        # An expansion sitting AT the resolved command word -- behind a wrapper
+        # (env $CMD -c ...) or after a leading assignment -- runs whatever it expands to as
+        # the command name and cannot be proven safe, so fail closed. The separator-anchored
+        # regex below misses the wrapper case because $CMD is not right after a separator.
+        if "$" in token or "`" in token:
+            blocked.add("command-expansion")
         if base in _BLOCKED_COMMANDS:
             blocked.add(base)
         # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag,
@@ -799,41 +805,66 @@ def _find_blocked_commands(command: str) -> set[str]:
     return blocked
 
 
-def _blocked_in_argv(str_elts: list[str | None]) -> set[str]:
-    """Return the blocked command basenames among the command WORDS of a non-shell
-    argv vector (subprocess.run(['rm', '-rf', '/'])). Only element 0 -- and the real
-    command after any wrapper prefix (env / nice / timeout / xargs / ...) -- is
-    executed by the OS; every later element is a literal argument that is never run.
-    Scanning just the command word(s) keeps `env rm -rf /` blocked (rm resolved
-    through the wrapper) while a benign argument such as subprocess.run(['echo',
-    'python']) is not misread as invoking `python`."""
+def _blocked_in_argv(str_elts: list[str | None]) -> tuple[set[str], int | None]:
+    """Scan the command WORDS of a non-shell argv vector (subprocess.run(['rm', '-rf', '/'])).
+    Only element 0 -- and the real command after any wrapper prefix (env / nice / timeout /
+    xargs / ...) -- is executed by the OS; every later element is a literal argument that is
+    never run. Scanning just the command word keeps `env rm -rf /` blocked (rm resolved through
+    the wrapper) while a benign argument such as subprocess.run(['echo', 'python']) is not
+    misread as invoking `python`.
+
+    Returns (blocked_basenames, cmd_index): cmd_index is the position of the resolved command
+    word (or None), so the caller can hand a wrapper-hidden shell binary (env bash s.sh) to the
+    shell-argv analyzer."""
     blocked: set[str] = set()
     idx, n = 0, len(str_elts)
     prefix_pending = False  # a wrapper is awaiting its real command word
+    prev_was_flag = False  # last token (under a wrapper) was an option flag with an operand
     while idx < n:
         tok = str_elts[idx]
         if tok is None:
-            break  # a non-literal element hides the command word; stop conservatively
+            return blocked, None  # a non-literal element hides the command word; stop
         # env FOO=bar assignments precede the command word.
         if _ASSIGNMENT_RE.match(tok):
             idx += 1
             continue
-        # A wrapper's option flag / numeric arg (`timeout 5 rm`, `nice -n 5 rm`).
-        if prefix_pending and (tok.startswith("-") or _is_wrapper_numeric_arg(tok)):
+        # A wrapper's option flag (`env -u FOO cmd`, `nice -n 5 cmd`): keep prefix_pending
+        # and remember a flag is active so its separated operand is skipped below.
+        if prefix_pending and tok.startswith("-"):
+            prev_was_flag = True
+            idx += 1
+            continue
+        # A wrapper's numeric arg (`timeout 5 cmd`).
+        if prefix_pending and _is_wrapper_numeric_arg(tok):
+            prev_was_flag = False
             idx += 1
             continue
         base = os.path.basename(tok).lower()
         stem, ext = os.path.splitext(base)
         if ext in {".exe", ".com", ".bat", ".cmd"}:
             base = stem
+        # A wrapper flag's SEPARATED operand (`env -u FOO python3`, `env -C DIR cmd`): the
+        # token after a wrapper option flag that is not itself a blocked command / prefix is
+        # the flag's value -- skip it and keep scanning so the real command (python3) is not
+        # missed. If it IS a blocked command / prefix (`env -i rm`) it is handled below.
+        if (
+            prefix_pending
+            and prev_was_flag
+            and base not in _BLOCKED_COMMANDS
+            and base not in _COMMAND_PREFIXES
+        ):
+            prev_was_flag = False
+            idx += 1
+            continue
+        prev_was_flag = False
         if base in _BLOCKED_COMMANDS:
             blocked.add(base)
         if base in _COMMAND_PREFIXES:
             prefix_pending = True
             idx += 1
             continue  # wrapper consumes one command; the next word is the real one
-        break  # reached the executed command word
-    return blocked
+        return blocked, idx  # reached the executed command word
+    return blocked, None
 
 
 def _build_safe_env(workdir: str) -> dict[str, str]:
@@ -4109,7 +4140,7 @@ def _check_signal_escape_patterns(
         found.add("shell-script:" + first)
         return found
 
-    def _check_args_for_blocked(args_nodes):
+    def _check_args_for_blocked(args_nodes, shell_maybe_true = False):
         """Check if any call arguments contain blocked commands."""
         found = set()
         for arg in args_nodes:
@@ -4118,17 +4149,33 @@ def _check_signal_escape_patterns(
                 found |= _find_blocked_commands(s)
                 continue
             if isinstance(arg, (ast.List, ast.Tuple)):
+                str_elts = [_extract_string_from_node(e) for e in arg.elts]
+                first = str_elts[0] if str_elts else None
+                # With shell=True, POSIX subprocess passes the FIRST sequence element to
+                # /bin/sh -c as the command string (the rest become $0, $1, ...); so
+                # subprocess.run(['echo x > /tmp/p'], shell=True) runs a full shell command,
+                # not an argv vector. Scan elts[0] with the shell parser in that case.
+                if shell_maybe_true and first is not None:
+                    found |= _find_blocked_commands(first)
                 # A shell argv vector is analyzed as a whole so `['bash', '-c', 'echo hi']`
                 # scans the payload instead of tripping the bare-shell block on the 'bash'
                 # element. A non-shell argv only executes its command word (argv[0] plus any
                 # wrapper prefix), so scan just that -- scanning every element would misread a
                 # benign argument (subprocess.run(['echo', 'python'])) as a blocked command.
-                str_elts = [_extract_string_from_node(e) for e in arg.elts]
-                first = str_elts[0] if str_elts else None
-                if first is not None and os.path.basename(first).lower() in _SHELL_BINARIES:
+                elif first is not None and os.path.basename(first).lower() in _SHELL_BINARIES:
                     found |= _check_shell_argv(arg.elts)
                 else:
-                    found |= _blocked_in_argv(str_elts)
+                    _argv_blocked, _cmd_idx = _blocked_in_argv(str_elts)
+                    found |= _argv_blocked
+                    # A wrapper-hidden shell binary (env bash s.sh, nice sh -c '...') resolves
+                    # to a shell as its command word; analyze the shell + its args (script file
+                    # or -c payload) so the bare-shell / unscanned-script forms are caught.
+                    if (
+                        _cmd_idx is not None
+                        and str_elts[_cmd_idx] is not None
+                        and os.path.basename(str_elts[_cmd_idx]).lower() in _SHELL_BINARIES
+                    ):
+                        found |= _check_shell_argv(arg.elts[_cmd_idx:])
                 continue
             for s in _extract_strings_from_list(arg):
                 found |= _find_blocked_commands(s)
@@ -4189,6 +4236,8 @@ def _check_signal_escape_patterns(
             # import pty as p -> {"pty", "p"}. pty.spawn([...]) / pty.fork() run an unguarded
             # child process (a shell) outside the sandbox.
             self.pty_aliases: set[str] = set()
+            # from pty import spawn as s -> {"s"}: bare-name aliases of the pty child sinks.
+            self.pty_func_aliases: set[str] = set()
             self.loop_depth = 0
 
         def visit_Import(self, node):
@@ -4244,14 +4293,18 @@ def _check_signal_escape_patterns(
                         "alarm",
                     ):
                         self.signal_aliases.add(alias.asname or alias.name)
-            elif node.module in ("os", "subprocess"):
-                if node.module == "os":
-                    self.os_aliases.add("os")
-                else:
+            elif node.module in ("os", "subprocess", "posix", "nt"):
+                if node.module == "subprocess":
                     self.subprocess_aliases.add("subprocess")
+                    _eff_mod = "subprocess"
+                else:
+                    # posix / nt are the C backend os wraps: `from posix import system` is
+                    # os.system, so model the sink under os so it is caught the same way.
+                    self.os_aliases.add("os")
+                    _eff_mod = "os"
                 # Track from-imports of dangerous functions.
                 for alias in node.names:
-                    fq = f"{node.module}.{alias.name}"
+                    fq = f"{_eff_mod}.{alias.name}"
                     if fq in _SHELL_EXEC_FUNCS:
                         self.shell_exec_aliases[alias.asname or alias.name] = fq
             elif node.module == "importlib":
@@ -4279,6 +4332,11 @@ def _check_signal_escape_patterns(
                 for alias in node.names:
                     if alias.name in ("run_path", "run_module"):
                         self.runpy_func_aliases.add(alias.asname or alias.name)
+            elif node.module == "pty":
+                # from pty import spawn / fork: bare-name aliases of the pty child sinks.
+                for alias in node.names:
+                    if alias.name in ("spawn", "fork"):
+                        self.pty_func_aliases.add(alias.asname or alias.name)
             elif node.module == "inspect":
                 for alias in node.names:
                     if alias.name == "getclosurevars":
@@ -4509,6 +4567,22 @@ def _check_signal_escape_patterns(
                 return None
             return None
 
+        def _rhs_module_attr(self, func, attrs, mod_aliases):
+            """A single-assignment alias (x = mod.attr; x(...)) resolving to an attribute in
+            ``attrs`` on a module in ``mod_aliases``. Returns the attribute name or None, so a
+            re-bound execution sink (r = runpy.run_path, s = pty.spawn) is caught the same as
+            the direct call."""
+            if not (_analyzer_on and isinstance(func, ast.Name)):
+                return None
+            rhs = _scope_idx.resolve(func.id, func, "rhsnode")
+            if (
+                isinstance(rhs, ast.Attribute)
+                and rhs.attr in attrs
+                and _ast_name_matches(rhs.value, mod_aliases)
+            ):
+                return rhs.attr
+            return None
+
         def _is_sys_modules_expr(self, n):
             # `sys.modules` (attribute form) or getattr(sys, 'modules') (the getattr-
             # obfuscated form) -- both denote the loader table itself.
@@ -4522,6 +4596,18 @@ def _check_signal_escape_patterns(
                 isinstance(n, ast.Call)
                 and isinstance(n.func, ast.Name)
                 and n.func.id == "getattr"
+                and len(n.args) >= 2
+                and _ast_name_matches(n.args[0], self.sys_aliases)
+                and _extract_string_from_node(n.args[1]) == "modules"
+            ):
+                return True
+            # object.__getattribute__(sys, 'modules') / type(sys).__getattribute__(sys,
+            # 'modules'): the unbound dunder accessor reaches the loader table exactly like
+            # getattr, so treat it the same.
+            if (
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and n.func.attr in ("__getattribute__", "__getattr__")
                 and len(n.args) >= 2
                 and _ast_name_matches(n.args[0], self.sys_aliases)
                 and _extract_string_from_node(n.args[1]) == "modules"
@@ -4701,7 +4787,14 @@ def _check_signal_escape_patterns(
 
                 cmd_kw_values = [v for k, v in expanded_kwargs.items() if k in _CMD_KWARGS]
                 all_call_args = list(node.args) + cmd_kw_values
-                blocked_in_args = _check_args_for_blocked(all_call_args)
+                # A non-literal-False shell= is treated as potentially True (conservative), so a
+                # sequence's first element is the shell -c command string, not an argv vector.
+                _shell_node = expanded_kwargs.get("shell")
+                _shell_maybe_true = not (
+                    _shell_node is None
+                    or (isinstance(_shell_node, ast.Constant) and _shell_node.value is False)
+                )
+                blocked_in_args = _check_args_for_blocked(all_call_args, _shell_maybe_true)
 
                 if has_opaque_kwargs:
                     # Can't inspect dynamic **kwargs; flag as unsafe.
@@ -5143,6 +5236,30 @@ def _check_signal_escape_patterns(
                             "namespace-dict .get() access to builtins / a sensitive module"
                         )
                 elif (
+                    # dict.__getitem__(globals(), '__builtins__') / dict.get(locals(), ...): the
+                    # unbound dict-method twin of globals()['__builtins__'], pulling the builtins
+                    # namespace (or a dangerous module) out of the namespace dict without a
+                    # subscript node. The receiver is `dict`, not the namespace dict itself, so
+                    # the subscript scan misses it; here the namespace dict is the first argument.
+                    isinstance(func, ast.Attribute)
+                    and func.attr in ("__getitem__", "get")
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "dict"
+                    and len(node.args) >= 2
+                    and isinstance(node.args[0], ast.Call)
+                    and isinstance(node.args[0].func, ast.Name)
+                    and node.args[0].func.id in ("globals", "locals", "vars")
+                    and not node.args[0].args
+                ):
+                    _key = _const_fold(node.args[1], _const_env)
+                    if isinstance(_key, str) and (
+                        _key in ("__builtins__", "__builtin__")
+                        or _key.split(".")[0] in _DANGEROUS_IMPORT_NAMES
+                    ):
+                        dynamic_desc = (
+                            "unbound dict access to builtins / a sensitive module namespace dict"
+                        )
+                elif (
                     (
                         # types.FunctionType(compile(src, ...), {})() runs a code object WITHOUT
                         # eval/exec, so a dynamic compile() payload reaches execution here even
@@ -5184,24 +5301,45 @@ def _check_signal_escape_patterns(
                     # file/module in the guarded interpreter WITHOUT the recursive source
                     # analysis exec/eval receive, so a sandboxed snippet can write a local
                     # evil.py and run it. Treat these as direct execution sinks. Covers the
-                    # attribute form and a `from runpy import run_path` bare-name alias.
+                    # attribute form, a `from runpy import run_path` bare-name alias, and a
+                    # single-assignment alias (r = runpy.run_path; r('evil.py')).
                     (
                         isinstance(func, ast.Attribute)
                         and func.attr in ("run_path", "run_module")
                         and _ast_name_matches(func.value, self.runpy_aliases)
                     )
                     or (isinstance(func, ast.Name) and func.id in self.runpy_func_aliases)
+                    or self._rhs_module_attr(func, ("run_path", "run_module"), self.runpy_aliases)
                 ):
-                    _rn = func.attr if isinstance(func, ast.Attribute) else func.id
+                    if isinstance(func, ast.Attribute):
+                        _rn = func.attr
+                    elif func.id in self.runpy_func_aliases:
+                        _rn = func.id
+                    else:
+                        _rn = self._rhs_module_attr(
+                            func, ("run_path", "run_module"), self.runpy_aliases
+                        )
                     dynamic_desc = f"runpy.{_rn}() executes a file/module without static analysis"
                 elif (
                     # pty.spawn([...]) / pty.fork() run an unguarded child process (typically a
                     # shell) outside the sandbox, the same escape as subprocess / os.system.
-                    isinstance(func, ast.Attribute)
-                    and func.attr in ("spawn", "fork")
-                    and _ast_name_matches(func.value, self.pty_aliases)
+                    # Covers the attribute form, a `from pty import spawn` bare-name alias, and a
+                    # single-assignment alias (s = pty.spawn; s([...])).
+                    (
+                        isinstance(func, ast.Attribute)
+                        and func.attr in ("spawn", "fork")
+                        and _ast_name_matches(func.value, self.pty_aliases)
+                    )
+                    or (isinstance(func, ast.Name) and func.id in self.pty_func_aliases)
+                    or self._rhs_module_attr(func, ("spawn", "fork"), self.pty_aliases)
                 ):
-                    dynamic_desc = f"pty.{func.attr}() spawns an unguarded child process"
+                    if isinstance(func, ast.Attribute):
+                        _pn = func.attr
+                    elif func.id in self.pty_func_aliases:
+                        _pn = func.id
+                    else:
+                        _pn = self._rhs_module_attr(func, ("spawn", "fork"), self.pty_aliases)
+                    dynamic_desc = f"pty.{_pn}() spawns an unguarded child process"
                 elif (
                     # inspect.getclosurevars(open).nonlocals['real'] recovers the original
                     # unguarded callable a guard wrapper closes over, without spelling
@@ -5366,12 +5504,17 @@ def _check_signal_escape_patterns(
             # 'cell_contents'].__get__(cell): fetch a gadget descriptor from a type's __dict__
             # BY NAME (a subscript, not an attribute node), then invoke __get__ to recover the
             # guarded wrapper's original callable. Flag a __dict__ subscript keyed by a gadget
-            # dunder so the attribute-node gadget scan cannot be side-stepped this way.
-            if (
-                isinstance(node.ctx, ast.Load)
-                and isinstance(node.value, ast.Attribute)
-                and node.value.attr == "__dict__"
-            ):
+            # dunder so the attribute-node gadget scan cannot be side-stepped this way. The same
+            # mapping is reachable through vars(type(obj))[...], so cover that form too.
+            _dunder_dict = (
+                isinstance(node.value, ast.Attribute) and node.value.attr == "__dict__"
+            ) or (
+                isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id == "vars"
+                and node.value.args
+            )
+            if isinstance(node.ctx, ast.Load) and _dunder_dict:
                 _dk = _const_fold(node.slice, _const_env)
                 if isinstance(_dk, str) and _dk in _GADGET_DUNDERS:
                     dynamic_exec.append(
@@ -5386,20 +5529,9 @@ def _check_signal_escape_patterns(
             # dangerous LITERAL key so legit uses ("x" in sys.modules, sys.modules.get(
             # name), sys.modules[name] = ...) stay allowed.
             v = node.value
-            # sys.modules[...] (attribute form) or getattr(sys, 'modules')[...] (the
-            # getattr-obfuscated form) both index the loader table.
-            is_sys_modules = (
-                isinstance(v, ast.Attribute)
-                and v.attr == "modules"
-                and _ast_name_matches(v.value, self.sys_aliases)
-            ) or (
-                isinstance(v, ast.Call)
-                and isinstance(v.func, ast.Name)
-                and v.func.id == "getattr"
-                and len(v.args) >= 2
-                and _ast_name_matches(v.args[0], self.sys_aliases)
-                and _extract_string_from_node(v.args[1]) == "modules"
-            )
+            # sys.modules[...] (attribute form), getattr(sys, 'modules')[...], or
+            # object.__getattribute__(sys, 'modules')[...] all index the loader table.
+            is_sys_modules = self._is_sys_modules_expr(v)
             if isinstance(node.ctx, ast.Load) and is_sys_modules:
                 # Constant-fold the key so sys.modules['o' + 's'] is caught, not just a
                 # bare literal; a truly dynamic key (sys.modules[name]) stays allowed.
@@ -7191,6 +7323,51 @@ for _iomod in (_io, _lowio):
             _iomod.FileIO = _guard_fileio(_iomod.FileIO)
     except Exception:
         pass
+
+# The guards above patch the EXISTING posix / nt / _io module objects, but sandboxed code
+# can mint a FRESH copy with the original unwrapped C functions via
+# _imp.create_builtin(posix.__spec__) (or the BuiltinImporter path) and call its open()
+# directly. Wrap _imp.create_builtin / create_dynamic so a freshly created guard-relevant
+# module (posix / nt with os.open-style open + mutators, _io / io with open + FileIO) gets
+# the same wrappers re-applied before it is handed back. Other builtin modules carry no file
+# primitives, so they pass through unchanged and ordinary lazy imports keep working.
+def _reguard_created(m):
+    try:
+        _nm = getattr(m, "__name__", "") or ""
+    except Exception:
+        return m
+    try:
+        if _nm in ("posix", "nt"):
+            if hasattr(m, "open"):
+                m.open = _make_osopen_guard(m.open)
+            for _rn in _OS_MUTATORS1:
+                _wrap1(m, _rn, _nm + "." + _rn)
+            for _rn in ("rename", "renames", "replace", "link", "symlink"):
+                _wrap2(m, _rn, True)
+        elif _nm in ("_io", "io"):
+            if hasattr(m, "open"):
+                m.open = _guard_open_like(m.open)
+            if hasattr(m, "FileIO"):
+                m.FileIO = _guard_fileio(m.FileIO)
+    except Exception:
+        pass
+    return m
+
+try:
+    import _imp as _lowimp
+
+    def _guard_create(_orig):
+        @_gwraps(_orig)
+        def w(spec, *a, **k):
+            return _reguard_created(_orig(spec, *a, **k))
+        return w
+
+    for _cn in ("create_builtin", "create_dynamic"):
+        _co = getattr(_lowimp, _cn, None)
+        if _co is not None:
+            setattr(_lowimp, _cn, _guard_create(_co))
+except Exception:
+    pass
 
 # Confine the current working directory: os.chdir to a dir outside the workdir would
 # let a later relative write/read (which the static read scan treats as local) escape.

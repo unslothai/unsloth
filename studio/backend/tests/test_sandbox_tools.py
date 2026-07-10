@@ -2608,3 +2608,100 @@ class TestRound20Bypasses:
     )
     def test_non_shell_argv_command_word_blocked(self, code):
         assert _check_code_safety(code) is not None, code
+
+
+class TestRound21Bypasses:
+    """Twenty-first-round Codex findings: wrapper option operands in argv, shell=True sequence
+    payloads, from-import/alias execution sinks (pty, posix/nt, runpy), dunder / vars() /
+    unbound-dict access to sys.modules and builtins, and expansions behind command wrappers."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['env', '-u', 'FOO', 'python3', '-c', 'x'])",
+            "import subprocess\nsubprocess.run(['env', '-C', '/tmp', 'python3', '-c', 'x'])",
+            "import subprocess\nsubprocess.run(['env', '-u', 'A', '-u', 'B', 'bash', 's.sh'])",
+        ],
+    )
+    def test_wrapper_option_operand_argv_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_wrapper_option_operand_benign_allowed(self):
+        _ok("import subprocess\nsubprocess.run(['env', '-u', 'FOO', 'echo', 'hi'])")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['echo x > /tmp/p'], shell=True)",
+            "import subprocess\nsubprocess.run(['rm -rf /tmp/x'], shell=True)",
+        ],
+    )
+    def test_shell_true_sequence_payload_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from pty import spawn\nspawn(['sh', '-c', 'echo x > /tmp/p'])",
+            "import pty\ns = pty.spawn\ns(['sh', '-c', 'id'])",
+            "from pty import fork\nfork()",
+        ],
+    )
+    def test_pty_spawn_alias_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from posix import system\nsystem('echo x > /tmp/p')",
+            "from posix import system as s\ns('rm -rf /tmp/x')",
+        ],
+    )
+    def test_posix_fromimport_shell_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_runpy_single_assignment_alias_blocked(self):
+        code = "import runpy\nr = runpy.run_path\nr('evil.py')"
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "vars(type(open))['__closure__'].__get__(open)[0]",
+            "c = (lambda: x).__closure__[0]\nvars(type(c))['cell_contents'].__get__(c)",
+        ],
+    )
+    def test_vars_type_descriptor_gadget_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_object_getattribute_sys_modules_blocked(self):
+        code = (
+            "import sys\nobject.__getattribute__(sys, 'modules').pop('posix', None)\nimport posix"
+        )
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "dict.__getitem__(globals(), '__builtins__').__import__('os').system('id')",
+            "dict.get(locals(), '__builtins__').__import__('os').system('id')",
+        ],
+    )
+    def test_unbound_dict_builtins_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_expansion_behind_wrapper_blocked(self):
+        code = "import os\nos.system('CMD=python3; env $CMD -c \\'x\\'')"
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "d = vars(type(''))\nprint(len(d))",
+            "d = {'a': 1}\nprint(dict.__getitem__(d, 'a'))",
+            "import os\nos.system('env FOO=bar echo hi')",
+            "from posix import getcwd\nprint(getcwd())",
+        ],
+    )
+    def test_round21_benign_allowed(self, code):
+        _ok(code)

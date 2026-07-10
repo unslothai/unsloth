@@ -1089,3 +1089,45 @@ def test_sandboxed_workdir_dir_read_allowed():
     assert "LS True" in out
     assert "SC True" in out
     assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_fresh_builtin_module_open_confined(tmp_path):
+    # _imp.create_builtin(posix.__spec__) mints a FRESH posix module with the original
+    # unwrapped C open(), sidestepping the guards on the existing posix object. The guard
+    # re-wraps a freshly created builtin module, so its open() to an outside path is confined.
+    target = tmp_path / "fresh_builtin_escape.txt"
+    out = _python_exec(
+        "import _imp, posix\n"
+        f"m = _imp.create_builtin(posix.__spec__)\n"
+        f"m.open({str(target)!r}, posix.O_CREAT | posix.O_WRONLY)\n"
+        "print('MADE')\n",
+        None,
+        30,
+        "backstop-freshbuiltin",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_fresh_builtin_local_write_allowed():
+    # A freshly created posix module can still write INSIDE the workdir (the re-applied guard
+    # only confines escapes), so ordinary use keeps working.
+    workdir = get_sandbox_workdir("backstop-freshbuiltin-local")
+    out = _python_exec(
+        "import _imp, posix, os\n"
+        "m = _imp.create_builtin(posix.__spec__)\n"
+        "fd = m.open('fresh_local.txt', posix.O_CREAT | posix.O_WRONLY)\n"
+        "os.write(fd, b'x')\nos.close(fd)\nprint('LOCAL-OK')\n",
+        None,
+        30,
+        "backstop-freshbuiltin-local",
+        disable_sandbox = False,
+    )
+    assert "LOCAL-OK" in out
+    assert "sandbox:" not in out
+    _p = os.path.join(workdir, "fresh_local.txt")
+    if os.path.exists(_p):
+        os.remove(_p)
