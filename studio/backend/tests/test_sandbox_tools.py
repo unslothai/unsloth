@@ -3181,3 +3181,103 @@ class TestRound28Bypasses:
     )
     def test_round28_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound29Bypasses:
+    """Twenty-ninth-round Codex findings (follow-ups on the round-28 cwd / wrapper handling
+    plus a reader-allowlist gap): a wrapper-prefixed shell argv (env bash -c), a wrapper's
+    numeric duration mistaken for the command word in the read scanner (timeout 1 bash -c),
+    args= ignored by the dynamic-cwd fail-closed, a relative env -C not resolved against the
+    ambient subprocess cwd, diff-style readers omitted from the read allowlist, and a
+    shell= / cwd= smuggled through a literal **{...} unpack. (The device-sink str-subclass
+    gadget is covered in test_sandbox_runtime_backstop.)"""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A wrapper (env / timeout / nice) hides the nested shell binary, so argv[0] alone
+            # is not the shell; the -c payload must still be scanned.
+            "import subprocess\nsubprocess.run(['env', 'bash', '-c', 'cat /etc/passwd'])",
+            "import subprocess\nsubprocess.run(['timeout', '5', 'bash', '-c', 'head /etc/shadow'])",
+            "import subprocess\nsubprocess.run(['env', '-i', 'sh', '-c', 'cat /etc/passwd'])",
+        ],
+    )
+    def test_wrapper_prefixed_shell_argv_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # timeout's numeric duration is not the command word: the nested bash -c after it
+            # must still be scanned in the shell-string read path.
+            "import os\nos.system('timeout 1 bash -c \"cat /etc/passwd\"')",
+            "import os\nos.system('nice 5 cat /etc/passwd')",
+        ],
+    )
+    def test_wrapper_duration_in_shell_reads_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # The dynamic-cwd fail-closed must honor the public args= keyword, not just argv[0].
+            "import subprocess\nsubprocess.run(args=['cat', 'passwd'], cwd=P)",
+            "import subprocess\nsubprocess.Popen(args=['head', 'shadow'], cwd=secret_dir)",
+        ],
+    )
+    def test_args_kw_dynamic_cwd_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # env -C with a RELATIVE dir chdirs relative to the ambient subprocess cwd, so
+            # `env -C . cat passwd` under cwd=/etc still reads /etc/passwd.
+            "import subprocess\nsubprocess.run('env -C . cat passwd', shell=True, cwd='/etc')",
+            "import subprocess\nsubprocess.run('env --chdir=. cat passwd', shell=True, cwd='/etc')",
+            "import subprocess\nsubprocess.run('env -C ssh cat sshd_config', shell=True, cwd='/etc')",
+        ],
+    )
+    def test_relative_env_c_against_ambient_cwd_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # diff-style utilities print file contents, so an escaping glob / $VAR handed to
+            # one exfiltrates a host secret.
+            "import os\nos.system('diff /etc/pass* /dev/null')",
+            "import os\nos.system('cmp /etc/shadow /dev/null')",
+            "import os\nos.system('sdiff /etc/ssh/* /dev/null')",
+        ],
+    )
+    def test_diff_style_readers_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # shell= / cwd= smuggled through a literal **{...} unpack must be seen like an
+            # explicit kwarg.
+            "import subprocess\nsubprocess.run('cat /etc/passwd', **{'shell': True})",
+            "import subprocess\nsubprocess.run('cat passwd', shell=True, **{'cwd': '/etc'})",
+        ],
+    )
+    def test_literal_kwargs_shell_cwd_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign wrapper / diff / args= / env -C / **kwargs forms must still pass.
+            "import subprocess\nsubprocess.run(['env', 'bash', '-c', 'echo hi'])",
+            "import os\nos.system('timeout 1 bash -c \"echo hi\"')",
+            "import subprocess\nsubprocess.run(args=['cat', 'out.txt'], cwd='sub')",
+            "import subprocess\nsubprocess.run('env -C sub cat notes.txt', shell=True)",
+            "import subprocess\nsubprocess.run('echo hi', **{'shell': True})",
+            "import os\nos.system('diff a.txt b.txt')",
+            "import os\nos.system('cmp a.bin b.bin')",
+        ],
+    )
+    def test_round29_benign_allowed(self, code):
+        _ok(code)

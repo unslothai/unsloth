@@ -286,6 +286,14 @@ _SHELL_READ_COMMANDS = frozenset(
         "dd",
         "readlink",
         "realpath",
+        # diff-style utilities print file contents in their output: `diff SECRET /dev/null`
+        # (or `cmp -l SECRET /dev/null`) leaks the file line-by-line / byte-by-byte, so a
+        # shell-expanded ($VAR / glob / `cmd`) path handed to one exfiltrates a host secret.
+        "diff",
+        "sdiff",
+        "diff3",
+        "colordiff",
+        "cmp",
     }
 )
 # Wrappers whose next non-flag argument is the command Bash will exec.
@@ -4367,6 +4375,19 @@ def _is_sensitive_abs_path(s):
 _READ_SCAN_SEPARATORS = (";", "&&", "||", "|", "&", "(", ")", "`", "{", "}", "\n")
 
 
+def _join_chdir(base, newdir):
+    """Resolve an ``env -C DIR`` / ``--chdir=DIR`` operand against the current child cwd.
+
+    A relative DIR chdirs relative to wherever the child already is (an ambient
+    subprocess ``cwd=`` or a prior ``env -C``), so ``env -C . cat passwd`` under
+    ``cwd=/etc`` still reads ``/etc/passwd``; join it onto the current base rather
+    than replacing the base with the bare relative fragment. An absolute / ``~``
+    DIR overrides the base outright."""
+    if newdir.startswith("/") or newdir.startswith("~"):
+        return newdir
+    return os.path.join(base, newdir) if base else newdir
+
+
 def _scan_command_string_for_reads(
     command,
     *,
@@ -4500,7 +4521,7 @@ def _scan_command_string_for_reads(
         if _at_cmd:
             if _skip_operand:  # a wrapper flag's separated operand (env -u NAME)
                 if _pending_chdir:  # ...but env -C DIR's operand is the child cwd
-                    _chdir = _pt
+                    _chdir = _join_chdir(_chdir, _pt)
                     _pending_chdir = False
                 _skip_operand = False
                 continue
@@ -4517,10 +4538,14 @@ def _scan_command_string_for_reads(
                     _pending_chdir = True
                     _skip_operand = True
                 elif _wrapper == "env" and _pt.startswith("--chdir="):
-                    _chdir = _pt.split("=", 1)[1]
+                    _chdir = _join_chdir(_chdir, _pt.split("=", 1)[1])
                 elif _wrapper and _wrapper_flag_takes_operand(_wrapper, _pt):
                     _skip_operand = True
                 continue  # wrapper flag; still before the command word
+            # A wrapper's numeric operand (`timeout 1 bash -c ...`, `nice 5 cat ...`) is not
+            # the command word; skip it so the real command (bash / cat) after it is scanned.
+            if _wrapper and _is_wrapper_numeric_arg(_pt):
+                continue
             _base = os.path.basename(_pt).lower()
             if _base in _COMMAND_PREFIXES:
                 _wrapper = _base
@@ -7687,6 +7712,22 @@ def _check_signal_escape_patterns(
         fq = _shell_string_sink_fq(f)
         return fq is not None and (fq.startswith("os.exec") or fq.startswith("os.spawn"))
 
+    def _iter_call_kwargs(call):
+        # Yield (name, value_node) for every keyword argument, EXPANDING a literal **{...}
+        # unpack (subprocess.run(cmd, **{'shell': True, 'cwd': p})) so a shell / cwd argument
+        # smuggled through a dict unpack is seen exactly like an explicit shell= / cwd= kwarg.
+        for _kw in call.keywords or []:
+            if _kw.arg is not None:
+                yield _kw.arg, _kw.value
+            elif isinstance(_kw.value, ast.Dict):
+                for _dk, _dv in zip(_kw.value.keys, _kw.value.values):
+                    if (
+                        _dk is not None
+                        and isinstance(_dk, ast.Constant)
+                        and isinstance(_dk.value, str)
+                    ):
+                        yield _dk.value, _dv
+
     def _scan_shell_string_reads(node, f):
         # os.system('cat /etc/passwd') / subprocess.run('cat /etc/passwd', shell=True): the
         # read scanner otherwise treats the whole command as one opaque path candidate, and
@@ -7694,12 +7735,13 @@ def _check_signal_escape_patterns(
         # check each token as a read path so an embedded host-secret read is caught.
         def _first_cmd_arg():
             # The command may be positional OR the public `args=` keyword
-            # (subprocess.run(args='cat /etc/passwd', shell=True) / run(args=['cat', p])).
+            # (subprocess.run(args='cat /etc/passwd', shell=True) / run(args=['cat', p])),
+            # including a literal **{'args': ...} unpack.
             if node.args:
                 return node.args[0]
-            for _kw in node.keywords or []:
-                if _kw.arg == "args":
-                    return _kw.value
+            for _name, _val in _iter_call_kwargs(node):
+                if _name == "args":
+                    return _val
             return None
 
         # subprocess.run('cat passwd', shell=True, cwd='/etc') runs the payload in an unguarded
@@ -7708,12 +7750,12 @@ def _check_signal_escape_patterns(
         _cwd_lit = None
         _cwd_dyn = False
         if _is_subprocess_exec_callee(f):
-            for _kw in node.keywords or []:
-                if _kw.arg == "cwd":
-                    _cv = _fold_read_arg(_kw.value)
+            for _name, _val in _iter_call_kwargs(node):
+                if _name == "cwd":
+                    _cv = _fold_read_arg(_val)
                     if isinstance(_cv, str):
                         _cwd_lit = _cv
-                    elif not (isinstance(_kw.value, ast.Constant) and _kw.value.value is None):
+                    elif not (isinstance(_val, ast.Constant) and _val.value is None):
                         _cwd_dyn = True
                     break
 
@@ -7739,10 +7781,16 @@ def _check_signal_escape_patterns(
         if _is_subprocess_exec_callee(f):
             argv = _first_cmd_arg()
             if isinstance(argv, (ast.List, ast.Tuple)) and argv.elts:
-                _first = _fold_read_arg(argv.elts[0])
-                if _first is not None and os.path.basename(_first).lower() in _SHELL_BINARIES:
-                    _elts = [_fold_read_arg(_e) for _e in argv.elts]
-                    for _k, _ev in enumerate(_elts):
+                _elts = [_fold_read_arg(_e) for _e in argv.elts]
+                # Resolve the executed command word past wrapper prefixes (env / timeout /
+                # nice / ...): subprocess.run(['env', 'bash', '-c', payload]) runs the nested
+                # shell just like subprocess.run(['bash', '-c', payload]), so scan the -c
+                # payload regardless of the wrapper hiding argv[0].
+                _ci = _blocked_in_argv(_elts)[1]
+                _sh = _elts[_ci] if _ci is not None and _ci < len(_elts) else None
+                if _sh is not None and os.path.basename(_sh).lower() in _SHELL_BINARIES:
+                    for _k in range(_ci + 1, len(_elts)):
+                        _ev = _elts[_k]
                         if _ev is not None and (
                             _ev == "-c"
                             or (
@@ -7764,9 +7812,9 @@ def _check_signal_escape_patterns(
             # subprocess-exec callee resolver so the attribute, from-import (from subprocess
             # import run as r) and single-assignment (r = subprocess.run) forms are all seen.
             if _is_subprocess_exec_callee(f):
-                for kw in node.keywords or []:
-                    if kw.arg == "shell" and not (
-                        isinstance(kw.value, ast.Constant) and kw.value.value is False
+                for _name, _val in _iter_call_kwargs(node):
+                    if _name == "shell" and not (
+                        isinstance(_val, ast.Constant) and _val.value is False
                     ):
                         _is_str = True
         _cmd_node = _first_cmd_arg()
@@ -7809,21 +7857,28 @@ def _check_signal_escape_patterns(
             _sub_cwd = None
             _sub_cwd_dynamic = False
             if _is_child_exec:
-                for kw in node.keywords or []:
-                    if kw.arg == "cwd":
-                        _cv = _fold_read_arg(kw.value)
+                for _name, _val in _iter_call_kwargs(node):
+                    if _name == "cwd":
+                        _cv = _fold_read_arg(_val)
                         if isinstance(_cv, str):
                             _sub_cwd = _cv
-                        elif not (isinstance(kw.value, ast.Constant) and kw.value.value is None):
+                        elif not (isinstance(_val, ast.Constant) and _val.value is None):
                             _sub_cwd_dynamic = True
                         break
             # A file-reading child (cat / head / ...) with a relative argv path under a
             # non-literal cwd could read a host secret (cwd=P; P evaluates to /etc); the child
-            # is unguarded, so fail closed unless the cwd is proven sandbox-local.
+            # is unguarded, so fail closed unless the cwd is proven sandbox-local. The argv may
+            # be positional OR the public args= keyword (run(args=['cat', p], cwd=P)).
             if _sub_cwd_dynamic:
                 _argv0 = None
-                if node.args and isinstance(node.args[0], (ast.List, ast.Tuple)):
-                    _av = node.args[0].elts
+                _argv_node = node.args[0] if node.args else None
+                if _argv_node is None:
+                    for _name, _val in _iter_call_kwargs(node):
+                        if _name == "args":
+                            _argv_node = _val
+                            break
+                if isinstance(_argv_node, (ast.List, ast.Tuple)):
+                    _av = _argv_node.elts
                     _p0 = _fold_read_arg(_av[0]) if _av else None
                     if (
                         isinstance(_p0, str)
@@ -8098,9 +8153,12 @@ def _within(p):
         if isinstance(p, int):
             return True
         # Allow a write to an exact device sink. Checked on the REQUESTED path, not its
-        # realpath, so /dev/stdout is not followed to a redirected outside file.
+        # realpath, so /dev/stdout is not followed to a redirected outside file. Normalize
+        # via the base str.replace (not p.replace): a str subclass could override replace()
+        # to return "/dev/null" while its real value is an outside file, so call the genuine
+        # method on the underlying buffer, which yields a plain str immune to the override.
         _ps = p if isinstance(p, str) else (_fsdecode(p) if isinstance(p, (bytes, bytearray)) else None)
-        if _ps is not None and _ps.replace("\\", "/") in _SAFE_DEV_SINKS:
+        if _ps is not None and str.replace(_ps, "\\", "/") in _SAFE_DEV_SINKS:
             return True
         # os.path.realpath internally calls the LIVE os.fspath (posixpath.realpath does
         # `filename = os.fspath(filename)`) and os.lstat / os.readlink / os.getcwd, so a

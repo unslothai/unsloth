@@ -1400,3 +1400,21 @@ def test_sandboxed_os_devnull_write_allowed():
     )
     assert "WROTE_OSDEVNULL" in out
     assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_device_sink_str_subclass_escape_denied(tmp_path):
+    # The device-sink allowlist must not trust a str subclass's replace(): a subclass whose
+    # replace() returns '/dev/null' while its real value is an outside file would otherwise
+    # pass the sink shortcut and write outside the workdir. The guard normalizes via the base
+    # str.replace, so the real (outside) path is seen and the write is denied.
+    target = tmp_path / "sink_escape.txt"
+    code = (
+        "class P(str):\n"
+        "    def replace(self, *a, **k):\n"
+        "        return '/dev/null'\n"
+        f"open(P({str(target)!r}), 'w').write('x'); print('WROTE_ESCAPE')"
+    )
+    out = _python_exec(code, None, 30, "backstop-devsink-subclass", disable_sandbox = False)
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
