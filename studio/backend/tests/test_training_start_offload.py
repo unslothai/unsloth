@@ -29,7 +29,13 @@ class _FakeBackend:
     def is_training_active(self):
         return False
 
-    def start_training(self, job_id, *, before_spawn = None, **kwargs):
+    def start_training(
+        self,
+        job_id,
+        *,
+        before_spawn = None,
+        **kwargs,
+    ):
         # The real backend runs before_spawn synchronously inside this call, so the
         # thread this method runs on is the thread the blocking VRAM hook runs on.
         self.start_thread = threading.current_thread()
@@ -79,7 +85,12 @@ def test_backend_start_guard_blocks_overlapping_starts():
     release_first = threading.Event()
     results = {}
 
-    def _slow_impl(job_id, *, before_spawn = None, **kwargs):
+    def _slow_impl(
+        job_id,
+        *,
+        before_spawn = None,
+        **kwargs,
+    ):
         first_entered.set()
         release_first.wait(timeout = 5.0)
         return True
