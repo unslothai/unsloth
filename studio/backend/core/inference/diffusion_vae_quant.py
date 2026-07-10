@@ -81,8 +81,9 @@ _VAE_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     "ltx-2": frozenset({VAE_QUANT_FP8_DYNAMIC}),
 }
 
-# Cache of device -> bool for the fp8_dynamic conv smoke probe (run once per device).
-_VAE_DYNAMIC_PROBE_CACHE: dict[str, bool] = {}
+# Cache of (device, conv ndim) -> bool for the fp8_dynamic conv smoke probe (run once per
+# device and dimensionality: the 2D and 3D torchao conv kernels are separate code paths).
+_VAE_DYNAMIC_PROBE_CACHE: dict[tuple[str, int], bool] = {}
 
 # ``auto`` only quantises a VAE big enough for the saving to be worth the fp8-decode overhead.
 # A decoded-image speed/memory sweep showed the split is by kind: image AutoencoderKLs are
@@ -148,17 +149,20 @@ def _vae_param_bytes(vae: Any) -> int:
         return _VAE_AUTO_MIN_BYTES
 
 
-def _vae_fp8_dynamic_probe(device: str) -> bool:
-    """True iff torchao's fp8_dynamic CONV path runs on this build: quantise a tiny
-    Conv2d(16, 16, 3, padding=1) (channels a multiple of 16 so torchao does not skip it;
-    a SPATIAL 3x3 kernel, NOT 1x1 -- torchao 0.17's fp8 conv kernel rejects pointwise convs,
-    which is the path _cast_vae_fp8_dynamic actually casts) with the PerTensor fp8 config and
-    run one forward. Cached per device. This makes an explicit fp8_dynamic request robust to a
-    torchao build whose Float8 config lacks the conv path (the Linear-only fp8 the transformer
-    probes does not prove the conv path works) -- it fails here and the request stays dense
-    rather than crashing at the first decode."""
-    if device in _VAE_DYNAMIC_PROBE_CACHE:
-        return _VAE_DYNAMIC_PROBE_CACHE[device]
+def _vae_fp8_dynamic_probe(device: str, ndim: int = 2) -> bool:
+    """True iff torchao's fp8_dynamic CONV path runs on this build for ``ndim``-D convolutions:
+    quantise a tiny Conv2d/Conv3d(16, 16, 3, padding=1) (channels a multiple of 16 so torchao
+    does not skip it; a SPATIAL 3x3(x3) kernel, NOT 1x1 -- torchao 0.17's fp8 conv kernel
+    rejects pointwise convs, which is the path _cast_vae_fp8_dynamic actually casts) with the
+    PerTensor fp8 config and run one forward. Cached per (device, ndim): the 2D and 3D conv
+    kernels are separate torchao code paths, so a working Conv2d does not prove Conv3d (the
+    video decoders) works. This makes an explicit fp8_dynamic request robust to a torchao build
+    whose Float8 config lacks the conv path (the Linear-only fp8 the transformer probes does not
+    prove the conv path works) -- it fails here and the request stays dense rather than crashing
+    at the first decode."""
+    key = (device, ndim)
+    if key in _VAE_DYNAMIC_PROBE_CACHE:
+        return _VAE_DYNAMIC_PROBE_CACHE[key]
     ok = False
     try:
         import torch
@@ -169,21 +173,40 @@ def _vae_fp8_dynamic_probe(device: str) -> bool:
             quantize_,
         )
 
-        conv = nn.Conv2d(16, 16, 3, padding = 1).to(device = device, dtype = torch.bfloat16)
+        conv_cls = nn.Conv3d if ndim == 3 else nn.Conv2d
+        conv = conv_cls(16, 16, 3, padding = 1).to(device = device, dtype = torch.bfloat16)
         quantize_(
             conv,
             Float8DynamicActivationFloat8WeightConfig(granularity = PerTensor()),
-            filter_fn = lambda m, fqn = "": isinstance(m, nn.Conv2d),
+            filter_fn = lambda m, fqn = "": isinstance(m, conv_cls),
         )
-        x = torch.randn(1, 16, 4, 4, device = device, dtype = torch.bfloat16)
+        x = torch.randn(1, 16, *([4] * ndim), device = device, dtype = torch.bfloat16)
         with torch.no_grad():
             conv(x)
         torch.cuda.synchronize()
         ok = True
     except Exception:
         ok = False
-    _VAE_DYNAMIC_PROBE_CACHE[device] = ok
+    _VAE_DYNAMIC_PROBE_CACHE[key] = ok
     return ok
+
+
+def _vae_conv_ndims(vae: Any) -> tuple[int, ...]:
+    """The conv dimensionalities ``_cast_vae_fp8_dynamic`` would quantise in this VAE: (2,) for
+    image AutoencoderKLs, (3,) or (2, 3) for the video Conv3d decoders. Falls back to (2,) when
+    the VAE cannot be inspected so the gate never silently widens."""
+    ndims: set[int] = set()
+    try:
+        from torch import nn
+
+        for module in vae.modules():
+            if isinstance(module, nn.Conv3d):
+                ndims.add(3)
+            elif isinstance(module, nn.Conv2d):
+                ndims.add(2)
+    except Exception:
+        ndims = set()
+    return tuple(sorted(ndims)) or (2,)
 
 
 def select_vae_quant_scheme(
@@ -193,6 +216,7 @@ def select_vae_quant_scheme(
     family: Optional[str] = None,
     offload_active: bool = False,
     force_fp32: bool = False,
+    vae: Any = None,
 ) -> Optional[str]:
     """Resolve the concrete VAE scheme to apply, or None to stay dense bf16.
 
@@ -202,7 +226,8 @@ def select_vae_quant_scheme(
     comment) and returns the first scheme that: survives the active offload policy (torchao
     fp8_dynamic tensors reject the Module.to() an offload hook uses -> only layerwise fp8 under
     offload), is not family-denied, is hardware-supported, and (fp8_dynamic only) passes a real
-    conv smoke probe. Returns None when nothing qualifies (e.g. no CUDA / pre-Ada)."""
+    conv smoke probe for every conv dimensionality the ``vae`` contains (Conv2d when the VAE is
+    not provided). Returns None when nothing qualifies (e.g. no CUDA / pre-Ada)."""
     requested = normalize_vae_quant(requested)
     if requested is None or force_fp32:
         return None
@@ -222,8 +247,13 @@ def select_vae_quant_scheme(
             continue
         if not vae_quant_supported(target, scheme):
             continue
-        # fp8_dynamic additionally needs the torchao CONV fp8 kernel to actually run on this build.
-        if scheme == VAE_QUANT_FP8_DYNAMIC and not _vae_fp8_dynamic_probe(device):
+        # fp8_dynamic additionally needs the torchao CONV fp8 kernel to actually run on this
+        # build, for every conv dimensionality the VAE contains (Conv3d video decoders are a
+        # separate kernel path; Conv2d assumed when no VAE was provided to inspect).
+        if scheme == VAE_QUANT_FP8_DYNAMIC and not all(
+            _vae_fp8_dynamic_probe(device, ndim)
+            for ndim in (_vae_conv_ndims(vae) if vae is not None else (2,))
+        ):
             continue
         return scheme
     return None
@@ -267,6 +297,7 @@ def quantize_vae(
             family = family,
             offload_active = offload_active,
             force_fp32 = force_fp32,
+            vae = vae,
         )
         if mode is None:
             return None
@@ -290,12 +321,15 @@ def quantize_vae(
         if not vae_quant_supported(target, mode):
             return None
         # fp8_dynamic additionally needs torchao's fp8 CONV kernel to actually run on this build
-        # (a spatial-conv smoke probe); otherwise the cast succeeds but the first decode crashes.
-        if mode == VAE_QUANT_FP8_DYNAMIC and not _vae_fp8_dynamic_probe(
-            str(getattr(target, "device", "cuda"))
-        ):
-            _note(logger, "vae 'fp8_dynamic' skipped: torchao build lacks a working fp8 conv path")
-            return None
+        # for EVERY conv dimensionality this VAE contains (a Conv3d video decoder is a separate
+        # kernel path from Conv2d); otherwise the cast succeeds but the first decode crashes.
+        if mode == VAE_QUANT_FP8_DYNAMIC:
+            device = str(getattr(target, "device", "cuda"))
+            if not all(_vae_fp8_dynamic_probe(device, ndim) for ndim in _vae_conv_ndims(vae)):
+                _note(
+                    logger, "vae 'fp8_dynamic' skipped: torchao build lacks a working fp8 conv path"
+                )
+                return None
     try:
         if mode == VAE_QUANT_FP8_DYNAMIC:
             _cast_vae_fp8_dynamic(vae, target)

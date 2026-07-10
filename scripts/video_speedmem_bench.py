@@ -298,7 +298,10 @@ def _build_pipe(repo: str, force_fp32_vae: bool):
     if force_fp32_vae:
         torch_dtype = {"vae": torch.float32, "default": torch.bfloat16}
     pipe = diffusers.DiffusionPipeline.from_pretrained(repo, torch_dtype = torch_dtype)
-    pipe = pipe.to("cuda")
+    # Stays on CPU: the caller applies the configured levers FIRST and only then places on
+    # CUDA, mirroring the loader (video.py quantizes before apply_memory_plan). Placing the
+    # dense pipeline first would OOM configs whose quantized form fits but whose dense form
+    # does not, and would record a dense load peak for a quantized row.
     if force_fp32_vae and getattr(pipe, "vae", None) is not None:
         pipe.vae.to(torch.float32)  # belt-and-suspenders; a no-op on the primary path above
     return pipe
@@ -613,8 +616,10 @@ def _run_config(
         torch._dynamo.reset()
     except Exception:
         pass
+    # Loader order (video.py): build on CPU, apply quant/optim levers, THEN place on CUDA.
+    # Placing dense first would OOM configs whose quantized form fits but dense does not, and
+    # load_peak_gb would record the dense placement instead of the measured config.
     pipe = _build_pipe(repo, force_fp32)
-    load_peak = _peak_gb()
     engaged = _apply_levers(
         pipe,
         cfg,
@@ -624,6 +629,9 @@ def _run_config(
         default_steps = default_steps,
         logger = logger,
     )
+    pipe = pipe.to("cuda")
+    _sync()
+    load_peak = _peak_gb()
     _empty()
     weights_gb = _alloc_gb()
     dit_active = engaged["dit"] is not None

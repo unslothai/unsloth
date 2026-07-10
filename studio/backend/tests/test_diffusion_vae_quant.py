@@ -165,7 +165,7 @@ def test_select_datacenter_uses_layerwise_fp8(monkeypatch):
     _stub_capability(monkeypatch, (10, 0))
     _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
     monkeypatch.setattr(
-        vq, "_vae_fp8_dynamic_probe", lambda device: pytest.fail("auto must not probe fp8_dynamic")
+        vq, "_vae_fp8_dynamic_probe", lambda *a: pytest.fail("auto must not probe fp8_dynamic")
     )
     assert select_vae_quant_scheme(_target(), "auto", family = "flux.1") == VAE_QUANT_FP8
 
@@ -176,7 +176,7 @@ def test_select_offload_uses_layerwise_fp8(monkeypatch):
     _stub_capability(monkeypatch, (10, 0))
     _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
     monkeypatch.setattr(
-        vq, "_vae_fp8_dynamic_probe", lambda device: pytest.fail("probe must not run under offload")
+        vq, "_vae_fp8_dynamic_probe", lambda *a: pytest.fail("probe must not run under offload")
     )
     assert select_vae_quant_scheme(_target(), "auto", offload_active = True) == VAE_QUANT_FP8
 
@@ -194,7 +194,7 @@ def test_select_family_deny_skips_scheme(monkeypatch):
     # dense (None). (This is the SDXL case in the real deny list: fp8 marginal -> stay dense.)
     _stub_capability(monkeypatch, (10, 0))
     _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
-    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device: True)
+    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device, ndim = 2: True)
     monkeypatch.setattr(vq, "_VAE_FAMILY_SCHEME_DENY", {"badfam": frozenset({VAE_QUANT_FP8})})
     assert select_vae_quant_scheme(_target(), "auto", family = "badfam") is None
 
@@ -217,7 +217,7 @@ def test_select_auto_never_uses_fp8_dynamic(monkeypatch):
     # layerwise fp8: fp8_dynamic is deliberately kept out of the auto ladder (explicit opt-in).
     _stub_capability(monkeypatch, (10, 0))
     _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
-    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device: True)
+    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device, ndim = 2: True)
     assert select_vae_quant_scheme(_target(), "auto") == VAE_QUANT_FP8
 
 
@@ -452,13 +452,13 @@ def test_quantize_vae_explicit_fp8_dynamic_probe_gates(monkeypatch):
     # working fp8 conv path (probe False) stays dense; a passing probe applies the caster.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
-    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device: False)
+    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device, ndim = 2: False)
     monkeypatch.setattr(
         vq, "_cast_vae_fp8_dynamic", lambda v, t: pytest.fail("probe failed: must not cast")
     )
     pipe = types.SimpleNamespace(vae = object())
     assert quantize_vae(pipe, _target(), mode = "fp8_dynamic", family = "flux.2-klein") is None
-    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device: True)
+    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device, ndim = 2: True)
     calls: list = []
     monkeypatch.setattr(vq, "_cast_vae_fp8_dynamic", lambda v, t: calls.append(v))
     assert (
@@ -491,3 +491,52 @@ def test_real_family_deny_list_policy(monkeypatch):
         select_vae_quant_scheme(_target(), "fp8_dynamic", family = "hunyuanvideo-1.5")
         == VAE_QUANT_FP8_DYNAMIC
     )
+
+
+# ── conv-dimensionality probe gating ─────────────────────────────────────────────
+
+
+def _conv_vae(torch, *ndims):
+    """A fake VAE whose .modules() yields stub Conv2d/Conv3d instances for ``ndims``."""
+    mods = [(torch.nn.Conv3d if n == 3 else torch.nn.Conv2d)() for n in ndims]
+    return types.SimpleNamespace(modules = lambda: iter(mods))
+
+
+def test_vae_conv_ndims(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    assert vq._vae_conv_ndims(_conv_vae(torch, 2)) == (2,)
+    assert vq._vae_conv_ndims(_conv_vae(torch, 3)) == (3,)
+    assert vq._vae_conv_ndims(_conv_vae(torch, 2, 3)) == (2, 3)
+    # A VAE that cannot be inspected (no .modules()) falls back to the 2D probe.
+    assert vq._vae_conv_ndims(object()) == (2,)
+
+
+def test_quantize_vae_fp8_dynamic_probes_conv3d_for_video_vae(monkeypatch):
+    # A Conv3d (video) VAE must pass the 3D conv probe: a torchao build whose Conv2d fp8 path
+    # works but whose Conv3d path is broken would otherwise report the VAE quantised and crash
+    # at the first video decode. Probe ok for 2D but not 3D -> the request stays dense.
+    torch = _stub_torch(monkeypatch, cc = (10, 0))
+    _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
+    probed: list = []
+
+    def _probe(device, ndim = 2):
+        probed.append(ndim)
+        return ndim == 2
+
+    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", _probe)
+    monkeypatch.setattr(
+        vq, "_cast_vae_fp8_dynamic", lambda v, t: pytest.fail("3D probe failed: must not cast")
+    )
+    pipe = types.SimpleNamespace(vae = _conv_vae(torch, 2, 3))
+    assert quantize_vae(pipe, _target(), mode = "fp8_dynamic", family = "hunyuanvideo-1.5") is None
+    assert 3 in probed
+    # A build whose 3D path also works casts the video VAE.
+    monkeypatch.setattr(vq, "_vae_fp8_dynamic_probe", lambda device, ndim = 2: True)
+    pipe = types.SimpleNamespace(vae = _conv_vae(torch, 2, 3))
+    calls: list = []
+    monkeypatch.setattr(vq, "_cast_vae_fp8_dynamic", lambda v, t: calls.append(v))
+    assert (
+        quantize_vae(pipe, _target(), mode = "fp8_dynamic", family = "hunyuanvideo-1.5")
+        == VAE_QUANT_FP8_DYNAMIC
+    )
+    assert len(calls) == 1
