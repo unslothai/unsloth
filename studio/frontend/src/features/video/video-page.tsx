@@ -1098,11 +1098,56 @@ export function VideoPage({ active = true }: { active?: boolean }) {
 
     setBusy("generating");
     setGenStep(null);
-    // Poll the backend's per-step progress so the bar tracks the live denoising steps and
-    // the encode phase.
+    // The POST only STARTS the job and returns at once (a clip takes minutes, and
+    // secure mode's tunnel caps responses near 100s, so completion cannot ride the
+    // POST). A synchronous rejection (no model / already generating / bad input)
+    // still surfaces here; everything after acceptance arrives via the poll.
+    try {
+      await generateVideo({
+        prompt: prompt.trim(),
+        // Only send a negative prompt when guidance uses it, so the recipe doesn't record
+        // one the model ignored.
+        negative_prompt: guidance > 0 ? negativePrompt.trim() || undefined : undefined,
+        width: w,
+        height: h,
+        num_frames: numFrames,
+        fps,
+        steps,
+        guidance,
+        seed: resolvedSeed,
+      });
+    } catch (err) {
+      if (!isMounted.current) return;
+      toast.error(err instanceof Error ? err.message : "Video generation failed");
+      setBusy(null);
+      setGenStep(null);
+      return;
+    }
+    // Poll the backend's per-step progress so the bar tracks the live denoising steps
+    // and the encode phase, and drive completion off the terminal phase: "completed"
+    // carries the saved gallery record, "failed" the client-safe error.
     genPollTimer.current = setInterval(async () => {
       try {
         const p = await getVideoGenerateProgress();
+        if (p.phase === "completed" || p.phase === "failed") {
+          if (genPollTimer.current) clearInterval(genPollTimer.current);
+          genPollTimer.current = null;
+          if (!isMounted.current) return;
+          setBusy(null);
+          setGenStep(null);
+          if (p.phase === "completed" && p.video) {
+            // Prepend the new clip (newest first) and load its blob.
+            const clip = p.video;
+            setVideos((prev) => [clip, ...prev.filter((v) => v.id !== clip.id)]);
+            setSelectedId(clip.id);
+            void ensureSrc(clip);
+          } else if (p.phase === "failed") {
+            const msg = p.error || "Video generation failed";
+            // The user's own Cancel surfaces as the backend's cancelled sentinel; not an error.
+            if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
+          }
+          return;
+        }
         setGenStep((prev) => {
           if (!p.active) return null;
           if (
@@ -1118,35 +1163,6 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         // transient; keep polling
       }
     }, 300);
-    try {
-      const res = await generateVideo({
-        prompt: prompt.trim(),
-        // Only send a negative prompt when guidance uses it, so the recipe doesn't record
-        // one the model ignored.
-        negative_prompt: guidance > 0 ? negativePrompt.trim() || undefined : undefined,
-        width: w,
-        height: h,
-        num_frames: numFrames,
-        fps,
-        steps,
-        guidance,
-        seed: resolvedSeed,
-      });
-      if (!isMounted.current) return;
-      // Prepend the new clip (newest first) and load its blob.
-      setVideos((prev) => [res.video, ...prev.filter((v) => v.id !== res.video.id)]);
-      setSelectedId(res.video.id);
-      void ensureSrc(res.video);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Video generation failed";
-      // The user's own Cancel comes back as the backend's 409 sentinel; not an error.
-      if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
-    } finally {
-      if (genPollTimer.current) clearInterval(genPollTimer.current);
-      genPollTimer.current = null;
-      setBusy(null);
-      setGenStep(null);
-    }
   }, [
     prompt,
     negativePrompt,

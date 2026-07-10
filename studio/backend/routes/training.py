@@ -134,6 +134,21 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
     return get_visible_gpu_utilization()
 
 
+def _background_video_generation_active() -> bool:
+    """Whether a video clip is generating on the video backend's worker thread.
+
+    POST /video/generate returns at once and generates in the background, so an
+    in-flight clip is invisible to the keep-warm in-flight request count the
+    API-key training guards consult; ask the backend directly. Best-effort: a
+    probe failure must never block a training start."""
+    try:
+        from core.inference.video import get_video_backend
+        return bool(get_video_backend().generate_progress().get("active"))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not check video generation state for training guard: %s", e)
+        return False
+
+
 @router.post("/start")
 async def start_training(
     request: TrainingStartRequest,
@@ -156,7 +171,10 @@ async def start_training(
         # session is not yet special-cased.)
         if via_api_key is True:
             from core.inference.llama_keepwarm import other_inference_request_count
-            if other_inference_request_count(current_request_counted = False) > 0:
+            if (
+                other_inference_request_count(current_request_counted = False) > 0
+                or _background_video_generation_active()
+            ):
                 raise HTTPException(
                     status_code = 409,
                     detail = (
@@ -1261,7 +1279,10 @@ async def start_diffusion_training(
     # a diffusion start cannot silently drop an active API inference request.
     if via_api_key is True:
         from core.inference.llama_keepwarm import other_inference_request_count
-        if other_inference_request_count(current_request_counted = False) > 0:
+        if (
+            other_inference_request_count(current_request_counted = False) > 0
+            or _background_video_generation_active()
+        ):
             raise HTTPException(
                 status_code = 409,
                 detail = (

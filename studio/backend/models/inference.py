@@ -2499,9 +2499,21 @@ class GalleryVideo(BaseModel):
 
 
 class VideoGenerateResponse(BaseModel):
-    """The persisted gallery record for one generation call."""
+    """Acknowledgement that a generation was accepted and started.
 
-    video: GalleryVideo = Field(..., description = "Saved record for the generated clip")
+    Generation runs as a background job (a clip takes minutes, and secure mode's
+    tunnel caps the origin response window near 100 seconds, so the POST cannot
+    span it). The saved gallery record arrives via GET /video/generate-progress
+    when its phase reaches "completed"."""
+
+    status: Literal["started"] = Field(
+        "started", description = "Discriminator: the generation job was started"
+    )
+    video: Optional[GalleryVideo] = Field(
+        None,
+        description = "Always null (kept for response-shape compatibility); the saved "
+        "record is delivered by generate-progress on completion",
+    )
 
 
 class VideoGalleryListResponse(BaseModel):
@@ -2512,13 +2524,23 @@ class VideoGalleryListResponse(BaseModel):
 
 
 class VideoGenerateProgressResponse(BaseModel):
-    """Live progress for an in-flight video generation."""
+    """Live progress for an in-flight video generation, plus the terminal outcome
+    of the background job POST /video/generate started."""
 
     active: bool = Field(False, description = "Whether a generation is running")
-    phase: Optional[str] = Field(None, description = "Current phase: denoise | export | null")
+    phase: Optional[str] = Field(
+        None,
+        description = "Current phase: queued | denoise | export | completed | failed | null",
+    )
     step: int = Field(0, description = "Denoising steps completed so far")
     total: int = Field(0, description = "Total denoising steps for this run")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+    video: Optional[GalleryVideo] = Field(
+        None, description = "Saved gallery record when phase is 'completed'"
+    )
+    error: Optional[str] = Field(
+        None, description = "Client-safe failure detail when phase is 'failed'"
+    )
 
 
 class VideoLoadProgressResponse(BaseModel):

@@ -81,6 +81,7 @@ from .diffusion_transformer_quant import (
 from .diffusion_precision import normalize_te_quant, quantize_text_encoders
 from .video_families import (
     VIDEO_CANCELLED_MSG,
+    VIDEO_GENERATION_BUSY_MSG,
     VIDEO_NOT_LOADED_MSG,
     VideoFamily,
     default_video_generation_params,
@@ -381,6 +382,10 @@ class VideoBackend:
         self._active_generate_cancel: Optional[threading.Event] = None
         # Generation progress, written by the step callback / phase transitions.
         self._gen: dict[str, Any] = {"active": False}
+        # True from begin_generate() until its worker records a terminal state, so
+        # a second begin_generate() is refused while the first still runs (or is
+        # about to run: generate() only sets _gen after taking its locks).
+        self._generate_job_active = False
 
     # ── validation ───────────────────────────────────────────────────────────
 
@@ -1474,6 +1479,164 @@ class VideoBackend:
                 except Exception:  # noqa: BLE001 -- reset is best-effort, never fail a generation
                     pass
 
+    def begin_generate(
+        self,
+        *,
+        prompt: str,
+        negative_prompt: Optional[str] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        num_frames: Optional[int] = None,
+        fps: Optional[int] = None,
+        steps: Optional[int] = None,
+        guidance: Optional[float] = None,
+        guidance_2: Optional[float] = None,
+        seed: Optional[int] = None,
+    ) -> None:
+        """Validate cheaply, then run generate + gallery persist on a daemon thread.
+
+        Returns at once, mirroring begin_load: a clip takes minutes to denoise, and
+        a proxy in front of Studio (secure mode's Cloudflare tunnel) caps the origin
+        response window near 100 seconds, so the HTTP call must not span the
+        generation. The terminal outcome (phase "completed" with the saved gallery
+        record, or "failed" with a client-safe error) is reported by
+        generate_progress(); cancel_generate() keeps working against the job.
+        Raises RuntimeError with VIDEO_NOT_LOADED_MSG / VIDEO_GENERATION_BUSY_MSG
+        sentinels the route maps to 409.
+        """
+        cancel = threading.Event()
+        with self._lock:
+            if self._state is None:
+                raise RuntimeError(VIDEO_NOT_LOADED_MSG)
+            if self._generate_job_active:
+                raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+            self._generate_job_active = True
+            # Register the cancel event BEFORE the worker starts so a cancel (or an
+            # unload) that lands in the spawn window still stops the run instead of
+            # returning "nothing to cancel".
+            self._active_generate_cancel = cancel
+            self._gen = {
+                "active": True,
+                "phase": "queued",
+                "step": 0,
+                "total": 0,
+                "eta_seconds": None,
+            }
+        threading.Thread(
+            target = self._run_generate,
+            kwargs = dict(
+                prompt = prompt,
+                negative_prompt = negative_prompt,
+                width = width,
+                height = height,
+                num_frames = num_frames,
+                fps = fps,
+                steps = steps,
+                guidance = guidance,
+                guidance_2 = guidance_2,
+                seed = seed,
+                cancel_event = cancel,
+            ),
+            daemon = True,
+        ).start()
+
+    def _run_generate(self, *, cancel_event: threading.Event, **gen_kwargs: Any) -> None:
+        """begin_generate's worker: generate, persist to the gallery, record the
+        terminal state where generate_progress() reports it. The error mapping is
+        the exact one the route applied when the call was synchronous: ValueError
+        text is client input feedback, sentinel RuntimeErrors pass through, and any
+        other failure is logged server-side and reported as a generic message so
+        internals (CUDA state, paths) never reach the client."""
+        from . import video_gallery
+
+        try:
+            result = self.generate(cancel_event = cancel_event, **gen_kwargs)
+        except ValueError as exc:
+            self._finish_generate_job(cancel_event = cancel_event, error = str(exc))
+            return
+        except RuntimeError as exc:
+            msg = str(exc)
+            if msg not in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG):
+                logger.error("video.generate_failed: %s", exc, exc_info = True)
+                msg = "Video generation failed."
+            self._finish_generate_job(cancel_event = cancel_event, error = msg)
+            return
+        except Exception as exc:  # noqa: BLE001 -- worker thread: never propagate
+            logger.error("video.generate_failed: %s", exc, exc_info = True)
+            self._finish_generate_job(cancel_event = cancel_event, error = "Video generation failed.")
+            return
+
+        # Persist the clip with its full recipe as the JSON sidecar the gallery reads back.
+        created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        try:
+            record = video_gallery.save(
+                result["mp4_bytes"],
+                {
+                    "prompt": gen_kwargs["prompt"],
+                    "negative_prompt": gen_kwargs.get("negative_prompt"),
+                    "width": result["width"],
+                    "height": result["height"],
+                    "num_frames": result["num_frames"],
+                    "fps": result["fps"],
+                    "duration_s": result["duration_s"],
+                    "steps": result["steps"],
+                    "guidance": result["guidance"],
+                    "guidance_2": gen_kwargs.get("guidance_2"),
+                    "seed": result["seed"],
+                    "has_audio": result["has_audio"],
+                    "model": result["repo_id"],
+                    "created_at": created_at,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 -- disk failure must reach the poller
+            logger.error("video.persist_failed: %s", exc)
+            self._finish_generate_job(
+                cancel_event = cancel_event, error = "Failed to save the generated video."
+            )
+            return
+        self._finish_generate_job(
+            cancel_event = cancel_event, video = record, total = result["steps"]
+        )
+
+    def _finish_generate_job(
+        self,
+        *,
+        cancel_event: Optional[threading.Event] = None,
+        video: Optional[dict] = None,
+        error: Optional[str] = None,
+        total: int = 0,
+    ) -> None:
+        """Record a job's terminal state as one atomic swap. The terminal dict
+        replaces the live-progress one so a poll can never mix fields from both,
+        and the busy flag drops in the same critical section so the earliest
+        moment a new begin_generate() can start is after the outcome is visible."""
+        with self._lock:
+            self._generate_job_active = False
+            if cancel_event is not None and self._active_generate_cancel is cancel_event:
+                # generate() clears its own registration; this covers a job whose
+                # worker failed before (or without) reaching generate()'s finally.
+                # Identity-guarded so a direct generate() that registered its own
+                # event in the meantime keeps its cancel handle.
+                self._active_generate_cancel = None
+            if error is not None:
+                self._gen = {
+                    "active": False,
+                    "phase": "failed",
+                    "error": error,
+                    "step": 0,
+                    "total": 0,
+                    "eta_seconds": None,
+                }
+            else:
+                self._gen = {
+                    "active": False,
+                    "phase": "completed",
+                    "video": video,
+                    "step": total,
+                    "total": total,
+                    "eta_seconds": None,
+                }
+
     def generate(
         self,
         *,
@@ -1487,9 +1650,12 @@ class VideoBackend:
         guidance: Optional[float] = None,
         guidance_2: Optional[float] = None,
         seed: Optional[int] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict[str, Any]:
         import torch
-        cancel = threading.Event()
+        # begin_generate passes the event it already registered (so a cancel in the
+        # spawn window is honoured); a direct call makes its own.
+        cancel = cancel_event if cancel_event is not None else threading.Event()
         with self._generate_lock:
             with self._lock:
                 state = self._state
@@ -1710,7 +1876,14 @@ class VideoBackend:
                 pass
 
     def generate_progress(self) -> dict[str, Any]:
-        gen = dict(self._gen)
+        with self._lock:
+            gen = dict(self._gen)
+            # generate() swaps in a bare {"active": False} on its own exit paths
+            # before the job worker records the terminal dict; report the job as
+            # still active across that gap so a poller only sees active drop
+            # together with a terminal phase ("completed" / "failed").
+            if self._generate_job_active:
+                gen["active"] = True
         gen.setdefault("active", False)
         return gen
 

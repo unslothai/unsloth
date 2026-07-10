@@ -25,6 +25,7 @@ from typing import Optional
 # these EXACTLY to return 409 (client-recoverable) instead of a sanitized 500.
 VIDEO_NOT_LOADED_MSG = "No video model is loaded."
 VIDEO_CANCELLED_MSG = "Video generation was cancelled."
+VIDEO_GENERATION_BUSY_MSG = "A video generation is already in progress."
 
 
 @dataclass(frozen = True)
