@@ -639,6 +639,9 @@ _WRAPPER_OPERAND_FLAGS = {
             "--delimiter",
             "-a",
             "--arg-file",
+            # --process-slot-var VAR sets an env var for the child; the separated operand VAR
+            # would otherwise be mistaken for the command word (xargs --process-slot-var V touch).
+            "--process-slot-var",
         }
     ),
     "time": frozenset({"-f", "--format", "-o", "--output"}),
@@ -666,6 +669,16 @@ def _wrapper_flag_takes_operand(wrapper, flag: str) -> bool:
 # closing delimiter follows), so these patterns are shaped to skip that.
 _SED_WRITE_RE = re.compile(r"(?<![A-Za-z])[wW](?:[ \t]|/|~)")
 _SED_EXEC_RE = re.compile(r"(?:^|[;\n{}]|[0-9$])[ \t]*e(?:[ \t;}\n]|$)")
+# GNU sed runs `e COMMAND` after an ADDRESS too (`/regex/e cmd`, `/a/,/b/e cmd`, `1,/x/e cmd`).
+# Match a `/regex/` that sits at a command boundary (start / `;` / `{` / `}`) OR right after a
+# range comma, followed by an optional `!` and the `e` command with a trailing separator. The `e`
+# must be followed by whitespace / `;` / `}` / EOL, so a substitution replacement that merely ends
+# in `.../e/` (e before the closing delimiter) does not match; and requiring a boundary before the
+# opening `/` means `s/a/e /` (its `/` preceded by `s`) is not mistaken for an address. A
+# line-number address then `e` (`1e`, `1,/x/` handled via the comma) is already covered above.
+_SED_ADDR_EXEC_RE = re.compile(
+    r"(?:^|[;\n{},])[ \t]*!?[ \t]*/(?:[^/\\]|\\.)*/[ \t]*!?[ \t]*e(?:[ \t;}\n]|$)"
+)
 # A completed s/PATTERN/REPL/FLAGS whose FLAGS include w (write) or e (execute).
 _SED_SFLAG_RE = re.compile(r"s(.)(?:(?!\1).)*\1(?:(?!\1).)*\1[A-Za-z0-9]*[we]")
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
@@ -824,6 +837,16 @@ def _rewrite_unquoted_newlines(command: str) -> str:
     prev_nl = False
     for ch in command:
         if esc:
+            if ch in ("\n", "\r"):
+                # A backslash immediately before a newline is a bash LINE CONTINUATION: both are
+                # removed before command lookup, so `tou\<nl>ch` runs `touch`. Drop the backslash
+                # we already emitted and the newline so the joined word is tokenized (outside
+                # single quotes; single-quoted text never sets esc, so it stays literal).
+                if out and out[-1] == "\\":
+                    out.pop()
+                esc = False
+                prev_nl = False
+                continue
             out.append(ch)
             esc = False
             prev_nl = False
@@ -1360,11 +1383,21 @@ def _find_blocked_commands(command: str) -> set[str]:
         prev_flag = False
         wrapper = None
         for _i, _tok in enumerate(tokens):
-            if _tok in _SHELL_SEPARATORS or _tok in _SHELL_KEYWORDS_AS_SEP:
+            if _tok in _SHELL_SEPARATORS:
                 expect = True
                 pending = False
                 prev_flag = False
                 wrapper = None
+                continue
+            if _tok in _SHELL_KEYWORDS_AS_SEP:
+                # if / while / until / then / do (etc.) begin a new command position ONLY at
+                # command position (the compound-statement header); after a command word they are
+                # ordinary arguments, so `echo if sed -i ...` must not record sed as a command.
+                # Mirrors the round-44 fix in the main scanner above.
+                if expect:
+                    pending = False
+                    prev_flag = False
+                    wrapper = None
                 continue
             if _tok.startswith("-"):
                 if not pending:
@@ -1643,6 +1676,12 @@ def _find_blocked_commands(command: str) -> set[str]:
         for _ci, _ct in enumerate(_seg):
             if _ct == "config":
                 _cj = _ci + 1
+                # --system / --global select the host system / user config file (/etc/gitconfig,
+                # ~/.gitconfig), both OUTSIDE the workdir. A WRITE there (KEY VALUE, or a write
+                # flag / --edit) escapes the sandbox; a pure read (--get* / --list / -l / a bare
+                # KEY) does not, so only writes are blocked.
+                _host_scope = False
+                _write_flag = False
                 while _cj < len(_seg):
                     _cw = _seg[_cj]
                     if _cw in ("--file", "-f") and _cj + 1 < len(_seg):
@@ -1655,11 +1694,31 @@ def _find_blocked_commands(command: str) -> set[str]:
                             blocked.add("git-write-outside")
                         _cj += 1
                         continue
+                    if _cw in ("--system", "--global"):
+                        _host_scope = True
+                        _cj += 1
+                        continue
+                    if _cw in (
+                        "--add", "--unset", "--unset-all", "--replace-all",
+                        "--remove-section", "--rename-section", "-e", "--edit",
+                    ):
+                        _write_flag = True
+                        _cj += 1
+                        continue
                     if not _cw.startswith("-"):
                         if _git_config_key_is_exec(_cw.split("=", 1)[0]):
                             blocked.add("git-exec-config")
+                        # A host-scope write: an explicit write flag, or a KEY followed by a VALUE
+                        # operand (git config --global user.name x). A bare KEY read is left alone.
+                        if _host_scope and (
+                            _write_flag
+                            or (_cj + 1 < len(_seg) and not _seg[_cj + 1].startswith("-"))
+                        ):
+                            blocked.add("git-write-outside")
                         break
                     _cj += 1
+                if _host_scope and _write_flag:
+                    blocked.add("git-write-outside")  # --global --edit / --unset with no inline KEY
                 break
 
     # hash -p PATHNAME NAME binds the command NAME to PATHNAME in the shell's hash table, so a
@@ -1839,6 +1898,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                     if _sed_script is not None and (
                         _SED_WRITE_RE.search(_sed_script)
                         or _SED_EXEC_RE.search(_sed_script)
+                        or _SED_ADDR_EXEC_RE.search(_sed_script)
                         or _SED_SFLAG_RE.search(_sed_script)
                     ):
                         blocked.add("mutating:" + _base)
@@ -6825,7 +6885,58 @@ def _check_signal_escape_patterns(
                     return True
             return False
 
+        def _environ_subscript_key(self, target):
+            # The literal key of an os.environ[...] (or a bare `environ[...]` from
+            # `from os import environ`) subscript assignment target; None otherwise.
+            if not isinstance(target, ast.Subscript):
+                return None
+            _v = target.value
+            _is_environ = (
+                isinstance(_v, ast.Attribute)
+                and _v.attr == "environ"
+                and isinstance(_v.value, ast.Name)
+                and _v.value.id in self.os_aliases
+            ) or (isinstance(_v, ast.Name) and _v.id == "environ")
+            if not _is_environ:
+                return None
+            return _extract_string_from_node(target.slice)
+
+        def _env_mutation_escape(self, key, value_node):
+            # A short reason when setting env var ``key`` to ``value_node`` is a child-escape
+            # prelude (mirrors the subprocess env={...} mapping analysis), else None. The mutated
+            # process environment is inherited by a later unguarded child.
+            _vs = _extract_string_from_node(value_node)
+            if key == "PATH":
+                if isinstance(_vs, str) and _path_value_is_unsafe(_vs):
+                    return "PATH set to a relative / cwd entry (a bare argv resolves to a workdir exec)"
+                return None
+            if key in ("BASH_ENV", "ENV"):
+                return None if _vs == "" else "a shell startup file a child shell sources"
+            if isinstance(key, str) and key.startswith("GIT_CONFIG"):
+                return "overrides git config / drops the sandbox hook suppression"
+            if key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+                if isinstance(_vs, str) and _arg_escapes_workdir(_vs):
+                    return "points git's repo / tree outside the workdir"
+                return None
+            return None
+
         def visit_Assign(self, node):
+            # os.environ['PATH'] = '.' (or BASH_ENV / ENV / GIT_CONFIG* / GIT_DIR) mutates the
+            # INHERITED environment a later unguarded subprocess child reads, the same escape as
+            # passing env={...} to the child: a bare-argv workdir exec via PATH='.', a sourced
+            # BASH_ENV script, or a dropped GIT_CONFIG hook suppression. Flag the mutation itself.
+            for _t in node.targets:
+                _envkey = self._environ_subscript_key(_t)
+                if _envkey is not None:
+                    _reason = self._env_mutation_escape(_envkey, node.value)
+                    if _reason is not None:
+                        shell_escapes.append(
+                            {
+                                "type": "shell_escape",
+                                "line": getattr(node, "lineno", -1),
+                                "description": f"os.environ[{_envkey!r}] mutation: {_reason}",
+                            }
+                        )
             # d['e'] = exec / lst[0] = eval -- storing a dynamic-exec builtin into a CONTAINER
             # element (not a plain name, which the alias tracker already follows) hides the sink
             # from the name / attribute call checks, and the later d['e'](payload) then runs
@@ -10743,11 +10854,26 @@ def _inject_sandbox_guard(code: str, prelude: str) -> str:
         idx += 1
     if not has_future or split <= 0:
         return prelude + code
+    # Split at the last head statement's exact END COLUMN, not the whole physical line: a
+    # `from __future__ import annotations; open('/tmp/x','w')` puts a real statement on the SAME
+    # line as the future import, and a line-granular split would copy that write into the head
+    # (before the guard prelude) and run it unguarded. Slice the head line at end_col_offset so the
+    # `;`-separated tail moves AFTER the prelude, then drop the leading `; ` so the tail is a valid
+    # statement. (Only future-import lines reach here -- pure ASCII -- so character slicing matches
+    # the byte col_offset.)
+    _last = body[idx - 1]
+    _el = _last.end_lineno or split
+    _ec = _last.end_col_offset or 0
     lines = code.splitlines(keepends = True)
-    head = "".join(lines[:split])
-    tail = "".join(lines[split:])
+    head = "".join(lines[: _el - 1]) + lines[_el - 1][:_ec]
+    tail = lines[_el - 1][_ec:] + "".join(lines[_el:])
+    _m = re.match(r"[ \t]*;[ \t]*", tail)
+    if _m:
+        tail = tail[_m.end() :]  # a same-line `; stmt` tail -> valid statement after the prelude
     if head and not head.endswith(("\n", "\r")):
         head += "\n"
+    if prelude and not prelude.endswith(("\n", "\r")):
+        prelude += "\n"
     return head + prelude + tail
 
 

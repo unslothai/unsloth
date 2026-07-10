@@ -4663,3 +4663,94 @@ class TestRound46Bypasses:
     )
     def test_openssl_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound47Bypasses:
+    """Forty-seventh-round Codex findings: backslash-newline line continuation, xargs
+    --process-slot-var, addressed sed e command, os.environ mutations, git config --system /
+    --global, and the command-position FP in the sed command-word helper. (The guard-prelude
+    same-line item is a runtime concern, covered in test_sandbox_runtime_backstop.py.)"""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # bash removes a backslash-newline before command lookup, so tou\<nl>ch runs touch.
+            "import os\nos.system('tou\\\nch /tmp/x')",
+            "import os\nos.system('r\\\nm -rf /tmp/x')",
+        ],
+    )
+    def test_backslash_newline_continuation_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # xargs --process-slot-var VAR consumes VAR as an operand; the command follows.
+            "import os\nos.system('xargs --process-slot-var VAR touch /tmp/p < /dev/null')",
+            "import subprocess\nsubprocess.run(['xargs', '--process-slot-var', 'V', 'touch', '/tmp/p'])",
+        ],
+    )
+    def test_xargs_process_slot_var_operand_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # GNU sed runs `e COMMAND` after an address (/regex/e cmd, 1,/x/e cmd).
+            "import os\nos.system(\"sed -n '/x/e touch /tmp/p' in.txt\")",
+            "import os\nos.system(\"sed '1,/y/e touch /tmp/p' in.txt\")",
+            "import subprocess\nsubprocess.run(['sed', '-n', '/x/e touch /tmp/p', 'in.txt'])",
+        ],
+    )
+    def test_sed_addressed_exec_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Mutating the inherited environment before an unguarded child is the env={...} escape.
+            "import os, subprocess\nos.environ['PATH'] = '.'\nsubprocess.run(['evil'])",
+            "import os, subprocess\nos.environ['BASH_ENV'] = 'e.sh'\nsubprocess.run(['bash', '-c', 'echo hi'])",
+            "import os, subprocess\nos.environ['GIT_CONFIG_COUNT'] = '0'\nsubprocess.run(['git', 'status'])",
+        ],
+    )
+    def test_os_environ_mutation_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # git config --system / --global writes the host config file (outside the workdir).
+            "import os\nos.system('git config --system user.name x')",
+            "import os\nos.system('git config --global user.name x')",
+            "import subprocess\nsubprocess.run(['git', 'config', '--global', 'user.name', 'x'])",
+        ],
+    )
+    def test_git_config_host_scope_write_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A shell keyword as an ARGUMENT (echo if sed -i) must not record sed as a command.
+            "import os\nos.system('echo if sed -i s/a/b/ file')",
+            "import os\nos.system('printf %s while sort -o out in')",
+        ],
+    )
+    def test_shell_keyword_argument_in_cmdword_helper_allowed(self, code):
+        _ok(code)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign env mutations, a local git config read/write, sed without e, xargs echo.
+            "import os, subprocess\nos.environ['MYVAR'] = 'x'\nsubprocess.run(['ls'])",
+            "import os, subprocess\nos.environ['PATH'] = '/usr/local/bin:' + os.environ['PATH']\nsubprocess.run(['ls'])",
+            "import os\nos.system('git config user.name x')",
+            "import os\nos.system('git config --global --get user.name')",
+            "import os\nos.system(\"sed -n 's/x/y/' in.txt\")",
+            "import os\nos.system('xargs echo hi')",
+        ],
+    )
+    def test_round47_benign_allowed(self, code):
+        _ok(code)

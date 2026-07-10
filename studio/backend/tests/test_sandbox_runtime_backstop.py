@@ -2054,3 +2054,35 @@ def test_sandboxed_low_level_posix_workdir_read_allowed():
     )
     assert "LS" in out
     assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_future_import_same_line_write_denied(tmp_path):
+    # A `from __future__ import ...; open(<outside>, 'w')` puts a real write on the SAME physical
+    # line as the future import; the guard prelude must still be installed BEFORE that write, so it
+    # is confined by the runtime backstop rather than running unguarded.
+    target = tmp_path / "future_sameline_escape.txt"
+    out = _python_exec(
+        f"from __future__ import annotations; open({str(target)!r}, 'w').write('x'); print('DONE')",
+        None,
+        30,
+        "backstop-future-sameline",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_future_import_own_line_benign_allowed():
+    # The ordinary form (future import on its own line, an in-workdir write after) still works.
+    out = _python_exec(
+        "from __future__ import annotations\n"
+        "open('future_ok.txt', 'w').write('hi')\nprint('WROTE_OK')",
+        None,
+        30,
+        "backstop-future-ok",
+        disable_sandbox = False,
+    )
+    assert "WROTE_OK" in out
+    assert "sandbox:" not in out
