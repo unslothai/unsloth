@@ -243,3 +243,60 @@ def test_renamed_gpt_oss_gets_template_markers():
             "response_part": expected["response"],
         }
     ]
+
+
+class _FakeTokenizerWrapper:
+    """mlx-lm TokenizerWrapper semantics: plain reads delegate to the wrapped
+    tokenizer, underscore attrs do not (so preset markers are hidden)."""
+
+    def __init__(self, tokenizer):
+        object.__setattr__(self, "_tokenizer", tokenizer)
+
+    def __getattr__(self, attr):
+        if attr.startswith("_"):
+            return object.__getattribute__(self, attr)
+        return getattr(object.__getattribute__(self, "_tokenizer"), attr)
+
+
+_FakeTokenizerWrapper.__name__ = "TokenizerWrapper"
+
+
+def test_mlx_tokenizer_wrapper_unwrapped_for_preset_markers():
+    # Markers live on the inner HF tokenizer; the wrapper hides them. The
+    # helper must unwrap so the preset bare-call path still fires on MLX.
+    class _Tok:
+        _unsloth_input_part = "<I>"
+        _unsloth_output_part = "<O>"
+
+    trainer = _Trainer()
+    trainer.tokenizer = _FakeTokenizerWrapper(_Tok())
+    train_fn = _Recorder()
+
+    _, applied = apply_completion_masking(
+        trainer, "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn = _detect_fail
+    )
+    assert applied is True
+    assert train_fn.calls == [{}]  # bare call, stored parts
+
+
+def test_mlx_tokenizer_wrapper_unwrapped_for_detection():
+    # Detection must see the real tokenizer, not the wrapper, so it does not
+    # depend on the loader's __call__ patch.
+    class _Tok:
+        pass
+
+    inner = _Tok()
+    trainer = _Trainer()
+    trainer.tokenizer = _FakeTokenizerWrapper(inner)
+    train_fn = _Recorder()
+    seen = []
+
+    def detect(processor):
+        seen.append(processor)
+        return "<INS>", "<RES>"
+
+    _, applied = apply_completion_masking(
+        trainer, "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn = detect
+    )
+    assert applied is True
+    assert seen == [inner]

@@ -81,6 +81,15 @@ def apply_completion_masking(
         processor = getattr(trainer, "processing_class", None) or getattr(
             trainer, "tokenizer", None
         )
+        # mlx-lm TokenizerWrapper delegates plain reads to the wrapped HF
+        # tokenizer but hides underscore attrs, so preset _unsloth_* markers
+        # are invisible through it and detection would hinge on the loader's
+        # __call__ patch. Unwrap to the real tokenizer (as zoo's MLX resolver
+        # does) before the preset check and detection.
+        if type(processor).__name__ == "TokenizerWrapper":
+            wrapped = getattr(processor, "_tokenizer", None)
+            if wrapped is not None:
+                processor = wrapped
         inner = getattr(processor, "tokenizer", processor)
         if hasattr(inner, "_unsloth_input_part") and hasattr(inner, "_unsloth_output_part"):
             # Markers preset on the tokenizer (e.g. by get_chat_template); zoo
