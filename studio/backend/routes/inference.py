@@ -3670,9 +3670,7 @@ def _resolve_inherited_extra_args(
     resolved_variant = (config.gguf_variant or "").lower()
     request_variant = (request.gguf_variant or "").lower()
     stored_variant = (source[1] or "").lower() if source else ""
-    same_model = bool(
-        source and source[0] and source[0].lower() == model_identifier.lower()
-    )
+    same_model = bool(source and source[0] and source[0].lower() == model_identifier.lower())
     if request.gguf_variant:
         variant_mismatch = request_variant != stored_variant
     else:
@@ -3702,16 +3700,12 @@ def _resolve_inherited_extra_args(
             llama_backend.extra_args,
             strip_context = "max_seq_length" in fields_set,
             strip_cache = "cache_type_kv" in fields_set,
-            strip_spec = (
-                "speculative_type" in fields_set or "spec_draft_n_max" in fields_set
-            ),
+            strip_spec = ("speculative_type" in fields_set or "spec_draft_n_max" in fields_set),
             strip_template = (
                 "chat_template_override" in fields_set
                 or effective_chat_template_override is not None
             ),
-            strip_split_mode = _should_strip_split_mode(
-                request, llama_backend.extra_args
-            ),
+            strip_split_mode = _should_strip_split_mode(request, llama_backend.extra_args),
             # manual + per-GPU ratio emits its own --tensor-split; drop
             # an inherited one (appended last would override it) while
             # keeping the user's --split-mode row/none/layer choice.

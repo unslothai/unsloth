@@ -895,12 +895,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         cfg = SimpleNamespace(is_gguf = True, gguf_variant = "Q4_K_M")
         request = SimpleNamespace(gguf_variant = "Q4_K_M", gpu_memory_mode = "auto")
         with patch.object(self.route, "get_llama_cpp_backend", return_value = backend):
-            inherited = self.route._resolve_inherited_extra_args(
-                request, cfg, "owner/repo", None
-            )
-            cross = self.route._resolve_inherited_extra_args(
-                request, cfg, "other/model", None
-            )
+            inherited = self.route._resolve_inherited_extra_args(request, cfg, "owner/repo", None)
+            cross = self.route._resolve_inherited_extra_args(request, cfg, "other/model", None)
         self.assertEqual(inherited, ["-c", "32768"])
         self.assertEqual(cross, [])
 
