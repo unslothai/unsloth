@@ -111,6 +111,10 @@ def fake_gefen(monkeypatch):
     module.Gefen = _FakeGefen
     module.GefenMuonHybrid = _FakeHybrid
     monkeypatch.setitem(sys.modules, "gefen", module)
+    # The CUDA gate imports torch; these constructor-mapping tests are torch-free
+    # by design, so stub it out here. The real gate is exercised by the dedicated
+    # test_gate_* tests (which do require torch).
+    monkeypatch.setattr(gefenx, "_require_nvidia_cuda", lambda: None)
     return captured
 
 
@@ -403,10 +407,15 @@ def test_build_gefenx_muon_passes_lr_weight_decay_and_backup_substrings(fake_gef
 # --------------------------------------------------------------------------- #
 # Device gate: NVIDIA CUDA only (AMD/ROCm and Intel XPU rejected)
 # --------------------------------------------------------------------------- #
-def test_gate_rejects_rocm_hip_build(fake_gefen, monkeypatch):
+def test_gate_rejects_rocm_hip_build(monkeypatch):
+    # No fake_gefen here: this must exercise the REAL gate. gefen is never stubbed,
+    # so a RuntimeError (not ModuleNotFoundError) proves the gate fires before any
+    # `from gefen import ...`.
     torch = pytest.importorskip("torch")
     # Simulate an AMD/ROCm PyTorch build by tagging torch.version.hip.
     monkeypatch.setattr(torch.version, "hip", "6.0.0", raising = False)
+    with pytest.raises(RuntimeError, match = "ROCm|HIP|CUDA"):
+        gefenx._require_nvidia_cuda()
     model = _FakeModel([("w", _FakeParam())])
     with pytest.raises(RuntimeError, match = "ROCm|HIP|CUDA"):
         gefenx.build_gefenx_optimizer(
@@ -426,8 +435,6 @@ def test_gate_rejects_rocm_hip_build(fake_gefen, monkeypatch):
             betas = (0.9, 0.999),
             eps = 1e-8,
         )
-    # The gate fires before gefen is even imported/constructed.
-    assert "gefen" not in fake_gefen and "muon" not in fake_gefen
 
 
 def test_gate_allows_non_hip(monkeypatch):
