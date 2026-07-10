@@ -74,8 +74,11 @@ _SNAPSHOT_SCHEMA = 1
 
 # Snapshot: {"schema", "fetched_at", "pypi_version", "pypi_model_types", "main_model_types"}
 _lock = threading.Lock()
+_install_lock = threading.Lock()
 _memory_snapshot: dict | None = None
 _last_failure_at: float = 0.0
+_is_fetching: bool = False
+_is_installing: bool = False
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 
@@ -209,8 +212,13 @@ def _refresh_snapshot() -> dict | None:
 
 
 def _get_snapshot() -> dict | None:
-    """Current support snapshot: memory -> disk -> network, with TTL and failure backoff."""
-    global _memory_snapshot, _last_failure_at
+    """Current support snapshot: memory -> disk -> network, with TTL and failure backoff.
+
+    The network refresh runs outside the lock so a slow fetch cannot stall other
+    threads in the ASGI pool; _is_fetching deduplicates concurrent refreshes
+    (losers return None, the graceful fallthrough, rather than waiting).
+    """
+    global _memory_snapshot, _last_failure_at, _is_fetching
     with _lock:
         if _snapshot_is_fresh(_memory_snapshot):
             return _memory_snapshot
@@ -222,24 +230,37 @@ def _get_snapshot() -> dict | None:
             return None
         if time.time() - _last_failure_at < _FAILURE_BACKOFF_SECONDS:
             return None
-        fresh = _refresh_snapshot()
-        if fresh is None:
-            _last_failure_at = time.time()
-            # A stale snapshot beats no answer for a "can this ever load" hint, but a
-            # stale positive could offer a version PyPI no longer serves; be strict and
-            # return None (graceful fallthrough to current behavior).
+        if _is_fetching:
             return None
-        _memory_snapshot = fresh
-        _save_snapshot_file(fresh)
-        return fresh
+        _is_fetching = True
+    fresh = None
+    try:
+        fresh = _refresh_snapshot()
+    finally:
+        with _lock:
+            _is_fetching = False
+            if fresh is None:
+                _last_failure_at = time.time()
+            else:
+                _memory_snapshot = fresh
+    if fresh is None:
+        # A stale snapshot beats no answer for a "can this ever load" hint, but a
+        # stale positive could offer a version PyPI no longer serves; be strict and
+        # return None (graceful fallthrough to current behavior).
+        return None
+    _save_snapshot_file(fresh)
+    return fresh
 
 
 def clear_caches() -> None:
-    """Test helper: drop the in-memory snapshot and failure backoff."""
-    global _memory_snapshot, _last_failure_at
+    """Test helper: drop the in-memory snapshot, failure backoff, and busy flags."""
+    global _memory_snapshot, _last_failure_at, _is_fetching, _is_installing
     with _lock:
         _memory_snapshot = None
         _last_failure_at = 0.0
+        _is_fetching = False
+    with _install_lock:
+        _is_installing = False
 
 
 def latest_transformers_supports(model_type: str) -> dict | None:
@@ -455,6 +476,24 @@ def install_latest_transformers(version: str) -> dict:
     On success ``.venv_t5_latest`` is provisioned and pinned; routing then resolves the
     new tier automatically on this and every future start.
     """
+    global _is_installing
+    with _install_lock:
+        if _is_installing:
+            return {
+                "success": False,
+                "version": version,
+                "message": "A transformers installation is already in progress.",
+            }
+        _is_installing = True
+    try:
+        return _install_latest_transformers_locked(version)
+    finally:
+        with _install_lock:
+            _is_installing = False
+
+
+def _install_latest_transformers_locked(version: str) -> dict:
+    """Body of install_latest_transformers; runs with the in-progress flag held."""
     if _disabled():
         return {
             "success": False,

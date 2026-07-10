@@ -736,3 +736,29 @@ class TestCompatPlan:
         )
         extras, blockers = tl.compat_plan("5.13.0")
         assert extras == () and blockers == []
+
+
+def test_get_snapshot_dedupes_concurrent_fetch(monkeypatch):
+    """While one thread is fetching, other callers return None instead of stacking fetches."""
+    with tl._lock:
+        tl._is_fetching = True
+    calls = {"n": 0}
+
+    def boom():
+        calls["n"] += 1
+        raise AssertionError("must not fetch while another fetch is in flight")
+
+    monkeypatch.setattr(tl, "_refresh_snapshot", boom)
+    assert tl._get_snapshot() is None
+    assert calls["n"] == 0
+    tl.clear_caches()
+
+
+def test_install_serialized():
+    """A second install call while one is in progress gets a structured refusal."""
+    with tl._install_lock:
+        tl._is_installing = True
+    out = tl.install_latest_transformers("5.13.0")
+    assert out["success"] is False
+    assert "already in progress" in out["message"]
+    tl.clear_caches()
