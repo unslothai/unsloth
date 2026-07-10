@@ -287,9 +287,6 @@ def latest_transformers_supports(model_type: str) -> dict | None:
     }
 
 
-
-
-
 # model_types the hardcoded per-tier tables already route; these must never trigger the
 # remote check even if a sidecar overlay is not provisioned yet.
 def _hardcoded_model_types() -> frozenset[str]:

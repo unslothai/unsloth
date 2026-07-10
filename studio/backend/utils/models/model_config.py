@@ -893,7 +893,6 @@ def _is_vision_model_uncached(
             # sidecar instead of the heuristic False.
             try:
                 from utils.transformers_version import get_transformers_tier
-
                 if get_transformers_tier(model_name, hf_token, probe = False) == "latest":
                     sub = _is_vision_model_subprocess(model_name, hf_token = hf_token)
                     if sub is not None:
