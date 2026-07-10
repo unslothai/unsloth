@@ -4315,3 +4315,104 @@ class TestRound40Bypasses:
     )
     def test_round40_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound41Bypasses:
+    """Forty-first-round Codex findings: env -C with a command-substitution operand, a dynamic
+    env -C chdir dropped when recursing into a nested shell, an argv env -C not applied before the
+    bash -c payload scan, env --unset (separated) / bare - dropping the git hook suppression, a
+    git apply --unsafe-paths escape, and the patch child writer. Plus a P2 FP: a non-reader that
+    merely mentions a sensitive path (echo /etc/passwd) must not be flagged as a read. The
+    workdir-module import-vetter mutation item is covered in test_sandbox_runtime_backstop.py."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # env -C $(...) / `...` chdirs the child to a substitution result; the tokenizer splits
+            # the operand into separator tokens, which must not drop the dynamic-cwd state.
+            "import os\nos.system('env -C $(printf /etc) cat passwd')",
+            "import os\nos.system('env -C `printf /etc` cat passwd')",
+        ],
+    )
+    def test_env_c_command_substitution_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # env -C ${X:-/etc} bash -c 'cat passwd': the dynamic chdir must propagate into the
+            # nested shell scan so the payload's relative read fails closed.
+            "import os\nos.system(\"env -C ${X:-/etc} bash -c 'cat passwd'\")",
+            # argv form: env -C /etc must be applied before the bash -c payload is scanned.
+            "import subprocess\nsubprocess.run(['env', '-C', '/etc', 'bash', '-c', 'cat passwd'])",
+        ],
+    )
+    def test_env_c_nested_shell_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # env --unset GIT_CONFIG_COUNT (separated) and a bare - (implies -i) strip the injected
+            # hook suppression before a git child, like -u / --unset= / -i.
+            "import os\nos.system('env --unset GIT_CONFIG_COUNT git commit -m x')",
+            "import os\nos.system('env - git commit -m x')",
+        ],
+    )
+    def test_env_unset_git_hook_suppression_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # git apply --unsafe-paths applies a patch whose targets can escape the working tree.
+            "import os\nos.system('git apply --unsafe-paths p.patch')",
+            "import subprocess\nsubprocess.run(['git', 'apply', '--unsafe-paths', 'p.patch'])",
+        ],
+    )
+    def test_git_apply_unsafe_paths_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # patch is an unguarded native writer (patch -o /tmp/x, or a ../../ target in the diff).
+            "import os\nos.system('patch -o /tmp/x < p.patch')",
+            "import subprocess\nsubprocess.run(['patch', '-o', '/tmp/x'])",
+            "import os\nos.system('patch < p.patch')",
+        ],
+    )
+    def test_patch_child_writer_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # An UNKNOWN command word mentioning a sensitive path still fails closed (the exemption
+            # is an explicit non-reader allowlist, not "anything but a known reader").
+            "import os\nos.system('cat /etc/passwd')",
+            "import os\nos.system('mytool /etc/shadow')",
+            "import os\nos.system('grep root /etc/passwd')",
+        ],
+    )
+    def test_unknown_command_sensitive_path_still_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # P2 FP: a non-reader that only PRINTS / passes a sensitive path as data is not a read.
+            "import os\nos.system('echo /etc/passwd')",
+            "import os\nos.system('printf %s /etc/passwd')",
+            "import os\nos.system('test -f /etc/passwd')",
+            "import os\nos.system('echo hello')",
+            # Benign env -C to a workdir-relative dir, a plain git apply, a non-shell env, and a
+            # benign nested shell read must all still pass.
+            "import os\nos.system('env -C sub cat file.txt')",
+            "import os\nos.system('git apply p.patch')",
+            "import os\nos.system('env PATH=/bin:$PATH ls')",
+            "import subprocess\nsubprocess.run(['bash', '-c', 'cat notes.txt'])",
+        ],
+    )
+    def test_round41_benign_allowed(self, code):
+        _ok(code)

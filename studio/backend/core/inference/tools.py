@@ -192,6 +192,10 @@ _CHILD_WRITE_COMMANDS = frozenset(
         "mknod",
         "shred",
         "unlink",
+        # patch applies a diff in an unguarded child; patch -o /tmp/x writes the result outside
+        # the workdir, and a patch targeting ../../tmp/x escapes even without -o. Same native
+        # writer class as touch / cp / tar.
+        "patch",
         # rmdir removes (empty) directories; a bash child gets no realpath guard, so
         # rmdir /tmp/some-empty-dir deletes a host directory outside the workdir.
         "rmdir",
@@ -238,6 +242,22 @@ _BLOCKED_COMMANDS_WIN = frozenset(
         "runas",
         "powershell",
         "pwsh",
+    }
+)
+# Commands that take a path as DATA but never read its CONTENTS: echo / printf print their args,
+# the no-ops do nothing, and test / [ only stat. A literal sensitive path handed to one of these
+# (echo /etc/passwd) is not an exfiltration, so the literal-sensitive-path scan skips it. Any
+# OTHER (unknown) command word still fails closed -- only this explicit allowlist is exempt.
+_SHELL_NON_READER_COMMANDS = frozenset(
+    {
+        "echo",
+        "printf",
+        ":",
+        "true",
+        "false",
+        "test",
+        "[",
+        "[[",
     }
 )
 _BLOCKED_COMMANDS = (
@@ -1492,13 +1512,17 @@ def _find_blocked_commands(command: str) -> set[str]:
                     _git_cwd_escapes = True
             elif _bt.startswith("--chdir=") and _arg_escapes_workdir(_bt.split("=", 1)[1]):
                 _git_cwd_escapes = True
-            # env -i / --ignore-environment starts git with an EMPTY environment, and env -u
-            # GIT_CONFIG_COUNT / --unset=GIT_CONFIG_* strips just the suppression var; either
+            # env -i / --ignore-environment / a bare `-` start git with an EMPTY environment, and
+            # env -u NAME / --unset NAME / --unset=NAME strip just the suppression var; either
             # removes the injected core.hooksPath suppression so a planted .git/hooks/* runs in
-            # the unguarded git child. Only attribute these flags to an actual env wrapper.
-            if _bt in ("-i", "--ignore-environment"):
+            # the unguarded git child. Handle the separated and glued long forms and the bare `-`.
+            if _bt in ("-i", "--ignore-environment", "-"):
                 _env_suppress_dropped = True
-            elif _bt == "-u" and _bk + 1 < len(tokens) and tokens[_bk + 1].startswith("GIT_CONFIG"):
+            elif (
+                _bt in ("-u", "--unset")
+                and _bk + 1 < len(tokens)
+                and tokens[_bk + 1].startswith("GIT_CONFIG")
+            ):
                 _env_suppress_dropped = True
             elif _bt.startswith("--unset=") and _bt.split("=", 1)[1].startswith("GIT_CONFIG"):
                 _env_suppress_dropped = True
@@ -1577,6 +1601,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             elif not _gt.startswith("-") and _git_operand_escapes(_gt, _local_assigns):
                 blocked.add("git-write-outside")
             _gk += 1
+        # git apply --unsafe-paths lets a patch write to targets OUTSIDE the working tree (a
+        # +++ ../../tmp/x hunk), which the native git child applies with no realpath guard. The
+        # patch body is not statically visible, so deny the unsafe mode outright; a plain
+        # git apply p.patch (in-tree targets) stays allowed.
+        if "apply" in _seg and "--unsafe-paths" in _seg:
+            blocked.add("git-write-outside")
         # git config [options] KEY [VALUE]: setting an execution-capable config key (git config
         # core.pager 'sh -c ...') runs its value on later git operations, like the -c form; and
         # git config --file <path> / -f <path> writes the config to an arbitrary file, escaping
@@ -5256,23 +5286,6 @@ def _scan_command_string_for_reads(
                     return _r
         return None
 
-    # Literal-path token scan (absolute-sensitive + traversal), splitting shell punctuation
-    # glued to an adjacent word (cat /etc/passwd|wc) so the path piece is still checked.
-    try:
-        toks = shlex.split(cmd, posix = True)
-    except ValueError:
-        toks = cmd.split()
-    for _t in toks:
-        for _piece in re.split(r"[;|&<>()`{}]+", _t):
-            if _piece and not _piece.startswith("-"):
-                _r = _flag(_piece)
-                if _r is not None:
-                    return _r
-        if _ASSIGNMENT_RE.match(_t):
-            _r = _check_assignment_rhs(_t)
-            if _r is not None:
-                return _r
-
     # Re-tokenize keeping redirects / separators for the input-redirect + expansion scan.
     try:
         _lx = shlex.shlex(cmd, posix = True, punctuation_chars = ";&|()`<>")
@@ -5280,6 +5293,47 @@ def _scan_command_string_for_reads(
         ptoks = list(_lx)
     except ValueError:
         ptoks = cmd.split()
+
+    # Literal-path token scan (absolute-sensitive + traversal), COMMAND-WORD aware: a sensitive
+    # path that a non-reader merely prints / passes as data (echo /etc/passwd, printf %s
+    # /etc/passwd) is not a read, so its args are exempt. Every other command word -- readers AND
+    # unknown commands -- still fails closed. A prefix assignment binding a sensitive path
+    # (P=/etc/passwd cat ${P}) is flagged at the command position; punctuation glued to a word
+    # (cat /etc/passwd|wc) is split so the path piece is still checked.
+    _lit_at_cmd = True
+    _lit_wrapper = None
+    _lit_is_reader_ctx = True  # unknown command word -> still fail closed
+    for _lt in ptoks:
+        if _lt in _READ_SCAN_SEPARATORS:
+            _lit_at_cmd = True
+            _lit_wrapper = None
+            _lit_is_reader_ctx = True
+            continue
+        if _lit_at_cmd:
+            if _ASSIGNMENT_RE.match(_lt):
+                _r = _check_assignment_rhs(_lt)
+                if _r is not None:
+                    return _r
+                continue  # assignment prefix; command word still ahead
+            if _lt.startswith("-"):
+                continue  # wrapper flag before the command word
+            _ltbase = os.path.basename(_lt).lower()
+            if _ltbase in _COMMAND_PREFIXES:
+                _lit_wrapper = _ltbase
+                continue
+            if _lit_wrapper is not None and _is_wrapper_numeric_arg(_lt):
+                continue
+            # command word resolved: a known non-reader exempts its args from the literal scan.
+            _lit_is_reader_ctx = _ltbase not in _SHELL_NON_READER_COMMANDS
+            _lit_at_cmd = False
+            continue
+        if not _lit_is_reader_ctx:
+            continue  # echo / printf / ... argument: the path is data, not a read
+        for _piece in re.split(r"[;|&<>()`{}]+", _lt):
+            if _piece and not _piece.startswith("-"):
+                _r = _flag(_piece)
+                if _r is not None:
+                    return _r
 
     # find ... -exec CMD ... ; runs CMD directly on each match; CMD may be a nested shell
     # (sh -c 'cat /etc/passwd') or a reader, so scan each -exec segment through this scanner
@@ -5400,13 +5454,24 @@ def _scan_command_string_for_reads(
     _local_assigns = {}
     for _pi, _pt in enumerate(ptoks):
         if _pt in _READ_SCAN_SEPARATORS:
+            # env -C `...` / env -C $(...): the substitution operand STARTS with a punctuation
+            # token ( ` or ( ) that the tokenizer emits as a separator, so the pending env -C
+            # never captured it. Mark the cwd dynamic here so the trailing reader fails closed.
+            if _pending_chdir and _pt in ("(", "`"):
+                _chdir_dynamic = True
             _at_cmd = True
             _cur_reader = False
             _wrapper = None
             _skip_operand = False
             _pending_argfile = False
             _chdir = cwd
-            _chdir_dynamic = False
+            # A command-substitution punctuation token ( ( ) ` ) does NOT end the current
+            # command, so it must not drop a pending env -C dynamic-cwd flag: env -C $(printf
+            # /etc) cat passwd tokenizes the operand into $ ( printf /etc ), and the ( / )
+            # would otherwise reset _chdir_dynamic before the trailing reader is scanned. Only a
+            # real command separator ( ; | & newline / keyword ) ends the env -C scope.
+            if _pt not in ("(", ")", "`"):
+                _chdir_dynamic = False
             _pending_chdir = False
             continue
         if _pt.startswith("<"):
@@ -5483,11 +5548,15 @@ def _scan_command_string_for_reads(
                         _fl.startswith("-") and not _fl.startswith("--") and _fl.endswith("c")
                     ):
                         if _k + 1 < len(ptoks):
+                            # Propagate the CURRENT env -C cwd AND its dynamic flag: env -C
+                            # ${X:-/etc} bash -c 'cat passwd' chdirs to an unprovable dir, so the
+                            # nested payload's relative reads must fail closed too (not just the
+                            # original ambient cwd_dynamic).
                             _r = _scan_command_string_for_reads(
                                 ptoks[_k + 1],
                                 strict_traversal = strict_traversal,
                                 cwd = _chdir,
-                                cwd_dynamic = cwd_dynamic,
+                                cwd_dynamic = cwd_dynamic or _chdir_dynamic,
                                 _depth = _depth + 1,
                             )
                             if _r is not None:
@@ -9132,6 +9201,18 @@ def _check_signal_escape_patterns(
                 _ci = _blocked_in_argv(_elts)[1]
                 _sh = _elts[_ci] if _ci is not None and _ci < len(_elts) else None
                 if _sh is not None and os.path.basename(_sh).lower() in _SHELL_BINARIES:
+                    # An env -C DIR earlier in the SAME argv chdirs the child before the nested
+                    # shell runs (['env', '-C', '/etc', 'bash', '-c', 'cat passwd']), so the -c
+                    # payload's relative reads resolve against DIR, not the workdir. Fold the
+                    # argv env -C into the payload's cwd (or fail closed on a dynamic DIR).
+                    _pl_cwd, _pl_dyn = _cwd_lit, _cwd_dyn
+                    _envc = _argv_env_chdir(_elts)
+                    if _envc is not None:
+                        _rdir, _rdyn = _resolve_read_chdir(_envc, {})
+                        if _rdyn:
+                            _pl_dyn = True
+                        else:
+                            _pl_cwd = _join_chdir(_cwd_lit, _rdir)
                     for _k in range(_ci + 1, len(_elts)):
                         _ev = _elts[_k]
                         if _ev is not None and (
@@ -9142,8 +9223,16 @@ def _check_signal_escape_patterns(
                                 and _ev.endswith("c")
                             )
                         ):
-                            if _k + 1 < len(_elts) and _scan_one_command(_elts[_k + 1]):
-                                return True
+                            if _k + 1 < len(_elts) and _elts[_k + 1] is not None:
+                                _rr = _scan_command_string_for_reads(
+                                    _elts[_k + 1],
+                                    strict_traversal = True,
+                                    cwd = _pl_cwd,
+                                    cwd_dynamic = _pl_dyn,
+                                )
+                                if _rr is not None:
+                                    _fs_block(node, _rr)
+                                    return True
                             break
                 # env -S 'payload' / --split-string in an argv (subprocess.run(['env', '-S',
                 # 'cat /etc/passwd'])) runs the split payload as the child; the -c block above
@@ -10128,6 +10217,12 @@ try:
                 # (x = os.system). A same-named attribute on an unrelated object
                 # (p.system = 'linux') is NOT a sink, so require a sink-module receiver root.
                 if _nd.attr in _GUARD_EXEC_ATTRS and _guard_attr_root(_nd.value) in _GUARD_EXEC_RECEIVERS:
+                    return True
+                # A workdir module that touches the import machinery (sys.meta_path /
+                # sys.path_hooks / sys.path_importer_cache) can remove THIS vetter, then a
+                # sibling `import evil` loads unscanned. The top-level analyzer blocks such
+                # mutation in submitted code; refuse it inside a vetted workdir module too.
+                if _nd.attr in ("meta_path", "path_hooks", "path_importer_cache"):
                     return True
         return False
     class _GuardWorkdirImportVetter:

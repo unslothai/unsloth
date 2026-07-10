@@ -765,6 +765,31 @@ def test_sandboxed_benign_attr_named_sink_workdir_module_allowed():
 
 
 @_POSIX_ONLY
+def test_sandboxed_workdir_module_meta_path_mutation_denied():
+    # A workdir module that mutates the import machinery (sys.meta_path.pop(0)) would remove THIS
+    # vetter, after which a second workdir module could import unscanned and run an unguarded
+    # sink. The top-level analyzer blocks meta_path mutation in submitted code; the vetter must
+    # refuse it inside a workdir module too.
+    session = "backstop-workdir-metapop"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "mp_popper.py"), "w") as f:
+        f.write("import sys\nsys.meta_path.pop(0)\nprint('POPPED_OK')\n")
+    try:
+        out = _python_exec(
+            "import mp_popper; print('REACHED_' + 'BODY')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "POPPED_OK" not in out
+        assert "REACHED_BODY" not in out
+        assert "sandbox:" in out or "ImportError" in out
+    finally:
+        os.remove(os.path.join(workdir, "mp_popper.py"))
+
+
+@_POSIX_ONLY
 def test_sandboxed_realpath_monkeypatch_write_escape_denied(tmp_path):
     # Sandboxed code reassigns os.path.realpath to a lambda that echoes an in-workdir
     # path, then writes to an absolute path outside the workdir. If the guard read
