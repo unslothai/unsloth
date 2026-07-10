@@ -1670,9 +1670,7 @@ def _content_part_id(part: dict) -> Optional[str]:
 
 
 def _chat_attachment_tombstones_for_messages(
-    conn: sqlite3.Connection,
-    thread_id: str,
-    message_ids: list[str],
+    conn: sqlite3.Connection, thread_id: str, message_ids: list[str]
 ) -> dict[str, set[str]]:
     tombstones = {message_id: set() for message_id in message_ids}
     unique_ids = list(dict.fromkeys(message_ids))
@@ -1703,10 +1701,7 @@ def _reconcile_chat_message_uploads(message: dict, tombstones: set[str]) -> dict
         reconciled["attachments"] = [
             attachment
             for attachment in attachments
-            if not (
-                isinstance(attachment, dict)
-                and str(attachment.get("id") or "") in tombstones
-            )
+            if not (isinstance(attachment, dict) and str(attachment.get("id") or "") in tombstones)
         ]
 
     content = message.get("content")
@@ -1714,10 +1709,7 @@ def _reconcile_chat_message_uploads(message: dict, tombstones: set[str]) -> dict
         reconciled["content"] = [
             part
             for part in content
-            if not (
-                isinstance(part, dict)
-                and (_content_part_id(part) or "") in tombstones
-            )
+            if not (isinstance(part, dict) and (_content_part_id(part) or "") in tombstones)
         ]
     return reconciled
 
@@ -1965,16 +1957,13 @@ def sync_chat_messages(
             [m["id"] for m in messages],
         )
         reconciled_messages = [
-            _reconcile_chat_message_uploads(m, tombstones.get(m["id"], set()))
-            for m in messages
+            _reconcile_chat_message_uploads(m, tombstones.get(m["id"], set())) for m in messages
         ]
         serialized_messages = [
             (
                 m,
                 json.dumps(m.get("content", [])),
-                json.dumps(m.get("attachments"))
-                if m.get("attachments") is not None
-                else None,
+                json.dumps(m.get("attachments")) if m.get("attachments") is not None else None,
             )
             for m in reconciled_messages
         ]
@@ -2286,8 +2275,7 @@ def _content_part_attachments(content_json: Optional[str]) -> list[dict]:
 
 
 def list_chat_attachments_page(
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = 50, offset: int = 0
 ) -> tuple[list[dict], Optional[int]]:
     """One bounded page from the normalized attachment inventory."""
     if not 1 <= limit <= 100:
@@ -2370,10 +2358,7 @@ def get_chat_attachment(message_id: str, attachment_id: str) -> Optional[dict]:
     attachments = _json_loads(row["attachments_json"], None)
     if isinstance(attachments, list):
         for attachment in attachments:
-            if (
-                isinstance(attachment, dict)
-                and str(attachment.get("id") or "") == attachment_id
-            ):
+            if isinstance(attachment, dict) and str(attachment.get("id") or "") == attachment_id:
                 return attachment
     if attachment_id.startswith(_CONTENT_PART_ID_PREFIX):
         for attachment in _content_part_attachments(row["content_json"]):
@@ -2383,10 +2368,7 @@ def get_chat_attachment(message_id: str, attachment_id: str) -> Optional[dict]:
 
 
 def _record_chat_attachment_tombstone(
-    conn: sqlite3.Connection,
-    thread_id: str,
-    message_id: str,
-    attachment_id: str,
+    conn: sqlite3.Connection, thread_id: str, message_id: str, attachment_id: str
 ) -> None:
     conn.execute(
         """
@@ -2451,10 +2433,7 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
             remaining_content = [
                 part
                 for part in content
-                if not (
-                    isinstance(part, dict)
-                    and _content_part_id(part) == attachment_id
-                )
+                if not (isinstance(part, dict) and _content_part_id(part) == attachment_id)
             ]
             deleted_content = len(remaining_content) != len(content)
             if deleted_content:
