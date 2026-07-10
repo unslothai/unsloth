@@ -3000,3 +3000,71 @@ class TestRound25Bypasses:
     )
     def test_round25_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound26Bypasses:
+    """Twenty-sixth-round Codex findings (static portion): bash history file writes, subprocess
+    cwd + relative argv reads, env -C chdir before a relative read, and tuple/list unpacking
+    aliases. (The runtime-guard items -- pinned builtins / stat and /root reads -- are covered
+    in test_sandbox_runtime_backstop.)"""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('history -s x; history -w /tmp/p')",
+            "import os\nos.system('history -r /etc/passwd')",
+            "import os\nos.system('history -a /tmp/p')",
+        ],
+    )
+    def test_history_file_write_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['cat', 'passwd'], cwd='/etc')",
+            "import subprocess\nsubprocess.run(['cat', 'shadow'], cwd='/etc')",
+            "import subprocess\nsubprocess.Popen(['cat', 'sshd_config'], cwd='/etc/ssh')",
+        ],
+    )
+    def test_subprocess_cwd_relative_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('env -C /etc cat passwd')",
+            "import os\nos.system('env --chdir /etc head -1 passwd')",
+            "import os\nos.system('env --chdir=/etc cat passwd')",
+        ],
+    )
+    def test_env_chdir_relative_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\n(s,) = (os.system,)\ns('touch /tmp/p')",
+            "import os\na, b = os.system, 1\na('rm -rf /tmp/x')",
+            "import os\ns, t = os.system, os.popen\nt('touch /tmp/x')",
+            "[e] = [exec]\ne('__import__(chr(111)+chr(115))')",
+            "import pickle\n(l,) = (pickle.loads,)\nl(b'x')",
+        ],
+    )
+    def test_unpacking_alias_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign history / subprocess-cwd / env -C / unpacking forms must still pass.
+            "import os\nos.system('history -c')",
+            "import subprocess\nsubprocess.run(['cat', 'data.txt'], cwd='logs')",
+            "import os\nos.system('env -C build make')",
+            "import os\nos.system('env -C /app cat readme.md')",
+            "a, b = 1, 2\nprint(a + b)",
+            "a, b = 3, 4\na, b = b, a\nprint(a)",
+        ],
+    )
+    def test_round26_benign_allowed(self, code):
+        _ok(code)

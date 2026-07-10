@@ -1086,7 +1086,18 @@ def _find_blocked_commands(command: str) -> set[str]:
     for i in _cmd_word_idx:
         tok = tokens[i]
         _base = _token_basename(tok)
-        if _base not in ("sed", "gsed", "ssed", "perl", "sort", "find", "dd", "tee", "truncate"):
+        if _base not in (
+            "sed",
+            "gsed",
+            "ssed",
+            "perl",
+            "sort",
+            "find",
+            "dd",
+            "tee",
+            "truncate",
+            "history",
+        ):
             continue
         if _base == "truncate":
             blocked.add("mutating:truncate")
@@ -1123,6 +1134,14 @@ def _find_blocked_commands(command: str) -> set[str]:
                     break
             elif _base == "tee" and not a.startswith("-"):
                 blocked.add("mutating:tee")
+                break
+            elif _base == "history" and _short and any(_c in al[1:] for _c in "warn"):
+                # bash's history builtin reads/writes an arbitrary file: `history -w FILE`
+                # (or -a append) creates/overwrites an absolute host path, and `-r` / `-n`
+                # read a file into the history buffer. Even without a FILE operand it targets
+                # $HISTFILE, which the caller can point outside the workdir. -c / -d / -p / -s
+                # do not touch a file, so only w / a / r / n are blocked.
+                blocked.add("mutating:history")
                 break
 
     return blocked
@@ -3790,6 +3809,22 @@ def _build_scope_alias_index(tree, const_env):
                 and isinstance(n.target, ast.Name)
             ):
                 assigns.append((n.target.id, n.value))
+            elif (
+                # A parallel unpacking assignment binds each name to the matching RHS element
+                # ((s,) = (os.system,); [e] = [exec]; a, b = os.system, 1), which then reaches
+                # a sink call the same way a plain alias does. Pair a literal tuple/list target
+                # with a literal tuple/list RHS of equal length element-wise so those aliases
+                # are recorded; a starred / mismatched / non-literal RHS is left alone.
+                isinstance(n, ast.Assign)
+                and len(n.targets) == 1
+                and isinstance(n.targets[0], (ast.Tuple, ast.List))
+                and isinstance(n.value, (ast.Tuple, ast.List))
+                and len(n.targets[0].elts) == len(n.value.elts)
+                and not any(isinstance(_t, ast.Starred) for _t in n.targets[0].elts)
+            ):
+                for _tgt, _val in zip(n.targets[0].elts, n.value.elts):
+                    if isinstance(_tgt, ast.Name):
+                        assigns.append((_tgt.id, _val))
         # A comprehension generator binds its target like a single-assignment alias when the
         # iterable is a one-element literal: [e(p) for e in [exec]] binds e to exec, so the
         # payload passed through e must still get eval/exec recursion.
@@ -4307,12 +4342,16 @@ def _scan_command_string_for_reads(
     _cur_reader = False
     _wrapper = None
     _skip_operand = False
+    _chdir = None  # env -C DIR / --chdir DIR sets the child's cwd for later relative reads
+    _pending_chdir = False
     for _pi, _pt in enumerate(ptoks):
         if _pt in _READ_SCAN_SEPARATORS:
             _at_cmd = True
             _cur_reader = False
             _wrapper = None
             _skip_operand = False
+            _chdir = None
+            _pending_chdir = False
             continue
         if _pt.startswith("<"):
             _rt = _pt.lstrip("<") or (ptoks[_pi + 1] if _pi + 1 < len(ptoks) else "")
@@ -4323,6 +4362,9 @@ def _scan_command_string_for_reads(
             continue  # output redirects are handled by _find_blocked_commands
         if _at_cmd:
             if _skip_operand:  # a wrapper flag's separated operand (env -u NAME)
+                if _pending_chdir:  # ...but env -C DIR's operand is the child cwd
+                    _chdir = _pt
+                    _pending_chdir = False
                 _skip_operand = False
                 continue
             if _ASSIGNMENT_RE.match(_pt):
@@ -4331,7 +4373,15 @@ def _scan_command_string_for_reads(
                     return _r
                 continue  # assignment prefix; the command word is still ahead
             if _pt.startswith("-"):
-                if _wrapper and _wrapper_flag_takes_operand(_wrapper, _pt):
+                # env -C DIR / --chdir DIR changes the child's cwd before the command runs, so
+                # a later relative reader arg (env -C /etc cat passwd -> /etc/passwd) resolves
+                # against DIR, not the workdir. Capture DIR instead of just skipping it.
+                if _wrapper == "env" and _pt in ("-C", "--chdir"):
+                    _pending_chdir = True
+                    _skip_operand = True
+                elif _wrapper == "env" and _pt.startswith("--chdir="):
+                    _chdir = _pt.split("=", 1)[1]
+                elif _wrapper and _wrapper_flag_takes_operand(_wrapper, _pt):
                     _skip_operand = True
                 continue  # wrapper flag; still before the command word
             _base = os.path.basename(_pt).lower()
@@ -4365,12 +4415,14 @@ def _scan_command_string_for_reads(
             _at_cmd = False
             _wrapper = None
             continue
-        if (
-            _cur_reader
-            and not _pt.startswith("-")
-            and ("$" in _pt or "`" in _pt or _escaping_glob(_pt))
-        ):
-            return f"shell read command reads an expanded path {_pt!r}"
+        if _cur_reader and not _pt.startswith("-"):
+            if "$" in _pt or "`" in _pt or _escaping_glob(_pt):
+                return f"shell read command reads an expanded path {_pt!r}"
+            # Under an env -C DIR chdir, a relative reader arg resolves against DIR.
+            if _chdir and not _pt.startswith("/") and not _pt.startswith("~"):
+                _r = _flag(os.path.join(_chdir, _pt))
+                if _r is not None:
+                    return _r
     return None
 
 
@@ -7559,16 +7611,27 @@ def _check_signal_escape_patterns(
             # A shell-command STRING sink: scan the command for embedded sensitive reads.
             if _scan_shell_string_reads(node, f):
                 return
+            _is_child_exec = _is_subprocess_exec_callee(f) or _is_exec_family_callee(f)
             is_read_callee = (
                 _resolves_to_open(f)
                 or fq in ("io.open", "os.open")
                 or fq in _SHUTIL_COPY_SINKS
                 or _is_shutil_copy_callee(f)
                 or (isinstance(f, ast.Name) and f.id in _shutil_copy_from_aliases)
-                or _is_subprocess_exec_callee(f)
-                or _is_exec_family_callee(f)
+                or _is_child_exec
                 or method in _READ_METHODS
             )
+            # subprocess.run(['cat', 'passwd'], cwd='/etc') reads /etc/passwd in an unguarded
+            # child: the argv entry is relative and /etc alone is not sensitive, so combine a
+            # literal cwd= with each relative argv path before the sensitivity check.
+            _sub_cwd = None
+            if _is_child_exec:
+                for kw in node.keywords or []:
+                    if kw.arg == "cwd":
+                        _cv = _fold_read_arg(kw.value)
+                        if isinstance(_cv, str):
+                            _sub_cwd = _cv
+                        break
             # Pathlib read on a Path(...) / join receiver: check the resolved path.
             if isinstance(f, ast.Attribute) and f.attr in _PATHLIB_READ_METHODS:
                 rp = _pathlib_receiver_path(f.value)
@@ -7617,6 +7680,11 @@ def _check_signal_escape_patterns(
                     continue
                 if _flag_read_path(node, s, is_read_callee):
                     break
+                # Resolve a relative argv entry against a literal subprocess cwd= (cat passwd
+                # + cwd='/etc' -> /etc/passwd) so the combined host-secret read is caught.
+                if _sub_cwd is not None and not s.startswith("/") and not s.startswith("~"):
+                    if _flag_read_path(node, os.path.join(_sub_cwd, s), is_read_callee):
+                        break
             self.generic_visit(node)
 
     NetworkAndIoVisitor().visit(tree)
@@ -7759,6 +7827,16 @@ import sys as _sys
 _saved_path = list(_sys.path)
 _sys.path = [_p for _p in _sys.path if _p not in ("", ".", __WORKDIR__, __WORKDIR__ + "/")]
 import os as _os, builtins as _bi, io as _io, pathlib as _pl, re as _re
+# Pin the builtins the guard predicates consult (isinstance / int / bytes / str / any) into
+# THIS namespace so a sandboxed `builtins.isinstance = lambda *a: True` (etc.) cannot make a
+# guard check lie -- e.g. isinstance(path, int) treating an outside path as an fd and
+# approving an absolute write. Every guard function below resolves these names from here, not
+# the mutable builtins module.
+isinstance = _bi.isinstance
+int = _bi.int
+bytes = _bi.bytes
+str = _bi.str
+any = _bi.any
 # NOTE: sys.path stays stripped for the WHOLE guard setup below (it also imports shutil,
 # which is pure-Python and equally shadowable); it is restored at the very END of this
 # prelude, just before user code runs, so ordinary user imports still resolve.
@@ -7786,6 +7864,13 @@ _lstat = _os.lstat
 _readlink = _os.readlink
 _getcwd = _os.getcwd
 _stat = _os.stat
+# posixpath.realpath decides whether to FOLLOW a component by calling os.path.stat.S_ISLNK
+# on the live stat module. Sandboxed code can set os.path.stat.S_ISLNK = lambda mode: False
+# (or reassign os.path.stat) so realpath stops following an in-workdir symlink that escapes,
+# leaving the target under _WD while the real open() follows it outside. Capture the module +
+# S_ISLNK so both can be re-pinned before each resolution.
+_stat_mod = _os.path.stat
+_S_ISLNK = _stat_mod.S_ISLNK
 _WD = _realpath(__WORKDIR__)
 
 def _within(p):
@@ -7805,6 +7890,8 @@ def _within(p):
         _os.readlink = _readlink
         _os.getcwd = _getcwd
         _os.stat = _stat
+        _os.path.stat = _stat_mod
+        _stat_mod.S_ISLNK = _S_ISLNK
         rp = _realpath(_fspath(p))
         # A bytes path resolves to bytes; normalize to str so the prefix compare against
         # the str _WD does not raise (which would deny a legitimate in-workdir bytes write
@@ -7883,6 +7970,15 @@ def _is_sensitive_read(rp):
         return True
     if _SENS_PROC.match(n):
         return True
+    # Dotfiles / caches under a root home hold credentials (/root/.bashrc, /root/.cache/...);
+    # an opaque path the static /root/ rule cannot fold could read them at runtime. Restore
+    # the /root/ protection here, but carve out package / library trees so importing a library
+    # installed under a root home (site-packages, the stdlib) is not broken.
+    if n.startswith("/root/") and not any(
+        _seg in n
+        for _seg in ("/site-packages/", "/dist-packages/", "/lib/python", "/lib64/python")
+    ):
+        return True
     low = n.lower()
     return any(tok in low for tok in _SENS_TOKENS)
 
@@ -7896,6 +7992,8 @@ def _read_realpath(p):
         _os.readlink = _readlink
         _os.getcwd = _getcwd
         _os.stat = _stat
+        _os.path.stat = _stat_mod
+        _stat_mod.S_ISLNK = _S_ISLNK
         rp = _realpath(_fspath(p))
         if isinstance(rp, bytes):
             rp = _fsdecode(rp)

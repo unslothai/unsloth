@@ -15,6 +15,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 from core.inference.tools import (
     _BLOCKED_COMMANDS_COMMON,
+    _SANDBOX_GUARD_SRC,
     _bash_exec,
     _command_reads_sensitive,
     _python_exec,
@@ -1266,3 +1267,65 @@ def test_bash_brace_expanded_writer_blocked(command):
 )
 def test_bash_benign_prefixed_read_scan_allows(command):
     assert _command_reads_sensitive(command) is None, command
+
+
+@_POSIX_ONLY
+def test_sandboxed_poisoned_isinstance_write_denied(tmp_path):
+    # Reassigning builtins.isinstance must not make the guard's isinstance(path, int) fd check
+    # lie and approve an absolute write outside the workdir; the guard uses pinned builtins.
+    target = tmp_path / "poison_isinstance.txt"
+    out = _python_exec(
+        "import builtins\n"
+        "builtins.isinstance = lambda *a, **k: True\n"
+        f"open({str(target)!r}, 'w').write('x'); print('WROTE')\n",
+        None,
+        30,
+        "backstop-poison-isinstance",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_poisoned_s_islnk_symlink_write_denied(tmp_path):
+    # Reassigning os.path.stat.S_ISLNK so realpath stops following an in-workdir symlink that
+    # escapes must not let the write through; the guard re-pins S_ISLNK before each resolve.
+    session = "backstop-poison-islnk"
+    workdir = get_sandbox_workdir(session)
+    link = os.path.join(workdir, "islnk_escape")
+    if os.path.islink(link) or os.path.exists(link):
+        os.remove(link)
+    os.symlink(str(tmp_path), link)
+    victim = tmp_path / "poison_islnk.txt"
+    try:
+        out = _python_exec(
+            "import os.path\n"
+            "os.path.stat.S_ISLNK = lambda mode: False\n"
+            "open('islnk_escape/poison_islnk.txt', 'w').write('x'); print('WROTE')\n",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "sandbox:" in out or "PermissionError" in out
+        assert not victim.exists()
+    finally:
+        os.remove(link)
+
+
+def test_runtime_is_sensitive_read_covers_root_home():
+    # The runtime backstop's _is_sensitive_read must protect /root dotfiles/caches while
+    # carving out package/library trees so imports under a root home are not broken.
+    import re as _re
+
+    src = _SANDBOX_GUARD_SRC
+    ns = {"_re": _re}
+    block = src[src.index("_SENS_EXACT = ") : src.index("def _read_realpath")]
+    exec(block, ns)
+    f = ns["_is_sensitive_read"]
+    assert f("/root/.bashrc") is True
+    assert f("/root/.cache/secret") is True
+    assert f("/root/.local/lib/python3.13/site-packages/certifi/cacert.pem") is False
+    assert f("/root/miniconda3/lib/python3.13/os.py") is False
+    assert f("/home/ubuntu/project/data.txt") is False
