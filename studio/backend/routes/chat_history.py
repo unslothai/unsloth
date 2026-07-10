@@ -314,6 +314,20 @@ _AUDIO_FORMAT_MEDIA_TYPES = {
 }
 
 
+def _safe_image_media_type(media_type: str) -> str:
+    """Clamp a data-URL media type to something inert to render.
+
+    Imported chats store image parts verbatim, so the embedded type can be
+    text/html or image/svg+xml; echoing those would execute markup with the
+    app origin when opened. Anything not a plain raster type downloads as
+    bytes instead.
+    """
+    lowered = media_type.strip().lower()
+    if lowered.startswith("image/") and lowered != "image/svg+xml":
+        return lowered
+    return "application/octet-stream"
+
+
 @router.get("/attachments/{message_id}/{attachment_id}/file")
 async def get_attachment_file(
     message_id: str,
@@ -338,7 +352,9 @@ async def get_attachment_file(
         image = part.get("image")
         if isinstance(image, str) and image.startswith("data:"):
             header, _, payload = image.partition(",")
-            media_type = header[5:].split(";", 1)[0] or "application/octet-stream"
+            media_type = _safe_image_media_type(
+                header[5:].split(";", 1)[0] or "application/octet-stream"
+            )
             if "base64" not in header:
                 # RFC 2397 non-base64 form stores percent-encoded bytes.
                 data = urllib.parse.unquote_to_bytes(payload)

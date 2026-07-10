@@ -337,7 +337,8 @@ def test_attachment_file_serves_percent_encoded_data_url(tmp_path, monkeypatch):
         chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
     )
     assert response.body == b"hello world"
-    assert response.media_type == "text/plain"
+    # Non-image data URL types are clamped so markup never renders same-origin.
+    assert response.media_type == "application/octet-stream"
 
 
 def test_attachment_file_serves_text_parts(tmp_path, monkeypatch):
@@ -405,7 +406,8 @@ def test_attachment_file_svg_media_type(tmp_path, monkeypatch):
         chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
     )
     assert response.body == svg
-    assert response.media_type == "image/svg+xml"
+    # SVG can carry scripts, so it downloads as bytes instead of rendering.
+    assert response.media_type == "application/octet-stream"
 
 
 def test_delete_attachment_route_then_404(tmp_path, monkeypatch):
@@ -551,3 +553,60 @@ def test_text_only_messages_not_listed_as_uploads(tmp_path, monkeypatch):
     message["content"] = [{"type": "text", "text": 'discussing an "image" and "audio" here'}]
     studio_db.upsert_chat_message(message)
     assert studio_db.list_chat_attachments() == []
+
+
+def test_remote_image_urls_are_not_listed_as_uploads(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    message = _message("msg-remote")
+    message["content"] = [
+        {"type": "image", "image": "https://example.com/cat.png"},
+        {"type": "text", "text": "look at this"},
+    ]
+    studio_db.upsert_chat_message(message)
+    # No stored bytes: nothing to list, open, or delete.
+    assert studio_db.list_chat_attachments() == []
+    assert studio_db.get_chat_attachment("msg-remote", "content-part-0") is None
+    assert studio_db.delete_chat_attachment("msg-remote", "content-part-0") is False
+    stored = studio_db.get_chat_message("thread-1", "msg-remote")
+    assert [p["type"] for p in stored["content"]] == ["image", "text"]
+
+
+def test_html_data_url_serves_as_octet_stream(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    html_b64 = base64.b64encode(b"<script>alert(1)</script>").decode()
+    message = _message("msg-html")
+    message["content"] = [
+        {"type": "image", "image": f"data:text/html;base64,{html_b64}"},
+    ]
+    studio_db.upsert_chat_message(message)
+    response = asyncio.run(
+        chat_history.get_attachment_file("msg-html", "content-part-0", current_subject = "unsloth")
+    )
+    # Never echo a script-capable media type back under the app origin.
+    assert response.media_type == "application/octet-stream"
+    assert response.body == b"<script>alert(1)</script>"
+
+
+def test_svg_data_url_serves_as_octet_stream(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    svg_b64 = base64.b64encode(b"<svg onload='x'/>").decode()
+    message = _message("msg-svg")
+    message["content"] = [
+        {"type": "image", "image": f"data:image/svg+xml;base64,{svg_b64}"},
+    ]
+    studio_db.upsert_chat_message(message)
+    response = asyncio.run(
+        chat_history.get_attachment_file("msg-svg", "content-part-0", current_subject = "unsloth")
+    )
+    assert response.media_type == "application/octet-stream"
+
+
+def test_png_data_url_keeps_its_media_type(tmp_path, monkeypatch):
+    _seed_compare(tmp_path, monkeypatch)
+    response = asyncio.run(
+        chat_history.get_attachment_file("msg-cmp", "content-part-0", current_subject = "unsloth")
+    )
+    assert response.media_type == "image/png"

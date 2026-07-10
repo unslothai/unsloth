@@ -18,9 +18,11 @@ import {
   fetchChatAttachmentBlob,
   listChatAttachments,
 } from "@/features/chat/api/chat-api";
+import { emitChatAttachmentDeleted } from "@/features/chat/utils/chat-attachment-events";
 import {
   deleteDocument,
   getDocumentFileUrl,
+  invalidateProjectSources,
   listAllDocuments,
 } from "@/features/rag/api/rag-api";
 import type { UploadedDocument } from "@/features/rag/types/rag";
@@ -33,7 +35,13 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 function formatUploadedAt(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === "") return "-";
@@ -215,6 +223,9 @@ function ragRow(doc: UploadedDocument): UploadedFileRow {
     open: () => openResolvedUrl(() => getDocumentFileUrl(doc.id)),
     remove: async () => {
       await deleteDocument(doc.id);
+      // Match the project sources panel: drop the cached "has sources" probe
+      // so project chats stop auto-enabling the docs tool on a stale entry.
+      if (doc.projectId) invalidateProjectSources(doc.projectId);
     },
     deleteDescription:
       "The file and its indexed content are removed. This cannot be undone.",
@@ -248,6 +259,12 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
       }),
     remove: async () => {
       await deleteChatAttachment(att.messageId, att.id);
+      // Patch any loaded runtime copy so a later repo sync cannot write the
+      // deleted attachment back to storage.
+      emitChatAttachmentDeleted({
+        messageId: att.messageId,
+        attachmentId: att.id,
+      });
     },
     deleteDescription:
       "The attachment is removed from its chat message; the message text is kept. This cannot be undone.",
@@ -269,40 +286,43 @@ export function UploadedFilesView() {
     void navigate({ to: "/chat", search: { thread: threadId } });
   }
 
-  useEffect(() => {
-    let cancelled = false;
+  // Shared by the mount effect and post-delete refreshes; `isCancelled` lets
+  // the unmount cleanup drop a late response.
+  const reload = useCallback(async (isCancelled?: () => boolean) => {
     setLoadError(null);
     // Load both sources independently: RAG being unavailable (no sqlite-vec)
     // must not hide chat attachments, and vice versa.
-    void Promise.allSettled([listAllDocuments(), listChatAttachments()]).then(
-      ([ragResult, chatResult]) => {
-        if (cancelled) return;
-        const next: UploadedFileRow[] = [];
-        if (ragResult.status === "fulfilled") {
-          next.push(...ragResult.value.map(ragRow));
-        }
-        if (chatResult.status === "fulfilled") {
-          next.push(...chatResult.value.map(chatAttachmentRow));
-        }
-        next.sort((a, b) => b.sortTime - a.sortTime);
-        setRows(next);
-        if (
-          ragResult.status === "rejected" &&
-          chatResult.status === "rejected"
-        ) {
-          const reason = ragResult.reason;
-          setLoadError(
-            reason instanceof Error
-              ? reason.message
-              : "Failed to load uploaded files",
-          );
-        }
-      },
-    );
+    const [ragResult, chatResult] = await Promise.allSettled([
+      listAllDocuments(),
+      listChatAttachments(),
+    ]);
+    if (isCancelled?.()) return;
+    const next: UploadedFileRow[] = [];
+    if (ragResult.status === "fulfilled") {
+      next.push(...ragResult.value.map(ragRow));
+    }
+    if (chatResult.status === "fulfilled") {
+      next.push(...chatResult.value.map(chatAttachmentRow));
+    }
+    next.sort((a, b) => b.sortTime - a.sortTime);
+    setRows(next);
+    if (ragResult.status === "rejected" && chatResult.status === "rejected") {
+      const reason = ragResult.reason;
+      setLoadError(
+        reason instanceof Error
+          ? reason.message
+          : "Failed to load uploaded files",
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void reload(() => cancelled);
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reload]);
 
   async function handleOpen(row: UploadedFileRow) {
     try {
@@ -317,7 +337,15 @@ export function UploadedFilesView() {
   async function handleDelete(row: UploadedFileRow) {
     try {
       await row.remove();
-      setRows((prev) => prev?.filter((r) => r.key !== row.key) ?? prev ?? null);
+      // Content-part ids are index-derived, so deleting one re-indexes the
+      // message's remaining parts; refetch so sibling rows get current ids.
+      if (row.key.includes("-content-part-")) {
+        await reload();
+      } else {
+        setRows(
+          (prev) => prev?.filter((r) => r.key !== row.key) ?? prev ?? null,
+        );
+      }
       toast.success("File deleted");
     } catch (err) {
       toast.error("Failed to delete file", {

@@ -54,6 +54,7 @@ import {
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
+import { onChatAttachmentDeleted } from "./utils/chat-attachment-events";
 import {
   deleteStoredChatThreads,
   ensureStoredChatThread,
@@ -882,6 +883,70 @@ function useStudioRuntimeAdapters(
   pairId?: string,
 ): StudioRuntimeAdapters {
   const aui = useAui();
+
+  // Mirror Data-tab attachment deletions into the loaded thread. The in-memory
+  // repository otherwise keeps the attachment, and a later repo-to-storage sync
+  // (e.g. deleting a message in the thread) would write it back.
+  useEffect(
+    () =>
+      onChatAttachmentDeleted(({ messageId, attachmentId }) => {
+        try {
+          const thread = aui.thread();
+          const exported = thread.export();
+          let changed = false;
+          const messages = exported.messages.map((item) => {
+            if (item.message.id !== messageId) return item;
+            const message = item.message;
+            if (attachmentId.startsWith("content-part-")) {
+              // Synthetic id for a blob stored as a message content part.
+              const idx = Number(attachmentId.slice("content-part-".length));
+              const content = message.content;
+              if (
+                !Array.isArray(content) ||
+                !Number.isInteger(idx) ||
+                idx < 0 ||
+                idx >= content.length
+              ) {
+                return item;
+              }
+              const part = content[idx] as { type?: string };
+              if (part?.type !== "image" && part?.type !== "audio") {
+                return item;
+              }
+              changed = true;
+              return {
+                ...item,
+                message: {
+                  ...message,
+                  content: content.filter((_, i) => i !== idx),
+                } as typeof message,
+              };
+            }
+            const attachments = (
+              message as { attachments?: readonly { id: string }[] }
+            ).attachments;
+            if (
+              !Array.isArray(attachments) ||
+              !attachments.some((a) => a.id === attachmentId)
+            ) {
+              return item;
+            }
+            changed = true;
+            return {
+              ...item,
+              message: {
+                ...message,
+                attachments: attachments.filter((a) => a.id !== attachmentId),
+              } as typeof message,
+            };
+          });
+          if (changed) thread.import({ ...exported, messages });
+        } catch {
+          // No active thread mounted: storage already holds the truth.
+        }
+      }),
+    [aui],
+  );
 
   const history = useMemo<ThreadHistoryAdapter>(
     () => ({

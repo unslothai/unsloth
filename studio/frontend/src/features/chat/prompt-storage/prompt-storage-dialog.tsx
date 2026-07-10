@@ -190,7 +190,16 @@ function contentBlocksToText(content: unknown): string {
 // predate the user's next message); the parent chain is timestamp-independent.
 type _Msg = { id: string; parentId?: string | null; createdAt?: number };
 
-function orderByParentChain<T extends _Msg>(messages: T[]): T[] {
+function orderByParentChain<T extends _Msg>(
+  messages: T[],
+  options: {
+    /** Append messages off the selected chain (abandoned branches) at the
+     *  end. Full exports keep everything; fine-tune conversion must not,
+     *  since alternate replies would merge into one conversation. */
+    includeSiblings?: boolean;
+  } = {},
+): T[] {
+  const { includeSiblings = true } = options;
   const byId = new Map<string, T>(messages.map((m) => [m.id, m]));
   const childrenOf = new Map<string | null, T[]>();
   for (const m of messages) {
@@ -211,7 +220,9 @@ function orderByParentChain<T extends _Msg>(messages: T[]): T[] {
     byId.delete(next.id);
   }
 
-  for (const [, m] of byId) result.push(m);
+  if (includeSiblings) {
+    for (const [, m] of byId) result.push(m);
+  }
   return result;
 }
 
@@ -582,25 +593,41 @@ function messageToPlainText(msg: {
   return parts.join("\n\n").trim();
 }
 
+/** Merge consecutive same-role turns so chat templates format cleanly. */
+function mergeSameRoleTurns(turns: FineTuneMessage[]): FineTuneMessage[] {
+  const merged: FineTuneMessage[] = [];
+  for (const turn of turns) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === turn.role) {
+      last.content += `\n\n${turn.content}`;
+    } else {
+      merged.push({ ...turn });
+    }
+  }
+  return merged;
+}
+
 /** Conversation turns for fine-tuning, or null when the thread has no
- *  usable user + assistant exchange. Consecutive same-role turns merge and
- *  trailing non-assistant turns drop so chat templates format cleanly. */
+ *  usable user + assistant exchange. Consecutive same-role turns merge,
+ *  assistant turns before the first user turn drop (an assistant target
+ *  with no prompt teaches nothing), and trailing non-assistant turns drop
+ *  so chat templates format cleanly. */
 function messagesToFineTuneTurns(
   messages: Array<{ role: unknown; content: unknown; attachments?: unknown }>,
 ): FineTuneMessage[] | null {
-  const turns: FineTuneMessage[] = [];
+  const raw: FineTuneMessage[] = [];
   for (const msg of messages) {
     const role = msg.role as FineTuneMessage["role"];
     if (!FINE_TUNE_ROLES.has(role)) continue;
     const content = messageToPlainText(msg);
     if (!content) continue;
-    const last = turns[turns.length - 1];
-    if (last && last.role === role) {
-      last.content += `\n\n${content}`;
-    } else {
-      turns.push({ role, content });
-    }
+    raw.push({ role, content });
   }
+  const firstUser = raw.findIndex((t) => t.role === "user");
+  if (firstUser === -1) return null;
+  const turns = mergeSameRoleTurns(
+    raw.filter((t, i) => i >= firstUser || t.role === "system"),
+  );
   while (turns.length > 0 && turns[turns.length - 1].role !== "assistant") {
     turns.pop();
   }
@@ -688,8 +715,10 @@ export async function buildFineTuneJsonl(
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );
+    // Chain only: retries/regenerations leave sibling branches, and mixing
+    // alternate replies into one conversation corrupts the training targets.
     const ordered = hasParentIds
-      ? (orderByParentChain(raw) as typeof raw)
+      ? (orderByParentChain(raw, { includeSiblings: false }) as typeof raw)
       : raw;
     const turns = messagesToFineTuneTurns(ordered);
     const converted = turns ? turnsToFineTuneLines(turns, format) : [];

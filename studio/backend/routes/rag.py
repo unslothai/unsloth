@@ -457,8 +457,10 @@ _CONTENT_TYPES = {
     ".txt": "text/plain; charset=utf-8",
     ".md": "text/markdown; charset=utf-8",
     ".markdown": "text/markdown; charset=utf-8",
-    ".html": "text/html; charset=utf-8",
-    ".htm": "text/html; charset=utf-8",
+    # Served as plain text, never text/html: an uploaded HTML document rendered
+    # same-origin would execute its scripts with access to the app's storage.
+    ".html": "text/plain; charset=utf-8",
+    ".htm": "text/plain; charset=utf-8",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
 

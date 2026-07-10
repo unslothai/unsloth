@@ -1774,10 +1774,10 @@ def _content_part_attachments(content_json: Optional[str]) -> list[dict]:
         if not isinstance(part, dict):
             continue
         image = part.get("image")
-        if isinstance(image, str) and image:
-            content_type = None
-            if image.startswith("data:"):
-                content_type = image[5:].split(";", 1)[0].split(",", 1)[0] or None
+        # Only data: URLs hold stored bytes; imported chats can reference
+        # remote image URLs, which the file route cannot serve.
+        if isinstance(image, str) and image.startswith("data:"):
+            content_type = image[5:].split(";", 1)[0].split(",", 1)[0] or None
             out.append(
                 {
                     "id": f"{_CONTENT_PART_ID_PREFIX}{idx}",
@@ -1884,7 +1884,13 @@ def _delete_content_part(conn, message_id: str, attachment_id: str, content_json
     if not isinstance(content, list) or not (0 <= idx < len(content)):
         return False
     part = content[idx]
-    if not isinstance(part, dict) or not ("image" in part or "audio" in part):
+    if not isinstance(part, dict):
+        return False
+    image = part.get("image")
+    # Mirror the listing rule: image parts are deletable only when they hold
+    # stored bytes (data: URL); remote references are not listed as uploads.
+    is_stored_image = isinstance(image, str) and image.startswith("data:")
+    if not (is_stored_image or "audio" in part):
         return False
     del content[idx]
     conn.execute(
