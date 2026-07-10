@@ -3655,7 +3655,6 @@ def _estimate_gguf_required_gb(
                     main_gb = 0.0
                 else:
                     from hub.utils.gguf import resolve_local_gguf_path
-
                     cached_main = resolve_local_gguf_path(repo, variant)
                     if cached_main:
                         frac = _manual_gpu_layer_fraction(cached_main, gpu_layers)

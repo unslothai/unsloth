@@ -460,9 +460,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         config = SimpleNamespace(is_gguf = True)
         # The estimator returns (total, companion) parts for the guard, so the
         # companion share can be checked against the first device.
-        with patch.object(
-            self.route, "_estimate_gguf_required_gb", return_value = (12.5, 1.5)
-        ):
+        with patch.object(self.route, "_estimate_gguf_required_gb", return_value = (12.5, 1.5)):
             self._guard(
                 config = config,
                 captured = captured,
@@ -972,13 +970,9 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
         with (
             patch.object(mc, "list_gguf_variants", return_value = ([variant], True)),
-            patch.object(
-                self.route, "_remote_gguf_companion_bytes", return_value = 1024**3
-            ),
+            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 1024**3),
         ):
-            gb = self.route._estimate_gguf_required_gb(
-                cfg, gpu_memory_mode = "manual", gpu_layers = 0
-            )
+            gb = self.route._estimate_gguf_required_gb(cfg, gpu_memory_mode = "manual", gpu_layers = 0)
         self.assertAlmostEqual(gb, 1.0, places = 6)
 
     def test_uncached_diffusion_repo_collapses_by_name(self):
