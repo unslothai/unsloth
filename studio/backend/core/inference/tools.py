@@ -1699,8 +1699,14 @@ def _find_blocked_commands(command: str) -> set[str]:
                         _cj += 1
                         continue
                     if _cw in (
-                        "--add", "--unset", "--unset-all", "--replace-all",
-                        "--remove-section", "--rename-section", "-e", "--edit",
+                        "--add",
+                        "--unset",
+                        "--unset-all",
+                        "--replace-all",
+                        "--remove-section",
+                        "--rename-section",
+                        "-e",
+                        "--edit",
                     ):
                         _write_flag = True
                         _cj += 1
