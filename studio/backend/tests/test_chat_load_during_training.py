@@ -710,7 +710,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # its file weights, so charge it -- gated on the spec mode: auto/mtp
         # reserve it, off/ngram don't (the loader wouldn't launch the drafter).
         import tempfile
-
         with tempfile.TemporaryDirectory() as d:
             main = Path(d) / "model.gguf"
             main.write_bytes(b"x" * 1000)
@@ -722,7 +721,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
                 # 3 GiB of MTP runtime buffers (e.g. an MLA target-KV copy).
                 patch.object(
-                    self.route, "_gguf_mtp_overhead_gb",
+                    self.route,
+                    "_gguf_mtp_overhead_gb",
                     lambda *a, **k: 3.0,
                 ),
             ):
