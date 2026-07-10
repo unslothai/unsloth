@@ -6852,12 +6852,27 @@ class LlamaCppBackend:
                     # Distribute the model across GPUs by the user's per-GPU shares
                     # (--tensor-split). Works with the default layer split and with
                     # tensor parallelism; --fit off means no fit/tensor abort. Only
-                    # when >1 GPU is in use: the field is hidden (not cleared) when
-                    # the picker narrows to one, so a stale ratio would otherwise
-                    # emit a split that doesn't match the GPUs and abort.
-                    if tensor_split and self._effective_gpu_count(gpu_indices) > 1:
-                        cmd.extend(["--tensor-split", ",".join(f"{x:g}" for x in tensor_split)])
-                        manual_tensor_split_emitted = True
+                    # when >1 GPU is in use AND the list matches that count: the
+                    # field is hidden (not cleared) when the picker narrows to one,
+                    # and a direct caller can send a stale ratio for a different
+                    # GPU set -- either way a mismatched split aborts llama-server
+                    # at launch, so fall back to the free-VRAM default instead.
+                    _split_gpus = self._effective_gpu_count(gpu_indices)
+                    if tensor_split and _split_gpus > 1:
+                        if len(tensor_split) == _split_gpus:
+                            cmd.extend(
+                                ["--tensor-split", ",".join(f"{x:g}" for x in tensor_split)]
+                            )
+                            manual_tensor_split_emitted = True
+                        else:
+                            logger.warning(
+                                "Dropping manual --tensor-split: %d entries for "
+                                "%d GPUs in use; llama.cpp's free-VRAM split "
+                                "applies instead",
+                                len(tensor_split),
+                                _split_gpus,
+                            )
+                            self._tensor_split = None
                 elif use_fit:
                     cmd.extend(["--fit", "on"])
                 elif gpu_indices is not None:

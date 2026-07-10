@@ -313,10 +313,9 @@ def can_load_chat_during_training(
                     free >= needed_gb * share / total
                     for free, share in zip(split_order_free, shares)
                 )
-            else:
-                # A split that doesn't match the GPUs aborts llama-server at
-                # launch; until then keep the conservative even-share floor.
-                per_gpu_fits = min_free_gb >= needed_gb / len(free_vals)
+            # A split that doesn't match the GPU count (or is all-zero) is
+            # dropped by the loader before launch, so llama.cpp self-places by
+            # free VRAM -- no per-GPU check, like the no-split case.
 
         return aggregate_fits and per_gpu_fits, {
             "mode": mode,

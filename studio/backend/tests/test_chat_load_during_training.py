@@ -258,15 +258,16 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         )
         self.assertFalse(ok)
 
-    def test_manual_split_length_mismatch_falls_back_to_even_floor(self):
-        # A split that doesn't match the GPU count aborts llama-server at launch;
-        # meanwhile the guard keeps the conservative even-share floor.
+    def test_manual_split_length_mismatch_treated_as_no_split(self):
+        # A split that doesn't match the GPU count is dropped by the loader
+        # before launch, so llama.cpp self-places by free VRAM: the guard sizes
+        # it like the no-split case (aggregate only, no floor) -> allow.
         ok, _, _ = self._run(
             devices = _devices((0, 80, 35), (1, 80, 70)),
             required_override = 20.0,
             tensor_split = [1, 1, 1],
         )
-        self.assertFalse(ok)
+        self.assertTrue(ok)
 
     def test_zero_estimate_bypasses_floor(self):
         # Deliberate zero-offload (manual gpu_layers=0, no companions): estimate

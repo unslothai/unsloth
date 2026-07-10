@@ -425,10 +425,12 @@ def test_manual_offload_emits_gpu_layers_fit_off_and_n_cpu_moe():
 
 def test_manual_offload_emits_tensor_split():
     # The offload path emits --tensor-split from the per-GPU shares, only when
-    # provided and only with >1 GPU in use (a stale ratio on a narrowed picker
-    # must not emit).
+    # provided, with >1 GPU in use, AND matching that count (a stale ratio on a
+    # narrowed picker or a mismatched direct-API list must not emit -- llama-
+    # server aborts on a split/GPU-count mismatch).
     src = _load_model_source()
-    assert "if tensor_split and self._effective_gpu_count(gpu_indices) > 1:" in src
+    assert "if tensor_split and _split_gpus > 1:" in src
+    assert "if len(tensor_split) == _split_gpus:" in src
     assert '"--tensor-split"' in src
     # Joined as a comma list (e.g. "2,1") within the explicit-offload cmd branch.
     gate = src.find('if gpu_memory_mode == "manual" and gpu_layers >= 0:')
