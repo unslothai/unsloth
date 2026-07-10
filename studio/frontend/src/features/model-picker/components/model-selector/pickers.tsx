@@ -10,7 +10,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
-import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
+import { ApiProviderLogo } from "@/features/chat";
 import {
   type ScanFolderInfo,
   addScanFolder,
@@ -20,37 +20,36 @@ import {
   listRecommendedFolders,
   listScanFolders,
   removeScanFolder,
-} from "@/features/chat/api/chat-api";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+} from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat";
 import type {
   CachedGgufRepo,
   CachedModelRepo,
+  GgufVariantDetail,
   LocalModelInfo,
-} from "@/features/chat/api/chat-api";
-import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
-import type { GgufVariantDetail } from "@/features/chat/types/api";
-import { DotTag } from "@/features/hub/catalog/dot-tag";
+} from "@/features/chat";
 import {
+  DotTag,
   type HubOption,
   HubOptionMenu,
-} from "@/features/hub/catalog/hub-option-menu";
-import { TransportConflictDialog } from "@/features/hub/catalog/transport-conflict-dialog";
-import { TrainIcon } from "@/features/hub/components/train-icon";
-import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
+  TrainIcon,
+  TransportConflictDialog,
+  useHubInfiniteScroll,
+} from "@/features/hub";
 import {
   type HfModelResult,
   type HfSortKey,
   useHubModelSearch,
-} from "@/features/hub/hooks/use-hub-model-search";
-import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
-import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
-import { classifyUnslothSupport } from "@/features/hub/lib/unsloth-support";
-import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+} from "@/features/hub";
 import {
+  classifyUnslothSupport,
   downloadManager,
+  isHiddenModelId,
   jobKeyOf,
   useDownloadManagerStore,
-} from "@/features/hub/download-manager";
+  useHfTokenStore,
+  useOnlineStatus,
+} from "@/features/hub";
 import { useDebouncedValue, useGpuInfo } from "@/hooks";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
@@ -83,6 +82,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
 import { FolderBrowser } from "./folder-browser";
 import {
   type ModelCapabilities,
@@ -715,8 +715,11 @@ function GgufVariantExpander({
 
   useEffect(() => {
     let canceled = false;
-    setLoading(true);
-    setError(null);
+    queueMicrotask(() => {
+      if (canceled) return;
+      setLoading(true);
+      setError(null);
+    });
 
     listGgufVariants(repoId, hfToken)
       .then((res) => {
@@ -744,7 +747,7 @@ function GgufVariantExpander({
   }, [repoId, refreshKey, hfToken]);
 
   // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
-  const isLocalPath = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(
+  const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
     repoId,
   );
 
@@ -986,7 +989,8 @@ function GgufVariantExpander({
                       This will update{" "}
                       <span className="font-medium text-foreground">
                         {repoId} ({v.quant})
-                      </span>{"."}
+                      </span>
+                      {"."}
                     </>
                   )
                 }
@@ -1239,9 +1243,7 @@ function hubRepoUrl(id: string | null | undefined): string | undefined {
 /** Whether a local model is an MLX build (name hint). MLX runs on Mac only, so
  * callers gate visibility on the host being a Mac. */
 function localModelIsMlx(m: LocalModelInfo): boolean {
-  return (
-    isMlxId(m.id) || isMlxId(m.display_name) || isMlxId(m.model_id ?? "")
-  );
+  return isMlxId(m.id) || isMlxId(m.display_name) || isMlxId(m.model_id ?? "");
 }
 
 /** Whether a local model matches the format toggle (GGUF detected by name/path). */
@@ -1388,12 +1390,14 @@ export function HubModelPicker({
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
   // Repos the user clicked to collapse while expand-by-default is on. Kept in
   // memory only, so it resets on reload (and when the setting is toggled).
-  const [collapsedGguf, setCollapsedGguf] = useState<Set<string>>(
-    () => new Set(),
-  );
-  useEffect(() => {
-    setCollapsedGguf(new Set());
-  }, [expandQuantizations]);
+  const [collapsedGgufState, setCollapsedGgufState] = useState<{
+    expandQuantizations: boolean;
+    value: Set<string>;
+  }>(() => ({ expandQuantizations, value: new Set() }));
+  const collapsedGguf =
+    collapsedGgufState.expandQuantizations === expandQuantizations
+      ? collapsedGgufState.value
+      : new Set<string>();
   const isGgufExpanded = useCallback(
     (id: string) =>
       expandQuantizations ? !collapsedGguf.has(id) : expandedGguf === id,
@@ -1404,11 +1408,15 @@ export function HubModelPicker({
   const toggleGgufExpanded = useCallback(
     (id: string) => {
       if (expandQuantizations) {
-        setCollapsedGguf((prev) => {
-          const next = new Set(prev);
+        setCollapsedGgufState((prev) => {
+          const current =
+            prev.expandQuantizations === expandQuantizations
+              ? prev.value
+              : new Set<string>();
+          const next = new Set(current);
           if (next.has(id)) next.delete(id);
           else next.add(id);
-          return next;
+          return { expandQuantizations, value: next };
         });
       } else {
         setExpandedGguf((prev) => (prev === id ? null : id));
@@ -1617,22 +1625,25 @@ export function HubModelPicker({
 
   // Updates run as managed downloads (Downloads panel: progress + Cancel), not a blocking
   // call. The worker pulls only changed blobs, so the cached copy stays usable until done.
-  const startManagedUpdate = useCallback((repoId: string, variant: string, expectedBytes: number) => {
-    return downloadManager
-      .requestStart({
-        kind: "model",
-        repoId,
-        variant,
-        expectedBytes,
-      })
-      .then((outcome) => {
-        if (outcome === "conflict") {
-          setUpdateConflictKey(jobKeyOf("model", repoId, variant));
-        } else if (outcome === "error") {
-          throw new Error("Failed to start update");
-        }
-      });
-  }, []);
+  const startManagedUpdate = useCallback(
+    (repoId: string, variant: string, expectedBytes: number) => {
+      return downloadManager
+        .requestStart({
+          kind: "model",
+          repoId,
+          variant,
+          expectedBytes,
+        })
+        .then((outcome) => {
+          if (outcome === "conflict") {
+            setUpdateConflictKey(jobKeyOf("model", repoId, variant));
+          } else if (outcome === "error") {
+            throw new Error("Failed to start update");
+          }
+        });
+    },
+    [],
+  );
 
   const updateGgufVariant = useCallback(
     (repoId: string, quant: string, expectedBytes: number) =>
@@ -1682,7 +1693,8 @@ export function HubModelPicker({
       // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
       // on Mac (matches the empty Recommended view so search stays consistent).
       .filter(
-        (id) => !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
+        (id) =>
+          !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
       )
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
     // Sort: GGUFs first, then hub models
@@ -2033,7 +2045,8 @@ export function HubModelPicker({
       // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
       // on Mac (matches the empty Recommended view so search stays consistent).
       .filter(
-        (id) => !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
+        (id) =>
+          !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
       )
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id))
       .filter((id) =>
@@ -2912,7 +2925,10 @@ export function HubModelPicker({
                       title="Browse folders on the server"
                       className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
                     >
-                      <HugeiconsIcon icon={Folder02Icon} className="size-3.5" />
+                        <HugeiconsIcon
+                          icon={Folder02Icon}
+                          className="size-3.5"
+                        />
                       Custom Folders
                     </button>
                     <div className="flex items-center gap-0.5">
@@ -3184,7 +3200,9 @@ export function HubModelPicker({
                                 ariaLabel={`Inference settings for ${
                                   m.model_id ?? m.display_name
                                 }`}
-                                onConfigure={() => onConfigure(m.id, localModelMeta())}
+                                onConfigure={() =>
+                                  onConfigure(m.id, localModelMeta())
+                                }
                               />
                             )}
                           </div>
@@ -3204,7 +3222,9 @@ export function HubModelPicker({
                               gpuGb={
                                 gpu.available ? gpu.memoryTotalGb : undefined
                               }
-                              systemRamGb={gpu.systemRamAvailableGb || undefined}
+                              systemRamGb={
+                                gpu.systemRamAvailableGb || undefined
+                              }
                             />
                           )}
                         </div>
@@ -3289,7 +3309,9 @@ export function HubModelPicker({
                                 ariaLabel={`Inference settings for ${
                                   m.model_id ?? m.display_name
                                 }`}
-                                onConfigure={() => onConfigure(m.id, localModelMeta())}
+                                onConfigure={() =>
+                                  onConfigure(m.id, localModelMeta())
+                                }
                               />
                             )}
                           </div>
@@ -3309,7 +3331,9 @@ export function HubModelPicker({
                               gpuGb={
                                 gpu.available ? gpu.memoryTotalGb : undefined
                               }
-                              systemRamGb={gpu.systemRamAvailableGb || undefined}
+                              systemRamGb={
+                                gpu.systemRamAvailableGb || undefined
+                              }
                             />
                           )}
                         </div>
@@ -3384,7 +3408,9 @@ export function HubModelPicker({
                                 ariaLabel={`Inference settings for ${
                                   m.model_id ?? m.display_name
                                 }`}
-                                onConfigure={() => onConfigure(m.id, localModelMeta())}
+                                onConfigure={() =>
+                                  onConfigure(m.id, localModelMeta())
+                                }
                               />
                             )}
                           </div>
@@ -3404,7 +3430,9 @@ export function HubModelPicker({
                               gpuGb={
                                 gpu.available ? gpu.memoryTotalGb : undefined
                               }
-                              systemRamGb={gpu.systemRamAvailableGb || undefined}
+                              systemRamGb={
+                                gpu.systemRamAvailableGb || undefined
+                              }
                             />
                           )}
                         </div>
@@ -3486,7 +3514,9 @@ export function HubModelPicker({
                               gpuGb={
                                 gpu.available ? gpu.memoryTotalGb : undefined
                               }
-                              systemRamGb={gpu.systemRamAvailableGb || undefined}
+                              systemRamGb={
+                                gpu.systemRamAvailableGb || undefined
+                              }
                               variantActions={{
                                 onDelete: async (quant) => {
                                   await deleteCachedModel(id, quant);
@@ -3546,10 +3576,14 @@ export function HubModelPicker({
                             }
                           }}
                           vramStatus={
-                            isKnownGgufRepo(id) ? null : (vram?.status ?? null)
+                            isKnownGgufRepo(id)
+                              ? null
+                              : (vram?.status ?? null)
                           }
                           vramEst={isKnownGgufRepo(id) ? undefined : vram?.est}
-                          gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                          gpuGb={
+                            gpu.available ? gpu.memoryTotalGb : undefined
+                          }
                           onArrowDownIntoChildren={
                             expandedGguf === id
                               ? () => {
@@ -3576,7 +3610,9 @@ export function HubModelPicker({
                             gpuGb={
                               gpu.available ? gpu.memoryTotalGb : undefined
                             }
-                            systemRamGb={gpu.systemRamAvailableGb || undefined}
+                            systemRamGb={
+                              gpu.systemRamAvailableGb || undefined
+                            }
                             variantActions={{
                               onDelete: async (quant) => {
                                 await deleteCachedModel(id, quant);
@@ -3668,7 +3704,9 @@ export function HubModelPicker({
                               gpuGb={
                                 gpu.available ? gpu.memoryTotalGb : undefined
                               }
-                              systemRamGb={gpu.systemRamAvailableGb || undefined}
+                              systemRamGb={
+                                gpu.systemRamAvailableGb || undefined
+                              }
                               variantActions={{
                                 onDelete: async (quant) => {
                                   await deleteCachedModel(id, quant);

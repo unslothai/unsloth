@@ -5,11 +5,11 @@ import {
   normalizeSpeculativeType,
   readPersistedSpeculativeType,
   useChatRuntimeStore,
-} from "@/features/chat/stores/chat-runtime-store";
+} from "@/features/chat";
 import {
   DEFAULT_PER_MODEL_CONFIG,
-  normalizeMaxSeqLength,
   type PerModelConfig,
+  normalizeMaxSeqLength,
 } from "./per-model-config";
 
 function cleanTemplate(value: string | null | undefined): string | null {

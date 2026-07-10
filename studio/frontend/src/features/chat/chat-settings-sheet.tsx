@@ -27,6 +27,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { InfoHint } from "@/components/ui/info-hint";
 import {
   InputGroup,
   InputGroupAddon,
@@ -49,29 +50,27 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { InfoHint } from "@/components/ui/info-hint";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { useIsMobile } from "@/hooks/use-mobile";
+import { NumericValueInput, snapToStep } from "@/features/model-picker";
+import { RetrievalSettingsSection } from "@/features/rag";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
-import { cn } from "@/lib/utils";
-import {
-  Edit03Icon,
-  LayoutAlignRightIcon,
-} from "@hugeicons/core-free-icons";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
+import { Edit03Icon, LayoutAlignRightIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Braces, ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { Fragment, type ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "@/lib/toast";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
 import {
   type ExternalProviderConfig,
   getExternalProviderApiKey,
   parseExternalModelId,
-  supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
+  supportsProviderPromptCaching,
 } from "./external-providers";
 import {
   BUILTIN_PRESETS,
@@ -92,11 +91,6 @@ import {
   providerSupportsFastMode,
 } from "./provider-capabilities";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
-import {
-  NumericValueInput,
-  snapToStep,
-} from "@/features/model-picker/components/numeric-value-input";
-import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
 import type { InferenceParams } from "./types/runtime";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
@@ -119,7 +113,7 @@ function getPromptVariablesError(raw: string): string | null {
       return null;
     }
   } catch {
-    return "Use valid JSON, for example { \"env\": \"staging\" }.";
+    return 'Use valid JSON, for example { "env": "staging" }.';
   }
   return "Variables must be a JSON object.";
 }
@@ -266,8 +260,7 @@ function CollapsibleSection({
   return (
     <div
       className={cn(
-        !first &&
-          "border-t border-black/[0.13] dark:border-white/[0.09]",
+        !first && "border-t border-black/[0.13] dark:border-white/[0.09]",
       )}
     >
       {labelHref ? (
@@ -381,8 +374,7 @@ export function ChatSettingsPanel({
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
-  const isLoadedGguf =
-    useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const isLoadedGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const isGguf = isLoadedGguf;
   const currentCheckpoint = params.checkpoint;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
@@ -410,7 +402,9 @@ export function ChatSettingsPanel({
         `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
       );
     } else {
-      toast.error(`llama.cpp update failed: ${result.error ?? "unknown error"}`);
+      toast.error(
+        `llama.cpp update failed: ${result.error ?? "unknown error"}`,
+      );
     }
   }, [applyLlamaUpdate]);
   const loadedEffectiveContext = customContextLength ?? ggufContextLength;
@@ -465,8 +459,7 @@ export function ChatSettingsPanel({
       BUILTIN_PRESETS.find((preset) => preset.name === activePreset) ?? null,
     [activePreset],
   );
-  const hasUnsavedPresetChanges = useMemo(
-    () => {
+  const hasUnsavedPresetChanges = useMemo(() => {
       if (activePresetDefinition == null) {
         return false;
       }
@@ -474,9 +467,7 @@ export function ChatSettingsPanel({
         return activePresetSource === "modified";
       }
       return !isSamePresetConfig(activePresetDefinition.params, params);
-    },
-    [activePresetDefinition, activePresetSource, params],
-  );
+  }, [activePresetDefinition, activePresetSource, params]);
   const presetSaveState = useMemo(
     () =>
       getPresetSaveState({
@@ -505,8 +496,7 @@ export function ChatSettingsPanel({
   const externalSelection = currentCheckpoint
     ? parseExternalModelId(currentCheckpoint)
     : null;
-  const maxTokensMax =
-    isExternalModel
+  const maxTokensMax = isExternalModel
       ? getExternalMaxOutputTokens(
           externalProviderType,
           externalSelection?.modelId,
@@ -596,8 +586,7 @@ export function ChatSettingsPanel({
       return;
     }
     const fallbackPreset =
-      BUILTIN_PRESETS.find((preset) => preset.name === "Default") ??
-      null;
+      BUILTIN_PRESETS.find((preset) => preset.name === "Default") ?? null;
     const next = customPresets.filter((preset) => preset.name !== name);
     setCustomPresets(next);
     if (activePreset === name) {
@@ -709,7 +698,7 @@ export function ChatSettingsPanel({
               Run settings
             </span>
             <Tooltip>
-              <TooltipPrimitive.Trigger asChild>
+                <TooltipPrimitive.Trigger asChild={true}>
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
@@ -741,7 +730,7 @@ export function ChatSettingsPanel({
       >
       <div className="px-[18px] pt-3">
         {(hasModelContent || modelConfig) && (
-          <CollapsibleSection label="Model" defaultOpen={true} first>
+              <CollapsibleSection label="Model" defaultOpen={true} first={true}>
             <div className="flex flex-col gap-3 pt-1">
               {modelConfig}
               {showSpecFallback && (
@@ -775,8 +764,8 @@ export function ChatSettingsPanel({
               {showContextVramWarning && (
                 <p className="text-[11px] text-amber-500">
                   Context length exceeds the estimated VRAM capacity (
-                  {ggufMaxContextLength?.toLocaleString()} tokens). The model may
-                  use system RAM.
+                      {ggufMaxContextLength?.toLocaleString()} tokens). The
+                      model may use system RAM.
                 </p>
               )}
             </div>
@@ -790,7 +779,7 @@ export function ChatSettingsPanel({
         >
           <div className="flex flex-col gap-3 pt-1">
             <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+                  <DropdownMenuTrigger asChild={true}>
                 <div
                   className="w-full min-w-0 cursor-pointer outline-none focus-visible:outline-none"
                   aria-label="Open preset list"
@@ -874,7 +863,9 @@ export function ChatSettingsPanel({
                 type="button"
                 onClick={() => savePresetWithName(presetNameInput)}
                 disabled={!(settingsHydrated && presetSaveState.canSubmit)}
-                variant={presetSaveState.isSaveReady ? "default" : "outline"}
+                    variant={
+                      presetSaveState.isSaveReady ? "default" : "outline"
+                    }
                 size="sm"
                 className={cn(
                   "h-9 w-full rounded-full text-[13px] font-medium tracking-nav",
@@ -915,7 +906,8 @@ export function ChatSettingsPanel({
                   Prompt caching
                 </span>
                 <InfoHint>
-                  Reuse compatible prompt prefixes for lower latency and cost.
+                      Reuse compatible prompt prefixes for lower latency and
+                      cost.
                 </InfoHint>
               </div>
               <Switch
@@ -938,10 +930,10 @@ export function ChatSettingsPanel({
                   </span>
                   <InfoHint>
                     Anthropic exposes a 5 minute and a 1 hour ephemeral
-                    cache pool. The 1 hour pool costs 2x base input on
-                    write vs 1.25x for 5 minute, but reads stay 0.1x for
-                    both, so a single read landing more than 5 minutes
-                    after the write pays off the premium.
+                        cache pool. The 1 hour pool costs 2x base input on write
+                        vs 1.25x for 5 minute, but reads stay 0.1x for both, so
+                        a single read landing more than 5 minutes after the
+                        write pays off the premium.
                   </InfoHint>
                 </div>
                 <Select
@@ -1009,7 +1001,7 @@ export function ChatSettingsPanel({
           onLabelClick={openSystemPromptEditor}
           headerAction={
             <Tooltip>
-              <TooltipPrimitive.Trigger asChild>
+                  <TooltipPrimitive.Trigger asChild={true}>
                 <button
                   type="button"
                   onClick={openSystemPromptEditor}
@@ -1064,7 +1056,6 @@ export function ChatSettingsPanel({
             />
           </div>
         </CollapsibleSection>
-
 
         <CollapsibleSection label="Sampling" defaultOpen={true}>
           <div className="flex flex-col gap-5 pt-1">
@@ -1136,7 +1127,9 @@ export function ChatSettingsPanel({
                 max={2}
                 step={0.1}
                 onChange={set("presencePenalty")}
-                displayValue={params.presencePenalty === 0 ? "Off" : undefined}
+                    displayValue={
+                      params.presencePenalty === 0 ? "Off" : undefined
+                    }
                 info="Penalizes any token that has already appeared at least once, encouraging the model to introduce new topics. 0 = off."
               />
             ) : null}
@@ -1165,7 +1158,7 @@ export function ChatSettingsPanel({
           </div>
         </CollapsibleSection>
 
-        {!isExternalModel ? (
+            {isExternalModel ? null : (
           <CollapsibleSection label="Tools">
             <div className="flex flex-col gap-5 pt-1">
               <AutoHealToolCallsToggle />
@@ -1176,13 +1169,13 @@ export function ChatSettingsPanel({
               <ToolCallTimeoutSlider />
             </div>
           </CollapsibleSection>
-        ) : null}
+            )}
 
-        {!isExternalModel ? (
+            {isExternalModel ? null : (
           <CollapsibleSection label="Retrieval">
             <RetrievalSettingsSection />
           </CollapsibleSection>
-        ) : null}
+            )}
       </div>
       </div>
       </div>

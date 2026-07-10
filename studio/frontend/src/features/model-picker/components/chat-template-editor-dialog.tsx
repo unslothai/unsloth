@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { useEffect, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { validateChatTemplate } from "../api/templates";
 import {
   MAX_CHAT_TEMPLATE_BYTES,
@@ -42,26 +42,22 @@ export function ChatTemplateEditorDialog({
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
-  const wasOpen = useRef(false);
+  const initialDraft = value ?? defaultTemplate ?? "";
+  const renderedDraft = useMemo(
+    () =>
+      open && value == null && defaultTemplate != null && draft.length === 0
+        ? defaultTemplate
+        : draft,
+    [open, value, defaultTemplate, draft],
+  );
 
-  useEffect(() => {
-    const justOpened = open && !wasOpen.current;
-    wasOpen.current = open;
-    if (justOpened) {
-      setDraft(value ?? defaultTemplate ?? "");
-      setError(null);
-    } else if (open && value == null && defaultTemplate != null) {
-      setDraft((current) => (current.length === 0 ? defaultTemplate : current));
-    }
-  }, [open, value, defaultTemplate]);
-
-  const byteLength = chatTemplateByteLength(draft);
-  const overLimit = !isChatTemplateWithinLimit(draft);
+  const byteLength = chatTemplateByteLength(renderedDraft);
+  const overLimit = !isChatTemplateWithinLimit(renderedDraft);
   const matchesDefault =
-    defaultTemplate != null && draft === defaultTemplate;
+    defaultTemplate != null && renderedDraft === defaultTemplate;
 
   const handleSave = async () => {
-    if (draft.trim().length === 0 || matchesDefault) {
+    if (renderedDraft.trim().length === 0 || matchesDefault) {
       onSave(null);
       onOpenChange(false);
       return;
@@ -72,12 +68,12 @@ export function ChatTemplateEditorDialog({
     }
     setValidating(true);
     try {
-      const result = await validateChatTemplate(draft);
+      const result = await validateChatTemplate(renderedDraft);
       if (!result.valid) {
         setError(result.error ?? "Invalid Jinja template.");
         return;
       }
-      onSave(draft);
+      onSave(renderedDraft);
       onOpenChange(false);
     } catch {
       setError("Could not validate the template.");
@@ -87,10 +83,21 @@ export function ChatTemplateEditorDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (nextOpen) {
+          setDraft(initialDraft);
+          setError(null);
+        }
+        onOpenChange(nextOpen);
+      }}
+    >
       <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>{readOnly ? "Chat Template" : "Edit Chat Template"}</DialogTitle>
+          <DialogTitle>
+            {readOnly ? "Chat Template" : "Edit Chat Template"}
+          </DialogTitle>
           <DialogDescription>
             {readOnly
               ? "This is the model's chat template. Custom templates apply to GGUF models for now, so it is view only for safetensors models."
@@ -98,7 +105,7 @@ export function ChatTemplateEditorDialog({
           </DialogDescription>
         </DialogHeader>
         <Textarea
-          value={draft}
+          value={renderedDraft}
           onChange={(event) => {
             if (readOnly) return;
             setDraft(event.target.value);
@@ -138,7 +145,9 @@ export function ChatTemplateEditorDialog({
                 type="button"
                 variant="ghost"
                 onClick={() => setDraft(defaultTemplate ?? "")}
-                disabled={defaultLoading || draft === (defaultTemplate ?? "")}
+                disabled={
+                  defaultLoading || renderedDraft === (defaultTemplate ?? "")
+                }
                 className="text-muted-foreground"
               >
                 {defaultLoading ? (

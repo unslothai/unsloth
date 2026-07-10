@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { DeleteConfirmDialog } from "@/features/hub/catalog/download-card";
+import { DeleteConfirmDialog } from "@/features/hub";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useState, type ReactNode } from "react";
-import { toast } from "@/lib/toast";
+import { type ReactNode, useCallback, useState } from "react";
 
 interface ModelDeleteActionProps {
   ariaLabel: string;
@@ -63,7 +63,8 @@ export function ModelDeleteAction({
         disabled={disabled}
         className={cn(
           "shrink-0 rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive",
-          disabled && "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground/60",
+          disabled &&
+            "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground/60",
           buttonClassName,
         )}
       >

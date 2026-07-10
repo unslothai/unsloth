@@ -1,35 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  applyModelLoadConfigToRuntime,
-  currentRuntimePerModelConfig,
-  resolveInitialConfig,
-} from "@/features/model-picker";
-import { hfModelFitsDevice } from "@/features/model-picker/components/model-selector/recommended-fit";
-import { useHubInventory } from "@/features/hub/inventory";
-import { useDebouncedValue } from "@/hooks/use-debounced-value";
-import { useGpuInfo } from "@/hooks/use-gpu-info";
-import {
-  type HfModelSearchChannel,
-  type HfSortDirection,
-  type HfSortKey,
-} from "@/features/hub/hooks/use-hub-model-search";
-import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
-import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
-import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub/lib/model-identity";
-import { cn } from "@/lib/utils";
 import { usePlatformStore } from "@/config/env";
-import {
-  hfApiToken,
-  useHfTokenStore,
-} from "@/features/hub/stores/hf-token-store";
 import {
   getInferenceStatus,
   isExternalModelId,
   useChatModelRuntime,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { useHubInventory } from "@/features/hub";
+import type {
+  HfModelSearchChannel,
+  HfSortDirection,
+  HfSortKey,
+} from "@/features/hub";
+import { useOnlineStatus } from "@/features/hub";
+import { useHubInfiniteScroll } from "@/features/hub";
+import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub";
+import { hfApiToken, useHfTokenStore } from "@/features/hub";
+import {
+  applyModelLoadConfigToRuntime,
+  currentRuntimePerModelConfig,
+  hfModelFitsDevice,
+  resolveInitialConfig,
+} from "@/features/model-picker";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { useGpuInfo } from "@/hooks/use-gpu-info";
+import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   useCallback,
@@ -39,17 +36,10 @@ import {
   useRef,
   useState,
 } from "react";
+import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
 import { HubDetailView } from "./catalog/hub-detail-view";
-import { HubTopBar } from "./catalog/hub-top-bar";
 import { HubFeed } from "./catalog/hub-feed";
-import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
-import {
-  type AllModelsView,
-  HubListHeader,
-  type InventorySort,
-  InventorySortControl,
-  ResultListHeader,
-} from "./catalog/models-table";
+import { HubTopBar } from "./catalog/hub-top-bar";
 import {
   ModelsCatalog,
   type ModelsCatalogHandlers,
@@ -57,9 +47,16 @@ import {
   type ModelsCatalogState,
 } from "./catalog/models-catalog";
 import { ModelsHeader } from "./catalog/models-header";
+import {
+  type AllModelsView,
+  HubListHeader,
+  type InventorySort,
+  InventorySortControl,
+  ResultListHeader,
+} from "./catalog/models-table";
 import { ModelsToolbar } from "./catalog/models-toolbar";
-import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
+import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
 import { useFeedWriteBack } from "./hooks/use-feed-write-back";
 import { useHubFeed } from "./hooks/use-hub-feed";
@@ -568,15 +565,15 @@ export function ModelsPage() {
   const deferredCapabilityFilter = useDeferredValue(capabilityFilter);
 
   const hasQuery = deferredDebouncedQuery.trim() !== "";
-  const mode: DiscoverMode = !isModelDiscover
-    ? "search"
-    : hasQuery
+  const mode: DiscoverMode = isModelDiscover
+    ? hasQuery
       ? "search"
       : urlSection != null
         ? "channel-list"
         : sortBrowseActive
           ? "search"
-          : "feed";
+          : "feed"
+    : "search";
   const isFeedMode = mode === "feed";
   const isChannelListMode = mode === "channel-list";
   const isSortBrowseMode =
@@ -700,7 +697,10 @@ export function ModelsPage() {
     return discoverRows.filter(
       (row) =>
         !isHiddenModelId(row.id) &&
-        matchesFormat(detectResultFormat(row.result), effectiveDiscoverFormat) &&
+        matchesFormat(
+          detectResultFormat(row.result),
+          effectiveDiscoverFormat,
+        ) &&
         matchesCapability(row.capabilities, deferredCapabilityFilter) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
         // Models already on disk stay visible regardless of device fit,
@@ -763,7 +763,10 @@ export function ModelsPage() {
     }
     return merged;
   }, [isFeedMode, feedTrendingRows, filteredDiscoverRows]);
-  const feedResults = useMemo(() => feedRows.map((row) => row.result), [feedRows]);
+  const feedResults = useMemo(
+    () => feedRows.map((row) => row.result),
+    [feedRows],
+  );
   const selectionDiscoverRows = isFeedMode ? feedRows : discoverRows;
   const selectionFilteredDiscoverRows = isFeedMode
     ? feedRows
@@ -1343,16 +1346,18 @@ export function ModelsPage() {
         </div>
       );
     }
-    const ownerToggle = !isDatasetMode ? (
+    const ownerToggle = isDatasetMode ? undefined : (
       <OwnerScopeToggle value={ownerScope} onChange={setOwnerScope} />
-    ) : undefined;
+    );
     // Compact pill so it stays beside the view-mode tabs even in the narrow
     // split pane instead of dropping to its own row.
     return (
       <div className="flex flex-col gap-3 pt-6">
         {isChannelListMode ? (
           <HubListHeader
-            title={channelSection ? HUB_SECTION_TITLE[channelSection] : "Models"}
+            title={
+              channelSection ? HUB_SECTION_TITLE[channelSection] : "Models"
+            }
             count={listCount}
             view={allModelsView}
             onViewChange={setAllModelsView}

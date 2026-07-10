@@ -4,12 +4,12 @@
 import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
-} from "@/features/hub/lib/model-identity";
+} from "@/features/hub";
 
 export {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
-} from "@/features/hub/lib/model-identity";
+} from "@/features/hub";
 
 const MODEL_STORAGE_KEY_PREFIX = "v2:";
 

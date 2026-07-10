@@ -2,6 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { ModelSelector } from "./components/model-selector";
+export { FolderBrowser } from "./components/model-selector/folder-browser";
+export { ModelDeleteAction } from "./components/model-selector/model-delete-action";
+export { ModelUpdateAction } from "./components/model-selector/model-update-action";
+export { hfModelFitsDevice } from "./components/model-selector/recommended-fit";
+export {
+  NumericValueInput,
+  snapToStep,
+} from "./components/numeric-value-input";
 export { SidebarModelConfig } from "./components/sidebar-model-config";
 export type {
   DeletedModelRef,

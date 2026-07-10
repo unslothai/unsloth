@@ -3,15 +3,15 @@
 
 "use client";
 
+import { Input } from "@/components/ui/input";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Input } from "@/components/ui/input";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
-import { isCustomProviderType } from "@/features/chat/external-providers";
+import { isCustomProviderType } from "@/features/chat";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
@@ -295,7 +295,8 @@ function saveLastHubSection(section: HubSection): void {
 // when they have downloads, else Recommended.
 function defaultHubSection(): HubSection {
   return (
-    loadLastHubSection() ?? (hasDownloadedModels() ? "downloaded" : "recommended")
+    loadLastHubSection() ??
+    (hasDownloadedModels() ? "downloaded" : "recommended")
   );
 }
 
@@ -475,11 +476,7 @@ function ModelSelectorContent({
   const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
     null,
   );
-  useEffect(() => {
-    if (!open) {
-      setConfigTarget(null);
-    }
-  }, [open]);
+  const visibleConfigTarget = open ? configTarget : null;
   const openConfigPage = (id: string, meta: ModelSelectorChangeMeta) => {
     const leaf = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
     setConfigTarget({
@@ -510,7 +507,7 @@ function ModelSelectorContent({
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
         "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
-        configTarget
+        visibleConfigTarget
           ? "w-[min(468px,calc(100vw-1rem))] px-4 pt-4 pb-4"
           : cn(
               "pt-4 pb-0 pl-4",
@@ -532,32 +529,35 @@ function ModelSelectorContent({
         skipDelayDuration={0}
         disableHoverableContent={true}
       >
-        {configTarget ? (
+        {visibleConfigTarget ? (
           <ModelConfigPage
-            key={`${configTarget.id}::${configTarget.ggufVariant ?? ""}`}
-            target={configTarget}
+            key={`${visibleConfigTarget.id}::${visibleConfigTarget.ggufVariant ?? ""}`}
+            target={visibleConfigTarget}
             onBack={() => setConfigTarget(null)}
             onRun={(config) =>
-              onSelect(configTarget.id, {
-                ...configTarget.meta,
+              onSelect(visibleConfigTarget.id, {
+                ...visibleConfigTarget.meta,
                 config,
               })
             }
             loadedConfig={
-              value === configTarget.id &&
-              (activeGgufVariant ?? null) === (configTarget.ggufVariant ?? null)
+              value === visibleConfigTarget.id &&
+              (activeGgufVariant ?? null) ===
+                (visibleConfigTarget.ggufVariant ?? null)
                 ? (activeModelConfig ?? null)
                 : null
             }
             loadedContextLength={
-              value === configTarget.id &&
-              (activeGgufVariant ?? null) === (configTarget.ggufVariant ?? null)
+              value === visibleConfigTarget.id &&
+              (activeGgufVariant ?? null) ===
+                (visibleConfigTarget.ggufVariant ?? null)
                 ? (activeGgufContextLength ?? null)
                 : null
             }
             initialConfig={
-              value === configTarget.id &&
-              (selectedGgufVariant ?? null) === (configTarget.ggufVariant ?? null)
+              value === visibleConfigTarget.id &&
+              (selectedGgufVariant ?? null) ===
+                (visibleConfigTarget.ggufVariant ?? null)
                 ? (selectedConfig ?? null)
                 : null
             }

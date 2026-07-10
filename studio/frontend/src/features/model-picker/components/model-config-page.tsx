@@ -13,11 +13,12 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { fetchGgufContextLength } from "@/features/chat/api/chat-api";
 import {
+  fetchGgufContextLength,
   readPersistedSpeculativeType,
   useChatRuntimeStore,
-} from "@/features/chat/stores/chat-runtime-store";
+} from "@/features/chat";
+import { NumericValueInput } from "@/features/model-picker";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
@@ -43,7 +44,6 @@ import {
 } from "../model-config/per-model-config";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import type { ModelPickTarget } from "./model-selector/types";
-import { NumericValueInput } from "./numeric-value-input";
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
@@ -315,9 +315,7 @@ export function ModelConfigPage({
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
-  const runtimeMaxSeqLength = useChatRuntimeStore(
-    (s) => s.params.maxSeqLength,
-  );
+  const runtimeMaxSeqLength = useChatRuntimeStore((s) => s.params.maxSeqLength);
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const [initialMaxSeqLength] = useState(
     () => normalizeMaxSeqLength(runtimeMaxSeqLength) ?? 4096,
@@ -393,12 +391,7 @@ export function ModelConfigPage({
     return () => {
       cancelled = true;
     };
-  }, [
-    contextFetchKey,
-    target.id,
-    target.ggufVariant,
-    hfToken,
-  ]);
+  }, [contextFetchKey, target.id, target.ggufVariant, hfToken]);
 
   const isMtp =
     config.speculativeType != null &&
@@ -619,7 +612,7 @@ export function ModelConfigPage({
             <ChatTemplateSetting
               config={config}
               onEditTemplate={() => setTemplateOpen(true)}
-              readOnly
+              readOnly={true}
             />
           </>
         )}

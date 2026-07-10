@@ -5,13 +5,13 @@ import type {
   CachedGgufRepo,
   CachedModelRepo,
   LocalModelInfo,
-} from "@/features/chat/api/chat-api";
+} from "@/features/chat";
 import {
   type CachedInventoryRow,
   type LocalInventoryRow,
   type LocalSource,
   useHubInventory,
-} from "@/features/hub/inventory";
+} from "@/features/hub";
 import { useMemo } from "react";
 
 const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
