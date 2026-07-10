@@ -4371,6 +4371,8 @@ def _scan_command_string_for_reads(
     command,
     *,
     strict_traversal,
+    cwd = None,
+    cwd_dynamic = False,
     _depth = 0,
 ):
     """Scan a shell command STRING for an embedded host-secret read; return a short reason or
@@ -4475,7 +4477,9 @@ def _scan_command_string_for_reads(
     _cur_reader = False
     _wrapper = None
     _skip_operand = False
-    _chdir = None  # env -C DIR / --chdir DIR sets the child's cwd for later relative reads
+    # The child's cwd for a relative read: seeded from an ambient cwd (a subprocess cwd=), and
+    # overridable per-command by env -C DIR. Resets to the ambient cwd at each separator.
+    _chdir = cwd
     _pending_chdir = False
     for _pi, _pt in enumerate(ptoks):
         if _pt in _READ_SCAN_SEPARATORS:
@@ -4483,7 +4487,7 @@ def _scan_command_string_for_reads(
             _cur_reader = False
             _wrapper = None
             _skip_operand = False
-            _chdir = None
+            _chdir = cwd
             _pending_chdir = False
             continue
         if _pt.startswith("<"):
@@ -4535,6 +4539,8 @@ def _scan_command_string_for_reads(
                             _r = _scan_command_string_for_reads(
                                 ptoks[_k + 1],
                                 strict_traversal = strict_traversal,
+                                cwd = _chdir,
+                                cwd_dynamic = cwd_dynamic,
                                 _depth = _depth + 1,
                             )
                             if _r is not None:
@@ -4551,11 +4557,17 @@ def _scan_command_string_for_reads(
         if _cur_reader and not _pt.startswith("-"):
             if "$" in _pt or "`" in _pt or _escaping_glob(_pt):
                 return f"shell read command reads an expanded path {_pt!r}"
-            # Under an env -C DIR chdir, a relative reader arg resolves against DIR.
-            if _chdir and not _pt.startswith("/") and not _pt.startswith("~"):
+            _rel = not _pt.startswith("/") and not _pt.startswith("~")
+            # Under a known chdir (env -C DIR or an ambient subprocess cwd=), a relative reader
+            # arg resolves against DIR (cat passwd + cwd=/etc -> /etc/passwd).
+            if _chdir and _rel:
                 _r = _flag(os.path.join(_chdir, _pt))
                 if _r is not None:
                     return _r
+            # A relative reader arg under a NON-literal cwd cannot be proven sandbox-local, so
+            # fail closed (subprocess.run('cat passwd', shell=True, cwd=P)).
+            if cwd_dynamic and _chdir is None and _rel:
+                return f"shell read command reads {_pt!r} under a non-literal cwd"
     return None
 
 
@@ -7261,6 +7273,10 @@ def _check_signal_escape_patterns(
     # the read-only os.open is deliberately allowed OUTSIDE the workdir by the runtime
     # guard, so a traversal read via such an alias must be caught statically.
     _open_from_aliases: set[str] = set()
+    # Receiver-module aliases for the open() attribute form (import builtins as b; b.open(...),
+    # import io as i; i.open(...), import os as o; o.open(...)), so an aliased-module read is
+    # recognized like the literal builtins/io/os.open forms.
+    _open_mod_aliases = {"builtins", "__builtins__", "io", "os"}
     # os/subprocess module aliases + from-import shell-name aliases, so a shell command
     # string that reads a host secret (os.system('cat /etc/passwd')) is scanned even when
     # os/subprocess is renamed.
@@ -7288,22 +7304,22 @@ def _check_signal_escape_patterns(
             for _a in _imp.names:
                 if _a.name == "open":
                     _open_from_aliases.add(_a.asname or "open")
+                # `from os import system as s` / popen: record the os shell-exec alias here too
+                # (this elif consumes the `os` module, so the subprocess branch below never sees
+                # it), else _scan_shell_string_reads skips s('cat /etc/passwd').
+                _fq = f"{_imp.module}.{_a.name}"
+                if _fq in _SHELL_EXEC_FUNCS:
+                    _shell_name_aliases[_a.asname or _a.name] = _fq
         elif isinstance(_imp, ast.ImportFrom) and _imp.module == "shutil":
             for _a in _imp.names:
                 if _a.name in _SHUTIL_COPY_METHODS:
                     _shutil_copy_from_aliases.add(_a.asname or _a.name)
-        elif isinstance(_imp, ast.ImportFrom) and _imp.module in ("os", "subprocess"):
+        elif isinstance(_imp, ast.ImportFrom) and _imp.module == "subprocess":
             for _a in _imp.names:
-                _fq = f"{_imp.module}.{_a.name}"
+                _fq = f"subprocess.{_a.name}"
                 if _fq in _SHELL_EXEC_FUNCS:
                     _shell_name_aliases[_a.asname or _a.name] = _fq
-                if _imp.module == "subprocess" and _a.name in (
-                    "run",
-                    "call",
-                    "check_call",
-                    "check_output",
-                    "Popen",
-                ):
+                if _a.name in ("run", "call", "check_call", "check_output", "Popen"):
                     _subprocess_exec_from_aliases.add(_a.asname or _a.name)
         elif isinstance(_imp, ast.ImportFrom) and _imp.module in (
             "os.path",
@@ -7325,10 +7341,13 @@ def _check_signal_escape_patterns(
                     _operator_mod_aliases.add(_a.asname or "operator")
                 elif _a.name == "os":
                     _os_mod_aliases.add(_a.asname or "os")
+                    _open_mod_aliases.add(_a.asname or "os")  # o.open(...)
                 elif _a.name in ("posix", "nt"):
                     # posix / nt are the os C backend (posix.system == os.system), so a shell
                     # string passed to them must be scanned for embedded secret reads too.
                     _os_mod_aliases.add(_a.asname or _a.name)
+                elif _a.name in ("io", "builtins"):
+                    _open_mod_aliases.add(_a.asname or _a.name)  # i.open(...) / b.open(...)
                 elif _a.name == "subprocess":
                     _subprocess_mod_aliases.add(_a.asname or "subprocess")
 
@@ -7407,14 +7426,14 @@ def _check_signal_escape_patterns(
                 isinstance(rhs, ast.Attribute)
                 and rhs.attr == "open"
                 and isinstance(rhs.value, ast.Name)
-                and rhs.value.id in ("builtins", "__builtins__", "io", "os")
+                and rhs.value.id in _open_mod_aliases
             ):
                 return True
         if (
             isinstance(fn, ast.Attribute)
             and fn.attr == "open"
             and isinstance(fn.value, ast.Name)
-            and fn.value.id in ("builtins", "__builtins__", "io", "os")
+            and fn.value.id in _open_mod_aliases
         ):
             return True
         return False
@@ -7683,6 +7702,21 @@ def _check_signal_escape_patterns(
                     return _kw.value
             return None
 
+        # subprocess.run('cat passwd', shell=True, cwd='/etc') runs the payload in an unguarded
+        # shell whose cwd is /etc, so a relative reader arg reads /etc/passwd; a NON-literal cwd
+        # cannot be proven sandbox-local. Extract cwd= once and thread it into the payload scan.
+        _cwd_lit = None
+        _cwd_dyn = False
+        if _is_subprocess_exec_callee(f):
+            for _kw in node.keywords or []:
+                if _kw.arg == "cwd":
+                    _cv = _fold_read_arg(_kw.value)
+                    if isinstance(_cv, str):
+                        _cwd_lit = _cv
+                    elif not (isinstance(_kw.value, ast.Constant) and _kw.value.value is None):
+                        _cwd_dyn = True
+                    break
+
         def _scan_one_command(cmd):
             # Scan a shell command STRING (folded to a literal) for an embedded host-secret
             # read and record a violation. Delegates to the shared scanner in strict-traversal
@@ -7690,7 +7724,9 @@ def _check_signal_escape_patterns(
             # resolves the reader past assignment / wrapper prefixes and recurses nested shells.
             if cmd is None:
                 return False
-            _r = _scan_command_string_for_reads(cmd, strict_traversal = True)
+            _r = _scan_command_string_for_reads(
+                cmd, strict_traversal = True, cwd = _cwd_lit, cwd_dynamic = _cwd_dyn
+            )
             if _r is not None:
                 _fs_block(node, _r)
                 return True
@@ -8050,10 +8086,21 @@ _stat = _os.stat
 _stat_mod = _os.path.stat
 _S_ISLNK = _stat_mod.S_ISLNK
 _WD = _realpath(__WORKDIR__)
+# Standard device sinks cannot persist data outside the workspace, so a write to one is
+# allowed (mirrors the terminal shell redirect allowlist); benign patterns like
+# open('/dev/null', 'w') to suppress output would otherwise be denied by the workdir check.
+_SAFE_DEV_SINKS = frozenset(
+    {"/dev/null", "/dev/zero", "/dev/full", "/dev/stdout", "/dev/stderr", "/dev/tty"}
+)
 
 def _within(p):
     try:
         if isinstance(p, int):
+            return True
+        # Allow a write to an exact device sink. Checked on the REQUESTED path, not its
+        # realpath, so /dev/stdout is not followed to a redirected outside file.
+        _ps = p if isinstance(p, str) else (_fsdecode(p) if isinstance(p, (bytes, bytearray)) else None)
+        if _ps is not None and _ps.replace("\\", "/") in _SAFE_DEV_SINKS:
             return True
         # os.path.realpath internally calls the LIVE os.fspath (posixpath.realpath does
         # `filename = os.fspath(filename)`) and os.lstat / os.readlink / os.getcwd, so a

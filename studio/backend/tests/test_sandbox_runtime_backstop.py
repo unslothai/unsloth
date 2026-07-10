@@ -1371,3 +1371,32 @@ def test_sandboxed_pathlib_glob_sensitive_dir_denied(meth):
         assert "sandbox:" in out or "PermissionError" in out
     finally:
         os.remove(link)
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("path", ["/dev/null", "/dev/stdout", "/dev/stderr"])
+def test_sandboxed_device_sink_write_allowed(path):
+    # A write to a standard device sink cannot persist data outside the workspace, so it is
+    # allowed (mirrors the terminal redirect allowlist) rather than denied by the workdir check.
+    out = _python_exec(
+        f"open({path!r}, 'w').write('x'); print('WROTE_SINK')",
+        None,
+        30,
+        "backstop-devsink",
+        disable_sandbox = False,
+    )
+    assert "WROTE_SINK" in out
+    assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_os_devnull_write_allowed():
+    out = _python_exec(
+        "import os\nopen(os.devnull, 'w').write('x'); print('WROTE_OSDEVNULL')",
+        None,
+        30,
+        "backstop-osdevnull",
+        disable_sandbox = False,
+    )
+    assert "WROTE_OSDEVNULL" in out
+    assert "sandbox:" not in out

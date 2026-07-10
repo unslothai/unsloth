@@ -3126,3 +3126,58 @@ class TestRound27Bypasses:
     )
     def test_round27_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound28Bypasses:
+    """Twenty-eighth-round Codex findings: aliased open-module receivers, os shell from-import
+    aliases dropped by an exclusive elif, and a subprocess shell payload not combined with a
+    literal / dynamic cwd. (The device-sink write FP is covered in test_sandbox_runtime_backstop.)"""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import builtins as b\nb.open('../../../etc/passwd').read()",
+            "import io as i\ni.open('../../../etc/passwd').read()",
+            "import os as o\no.open('../../../etc/passwd', 0)",
+            "import builtins as b\nb.open('/etc/passwd').read()",
+        ],
+    )
+    def test_aliased_open_module_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from os import system as s\ns('cat /etc/passwd')",
+            "from os import popen as p\np('head -1 /etc/shadow')",
+        ],
+    )
+    def test_os_shell_from_import_alias_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run('cat passwd', shell=True, cwd='/etc')",
+            "import subprocess\nsubprocess.run(['sh', '-c', 'cat passwd'], cwd='/etc')",
+            "import subprocess\nsubprocess.run('cat passwd', shell=True, cwd=P)",
+            "import subprocess\nsubprocess.check_output('cat sshd_config', shell=True, cwd='/etc/ssh')",
+        ],
+    )
+    def test_subprocess_shell_cwd_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign aliased-open / from-import / shell-cwd forms must still pass.
+            "import builtins as b\nb.open('data.txt').read()",
+            "from os import getcwd as g\nprint(g())",
+            "from subprocess import run as r\nr(['echo', 'hi'])",
+            "import subprocess\nsubprocess.run('cat notes.txt', shell=True, cwd='logs')",
+            "import subprocess\nsubprocess.run('echo hi', shell=True, cwd=P)",
+            "import subprocess\nsubprocess.run('echo hi', shell=True)",
+        ],
+    )
+    def test_round28_benign_allowed(self, code):
+        _ok(code)
