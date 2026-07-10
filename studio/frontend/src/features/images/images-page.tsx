@@ -1536,6 +1536,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       lastLoadSig.current = null;
       loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS));
       // Remember what was loaded so "Reapply" can reload it with new advanced options.
+      // Snapshot the prior target first: a load that fails to START (validation, gated
+      // repo, training guard) leaves the previous model resident, so Reapply and the
+      // resident-default seeding must keep pointing at it, not at the failed pick.
+      const prevLastLoad = lastLoad.current;
       lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
       try {
         // Returns immediately — the load runs in the background; we poll for it.
@@ -1557,6 +1561,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
         });
       } catch (err) {
+        lastLoad.current = prevLastLoad;
         dismissLoadToast();
         toast.error(err instanceof Error ? err.message : "Failed to start load");
         setBusy(null);

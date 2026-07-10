@@ -936,6 +936,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       dismissLoadToast();
       lastLoadSig.current = null;
       loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS));
+      // Snapshot the prior Reapply target first: a load that fails to START (validation,
+      // gated repo, training guard) leaves the previous model resident, so Reapply must
+      // keep pointing at it, not at the failed pick.
+      const prevLastLoad = lastLoad.current;
+      const prevCanReapply = canReapply;
       lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
       setCanReapply(true);
       try {
@@ -954,6 +959,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
         });
       } catch (err) {
+        lastLoad.current = prevLastLoad;
+        setCanReapply(prevCanReapply);
         dismissLoadToast();
         toast.error(err instanceof Error ? err.message : "Failed to start load");
         setBusy(null);
@@ -967,6 +974,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       pollLoadProgress,
       refreshStatus,
       dismissLoadToast,
+      canReapply,
       memoryMode,
       speedMode,
       attentionBackend,
