@@ -6056,7 +6056,11 @@ def _check_signal_escape_patterns(
         found.add("shell-script:" + first)
         return found
 
-    def _check_args_for_blocked(args_nodes, shell_maybe_true = False, cwd_prefix = ""):
+    def _check_args_for_blocked(
+        args_nodes,
+        shell_maybe_true = False,
+        cwd_prefix = "",
+    ):
         """Check if any call arguments contain blocked commands. ``cwd_prefix`` is a synthetic
         ``env -C <dir> `` wrapper string prepended to a reconstructed argv command when the call
         has a literal escaping ``cwd=`` (subprocess.run(['git','init','repo'], cwd='/tmp')), so the
