@@ -5,7 +5,6 @@ import {
   shouldShowTrainingView,
   useDatasetPreviewDialogStore,
   useTrainingConfigStore,
-  useTrainingQueue,
   useTrainingRuntimeLifecycle,
   useTrainingRuntimeStore,
 } from "@/features/training";
@@ -39,7 +38,6 @@ import { useT } from "@/i18n";
 export function StudioPage(): ReactElement {
   const t = useT();
   useTrainingRuntimeLifecycle();
-  useTrainingQueue();
   const showTrainingView = useTrainingRuntimeStore(shouldShowTrainingView);
   const isTrainingRunning = useTrainingRuntimeStore((state) => state.isTrainingRunning);
   const currentJobId = useTrainingRuntimeStore((state) => state.jobId);

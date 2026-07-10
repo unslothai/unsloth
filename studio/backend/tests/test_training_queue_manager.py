@@ -154,6 +154,18 @@ def test_pause_during_settle_delay_prevents_launch(manager, backend, monkeypatch
     assert studio_db.get_queue_item(item["id"])["status"] == "pending"
 
 
+def test_stop_before_launch_prevents_queue_start(manager, backend, monkeypatch):
+    record = []
+    _patch_launch(monkeypatch, record = record)
+    item = _enqueue(manager, monkeypatch)
+    manager._stop_runner.set()
+
+    manager._tick()
+
+    assert record == []
+    assert studio_db.get_queue_item(item["id"])["status"] == "pending"
+
+
 def test_reorder_during_settle_delay_launches_new_head(manager, backend, monkeypatch):
     # The head is re-read after the settle sleep so a reorder made during the
     # delay wins over the stale pre-sleep pick.
@@ -532,6 +544,36 @@ def test_restore_marks_orphans_and_pauses(manager, backend, monkeypatch):
         assert "hf_secret" not in stored2["request_json"]
         assert studio_db.get_queue_item(item3["id"])["status"] == "pending"
         assert studio_db.get_queue_paused() == (True, "restart")
+    finally:
+        manager.stop_runner()
+
+
+def test_restore_preserves_terminal_queue_run(manager, backend, monkeypatch):
+    item = _enqueue(manager, monkeypatch)
+    studio_db.update_queue_item_status(item["id"], "running", job_id = "job_complete")
+    studio_db.create_run(
+        id = "job_complete",
+        model_name = "unsloth/test",
+        dataset_name = "org/dataset",
+        config_json = "{}",
+        started_at = "2026-01-01T00:00:00+00:00",
+        total_steps = 1,
+    )
+    studio_db.finish_run(
+        id = "job_complete",
+        status = "completed",
+        ended_at = "2026-01-01T00:01:00+00:00",
+        final_step = 1,
+        final_loss = 0.1,
+        duration_seconds = 60,
+    )
+
+    manager.restore_on_startup()
+    try:
+        stored = studio_db.get_queue_item(item["id"])
+        assert stored["status"] == "done"
+        assert stored["result_status"] == "completed"
+        assert "hf_secret" not in stored["request_json"]
     finally:
         manager.stop_runner()
 

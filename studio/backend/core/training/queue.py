@@ -164,10 +164,29 @@ class TrainingQueueManager:
         }
 
     def restore_on_startup(self) -> None:
-        # Terminal transition, so redact request_json like every other one:
-        # orphaned items must not keep credentials in studio.db.
+        # Preserve a terminal run that finished before the queue runner had a
+        # chance to reconcile its row. Only rows with no terminal run record
+        # were interrupted by the restart.
         skipped = 0
+        recovered = 0
         for item in studio_db.list_queue_items(statuses = ("starting", "running")):
+            job_id = item.get("job_id")
+            run = studio_db.get_run(job_id) if job_id else None
+            result_status = (run or {}).get("status")
+            if result_status and result_status != "running":
+                studio_db.update_queue_item_status(
+                    item["id"],
+                    "done",
+                    result_status = result_status,
+                    error_message = (run or {}).get("error_message"),
+                    finished_at = _now(),
+                    request_json = _redact_request_json(item["request_json"]),
+                )
+                recovered += 1
+                continue
+
+            # Terminal transition: redact request_json like every other one
+            # so orphaned queue items cannot retain credentials in studio.db.
             studio_db.update_queue_item_status(
                 item["id"],
                 "skipped",
@@ -178,6 +197,8 @@ class TrainingQueueManager:
             skipped += 1
         if skipped:
             logger.info("Skipped %d queue item(s) orphaned by restart", skipped)
+        if recovered:
+            logger.info("Recovered %d completed queue item(s) at startup", recovered)
         if studio_db.count_pending_queue_items() > 0:
             studio_db.set_queue_paused(True, "restart")
             logger.info("Training queue has pending items after restart; starting paused")
@@ -201,6 +222,10 @@ class TrainingQueueManager:
     def stop_runner(self) -> None:
         self._stop_runner.set()
         self._wake.set()
+        with self._runner_lock:
+            runner = self._runner_thread
+        if runner is not None and runner is not threading.current_thread():
+            runner.join(timeout = 1.0)
 
     def _run_loop(self) -> None:
         while not self._stop_runner.is_set():
@@ -244,6 +269,8 @@ class TrainingQueueManager:
         if backend.is_training_active():
             return
         if self._api_item_must_wait(item):
+            return
+        if self._stop_runner.is_set():
             return
 
         self._launch_item(backend, item)
@@ -302,9 +329,17 @@ class TrainingQueueManager:
             logger.info("Queue item %s finished: run %s -> %s", item["id"], job_id, result_status)
 
     def _launch_item(self, backend, item: dict) -> None:
+        if self._stop_runner.is_set():
+            return
         if not studio_db.update_queue_item_status(
             item["id"], "starting", expected_status = "pending"
         ):
+            return
+
+        if self._stop_runner.is_set():
+            studio_db.update_queue_item_status(
+                item["id"], "pending", expected_status = "starting"
+            )
             return
 
         def _skip(reason: str) -> None:

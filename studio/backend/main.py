@@ -509,20 +509,21 @@ async def lifespan(app: FastAPI):
         import structlog as _structlog
         _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
 
+    # Reconcile queued rows before marking unfinished runs as orphaned: a run
+    # can have completed just before restart while its queue row is still
+    # marked running.
+    try:
+        from core.training.queue import get_training_queue_manager
+        get_training_queue_manager().restore_on_startup()
+    except Exception as exc:
+        _lifespan_log.warning("training queue restore failed at startup: %s", exc)
+
     # Reap workers/runs orphaned by a previous crash before new work starts.
     try:
         from storage.studio_db import cleanup_orphaned_runs
         cleanup_orphaned_runs()
     except Exception as exc:
         _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
-
-    # Training queue: skip items orphaned mid-run, restart paused when pending
-    # work survived (the user resumes explicitly), then start the runner.
-    try:
-        from core.training.queue import get_training_queue_manager
-        get_training_queue_manager().restore_on_startup()
-    except Exception as exc:
-        _lifespan_log.warning("training queue restore failed at startup: %s", exc)
 
     reap_hub_orphan_workers()
 
