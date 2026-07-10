@@ -14,7 +14,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -86,8 +85,8 @@ export function DataTab() {
   const [fineTuneAction, setFineTuneAction] = useState<
     "train" | "recipes" | "export"
   >(chatOnly ? "export" : "train");
-  const [fineTuneFormat, setFineTuneFormat] =
-    useState<FineTuneFormat>("openai");
+  // Chat Completions (OpenAI messages) is the only export format we ship.
+  const fineTuneFormat: FineTuneFormat = "openai";
 
   // The MLX self-heal can flip chat-only while the dialog is open.
   useEffect(() => {
@@ -374,34 +373,6 @@ export function DataTab() {
                       {fineTuneActionLabels[action]}
                     </span>
                     {fineTuneAction === action ? (
-                      <HugeiconsIcon icon={Tick02Icon} className="size-4" />
-                    ) : null}
-                  </DropdownMenuItem>
-                ))}
-                <DropdownMenuSeparator />
-                <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
-                  {t("settings.data.fineTuneFormatLabel")}
-                </DropdownMenuLabel>
-                {/* Format ticks keep the menu open so picking a format and
-                  an action does not need two openings. */}
-                {(
-                  [
-                    { value: "openai", label: "fineTuneFormatOpenAi" },
-                    { value: "sharegpt", label: "fineTuneFormatShareGpt" },
-                    { value: "alpaca", label: "fineTuneFormatAlpaca" },
-                  ] as const
-                ).map(({ value, label }) => (
-                  <DropdownMenuItem
-                    key={value}
-                    onSelect={(e) => {
-                      e.preventDefault();
-                      setFineTuneFormat(value);
-                    }}
-                  >
-                    <span className="flex-1">
-                      {t(`settings.data.${label}`)}
-                    </span>
-                    {fineTuneFormat === value ? (
                       <HugeiconsIcon icon={Tick02Icon} className="size-4" />
                     ) : null}
                   </DropdownMenuItem>
