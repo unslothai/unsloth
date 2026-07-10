@@ -2311,6 +2311,7 @@ def apply_gpu_ids(gpu_ids) -> None:
         # mask target must follow that fallback.
         try:
             import torch as _torch
+
             _ver = _torch.version
             _is_comp = getattr(getattr(_torch, "xpu", None), "_is_compiled", None)
             _xpu_build = (callable(_is_comp) and bool(_is_comp())) or (
