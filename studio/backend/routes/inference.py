@@ -3435,6 +3435,47 @@ def _estimate_gguf_kv_gb(
         return 0.0
 
 
+def _diffusion_guard_gpu_ids(
+    config: ModelConfig, requested_gpu_ids: Optional[List[int]]
+) -> Optional[List[int]]:
+    """Collapse a multi-GPU pick to the device a diffusion GGUF will actually
+    use (the lowest id -- the runner takes a single --gpu, see
+    _start_diffusion_server), so the guard can't pass on another GPU's free
+    VRAM and OOM the one used. Non-diffusion picks pass through, as does an
+    unreadable or not-yet-downloaded header (the safe over-check is the
+    aggregate the guard already does)."""
+    if not requested_gpu_ids or len(requested_gpu_ids) < 2:
+        return requested_gpu_ids
+    try:
+        main = getattr(config, "gguf_file", None)
+        if not main:
+            repo = getattr(config, "gguf_hf_repo", None)
+            variant = getattr(config, "gguf_variant", None)
+            if repo and variant:
+                from hub.utils.gguf import resolve_local_gguf_path
+
+                main = resolve_local_gguf_path(repo, variant)
+        if not main or not Path(main).is_file():
+            return requested_gpu_ids
+        from utils.models.gguf_metadata import (
+            gguf_header_has_key,
+            read_gguf_general_metadata,
+        )
+
+        meta = read_gguf_general_metadata(str(main)) or {}
+        arch = (meta.get("general.architecture") or "").lower()
+        # Mirror load_model's detection: a diffusion arch prefix OR the
+        # block-diffusion canvas marker (an arch that doesn't say "diffusion"
+        # can still route to the single-GPU diffusion runner).
+        if arch.startswith("diffusion") or gguf_header_has_key(
+            str(main), "diffusion.canvas_length"
+        ):
+            return [min(requested_gpu_ids)]
+    except Exception as e:
+        logger.debug("Could not check diffusion arch for the guard pick: %s", e)
+    return requested_gpu_ids
+
+
 def _spec_mode_may_emit_drafter(
     speculative_type: Optional[str], llama_extra_args: Optional[list[str]]
 ) -> bool:
@@ -3740,6 +3781,31 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             None if request.llama_extra_args is None else extra_llama_args
         )
 
+        # Manual mode owns the offload flags: strip them from EXPLICIT extras
+        # too (the inherited path already does), or a last-wins --gpu-layers /
+        # --fit in extras re-enables GPU offload on a load the guard sized (and
+        # status reports) as CPU-only. Manual + per-GPU ratio owns
+        # --tensor-split the same way.
+        if request.gpu_memory_mode == "manual" and extra_llama_args:
+            _stripped_explicit = strip_shadowing_flags(
+                extra_llama_args,
+                strip_context = False,
+                strip_cache = False,
+                strip_spec = False,
+                strip_template = False,
+                strip_split_mode = False,
+                strip_tensor_split = _should_strip_tensor_split(request),
+                strip_offload = True,
+            )
+            if _stripped_explicit != extra_llama_args:
+                logger.info(
+                    "Manual GPU memory owns the offload flags; stripping them "
+                    "from explicit llama_extra_args: %s -> %s",
+                    extra_llama_args,
+                    _stripped_explicit,
+                )
+                extra_llama_args = _stripped_explicit
+
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "load-model")
         )
@@ -3896,9 +3962,23 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
 
         # GGUF supports gpu_ids: validate the pick up front (before the training
         # guard) so a bad pick is a clean 400, not masked by a VRAM 409. Rejects
-        # negative / out-of-range / duplicate ids and UUID/MIG parents.
+        # negative / out-of-range / duplicate ids and UUID/MIG parents. XPU-host
+        # picks are rejected outright: the picker's indices are torch-xpu
+        # ordinals, and neither applicator speaks that space -- CUDA/HIP masks
+        # don't apply, and the Vulkan --device pin uses ggml's own Vulkan
+        # ordinals, which have no defined mapping from the xpu enumeration -- so
+        # a pick could silently land on the wrong device.
         if config.is_gguf and effective_gpu_ids is not None:
+            from utils.hardware import DeviceType, get_device
             from utils.hardware.hardware import resolve_requested_gpu_ids
+            if get_device() == DeviceType.XPU:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "GPU selection (gpu_ids) is not supported on Intel XPU. "
+                        "Omit gpu_ids to use all devices."
+                    ),
+                )
             try:
                 resolve_requested_gpu_ids(effective_gpu_ids)
             except ValueError as exc:
@@ -4021,7 +4101,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             hf_token = request.hf_token,
             load_in_4bit = effective_load_in_4bit,
             max_seq_length = request.max_seq_length,
-            requested_gpu_ids = effective_gpu_ids,
+            requested_gpu_ids = _diffusion_guard_gpu_ids(config, effective_gpu_ids),
             llama_extra_args = extra_llama_args,
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
             gpu_memory_mode = request.gpu_memory_mode,
@@ -4505,8 +4585,19 @@ async def validate_model(
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
         # Mirror /load: GGUF supports gpu_ids, so validate the pick (a bad one is
         # a clean 400) before the guard sizes the model against training VRAM.
+        # XPU-host picks are rejected like /load (no defined mapping from the
+        # picker's torch-xpu ordinals to the launcher's device spaces).
         if config.is_gguf and effective_gpu_ids is not None:
+            from utils.hardware import DeviceType, get_device
             from utils.hardware.hardware import resolve_requested_gpu_ids
+            if get_device() == DeviceType.XPU:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "GPU selection (gpu_ids) is not supported on Intel XPU. "
+                        "Omit gpu_ids to use all devices."
+                    ),
+                )
             try:
                 resolve_requested_gpu_ids(effective_gpu_ids)
             except ValueError as exc:
@@ -4520,7 +4611,7 @@ async def validate_model(
             hf_token = request.hf_token,
             load_in_4bit = effective_load_in_4bit,
             max_seq_length = request.max_seq_length,
-            requested_gpu_ids = effective_gpu_ids,
+            requested_gpu_ids = _diffusion_guard_gpu_ids(config, effective_gpu_ids),
             gpu_memory_mode = request.gpu_memory_mode,
             gpu_layers = request.gpu_layers,
             tensor_split = request.tensor_split,

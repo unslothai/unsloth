@@ -802,6 +802,40 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(auto, 400 / (1024**3), places = 9)
         self.assertEqual(extras_own_spec, 0.0)
 
+    def test_diffusion_pick_collapses_to_lowest_gpu(self):
+        # The diffusion runner uses a single device (the lowest of the pick), so
+        # the guard must size that GPU only -- aggregating [0, 1] could pass on
+        # GPU 1's free VRAM and OOM GPU 0, the one actually used.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.gguf"
+            p.write_bytes(b"x" * 1000)
+            cfg = self._local_gguf_cfg(p)
+            with patch(
+                "utils.models.gguf_metadata.read_gguf_general_metadata",
+                return_value = {"general.architecture": "diffusion-gemma"},
+            ):
+                collapsed = self.route._diffusion_guard_gpu_ids(cfg, [1, 0])
+            with patch(
+                "utils.models.gguf_metadata.read_gguf_general_metadata",
+                return_value = {"general.architecture": "gemma3"},
+            ):
+                dense = self.route._diffusion_guard_gpu_ids(cfg, [1, 0])
+                # Canvas-only block diffusion (arch doesn't say "diffusion")
+                # must collapse too, mirroring load_model's OR canvas_seen.
+                with patch(
+                    "utils.models.gguf_metadata.gguf_header_has_key",
+                    return_value = True,
+                ):
+                    canvas_only = self.route._diffusion_guard_gpu_ids(cfg, [1, 0])
+        self.assertEqual(collapsed, [0])
+        self.assertEqual(dense, [1, 0])
+        self.assertEqual(canvas_only, [0])
+        # Single pick / no pick pass through without a header read.
+        self.assertEqual(self.route._diffusion_guard_gpu_ids(cfg, [1]), [1])
+        self.assertIsNone(self.route._diffusion_guard_gpu_ids(cfg, None))
+
     def test_manual_charges_companions_in_full_not_scaled_by_gpu_layers(self):
         # A companion (mmproj / separate MTP drafter) is GPU-resident regardless of
         # the main --gpu-layers, so it must not be scaled by the fraction. At

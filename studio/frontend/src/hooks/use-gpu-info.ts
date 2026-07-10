@@ -85,6 +85,12 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
 }
 
 function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
+  // XPU indices are never pinnable: they are torch-xpu ordinals, and the GGUF
+  // launcher's applicators (CUDA/HIP visibility masks, Vulkan --device with
+  // ggml's own ordinals) have no defined mapping from that space, so a pick
+  // could silently land on the wrong device. Every gate keyed on physicalIndex
+  // (picker, persisted-pick reconcile) treats XPU devices as unpinnable.
+  const pinnableBackend = data?.gpu?.backend !== "xpu";
   return (data?.gpu?.devices ?? [])
     .filter((d) => typeof d.index === "number")
     .map((d) => ({
@@ -92,7 +98,7 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
       name: d.name ?? `GPU ${d.index}`,
       memoryTotalGb: d.memory_total_gb ?? 0,
       memoryFreeGb: d.vram_free_gb ?? 0,
-      physicalIndex: d.index_kind === "physical",
+      physicalIndex: pinnableBackend && d.index_kind === "physical",
     }));
 }
 
