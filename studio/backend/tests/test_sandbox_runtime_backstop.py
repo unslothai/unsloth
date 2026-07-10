@@ -694,7 +694,11 @@ def test_sandboxed_pyc_only_workdir_module_import_denied():
     session = "backstop-workdir-pyc"
     workdir = get_sandbox_workdir(session)
     src = "import os\nos.system('echo PWNED_PYC')\n"
-    pyc = importlib.util.MAGIC_NUMBER + (b"\x00" * 12) + marshal.dumps(compile(src, "evilpyc.py", "exec"))
+    pyc = (
+        importlib.util.MAGIC_NUMBER
+        + (b"\x00" * 12)
+        + marshal.dumps(compile(src, "evilpyc.py", "exec"))
+    )
     target = os.path.join(workdir, "evilpyc.pyc")
     with open(target, "wb") as f:
         f.write(pyc)

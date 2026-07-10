@@ -4162,7 +4162,7 @@ class TestRound39Bypasses:
         "code",
         [
             # A $() / backtick substitution runs inside DOUBLE quotes, so a reader payload leaks.
-            'import os\nos.system(\'echo "$(cat /etc/passwd)"\')',
+            "import os\nos.system('echo \"$(cat /etc/passwd)\"')",
             "import os\nos.system('echo \"`cat /etc/passwd`\"')",
         ],
     )
