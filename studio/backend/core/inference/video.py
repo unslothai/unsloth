@@ -1594,9 +1594,7 @@ class VideoBackend:
                 cancel_event = cancel_event, error = "Failed to save the generated video."
             )
             return
-        self._finish_generate_job(
-            cancel_event = cancel_event, video = record, total = result["steps"]
-        )
+        self._finish_generate_job(cancel_event = cancel_event, video = record, total = result["steps"])
 
     def _finish_generate_job(
         self,
@@ -1653,6 +1651,7 @@ class VideoBackend:
         cancel_event: Optional[threading.Event] = None,
     ) -> dict[str, Any]:
         import torch
+
         # begin_generate passes the event it already registered (so a cancel in the
         # spawn window is honoured); a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()

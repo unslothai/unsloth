@@ -321,9 +321,7 @@ def test_load_threads_transformer_quant_and_guidance_2(client):
     kwargs = video_module.get_video_backend().last_load_kwargs
     assert kwargs.get("transformer_quant") == "fp8"
 
-    video = _generate_and_wait(
-        client, {"prompt": "a sloth", "guidance": 5.0, "guidance_2": 3.0}
-    )
+    video = _generate_and_wait(client, {"prompt": "a sloth", "guidance": 5.0, "guidance_2": 3.0})
     assert video["guidance"] == 5.0 and video["guidance_2"] == 3.0
 
 
