@@ -907,12 +907,24 @@ def _cached_config_json(model_name: str, hf_token: str | None) -> dict | None:
 _config_mapping_cache: dict[str, frozenset[str]] = {}
 
 
+def _latest_tier_disabled() -> bool:
+    """Kill switch shared with utils.transformers_latest: lets operators roll
+    back a provisioned latest sidecar without deleting files."""
+    return (
+        os.environ.get("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "").strip().lower()
+        in ("1", "true", "yes", "on")
+    )
+
+
 def _overlay_transformers_dir(tier: str) -> str | None:
     """transformers source dir for a tier, located without importing it."""
     if tier != "default":
         # latest participates only with a valid pin (activation refuses unpinned,
-        # so mapping from a partial/manual dir would route to a dead tier).
-        if tier == "latest" and latest_venv_pinned_version() is None:
+        # so mapping from a partial/manual dir would route to a dead tier) and
+        # while the kill switch is off.
+        if tier == "latest" and (
+            _latest_tier_disabled() or latest_venv_pinned_version() is None
+        ):
             return None
         root = {
             "530": _VENV_T5_530_DIR,
@@ -1131,7 +1143,7 @@ def _probe_tier_order() -> tuple[str, ...]:
     """Sidecar probe order. The consented "latest" sidecar joins only once it is
     provisioned (pin marker present): an absent optional tier must not flip the probe's
     skipped-tier bookkeeping, keeping pre-latest behavior byte-identical."""
-    if latest_venv_pinned_version() is not None:
+    if not _latest_tier_disabled() and latest_venv_pinned_version() is not None:
         return _PROBE_TIER_ORDER + ("latest",)
     return _PROBE_TIER_ORDER
 
@@ -1213,7 +1225,7 @@ def _probe_tier(
     stays on the default. Cached per _probe_cache_key (process lifetime). No Hub sha is
     resolved: that would import huggingface_hub before the sidecar is on sys.path.
     """
-    if os.environ.get("UNSLOTH_DISABLE_TIER_PROBE", "").lower() in ("1", "true", "yes"):
+    if os.environ.get("UNSLOTH_DISABLE_TIER_PROBE", "").lower() in ("1", "true", "yes", "on"):
         return floor
     key = _probe_cache_key(model_name)
     # Key by probe mode: the default-first path can return 'default', which must not be

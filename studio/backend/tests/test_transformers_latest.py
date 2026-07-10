@@ -995,3 +995,21 @@ def test_install_endpoint_not_mounted_on_v1():
     path = "/install-latest-transformers"
     assert path in [r.path for r in ri.studio_router.routes]
     assert path not in [r.path for r in ri.router.routes]
+
+
+def test_kill_switch_removes_provisioned_latest_from_routing(tmp_path, monkeypatch):
+    """UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS must roll back a provisioned latest
+    sidecar: no overlay mapping, no probe participation, no file deletion needed."""
+    venv_dir = tmp_path / ".venv_t5_latest"
+    (venv_dir / "transformers").mkdir(parents = True)
+    (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
+    monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
+
+    assert tv._overlay_transformers_dir("latest") == str(venv_dir / "transformers")
+    assert tv._probe_tier_order() == tv._PROBE_TIER_ORDER + ("latest",)
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "1")
+    tv._config_mapping_cache.pop("latest", None)
+    assert tv._overlay_transformers_dir("latest") is None
+    assert tv._probe_tier_order() == tv._PROBE_TIER_ORDER
+    tv._config_mapping_cache.pop("latest", None)
