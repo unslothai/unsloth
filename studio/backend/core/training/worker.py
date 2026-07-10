@@ -1731,6 +1731,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # sharegpt+images) and text (alpaca/sharegpt/chatml → "text" column).
     format_type = config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
+    dataset_final_format = ""
     try:
         from utils.datasets import format_and_template_dataset
         def _fmt_progress(status_message = "", **_kw):
@@ -1796,6 +1797,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
             if info.get("success", True):
                 dataset = info.get("dataset", dataset)
+            dataset_final_format = str(info.get("final_format", "") or "").lower()
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
                     eval_dataset,
@@ -1933,8 +1935,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # Auto-detect instruction/response markers from the chat template first,
     # then fall back to the manual template table if auto-detection raises.
     # Mirror the CUDA path's skips: raw/CPT text has no chat turns to mask and
-    # Alpaca-rendered text does not contain the tokenizer's chat markers.
-    if config.get("train_on_completions", False) and not raw_text_mode and format_type != "alpaca":
+    # Alpaca-rendered text does not contain the tokenizer's chat markers. Check
+    # the formatter's RESOLVED format too: format_type="auto" can land on alpaca
+    # or raw text, exactly as the CUDA path gates on dataset_final_format.
+    if (
+        config.get("train_on_completions", False)
+        and not raw_text_mode
+        and format_type != "alpaca"
+        and dataset_final_format not in ("alpaca", "raw_text")
+    ):
         _send("status", status_message = "Configuring response-only training...")
         # No catch: detection failures fall back inside the helper and a double
         # miss returns applied=False, so an exception here is a real failure
