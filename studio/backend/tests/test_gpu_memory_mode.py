@@ -687,3 +687,16 @@ def test_cmd_has_gpu_companion_detection():
     assert has(["llama-server", "--mmproj=p.gguf"], {}) is True
     assert has(["llama-server", "-md", "d.gguf"], {}) is True
     assert has(["llama-server"], {"LLAMA_ARG_SPEC_DRAFT_MODEL": "d.gguf"}) is True
+
+
+def test_cmd_companion_ignores_cpu_forced_drafter():
+    # A drafter pinned to CPU holds no VRAM: the zero-offload mask may hide the
+    # GPUs and the training coordinator may leave the server alone.
+    has = LlamaCppBackend._cmd_has_gpu_companion
+    cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-ngl", "0"]
+    assert has(cmd, {}) is False
+    cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-device", "cpu"]
+    assert has(cmd, {}) is False
+    # mmproj still counts even alongside a CPU drafter.
+    cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-ngl", "0", "--mmproj", "p.gguf"]
+    assert has(cmd, {}) is True

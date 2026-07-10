@@ -3533,16 +3533,23 @@ def _estimate_gguf_required_gb(
     try:
         # An explicit pass-through drafter (extras --model-draft/-md/HF forms,
         # or the LLAMA_ARG_SPEC_DRAFT_* env) launches on the GPU like the
-        # config-owned companions, so charge it in full too -- else a manual
-        # gpu_layers=0 load with a drafter scales to zero and takes the guard's
-        # CPU-only bypass while the drafter still lands on the GPU. A drafter
-        # that isn't a readable local file (an HF repo form) can't be sized:
-        # return None so the caller default-denies rather than under-estimates.
-        from core.inference.llama_cpp import _extra_args_mtp_draft_path
+        # config-owned companions -- llama-server loads a named draft model
+        # under every spec mode (verified live: 2.5 GB drafter VRAM under
+        # --spec-type ngram-mod at -ngl 0) -- so charge it in full too. A
+        # drafter that isn't a readable local file (an HF repo form) can't be
+        # sized: return None so the caller default-denies rather than
+        # under-estimates. The one real exemption is a drafter explicitly
+        # forced to CPU (--spec-draft-ngl 0 / --spec-draft-device cpu), which
+        # the loader's own budget also skips.
+        from core.inference.llama_cpp import (
+            _extra_args_draft_offloaded_to_cpu,
+            _extra_args_mtp_draft_path,
+        )
 
+        draft_on_cpu = _extra_args_draft_offloaded_to_cpu(llama_extra_args)
         extras_draft_bytes = 0
         draft_path = _extra_args_mtp_draft_path(llama_extra_args)
-        if draft_path:
+        if draft_path and not draft_on_cpu:
             if Path(draft_path).is_file():
                 extras_draft_bytes = Path(draft_path).stat().st_size
             else:
@@ -3550,8 +3557,12 @@ def _estimate_gguf_required_gb(
 
         # The separate MTP drafter launches only under spec modes that can emit
         # it -- an unused drafter must not push a deliberate CPU-only load over
-        # the guard floor. mmproj is mode-independent and always charged.
-        charge_mtp = _spec_mode_may_emit_drafter(speculative_type, llama_extra_args)
+        # the guard floor -- and a drafter forced to CPU holds no VRAM either.
+        # mmproj is mode-independent and always charged.
+        charge_mtp = (
+            _spec_mode_may_emit_drafter(speculative_type, llama_extra_args)
+            and not draft_on_cpu
+        )
 
         main = getattr(config, "gguf_file", None)
         main_bytes = 0

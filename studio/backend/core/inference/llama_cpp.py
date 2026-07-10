@@ -5778,6 +5778,21 @@ class LlamaCppBackend:
                 # use the same helper so a healthy env-driven tensor server matches.
                 split_mode_override = parse_split_mode_override(extra_args)
                 tensor_parallel = _effective_tensor_parallel(extra_args, tensor_parallel)
+                # Zero GPU layers leaves nothing to split: --split-mode tensor or
+                # a per-GPU ratio at gpu_layers=0 launches tensor mode with no
+                # offloaded work -- and under the CPU-only GPU mask below, with
+                # no visible devices at all, which aborts the server instead of
+                # the intended CPU-only load. Drop both for this launch (a user
+                # --split-mode in extras still wins last-wins and keeps the GPUs
+                # visible via the mask's own gate).
+                if gpu_memory_mode == "manual" and gpu_layers == 0:
+                    if tensor_parallel or tensor_split:
+                        logger.info(
+                            "Manual gpu_layers=0: dropping tensor split/parallel "
+                            "flags (nothing to split on the GPU)"
+                        )
+                    tensor_parallel = False
+                    tensor_split = None
                 # Record the requested strategy for /status and the load
                 # response. 'manual' has no fallback, so the request value is the
                 # value actually applied.
@@ -7148,7 +7163,11 @@ class LlamaCppBackend:
                     gpu_memory_mode == "manual"
                     and gpu_layers == 0
                     and not is_vulkan_backend
-                    and not any(a == "--device" or str(a).startswith("--device=") for a in cmd)
+                    and not any(
+                        a in ("--device", "-sm", "--split-mode")
+                        or str(a).startswith(("--device=", "--split-mode="))
+                        for a in cmd
+                    )
                     and not self._cmd_has_gpu_companion(cmd, env)
                 )
                 if _cpu_only_zero_offload:
@@ -8104,10 +8123,13 @@ class LlamaCppBackend:
         """True when the argv/env carries a GPU companion: any --mmproj form, or
         a drafter (Studio's --model-draft, the extras aliases, or the
         LLAMA_ARG_SPEC_DRAFT_* env) -- these offload to the GPU regardless of
-        the main ``--gpu-layers``."""
+        the main ``--gpu-layers``. A drafter explicitly forced to CPU
+        (--spec-draft-ngl 0 / --spec-draft-device cpu) doesn't count."""
         if any(str(a).startswith("--mmproj") for a in cmd):
             return True
-        return _extra_args_mtp_draft_path(cmd, env) is not None
+        if _extra_args_mtp_draft_path(cmd, env) is None:
+            return False
+        return not _extra_args_draft_offloaded_to_cpu(cmd, env)
 
     @staticmethod
     def _zero_offload_gpu_flag(
