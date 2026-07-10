@@ -194,6 +194,55 @@ def test_force_xpu_without_working_xpu_leaves_cuda_untouched(spoof_xpu):
     assert "CUDA_VISIBLE_DEVICES" not in os.environ
 
 
+def test_apply_gpu_ids_predetect_never_probes_torch(spoof_xpu, monkeypatch):
+    # Workers call apply_gpu_ids() BEFORE detect_hardware(); a lazy detect
+    # would probe torch.cuda against the unmasked parent env, latching device
+    # enumeration before the mask is written. Pre-detect it must decide from
+    # env/build attributes only.
+    import torch
+
+    hw, _ = spoof_xpu(ze_mask = None, cuda_visible = None)
+    assert hw.DEVICE is None  # fresh import, pre-detect
+
+    def _poisoned_detect():
+        raise AssertionError("apply_gpu_ids triggered detect_hardware pre-mask")
+
+    monkeypatch.setattr(hw, "detect_hardware", _poisoned_detect)
+    monkeypatch.setattr(
+        torch.cuda, "is_available", _poisoned_detect, raising = False
+    )
+    # CUDA-build torch (torch.version.cuda set on this box or spoofed):
+    monkeypatch.setattr(torch.version, "cuda", "12.8", raising = False)
+    monkeypatch.setattr(torch.version, "xpu", None, raising = False)
+    hw.apply_gpu_ids([1])
+    import os
+
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
+    assert "ZE_AFFINITY_MASK" not in os.environ
+
+
+def test_apply_gpu_ids_predetect_xpu_build_writes_ze_mask(spoof_xpu, monkeypatch):
+    # Pre-detect on an XPU-build torch (version.xpu set, no cuda/hip):
+    # the mask must go to ZE_AFFINITY_MASK without any runtime probe.
+    import torch
+
+    hw, _ = spoof_xpu(ze_mask = None, cuda_visible = None)
+    assert hw.DEVICE is None
+
+    def _poisoned_detect():
+        raise AssertionError("apply_gpu_ids triggered detect_hardware pre-mask")
+
+    monkeypatch.setattr(hw, "detect_hardware", _poisoned_detect)
+    monkeypatch.setattr(torch.version, "cuda", None, raising = False)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch.version, "xpu", "2.7", raising = False)
+    hw.apply_gpu_ids([0])
+    import os
+
+    assert os.environ["ZE_AFFINITY_MASK"] == "0"
+    assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+
 # ---------- visibility / selection ----------
 
 

@@ -2297,7 +2297,31 @@ def apply_gpu_ids(gpu_ids) -> None:
 
     # Intel XPU honors ZE_AFFINITY_MASK, not CUDA_VISIBLE_DEVICES; route XPU
     # pinning through it so worker subprocesses are restricted to the intended GPU.
-    if get_device() == DeviceType.XPU:
+    # Decide WITHOUT get_device(): workers call this before detect_hardware(),
+    # and a lazy detect would probe torch.cuda against the unmasked parent env,
+    # latching device enumeration before the mask below is written. Pre-detect,
+    # use env + torch BUILD attributes only (no runtime init, like the ROCm
+    # mirror below).
+    _is_xpu = DEVICE == DeviceType.XPU
+    if DEVICE is None:
+        if os.environ.get("UNSLOTH_FORCE_XPU") == "1":
+            _is_xpu = True
+        else:
+            try:
+                import torch as _torch
+                _ver = _torch.version
+                _is_xpu = (
+                    getattr(_ver, "xpu", None) is not None
+                    and getattr(_ver, "cuda", None) is None
+                    and getattr(_ver, "hip", None) is None
+                )
+            except Exception as e:
+                logger.debug(
+                    "apply_gpu_ids: torch XPU probe skipped (%s: %s)",
+                    type(e).__name__,
+                    e,
+                )
+    if _is_xpu:
         os.environ["ZE_AFFINITY_MASK"] = value
         # Leave inherited CUDA_VISIBLE_DEVICES alone -- clearing it could let
         # the worker flip back to CUDA on hybrid hosts.
