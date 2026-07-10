@@ -1078,6 +1078,33 @@ def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
     assert models_route._cached_repo_partial("Org/Repo", snapshot_dir) is False
 
 
+def test_repo_has_pipeline_index_requires_root_model_index(tmp_path):
+    # Only a ROOT model_index.json makes a repo pipeline-loadable: from_pretrained
+    # reads the repo root, so a nested subdir/model_index.json must NOT clear the
+    # single_file flag. CachedFileInfo.file_name is the basename, so the helper has
+    # to scope by file_path/snapshot_path -- a name-only match would claim both.
+    snap = tmp_path / "snapshots" / "abc"
+    nested = SimpleNamespace(
+        file_name = "model_index.json",
+        file_path = snap / "prior" / "model_index.json",
+    )
+    repo_nested = SimpleNamespace(
+        repo_id = "unsloth/nested-index",
+        revisions = [SimpleNamespace(files = [nested], snapshot_path = snap)],
+    )
+    assert models_route._repo_has_pipeline_index(repo_nested) is False
+
+    root = SimpleNamespace(
+        file_name = "model_index.json",
+        file_path = snap / "model_index.json",
+    )
+    repo_root = SimpleNamespace(
+        repo_id = "unsloth/root-index",
+        revisions = [SimpleNamespace(files = [root], snapshot_path = snap)],
+    )
+    assert models_route._repo_has_pipeline_index(repo_root) is True
+
+
 def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_path):
     # A diffusion-tagged repo with NO top-level model_index.json is a single-file
     # checkpoint: the task pickers must not offer it as a pipeline load (from_pretrained

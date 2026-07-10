@@ -1660,6 +1660,29 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         });
         return;
       }
+      // A direct local single-file .safetensors pick (custom folder / on-device file)
+      // must load via from_single_file: the pipeline route rejects a bare file (no
+      // model_index.json) and only after evicting the resident model. Split into
+      // (parent dir, basename) exactly like the local GGUF branch above.
+      if (meta.source === "local" && id.toLowerCase().endsWith(".safetensors")) {
+        const norm = id.replace(/\\/g, "/");
+        const slash = norm.lastIndexOf("/");
+        const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
+        const dir = slash >= 0 ? norm.slice(0, slash) : ".";
+        const prevQuant = quant;
+        quantRevert.current = { prev: prevQuant };
+        setQuant(filename);
+        const dsf = defaultsFor(id);
+        setSteps(dsf.steps);
+        setGuidance(dsf.guidance);
+        void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
+          if (!started) {
+            setQuant(prevQuant);
+            quantRevert.current = null;
+          }
+        });
+        return;
+      }
       // Otherwise treat it as a full diffusers repo (safetensors / bnb-4bit). The backend
       // infers the family + base repo from the id and gates loads to unsloth/* repos or
       // on-device paths, so only attempt those; other Hub orgs can't be assembled here.
@@ -1838,6 +1861,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // can yield NaN), which would otherwise make the loop a silent no-op.
     const runs = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
     if (runs !== count) setCount(runs);
+
+    // An explicit seed near the 2**53-1 backend cap can overflow once the per-run
+    // offset (base + i*batchSize) and the engine's in-batch +j offsets are added,
+    // 422ing a later run AFTER earlier images already generated. Fail before any
+    // GPU work. Subtraction keeps the comparison exact where the sum would round.
+    if (baseSeed > Number.MAX_SAFE_INTEGER - (runs * batchSize - 1)) {
+      toast.error("Seed too large for this run count and batch size; use a smaller seed");
+      return;
+    }
 
     setBusy("generating");
     setGenDone(0);

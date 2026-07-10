@@ -1044,6 +1044,29 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         });
         return;
       }
+      // A direct local single-file .safetensors pick must load via from_single_file:
+      // the pipeline route rejects a bare file (no model_index.json) and only after
+      // evicting the resident model. Split into (parent dir, basename) exactly like
+      // the local GGUF branch above.
+      if (meta.source === "local" && id.toLowerCase().endsWith(".safetensors")) {
+        const norm = id.replace(/\\/g, "/");
+        const slash = norm.lastIndexOf("/");
+        const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
+        const dir = slash >= 0 ? norm.slice(0, slash) : ".";
+        const prevQuant = quant;
+        quantRevert.current = { prev: prevQuant };
+        setQuant(filename);
+        const dsf = defaultsFor(id);
+        setSteps(dsf.steps);
+        setGuidance(dsf.guidance);
+        void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
+          if (!started) {
+            setQuant(prevQuant);
+            quantRevert.current = null;
+          }
+        });
+        return;
+      }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/*
       // repos, the family bases, or on-device paths, so only attempt those.
       if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {

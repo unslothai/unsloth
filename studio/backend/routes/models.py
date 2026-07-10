@@ -3386,13 +3386,23 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
 
 
 def _repo_has_pipeline_index(repo_info) -> bool:
-    """Whether the cached snapshot carries a model_index.json, i.e. is loadable as a
-    full diffusers pipeline (from_pretrained). Single-file / ComfyUI checkpoints ship
-    none and need a checkpoint filename + from_single_file instead."""
+    """Whether the cached snapshot carries a ROOT model_index.json, i.e. is loadable
+    as a full diffusers pipeline (from_pretrained reads only the repo root). A nested
+    subdir/model_index.json does not count: loading the repo root still fails, so the
+    row must keep its single_file flag. CachedFileInfo.file_name is the basename, so
+    a name match alone would also claim nested copies -- scope by file_path when the
+    scan provides it."""
     try:
         for rev in repo_info.revisions:
+            snapshot = getattr(rev, "snapshot_path", None)
             for f in rev.files:
-                if f.file_name == "model_index.json" or f.file_name.endswith("/model_index.json"):
+                name = str(getattr(f, "file_name", "") or "")
+                path = getattr(f, "file_path", None)
+                if path is not None and snapshot is not None:
+                    p = Path(path)
+                    if p.name == "model_index.json" and p.parent == Path(snapshot):
+                        return True
+                elif name == "model_index.json":
                     return True
     except Exception:
         pass
