@@ -7493,6 +7493,10 @@ class LlamaCppBackend:
                             "session; run 'unsloth studio update' to enable vision."
                         )
                         cmd = self._strip_mmproj_args(_last_spawn_cmd)
+                        # This retry bypasses _spawn_and_wait, so refresh the
+                        # launched-argv snapshot itself -- the zero-offload
+                        # classification below must not see the stripped --mmproj.
+                        _last_spawn_cmd = list(cmd)
                         self._is_vision = False
                         self._mmproj_has_audio = False
                         self._start_llama_process(cmd, env)
@@ -7547,14 +7551,23 @@ class LlamaCppBackend:
                 # Catch silent CPU fallback when GPU was intended (#5106). Manual
                 # offload (no picker) leaves gpu_indices None and use_fit False, so
                 # include its GPU-layer intent; use the preserved probe since
-                # auto-layers/manual empty `gpus`.
-                self._gpu_offload_active = self._classify_gpu_offload(
-                    gpu_indices is not None
-                    or use_fit
-                    or (gpu_memory_mode == "manual" and gpu_layers != 0),
-                    _detected_gpus,
-                )
-                if self._gpu_offload_active is False:
+                # auto-layers/manual empty `gpus`. A deliberate zero-offload load
+                # classifies by its launched argv instead: the main model is
+                # CPU-only by construction and must read False (not None), or
+                # training needlessly unloads a server holding no VRAM.
+                _deliberate_cpu_only = gpu_memory_mode == "manual" and gpu_layers == 0
+                if _deliberate_cpu_only:
+                    self._gpu_offload_active = self._zero_offload_gpu_flag(
+                        _last_spawn_cmd, _detected_gpus
+                    )
+                else:
+                    self._gpu_offload_active = self._classify_gpu_offload(
+                        gpu_indices is not None
+                        or use_fit
+                        or gpu_memory_mode == "manual",
+                        _detected_gpus,
+                    )
+                if self._gpu_offload_active is False and not _deliberate_cpu_only:
                     logger.warning(
                         "llama-server appears to have loaded the model entirely "
                         "on CPU even though Studio detected at least one GPU. "
@@ -8070,6 +8083,22 @@ class LlamaCppBackend:
         if not detected_gpus or not expected_gpu:
             return None
         return classify_gpu_offload_lines(self._stdout_lines)
+
+    @staticmethod
+    def _zero_offload_gpu_flag(
+        spawn_cmd: list, detected_gpus: list
+    ) -> Optional[bool]:
+        """GPU-residency flag for a deliberate manual zero-offload load. The
+        main model is CPU-only by construction, but launched companions (mmproj
+        / an MTP drafter) offload to the GPU regardless of ``--gpu-layers`` --
+        and the counted-offload classifier, keyed on the main model's layer
+        line, can't see them. True when a companion is in the launched argv
+        (the server still holds VRAM, so training must unload it), False when
+        none is (nothing to free; training leaves the server alone), None
+        without a detected GPU (the existing no-signal convention)."""
+        if not detected_gpus:
+            return None
+        return any(f in spawn_cmd for f in ("--mmproj", "--model-draft"))
 
     def load_cancelled(self) -> bool:
         """True if a load was cancelled (e.g. via unload/_cancel_event) and not

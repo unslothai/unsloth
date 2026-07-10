@@ -19,6 +19,9 @@ export interface SystemGpuDevice {
   index: number;
   name: string;
   memoryTotalGb: number;
+  /** Free VRAM at fetch time. Degrades to the total when the utilization
+   * probe had no usage data; 0 only when the total is unknown too. */
+  memoryFreeGb: number;
   /**
    * "physical" = `index` is a stable physical/PCI id safe to pin via gpu_ids;
    * "relative" = an ordinal into a parent CUDA_VISIBLE_DEVICES mask, which the
@@ -88,6 +91,7 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
       index: d.index as number,
       name: d.name ?? `GPU ${d.index}`,
       memoryTotalGb: d.memory_total_gb ?? 0,
+      memoryFreeGb: d.vram_free_gb ?? 0,
       physicalIndex: d.index_kind === "physical",
     }));
 }

@@ -636,3 +636,26 @@ def test_split_pin_mirrors_hip_mask_on_rocm(monkeypatch):
     assert env["CUDA_VISIBLE_DEVICES"] == "1,3"
     assert env["HIP_VISIBLE_DEVICES"] == "1,3"
     assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+# ── Deliberate zero-offload (manual gpu_layers=0): training-skip flag ─────────
+
+
+def test_zero_offload_flag_false_without_companions():
+    # CPU-only by construction: False lets the training coordinator skip
+    # unloading a server that holds no VRAM.
+    cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0", "--fit", "off"]
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)]) is False
+
+
+@pytest.mark.parametrize("companion", ["--mmproj", "--model-draft"])
+def test_zero_offload_flag_true_with_companion(companion):
+    # mmproj / MTP drafter offload to GPU regardless of --gpu-layers, so the
+    # server still holds VRAM and training must unload it.
+    cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0", companion, "x.gguf"]
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)]) is True
+
+
+def test_zero_offload_flag_none_without_gpus():
+    cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0"]
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, []) is None

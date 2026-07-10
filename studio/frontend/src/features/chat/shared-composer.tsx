@@ -932,6 +932,22 @@ export function SharedComposer({
         return parts[parts.length - 1] || id;
       }
 
+      // The GPU/offload knobs both compare loads must use, snapshotted at Send.
+      // ensureModelLoaded runs sequentially and the first load's response echo
+      // (loadedGpuMemoryFields) rewrites the live store -- a non-GGUF or Auto
+      // first model resets gpuLayers/nCpuMoe/split/pick to defaults -- so
+      // reading the store per load would hand model 2 the first model's echoed
+      // defaults instead of the settings the user pressed Send with.
+      const compareLoadKnobs = {
+        gpuMemoryMode: store.gpuMemoryMode,
+        gpuLayers: store.gpuLayers,
+        nCpuMoe: store.nCpuMoe,
+        splitRatio: store.splitRatio,
+        selectedGpuIds: store.selectedGpuIds,
+        tensorParallel: store.tensorParallel,
+        customContextLength: store.customContextLength,
+      };
+
       // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(
         sel: CompareModelSelection,
@@ -953,9 +969,9 @@ export function SharedComposer({
         // layers the load sends 0 / the pinned context, not raw maxSeqLength).
         const compareMaxSeqLength = resolveFitMaxSeqLength(
           sel.id.toLowerCase().endsWith(".gguf") || sel.ggufVariant != null,
-          currentStore.gpuMemoryMode,
-          currentStore.gpuLayers,
-          currentStore.customContextLength,
+          compareLoadKnobs.gpuMemoryMode,
+          compareLoadKnobs.gpuLayers,
+          compareLoadKnobs.customContextLength,
           maxSeqLength,
         );
         const validation = await validateModel({
@@ -968,12 +984,12 @@ export function SharedComposer({
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
           // Size the guard against the GPUs the compare load will use.
-          gpu_ids: currentStore.selectedGpuIds ?? undefined,
+          gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
           // Manual offload too, so the guard credits a low gpu_layers pick and
           // re-checks the per-GPU split the same way the compare load does.
-          gpu_memory_mode: currentStore.gpuMemoryMode,
-          gpu_layers: currentStore.gpuLayers,
-          tensor_split: currentStore.splitRatio ?? undefined,
+          gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
+          gpu_layers: compareLoadKnobs.gpuLayers,
+          tensor_split: compareLoadKnobs.splitRatio ?? undefined,
         });
         if (
           validation.requires_trust_remote_code ||
@@ -1007,17 +1023,17 @@ export function SharedComposer({
           speculative_type: specSettings.speculativeType,
           spec_draft_n_max: specSettings.specDraftNMax,
           // Honor the Tensor Parallelism + GPU Memory choices on compare loads.
-          tensor_parallel: currentStore.tensorParallel,
-          gpu_memory_mode: currentStore.gpuMemoryMode,
-          gpu_layers: currentStore.gpuLayers,
-          n_cpu_moe: currentStore.nCpuMoe,
-          tensor_split: currentStore.splitRatio ?? undefined,
-          gpu_ids: currentStore.selectedGpuIds ?? undefined,
+          tensor_parallel: compareLoadKnobs.tensorParallel,
+          gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
+          gpu_layers: compareLoadKnobs.gpuLayers,
+          n_cpu_moe: compareLoadKnobs.nCpuMoe,
+          tensor_split: compareLoadKnobs.splitRatio ?? undefined,
+          gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
         });
         saveSpeculativeType(specSettings.speculativeType);
         // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too,
         // so an applied manual choice survives a restart.
-        persistGpuMemoryModeOnLoad(resp, currentStore.gpuMemoryMode);
+        persistGpuMemoryModeOnLoad(resp, compareLoadKnobs.gpuMemoryMode);
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,

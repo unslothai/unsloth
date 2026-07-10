@@ -774,14 +774,17 @@ export function ChatSettingsPanel({
   // Displayed per-GPU counts. splitRatio is a stable reference balance (only a
   // slider edit changes it), rescaled to the current total. Deriving it -- rather
   // than mutating it on every GPU Layers change -- keeps the balance intact when
-  // the total passes through low values or Auto. No saved split: VRAM-weighted
-  // default (mirroring llama.cpp), not yet sent.
+  // the total passes through low values or Auto. No saved split: free-VRAM-
+  // weighted default (llama.cpp's unset default splits by free VRAM, so the
+  // first slider edit starts from the placement the default would have used,
+  // not a total-VRAM ratio that can land layers on a busy GPU); total is the
+  // fallback when the utilization probe had no data. Not yet sent.
   const splitCounts =
     splitRatio && splitRatio.length === gpusInUse.length
       ? distributeByWeight(splitTotal, splitRatio)
       : distributeByWeight(
           splitTotal,
-          gpusInUseDevices.map((d) => d?.memoryTotalGb || 1),
+          gpusInUseDevices.map((d) => d?.memoryFreeGb || d?.memoryTotalGb || 1),
         );
   const setSplitCount = (k: number, v: number) =>
     setSplitRatio(rebalanceSplit(splitTotal, splitCounts, k, v));
