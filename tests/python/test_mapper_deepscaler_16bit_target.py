@@ -18,10 +18,7 @@ def _load_int_to_float_mapper():
 
 def _base_name(model_name):
     return (
-        model_name.split("/")[-1]
-        .lower()
-        .replace("-unsloth-bnb-4bit", "")
-        .replace("-bnb-4bit", "")
+        model_name.split("/")[-1].lower().replace("-unsloth-bnb-4bit", "").replace("-bnb-4bit", "")
     )
 
 
