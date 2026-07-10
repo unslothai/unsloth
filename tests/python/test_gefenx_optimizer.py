@@ -190,6 +190,41 @@ def test_build_gefenx_forwards_config_and_falls_back_to_trainer_betas(fake_gefen
     assert opt.param_groups == fake_gefen["gefen"]["params"]
 
 
+def test_extra_kwargs_reserved_keys_are_dropped(fake_gefen):
+    # Reserved keys (would collide with the builders' explicit args -> TypeError)
+    # are dropped from extra_kwargs with a warning; non-reserved keys pass through.
+    model = _FakeModel([("w", _FakeParam())])
+    config = _GefenXConfig(
+        extra_kwargs={"lr": 9.9, "weight_decay": 9.9, "codebook_refresh_every": "50"}
+    )
+    with pytest.warns(UserWarning, match="reserved key"):
+        gefenx.build_gefenx_optimizer(
+            model, config, lr=1e-4, weight_decay=0.01,
+            betas=(0.9, 0.999), eps=1e-8,
+        )
+    kw = fake_gefen["gefen"]["kwargs"]
+    # Build succeeds (no duplicate-keyword TypeError) and the reserved extra_kwargs
+    # values did NOT override the real builder args (9.9 dropped, 1e-4 / 0.01 win).
+    assert kw["lr"] == 1e-4
+    assert kw["weight_decay"] == 0.01
+    assert kw["codebook_refresh_every"] == 50            # allowed key -> coerced
+
+
+def test_muon_extra_kwargs_reserved_backup_substrings_dropped(fake_gefen):
+    model = _FakeModel([("w", _FakeParam())])
+    config = _GefenXMuonConfig(extra_kwargs={"backup_substrings": ["x"], "ns_steps": "7"})
+    with pytest.warns(UserWarning, match="reserved key"):
+        gefenx.build_gefenx_muon_optimizer(
+            model, config, lr=1e-4, weight_decay=0.0,
+            betas=(0.9, 0.999), eps=1e-8,
+        )
+    kw = fake_gefen["muon"]["kwargs"]
+    # backup_substrings is passed as an explicit arg, not via **kwargs.
+    assert "backup_substrings" not in kw
+    assert fake_gefen["muon"]["backup_substrings"] is None
+    assert kw["ns_steps"] == 7
+
+
 def test_build_gefenx_config_betas_override_and_extra_kwargs(fake_gefen):
     model = _FakeModel([("w", _FakeParam())])
     config = _GefenXConfig(
@@ -298,7 +333,10 @@ def _cuda_available():
     try:
         import torch
 
-        return torch.cuda.is_available()
+        # NVIDIA CUDA only. On ROCm/HIP torch.cuda.is_available() is also True, but
+        # the Gefen-X gate rejects HIP — so the fused tests must skip there too,
+        # otherwise they'd error on _require_nvidia_cuda() instead of skipping.
+        return torch.cuda.is_available() and getattr(torch.version, "hip", None) is None
     except Exception:
         return False
 
@@ -366,7 +404,7 @@ def test_real_gefenx_muon_updates_all_params_cpu():
     assert _num_changed(torch, before, model) == len(before)
 
 
-@pytest.mark.skipif(not _CUDA, reason="requires CUDA for the fused gefen kernels")
+@pytest.mark.skipif(not _CUDA, reason="requires NVIDIA CUDA for the fused gefen kernels")
 def test_real_gefenx_cuda_fused_updates_all_params():
     import torch
     pytest.importorskip("gefen")
@@ -384,7 +422,7 @@ def test_real_gefenx_cuda_fused_updates_all_params():
     assert _num_changed(torch, before, model) == len(before)
 
 
-@pytest.mark.skipif(not _CUDA, reason="requires CUDA for the fused gefen kernels")
+@pytest.mark.skipif(not _CUDA, reason="requires NVIDIA CUDA for the fused gefen kernels")
 def test_real_gefenx_muon_cuda_fused_updates_all_params():
     import torch
     pytest.importorskip("gefen")
@@ -465,3 +503,18 @@ def test_trainer_create_optimizer_dispatches_gefenx_muon(tmp_path):
     opt.step()
     opt.zero_grad()
     assert _num_changed(torch, before, trainer.model) == len(before)
+
+
+def test_conflicting_optimizer_configs_raise(tmp_path):
+    pytest.importorskip("unsloth")
+    from unsloth import GefenXConfig, GefenXMuonConfig
+    from unsloth.trainer import UnslothTrainingArguments
+
+    # Setting both Gefen-X configs is ambiguous (dispatch would silently pick one).
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        UnslothTrainingArguments(
+            output_dir=str(tmp_path / "conflict"),
+            gefenx_config=GefenXConfig(),
+            gefenx_muon_config=GefenXMuonConfig(),
+            report_to="none",
+        )

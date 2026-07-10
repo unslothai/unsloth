@@ -273,6 +273,26 @@ class UnslothTrainingArguments(TrainingArguments):
         self.gefenx_config = gefenx_config
         self.gefenx_muon_config = gefenx_muon_config
         self.embedding_learning_rate = embedding_learning_rate
+
+        # q_galore_config, gefenx_config and gefenx_muon_config are mutually
+        # exclusive — create_optimizer dispatches to the first one set, so
+        # supplying more than one would silently ignore the rest. Fail loudly.
+        _optimizer_configs = [
+            name
+            for name, cfg in (
+                ("q_galore_config", q_galore_config),
+                ("gefenx_config", gefenx_config),
+                ("gefenx_muon_config", gefenx_muon_config),
+            )
+            if cfg is not None
+        ]
+        if len(_optimizer_configs) > 1:
+            raise ValueError(
+                f"Unsloth: only one optimizer config may be set, but got "
+                f"{_optimizer_configs}. q_galore_config, gefenx_config and "
+                f"gefenx_muon_config are mutually exclusive."
+            )
+
         super().__init__(*args, **kwargs)
         self.embedding_learning_rate = embedding_learning_rate
 
@@ -467,7 +487,7 @@ class UnslothTrainer(SFTTrainer):
             embedding_lr = embedding_lr,
         )
         n_params = sum(
-            len(g["params"]) for g in self.optimizer.param_groups
+            p.numel() for g in self.optimizer.param_groups for p in g["params"]
         )
         print(
             f"🦥 Unsloth: Gefen-X optimizer enabled — "

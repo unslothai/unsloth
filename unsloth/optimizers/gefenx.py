@@ -23,7 +23,17 @@ definition.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Dict, List, Optional, Tuple
+
+# Keys the builders pass explicitly (positionally or by keyword) to the gefen
+# constructors. Allowing them through the ``extra_kwargs`` escape hatch would
+# duplicate a keyword argument (TypeError) or shadow ``learning_rate``, so they
+# are dropped from ``extra_kwargs`` with a warning — set them via the dedicated
+# config field / ``learning_rate`` / ``weight_decay`` instead.
+_RESERVED_EXTRA_KWARGS = frozenset(
+    {"params", "lr", "weight_decay", "backup_substrings", "backup_lr_scale"}
+)
 
 
 def _require_nvidia_cuda() -> None:
@@ -134,7 +144,14 @@ def _collect_kwargs(config, fields: Tuple[str, ...]) -> Dict[str, Any]:
             kwargs[name] = value
     extra = getattr(config, "extra_kwargs", None)
     if extra:
-        kwargs.update({k: coerce_optim_arg(v) for k, v in extra.items()})
+        for key, value in extra.items():
+            if key in _RESERVED_EXTRA_KWARGS:
+                warnings.warn(
+                    f"Unsloth: ignoring reserved key {key!r} in Gefen-X extra_kwargs; "
+                    f"set it via the config field / learning_rate / weight_decay instead."
+                )
+                continue
+            kwargs[key] = coerce_optim_arg(value)
     return kwargs
 
 
