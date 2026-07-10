@@ -2471,6 +2471,62 @@ class LlamaCppBackend:
             return None
 
     @staticmethod
+    def _emit_child_gpu_visibility(env: dict, pinned: str) -> None:
+        """Write the child's GPU visibility mask (CUDA, plus the HIP mirror on
+        ROCm, where narrowing only CUDA_VISIBLE_DEVICES leaves an AMD child
+        seeing the full set). Do NOT also set ROCR_VISIBLE_DEVICES to the same
+        value: ROCR filters at the HSA/ROCr layer and HIP at the HIP layer, so
+        setting both with the same physical indices applies the mask twice --
+        ROCR reduces the visible set and re-indexes it from 0, then HIP indexes
+        into the already-reduced set. A single non-zero pin (e.g. "1") then
+        points out of range at the HIP layer, HIP enumerates 0 devices, and
+        llama.cpp falls back to CPU ("ggml_cuda_init: no ROCm-capable device is
+        detected"). The HIP mask alone narrows correctly; clear any inherited
+        ROCR mask so it can't double up."""
+        env["CUDA_VISIBLE_DEVICES"] = pinned
+        try:
+            import torch as _torch
+            if getattr(_torch.version, "hip", None) is not None:
+                env["HIP_VISIBLE_DEVICES"] = pinned
+                env.pop("ROCR_VISIBLE_DEVICES", None)
+        except Exception as e:
+            logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
+
+    @staticmethod
+    def _pin_visible_gpu_order_for_split(env: dict) -> None:
+        """Pin the child's GPU enumeration to the picker's order for a manual
+        ``--tensor-split`` across the whole visible set. CUDA's default
+        FASTEST_FIRST enumeration applies the shares to the wrong cards on
+        heterogeneous hosts (#5025), and CUDA_DEVICE_ORDER only fixes the
+        numbering base: an inherited numeric visibility mask ALSO defines
+        enumeration order, so a reordered parent mask (CUDA_VISIBLE_DEVICES=3,1)
+        would still hand the shares to the wrong cards. The UI built the split
+        positionally over get_backend_visible_gpu_info's device list (ascending
+        physical via nvidia-smi, inherited mask order on the torch fallback), so
+        re-emit the same set in that report order -- not an assumed ascending
+        sort. The visible set itself never changes. No mask, an empty mask, or a
+        UUID/MIG mask (which resolves to None) is left alone -- the multi-GPU
+        controls are hidden for the latter."""
+        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        inherited = LlamaCppBackend._resolve_visible_physical_ids()
+        if not inherited:
+            return
+        order = None
+        try:
+            from utils.hardware import get_backend_visible_gpu_info
+
+            info = get_backend_visible_gpu_info()
+            if info.get("available") and info.get("index_kind") == "physical":
+                reported = [d["index"] for d in info.get("devices", [])]
+                if sorted(reported) == sorted(inherited):
+                    order = reported
+        except Exception as e:
+            logger.debug("Could not read reported GPU order for split pin: %s", e)
+        if order is None:
+            order = sorted(inherited)
+        LlamaCppBackend._emit_child_gpu_visibility(env, ",".join(str(i) for i in order))
+
+    @staticmethod
     def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
         """True only for AMD unified-memory APUs (gfx1150/gfx1151), where
         GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM (it
@@ -7082,42 +7138,22 @@ class LlamaCppBackend:
                 # set HIP_VISIBLE_DEVICES too. Vulkan is pinned via --device
                 # (above), not here.
                 if gpu_indices is not None and not is_vulkan_backend:
-                    pinned = ",".join(str(i) for i in gpu_indices)
-                    env["CUDA_VISIBLE_DEVICES"] = pinned
                     # When the user picked GPUs by index, align CUDA's ordering
                     # with the PCI-bus order the picker enumerated (nvidia-smi),
                     # so "GPU 1" in the UI is GPU 1 to llama.cpp -- not CUDA's
                     # default FASTEST_FIRST order (#5025).
                     if gpu_ids:
                         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-                    try:
-                        import torch as _torch
-                        if getattr(_torch.version, "hip", None) is not None:
-                            env["HIP_VISIBLE_DEVICES"] = pinned
-                            # Do NOT also set ROCR_VISIBLE_DEVICES to the same
-                            # value. ROCR_VISIBLE_DEVICES filters at the HSA/ROCr
-                            # layer and HIP_VISIBLE_DEVICES at the HIP layer, so
-                            # setting both with the same physical indices applies
-                            # the mask twice: ROCR reduces the visible set and
-                            # re-indexes it from 0, then HIP indexes into the
-                            # already-reduced set. A single non-zero pin (e.g.
-                            # "1") then points out of range at the HIP layer, HIP
-                            # enumerates 0 devices, and llama.cpp falls back to
-                            # CPU ("ggml_cuda_init: no ROCm-capable device is
-                            # detected"). The HIP mask alone narrows correctly;
-                            # clear any inherited ROCR mask so it can't double up.
-                            env.pop("ROCR_VISIBLE_DEVICES", None)
-                    except Exception as e:
-                        logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
-                elif manual_tensor_split_emitted:
+                    self._emit_child_gpu_visibility(
+                        env, ",".join(str(i) for i in gpu_indices)
+                    )
+                elif manual_tensor_split_emitted and not is_vulkan_backend:
                     # A manual per-GPU ratio across ALL GPUs (no explicit pick, so
                     # no CUDA_VISIBLE_DEVICES mask above): the UI built the
-                    # --tensor-split list in physical/PCI index order, so pin CUDA
-                    # to that order too. Without this, CUDA's default FASTEST_FIRST
-                    # enumeration applies the shares to the wrong cards on
-                    # heterogeneous hosts (#5025). The whole visible set stays in
-                    # use; only its ordering is fixed.
-                    env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+                    # --tensor-split list in ascending physical/PCI index order,
+                    # so pin the child's enumeration to that order too. The whole
+                    # visible set stays in use; only its ordering is fixed.
+                    self._pin_visible_gpu_order_for_split(env)
 
                 # Captured before any text-only fallback strips it from cmd.
                 launched_with_mmproj = "--mmproj" in cmd

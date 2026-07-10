@@ -559,3 +559,80 @@ def test_gpu_picker_filters_probe_and_masks():
     assert "gpu_indices = sorted(gpu_ids)" in src
     # Picked indices follow PCI-bus order so the UI index == llama.cpp's.
     assert 'env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"' in src
+
+
+# ── Manual tensor split: child enumeration pinned to the picker's order ──────
+
+
+def _patch_split_pin_env(monkeypatch, *, inherited, reported):
+    """Point the pin helper at a fake inherited mask and picker report.
+    ``reported`` None = enumeration unavailable (falls back to ascending)."""
+    import utils.hardware as hw
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: inherited)
+    )
+    info = (
+        {"available": False}
+        if reported is None
+        else {
+            "available": True,
+            "index_kind": "physical",
+            "devices": [{"index": i} for i in reported],
+        }
+    )
+    monkeypatch.setattr(hw, "get_backend_visible_gpu_info", lambda: info)
+
+
+def test_split_pin_reorders_inherited_numeric_mask(monkeypatch):
+    # Parent CUDA_VISIBLE_DEVICES=3,1 makes the child enumerate dev0=phys3, but
+    # nvidia-smi reported the picker's list ascending -- the mask must be
+    # re-emitted in that order or the per-GPU shares land on the wrong cards.
+    _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
+    env = {"CUDA_VISIBLE_DEVICES": "3,1"}
+    LlamaCppBackend._pin_visible_gpu_order_for_split(env)
+    assert env["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+    assert env["CUDA_VISIBLE_DEVICES"] == "1,3"
+
+
+def test_split_pin_keeps_mask_order_when_picker_reported_it(monkeypatch):
+    # Torch-fallback enumeration (no nvidia-smi) reports devices in inherited
+    # mask order, so the picker's split list follows the mask -- the pin must
+    # keep that order, not re-sort it into a mismatch.
+    _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [3, 1])
+    env = {"CUDA_VISIBLE_DEVICES": "3,1"}
+    LlamaCppBackend._pin_visible_gpu_order_for_split(env)
+    assert env["CUDA_VISIBLE_DEVICES"] == "3,1"
+
+
+def test_split_pin_falls_back_to_ascending_without_report(monkeypatch):
+    # Enumeration unavailable: ascending physical is the best guess (it matches
+    # the dominant nvidia-smi report order).
+    _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = None)
+    env = {"CUDA_VISIBLE_DEVICES": "3,1"}
+    LlamaCppBackend._pin_visible_gpu_order_for_split(env)
+    assert env["CUDA_VISIBLE_DEVICES"] == "1,3"
+
+
+def test_split_pin_without_mask_only_sets_pci_order(monkeypatch):
+    # No inherited mask (or a UUID/MIG one resolving to None): enumeration order
+    # is fully fixed by CUDA_DEVICE_ORDER, so no mask is written.
+    _patch_split_pin_env(monkeypatch, inherited = None, reported = None)
+    env = {}
+    LlamaCppBackend._pin_visible_gpu_order_for_split(env)
+    assert env == {"CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
+
+
+def test_split_pin_mirrors_hip_mask_on_rocm(monkeypatch):
+    # ROCm: the pin must land in HIP_VISIBLE_DEVICES too, and an inherited ROCR
+    # mask is cleared so the mask can't apply twice (ROCR re-indexes, then HIP
+    # would index into the already-reduced set).
+    _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = "6.0")
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    env = {"CUDA_VISIBLE_DEVICES": "3,1", "ROCR_VISIBLE_DEVICES": "3,1"}
+    LlamaCppBackend._pin_visible_gpu_order_for_split(env)
+    assert env["CUDA_VISIBLE_DEVICES"] == "1,3"
+    assert env["HIP_VISIBLE_DEVICES"] == "1,3"
+    assert "ROCR_VISIBLE_DEVICES" not in env

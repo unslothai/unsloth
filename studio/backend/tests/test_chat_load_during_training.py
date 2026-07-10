@@ -168,11 +168,13 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         devices,
         required_override = None,
         estimate = None,
+        gpu_ids = None,
     ):
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
             patch("utils.hardware.estimate_required_model_memory_gb", return_value = (estimate, {})),
             patch("utils.hardware.get_visible_gpu_utilization", return_value = {"devices": devices}),
+            patch("utils.hardware.resolve_requested_gpu_ids", return_value = list(gpu_ids or [])),
             patch("utils.hardware.auto_select_gpu_ids") as auto_mock,
         ):
             ok, info = tv.can_load_chat_during_training(
@@ -180,7 +182,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
                 hf_token = None,
                 load_in_4bit = True,
                 max_seq_length = 0,
-                requested_gpu_ids = None,
+                requested_gpu_ids = gpu_ids,
                 is_gguf = True,
                 required_override_gb = required_override,
             )
@@ -197,6 +199,18 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         # places, so the per-GPU floor that would block HF doesn't apply -> allow.
         ok, _, _ = self._run(devices = _devices((0, 80, 35), (1, 80, 70)), required_override = 20.0)
         self.assertTrue(ok)
+
+    def test_no_per_gpu_floor_for_gguf_explicit_pick(self):
+        # Same free [45, 10] shape, but with the GPUs pinned via gpu_ids. llama.cpp
+        # still self-places by free VRAM within the allowed set, so the HF
+        # balanced-shard floor (27/2 = 13.5 > 10) must not fire -> allow.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70)),
+            required_override = 20.0,
+            gpu_ids = [0, 1],
+        )
+        self.assertTrue(ok)
+        self.assertEqual(info["mode"], "explicit")
 
     def test_estimate_unavailable_refuses(self):
         # No override and the estimator can't size it -> default-deny.

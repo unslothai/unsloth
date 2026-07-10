@@ -281,10 +281,12 @@ def can_load_chat_during_training(
         aggregate_fits = usable_gb >= needed_gb
 
         # device_map="balanced" shards across GPUs: an even-share floor stops one
-        # near-full GPU hiding behind aggregate capacity. GGUF self-places, no floor.
+        # near-full GPU hiding behind aggregate capacity. GGUF self-places (llama.cpp
+        # splits by free VRAM within the allowed set), so no floor even when the
+        # request pins explicit gpu_ids.
         min_free_gb = min(free_vals)
         per_gpu_fits = True
-        if mode == "explicit" and len(free_vals) > 1:
+        if mode == "explicit" and not is_gguf and len(free_vals) > 1:
             per_gpu_fits = min_free_gb >= needed_gb / len(free_vals)
 
         return aggregate_fits and per_gpu_fits, {
