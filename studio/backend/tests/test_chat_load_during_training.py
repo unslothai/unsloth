@@ -718,7 +718,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             main_gb, companion_gb = self.route._estimate_gguf_required_gb(cfg, hf_token = "tok")
         self.assertEqual(captured["token"], "tok")  # token threaded for gated repos
         self.assertAlmostEqual(main_gb, 10.0, places = 6)  # full remote (not downloaded)
-        self.assertAlmostEqual(companion_gb, 2.0, places = 6)
+        factor = self.route.LlamaCppBackend._MMPROJ_VRAM_SAFETY
+        self.assertAlmostEqual(companion_gb, int(2 * 1024**3 * factor) / (1024**3), places = 6)
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
 
     def test_mtp_runtime_overhead_charged_when_spec_may_engage(self):
@@ -747,6 +748,43 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 )
         # config MTP file (500 B) + the 3 GiB runtime reserve.
         self.assertAlmostEqual(companion_auto, 500 / (1024**3) + 3.0, places = 6)
+
+    def test_uncached_remote_mtp_repo_denies(self):
+        # An uncached remote MTP repo has no header to size the MTP overhead
+        # (draft KV + an MLA target-KV copy), so default-deny rather than
+        # under-estimate; a non-MTP repo of the same shape is allowed.
+        import utils.models.model_config as mc
+
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+        mtp_cfg = SimpleNamespace(
+            identifier = "unsloth/GLM-5.2-MTP-GGUF",
+            gguf_file = None, gguf_mmproj_file = None, gguf_mtp_file = None,
+            gguf_hf_repo = "unsloth/GLM-5.2-MTP-GGUF", gguf_variant = "Q4_K_M",
+        )
+        plain_cfg = SimpleNamespace(
+            identifier = "unsloth/gemma-4-E2B-it-GGUF",
+            gguf_file = None, gguf_mmproj_file = None, gguf_mtp_file = None,
+            gguf_hf_repo = "unsloth/gemma-4-E2B-it-GGUF", gguf_variant = "Q4_K_M",
+        )
+        with (
+            patch.object(mc, "list_gguf_variants", return_value = ([variant], False)),
+            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
+            patch("hub.utils.gguf.resolve_local_gguf_path", return_value = None),
+        ):
+            # spec auto (may engage MTP) + MTP-named uncached repo -> deny.
+            self.assertIsNone(
+                self.route._estimate_gguf_required_gb(mtp_cfg, speculative_type = "auto")
+            )
+            # spec off never engages MTP -> allowed.
+            main_off, _ = self.route._estimate_gguf_required_gb(
+                mtp_cfg, speculative_type = "off"
+            )
+            self.assertAlmostEqual(main_off, 10.0, places = 6)
+            # non-MTP repo -> allowed even under auto.
+            main_plain, _ = self.route._estimate_gguf_required_gb(
+                plain_cfg, speculative_type = "auto"
+            )
+            self.assertAlmostEqual(main_plain, 10.0, places = 6)
 
     def test_unsized_remote_vision_companion_denies(self):
         # A VLM's mmproj is required and GPU-resident; if the repo listing can't
@@ -867,7 +905,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # config MTP (3000) + extras drafter (500), both charged in full.
         self.assertAlmostEqual(companion_gb, 3500 / (1024**3), places = 9)
 
-    def test_companions_charged_in_full_regardless_of_mode(self):
+    def test_mmproj_charged_with_runtime_safety_factor(self):
         # A projector / drafter is GPU-resident no matter the spec mode or CPU
         # flags -- the conservative bound charges it, over-refusing at worst.
         import tempfile
@@ -883,13 +921,13 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
             ):
                 # --no-mmproj / spec off do NOT change the charge (upper bound).
-                _, companion_off = self.route._estimate_gguf_required_gb(
-                    cfg,
-                    llama_extra_args = ["--no-mmproj"],
-                    gpu_memory_mode = "manual",
-                    gpu_layers = 0,
+                _, companion = self.route._estimate_gguf_required_gb(
+                    cfg, gpu_memory_mode = "manual", gpu_layers = 0
                 )
-        self.assertAlmostEqual(companion_off, 600 / (1024**3), places = 9)
+        # mmproj charged at the vision runtime factor (~1.4x its file size),
+        # matching the loader's _MMPROJ_VRAM_SAFETY.
+        factor = self.route.LlamaCppBackend._MMPROJ_VRAM_SAFETY
+        self.assertAlmostEqual(companion, int(600 * factor) / (1024**3), places = 9)
 
     def test_unsizable_extras_drafter_denies(self):
         # An HF-repo drafter can't be sized pre-download -> None (default-deny).
@@ -925,7 +963,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 cfg, gpu_memory_mode = "manual", gpu_layers = 0
             )
         self.assertEqual(main_gb, 0.0)
-        self.assertAlmostEqual(companion_gb, 1.0, places = 6)
+        factor = self.route.LlamaCppBackend._MMPROJ_VRAM_SAFETY
+        self.assertAlmostEqual(companion_gb, int(1024**3 * factor) / (1024**3), places = 6)
 
     def test_manual_scales_cached_hf_repo_by_gpu_layer_fraction(self):
         # A cached repo id is local in all but name; scale its main from the

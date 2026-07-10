@@ -1090,6 +1090,17 @@ export function SharedComposer({
           loadedTensorParallel: resp.tensor_parallel ?? false,
           customContextLength: keepCustomCtx,
           loadedCustomContextLength: keepCustomCtx,
+          // Seed the loaded GGUF context (interactive/auto-load parity): the
+          // settings sheet keys the GGUF GPU controls off it for a direct .gguf
+          // with no variant, and a later Apply reads it as the resolved context.
+          ...(targetIsGguf
+            ? {
+                ggufContextLength: resp.context_length ?? 131072,
+                ggufMaxContextLength:
+                  resp.max_context_length ?? resp.context_length ?? 131072,
+                ggufNativeContextLength: resp.native_context_length ?? null,
+              }
+            : { ggufContextLength: null }),
           ...loadedGpuMemoryFields(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the
           // GPU fields on every load path so the gate can't read stale.

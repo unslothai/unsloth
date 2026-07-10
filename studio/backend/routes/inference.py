@@ -3447,6 +3447,20 @@ def _estimate_gguf_kv_gb(
         return 0.0
 
 
+def _mtp_may_engage(
+    speculative_type: Optional[str], llama_extra_args: Optional[list[str]]
+) -> bool:
+    """Whether the launch may run MTP speculative decoding: auto/mtp/mtp+ngram
+    engage it, off/ngram/ngram-simple never do. Extras that set --spec-type own
+    the mode (a user -md drafter is still in play), so don't gate those out."""
+    from core.inference.llama_cpp import _canonicalize_spec_mode, _extra_args_set_spec_type
+
+    if _extra_args_set_spec_type(llama_extra_args):
+        return True
+    mode = _canonicalize_spec_mode(speculative_type) or "auto"
+    return mode not in ("off", "ngram", "ngram-simple")
+
+
 def _gguf_mtp_overhead_gb(
     local_path: str,
     config: ModelConfig,
@@ -3462,20 +3476,11 @@ def _gguf_mtp_overhead_gb(
     -- reusing the loader's own _estimate_mtp_overhead_bytes so the guard matches
     it. 0 when MTP won't engage (spec off / ngram) or the model isn't MTP-capable."""
     try:
-        from core.inference.llama_cpp import (
-            _canonicalize_spec_mode,
-            _extra_args_mtp_draft_path,
-            _extra_args_set_spec_type,
-        )
+        from core.inference.llama_cpp import _extra_args_mtp_draft_path
         from core.inference.llama_server_args import parse_ctx_override
 
-        # MTP engages under auto/mtp/mtp+ngram; off/ngram/ngram-simple never do.
-        # Extras that set --spec-type own the mode (a user -md is still charged
-        # below), so don't gate those out.
-        if not _extra_args_set_spec_type(llama_extra_args):
-            mode = _canonicalize_spec_mode(speculative_type) or "auto"
-            if mode in ("off", "ngram", "ngram-simple"):
-                return 0.0
+        if not _mtp_may_engage(speculative_type, llama_extra_args):
+            return 0.0
 
         probe = LlamaCppBackend()
         probe._read_gguf_metadata(local_path)
@@ -3603,11 +3608,15 @@ def _estimate_gguf_required_gb(
         # Companions always land on the GPU regardless of --gpu-layers, so
         # charge every declared/extras one in full. An extras drafter that isn't
         # a readable local file (an HF-repo form) can't be sized -> default-deny.
+        # mmproj allocates more VRAM than its file (vision runtime buffers); the
+        # loader charges _MMPROJ_VRAM_SAFETY (~1.4x), so mirror it here.
+        mmproj_factor = LlamaCppBackend._MMPROJ_VRAM_SAFETY
         companion_bytes = 0
         for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
-                companion_bytes += Path(f).stat().st_size
+                size = Path(f).stat().st_size
+                companion_bytes += int(size * mmproj_factor) if attr == "gguf_mmproj_file" else size
         draft_path = _extra_args_mtp_draft_path(llama_extra_args)
         if draft_path:
             if Path(draft_path).is_file():
@@ -3644,6 +3653,10 @@ def _estimate_gguf_required_gb(
                 if has_vision:
                     return None
                 remote_companions = 0
+            # Charge the vision runtime factor on the remote companions too (the
+            # root-mtp share also getting it is a safe over-estimate).
+            if has_vision:
+                remote_companions = int(remote_companions * mmproj_factor)
             companion_bytes += remote_companions
             cached = None
             if not zero_offload:
@@ -3667,6 +3680,15 @@ def _estimate_gguf_required_gb(
             companion_gb += _gguf_mtp_overhead_gb(
                 local_main, config, max_seq_length, llama_extra_args, n_parallel, speculative_type
             )
+        elif repo and _mtp_may_engage(speculative_type, llama_extra_args):
+            # Uncached remote GGUF: no header to size the MTP overhead. An MLA
+            # MTP repo (draft KV + a duplicated target-KV copy) can allocate GiB
+            # the guard can't verify, so default-deny an MTP-named repo rather
+            # than under-estimate; the user loads it once (caches it) and the
+            # local branch then sizes it exactly.
+            ident = f"{getattr(config, 'identifier', '') or ''} {repo}".lower()
+            if "mtp" in ident:
+                return None
         return main_gb, companion_gb
     except Exception as e:
         logger.warning(f"Could not size GGUF model for training guard: {e}")
