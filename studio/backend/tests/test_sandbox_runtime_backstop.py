@@ -296,6 +296,50 @@ def test_sandboxed_low_level_sqlite3_connect_escape_denied(tmp_path):
 
 
 @_POSIX_ONLY
+def test_sandboxed_sqlite3_uri_percent_encoded_escape_denied(tmp_path):
+    # SQLite percent-decodes the URI filename, so an encoded absolute path (file:%2Ftmp%2Fx,
+    # uri=True) must be decoded before the workdir check or it slips through as relative-looking.
+    target = tmp_path / "uri_escape.db"
+    enc = str(target).replace("/", "%2F")
+    out = _python_exec(
+        f"import sqlite3; sqlite3.connect('file:{enc}', uri=True); print('OPENED')",
+        None,
+        30,
+        "backstop-sqlite-uri-escape",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
+
+
+def test_sandboxed_sqlite3_uri_local_allowed():
+    # A workdir-local file: URI (no escaping percent-decode) still opens.
+    out = _python_exec(
+        "import sqlite3\n"
+        "c = sqlite3.connect('file:uri_local.db', uri=True)\n"
+        "c.execute('create table if not exists t(x)'); c.close(); print('URI_OK')",
+        None,
+        30,
+        "backstop-sqlite-uri-local",
+        disable_sandbox = False,
+    )
+    assert "URI_OK" in out
+    assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_getattr_gadget_dunder_workdir_module_denied():
+    # A workdir helper recovering the guard wrapper's original open via a getattr gadget dunder
+    # (getattr(open, '__closure__')) must be refused by the vetter, like the direct attribute form.
+    _assert_workdir_module_denied(
+        "backstop-workdir-getattr-gadget",
+        "gadgetdunder",
+        "C = getattr(open, '__closure__')\nprint('GADGET_RAN')\n",
+        "GADGET_RAN",
+    )
+
+
+@_POSIX_ONLY
 def test_sandboxed_os_rename_dir_fd_denied(tmp_path):
     # os.rename / os.replace with src_dir_fd / dst_dir_fd is fd-relative; a string
     # realpath against cwd cannot confine it (the relative names look local), so the

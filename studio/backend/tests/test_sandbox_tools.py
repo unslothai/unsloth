@@ -5000,3 +5000,85 @@ class TestRound50Bypasses:
     )
     def test_round50_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound51Bypasses:
+    """Fifty-first-round Codex findings: dynamic / os.environb / os.environ.update PATH mutations,
+    sqlite shell + pipe dot-commands, and find -exec over an escaping root in a subprocess argv.
+    (The sqlite URI percent-decode and the getattr gadget-dunder helper are runtime concerns,
+    covered in test_sandbox_runtime_backstop.py.)"""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A non-literal PATH value that prepends a relative / cwd entry.
+            "import os, subprocess\nos.environ['PATH'] = '.:' + os.environ['PATH']\nsubprocess.run(['evil'])",
+            "import os, subprocess\nos.environ['PATH'] = f'.:{os.environ[\"PATH\"]}'\nsubprocess.run(['evil'])",
+        ],
+    )
+    def test_dynamic_path_mutation_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # os.environb byte-key mutations are the same inherited environment as os.environ.
+            "import os, subprocess\nos.environb[b'PATH'] = b'.:/usr/bin'\nsubprocess.run(['evil'])",
+            "import os, subprocess\nos.environb[b'BASH_ENV'] = b'e.sh'\nsubprocess.run(['bash','-c','echo hi'])",
+        ],
+    )
+    def test_environb_mutation_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # os.environ.update(...) / .setdefault(...) mapping mutators reach PATH too.
+            "import os, subprocess\nos.environ.update({'PATH': '.:/usr/bin'})\nsubprocess.run(['evil'])",
+            "import os, subprocess\nos.environ.update(PATH='.:/usr/bin')\nsubprocess.run(['evil'])",
+            "import os, subprocess\nos.environ.setdefault('PATH', '.:/usr/bin')\nsubprocess.run(['evil'])",
+        ],
+    )
+    def test_environ_update_mutation_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # sqlite .shell / .system run a system shell; .output |CMD opens a pipe (a shell cmd).
+            "import os\nos.system(\"sqlite3 ':memory:' '.shell touch /tmp/x'\")",
+            "import os\nos.system(\"sqlite3 ':memory:' '.system rm -rf /'\")",
+            "import os\nos.system(\"sqlite3 local.db '.output |touch /tmp/x' 'select 1;'\")",
+        ],
+    )
+    def test_sqlite_shell_dotcommand_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # find -exec reader over an escaping root, expressed as a subprocess argv vector.
+            "import subprocess\nsubprocess.run(['find','/etc','-maxdepth','1','-name','passwd','-exec','cat','{}',';'])",
+            "import subprocess\nsubprocess.run(['find','/','-name','id_rsa','-exec','head','{}',';'])",
+        ],
+    )
+    def test_find_exec_argv_escaping_root_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A dynamic ABSOLUTE PATH extension, a benign environb / update var, a local sqlite
+            # .output / .dump, and a workdir-scoped find -exec argv all stay allowed.
+            "import os, subprocess\nos.environ['PATH'] = '/usr/local/bin:' + os.environ['PATH']\nsubprocess.run(['ls'])",
+            "import os, subprocess\nos.environ['MYVAR'] = 'a' + 'b'\nsubprocess.run(['ls'])",
+            "import os, subprocess\nos.environb[b'MYVAR'] = b'x'\nsubprocess.run(['ls'])",
+            "import os, subprocess\nos.environ.update({'MYVAR': 'x'})\nsubprocess.run(['ls'])",
+            "import os, subprocess\nos.environ.update({'PATH': '/usr/bin:/bin'})\nsubprocess.run(['ls'])",
+            "import os\nos.system(\"sqlite3 ':memory:' '.output out.txt' 'select 1;'\")",
+            "import os\nos.system(\"sqlite3 local.db '.dump'\")",
+            "import subprocess\nsubprocess.run(['find','.','-name','*.py','-exec','cat','{}',';'])",
+        ],
+    )
+    def test_round51_benign_allowed(self, code):
+        _ok(code)

@@ -301,6 +301,10 @@ _SQLITE_DOTFILE_RE = re.compile(
     r"(?m)^\s*\.(?:output|once|excel|import|backup|save|dump|clone|log|read)\b\s+(?:-{1,2}\S+\s+)*"
     r"(?P<f>(?:'[^']*'|\"[^\"]*\"|\S+))"
 )
+# sqlite3 dot-commands that RUN a system shell command in the unguarded child: `.shell CMD` /
+# `.system CMD` ("Run CMD ARGS... in a system shell"), and `.excel` (opens the result in a
+# system program). These execute regardless of any path check, so match the command itself.
+_SQLITE_SHELL_RE = re.compile(r"(?m)^\s*\.(?:shell|system|excel)\b")
 # sqlite3 CLI options that consume a SEPARATED operand (so the value after them is NOT the
 # database filename). Only -init also reads a file (its value is path-checked at the call site).
 _SQLITE_OPERAND_OPTS = frozenset(
@@ -464,6 +468,58 @@ def _path_value_is_unsafe(value: str, assignments = None) -> bool:
         if e.startswith(("/", "%")):
             continue
         return True  # a relative directory (relbin, ./tools)
+    return False
+
+
+def _dynamic_path_value_unsafe(value_node, env) -> bool:
+    """A NON-literal PATH assignment value (os.environ['PATH'] = '.:' + os.environ['PATH'],
+    f'.:{x}') is unsafe when a COMPLETE, fully-literal PATH entry it contributes is a relative /
+    cwd / empty entry. Operands are const-folded; an OPAQUE segment (os.environ['PATH'], a
+    variable) taints only the entry that spans it, so a dynamic ABSOLUTE extension
+    (venv + ':' + $PATH, '/usr/local/bin:' + $PATH) stays allowed. Returns True only for a
+    provable unsafe entry -- the folded literal case is handled by the caller."""
+    segments: list = []  # ("lit", str) or ("opaque",)
+
+    def _flatten(n):
+        folded = _const_fold(n, env)
+        if isinstance(folded, str):
+            segments.append(("lit", folded))
+            return
+        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add):
+            _flatten(n.left)
+            _flatten(n.right)
+            return
+        if isinstance(n, ast.JoinedStr):
+            for _p in n.values:
+                if isinstance(_p, ast.Constant) and isinstance(_p.value, str):
+                    segments.append(("lit", _p.value))
+                else:
+                    _fv = _const_fold(getattr(_p, "value", _p), env)
+                    segments.append(("lit", _fv) if isinstance(_fv, str) else ("opaque",))
+            return
+        segments.append(("opaque",))
+
+    _flatten(value_node)
+    entries: list = []  # (text, complete, tainted)
+    cur = ""
+    tainted = False
+    for seg in segments:
+        if seg[0] == "opaque":
+            tainted = True
+            continue
+        parts = seg[1].split(":")
+        for j, part in enumerate(parts):
+            if j == 0:
+                cur += part
+            else:
+                entries.append((cur, True, tainted))
+                cur = part
+                tainted = False
+    _last_opaque = bool(segments) and segments[-1][0] == "opaque"
+    entries.append((cur, not _last_opaque, tainted))
+    for text, complete, taint in entries:
+        if complete and not taint and _path_value_is_unsafe(text):
+            return True
     return False
 
 
@@ -1928,11 +1984,17 @@ def _find_blocked_commands(command: str) -> set[str]:
             _unq = t
             if len(_unq) >= 2 and _unq[0] == _unq[-1] and _unq[0] in ("'", '"'):
                 _unq = _unq[1:-1]
+            # .shell CMD / .system CMD run an arbitrary command in the unguarded child shell.
+            if _SQLITE_SHELL_RE.search(_unq):
+                blocked.add("sqlite3-shell")
             for _m in _SQLITE_DOTFILE_RE.finditer(_unq):
                 _dot_f = _m.group("f")
                 if len(_dot_f) >= 2 and _dot_f[0] == _dot_f[-1] and _dot_f[0] in ("'", '"'):
                     _dot_f = _dot_f[1:-1]
-                if _dot_f not in ("stdout", "stderr", "off") and _git_operand_escapes(
+                # .output |CMD / .once |CMD open CMD as a PIPE (a shell command), not a file.
+                if _dot_f.startswith("|"):
+                    blocked.add("sqlite3-shell")
+                elif _dot_f not in ("stdout", "stderr", "off") and _git_operand_escapes(
                     _dot_f, _local_assigns
                 ):
                     blocked.add("sqlite3-write-outside")
@@ -6609,6 +6671,19 @@ def _check_signal_escape_patterns(
             return node.value
         return None
 
+    def _extract_env_scalar(node):
+        """A str constant, or a bytes constant decoded to str (os.environb byte keys / values are
+        the same inherited environment as os.environ), else None."""
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, str):
+                return node.value
+            if isinstance(node.value, (bytes, bytearray)):
+                try:
+                    return bytes(node.value).decode("utf-8", "surrogateescape")
+                except Exception:
+                    return None
+        return None
+
     def _extract_strings_from_list(node):
         """Extract string elements from an AST List or Tuple node."""
         if isinstance(node, (ast.List, ast.Tuple)):
@@ -7419,30 +7494,39 @@ def _check_signal_escape_patterns(
                     return True
             return False
 
-        def _environ_subscript_key(self, target):
-            # The literal key of an os.environ[...] (or a bare `environ[...]` from
-            # `from os import environ`) subscript assignment target; None otherwise.
-            if not isinstance(target, ast.Subscript):
-                return None
-            _v = target.value
-            _is_environ = (
+        def _is_environ_receiver(self, _v):
+            # os.environ / os.environb (or a bare `environ` / `environb` from `from os import ...`).
+            # environb is the SAME inherited process environment via byte keys/values.
+            return (
                 isinstance(_v, ast.Attribute)
-                and _v.attr == "environ"
+                and _v.attr in ("environ", "environb")
                 and isinstance(_v.value, ast.Name)
                 and _v.value.id in self.os_aliases
-            ) or (isinstance(_v, ast.Name) and _v.id == "environ")
-            if not _is_environ:
+            ) or (isinstance(_v, ast.Name) and _v.id in ("environ", "environb"))
+
+        def _environ_subscript_key(self, target):
+            # The literal key of an os.environ[...] / os.environb[...] (or a bare environ[...] /
+            # environb[...]) subscript assignment target; None otherwise. A bytes key is decoded.
+            if not isinstance(target, ast.Subscript):
                 return None
-            return _extract_string_from_node(target.slice)
+            if not self._is_environ_receiver(target.value):
+                return None
+            return _extract_env_scalar(target.slice)
 
         def _env_mutation_escape(self, key, value_node):
             # A short reason when setting env var ``key`` to ``value_node`` is a child-escape
             # prelude (mirrors the subprocess env={...} mapping analysis), else None. The mutated
             # process environment is inherited by a later unguarded child.
-            _vs = _extract_string_from_node(value_node)
+            _vs = _extract_env_scalar(value_node)
             if key == "PATH":
-                if isinstance(_vs, str) and _path_value_is_unsafe(_vs):
-                    return "PATH set to a relative / cwd entry (a bare argv resolves to a workdir exec)"
+                if isinstance(_vs, str):
+                    if _path_value_is_unsafe(_vs):
+                        return "PATH set to a relative / cwd entry (a bare argv resolves to a workdir exec)"
+                    return None
+                # A non-literal PATH value that provably prepends / embeds a relative / cwd entry
+                # ('.:' + os.environ['PATH'], f'.:{x}'); a dynamic ABSOLUTE extension stays allowed.
+                if _dynamic_path_value_unsafe(value_node, _const_env):
+                    return "PATH prepends a relative / cwd entry (dynamic value)"
                 return None
             if key in ("BASH_ENV", "ENV"):
                 return None if _vs == "" else "a shell startup file a child shell sources"
@@ -7517,6 +7601,40 @@ def _check_signal_escape_patterns(
             if _mc_rewrite is not None:
                 self.visit_Call(_mc_rewrite)
                 return
+            # os.environ.update({'PATH': '.:...'}) / .update(PATH='...') / .setdefault('PATH', ...)
+            # (and the os.environb byte forms) mutate the inherited environment WITHOUT a subscript
+            # assignment, the same child escape as os.environ['PATH'] = ...; run each (key, value)
+            # pair through the mutation policy.
+            _mf = node.func
+            if isinstance(_mf, ast.Attribute) and _mf.attr in ("update", "setdefault"):
+                if self._is_environ_receiver(_mf.value):
+                    _pairs = []
+                    if _mf.attr == "setdefault" and len(node.args) >= 2:
+                        _sk = _extract_env_scalar(node.args[0])
+                        if _sk is not None:
+                            _pairs.append((_sk, node.args[1]))
+                    elif _mf.attr == "update":
+                        if node.args and isinstance(node.args[0], ast.Dict):
+                            for _kn, _vn in zip(node.args[0].keys, node.args[0].values):
+                                if _kn is not None:
+                                    _dk = _extract_env_scalar(_kn)
+                                    if _dk is not None:
+                                        _pairs.append((_dk, _vn))
+                        for _kw in node.keywords:
+                            if _kw.arg is not None:
+                                _pairs.append((_kw.arg, _kw.value))
+                    for _pk, _pvn in _pairs:
+                        _preason = self._env_mutation_escape(_pk, _pvn)
+                        if _preason is not None:
+                            shell_escapes.append(
+                                {
+                                    "type": "shell_escape",
+                                    "line": getattr(node, "lineno", -1),
+                                    "description": (
+                                        f"os.environ.{_mf.attr}({_pk!r}) mutation: {_preason}"
+                                    ),
+                                }
+                            )
             if self._is_unbound_mro_gadget(node):
                 # type.mro(io.FileIO) / type.__getattribute__(io.FileIO, '__mro__') /
                 # getattr(io.FileIO, 'mro'): reaches the unguarded MRO without a .mro / .__mro__
@@ -10171,6 +10289,31 @@ def _check_signal_escape_patterns(
                                 break
                 if _argv0:
                     return
+            # A `find` child-exec argv (subprocess.run(['find','/etc','-name','passwd','-exec',
+            # 'cat','{}',';'])) reads host files the flat per-element scan misses: the {} placeholder
+            # loses the escaping search root. Reconstruct the argv from the find command word into a
+            # shell string and run it through the read scanner, which carries the find-root + -exec
+            # logic. Only when every reconstructed element folds to a literal (else best-effort skip).
+            if _is_child_exec:
+                _fargv = node.args[0] if node.args else None
+                if _fargv is None:
+                    for _name, _val in _iter_call_kwargs(node):
+                        if _name == "args":
+                            _fargv = _val
+                            break
+                if isinstance(_fargv, (ast.List, ast.Tuple)):
+                    _ffolded = [_fold_read_arg(_e) for _e in _fargv.elts]
+                    _fci = _argv_command_word_index(_ffolded)
+                    if (
+                        _fci is not None
+                        and isinstance(_ffolded[_fci], str)
+                        and os.path.basename(_ffolded[_fci]).lower() == "find"
+                        and all(isinstance(_x, str) for _x in _ffolded[_fci:])
+                    ):
+                        _freason = _command_reads_sensitive(shlex.join(_ffolded[_fci:]))
+                        if _freason is not None:
+                            _fs_block(node, f"find child-exec reads a host file ({_freason})")
+                            return
             # Pathlib read on a Path(...) / join receiver: check the resolved path.
             if isinstance(f, ast.Attribute) and f.attr in _PATHLIB_READ_METHODS:
                 rp = _pathlib_receiver_path(f.value)
@@ -10910,6 +11053,15 @@ try:
                 if _pth.startswith("//"):
                     _slash = _pth.find("/", 2)
                     _pth = _pth[_slash:] if _slash != -1 else ""
+                # SQLite percent-decodes the URI filename (file:%2Ftmp%2Fx -> /tmp/x), so decode
+                # BEFORE the workdir check -- otherwise an encoded absolute path passes _within()
+                # as a relative-looking string while SQLite opens the escaping path. Use the
+                # captured _bi.chr / _bi.int so a sandboxed rebind of chr/int cannot skew the decode.
+                _pth = _re.sub(
+                    "%([0-9A-Fa-f]{2})",
+                    lambda _m: _bi.chr(_bi.int(_m.group(1), 16)),
+                    _pth,
+                )
                 return _within(_pth)
         return _within(_db)
 
@@ -11256,6 +11408,13 @@ try:
                         if _grecv in _obf:
                             return True
                     else:
+                        # An introspection / frame gadget dunder via getattr reaches an escape on
+                        # ANY receiver -- getattr(open, '__closure__'), getattr(cell,
+                        # 'cell_contents') recover the guard wrapper's original unguarded open --
+                        # so reject the gadget name regardless of receiver (mirrors the direct
+                        # attribute check below).
+                        if _gname in _GUARD_GADGET_ATTRS:
+                            return True
                         if _grecv in _recv and _gname in _GUARD_EXEC_ATTRS:
                             return True
                         if _grecv in _bi and _gname in ("eval", "exec", "compile", "__import__"):
