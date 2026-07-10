@@ -32,6 +32,7 @@ def apply_completion_masking(
     train_fn,
     num_proc = None,
     notify = None,
+    detect_fn = None,
 ):
     """Apply completion-only masking with auto-detection first and the manual
     template table as fallback.
@@ -39,21 +40,23 @@ def apply_completion_masking(
     Args:
         trainer: The platform trainer (SFTTrainer or MLXTrainer).
         model_name: Model repo id used for table lookup and gpt-oss detection.
-        train_fn: The platform train_on_responses_only callable. Called with
-            no marker arguments to auto-detect from the chat template
-            (unsloth_zoo.get_chat_template_parts), which raises loudly when
-            the template cannot be parsed.
+        train_fn: The platform train_on_responses_only callable.
         num_proc: Forwarded to train_fn when not None (CUDA path only).
         notify: Optional callback notify(level, message) with level "info" or
             "warning" for user-visible progress and warnings.
+        detect_fn: Marker detector (tokenizer/processor) -> (instruction_part,
+            response_part). Defaults to unsloth_zoo's get_chat_template_parts,
+            which raises loudly when the template cannot be parsed. Test seam.
 
     Returns:
         (trainer, applied): the possibly wrapped trainer and whether masking
         was applied. When applied is False the trainer is unchanged and
         training runs on full sequences.
 
-    Exceptions from the manual fallback propagate to the caller; exceptions
-    from the auto attempt are caught and trigger the fallback.
+    Only marker DETECTION failures trigger the table fallback. Exceptions
+    raised while applying the masking (dataset map, tokenization) propagate
+    to the caller in both the auto and manual paths, so a real failure stops
+    the run instead of silently changing the training objective.
     """
     if notify is None:
         notify = lambda level, message: None
@@ -67,19 +70,40 @@ def apply_completion_masking(
     # tokens stay trained, whereas auto-detection would mask them. Preserve
     # the current trained behavior.
     if not is_gpt_oss_model_name(model_name):
-        try:
+        processor = getattr(trainer, "processing_class", None) or getattr(trainer, "tokenizer", None)
+        inner = getattr(processor, "tokenizer", processor)
+        if hasattr(inner, "_unsloth_input_part") and hasattr(inner, "_unsloth_output_part"):
+            # Markers preset on the tokenizer (e.g. by get_chat_template); zoo
+            # reuses them when called bare. Application errors propagate.
             trainer = train_fn(trainer, **kwargs)
             notify(
                 "info",
-                "Train on responses only configured via chat template auto-detection",
+                "Train on responses only configured via tokenizer preset markers",
             )
             return trainer, True
+        auto_instruction = auto_response = None
+        try:
+            if detect_fn is None:
+                from unsloth_zoo.dataset_utils import get_chat_template_parts as detect_fn
+            auto_instruction, auto_response = detect_fn(processor)
         except Exception as e:
             notify(
                 "warning",
                 f"Auto-detection of instruction/response markers failed ({e}); "
                 f"falling back to the template table",
             )
+        if auto_instruction and auto_response:
+            trainer = train_fn(
+                trainer,
+                instruction_part = auto_instruction,
+                response_part = auto_response,
+                **kwargs,
+            )
+            notify(
+                "info",
+                "Train on responses only configured via chat template auto-detection",
+            )
+            return trainer, True
 
     if instruction_part and response_part:
         trainer = train_fn(

@@ -27,26 +27,30 @@ class _Trainer:
 
 
 class _Recorder:
-    """Fake train_on_responses_only that records calls.
+    """Fake train_on_responses_only that records calls."""
 
-    fail_auto=True raises the loud unsloth_zoo ValueError when called without
-    instruction_part/response_part (the auto-detect call shape).
-    """
-
-    def __init__(self, fail_auto = False):
+    def __init__(self):
         self.calls = []
-        self.fail_auto = fail_auto
 
     def __call__(self, trainer, **kwargs):
         self.calls.append(kwargs)
-        if self.fail_auto and "instruction_part" not in kwargs:
-            raise ValueError(
-                "Unsloth: Could not reliably auto-detect response_part - "
-                "pass instruction_part and response_part."
-            )
         wrapped = _Trainer()
         wrapped.wrapped_from = trainer
         return wrapped
+
+
+def _detect_ok(processor):
+    return "<INS>", "<RES>"
+
+
+def _detect_fail(processor):
+    raise ValueError(
+        "Unsloth: Could not reliably auto-detect response_part - "
+        "pass instruction_part and response_part."
+    )
+
+
+_AUTO = {"instruction_part": "<INS>", "response_part": "<RES>"}
 
 
 class _Notes:
@@ -68,12 +72,12 @@ def test_unmapped_model_uses_auto_detection():
     notes = _Notes()
 
     result, applied = apply_completion_masking(
-        trainer, "LiquidAI/LFM2-8B-A1B", train_fn, notify = notes
+        trainer, "LiquidAI/LFM2-8B-A1B", train_fn, notify = notes, detect_fn = _detect_ok
     )
 
     assert applied is True
     assert result.wrapped_from is trainer
-    assert train_fn.calls == [{}]  # single call, no marker kwargs
+    assert train_fn.calls == [dict(_AUTO)]  # applied with the detected markers
     assert notes.warnings() == []
 
 
@@ -81,10 +85,12 @@ def test_mapped_model_prefers_auto_detection():
     trainer = _Trainer()
     train_fn = _Recorder()
 
-    _, applied = apply_completion_masking(trainer, "unsloth/Qwen3-0.6B", train_fn)
+    _, applied = apply_completion_masking(
+        trainer, "unsloth/Qwen3-0.6B", train_fn, detect_fn = _detect_ok
+    )
 
     assert applied is True
-    assert train_fn.calls == [{}]
+    assert train_fn.calls == [dict(_AUTO)]
 
 
 def test_gpt_oss_stays_on_manual_markers():
@@ -107,18 +113,17 @@ def test_gpt_oss_stays_on_manual_markers():
 
 def test_auto_failure_falls_back_to_template_table():
     trainer = _Trainer()
-    train_fn = _Recorder(fail_auto = True)
+    train_fn = _Recorder()
     notes = _Notes()
 
     result, applied = apply_completion_masking(
-        trainer, "unsloth/Qwen3-0.6B", train_fn, notify = notes
+        trainer, "unsloth/Qwen3-0.6B", train_fn, notify = notes, detect_fn = _detect_fail
     )
 
     assert applied is True
     assert result.wrapped_from is trainer
     expected = TEMPLATE_TO_RESPONSES_MAPPER["qwen3"]
     assert train_fn.calls == [
-        {},
         {
             "instruction_part": expected["instruction"],
             "response_part": expected["response"],
@@ -127,18 +132,48 @@ def test_auto_failure_falls_back_to_template_table():
     assert any("falling back to the template table" in m for m in notes.warnings())
 
 
+def test_application_failure_propagates_not_fallback():
+    # Detection succeeds; a failure while APPLYING the masking (dataset map,
+    # tokenization) must propagate, never silently fall back to full-sequence.
+    def train_fn(trainer, **kwargs):
+        raise RuntimeError("dataset map worker crashed")
+
+    with pytest.raises(RuntimeError, match = "dataset map worker crashed"):
+        apply_completion_masking(
+            _Trainer(), "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn = _detect_ok
+        )
+
+
+def test_preset_tokenizer_markers_used_directly():
+    # A tokenizer that already carries unsloth marker attrs skips detection;
+    # zoo reuses the stored parts when called bare.
+    class _Tok:
+        _unsloth_input_part = "<I>"
+        _unsloth_output_part = "<O>"
+
+    trainer = _Trainer()
+    trainer.processing_class = _Tok()
+    train_fn = _Recorder()
+
+    _, applied = apply_completion_masking(
+        trainer, "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn = _detect_fail
+    )
+    assert applied is True
+    assert train_fn.calls == [{}]  # bare call, stored parts
+
+
 def test_table_miss_warns_and_disables_without_crashing():
     trainer = _Trainer()
-    train_fn = _Recorder(fail_auto = True)
+    train_fn = _Recorder()
     notes = _Notes()
 
     result, applied = apply_completion_masking(
-        trainer, "some-org/not-in-any-mapper", train_fn, notify = notes
+        trainer, "some-org/not-in-any-mapper", train_fn, notify = notes, detect_fn = _detect_fail
     )
 
     assert applied is False
     assert result is trainer  # unchanged: full sequence training
-    assert train_fn.calls == [{}]  # only the auto attempt
+    assert train_fn.calls == []  # detection failed; nothing applied
     assert any("could not be applied" in m for m in notes.warnings())
     assert any("full sequences" in m for m in notes.warnings())
 
@@ -146,16 +181,20 @@ def test_table_miss_warns_and_disables_without_crashing():
 def test_num_proc_forwarded_only_when_given():
     # CUDA path passes num_proc; the MLX path omits it.
     train_fn = _Recorder()
-    apply_completion_masking(_Trainer(), "unsloth/Qwen3-0.6B", train_fn, num_proc = 4)
-    assert train_fn.calls == [{"num_proc": 4}]
-
-    train_fn = _Recorder(fail_auto = True)
-    apply_completion_masking(_Trainer(), "unsloth/Qwen3-0.6B", train_fn, num_proc = 4)
-    assert train_fn.calls[1]["num_proc"] == 4
+    apply_completion_masking(
+        _Trainer(), "unsloth/Qwen3-0.6B", train_fn, num_proc = 4, detect_fn = _detect_ok
+    )
+    assert train_fn.calls == [dict(_AUTO, num_proc = 4)]
 
     train_fn = _Recorder()
-    apply_completion_masking(_Trainer(), "unsloth/Qwen3-0.6B", train_fn)
-    assert train_fn.calls == [{}]
+    apply_completion_masking(
+        _Trainer(), "unsloth/Qwen3-0.6B", train_fn, num_proc = 4, detect_fn = _detect_fail
+    )
+    assert train_fn.calls[0]["num_proc"] == 4
+
+    train_fn = _Recorder()
+    apply_completion_masking(_Trainer(), "unsloth/Qwen3-0.6B", train_fn, detect_fn = _detect_ok)
+    assert train_fn.calls == [dict(_AUTO)]
 
 
 def test_manual_fallback_failure_propagates_to_caller():
@@ -169,8 +208,10 @@ def test_manual_fallback_failure_propagates_to_caller():
 
 
 def test_notify_is_optional():
-    train_fn = _Recorder(fail_auto = True)
-    _, applied = apply_completion_masking(_Trainer(), "some-org/not-in-any-mapper", train_fn)
+    train_fn = _Recorder()
+    _, applied = apply_completion_masking(
+        _Trainer(), "some-org/not-in-any-mapper", train_fn, detect_fn = _detect_fail
+    )
     assert applied is False
 
 
