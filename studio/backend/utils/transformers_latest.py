@@ -324,22 +324,25 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         if not _config_model_types("default"):
             return None
         hardcoded = _hardcoded_model_types()
-        model_type = support = None
-        for candidate in candidates:
-            if candidate in hardcoded:
-                continue
+        missing = [
+            candidate
+            for candidate in candidates
+            if candidate not in hardcoded
             # Known to some installed overlay -> current routing handles it.
-            if any(candidate in _config_model_types(tier) for tier in _TIER_RANK):
-                continue
-            support = latest_transformers_supports(candidate)
-            if support is not None and (
-                support["supported_in_pypi"] or support["supported_in_main"]
-            ):
-                model_type = candidate
-                break
-            support = None
-        if model_type is None or support is None:
+            and not any(candidate in _config_model_types(tier) for tier in _TIER_RANK)
+        ]
+        if not missing:
             return None
+        # Installing latest only helps when it can load EVERY missing type
+        # (routing needs the primary loadable and wrappers instantiate nested
+        # sub-configs through CONFIG_MAPPING); otherwise the load still fails.
+        supports = [latest_transformers_supports(candidate) for candidate in missing]
+        if any(
+            s is None or not (s["supported_in_pypi"] or s["supported_in_main"])
+            for s in supports
+        ):
+            return None
+        model_type, support = missing[0], supports[0]
         logger.info(
             "Model %s has model_type=%s unknown to every installed transformers "
             "(latest PyPI %s: %s, main: %s)",
@@ -543,9 +546,27 @@ def _install_latest_transformers_locked(version: str) -> dict:
             "version": version,
             "message": f"Installing transformers {version} failed; see the Studio logs.",
         }
+    _invalidate_capability_caches()
     return {
         "success": True,
         "version": version,
         "message": f"Installed transformers {version} into the latest sidecar "
         f"(pinned: {latest_venv_pinned_version()}).",
     }
+
+
+def _invalidate_capability_caches():
+    """Drop caches computed before the new sidecar existed: tier probes and the
+    latest tier's model_type mapping (stale on upgrade) plus vision detection
+    (a raw-heuristic False may now defer to the sidecar AutoConfig probe)."""
+    try:
+        from utils import transformers_version as tv
+        tv._probe_tier_cache.clear()
+        tv._config_mapping_cache.pop("latest", None)
+    except Exception:
+        pass
+    try:
+        from utils.models import model_config as mc
+        mc._vision_detection_cache.clear()
+    except Exception:
+        pass

@@ -3,8 +3,10 @@
 
 """Tests for the latest-transformers support check and the consented sidecar install."""
 
+import ast
 import json
 import os
+import textwrap
 import time
 import pytest
 from pathlib import Path
@@ -822,3 +824,139 @@ def test_upgrade_check_ignores_nested_known_types(monkeypatch):
     monkeypatch.setattr(tl, "latest_transformers_supports", lambda mt: calls.append(mt) or None)
     assert tl.check_upgrade_for_model("some-org/normal-vlm") is None
     assert calls == []
+
+
+def test_upgrade_check_requires_primary_supported(monkeypatch):
+    """Latest supporting only a nested type must not prompt: routing still
+    cannot load the primary, so the install would not fix the model."""
+    cfg = {
+        "model_type": "zz_new_wrapper",
+        "text_config": {"model_type": "zz_new_llm"},
+    }
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda mt: {
+            "pypi_version": "5.13.0",
+            "supported_in_pypi": mt == "zz_new_llm",
+            "supported_in_main": mt == "zz_new_llm",
+        },
+    )
+    assert tl.check_upgrade_for_model("some-org/half-supported") is None
+
+
+def test_upgrade_check_requires_every_missing_type(monkeypatch):
+    """Primary supported but a nested backbone missing from latest -> no prompt
+    (CONFIG_MAPPING would still fail on the sub-config); all supported -> signal
+    carries the primary type."""
+    cfg = {
+        "model_type": "zz_new_wrapper",
+        "text_config": {"model_type": "zz_new_llm"},
+    }
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda mt: {
+            "pypi_version": "5.13.0",
+            "supported_in_pypi": mt == "zz_new_wrapper",
+            "supported_in_main": mt == "zz_new_wrapper",
+        },
+    )
+    assert tl.check_upgrade_for_model("some-org/half-supported") is None
+
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda mt: {
+            "pypi_version": "5.13.0",
+            "supported_in_pypi": True,
+            "supported_in_main": True,
+        },
+    )
+    out = tl.check_upgrade_for_model("some-org/fully-supported")
+    assert out is not None and out["model_type"] == "zz_new_wrapper"
+
+
+def test_install_success_invalidates_capability_caches(monkeypatch):
+    """A successful install must drop tier probes, the latest mapping, and the
+    vision-detection cache so the new sidecar takes effect without a restart."""
+    from utils.models import model_config as mc
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
+    monkeypatch.setattr(tl, "compat_plan", lambda v: ((), []))
+    monkeypatch.setattr(tl, "ensure_latest_transformers_venv", lambda v, extra_packages = (): True)
+    monkeypatch.setattr(tl, "latest_venv_pinned_version", lambda: "5.13.0")
+
+    tv._probe_tier_cache["stale/model"] = "default"
+    tv._config_mapping_cache["latest"] = frozenset({"stale_type"})
+    tv._config_mapping_cache["default"] = frozenset({"llama"})
+    mc._vision_detection_cache[("stale/model", None, False)] = False
+
+    result = install_latest_transformers("5.13.0")
+    assert result["success"] is True
+    assert tv._probe_tier_cache == {}
+    assert "latest" not in tv._config_mapping_cache
+    assert tv._config_mapping_cache.get("default") == frozenset({"llama"})  # untouched
+    assert mc._vision_detection_cache == {}
+
+    tv._probe_tier_cache.clear()
+    tv._config_mapping_cache.clear()
+    tl.clear_caches()
+
+
+def test_vision_subprocess_unions_sidecar_registry():
+    """The embedded vision-check script must extend the inlined parent sets with
+    the ACTIVE sidecar's registry so sidecar-only architectures classify."""
+    from utils.models import model_config as mc
+
+    script = mc._VISION_CHECK_SCRIPT
+    ast.parse(script)
+    stub_registry = {
+        "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES": {
+            "zz_sidecar_vlm": "ZzSidecarForConditionalGeneration"
+        },
+    }
+    ns = {}
+    # Run only the registry-union block: everything between the AutoConfig
+    # import and the config fetch, against a stubbed sidecar registry.
+    body = script.split("from transformers import AutoConfig", 1)[1]
+    body = body.split("kwargs = {", 1)[0]
+    helpers = script.split('sys.path.insert(0, backend_dir)', 1)[1]
+    helpers = helpers.split("try:", 1)[0]
+    exec(helpers, ns)
+
+    class _FakeMa:
+        MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES = stub_registry[
+            "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES"
+        ]
+
+    import sys as _sys
+    import types as _types
+
+    fake_pkg = _types.ModuleType("transformers.models.auto")
+    fake_pkg.modeling_auto = _FakeMa
+    saved = {
+        k: _sys.modules.get(k)
+        for k in ("transformers.models.auto", "transformers.models.auto.modeling_auto")
+    }
+    _sys.modules["transformers.models.auto"] = fake_pkg
+    _sys.modules["transformers.models.auto.modeling_auto"] = _FakeMa
+    try:
+        exec(textwrap.dedent(body), ns)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                _sys.modules.pop(k, None)
+            else:
+                _sys.modules[k] = v
+
+    assert "zz_sidecar_vlm" in ns["_VLM_MODEL_TYPES"]
+    assert "ZzSidecarForConditionalGeneration" in ns["_VLM_CLASS_NAMES"]
+
+    class _Cfg:
+        architectures = ["ZzSidecarForConditionalGeneration"]
+        model_type = "zz_sidecar_vlm"
+
+    assert ns["_is_vlm"](_Cfg()) is True

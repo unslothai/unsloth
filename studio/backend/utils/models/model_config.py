@@ -698,6 +698,25 @@ if backend_dir not in sys.path:
 try:
     from transformers import AutoConfig
 
+    # Union the ACTIVE sidecar's registry into the inlined parent-process sets
+    # so architectures only the sidecar knows still classify correctly.
+    try:
+        from transformers.models.auto import modeling_auto as _ma
+        for _attr in ("MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES",
+                      "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES"):
+            _d = dict(getattr(_ma, _attr, None) or {})
+            _VLM_MODEL_TYPES |= set(_d)
+            _VLM_CLASS_NAMES |= set(_d.values())
+        for _attr in ("MODEL_FOR_CTC_MAPPING_NAMES",
+                      "MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING_NAMES",
+                      "MODEL_FOR_AUDIO_CLASSIFICATION_MAPPING_NAMES",
+                      "MODEL_FOR_TEXT_TO_WAVEFORM_MAPPING_NAMES",
+                      "MODEL_FOR_TEXT_TO_SPECTROGRAM_MAPPING_NAMES",
+                      "MODEL_FOR_AUDIO_XVECTOR_MAPPING_NAMES"):
+            _AUDIO_ONLY_MODEL_TYPES |= set(dict(getattr(_ma, _attr, None) or {}))
+    except Exception:
+        pass
+
     # Capability detection never executes model repo code.
     kwargs = {"trust_remote_code": False}
     if token:
