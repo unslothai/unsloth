@@ -208,9 +208,7 @@ def test_apply_gpu_ids_predetect_never_probes_torch(spoof_xpu, monkeypatch):
         raise AssertionError("apply_gpu_ids triggered detect_hardware pre-mask")
 
     monkeypatch.setattr(hw, "detect_hardware", _poisoned_detect)
-    monkeypatch.setattr(
-        torch.cuda, "is_available", _poisoned_detect, raising = False
-    )
+    monkeypatch.setattr(torch.cuda, "is_available", _poisoned_detect, raising = False)
     # CUDA-build torch (torch.version.cuda set on this box or spoofed):
     monkeypatch.setattr(torch.version, "cuda", "12.8", raising = False)
     monkeypatch.setattr(torch.version, "xpu", None, raising = False)
