@@ -321,6 +321,10 @@ function formatTimestamp(epochSeconds: number): string {
 // Bar label for an in-flight generation: step count plus an ETA once it's known
 // (formatEta returns "" for non-positive, so the last step shows just the step).
 function genStepLabel(p: DiffusionGenerateProgress): string {
+  // Text encoding (and any first-run warmup) happens before the first scheduler
+  // tick, so step 0 means "working, not denoising yet" -- label it that way
+  // instead of sitting on "Step 0/N".
+  if (p.step === 0) return "Preparing (text encoding + warmup)…";
   const base = `Step ${p.step}/${p.total_steps}`;
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
   return eta ? `${base} · ~${eta}` : base;
@@ -1042,6 +1046,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Live per-step progress (step / total + ETA) polled during generation.
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // visibilitychange handler active while a generation poll runs: background tabs clamp
+  // setInterval to >=1s (and can suspend it outright after ~5 min), so returning to the
+  // tab fires one immediate poll instead of waiting for a throttled tick.
+  const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
   // Controlled so the body-portaled overlays force-close when this page is mounted
   // but off-tab (a hidden/inert parent can't contain a body portal): the model
@@ -1473,6 +1481,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
       if (genPollTimer.current) clearInterval(genPollTimer.current);
+      if (genVisibilityListener.current) {
+        document.removeEventListener("visibilitychange", genVisibilityListener.current);
+        genVisibilityListener.current = null;
+      }
       dismissLoadToast();
     };
   }, [refreshStatus, dismissLoadToast, pollLoadProgress]);
@@ -1641,6 +1653,29 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         setSteps(dq2.steps);
         setGuidance(dq2.guidance);
         void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
+          if (!started) {
+            setQuant(prevQuant);
+            quantRevert.current = null;
+          }
+        });
+        return;
+      }
+      // A direct local single-file .safetensors pick (custom folder / on-device file)
+      // must load via from_single_file: the pipeline route rejects a bare file (no
+      // model_index.json) and only after evicting the resident model. Split into
+      // (parent dir, basename) exactly like the local GGUF branch above.
+      if (meta.source === "local" && id.toLowerCase().endsWith(".safetensors")) {
+        const norm = id.replace(/\\/g, "/");
+        const slash = norm.lastIndexOf("/");
+        const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
+        const dir = slash >= 0 ? norm.slice(0, slash) : ".";
+        const prevQuant = quant;
+        quantRevert.current = { prev: prevQuant };
+        setQuant(filename);
+        const dsf = defaultsFor(id);
+        setSteps(dsf.steps);
+        setGuidance(dsf.guidance);
+        void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
           if (!started) {
             setQuant(prevQuant);
             quantRevert.current = null;
@@ -1827,12 +1862,26 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     const runs = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
     if (runs !== count) setCount(runs);
 
+    // An explicit seed near the 2**53-1 backend cap can overflow once the per-run
+    // offset (base + i*batchSize) and the engine's in-batch +j offsets are added,
+    // 422ing a later run AFTER earlier images already generated. Fail before any
+    // GPU work. Subtraction keeps the comparison exact where the sum would round.
+    if (baseSeed > Number.MAX_SAFE_INTEGER - (runs * batchSize - 1)) {
+      toast.error("Seed too large for this run count and batch size; use a smaller seed");
+      return;
+    }
+
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
     // Poll the backend's per-step progress across the whole run (all sequential
-    // generations), so the bar tracks the live denoising steps.
-    genPollTimer.current = setInterval(async () => {
+    // generations), so the bar tracks the live denoising steps. A named poll body
+    // (guarded against overlap) also serves the visibilitychange listener: a
+    // background tab's throttled interval catches up the moment the tab is visible.
+    let pollInFlight = false;
+    const pollGenerateOnce = async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
       try {
         const p = await getGenerateProgress();
         // Skip the state update (and re-render) when nothing the bar shows moved.
@@ -1843,8 +1892,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         });
       } catch {
         // transient; keep polling
+      } finally {
+        pollInFlight = false;
       }
-    }, 300);
+    };
+    if (genVisibilityListener.current)
+      document.removeEventListener("visibilitychange", genVisibilityListener.current);
+    genVisibilityListener.current = () => {
+      if (document.visibilityState === "visible") void pollGenerateOnce();
+    };
+    document.addEventListener("visibilitychange", genVisibilityListener.current);
+    genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
     try {
       for (let i = 0; i < runs; i++) {
         // The page truly unmounted mid-run (app close / chat-only eject): stop
@@ -1903,16 +1961,25 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         res.images.forEach((image) => void ensureSrc(image));
         setGenDone(i + 1);
       }
+      // A generation can change server-side status: Speed=Auto compiles the
+      // transformer on the 3rd LoRA-free run (supports_lora flips to false), so
+      // without a refresh the LoRA picker stays enabled and the next LoRA run
+      // fails on the backend. Cheap status GET; also picks up any other drift.
+      if (isMounted.current) void refreshStatus();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Image generation failed");
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;
+      if (genVisibilityListener.current) {
+        document.removeEventListener("visibilitychange", genVisibilityListener.current);
+        genVisibilityListener.current = null;
+      }
       setBusy(null);
       setGenDone(null);
       setGenStep(null);
     }
-  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc]);
+  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, refreshStatus]);
 
   // Keep the active workflow valid for the loaded model: an edit-only model (Qwen-Image-
   // Edit) has no Create/Transform tabs, a base model has no Edit tab. Snap to the first

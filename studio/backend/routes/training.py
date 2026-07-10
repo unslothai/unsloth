@@ -134,6 +134,21 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
     return get_visible_gpu_utilization()
 
 
+def _background_video_generation_active() -> bool:
+    """Whether a video clip is generating on the video backend's worker thread.
+
+    POST /video/generate returns at once and generates in the background, so an
+    in-flight clip is invisible to the keep-warm in-flight request count the
+    API-key training guards consult; ask the backend directly. Best-effort: a
+    probe failure must never block a training start."""
+    try:
+        from core.inference.video import get_video_backend
+        return bool(get_video_backend().generate_progress().get("active"))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not check video generation state for training guard: %s", e)
+        return False
+
+
 @router.post("/start")
 async def start_training(
     request: TrainingStartRequest,
@@ -156,7 +171,10 @@ async def start_training(
         # session is not yet special-cased.)
         if via_api_key is True:
             from core.inference.llama_keepwarm import other_inference_request_count
-            if other_inference_request_count(current_request_counted = False) > 0:
+            if (
+                other_inference_request_count(current_request_counted = False) > 0
+                or _background_video_generation_active()
+            ):
                 raise HTTPException(
                     status_code = 409,
                     detail = (
@@ -506,8 +524,18 @@ async def start_training(
                 logger.warning("Chat/training VRAM coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
-        success = backend.start_training(
-            job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
+        # Offloaded to a worker thread: the hook's diffusion/video unload() waits on the
+        # engines' generation locks until an in-flight denoise step reaches its cancel
+        # callback (and the export subprocess teardown can take seconds), which would
+        # otherwise block the event loop and freeze every concurrent status/cancel/UI
+        # request -- the same reason start_diffusion_training runs
+        # _free_gpu_for_diffusion_training via asyncio.to_thread. Overlapping starts are
+        # serialized by the backend's own start-in-progress guard.
+        success = await asyncio.to_thread(
+            backend.start_training,
+            job_id = job_id,
+            before_spawn = _free_vram_for_training,
+            **training_kwargs,
         )
 
         if not success:
@@ -1213,6 +1241,29 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
         return
 
 
+def _resolve_diffusion_data_dir(raw: str) -> Path:
+    """Resolve a diffusion-training ``data_dir``. The upload/labeling routes create and
+    manage image datasets directly under ``datasets_root()`` and the UI passes the bare
+    folder name back as ``data_dir``, but the generic :func:`resolve_dataset_path`
+    searches the LLM uploads and recipe dataset roots FIRST -- so an unrelated upload
+    file or recipe folder sharing that name would shadow the just-uploaded image
+    dataset (preflight 400 "not a directory", or training the wrong data). Prefer the
+    image dataset root for a bare single-component name that exists there; everything
+    else (explicit "uploads/..." / "recipes/..." prefixes, absolute paths, missing
+    names) resolves exactly as before."""
+    from utils.paths import datasets_root
+
+    value = str(raw or "").strip()
+    if value and "\x00" not in value:
+        p = Path(value)
+        # Single component and not ".." -> joining under datasets_root() cannot escape it.
+        if not p.is_absolute() and len(p.parts) == 1 and p.parts[0] != "..":
+            direct = datasets_root() / value
+            if direct.is_dir():
+                return direct
+    return resolve_dataset_path(raw)
+
+
 @router.post("/diffusion/start", response_model = DiffusionTrainingStartResponse)
 async def start_diffusion_training(
     body: DiffusionTrainingStartRequest,
@@ -1228,7 +1279,10 @@ async def start_diffusion_training(
     # a diffusion start cannot silently drop an active API inference request.
     if via_api_key is True:
         from core.inference.llama_keepwarm import other_inference_request_count
-        if other_inference_request_count(current_request_counted = False) > 0:
+        if (
+            other_inference_request_count(current_request_counted = False) > 0
+            or _background_video_generation_active()
+        ):
             raise HTTPException(
                 status_code = 409,
                 detail = (
@@ -1259,8 +1313,8 @@ async def start_diffusion_training(
     # trainer subprocess otherwise resolves them relative to its own cwd.
     config = body.model_dump()
     try:
-        from utils.paths import resolve_dataset_path, resolve_output_dir
-        config["data_dir"] = str(resolve_dataset_path(config["data_dir"]))
+        from utils.paths import resolve_output_dir
+        config["data_dir"] = str(_resolve_diffusion_data_dir(config["data_dir"]))
         config["output_dir"] = str(resolve_output_dir(config["output_dir"]))
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
@@ -1600,6 +1654,25 @@ async def upload_diffusion_dataset(
                 status_code = 400,
                 detail = f"Unsupported file '{f.filename}'. Allowed: {exts}",
             )
+        # Reject an EXACT duplicate name within THIS batch (two cat.png dragged from
+        # different folders, or an API client repeating a part). The same-name exemption
+        # below exists for SEPARATE repeat uploads, where re-sending a name is a
+        # deliberate overwrite of the file on disk; inside one batch the two parts are
+        # distinct files staged to the same destination on EVERY filesystem, so the later
+        # tmp.replace(dest) in the commit loop would silently discard the earlier one
+        # while `uploaded` still counts both. Exact match only: a case VARIANT pair
+        # (pic.png vs Pic.png) stays exempt like the stem guard documents -- one file /
+        # an overwrite on case-insensitive filesystems, two files on Linux.
+        fname_cf = filename.casefold()
+        if filename in names:
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    f"Duplicate file '{filename}' appears more than once in this upload. "
+                    "Files sharing a name would overwrite each other; rename one before "
+                    "uploading."
+                ),
+            )
         # Reject a second IMAGE that shares this one's stem but differs by extension (sample.png
         # vs sample.jpg): both resolve to the same <stem>.txt caption sidecar (the kohya/diffusers
         # convention the reader, editor, and delete paths all use), so keeping both would silently
@@ -1616,7 +1689,6 @@ async def upload_diffusion_dataset(
             # one caption. Casefolding the name guard too keeps a same-name case variant
             # (sample.png vs Sample.png, one file / an overwrite on those filesystems) exempt.
             stem_cf = stem.casefold()
-            fname_cf = filename.casefold()
             clash = next(
                 (
                     p.name

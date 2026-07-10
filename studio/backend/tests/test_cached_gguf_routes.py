@@ -1076,3 +1076,70 @@ def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
 
     monkeypatch.setattr(scan, "is_snapshot_partial", _boom)
     assert models_route._cached_repo_partial("Org/Repo", snapshot_dir) is False
+
+
+def test_repo_has_pipeline_index_requires_root_model_index(tmp_path):
+    # Only a ROOT model_index.json makes a repo pipeline-loadable: from_pretrained
+    # reads the repo root, so a nested subdir/model_index.json must NOT clear the
+    # single_file flag. CachedFileInfo.file_name is the basename, so the helper has
+    # to scope by file_path/snapshot_path -- a name-only match would claim both.
+    snap = tmp_path / "snapshots" / "abc"
+    nested = SimpleNamespace(
+        file_name = "model_index.json",
+        file_path = snap / "prior" / "model_index.json",
+    )
+    repo_nested = SimpleNamespace(
+        repo_id = "unsloth/nested-index",
+        revisions = [SimpleNamespace(files = [nested], snapshot_path = snap)],
+    )
+    assert models_route._repo_has_pipeline_index(repo_nested) is False
+
+    root = SimpleNamespace(
+        file_name = "model_index.json",
+        file_path = snap / "model_index.json",
+    )
+    repo_root = SimpleNamespace(
+        repo_id = "unsloth/root-index",
+        revisions = [SimpleNamespace(files = [root], snapshot_path = snap)],
+    )
+    assert models_route._repo_has_pipeline_index(repo_root) is True
+
+
+def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_path):
+    # A diffusion-tagged repo with NO top-level model_index.json is a single-file
+    # checkpoint: the task pickers must not offer it as a pipeline load (from_pretrained
+    # fails on it), so the row carries single_file=True. A full pipeline repo (has
+    # model_index.json) and a chat repo (task None) carry no flag.
+    single = _repo(
+        "unsloth/Qwen-Image-fp8-single",
+        [_file("qwen-image-fp8.safetensors", 10_000)],
+        tmp_path / "models--unsloth--Qwen-Image-fp8-single",
+    )
+    pipeline = _repo(
+        "unsloth/Qwen-Image-pipeline",
+        [_file("model_index.json", 10), _file("transformer/model.safetensors", 10_000)],
+        tmp_path / "models--unsloth--Qwen-Image-pipeline",
+    )
+    chat = _repo(
+        "Org/ChatRepo",
+        [_file("model.safetensors", 10_000)],
+        tmp_path / "models--Org--ChatRepo",
+    )
+
+    monkeypatch.setattr(
+        models_route,
+        "_cached_repo_task",
+        lambda repo_info: ("text-to-image" if "Qwen-Image" in repo_info.repo_id else None),
+    )
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [single, pipeline, chat])],
+    )
+
+    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+
+    rows = {r["repo_id"]: r for r in result["cached"]}
+    assert rows["unsloth/Qwen-Image-fp8-single"].get("single_file") is True
+    assert "single_file" not in rows["unsloth/Qwen-Image-pipeline"]
+    assert "single_file" not in rows["Org/ChatRepo"]

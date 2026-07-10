@@ -421,6 +421,24 @@ def _cast_int8_selective(encoder: Any, target: Any, skip_first: int, skip_last: 
     quantize_(encoder, _make_quant_config(TQ_INT8), filter_fn = filter_fn)
 
 
+def _weight_has_zero_output_row(module: Any) -> bool:
+    """True when a Linear's weight contains an all-zero OUTPUT row. torchao's per-row
+    fp8 scheme derives a per-output-channel scale from that row's amax, so a dead row
+    yields scale 0 -> 0/0 = NaN through the whole forward. Real checkpoints ship such
+    rows: SDXL's text_encoder_2 (OpenCLIP ViT-bigG) has one in
+    ``text_model.encoder.layers.2.self_attn.out_proj`` -- measured on B200: every
+    fp8_dynamic SDXL render came out black (NaN embeddings) until this Linear is left
+    dense. Cheap (one amax per Linear, once per load); False on any error so the
+    caster's own failure handling stays in charge."""
+    try:
+        weight = getattr(module, "weight", None)
+        if weight is None or weight.ndim != 2:
+            return False
+        return bool((weight.abs().amax(dim = -1) == 0).any().item())
+    except Exception:  # noqa: BLE001 -- unreadable weight: let quantize_ decide
+        return False
+
+
 def _cast_fp8_dynamic(encoder: Any, target: Any) -> None:
     # torchao dynamic fp8 COMPUTE, per-row (per-token activation + per-output-channel weight ->
     # torch._scaled_mm on the fp8 tensor cores). Unlike the layerwise `fp8` backend this keeps the
@@ -436,9 +454,15 @@ def _cast_fp8_dynamic(encoder: Any, target: Any) -> None:
 
     # require_bf16: scaled_mm asserts a bf16 weight, so skip any stray non-bf16 Linear the encoder
     # keeps (belt-and-suspenders over the named T5 wo exclusion) rather than aborting the pass.
-    filter_fn = make_filter_fn(
+    base = make_filter_fn(
         DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True
     )
+
+    # A Linear with an all-zero output row NaNs under per-row scaling (scale 0 -> 0/0);
+    # keep exactly those Linears dense so one dead row cannot black out every render.
+    def filter_fn(module: Any, fqn: str = "") -> bool:
+        return base(module, fqn) and not _weight_has_zero_output_row(module)
+
     quantize_(encoder, _make_quant_config(TQ_FP8), filter_fn = filter_fn)
 
 

@@ -647,3 +647,81 @@ def test_quantize_explicit_fp8_dynamic_refused_for_ltx2(monkeypatch):
         is None
     )
     assert calls == []
+
+
+# ── zero-output-row guard (per-row fp8 NaN protection) ───────────────────────────
+
+
+class _FakeAmaxVec:
+    def __init__(self, vals):
+        self._vals = vals
+
+    def __eq__(self, other):  # noqa: PLW0642 -- tensor-style elementwise compare
+        return _FakeAmaxVec([v == other for v in self._vals])
+
+    def any(self):
+        return _FakeScalar(any(self._vals))
+
+
+class _FakeScalar:
+    def __init__(self, v):
+        self._v = v
+
+    def item(self):
+        return self._v
+
+
+class _FakeWeight:
+    """Tensor-shaped stand-in supporting the exact chain the guard runs:
+    ``weight.abs().amax(dim = -1) == 0 -> .any().item()``."""
+
+    ndim = 2
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def abs(self):
+        return _FakeWeight([[abs(v) for v in r] for r in self._rows])
+
+    def amax(self, dim = -1):
+        return _FakeAmaxVec([max(r) for r in self._rows])
+
+
+def test_weight_zero_output_row_detection():
+    # A dead output row NaNs torchao's per-row fp8 (scale 0 -> 0/0); SDXL's
+    # text_encoder_2 (OpenCLIP bigG) really ships one in layers.2.self_attn.out_proj --
+    # measured: every fp8_dynamic SDXL render was black until the row is kept dense.
+    zero_row = types.SimpleNamespace(weight = _FakeWeight([[0.1, 0.2], [0.0, 0.0]]))
+    dense = types.SimpleNamespace(weight = _FakeWeight([[0.1, 0.2], [0.3, 0.0]]))
+    assert dp._weight_has_zero_output_row(zero_row) is True
+    assert dp._weight_has_zero_output_row(dense) is False
+    # Non-2D / absent weights are not the per-row scheme's input: never flagged.
+    w3 = _FakeWeight([[1.0]])
+    w3.ndim = 3
+    assert dp._weight_has_zero_output_row(types.SimpleNamespace(weight = w3)) is False
+    assert dp._weight_has_zero_output_row(types.SimpleNamespace()) is False
+
+    # An unreadable weight falls through to quantize_'s own handling.
+    class _Boom:
+        @property
+        def weight(self):
+            raise RuntimeError("meta tensor")
+
+    assert dp._weight_has_zero_output_row(_Boom()) is False
+
+
+def test_fp8_dynamic_filter_skips_zero_row_linear(monkeypatch):
+    # The fp8_dynamic caster must leave a zero-output-row Linear dense while the rest
+    # of the encoder still quantises (a family-wide deny would forfeit the whole win).
+    _stub_torch(monkeypatch)
+    captured: dict = {}
+    _stub_transformer_quant(monkeypatch, captured)
+    enc = types.SimpleNamespace(_keep_in_fp32_modules = [])
+
+    dp._cast_fp8_dynamic(enc, _target())
+
+    ff = captured["filter_fn"]
+    dead = types.SimpleNamespace(weight = _FakeWeight([[0.5, 0.5], [0.0, 0.0]]))
+    live = types.SimpleNamespace(weight = _FakeWeight([[0.5, 0.5], [0.5, 0.5]]))
+    assert ff(dead, "text_model.encoder.layers.2.self_attn.out_proj") is False
+    assert ff(live, "text_model.encoder.layers.2.mlp.fc1") is True

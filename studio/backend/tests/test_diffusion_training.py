@@ -655,6 +655,30 @@ def test_route_start_rejects_uncontained_paths(client):
     assert r.status_code == 400
 
 
+def test_route_start_resolves_bare_name_under_image_dataset_root(client, monkeypatch, tmp_path):
+    # The upload/labeling routes manage image datasets directly under datasets_root() and
+    # the UI passes the bare folder name back as data_dir. The generic resolve_dataset_path
+    # searches the LLM uploads and recipe roots FIRST, so an unrelated upload file or recipe
+    # folder sharing the name would shadow the just-uploaded image dataset (preflight 400
+    # "not a directory", or training the wrong data). The route must prefer the image
+    # dataset root for a bare name that exists there.
+    import utils.paths as up
+
+    ds_root = tmp_path / "assets" / "datasets"
+    img_ds = ds_root / "my-photos"
+    img_ds.mkdir(parents = True)
+    (img_ds / "a.png").write_bytes(b"x")
+    # Shadowing entries the generic resolver would pick first.
+    (ds_root / "uploads").mkdir()
+    (ds_root / "uploads" / "my-photos").write_text("an LLM dataset upload, not a folder")
+    (ds_root / "recipes" / "my-photos").mkdir(parents = True)
+    monkeypatch.setattr(up, "datasets_root", lambda: ds_root)
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "my-photos"})
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["data_dir"] == str(img_ds)
+
+
 def test_route_start_blocked_by_active_llm_training(client, monkeypatch):
     import routes.training as tr
 

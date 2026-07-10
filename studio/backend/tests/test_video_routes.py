@@ -12,6 +12,9 @@ video_gallery code.
 
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -20,7 +23,11 @@ import core.inference.gpu_arbiter as gpu_arbiter
 import core.inference.video as video_module
 import core.inference.video_gallery as gallery_module
 from auth.authentication import get_current_subject
-from core.inference.video_families import VIDEO_CANCELLED_MSG, VIDEO_NOT_LOADED_MSG
+from core.inference.video_families import (
+    VIDEO_CANCELLED_MSG,
+    VIDEO_GENERATION_BUSY_MSG,
+    VIDEO_NOT_LOADED_MSG,
+)
 from routes.video import router as video_router
 
 
@@ -60,13 +67,28 @@ def _unloaded_status():
     }
 
 
-class _FakeBackend:
+class _FakeBackend(video_module.VideoBackend):
+    """Overrides the heavy load/generate/status surface but INHERITS the real
+    begin_generate / _run_generate / generate_progress / cancel_generate job
+    machinery, so the asynchronous generate contract (immediate accept, busy
+    guard, terminal completed/failed state, cancel) is exercised for real."""
+
     def __init__(self) -> None:
-        self.loaded = False
+        super().__init__()
         self.last_load_kwargs: dict = {}
         # Repo ids of in-flight (not yet committed) loads; empty tuple = none. The unload
         # route reads this to keep VIDEO ownership while a concurrent load is still loading.
         self.loading: tuple = ()
+
+    # The real backend keys "loaded" off its committed pipeline state (_state); map
+    # the fake's flag onto it so the inherited begin_generate sees the same thing.
+    @property
+    def loaded(self) -> bool:
+        return self._state is not None
+
+    @loaded.setter
+    def loaded(self, value: bool) -> None:
+        self._state = object() if value else None
 
     def loading_repo_ids(self) -> tuple:
         return tuple(self.loading)
@@ -131,6 +153,7 @@ class _FakeBackend:
         *,
         prompt,
         seed = None,
+        cancel_event = None,
         **kwargs,
     ):
         if not self.loaded:
@@ -148,12 +171,6 @@ class _FakeBackend:
             "steps": kwargs.get("steps") or 40,
             "guidance": 4.0 if kwargs.get("guidance") is None else kwargs.get("guidance"),
         }
-
-    def generate_progress(self):
-        return {"active": False}
-
-    def cancel_generate(self):
-        return False
 
     def unload(self):
         self.loaded = False
@@ -202,6 +219,33 @@ def client(monkeypatch, tmp_path):
     app.include_router(video_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     return TestClient(app)
+
+
+def _wait_terminal(client, timeout = 5.0) -> dict:
+    """Poll generate-progress until the background job records a terminal phase.
+    Generation is asynchronous now (the POST returns as soon as the job starts),
+    so its outcome is only observable here."""
+    deadline = time.monotonic() + timeout
+    progress: dict = {}
+    while time.monotonic() < deadline:
+        progress = client.get("/api/inference/video/generate-progress").json()
+        if progress.get("phase") in ("completed", "failed"):
+            return progress
+        time.sleep(0.01)
+    raise AssertionError(f"generation never reached a terminal state: {progress}")
+
+
+def _generate_and_wait(client, payload) -> dict:
+    """Start a generation, assert the immediate accepted response, and return the
+    saved gallery record the completed progress state carries."""
+    resp = client.post("/api/inference/video/generate", json = payload)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "started" and body["video"] is None
+    progress = _wait_terminal(client)
+    assert progress["phase"] == "completed", progress
+    assert progress["active"] is False and progress["error"] is None
+    return progress["video"]
 
 
 def test_load_happy_path_and_arbiter_acquired(client, monkeypatch):
@@ -278,11 +322,8 @@ def test_load_threads_transformer_quant_and_guidance_2(client):
     kwargs = video_module.get_video_backend().last_load_kwargs
     assert kwargs.get("transformer_quant") == "fp8"
 
-    gen = client.post(
-        "/api/inference/video/generate",
-        json = {"prompt": "a sloth", "guidance": 5.0, "guidance_2": 3.0},
-    )
-    assert gen.status_code == 200
+    video = _generate_and_wait(client, {"prompt": "a sloth", "guidance": 5.0, "guidance_2": 3.0})
+    assert video["guidance"] == 5.0 and video["guidance_2"] == 3.0
 
 
 def test_load_rejects_bad_transformer_quant_422(client):
@@ -338,16 +379,14 @@ def test_load_progress_route(client):
     assert ready.json()["phase"] == "ready"
 
 
-def test_generate_happy_path_persists_and_returns_record(client):
+def test_generate_happy_path_persists_and_reports_record(client):
     client.post(
         "/api/inference/video/load",
         json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
     )
-    gen = client.post(
-        "/api/inference/video/generate", json = {"prompt": "a sloth surfing", "seed": 7}
-    )
-    assert gen.status_code == 200
-    video = gen.json()["video"]
+    # The POST returns at once ("started"); the saved record arrives through the
+    # generate-progress terminal state (asserted inside the helper).
+    video = _generate_and_wait(client, {"prompt": "a sloth surfing", "seed": 7})
     assert video["seed"] == 7 and video["prompt"] == "a sloth surfing" and video["id"]
     assert video["has_audio"] is True
     assert video["model"] == "unsloth/LTX-2.3-GGUF"
@@ -370,7 +409,9 @@ def test_generate_without_load_returns_409(client):
     assert resp.json()["detail"] == VIDEO_NOT_LOADED_MSG
 
 
-def test_generate_cancelled_returns_409(client, monkeypatch):
+def test_generate_cancelled_reports_failed_with_sentinel(client, monkeypatch):
+    # A cancel mid-run surfaces as the job's terminal failed state carrying the exact
+    # sentinel (the frontend suppresses the toast on it), not as an HTTP error.
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -379,13 +420,16 @@ def test_generate_cancelled_returns_409(client, monkeypatch):
 
     monkeypatch.setattr(backend, "generate", _cancel)
     resp = client.post("/api/inference/video/generate", json = {"prompt": "p"})
-    assert resp.status_code == 409
-    assert resp.json()["detail"] == VIDEO_CANCELLED_MSG
+    assert resp.status_code == 200
+    progress = _wait_terminal(client)
+    assert progress["phase"] == "failed"
+    assert progress["error"] == VIDEO_CANCELLED_MSG
+    assert progress["active"] is False
 
 
-def test_generate_pipeline_error_returns_sanitized_500(client, monkeypatch):
-    # A loaded model that fails mid-pipeline (CUDA OOM) is a server failure: 500 with a
-    # generic message, not a 409 echoing the raw exception.
+def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
+    # A loaded model that fails mid-pipeline (CUDA OOM) is a server failure: the job's
+    # terminal state carries a generic message, never the raw exception.
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -394,12 +438,15 @@ def test_generate_pipeline_error_returns_sanitized_500(client, monkeypatch):
 
     monkeypatch.setattr(backend, "generate", _oom)
     resp = client.post("/api/inference/video/generate", json = {"prompt": "p"})
-    assert resp.status_code == 500
-    assert resp.json()["detail"] == "Video generation failed."
-    assert "CUDA" not in resp.json()["detail"]
+    assert resp.status_code == 200
+    progress = _wait_terminal(client)
+    assert progress["phase"] == "failed"
+    assert progress["error"] == "Video generation failed."
+    assert "CUDA" not in progress["error"]
 
 
-def test_generate_value_error_returns_400(client, monkeypatch):
+def test_generate_value_error_reports_reason(client, monkeypatch):
+    # Bad client input is feedback: the terminal failed state carries the reason.
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -408,20 +455,79 @@ def test_generate_value_error_returns_400(client, monkeypatch):
 
     monkeypatch.setattr(backend, "generate", _bad)
     resp = client.post("/api/inference/video/generate", json = {"prompt": "p"})
-    assert resp.status_code == 400
-    assert "not supported" in resp.json()["detail"]
+    assert resp.status_code == 200
+    progress = _wait_terminal(client)
+    assert progress["phase"] == "failed"
+    assert "not supported" in progress["error"]
+
+
+def test_generate_concurrent_second_returns_409(client, monkeypatch):
+    # While a job is running, a second generate is refused synchronously with the busy
+    # sentinel; the first job still completes and persists once released.
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+    release = threading.Event()
+    real_generate = _FakeBackend.generate
+
+    def _slow(**kwargs):
+        assert release.wait(5)
+        return real_generate(backend, **kwargs)
+
+    monkeypatch.setattr(backend, "generate", _slow)
+    first = client.post("/api/inference/video/generate", json = {"prompt": "a", "seed": 1})
+    assert first.status_code == 200 and first.json()["status"] == "started"
+
+    second = client.post("/api/inference/video/generate", json = {"prompt": "b"})
+    assert second.status_code == 409
+    assert second.json()["detail"] == VIDEO_GENERATION_BUSY_MSG
+
+    running = client.get("/api/inference/video/generate-progress").json()
+    assert running["active"] is True
+
+    release.set()
+    progress = _wait_terminal(client)
+    assert progress["phase"] == "completed" and progress["video"]["seed"] == 1
+    # With the job finished, a new generate is accepted again.
+    assert _generate_and_wait(client, {"prompt": "c", "seed": 2})["seed"] == 2
 
 
 def test_generate_progress_route(client):
     resp = client.get("/api/inference/video/generate-progress")
     assert resp.status_code == 200
-    assert resp.json()["active"] is False
+    body = resp.json()
+    assert body["active"] is False
+    assert body["phase"] is None and body["video"] is None and body["error"] is None
 
 
 def test_cancel_generation_route(client):
     resp = client.post("/api/inference/video/generate/cancel")
     assert resp.status_code == 200
     assert resp.json()["cancelled"] is False
+
+
+def test_cancel_running_job(client, monkeypatch):
+    # Cancel still works against the background job: begin_generate registers the
+    # cancel event before the worker starts, so the cancel route reports True at
+    # once and the job lands in the failed(cancelled) terminal state.
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    def _wait_for_cancel(*, cancel_event = None, **kwargs):
+        assert cancel_event is not None and cancel_event.wait(5)
+        raise RuntimeError(VIDEO_CANCELLED_MSG)
+
+    monkeypatch.setattr(backend, "generate", _wait_for_cancel)
+    resp = client.post("/api/inference/video/generate", json = {"prompt": "p"})
+    assert resp.status_code == 200
+
+    cancelled = client.post("/api/inference/video/generate/cancel")
+    assert cancelled.status_code == 200 and cancelled.json()["cancelled"] is True
+
+    progress = _wait_terminal(client)
+    assert progress["phase"] == "failed"
+    assert progress["error"] == VIDEO_CANCELLED_MSG
+    # Nothing was persisted for the cancelled run.
+    assert client.get("/api/inference/video/gallery").json()["videos"] == []
 
 
 def test_file_endpoint_404_for_bad_id(client):
@@ -434,8 +540,8 @@ def test_delete_and_clear(client):
         "/api/inference/video/load",
         json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
     )
-    first = client.post("/api/inference/video/generate", json = {"prompt": "a"}).json()["video"]
-    second = client.post("/api/inference/video/generate", json = {"prompt": "b"}).json()["video"]
+    first = _generate_and_wait(client, {"prompt": "a"})
+    second = _generate_and_wait(client, {"prompt": "b"})
     assert len(client.get("/api/inference/video/gallery").json()["videos"]) == 2
 
     # Delete one, then confirm it 404s and the other remains.
@@ -456,7 +562,7 @@ def test_gallery_pagination(client):
         json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
     )
     for i in range(5):
-        client.post("/api/inference/video/generate", json = {"prompt": f"clip {i}", "seed": i})
+        _generate_and_wait(client, {"prompt": f"clip {i}", "seed": i})
     page1 = client.get("/api/inference/video/gallery?limit=2&offset=0").json()
     assert len(page1["videos"]) == 2 and page1["has_more"] is True
     last = client.get("/api/inference/video/gallery?limit=2&offset=4").json()
@@ -572,7 +678,7 @@ def test_export_endpoint_validation(client, monkeypatch):
         "/api/inference/video/load",
         json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
     )
-    video = client.post("/api/inference/video/generate", json = {"prompt": "a"}).json()["video"]
+    video = _generate_and_wait(client, {"prompt": "a"})
     resp = client.get(f"/api/inference/video/gallery/{video['id']}/export?format=webm")
     assert resp.status_code == 501
     assert "PyAV" in resp.json()["detail"]

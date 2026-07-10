@@ -360,11 +360,14 @@ def _compile_repeated_blocks(
                     setattr(dynamo_cfg, _limit_attr, max(getattr(dynamo_cfg, _limit_attr) or 0, 64))
         # Match eager's intermediate rounding inside inductor's fused pointwise kernels:
         # by default they keep chains in fp32 where eager materialises bf16 between ops,
-        # a per-forward rounding delta (max abs ~0.09 on the HunyuanVideo-1.5 DiT) that a
-        # multi-step denoise amplifies chaotically -- measured full-clip LPIPS vs the
-        # bit-exact reference drops 0.221 -> 0.052 at ZERO speed cost (1.093 vs 1.089
-        # s/step on a B200, 720p/33f). Process-global, so snapshot_backend_flags carries
-        # it and unload restores the prior value.
+        # a per-forward rounding delta that a multi-step denoise amplifies chaotically.
+        # Measured (B200, scripts/image_speedmem_bench.py, pairwise LPIPS of the
+        # compiled tier vs the same-stack eager tier): Qwen-Image 0.019 -> 0.006 at
+        # identical speed, FLUX.1-dev 0.046 -> 0.029 at +2% step time, FLUX.2-klein
+        # 0.018 -> 0.017 at identical speed; on the video DiT (HunyuanVideo-1.5-720p)
+        # full-clip LPIPS vs bit-exact drops 0.221 -> 0.052 at zero cost. Process-
+        # global, so snapshot_backend_flags carries it and unload restores the prior
+        # value.
         inductor_cfg = _inductor_config()
         if inductor_cfg is not None and hasattr(inductor_cfg, "emulate_precision_casts"):
             inductor_cfg.emulate_precision_casts = True

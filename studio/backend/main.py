@@ -767,9 +767,14 @@ _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (_DIFFUSION_DATASET_UPLOAD_PATH,)
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.startswith(_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX):
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
+    # The trailing-slash variant (/api/train/diffusion/dataset/) reaches this middleware
+    # BEFORE the router's redirect_slashes 307, so it must resolve to the same upload cap
+    # as the canonical path or a large upload 413s on the default /api/train body cap.
+    # Stripping slashes cannot promote a JSON sub-route: those all keep extra path
+    # components after normalization and still miss the exact match.
     if (
         path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIX)
-        or path == _DIFFUSION_DATASET_UPLOAD_PATH
+        or path.rstrip("/") == _DIFFUSION_DATASET_UPLOAD_PATH
     ):
         return upload_request_limit_bytes()
     return default_request_body_limit_bytes()
@@ -831,7 +836,10 @@ class MaxBodyMiddleware:
         self.upload_passthrough_exact_paths = upload_passthrough_exact_paths
 
     def _is_upload_passthrough(self, path: str) -> bool:
-        return path in self.upload_passthrough_exact_paths or any(
+        # Exact paths also match their trailing-slash variant: the middleware runs
+        # before the router's redirect_slashes 307, and a JSON sub-route can never
+        # normalize down to the exact path (it keeps extra components).
+        return path.rstrip("/") in self.upload_passthrough_exact_paths or any(
             path.startswith(p) for p in self.upload_passthrough_prefixes
         )
 

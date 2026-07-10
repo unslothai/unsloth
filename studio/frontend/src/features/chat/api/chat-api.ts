@@ -326,6 +326,10 @@ export interface CachedModelRepo {
   /** True when the snapshot is incomplete (a cancelled/partial download). Such a
    * repo must not count as downloaded, or a click re-downloads the full weights. */
   partial?: boolean;
+  /** True for a diffusion repo with no model_index.json: a single-file checkpoint that
+   * loads only via from_single_file + a checkpoint filename. Task pickers must not offer
+   * it as a pipeline load unless the curated catalog carries its artifact. */
+  single_file?: boolean;
 }
 
 export async function listCachedModels(

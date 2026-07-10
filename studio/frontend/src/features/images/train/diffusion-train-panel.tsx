@@ -612,10 +612,21 @@ export function DiffusionTrainPanel({
       toast.error("Name the adapter (this becomes its folder under Studio outputs).");
       return;
     }
-    if (selectedDataset && selectedDataset.caption_count === 0 && !instancePrompt.trim()) {
+    // Require a trigger prompt whenever ANY image lacks a caption, not only when none
+    // have one: without an instance_prompt the backend discovery silently skips every
+    // uncaptioned image, so a partially captioned dataset would train on a subset.
+    if (
+      selectedDataset &&
+      selectedDataset.caption_count < selectedDataset.image_count &&
+      !instancePrompt.trim()
+    ) {
       toast.error(
-        "These images have no captions - add a trigger prompt so the trainer knows " +
-          "what to learn (it becomes the caption for every image).",
+        selectedDataset.caption_count === 0
+          ? "These images have no captions - add a trigger prompt so the trainer knows " +
+              "what to learn (it becomes the caption for every image)."
+          : `Only ${selectedDataset.caption_count} of ${selectedDataset.image_count} images ` +
+              "have captions - the rest would be silently skipped. Add a trigger prompt " +
+              "(it becomes their caption) or caption every image.",
       );
       return;
     }

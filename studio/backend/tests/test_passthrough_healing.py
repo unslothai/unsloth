@@ -515,6 +515,7 @@ class ScriptedClient:
         _url,
         json = None,
         timeout = None,
+        headers = None,
     ):
         self.posts.append(json)
         return httpx.Response(200, json = self.bodies[min(len(self.posts) - 1, len(self.bodies) - 1)])

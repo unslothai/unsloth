@@ -471,17 +471,23 @@ def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
     """Restore the regional compile on cache-hooked blocks' COMPUTED steps.
 
     ``enable_cache`` replaces each block's ``forward`` with the hook's ``new_forward``
-    (stashing the pre-hook bound method in ``fn_ref.original_forward``), and every cache
-    ``new_forward`` is ``@torch.compiler.disable``d because its skip decision is
-    data-dependent Python. The disable is recursive, so the compute branch's call into
-    ``original_forward`` runs EAGER and the block's regional compile artifact
-    (``_compiled_call_impl``) is never reached: measured 1.69 vs 1.09 s/step on
-    HunyuanVideo-1.5-720p, i.e. the cache forfeited the whole compile win on every
-    non-skipped step. An explicitly ``torch.compile``d callable re-enables dynamo for
-    its own extent even inside a disabled frame, so re-pointing
+    (stashing the pre-hook bound method in ``fn_ref.original_forward``), whose skip
+    decision is data-dependent Python: MagCache ``@torch.compiler.disable``s the whole
+    ``new_forward`` (recursive -- the compute branch runs EAGER), and even FBCache's
+    traceable ``new_forward`` graph-breaks around its disabled threshold decision,
+    which on some archs (measured: Qwen-Image) drops the compute branch's call into
+    ``original_forward`` out of the compiled region -- the block's regional compile
+    artifact (``_compiled_call_impl``) is never reached and the cache forfeits the
+    compile win on every non-skipped step. An explicitly ``torch.compile``d callable
+    re-enables
+    dynamo for its own extent even inside a disabled frame, so re-pointing
     ``fn_ref.original_forward`` at a compiled wrapper of the same bound method restores
-    compiled compute steps while the skip decision stays eager exactly as designed
-    (measured: identical skip counts, balanced MagCache 39.4 -> 26.9 s at 50 steps).
+    compiled compute steps while the skip decision stays eager exactly as designed.
+    Measured (B200, scripts/image_speedmem_bench.py): Qwen-Image FBCache computed steps
+    91.8 -> 71.2 ms (= the uncached compiled rate), 1.21x end to end; FLUX.1-dev is
+    neutral (its FBCache ``new_forward`` happens to trace, so computed steps were
+    already compiled -- same-process armed vs unarmed latents bit-identical); on the
+    video DiT balanced MagCache went 39.4 -> 26.9 s at 50 steps.
 
     Only blocks the speed layer actually compiled are armed (``_compiled_call_impl``
     guard -- eager tiers stay untouched), and only when ``original_forward`` is a plain

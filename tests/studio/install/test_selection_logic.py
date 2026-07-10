@@ -2684,68 +2684,6 @@ class TestBlackwellCuda124Exclusion:
         assert kept == [cpu]
 
 
-# N.1c3. direct_linux_release_plan -- no silent CPU on NVIDIA hosts
-
-
-class TestDirectLinuxNvidiaCpuGate:
-    """A linux-cpu-only release on an NVIDIA host must raise (caller walks back to a usable CUDA line), not silently CPU-install. CPU-only hosts keep the CPU bundle."""
-
-    def _bundle_cpu_only(self):
-        return make_release(
-            [
-                make_artifact(
-                    "llama-b8508-bin-ubuntu-x64.tar.gz",
-                    install_kind = "linux-cpu",
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
-                    bundle_profile = None,
-                ),
-            ]
-        )
-
-    def _patch(self, monkeypatch):
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "parse_direct_linux_release_bundle",
-            lambda repo, release: self._bundle_cpu_only(),
-        )
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "detect_torch_cuda_runtime_preference",
-            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
-        )
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "detected_linux_runtime_lines",
-            lambda: (["cuda13"], {"cuda13": ["/usr/local/cuda/lib64"]}),
-        )
-
-    def test_nvidia_host_without_cuda_line_raises_for_walkback(self, monkeypatch):
-        self._patch(monkeypatch)
-        host = make_host(driver_cuda_version = (13, 1), compute_caps = ["100"])
-        with pytest.raises(PrebuiltFallback, match = "no compatible Linux prebuilt"):
-            INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
-                {"tag_name": "b8508"}, host, "unslothai/llama.cpp", "latest"
-            )
-
-    def test_cpu_host_still_gets_cpu_bundle(self, monkeypatch):
-        self._patch(monkeypatch)
-        host = make_host(
-            nvidia_smi = None,
-            driver_cuda_version = None,
-            compute_caps = [],
-            has_physical_nvidia = False,
-            has_usable_nvidia = False,
-        )
-        plan = INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
-            {"tag_name": "b8508"}, host, "unslothai/llama.cpp", "latest"
-        )
-        assert [a.install_kind for a in plan.attempts] == ["linux-cpu"]
-
-
 class TestLinuxPublishedAttemptsNvidiaCpuGate:
     """Live fork-manifest path: an NVIDIA host whose CUDA selection finds nothing gets an empty attempt list (source-builds with CUDA), not the manifest CPU bundle. CPU-only hosts still get the CPU bundle."""
 

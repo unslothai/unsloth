@@ -2273,8 +2273,12 @@ export function HubModelPicker({
             // Gate on a curated ARTIFACT (artifactForRepoId, what loadSpecFor resolves), not a
             // group-key match: a base / uncurated-quant sibling (Qwen/Qwen-Image-2512) matches
             // the group by key but has no loadable artifact and dead-ends at the trust gate.
+            // An unsloth repo must also be a full pipeline (not single_file): the selection
+            // fall-through loads uncataloged rows as kind "pipeline", and from_pretrained on
+            // a single-file checkpoint repo (no model_index.json) fails after the handoff.
+            // Curated single-file artifacts stay: loadSpecFor carries their filename.
             (!task ||
-              isUnslothRepoId(c.repo_id) ||
+              (isUnslothRepoId(c.repo_id) && !c.single_file) ||
               (catalog ? artifactForRepoId(c.repo_id, catalog) !== null : false)),
         ),
         downloadedSort,

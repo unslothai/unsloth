@@ -392,6 +392,31 @@ def test_upload_same_stem_collision_within_one_batch(client, ds_root):
     assert "Duplicate image name" in r.json()["detail"]
 
 
+def test_upload_rejects_exact_duplicate_name_within_one_batch(client, ds_root):
+    # Two parts with the SAME name in ONE multipart batch are distinct files (dragged from
+    # different folders, or an API client repeating a part); the staged commit would let the
+    # later tmp.replace(dest) silently discard the earlier one while `uploaded` still counts
+    # both. The batch must be rejected whole. Re-sending a name in a SEPARATE upload stays a
+    # deliberate overwrite (test_upload_allows_exact_name_overwrite_and_caption_sidecar).
+    r = _upload(
+        client,
+        "styleset",
+        [("sample.png", _png_bytes((10, 20, 30))), ("sample.png", _png_bytes((90, 90, 90)))],
+    )
+    assert r.status_code == 400
+    assert "more than once" in r.json()["detail"]
+    assert not (ds_root / "styleset" / "sample.png").exists()  # all-or-nothing
+    # Caption files collide at one destination the same way.
+    r = _upload(client, "styleset", [("sample.txt", b"a"), ("sample.txt", b"b")])
+    assert r.status_code == 400
+    assert "more than once" in r.json()["detail"]
+    # A case VARIANT pair (Cat.png vs cat.png) stays exempt, matching the stem-guard
+    # contract: it is one file / an overwrite on case-insensitive filesystems and two
+    # files on Linux, not silent same-destination data loss.
+    r = _upload(client, "styleset", [("Cat.png", _png_bytes()), ("cat.png", _png_bytes())])
+    assert r.status_code == 200
+
+
 def test_upload_allows_exact_name_overwrite_and_caption_sidecar(client, ds_root):
     # Re-uploading the EXACT same name (stem AND extension) is an allowed overwrite, and a .txt
     # caption for the same stem is the intended kohya flow -- neither is a same-stem image collision.

@@ -8,15 +8,16 @@ these routes mirror the /images/* routes one-for-one: the same validate-before-e
 load ordering, the same GPU arbiter handoff (VIDEO owner in place of DIFFUSION),
 the same error boundary mapping backend exceptions to HTTP, and the same gallery
 CRUD shape. The backend runs in-process and is synchronous, so the blocking
-load/generate/unload calls are offloaded with asyncio.to_thread to keep the event
-loop free. This module is the single error boundary: backend methods raise, we
-map to HTTP here.
+calls are offloaded with asyncio.to_thread to keep the event loop free; the slow
+operations (load AND generate) run as background jobs whose begin_* calls return
+at once, with progress + terminal outcome polled from their *-progress routes.
+This module is the single error boundary: backend methods raise, we map to HTTP
+here.
 """
 
 from __future__ import annotations
 
 import asyncio
-import time
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import ValidationError
@@ -149,14 +150,18 @@ async def video_load_progress(current_subject: str = Depends(get_current_subject
 async def generate_video(
     request: VideoGenerateRequest, current_subject: str = Depends(get_current_subject)
 ):
-    from core.inference import video_gallery
+    """Start a generation job and return at once (the begin_load pattern): a clip
+    takes minutes, and secure mode's tunnel caps the origin response window near
+    100 seconds, so the response must not span the generation. The worker runs the
+    generate + gallery-persist pipeline; the terminal outcome (completed with the
+    saved record / failed with a client-safe error) arrives via generate-progress."""
     from core.inference.video import get_video_backend
-    from core.inference.video_families import VIDEO_CANCELLED_MSG, VIDEO_NOT_LOADED_MSG
+    from core.inference.video_families import VIDEO_GENERATION_BUSY_MSG, VIDEO_NOT_LOADED_MSG
 
     backend = get_video_backend()
     try:
-        result = await asyncio.to_thread(
-            backend.generate,
+        await asyncio.to_thread(
+            backend.begin_generate,
             prompt = request.prompt,
             negative_prompt = request.negative_prompt,
             width = request.width,
@@ -169,53 +174,19 @@ async def generate_video(
             seed = request.seed,
         )
     except ValueError as exc:
-        # Bad client input (a workflow the loaded family doesn't support) -- a 400 with
-        # the reason, not a generic 500.
+        # Bad client input -- a 400 with the reason, not a generic 500.
         raise HTTPException(status_code = 400, detail = str(exc))
     except RuntimeError as exc:
-        # Only "no model loaded" / user-cancelled are client-state (409). Match the
-        # sentinels exactly, not as a substring, so an execution failure that merely
-        # contains "cancelled" can't misroute to 409 and leak that output.
+        # Only "no model loaded" / "already generating" are client-state (409).
+        # Match the sentinels exactly, not as a substring, so an unrelated failure
+        # can't misroute to 409 and leak its message.
         msg = str(exc)
-        if msg in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG):
+        if msg in (VIDEO_NOT_LOADED_MSG, VIDEO_GENERATION_BUSY_MSG):
             raise HTTPException(status_code = 409, detail = msg)
         logger.error("video.generate_failed: %s", exc, exc_info = True)
         raise HTTPException(status_code = 500, detail = "Video generation failed.")
-    except Exception as exc:
-        logger.error("video.generate_failed: %s", exc, exc_info = True)
-        raise HTTPException(status_code = 500, detail = "Video generation failed.")
 
-    # Persist the clip with its full recipe as the JSON sidecar the gallery reads back.
-    created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-    def _persist() -> dict:
-        return video_gallery.save(
-            result["mp4_bytes"],
-            {
-                "prompt": request.prompt,
-                "negative_prompt": request.negative_prompt,
-                "width": result["width"],
-                "height": result["height"],
-                "num_frames": result["num_frames"],
-                "fps": result["fps"],
-                "duration_s": result["duration_s"],
-                "steps": result["steps"],
-                "guidance": result["guidance"],
-                "guidance_2": request.guidance_2,
-                "seed": result["seed"],
-                "has_audio": result["has_audio"],
-                "model": result["repo_id"],
-                "created_at": created_at,
-            },
-        )
-
-    try:
-        record = await asyncio.to_thread(_persist)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("video.persist_failed: %s", exc)
-        raise HTTPException(status_code = 500, detail = "Failed to save the generated video.")
-
-    return VideoGenerateResponse(video = GalleryVideo(**record))
+    return VideoGenerateResponse()
 
 
 @router.get("/video/generate-progress", response_model = VideoGenerateProgressResponse)

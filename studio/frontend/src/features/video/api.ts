@@ -60,11 +60,16 @@ export interface VideoStatus {
 
 export interface VideoGenerateProgress {
   active: boolean;
-  // "denoise" | "export" | null.
+  // "queued" | "denoise" | "export" | "completed" | "failed" | null. The terminal
+  // phases carry the outcome of the background job POST /video/generate started.
   phase?: string | null;
   step: number;
   total: number;
   eta_seconds?: number | null;
+  // Saved gallery record when phase is "completed".
+  video?: GalleryVideo | null;
+  // Client-safe failure detail when phase is "failed".
+  error?: string | null;
 }
 
 export interface VideoLoadProgress {
@@ -149,8 +154,12 @@ export interface GalleryVideo {
   created_at: string;
 }
 
+// Acknowledgement that the generation job started; the saved record arrives via
+// getVideoGenerateProgress when its phase reaches "completed".
 export interface VideoGenerateResponse {
-  video: GalleryVideo;
+  status: "started";
+  // Always null (kept for response-shape compatibility).
+  video?: GalleryVideo | null;
 }
 
 async function parseJson<T>(response: Response): Promise<T> {
@@ -182,6 +191,9 @@ export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatu
   );
 }
 
+/** Start a generation job. Returns as soon as the backend accepts it (the clip takes
+ *  minutes, and secure mode's tunnel caps responses near 100s, so the POST cannot span
+ *  the generation); poll getVideoGenerateProgress for completion. */
 export async function generateVideo(
   body: VideoGenerateRequest,
 ): Promise<VideoGenerateResponse> {

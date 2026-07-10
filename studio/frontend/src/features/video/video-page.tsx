@@ -194,6 +194,10 @@ function clipMeta(video: GalleryVideo): string {
 // "Encoding video…" during export) plus an ETA once known.
 function genStepLabel(p: VideoGenerateProgress): string {
   if (p.phase === "export") return "Encoding video…";
+  // Text encoding and the first-step warmup run inside the pipeline before the first
+  // scheduler tick, so step 0 means "working, not denoising yet" -- up to a minute at
+  // 720p. Label that phase honestly instead of sitting on "Denoising step 0/N".
+  if (p.step === 0) return "Preparing (text encoding + warmup)…";
   const base = p.total > 0 ? `Denoising step ${p.step}/${p.total}` : "Denoising…";
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
   return eta ? `${base} · ~${eta}` : base;
@@ -541,6 +545,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   // Live per-step progress (phase / step / total + ETA) polled during generation.
   const [genStep, setGenStep] = useState<VideoGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // visibilitychange handler active while a generation poll runs: background tabs clamp
+  // setInterval to >=1s (and can suspend it outright after ~5 min), so returning to the
+  // tab fires one immediate poll instead of waiting for a throttled tick.
+  const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<VideoStatus | null>(null);
   // Controlled so the body-portaled overlays force-close when this page is mounted but
   // off-tab (a hidden/inert parent can't contain a body portal): the model selector.
@@ -911,6 +919,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
       if (genPollTimer.current) clearInterval(genPollTimer.current);
+      if (genVisibilityListener.current) {
+        document.removeEventListener("visibilitychange", genVisibilityListener.current);
+        genVisibilityListener.current = null;
+      }
       dismissLoadToast();
     };
   }, [refreshStatus, dismissLoadToast, pollLoadProgress]);
@@ -1042,6 +1054,29 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         });
         return;
       }
+      // A direct local single-file .safetensors pick must load via from_single_file:
+      // the pipeline route rejects a bare file (no model_index.json) and only after
+      // evicting the resident model. Split into (parent dir, basename) exactly like
+      // the local GGUF branch above.
+      if (meta.source === "local" && id.toLowerCase().endsWith(".safetensors")) {
+        const norm = id.replace(/\\/g, "/");
+        const slash = norm.lastIndexOf("/");
+        const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
+        const dir = slash >= 0 ? norm.slice(0, slash) : ".";
+        const prevQuant = quant;
+        quantRevert.current = { prev: prevQuant };
+        setQuant(filename);
+        const dsf = defaultsFor(id);
+        setSteps(dsf.steps);
+        setGuidance(dsf.guidance);
+        void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
+          if (!started) {
+            setQuant(prevQuant);
+            quantRevert.current = null;
+          }
+        });
+        return;
+      }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/*
       // repos, the family bases, or on-device paths, so only attempt those.
       if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
@@ -1108,11 +1143,68 @@ export function VideoPage({ active = true }: { active?: boolean }) {
 
     setBusy("generating");
     setGenStep(null);
-    // Poll the backend's per-step progress so the bar tracks the live denoising steps and
-    // the encode phase.
-    genPollTimer.current = setInterval(async () => {
+    // The POST only STARTS the job and returns at once (a clip takes minutes, and
+    // secure mode's tunnel caps responses near 100s, so completion cannot ride the
+    // POST). A synchronous rejection (no model / already generating / bad input)
+    // still surfaces here; everything after acceptance arrives via the poll.
+    try {
+      await generateVideo({
+        prompt: prompt.trim(),
+        // Only send a negative prompt when guidance uses it, so the recipe doesn't record
+        // one the model ignored.
+        negative_prompt: guidance > 0 ? negativePrompt.trim() || undefined : undefined,
+        width: w,
+        height: h,
+        num_frames: numFrames,
+        fps,
+        steps,
+        guidance,
+        seed: resolvedSeed,
+      });
+    } catch (err) {
+      if (!isMounted.current) return;
+      toast.error(err instanceof Error ? err.message : "Video generation failed");
+      setBusy(null);
+      setGenStep(null);
+      return;
+    }
+    // Poll the backend's per-step progress so the bar tracks the live denoising steps
+    // and the encode phase, and drive completion off the terminal phase: "completed"
+    // carries the saved gallery record, "failed" the client-safe error. A named poll
+    // body (guarded against overlap) also serves the visibilitychange listener: a
+    // background tab's throttled interval catches up the moment the tab is visible.
+    let pollInFlight = false;
+    const stopGenPoll = () => {
+      if (genPollTimer.current) clearInterval(genPollTimer.current);
+      genPollTimer.current = null;
+      if (genVisibilityListener.current) {
+        document.removeEventListener("visibilitychange", genVisibilityListener.current);
+        genVisibilityListener.current = null;
+      }
+    };
+    const pollGenerateOnce = async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
       try {
         const p = await getVideoGenerateProgress();
+        if (p.phase === "completed" || p.phase === "failed") {
+          stopGenPoll();
+          if (!isMounted.current) return;
+          setBusy(null);
+          setGenStep(null);
+          if (p.phase === "completed" && p.video) {
+            // Prepend the new clip (newest first) and load its blob.
+            const clip = p.video;
+            setVideos((prev) => [clip, ...prev.filter((v) => v.id !== clip.id)]);
+            setSelectedId(clip.id);
+            void ensureSrc(clip);
+          } else if (p.phase === "failed") {
+            const msg = p.error || "Video generation failed";
+            // The user's own Cancel surfaces as the backend's cancelled sentinel; not an error.
+            if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
+          }
+          return;
+        }
         setGenStep((prev) => {
           if (!p.active) return null;
           if (
@@ -1126,37 +1218,17 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         });
       } catch {
         // transient; keep polling
+      } finally {
+        pollInFlight = false;
       }
-    }, 300);
-    try {
-      const res = await generateVideo({
-        prompt: prompt.trim(),
-        // Only send a negative prompt when guidance uses it, so the recipe doesn't record
-        // one the model ignored.
-        negative_prompt: guidance > 0 ? negativePrompt.trim() || undefined : undefined,
-        width: w,
-        height: h,
-        num_frames: numFrames,
-        fps,
-        steps,
-        guidance,
-        seed: resolvedSeed,
-      });
-      if (!isMounted.current) return;
-      // Prepend the new clip (newest first) and load its blob.
-      setVideos((prev) => [res.video, ...prev.filter((v) => v.id !== res.video.id)]);
-      setSelectedId(res.video.id);
-      void ensureSrc(res.video);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Video generation failed";
-      // The user's own Cancel comes back as the backend's 409 sentinel; not an error.
-      if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
-    } finally {
-      if (genPollTimer.current) clearInterval(genPollTimer.current);
-      genPollTimer.current = null;
-      setBusy(null);
-      setGenStep(null);
-    }
+    };
+    if (genVisibilityListener.current)
+      document.removeEventListener("visibilitychange", genVisibilityListener.current);
+    genVisibilityListener.current = () => {
+      if (document.visibilityState === "visible") void pollGenerateOnce();
+    };
+    document.addEventListener("visibilitychange", genVisibilityListener.current);
+    genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
   }, [
     prompt,
     negativePrompt,

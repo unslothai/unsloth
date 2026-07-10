@@ -945,6 +945,8 @@ def test_arming_skips_partial_captured_inner(monkeypatch):
 
 
 def test_arming_covers_every_cache_hook_family(monkeypatch):
+    # FBCache is the image cache today, but the hook-name table already covers the
+    # MagCache layout too (same fn_ref shape), so a future mode arms for free.
     _stub_torch_compile(monkeypatch)
     names = (
         "mag_cache_leader_block_hook",
@@ -1007,3 +1009,69 @@ def test_apply_step_cache_arms_compiled_blocks_on_toggle(monkeypatch):
     assert engaged == TC_MAGCACHE
     assert hook.fn_ref.original_forward is not orig
     assert hook._unsloth_orig_inner is orig
+
+
+def test_toggle_disable_restores_inners_before_disable(monkeypatch):
+    # remove_hook splices fn_ref.original_forward back into module.forward, so the
+    # compiled wrapper must be swapped out BEFORE disable_cache runs.
+    _stub_diffusers(monkeypatch)
+    order = []
+
+    class _T(_ToggleTransformer):
+        def disable_cache(self):
+            super().disable_cache()
+            order.append("disable")
+
+        def modules(self):
+            order.append("restore-walk")
+            return []
+
+    t = _T()
+    maybe_toggle_step_cache(_pipe(t), steps = 28)
+    mode = maybe_toggle_step_cache(_pipe(t), steps = 8)
+    assert mode is None and t.disables == 1
+    assert order[-2:] == ["restore-walk", "disable"]
+
+
+def test_enable_failure_restores_inners_before_partial_disable(monkeypatch):
+    # enable_cache can fail after hooking (and arming) some blocks; the partial-hook
+    # cleanup must un-arm them before disable_cache splices original_forward back.
+    _stub_diffusers(monkeypatch)
+    order = []
+
+    class _T(_ToggleTransformer):
+        def enable_cache(self, config):
+            raise RuntimeError("block signature not recognised")
+
+        def disable_cache(self):
+            super().disable_cache()
+            order.append("disable")
+
+        def modules(self):
+            order.append("restore-walk")
+            return []
+
+    t = _T()
+    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert order == ["restore-walk", "disable"]
+
+
+# ── stale child-registry cache invalidation (mid-session enable) ────────────────────
+
+
+def test_enable_invalidates_stale_child_registry_cache(monkeypatch):
+    # diffusers 0.39 caches the child-registry list on first cache_context use; an
+    # UNCACHED generation already populates it (empty), so a later toggle-time
+    # enable_cache would install hooks the context never reaches ("No context is set").
+    _stub_diffusers(monkeypatch)
+    t = _MixinTransformer()
+    t._diffusers_hook = types.SimpleNamespace(_child_registries_cache = ["stale"])
+    assert apply_step_cache(_pipe(t), mode = "fbcache") == TC_FBCACHE
+    assert t._diffusers_hook._child_registries_cache is None
+
+
+def test_invalidate_child_registry_cache_tolerates_absence():
+    _invalidate_child_registry_cache(types.SimpleNamespace())  # no registry: no-op
+    reg = types.SimpleNamespace(_child_registries_cache = None)
+    _invalidate_child_registry_cache(types.SimpleNamespace(_diffusers_hook = reg))
+    assert reg._child_registries_cache is None

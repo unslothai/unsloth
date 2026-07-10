@@ -204,6 +204,57 @@ class TestMaxBodyMiddleware:
                 default_request_body_limit_bytes()
             ), path
 
+    def test_diffusion_dataset_trailing_slash_gets_upload_cap(self, main_module):
+        # The trailing-slash variant reaches the middleware BEFORE the router's
+        # redirect_slashes 307, so it must resolve to the same passthrough + upload cap
+        # as the canonical path or a large upload 413s on the default /api/train cap.
+        # JSON sub-routes keep extra components after normalization, so they stay capped.
+        from utils.upload_limits import (
+            default_request_body_limit_bytes,
+            upload_request_limit_bytes,
+        )
+
+        slashed = "/api/train/diffusion/dataset/"
+        assert main_module._get_upload_passthrough_request_max_bytes(slashed) == (
+            upload_request_limit_bytes()
+        )
+        # End-to-end through the middleware: a body over the default cap but under the
+        # upload cap passes through on both the canonical and the slashed path.
+        app = _make_protected_app(
+            128,
+            main_module,
+            upload_passthrough_max_bytes_getter = lambda _p: 1024,
+            upload_passthrough_exact_paths = ("/api/train/diffusion/dataset",),
+        )
+
+        @app.post("/api/train/diffusion/dataset")
+        async def upload(request: Request):
+            body = await request.body()
+            return {"total": len(body)}
+
+        c = TestClient(app)
+        for path in ("/api/train/diffusion/dataset", "/api/train/diffusion/dataset/"):
+            r = c.post(
+                path,
+                content = b"x" * 512,
+                headers = {"content-type": "application/octet-stream"},
+            )
+            assert r.status_code == 200, path
+            assert r.json()["total"] == 512, path
+        # A slashed JSON sub-route is still NOT passthrough: over-cap body is rejected.
+        r = c.post(
+            "/api/train/diffusion/dataset/import-example/",
+            content = b"x" * 512,
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 413
+        assert (
+            main_module._get_upload_passthrough_request_max_bytes(
+                "/api/train/diffusion/dataset/import-example/"
+            )
+            == default_request_body_limit_bytes()
+        )
+
     def test_v1_surface_is_body_protected(self, main_module):
         # /images/generations is mounted at both /api/inference and /v1; the /v1 alias (and every
         # other /v1 POST route) must be body-capped via the /v1 blanket prefix, or an unbounded

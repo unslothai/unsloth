@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 # Multi-language supply-chain audit. Triggers:
-#   - PRs touching any dependency manifest (Python / npm / Cargo) or
-#     this workflow file,
+#   - PRs touching any dependency manifest (Python / npm / Cargo), a
+#     scanner or its allowlist baseline, or this workflow file,
 #   - push to main / pip,
 #   - nightly @ 04:13 UTC so newly-published advisories surface even
 #     when no PR opens,
@@ -57,7 +57,9 @@ on:
       - 'studio/src-tauri/Cargo.lock'
       - 'pyproject.toml'
       - 'scripts/scan_packages.py'
+      - 'scripts/scan_packages_baseline.json'
       - 'scripts/scan_npm_packages.py'
+      - 'scripts/scan_npm_packages_baseline.json'
       - '.github/workflows/security-audit.yml'
   push:
     branches: [main, pip]
