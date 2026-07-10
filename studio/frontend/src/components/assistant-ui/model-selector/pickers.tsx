@@ -2074,8 +2074,13 @@ export function HubModelPicker({
     [downloadedSet],
   );
   const deviceBudget = useMemo(
+    // Largest single device, NOT the multi-GPU sum: the diffusion/video
+    // backends place the whole pipeline on one device (pipe.to / cpu-offload,
+    // never device_map), so summed VRAM would pass groups no single card can
+    // hold (e.g. a 114 GB group "fits" a 4x24 GB host) and a bare group click
+    // would OOM -- the exact load the fit toggle exists to prevent.
     () => ({
-      gpuGb: gpu.available ? gpu.memoryTotalGb : 0,
+      gpuGb: gpu.available ? gpu.maxDeviceMemoryGb : 0,
       systemRamGb: gpu.systemRamAvailableGb || 0,
     }),
     [gpu],
