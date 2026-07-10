@@ -30,6 +30,7 @@ STUDIO_BACKEND = REPO_ROOT / "studio" / "backend"
 
 def _make_fake_xpu(
     *,
+    available: bool = True,
     device_count: int = 2,
     total_gb: float = 16.0,
     used_gb: float = 1.0,
@@ -63,7 +64,7 @@ def _make_fake_xpu(
         calls["empty_cache"] += 1
 
     xpu = types.SimpleNamespace(
-        is_available = lambda: True,
+        is_available = lambda: available,
         device_count = lambda: device_count,
         current_device = lambda: 0,
         get_device_name = lambda idx = 0: device_name,
@@ -164,6 +165,33 @@ def test_bare_mask_with_cuda_present_stays_cuda(spoof_xpu):
     # Canary: a stray inherited ZE_AFFINITY_MASK must NOT steal a CUDA host.
     hw, _ = spoof_xpu(cuda_available = True, cuda_visible = None, ze_mask = "0,1")
     assert hw.detect_hardware() == hw.DeviceType.CUDA
+
+
+def test_force_xpu_on_hybrid_hides_cuda_for_workers(spoof_xpu):
+    # Forced XPU with CUDA still visible must hide CUDA: unsloth's
+    # device_type picks CUDA before XPU and ignores UNSLOTH_FORCE_XPU,
+    # so workers would otherwise silently train on CUDA.
+    hw, _ = spoof_xpu(force_xpu = True, cuda_available = True, cuda_visible = None, ze_mask = None)
+    assert hw.detect_hardware() == hw.DeviceType.XPU
+    import os
+
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == ""
+
+
+def test_force_xpu_without_working_xpu_leaves_cuda_untouched(spoof_xpu):
+    # Canary: FORCE_XPU on a CUDA host with no working XPU must fall
+    # through to CUDA and must NOT hide it.
+    hw, _ = spoof_xpu(
+        force_xpu = True,
+        cuda_available = True,
+        cuda_visible = None,
+        ze_mask = None,
+        available = False,
+    )
+    assert hw.detect_hardware() == hw.DeviceType.CUDA
+    import os
+
+    assert "CUDA_VISIBLE_DEVICES" not in os.environ
 
 
 # ---------- visibility / selection ----------

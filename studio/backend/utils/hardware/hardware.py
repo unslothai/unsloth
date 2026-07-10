@@ -209,6 +209,11 @@ def detect_hardware() -> DeviceType:
             except Exception:
                 xpu_ok = False
             if xpu_ok:
+                # Forced XPU on a hybrid host: unsloth's device_type picks
+                # CUDA before XPU and ignores this Studio-only env var, so
+                # hide CUDA or spawned workers would silently train on CUDA.
+                if force_xpu and not cuda_hidden and not cuda_unavailable:
+                    os.environ["CUDA_VISIBLE_DEVICES"] = ""
                 DEVICE = DeviceType.XPU
                 CHAT_ONLY = False
                 CHAT_ONLY_REASON = None
