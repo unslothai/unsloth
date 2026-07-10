@@ -4831,3 +4831,82 @@ class TestRound48Bypasses:
     )
     def test_round48_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound49Bypasses:
+    """Forty-ninth-round Codex findings: watch runs its payload via sh -c (non -x), xargs -I/-i/
+    --replace feeding UNSCANNED stdin into an interpreter or command position, the sqlite3 CLI as
+    an unguarded child DB/output writer, and jq's file-reading options (--rawfile / --slurpfile /
+    -f) leaking an expanded host path. (The native _sqlite3.connect escape is enforced by the
+    runtime guard -- see test_sandbox_runtime_backstop.py.)"""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Without -x, watch runs its (quoted) payload via sh -c, so it is shell code.
+            "import os\nos.system('watch -n 0.1 \\'python3 -c \"import os\"\\'')",
+            "import os\nos.system('watch \\'rm -rf /\\'')",
+            "import os\nos.system('TERM=xterm watch -n 1 \\'python3 -c \"x\"\\'')",
+        ],
+    )
+    def test_watch_shell_payload_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # xargs -I/-i/--replace substitutes stdin into an interpreter code string / command.
+            "import os\nos.system(\"printf 'touch /tmp/p' | xargs -I{} sh -c '{}'\")",
+            "import os\nos.system(\"xargs --replace={} sh -c '{}'\")",
+            "import os\nos.system('xargs -I % bash -c %')",
+            "import os\nos.system('xargs -I{} {}')",
+        ],
+    )
+    def test_xargs_replace_into_exec_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # sqlite3 CLI creates a DB / redirects output outside the workdir in an unguarded child.
+            "import os\nos.system(\"sqlite3 /tmp/escape.db 'create table t(x);'\")",
+            "import os\nos.system(\"sqlite3 ':memory:' '.output /tmp/leak' 'select 1;'\")",
+            "import subprocess\nsubprocess.run(['sqlite3', '/tmp/escape.db', 'create table t(x);'])",
+        ],
+    )
+    def test_sqlite3_cli_escape_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # jq --rawfile / --slurpfile / -f read a file; an expanded or sensitive path leaks it.
+            "import os\nos.system(\"P=$(printf /etc/passwd); jq -n --rawfile x $P '$x'\")",
+            "import os\nos.system(\"jq -n --slurpfile x $SECRET '$x'\")",
+            "import os\nos.system('jq -f $PROG in.json')",
+            "import os\nos.system(\"jq -n --rawfile x /etc/passwd '$x'\")",
+        ],
+    )
+    def test_jq_file_option_sensitive_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A benign watch, an xargs replacement used only as a data ARGUMENT to a
+            # non-interpreter, a local / in-memory sqlite CLI, and jq's non-file options (a
+            # $-bearing FILTER, --arg) all stay allowed.
+            "import os\nos.system('watch -n 1 date')",
+            "import os\nos.system('echo watch rm')",
+            "import os\nos.system('xargs echo hi')",
+            "import os\nos.system('xargs -I{} echo {}')",
+            "import os\nos.system('xargs -I{} grep -e {} file')",
+            "import os\nos.system(\"sqlite3 local.db 'create table t(x);'\")",
+            "import os\nos.system(\"sqlite3 ':memory:' 'select 1;'\")",
+            "import os\nos.system(\"jq -n --rawfile x data.txt '$x'\")",
+            "import os\nos.system(\"jq '.foo' in.json\")",
+            "import os\nos.system('jq --arg x $Y .')",
+        ],
+    )
+    def test_round49_benign_allowed(self, code):
+        _ok(code)

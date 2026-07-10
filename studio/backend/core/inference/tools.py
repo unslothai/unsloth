@@ -284,13 +284,27 @@ _SHELL_BINARIES = frozenset({"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", 
 # (find -exec/-delete, sed -i / w, sort -o). A non-shell argv resolving to one of these is
 # re-scanned as a reconstructed command line so those dangerous flags are caught.
 _ARGV_TAIL_SCAN_COMMANDS = frozenset(
-    {"find", "sed", "gsed", "ssed", "perl", "sort", "git", "openssl"}
+    {"find", "sed", "gsed", "ssed", "perl", "sort", "git", "openssl", "sqlite3"}
 )
 # openssl option flags whose VALUE is an output file the unguarded openssl child writes (rand
 # -out, req -keyout, ca -CAout / -CAserial, ...). A value that escapes the workdir writes a host
 # file the realpath guard never sees; a workdir-local -out and the no-output forms stay allowed.
 _OPENSSL_WRITE_FLAGS = frozenset(
     {"-out", "-writerand", "-keyout", "-CAout", "-CAkeyout", "-CAserial"}
+)
+# sqlite3 CLI dot-commands that WRITE (or read) an arbitrary file argument in the unguarded
+# child: `.output FILE` / `.once FILE` redirect query output to FILE, `.excel` / `.import` /
+# `.backup FILE` / `.save FILE` / `.dump FILE` / `.clone FILE` create files, `.log FILE` writes
+# a log, and `.read FILE` sources SQL from FILE. A FILE that escapes the workdir writes / reads a
+# host path the realpath guard never sees. The group captures the FILE operand for a path check.
+_SQLITE_DOTFILE_RE = re.compile(
+    r"(?m)^\s*\.(?:output|once|excel|import|backup|save|dump|clone|log|read)\b\s+(?:-{1,2}\S+\s+)*"
+    r"(?P<f>(?:'[^']*'|\"[^\"]*\"|\S+))"
+)
+# sqlite3 CLI options that consume a SEPARATED operand (so the value after them is NOT the
+# database filename). Only -init also reads a file (its value is path-checked at the call site).
+_SQLITE_OPERAND_OPTS = frozenset(
+    {"-init", "-cmd", "-mode", "-separator", "-newline", "-nullvalue", "-lookaside", "-mmap", "-maxsize"}
 )
 
 
@@ -1442,6 +1456,67 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     _cmd_word_idx = _command_word_indices()
 
+    def _wrapper_prefix_indices():
+        # Indices where a _COMMAND_PREFIXES wrapper (env / xargs / watch / ...) sits AT command
+        # position. _command_word_indices SKIPS these (it records the RESOLVED command), but the
+        # watch / xargs handlers below key off the wrapper token itself, so track them here with
+        # the same command-position rules -- so `echo watch rm` (watch in ARGUMENT position) is
+        # not mistaken for a wrapper.
+        out = []
+        expect = True
+        pending = False
+        prev_flag = False
+        wrapper = None
+        for _i, _tok in enumerate(tokens):
+            if _tok in _SHELL_SEPARATORS:
+                expect = True
+                pending = False
+                prev_flag = False
+                wrapper = None
+                continue
+            if _tok in _SHELL_KEYWORDS_AS_SEP:
+                if expect:
+                    pending = False
+                    prev_flag = False
+                    wrapper = None
+                continue
+            if _tok.startswith("-"):
+                if not pending:
+                    expect = False
+                elif _wrapper_flag_takes_operand(wrapper, _tok):
+                    prev_flag = True
+                continue
+            if not expect:
+                continue
+            if _tok == "!":
+                continue
+            if _ASSIGNMENT_RE.match(_tok):
+                continue
+            if pending and _is_wrapper_numeric_arg(_tok):
+                prev_flag = False
+                continue
+            _base = _token_basename(_tok)
+            if (
+                pending
+                and prev_flag
+                and _base not in _BLOCKED_COMMANDS
+                and _base not in _COMMAND_PREFIXES
+            ):
+                prev_flag = False
+                continue
+            prev_flag = False
+            if _base in _COMMAND_PREFIXES:
+                out.append(_i)
+                pending = True
+                wrapper = _base
+                continue
+            expect = False
+            pending = False
+            wrapper = None
+        return out
+
+    _wrapper_prefix_idx = _wrapper_prefix_indices()
+
     # trap 'CMD' SIGSPEC registers CMD to run (in the unguarded shell) on EXIT / a signal, so
     # the quoted handler is unscanned shell code. Scan the handler operand of a command-position
     # `trap` recursively; a reset (trap - EXIT) / ignore (trap '' EXIT) has nothing to run.
@@ -1782,6 +1857,160 @@ def _find_blocked_commands(command: str) -> set[str]:
                 and _git_operand_escapes(tokens[k + 1], _local_assigns)
             ):
                 blocked.add("openssl-write-outside")
+
+    # sqlite3 <DBFILE> creates / opens a database in an unguarded child (no realpath guard), and
+    # its dot-commands (.output / .backup / .dump / .read ...) read + write arbitrary files. Flag
+    # a DBFILE operand that escapes the workdir, and any dot-file target that escapes. A local DB
+    # (sqlite3 local.db 'create ...'), :memory:, and an in-memory URI carry no escape and stay
+    # allowed. -init / -cmd option values are option operands, not the DBFILE.
+    for i in _cmd_word_idx:
+        if _token_basename(tokens[i]) != "sqlite3":
+            continue
+        _seen_db = False
+        _sk = i + 1
+        while _sk < len(tokens):
+            t = tokens[_sk]
+            if t in _SHELL_SEPARATORS or t in _SHELL_KEYWORDS_AS_SEP:
+                break
+            # sqlite3 options that consume a SEPARATED operand; skip the value so it is not
+            # mistaken for the DBFILE (only -init reads a file, checked via its own value here).
+            if t in _SQLITE_OPERAND_OPTS:
+                if (
+                    t == "-init"
+                    and _sk + 1 < len(tokens)
+                    and _git_operand_escapes(tokens[_sk + 1], _local_assigns)
+                ):
+                    blocked.add("sqlite3-write-outside")
+                _sk += 2
+                continue
+            # Any dot-command file target that escapes the workdir (.output /tmp/leak, .backup
+            # ../x, .read $P) writes / reads a host path; scan the (possibly quoted, multi-line
+            # SQL) operand for one.
+            _unq = t
+            if len(_unq) >= 2 and _unq[0] == _unq[-1] and _unq[0] in ("'", '"'):
+                _unq = _unq[1:-1]
+            for _m in _SQLITE_DOTFILE_RE.finditer(_unq):
+                _dot_f = _m.group("f")
+                if len(_dot_f) >= 2 and _dot_f[0] == _dot_f[-1] and _dot_f[0] in ("'", '"'):
+                    _dot_f = _dot_f[1:-1]
+                if _dot_f not in ("stdout", "stderr", "off") and _git_operand_escapes(
+                    _dot_f, _local_assigns
+                ):
+                    blocked.add("sqlite3-write-outside")
+            if t.startswith("-"):
+                _sk += 1
+                continue
+            # First bare operand is the DBFILE. :memory: / '' / file::memory: never touch disk.
+            if not _seen_db:
+                _seen_db = True
+                _dbn = t
+                if len(_dbn) >= 2 and _dbn[0] == _dbn[-1] and _dbn[0] in ("'", '"'):
+                    _dbn = _dbn[1:-1]
+                _dblow = _dbn.lower()
+                _is_mem = (
+                    _dbn in ("", ":memory:")
+                    or _dblow.startswith("file::memory:")
+                    or "mode=memory" in _dblow
+                )
+                if not _is_mem and _git_operand_escapes(_dbn, _local_assigns):
+                    blocked.add("sqlite3-write-outside")
+            _sk += 1
+
+    # watch runs its command via `sh -c '<operands joined>'` UNLESS -x/--exec is given (then it
+    # execs argv directly, resolved by the wrapper handling above). So a quoted payload
+    # (watch 'python3 -c ...', watch -n 0.1 'rm -rf /') is shell CODE, not one inert command
+    # word; scan it recursively. A bare `watch date` / `watch -n 1 date` just re-scans `date`.
+    for i in _wrapper_prefix_idx:
+        if _token_basename(tokens[i]) != "watch":
+            continue
+        _has_x = False
+        _ops = []
+        _skip_val = False
+        _wk = i + 1
+        while _wk < len(tokens):
+            t = tokens[_wk]
+            if t in _SHELL_SEPARATORS or t in _SHELL_KEYWORDS_AS_SEP:
+                break
+            if _skip_val:
+                _skip_val = False
+                _wk += 1
+                continue
+            if t in ("-x", "--exec"):
+                _has_x = True
+            elif t in ("-n", "--interval"):
+                _skip_val = True
+            elif not t.startswith("-"):
+                _ops.append(t)
+            _wk += 1
+        if not _has_x and _ops:
+            _payload = " ".join(
+                (o[1:-1] if len(o) >= 2 and o[0] == o[-1] and o[0] in ("'", '"') else o)
+                for o in _ops
+            )
+            blocked |= _find_blocked_commands(_payload)
+
+    # xargs -I{} / -i / --replace substitutes UNSCANNED stdin into the command at runtime. When
+    # the replacement token becomes the command word (xargs -I{} {}) or flows into an interpreter
+    # code string (xargs -I{} sh -c '{}', xargs -I% python3 -c %), stdin executes as code -- the
+    # `{}` payload the scanner sees is inert. Fail closed on those forms; a replacement used only
+    # as a data ARGUMENT to a non-interpreter (xargs -I{} cp {} dir/) is left to the normal
+    # command-word scan, and xargs without a replace flag (xargs echo hi) is unaffected.
+    _XARGS_INTERP = _SHELL_BINARIES | _INTERPRETER_COMMANDS
+    for i in _wrapper_prefix_idx:
+        if _token_basename(tokens[i]) != "xargs":
+            continue
+        _xseg = []
+        _xk = i + 1
+        while _xk < len(tokens):
+            t = tokens[_xk]
+            if t in _SHELL_SEPARATORS or t in _SHELL_KEYWORDS_AS_SEP:
+                break
+            _xseg.append(t)
+            _xk += 1
+        _repl = None
+        _xj = 0
+        while _xj < len(_xseg):
+            t = _xseg[_xj]
+            if t == "-I" and _xj + 1 < len(_xseg):
+                _repl = _xseg[_xj + 1]
+                _xj += 2
+                continue
+            if t.startswith("-I") and len(t) > 2:
+                _repl = t[2:]
+            elif t in ("-i", "--replace"):
+                _repl = "{}"
+            elif t.startswith("--replace="):
+                _repl = t.split("=", 1)[1] or "{}"
+            elif t.startswith("-i") and len(t) > 2:
+                _repl = t[2:]
+            _xj += 1
+        if not _repl:
+            continue
+        # Resolve the wrapped command word (skip xargs flags + their separated operands).
+        _cwidx = None
+        _cwj = 0
+        while _cwj < len(_xseg):
+            t = _xseg[_cwj]
+            if t.startswith("-"):
+                _cwj += 2 if _wrapper_flag_takes_operand("xargs", t) else 1
+                continue
+            _cwidx = _cwj
+            break
+        if _cwidx is None:
+            continue
+        _cw = os.path.basename(_xseg[_cwidx]).lower()
+        if _repl in _xseg[_cwidx]:
+            blocked.add("xargs-replace-exec")  # stdin becomes the command itself
+        elif _cw in _XARGS_INTERP:
+            for _ci2 in range(_cwidx + 1, len(_xseg)):
+                _ct2 = _xseg[_ci2].lower()
+                _is_code_flag = (
+                    _ct2 in ("-c", "-e", "--eval")
+                    or (_ct2.startswith("-") and not _ct2.startswith("--") and _ct2.endswith("c"))
+                )
+                if _is_code_flag and _ci2 + 1 < len(_xseg) and _repl in _xseg[_ci2 + 1]:
+                    blocked.add("xargs-replace-exec")  # stdin flows into interpreter code
+                    break
 
     # Output redirection (> / >> / &> / N>) runs in an unguarded child shell that follows
     # symlinks before any Python guard, so no filename target can be trusted: a relative
@@ -5646,6 +5875,31 @@ def _scan_command_string_for_reads(
     # Shell VAR=value bindings seen so far (P=/etc; env -C $P ...), so an env -C $P operand
     # resolves to /etc and the read is combined + caught. Persists across separators.
     _local_assigns = {}
+    # jq reads files through explicit options, but its positional FILTER legitimately contains
+    # `$` (jq variables: jq -n --rawfile x f '$x'), so jq is NOT a generic reader -- that would
+    # misfire on every filter. Scan only jq's file-valued options: --rawfile NAME FILE /
+    # --slurpfile NAME FILE read FILE into a variable, and -f / --from-file FILE read the program
+    # file. A sensitive / expanded / escaping FILE operand exfiltrates a host secret.
+    for _ji, _jt in enumerate(ptoks):
+        if os.path.basename(_jt).lower() != "jq":
+            continue
+        _jk = _ji + 1
+        while _jk < len(ptoks) and ptoks[_jk] not in _READ_SCAN_SEPARATORS:
+            _jw = ptoks[_jk]
+            if _jw in ("--rawfile", "--slurpfile") and _jk + 2 < len(ptoks):
+                if _risky_read_target(ptoks[_jk + 2]):
+                    return f"jq reads a sensitive file {ptoks[_jk + 2]!r}"
+                _jk += 3
+                continue
+            if _jw in ("-f", "--from-file") and _jk + 1 < len(ptoks):
+                if _risky_read_target(ptoks[_jk + 1]):
+                    return f"jq reads a program file {ptoks[_jk + 1]!r}"
+                _jk += 2
+                continue
+            if _jw.startswith("--from-file="):
+                if _risky_read_target(_jw.split("=", 1)[1]):
+                    return f"jq reads a program file {_jw.split('=', 1)[1]!r}"
+            _jk += 1
     for _pi, _pt in enumerate(ptoks):
         if _pt in _READ_SCAN_SEPARATORS:
             # env -C `...` / env -C $(...): the substitution operand STARTS with a punctuation
@@ -10469,6 +10723,16 @@ try:
     _sq3.connect = _sq3_guarded_connect
     try:
         _sq3.dbapi2.connect = _sq3_guarded_connect
+    except Exception:
+        pass
+    # The native _sqlite3 C extension still exposes the ORIGINAL connect, and it is importable
+    # directly (import _sqlite3; _sqlite3.connect('/tmp/escape.db')), bypassing the two Python
+    # bindings above. Wrap it too so the low-level entry point is confined; module attribute
+    # assignment on a C extension is allowed, but guard it in case a build disallows it.
+    try:
+        import _sqlite3 as _lowsq3
+
+        _lowsq3.connect = _guard_sqlite_connect(_lowsq3.connect)
     except Exception:
         pass
 except Exception:

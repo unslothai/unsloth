@@ -280,6 +280,22 @@ def test_sandboxed_sqlite3_connect_memory_allowed():
 
 
 @_POSIX_ONLY
+def test_sandboxed_low_level_sqlite3_connect_escape_denied(tmp_path):
+    # The native _sqlite3 C extension exposes the ORIGINAL connect and is importable directly,
+    # bypassing the two Python bindings; the guard must wrap it too.
+    target = tmp_path / "low_sqlite_escape.db"
+    out = _python_exec(
+        f"import _sqlite3; _sqlite3.connect({str(target)!r}); print('OPENED')",
+        None,
+        30,
+        "backstop-low-sqlite-escape",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
 def test_sandboxed_os_rename_dir_fd_denied(tmp_path):
     # os.rename / os.replace with src_dir_fd / dst_dir_fd is fd-relative; a string
     # realpath against cwd cannot confine it (the relative names look local), so the
