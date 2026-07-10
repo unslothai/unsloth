@@ -770,6 +770,16 @@ def _find_blocked_commands(command: str) -> set[str]:
                 if al.startswith("--in-place") or (_short and "i" in al[1:]):
                     blocked.add("mutating:" + _base)
                     break
+                # A sed script's `w FILE` / `W FILE` command (and the s///w FILE flag) writes
+                # arbitrary files even without -i: sed -n '1w /tmp/escape' /etc/hostname or
+                # sed 's/a/b/w /tmp/out' input.txt. The `w`/`W` command follows a sed address
+                # (a line number `1w`, `$w`, a `/re/w`, `;`/`}` separator) or an s/// flag, so
+                # it is preceded by a NON-LETTER and followed by whitespace + a filename. A
+                # plain s/word/x/ has `w` inside a word (preceded by a letter) and is not matched.
+                if _base in ("sed", "gsed", "ssed") and not a.startswith("-"):
+                    if re.search(r"(?<![A-Za-z])[wW][ \t]+\S", a):
+                        blocked.add("mutating:" + _base)
+                        break
             elif _base == "sort":
                 if al.startswith("--output") or (_short and "o" in al[1:]):
                     blocked.add("mutating:sort")
@@ -786,6 +796,43 @@ def _find_blocked_commands(command: str) -> set[str]:
                 blocked.add("mutating:tee")
                 break
 
+    return blocked
+
+
+def _blocked_in_argv(str_elts: list[str | None]) -> set[str]:
+    """Return the blocked command basenames among the command WORDS of a non-shell
+    argv vector (subprocess.run(['rm', '-rf', '/'])). Only element 0 -- and the real
+    command after any wrapper prefix (env / nice / timeout / xargs / ...) -- is
+    executed by the OS; every later element is a literal argument that is never run.
+    Scanning just the command word(s) keeps `env rm -rf /` blocked (rm resolved
+    through the wrapper) while a benign argument such as subprocess.run(['echo',
+    'python']) is not misread as invoking `python`."""
+    blocked: set[str] = set()
+    idx, n = 0, len(str_elts)
+    prefix_pending = False  # a wrapper is awaiting its real command word
+    while idx < n:
+        tok = str_elts[idx]
+        if tok is None:
+            break  # a non-literal element hides the command word; stop conservatively
+        # env FOO=bar assignments precede the command word.
+        if _ASSIGNMENT_RE.match(tok):
+            idx += 1
+            continue
+        # A wrapper's option flag / numeric arg (`timeout 5 rm`, `nice -n 5 rm`).
+        if prefix_pending and (tok.startswith("-") or _is_wrapper_numeric_arg(tok)):
+            idx += 1
+            continue
+        base = os.path.basename(tok).lower()
+        stem, ext = os.path.splitext(base)
+        if ext in {".exe", ".com", ".bat", ".cmd"}:
+            base = stem
+        if base in _BLOCKED_COMMANDS:
+            blocked.add(base)
+        if base in _COMMAND_PREFIXES:
+            prefix_pending = True
+            idx += 1
+            continue  # wrapper consumes one command; the next word is the real one
+        break  # reached the executed command word
     return blocked
 
 
@@ -4073,11 +4120,16 @@ def _check_signal_escape_patterns(
             if isinstance(arg, (ast.List, ast.Tuple)):
                 # A shell argv vector is analyzed as a whole so `['bash', '-c', 'echo hi']`
                 # scans the payload instead of tripping the bare-shell block on the 'bash'
-                # element; non-shell argv is still scanned element-wise below.
-                first = _extract_string_from_node(arg.elts[0]) if arg.elts else None
+                # element. A non-shell argv only executes its command word (argv[0] plus any
+                # wrapper prefix), so scan just that -- scanning every element would misread a
+                # benign argument (subprocess.run(['echo', 'python'])) as a blocked command.
+                str_elts = [_extract_string_from_node(e) for e in arg.elts]
+                first = str_elts[0] if str_elts else None
                 if first is not None and os.path.basename(first).lower() in _SHELL_BINARIES:
                     found |= _check_shell_argv(arg.elts)
-                    continue
+                else:
+                    found |= _blocked_in_argv(str_elts)
+                continue
             for s in _extract_strings_from_list(arg):
                 found |= _find_blocked_commands(s)
         return found
@@ -4457,22 +4509,35 @@ def _check_signal_escape_patterns(
                 return None
             return None
 
-        def _is_sys_modules(self, n):
-            # `sys.modules` as the attribute form, or a single-assignment alias of it
-            # (m = sys.modules; m.pop('_io')). Used by the loader-table mutation checks.
+        def _is_sys_modules_expr(self, n):
+            # `sys.modules` (attribute form) or getattr(sys, 'modules') (the getattr-
+            # obfuscated form) -- both denote the loader table itself.
             if (
                 isinstance(n, ast.Attribute)
                 and n.attr == "modules"
                 and _ast_name_matches(n.value, self.sys_aliases)
             ):
                 return True
+            if (
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name)
+                and n.func.id == "getattr"
+                and len(n.args) >= 2
+                and _ast_name_matches(n.args[0], self.sys_aliases)
+                and _extract_string_from_node(n.args[1]) == "modules"
+            ):
+                return True
+            return False
+
+        def _is_sys_modules(self, n):
+            # `sys.modules` / getattr(sys, 'modules'), or a single-assignment alias of
+            # either (m = sys.modules; m.pop('_io')). Used by the loader-table mutation
+            # checks (sys.modules.pop('posix'); import posix drops the guard-patched module).
+            if self._is_sys_modules_expr(n):
+                return True
             if _analyzer_on and isinstance(n, ast.Name):
                 rhs = _scope_idx.resolve(n.id, n, "rhsnode")
-                if (
-                    isinstance(rhs, ast.Attribute)
-                    and rhs.attr == "modules"
-                    and _ast_name_matches(rhs.value, self.sys_aliases)
-                ):
+                if rhs is not None and self._is_sys_modules_expr(rhs):
                     return True
             return False
 
@@ -5246,7 +5311,28 @@ def _check_signal_escape_patterns(
                         "description": "__dict__ access on a sensitive module",
                     }
                 )
+            elif node.attr in ("__mro__", "mro") and self._is_fileclass_recovery_expr(node.value):
+                # io.FileIO.mro() / io.FileIO.__mro__ / open.__class__.mro(): the guard
+                # replaces io.FileIO with a confining subclass, but its MRO still exposes the
+                # UNGUARDED C base. Plain iteration recovers it (for c in io.FileIO.mro(): c(
+                # '/etc/x','w')) without ever indexing, so flag any whole-MRO access on a
+                # file-class-recovery receiver. Benign int.mro() / cls.__mro__ do not match.
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(node, "lineno", -1),
+                        "description": "MRO access on a file class recovers an unguarded base (gadget)",
+                    }
+                )
             self.generic_visit(node)
+
+        def _is_fileclass_recovery_expr(self, expr):
+            """True when ``expr`` denotes a file/IO class whose MRO walk recovers an UNGUARDED
+            file primitive: the guarded ``io.FileIO`` / ``_io.FileIO`` (``.FileIO`` attribute)
+            or the type of a file object reached through ``.__class__`` (``open.__class__``,
+            ``f.__class__``). Ordinary class receivers (``int``, ``cls``, ``type('X', (), {})``)
+            are plain Names / Calls and do not match, so benign MRO introspection stays allowed."""
+            return isinstance(expr, ast.Attribute) and expr.attr in ("FileIO", "__class__")
 
         def visit_Subscript(self, node):
             # An INTEGER-indexed __mro__ (cls.__mro__[1]) or the equivalent method call
@@ -6410,6 +6496,16 @@ def _check_signal_escape_patterns(
         # read scanner otherwise treats the whole command as one opaque path candidate, and
         # _is_sensitive_abs_path ignores strings with whitespace. Tokenize the command and
         # check each token as a read path so an embedded host-secret read is caught.
+        def _first_cmd_arg():
+            # The command may be positional OR the public `args=` keyword
+            # (subprocess.run(args='cat /etc/passwd', shell=True) / run(args=['cat', p])).
+            if node.args:
+                return node.args[0]
+            for _kw in node.keywords or []:
+                if _kw.arg == "args":
+                    return _kw.value
+            return None
+
         def _escaping_glob(tok):
             # A shell glob that can expand OUTSIDE the workdir (absolute or ~ rooted) can
             # name a host secret the static scanner cannot see (head /etc/shad* -> /etc/shadow);
@@ -6436,8 +6532,17 @@ def _check_signal_escape_patterns(
             except ValueError:
                 toks = cmd.split()
             for t in toks:
-                if t and not t.startswith("-") and _flag_read_path(node, t, True):
-                    return True
+                # shlex.split leaves shell punctuation glued to an adjacent word
+                # (`/etc/passwd;`, `/etc/passwd|wc`), so split each token on shell separators
+                # and check every piece, else the sensitive path is missed (cat /etc/passwd;
+                # echo ok / cat /etc/passwd|wc).
+                for _piece in re.split(r"[;|&<>()`{}]+", t):
+                    if (
+                        _piece
+                        and not _piece.startswith("-")
+                        and _flag_read_path(node, _piece, True)
+                    ):
+                        return True
             # Re-tokenize keeping redirects / separators for the expansion scan.
             try:
                 _lx = shlex.shlex(cmd, posix = True, punctuation_chars = ";&|()`<>")
@@ -6489,8 +6594,8 @@ def _check_signal_escape_patterns(
         # child (subprocess.run(['sh', '-c', 'head -1 /etc/passwd'])). The blocked-command
         # scanner finds no blocked command (head is benign), so scan the -c payload for
         # sensitive reads here the same way a string shell sink is scanned.
-        if _is_subprocess_exec_callee(f) and node.args:
-            argv = node.args[0]
+        if _is_subprocess_exec_callee(f):
+            argv = _first_cmd_arg()
             if isinstance(argv, (ast.List, ast.Tuple)) and argv.elts:
                 _first = _fold_read_arg(argv.elts[0])
                 if _first is not None and os.path.basename(_first).lower() in _SHELL_BINARIES:
@@ -6522,9 +6627,10 @@ def _check_signal_escape_patterns(
                         isinstance(kw.value, ast.Constant) and kw.value.value is False
                     ):
                         _is_str = True
-        if not _is_str or not node.args:
+        _cmd_node = _first_cmd_arg()
+        if not _is_str or _cmd_node is None:
             return False
-        return _scan_one_command(_fold_read_arg(node.args[0]))
+        return _scan_one_command(_fold_read_arg(_cmd_node))
 
     class _SensitiveReadVisitor(ast.NodeVisitor):
         def visit_Call(self, node):
@@ -6854,7 +6960,10 @@ def _is_sensitive_read(rp):
     n = rp.replace("\\", "/")
     if n in _SENS_EXACT:
         return True
-    if any(part in n for part in _SENS_DIRS):
+    # _SENS_DIRS entries carry a trailing slash to match a file UNDER the dir
+    # (/root/.ssh/id_rsa). Append one to n so the sensitive directory ITSELF
+    # (os.listdir('/root/.ssh') -> '/root/.ssh', no trailing slash) matches too.
+    if any(part in (n + "/") for part in _SENS_DIRS):
         return True
     if _SENS_PROC.match(n):
         return True
@@ -6983,6 +7092,26 @@ _OS_MUTATORS1 = (
 )
 for _n in _OS_MUTATORS1:
     _wrap1(_os, _n, _n)
+
+# Directory readers (os.listdir / os.scandir) enumerate a directory's names/entries
+# WITHOUT routing through open(), so a sensitive host directory whose path is opaque to
+# the static scanner (P = globals()['P']; os.listdir(P)) would leak its contents past the
+# open-like backstop. Apply the same sensitive-read check to the directory path. A bare
+# call (cwd), in-workdir paths, and an fd argument (os.open already screens the fd's read)
+# stay allowed.
+def _guard_dir_reader(name):
+    orig = getattr(_os, name, None)
+    if orig is None:
+        return
+    @_gwraps(orig)
+    def w(path=".", *a, **k):
+        if not isinstance(path, int):
+            _deny_sensitive_read(_fspath1(path))
+        return orig(path, *a, **k)
+    setattr(_os, name, w)
+
+for _n in ("listdir", "scandir"):
+    _guard_dir_reader(_n)
 
 def _wrap2(mod, name, both):
     orig = getattr(mod, name, None)
@@ -7173,6 +7302,18 @@ try:
         _wrapp(_n, False)
     for _n in ("rename", "replace", "symlink_to", "hardlink_to"):
         _wrapp(_n, True)
+
+    # Path.iterdir enumerates a directory; a dynamically built receiver
+    # (Path(globals()['P']).iterdir()) has no literal path for the static scanner and, on
+    # some CPython versions, routes through pathlib's captured original os.scandir rather
+    # than the patched one, so screen the directory read here too.
+    _real_iterdir = getattr(_pl.Path, "iterdir", None)
+    if _real_iterdir is not None:
+        @_gwraps(_real_iterdir)
+        def _guarded_iterdir(self, *a, **k):
+            _deny_sensitive_read(self)
+            return _real_iterdir(self, *a, **k)
+        _pl.Path.iterdir = _guarded_iterdir
 except Exception:
     pass
 

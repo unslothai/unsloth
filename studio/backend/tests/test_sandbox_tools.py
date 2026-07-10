@@ -2517,3 +2517,94 @@ class TestRound19Bypasses:
 
     def test_benign_higher_order_allowed(self):
         _ok("print(list(map(str, [1, 2, 3])))")
+
+
+class TestRound20Bypasses:
+    """Twentieth-round Codex findings: keyword subprocess args, shell-separator-attached read
+    paths, sed write commands, non-shell argv over-blocking, getattr(sys, 'modules') mutation,
+    and MRO iteration recovering the unguarded FileIO base."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(args='cat /etc/passwd', shell=True)",
+            "import subprocess\nsubprocess.run(args=['cat', '/etc/passwd'])",
+        ],
+    )
+    def test_keyword_subprocess_args_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('cat /etc/passwd; echo ok')",
+            "import os\nos.system('cat /etc/passwd|wc -l')",
+            "import os\nos.system('head -1 /etc/shadow&&true')",
+        ],
+    )
+    def test_shell_separator_attached_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system(\"sed -n '1w /tmp/escape' /etc/hostname\")",
+            "import os\nos.system(\"sed 's/a/b/w /tmp/out' input.txt\")",
+            "import os\nos.system(\"sed '$w /tmp/last' input.txt\")",
+        ],
+    )
+    def test_sed_write_command_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_plain_sed_substitution_allowed(self):
+        _ok("import os\nos.system(\"sed 's/word/x/' input.txt\")")
+
+    def test_getattr_sys_modules_mutation_blocked(self):
+        code = "import sys\ngetattr(sys, 'modules').pop('posix', None)\nimport posix"
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import io\nfor c in io.FileIO.mro():\n    pass",
+            "import io\nfor c in io.FileIO.__mro__:\n    print(c)",
+            "for c in open.__class__.__mro__:\n    pass",
+            "import _io\nbases = list(_io.FileIO.mro())",
+        ],
+    )
+    def test_fileclass_mro_iteration_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "for c in int.mro():\n    pass",
+            "cls = int\nfor c in cls.__mro__:\n    pass",
+            "bases = list(type('X', (), {}).mro())",
+            "for c in int.__mro__[1:]:\n    pass",
+        ],
+    )
+    def test_benign_mro_iteration_allowed(self, code):
+        _ok(code)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['echo', 'python'])",
+            "import subprocess\nsubprocess.run(['echo', 'touch', 'mkdir'])",
+            "import subprocess\nsubprocess.run(['printf', '%s', 'perl'])",
+        ],
+    )
+    def test_non_shell_argv_argument_word_allowed(self, code):
+        _ok(code)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import subprocess\nsubprocess.run(['env', 'rm', '-rf', '/tmp/x'])",
+            "import subprocess\nsubprocess.run(['rm', '-rf', '/tmp/x'])",
+            "import subprocess\nsubprocess.run(['nice', 'python', '-c', 'x'])",
+        ],
+    )
+    def test_non_shell_argv_command_word_blocked(self, code):
+        assert _check_code_safety(code) is not None, code

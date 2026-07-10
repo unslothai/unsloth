@@ -1050,3 +1050,42 @@ def test_sandboxed_keyword_path_mutator_escape_denied(tmp_path):
     )
     assert "sandbox:" in out or "PermissionError" in out
     assert not target.exists()
+
+
+# The sensitive directory path is assembled from chr() codepoints at runtime so the static
+# scanner cannot const-fold it (proving the RUNTIME dir-reader guard, not the static layer).
+_OPAQUE_SSH = "P=''.join(chr(c) for c in [47,114,111,111,116,47,46,115,115,104])\n"
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize(
+    "reader",
+    [
+        "import os\nos.listdir(P)",
+        "import os\nlist(os.scandir(P))",
+        "import pathlib\nlist(pathlib.Path(P).iterdir())",
+    ],
+)
+def test_sandboxed_opaque_sensitive_dir_read_denied(reader):
+    # A directory-enumeration API (os.listdir / os.scandir / Path.iterdir) does not route
+    # through open(), so an opaque sensitive host directory would leak its contents/names past
+    # the open-like backstop. The runtime guard applies the sensitive-read check to the dir path.
+    out = _python_exec(_OPAQUE_SSH + reader, None, 30, "backstop-diropaque", disable_sandbox = False)
+    assert "sandbox:" in out or "PermissionError" in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_workdir_dir_read_allowed():
+    # Enumerating the sandbox's own workdir stays allowed (positional and keyword forms).
+    out = _python_exec(
+        "import os\nopen('a.txt', 'w').write('x')\n"
+        "print('LS', 'a.txt' in os.listdir('.'))\n"
+        "print('SC', any(e.name == 'a.txt' for e in os.scandir(path='.')))\n",
+        None,
+        30,
+        "backstop-dirlocal",
+        disable_sandbox = False,
+    )
+    assert "LS True" in out
+    assert "SC True" in out
+    assert "sandbox:" not in out
