@@ -735,7 +735,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # model -- else a gpu_layers=0 load with a drafter takes the guard's
         # CPU-only bypass while the drafter still lands on the GPU.
         import tempfile
-
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "model.gguf"
             p.write_bytes(b"x" * 1000)
@@ -758,7 +757,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # An HF-repo drafter can't be sized pre-download: return None so the
         # guard default-denies instead of under-estimating.
         import tempfile
-
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "model.gguf"
             p.write_bytes(b"x" * 1000)
