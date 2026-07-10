@@ -69,6 +69,7 @@ import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { loadModel, validateModel } from "./api/chat-api";
 import { resolveFitMaxSeqLength } from "./presets/preset-policy";
+import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
   providerTypeSupportsVision,
@@ -933,6 +934,11 @@ export function SharedComposer({
         return parts[parts.length - 1] || id;
       }
 
+      // Warm the device cache before the snapshot below reconciles the GPU
+      // pick: on a cold cache the reconcile passes a stale pick through.
+      if (store.selectedGpuIds != null) {
+        await ensureGpuDeviceCache();
+      }
       // The GPU/offload knobs both compare loads must use, snapshotted at Send.
       // ensureModelLoaded runs sequentially and the first load's response echo
       // (loadedGpuMemoryFields) rewrites the live store -- a non-GGUF or Auto

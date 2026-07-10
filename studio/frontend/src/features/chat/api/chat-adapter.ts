@@ -55,6 +55,7 @@ import {
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { resolveFitMaxSeqLength } from "../presets/preset-policy";
+import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
@@ -1476,6 +1477,12 @@ async function autoLoadSmallestModel(): Promise<{
       remembered?.gpuMemoryMode ?? currentStore.gpuMemoryMode;
     const effectiveGpuLayers = remembered?.gpuLayers ?? GPU_LAYERS_AUTO;
     const effectiveNCpuMoe = remembered?.nCpuMoe ?? 0;
+    if (remembered?.selectedGpuIds != null) {
+      // Warm the device cache first: on a cold cache the reconcile passes the
+      // saved pick through unvalidated, and a stale cross-host pick then fails
+      // the load with the picker hidden.
+      await ensureGpuDeviceCache();
+    }
     const effectiveGpuIds =
       remembered?.selectedGpuIds !== undefined
         ? reconcilePersistedGpuIds(remembered.selectedGpuIds)

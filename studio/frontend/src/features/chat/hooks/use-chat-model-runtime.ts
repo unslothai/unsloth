@@ -50,6 +50,7 @@ import {
   resolveLoadMaxSeqLength,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
+import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   isMultimodalResponse,
 } from "../types/api";
@@ -583,10 +584,14 @@ export function useChatModelRuntime() {
           let loadGpuLayers = stateBeforeUnload.gpuLayers;
           let loadNCpuMoe = stateBeforeUnload.nCpuMoe;
           let loadSplitRatio = stateBeforeUnload.splitRatio;
-          // Reconcile the persisted pick against the GPUs present now (the device
-          // cache is populated by load time, unlike an early remember-restore that
-          // no-ops), so a stale cross-host / now-hidden pick is dropped before
-          // /load rather than rejected there. validateGpuIds derives from this too.
+          // Reconcile the persisted pick against the GPUs present now, so a stale
+          // cross-host / now-hidden pick is dropped before /load rather than
+          // rejected there. Warm the device cache first: load-on-selection can
+          // run before any GPU hook mounted, and a cold cache would pass the
+          // pick through unvalidated. validateGpuIds derives from this too.
+          if (stateBeforeUnload.selectedGpuIds != null) {
+            await ensureGpuDeviceCache();
+          }
           let loadSelectedGpuIds = reconcilePersistedGpuIds(
             stateBeforeUnload.selectedGpuIds,
           );

@@ -261,6 +261,7 @@ function ParamSlider({
   displayValue,
   info,
   valueSize,
+  disabled,
 }: {
   label: string;
   value: number;
@@ -271,6 +272,7 @@ function ParamSlider({
   displayValue?: string;
   info?: ReactNode;
   valueSize?: number;
+  disabled?: boolean;
 }) {
   return (
     <div className="space-y-3.5">
@@ -290,6 +292,7 @@ function ParamSlider({
           displayValue={displayValue}
           ariaLabel={label}
           size={valueSize ?? 4}
+          disabled={disabled}
         />
       </div>
       <Slider
@@ -299,6 +302,7 @@ function ParamSlider({
         value={[value]}
         onValueChange={([v]) => onChange(snapToStep(v, step, min, max))}
         className="panel-slider"
+        disabled={disabled}
       />
     </div>
   );
@@ -1420,6 +1424,10 @@ export function ChatSettingsPanel({
                       onValueChange={(v) => {
                         setGpuMemoryMode(v as "auto" | "manual");
                       }}
+                      // An in-flight staged load already snapshotted its
+                      // settings, so edits here could not apply -- disable like
+                      // the sibling context/KV/spec controls.
+                      disabled={modelControlsDisabled}
                     >
                       <SelectTrigger
                         animateRadius={false}
@@ -1447,6 +1455,7 @@ export function ChatSettingsPanel({
                       max={gpuLayersMax}
                       step={1}
                       onChange={setGpuLayers}
+                      disabled={modelControlsDisabled}
                       displayValue={autoLayers ? "Auto" : undefined}
                       valueSize={6}
                       info={
@@ -1466,6 +1475,7 @@ export function ChatSettingsPanel({
                         max={moeLayersMax}
                         step={1}
                         onChange={setNCpuMoe}
+                        disabled={modelControlsDisabled}
                         valueSize={6}
                         info={
                           <>
@@ -1499,6 +1509,7 @@ export function ChatSettingsPanel({
                             step={1}
                             onChange={(v) => setSplitCount(k, v)}
                             valueSize={6}
+                            disabled={modelControlsDisabled}
                           />
                         ))}
                       </div>
@@ -1535,6 +1546,7 @@ export function ChatSettingsPanel({
                             checked={isGpuChecked(d.index)}
                             onCheckedChange={() => toggleGpu(d.index)}
                             data-test-id={`gpu-pick-${d.index}`}
+                            disabled={modelControlsDisabled}
                           />
                         </div>
                       ))}

@@ -138,6 +138,19 @@ export function useGpuDevices(): SystemGpuDevice[] {
 }
 
 /**
+ * Await the shared /api/system fetch so cachedPinnableGpuIndices (and the
+ * store's reconcilePersistedGpuIds) can validate a persisted pick before a
+ * load path sends it -- on a cold cache the reconcile passes ids through
+ * unvalidated, and a stale cross-host pick then fails /load with the picker
+ * hidden. Resolves immediately once the module cache is warm; a failed fetch
+ * keeps the cache cold, preserving the "can't validate, backend guards"
+ * degradation.
+ */
+export async function ensureGpuDeviceCache(): Promise<void> {
+  await fetchSystemOnce();
+}
+
+/**
  * Pinnable physical GPU indices from the already-fetched /api/system cache, for
  * non-React code (the store) that needs to validate a persisted `gpu_ids` pick
  * without triggering a fetch. Returns:
