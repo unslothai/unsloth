@@ -7148,9 +7148,7 @@ class LlamaCppBackend:
                     gpu_memory_mode == "manual"
                     and gpu_layers == 0
                     and not is_vulkan_backend
-                    and not any(
-                        a == "--device" or str(a).startswith("--device=") for a in cmd
-                    )
+                    and not any(a == "--device" or str(a).startswith("--device=") for a in cmd)
                     and not self._cmd_has_gpu_companion(cmd, env)
                 )
                 if _cpu_only_zero_offload:
