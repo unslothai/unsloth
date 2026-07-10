@@ -45,6 +45,8 @@ except ImportError:
 # Auth
 from auth.authentication import authenticated_via_api_key, get_current_subject
 
+from storage import studio_db
+
 from utils.utils import log_and_http_error
 
 from models import (
@@ -133,6 +135,18 @@ async def start_training(
                 status = "error",
                 message = ("Training is already in progress. Stop it or add this run to the queue."),
                 error = "Training already active",
+            )
+
+        # A direct start must not bypass queued work while the worker is idle
+        # (for example, a queue paused after restart or an item being claimed).
+        # The queue is global, so this guard intentionally applies to UI and
+        # API callers alike.
+        if studio_db.list_queue_items():
+            return TrainingJobResponse(
+                job_id = "",
+                status = "error",
+                message = "Training queue has active jobs. Add this run to the queue instead.",
+                error = "Training queue active",
             )
 
         # Job ID; start_training() sets it on the backend only after the old

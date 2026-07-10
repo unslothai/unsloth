@@ -143,6 +143,22 @@ def test_state_reports_active_job(_isolated):
     assert state.active_job_id == "job_live"
 
 
+def test_direct_start_rejected_while_queue_has_active_item(monkeypatch, _isolated):
+    from routes import training as training_routes
+
+    _enqueue()
+    monkeypatch.setattr(training_routes, "get_training_backend", lambda: _isolated["backend"])
+
+    response = asyncio.run(
+        training_routes.start_training(
+            _request(), current_subject = "tester", via_api_key = False
+        )
+    )
+
+    assert response.status == "error"
+    assert response.error == "Training queue active"
+
+
 def test_no_secrets_in_queue_responses():
     item = _enqueue()
     state = asyncio.run(routes_module.get_queue_state(current_subject = "tester"))
