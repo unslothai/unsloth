@@ -3447,6 +3447,68 @@ def _estimate_gguf_kv_gb(
         return 0.0
 
 
+def _gguf_mtp_overhead_gb(
+    local_path: str,
+    config: ModelConfig,
+    max_seq_length: int,
+    llama_extra_args: Optional[list[str]],
+    n_parallel: int,
+    speculative_type: Optional[str],
+) -> float:
+    """Extra GPU VRAM (GB) an MTP drafter allocates BEYOND its file weights: its
+    own draft KV cache and, for MLA models under MTP (GLM-5.x/DeepSeek/Kimi), a
+    duplicated target-KV context (~a full main KV). The drafter file itself is
+    charged separately as a companion, so this reserves only the runtime buffers
+    -- reusing the loader's own _estimate_mtp_overhead_bytes so the guard matches
+    it. 0 when MTP won't engage (spec off / ngram) or the model isn't MTP-capable."""
+    try:
+        from core.inference.llama_cpp import (
+            _canonicalize_spec_mode,
+            _extra_args_mtp_draft_path,
+            _extra_args_set_spec_type,
+        )
+        from core.inference.llama_server_args import parse_ctx_override
+
+        # MTP engages under auto/mtp/mtp+ngram; off/ngram/ngram-simple never do.
+        # Extras that set --spec-type own the mode (a user -md is still charged
+        # below), so don't gate those out.
+        if not _extra_args_set_spec_type(llama_extra_args):
+            mode = _canonicalize_spec_mode(speculative_type) or "auto"
+            if mode in ("off", "ngram", "ngram-simple"):
+                return 0.0
+
+        probe = LlamaCppBackend()
+        probe._read_gguf_metadata(local_path)
+
+        drafter = _extra_args_mtp_draft_path(llama_extra_args)
+        if not (drafter and Path(drafter).is_file()):
+            cfg_mtp = getattr(config, "gguf_mtp_file", None)
+            drafter = cfg_mtp if (cfg_mtp and Path(cfg_mtp).is_file()) else None
+        # MTP-capable: an embedded head or a separate drafter.
+        if not (probe._nextn_predict_layers or drafter):
+            return 0.0
+
+        try:
+            ctx_override = parse_ctx_override(llama_extra_args) or 0
+        except Exception:
+            ctx_override = 0
+        ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
+        if ctx <= 0:
+            return 0.0
+
+        overhead = probe._estimate_mtp_overhead_bytes(
+            ctx,
+            drafter_path = drafter,
+            draft_weights_bytes = 0,  # the drafter file is charged as a companion
+            n_parallel = max(1, n_parallel or 1),
+            mtp_keeps_target_ctx = True,
+        )
+        return (overhead or 0) / (1024**3)
+    except Exception as e:
+        logger.debug("Could not size MTP overhead for the guard: %s", e)
+        return 0.0
+
+
 def _is_diffusion_gguf(config: ModelConfig) -> bool:
     """Whether the pick is a block-diffusion GGUF (DiffusionGemma), which the
     diffusion runner pins to a SINGLE device (see _start_diffusion_server), so
@@ -3508,6 +3570,7 @@ def _estimate_gguf_required_gb(
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
     gpu_layers: int = -1,
     cache_type_kv: Optional[str] = None,
+    speculative_type: Optional[str] = None,
 ) -> Optional[Tuple[float, float]]:
     """Conservative GPU-VRAM upper bound for the training guard, as
     ``(main_gb, companion_gb)``. ``main_gb`` (quantized weights + KV, scaled by
@@ -3556,6 +3619,7 @@ def _estimate_gguf_required_gb(
         repo = getattr(config, "gguf_hf_repo", None)
         variant = getattr(config, "gguf_variant", None)
         main_gb = 0.0
+        local_main = None  # the on-disk main file used for sizing, for MTP probing
         if repo and variant:
             # Repo id: companions come from the repo listing (ModelConfig leaves
             # gguf_mmproj_file unset here); the main model from the cached file
@@ -3581,17 +3645,29 @@ def _estimate_gguf_required_gb(
                     return None
                 remote_companions = 0
             companion_bytes += remote_companions
+            cached = None
             if not zero_offload:
                 from hub.utils.gguf import resolve_local_gguf_path
                 cached = resolve_local_gguf_path(repo, variant)
                 main_gb = _local_main_gb(cached) if cached else size / (1024**3)
+            local_main = cached
         elif main and Path(main).is_file():
+            local_main = str(main)
             if not zero_offload:
-                main_gb = _local_main_gb(str(main))
+                main_gb = _local_main_gb(local_main)
         elif companion_bytes <= 0:
             return None  # nothing resolves -> default-deny
 
-        return main_gb, companion_bytes / (1024**3)
+        # MTP runtime buffers (draft KV + an MLA target-KV copy) are GPU-resident
+        # beyond the drafter file, so charge them as a (non-distributable)
+        # companion. Needs a local header to size, and a zero-offload load still
+        # runs its drafter on the GPU.
+        companion_gb = companion_bytes / (1024**3)
+        if local_main:
+            companion_gb += _gguf_mtp_overhead_gb(
+                local_main, config, max_seq_length, llama_extra_args, n_parallel, speculative_type
+            )
+        return main_gb, companion_gb
     except Exception as e:
         logger.warning(f"Could not size GGUF model for training guard: {e}")
         return None
@@ -3711,6 +3787,7 @@ def _guard_chat_load_against_training(
     gpu_layers: int = -1,
     tensor_split: Optional[List[float]] = None,
     cache_type_kv: Optional[str] = None,
+    speculative_type: Optional[str] = None,
 ) -> None:
     """Refuse loading a local chat model that would OOM an active training run.
     No-op when training is inactive or unknown. `load_in_4bit` must be the
@@ -3744,6 +3821,7 @@ def _guard_chat_load_against_training(
             gpu_memory_mode = gpu_memory_mode,
             gpu_layers = gpu_layers,
             cache_type_kv = cache_type_kv,
+            speculative_type = speculative_type,
         )
         if parts is not None:
             gguf_main_gb, gguf_companion_gb = parts
@@ -4134,6 +4212,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             gpu_layers = request.gpu_layers,
             tensor_split = request.tensor_split,
             cache_type_kv = request.cache_type_kv,
+            speculative_type = request.speculative_type,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -4664,6 +4743,7 @@ async def validate_model(
             gpu_layers = request.gpu_layers,
             tensor_split = request.tensor_split,
             cache_type_kv = request.cache_type_kv,
+            speculative_type = request.speculative_type,
         )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):

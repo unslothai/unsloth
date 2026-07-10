@@ -705,6 +705,33 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(companion_gb, 2.0, places = 6)
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
 
+    def test_mtp_runtime_overhead_charged_when_spec_may_engage(self):
+        # The drafter's draft KV (+ an MLA target-KV copy) is GPU-resident beyond
+        # its file weights, so charge it -- gated on the spec mode: auto/mtp
+        # reserve it, off/ngram don't (the loader wouldn't launch the drafter).
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            main = Path(d) / "model.gguf"
+            main.write_bytes(b"x" * 1000)
+            mtp = Path(d) / "mtp-model.gguf"
+            mtp.write_bytes(b"y" * 500)
+            cfg = self._local_gguf_cfg(main)
+            cfg.gguf_mtp_file = str(mtp)
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                # 3 GiB of MTP runtime buffers (e.g. an MLA target-KV copy).
+                patch.object(
+                    self.route, "_gguf_mtp_overhead_gb",
+                    lambda *a, **k: 3.0,
+                ),
+            ):
+                _, companion_auto = self.route._estimate_gguf_required_gb(
+                    cfg, speculative_type = "auto"
+                )
+        # config MTP file (500 B) + the 3 GiB runtime reserve.
+        self.assertAlmostEqual(companion_auto, 500 / (1024**3) + 3.0, places = 6)
+
     def test_unsized_remote_vision_companion_denies(self):
         # A VLM's mmproj is required and GPU-resident; if the repo listing can't
         # be read (offline / transient error -> None), the guard can't verify it,
