@@ -300,10 +300,13 @@ def can_load_chat_during_training(
                 # Main distributes (aggregate). A manual split concentrates up to
                 # max_share of it on one card; free placement pins only the
                 # companion. Either way the tightest device must hold its share.
-                per_device_main = gguf_main_gb * gguf_split_max_share if gguf_split_max_share else 0.0
-                fits = usable_gb >= needed_main and min_free_gb >= (
-                    per_device_main + gguf_companion_gb
-                ) * SAFETY_MARGIN
+                per_device_main = (
+                    gguf_main_gb * gguf_split_max_share if gguf_split_max_share else 0.0
+                )
+                fits = (
+                    usable_gb >= needed_main
+                    and min_free_gb >= (per_device_main + gguf_companion_gb) * SAFETY_MARGIN
+                )
             return fits, {
                 "mode": mode,
                 "required_gb": round(gguf_main_gb + gguf_companion_gb, 3),
