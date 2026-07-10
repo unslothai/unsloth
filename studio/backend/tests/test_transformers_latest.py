@@ -35,7 +35,7 @@ from utils.transformers_latest import (
     install_latest_transformers,
     latest_transformers_supports,
     _fetch_remote_model_types,
-    _model_type_from_config,
+    _model_types_from_config,
 )
 from utils.transformers_version import (
     _config_mapping_cache,
@@ -388,14 +388,15 @@ class TestCheckUpgradeForModel:
 class TestNestedModelTypeExtraction:
     def test_top_level_wins(self):
         assert (
-            _model_type_from_config({"model_type": "a", "text_config": {"model_type": "b"}}) == "a"
+            _model_types_from_config({"model_type": "a", "text_config": {"model_type": "b"}})
+            == ["a", "b"]
         )
 
     def test_nested_fallback(self):
-        assert _model_type_from_config({"llm_config": {"model_type": "b"}}) == "b"
+        assert _model_types_from_config({"llm_config": {"model_type": "b"}}) == ["b"]
 
     def test_missing_returns_none(self):
-        assert _model_type_from_config({}) is None
+        assert _model_types_from_config({}) == []
 
 
 # ---------------------------------------------------------------------------
@@ -766,3 +767,40 @@ def test_install_serialized():
     assert out["success"] is False
     assert "already in progress" in out["message"]
     tl.clear_caches()
+
+
+def test_upgrade_check_sees_nested_model_types(monkeypatch):
+    """A supported wrapper with a brand-new nested backbone must still signal."""
+    cfg = {
+        "model_type": "llava",  # in every installed overlay
+        "text_config": {"model_type": "zz_brand_new_llm"},
+    }
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda mt: {
+            "pypi_version": "5.13.0",
+            "supported_in_pypi": mt == "zz_brand_new_llm",
+            "supported_in_main": mt == "zz_brand_new_llm",
+        },
+    )
+    out = tl.check_upgrade_for_model("some-org/wrapped-new-backbone")
+    assert out is not None
+    assert out["model_type"] == "zz_brand_new_llm"
+
+
+def test_upgrade_check_ignores_nested_known_types(monkeypatch):
+    """All nested types known to installed overlays -> no signal, no remote call."""
+    cfg = {
+        "model_type": "llava",
+        "text_config": {"model_type": "llama"},
+        "vision_config": {"model_type": "clip_vision_model"},
+    }
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: cfg)
+    calls = []
+    monkeypatch.setattr(
+        tl, "latest_transformers_supports", lambda mt: calls.append(mt) or None
+    )
+    assert tl.check_upgrade_for_model("some-org/normal-vlm") is None
+    assert calls == []

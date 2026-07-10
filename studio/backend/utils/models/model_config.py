@@ -727,13 +727,24 @@ def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None)
     """
     token_arg = hf_token or ""
 
+    # Latest-only architectures need the pinned latest sidecar for AutoConfig;
+    # every other tier keeps the 5.5 sidecar used today.
+    sidecar_dir = _VENV_T5_DIR
+    try:
+        from utils.transformers_version import _VENV_T5_LATEST_DIR, get_transformers_tier
+
+        if get_transformers_tier(model_name, hf_token, probe = False) == "latest":
+            sidecar_dir = _VENV_T5_LATEST_DIR
+    except Exception:
+        pass
+
     try:
         result = subprocess.run(
             [
                 sys.executable,
                 "-c",
                 _VISION_CHECK_SCRIPT,
-                _VENV_T5_DIR,
+                sidecar_dir,
                 _BACKEND_DIR,
                 model_name,
                 token_arg,

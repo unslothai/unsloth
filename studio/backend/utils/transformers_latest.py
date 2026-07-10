@@ -48,6 +48,7 @@ from utils.transformers_version import (
     _tier_from_config_mapping,
     _config_model_types,
     _NESTED_CONFIG_KEYS,
+    _TIER_RANK,
     _TRANSFORMERS_510_MODEL_TYPES,
     _TRANSFORMERS_530_MODEL_TYPES,
     _TRANSFORMERS_550_MODEL_TYPES,
@@ -285,16 +286,26 @@ def latest_transformers_supports(model_type: str) -> dict | None:
     }
 
 
-def _model_type_from_config(cfg: dict) -> str | None:
-    """Top-level model_type, else the first nested one (mirrors _tier_from_config_mapping)."""
-    model_type = cfg.get("model_type")
-    if isinstance(model_type, str) and model_type:
-        return model_type
+def _model_types_from_config(cfg: dict) -> list[str]:
+    """All model_types in the config: top-level first, then every nested
+    sub-config (text_config, vision_config, ...). A supported wrapper can
+    carry a brand-new backbone, and the wrapper instantiates sub-configs
+    through CONFIG_MAPPING, so nested types must be checked too."""
+    seen: list[str] = []
+
+    def add(value):
+        if isinstance(value, str) and value and value not in seen:
+            seen.append(value)
+
+    add(cfg.get("model_type"))
     for key in _NESTED_CONFIG_KEYS:
         sub = cfg.get(key)
-        if isinstance(sub, dict) and isinstance(sub.get("model_type"), str) and sub["model_type"]:
-            return sub["model_type"]
-    return None
+        if isinstance(sub, dict):
+            add(sub.get("model_type"))
+    for value in cfg.values():
+        if isinstance(value, dict):
+            add(value.get("model_type"))
+    return seen
 
 
 # model_types the hardcoded per-tier tables already route; these must never trigger the
@@ -325,22 +336,30 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         cfg = _load_config_json(model_name, hf_token)
         if not isinstance(cfg, dict):
             return None
-        model_type = _model_type_from_config(cfg)
-        if model_type is None:
+        candidates = _model_types_from_config(cfg)
+        if not candidates:
             return None
-        if model_type in _hardcoded_model_types():
-            return None
-        # Known to some installed overlay -> current routing handles it; no signal. Requires
-        # a readable base mapping: if even the default overlay cannot be located, every
-        # type would look "brand new", so bail out instead of mass-flagging.
+        # Requires a readable base mapping: if even the default overlay cannot be
+        # located, every type would look "brand new", so bail out instead of
+        # mass-flagging.
         if not _config_model_types("default"):
             return None
-        if _tier_from_config_mapping(cfg) is not None:
-            return None
-        support = latest_transformers_supports(model_type)
-        if support is None:
-            return None
-        if not (support["supported_in_pypi"] or support["supported_in_main"]):
+        hardcoded = _hardcoded_model_types()
+        model_type = support = None
+        for candidate in candidates:
+            if candidate in hardcoded:
+                continue
+            # Known to some installed overlay -> current routing handles it.
+            if any(candidate in _config_model_types(tier) for tier in _TIER_RANK):
+                continue
+            support = latest_transformers_supports(candidate)
+            if support is not None and (
+                support["supported_in_pypi"] or support["supported_in_main"]
+            ):
+                model_type = candidate
+                break
+            support = None
+        if model_type is None or support is None:
             return None
         logger.info(
             "Model %s has model_type=%s unknown to every installed transformers "
