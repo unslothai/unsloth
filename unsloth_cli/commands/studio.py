@@ -654,6 +654,22 @@ def _prompt_streams_interactive() -> bool:
         return False
 
 
+def _bootstrap_deadline_active() -> bool:
+    """Whether the backend's bootstrap shutdown deadline will arm.
+
+    Mirror of studio/backend/auth/bootstrap_timeout.py bootstrap_timeout_seconds:
+    unset/blank/malformed UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT falls back to the 1h
+    default (a typo must not remove protection); 0 or negative disables it.
+    """
+    raw = os.environ.get("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", "").strip()
+    if not raw:
+        return True
+    try:
+        return int(raw) > 0
+    except ValueError:
+        return True
+
+
 def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: str) -> None:
     """CLI mirror of backend update_password + change-password route effects.
 
@@ -736,11 +752,29 @@ def _enforce_password_change_before_exposure(
         if not row or not row[2]:
             return
         if not _prompt_streams_interactive():
+            # Only proceed headless when the backend's bootstrap shutdown
+            # deadline will actually protect the launch. It never arms for
+            # api-only serving, and UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0
+            # disables it (mirrors auth/bootstrap_timeout.py semantics:
+            # unset/malformed -> default 1h, <= 0 -> disabled).
+            if api_only or not _bootstrap_deadline_active():
+                typer.echo(
+                    "Error: refusing to publish Studio on a public Cloudflare "
+                    "URL: the default admin password was never changed, no "
+                    "terminal is attached to change it here, and the bootstrap "
+                    "shutdown deadline does not apply to this launch (api-only, "
+                    "or UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0). Change the "
+                    "password first (run `unsloth studio` locally and log in, "
+                    "or re-run with a terminal attached), then retry.",
+                    err = True,
+                )
+                raise typer.Exit(1)
             typer.echo(
                 "Warning: Studio is being exposed publicly while the admin account "
                 "still uses its auto-generated bootstrap password. Change it promptly "
-                "(the browser login will ask for it); Studio shuts down after "
-                "~1h if it stays unchanged (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT).",
+                "(read it on this machine from "
+                f"{STUDIO_HOME / 'auth' / BOOTSTRAP_PASSWORD_FILE}); Studio shuts "
+                "down after ~1h if it stays unchanged (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT).",
                 err = True,
             )
             return

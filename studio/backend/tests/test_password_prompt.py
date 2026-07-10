@@ -216,3 +216,14 @@ def test_should_prompt_matrix(tunnel, requires, stdin_tty, stderr_tty, expected)
         )
         is expected
     )
+
+
+def test_stream_eof_aborts_instead_of_submitting(monkeypatch):
+    # A dead stream ("" from _getch, e.g. a closed pty) must abort the line,
+    # never silently submit the partial password typed so far.
+    import io
+
+    err = io.StringIO()
+    monkeypatch.setattr(tp, "_getch", _fake_getch(list("abc") + [""]))
+    with pytest.raises(EOFError):
+        tp._read_password("New password: ", out = err)

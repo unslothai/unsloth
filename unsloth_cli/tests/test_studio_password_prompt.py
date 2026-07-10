@@ -335,3 +335,59 @@ def test_run_non_tty_warns_and_proceeds(monkeypatch, tmp_path):
     assert kinds == ["exec"], events
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
     assert "bootstrap password" in combined
+
+
+def test_run_non_tty_api_only_fails_closed(monkeypatch, tmp_path):
+    # api-only serving never arms the bootstrap shutdown deadline, so a
+    # headless public launch with the default password has no safeguard at
+    # all: the CLI must refuse rather than promise a shutdown that never comes.
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+
+    result = _invoke_run(monkeypatch, events, _BASE + ["--secure", "--api-only"])
+
+    kinds = [kind for kind, _ in events]
+    assert "exec" not in kinds, events
+    assert result.exit_code == 1, result.output
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "refusing to publish" in combined.lower()
+    assert _auth_state(studio_mod)["must_change_password"] == 1
+
+
+def test_studio_default_non_tty_disabled_deadline_fails_closed(monkeypatch, tmp_path):
+    # UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables the deadline; headless +
+    # default password + public tunnel then has no protection -> refuse.
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+    monkeypatch.setenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", "0")
+
+    result = _invoke_studio_default(monkeypatch, events, ["--secure"])
+
+    kinds = [kind for kind, _ in events]
+    assert "exec" not in kinds, events
+    assert result.exit_code == 1, result.output
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "refusing to publish" in combined.lower()
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (None, True),  # unset -> default 1h
+        ("", True),
+        ("garbage", True),  # malformed must not remove protection
+        ("3600", True),
+        ("1", True),
+        ("0", False),
+        ("-5", False),
+    ],
+)
+def test_bootstrap_deadline_active_mirrors_backend_parsing(monkeypatch, raw, expected):
+    studio_mod = _studio()
+    if raw is None:
+        monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raw)
+    assert studio_mod._bootstrap_deadline_active() is expected

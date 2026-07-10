@@ -39,21 +39,79 @@ def _getch_windows() -> str:  # pragma: no cover - exercised via fake on Linux C
     return ch
 
 
+class _RestoreTtyOnSignals:
+    """Restore terminal attrs if SIGTERM/SIGHUP kills the prompt mid-read.
+
+    A finally block cannot run when a default-disposition signal terminates
+    the process, which would leave the shared terminal in cbreak/no-echo mode.
+    Best-effort: silently a no-op off the main thread or on platforms without
+    the signals.
+    """
+
+    def __init__(self, fd: int, old_attrs) -> None:
+        self._fd = fd
+        self._old_attrs = old_attrs
+        self._previous: list = []
+
+    def __enter__(self) -> "_RestoreTtyOnSignals":
+        import signal
+        import termios
+
+        def _restore_and_reraise(signum, frame):
+            termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_attrs)
+            signal.signal(signum, signal.SIG_DFL)
+            signal.raise_signal(signum)
+
+        for name in ("SIGTERM", "SIGHUP"):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                self._previous.append((sig, signal.signal(sig, _restore_and_reraise)))
+            except (ValueError, OSError):  # non-main thread / unsupported
+                pass
+        return self
+
+    def __exit__(self, *exc) -> None:
+        import signal
+
+        for sig, previous in self._previous:
+            try:
+                signal.signal(sig, previous)
+            except (ValueError, OSError):
+                pass
+
+
 def _getch_posix() -> str:  # pragma: no cover - needs a real tty
+    import codecs
     import termios
     import tty
 
     fd = sys.stdin.fileno()
     old_attrs = termios.tcgetattr(fd)
     try:
-        # cbreak (not raw): keep output post-processing, disable echo + line
-        # buffering. ISIG stays on in cbreak, so disable it here and surface
-        # Ctrl-C as \x03 to the caller loop, which restores the terminal first.
-        tty.setcbreak(fd, termios.TCSADRAIN)
-        new_attrs = termios.tcgetattr(fd)
-        new_attrs[3] &= ~termios.ISIG
-        termios.tcsetattr(fd, termios.TCSADRAIN, new_attrs)
-        return os.read(fd, 4).decode(sys.stdin.encoding or "utf-8", "ignore") or "\x00"
+        with _RestoreTtyOnSignals(fd, old_attrs):
+            # cbreak (not raw): keep output post-processing, disable echo + line
+            # buffering. ISIG stays on in cbreak, so disable it here and surface
+            # Ctrl-C as \x03 to the caller loop, which restores the terminal first.
+            tty.setcbreak(fd, termios.TCSADRAIN)
+            new_attrs = termios.tcgetattr(fd)
+            new_attrs[3] &= ~termios.ISIG
+            termios.tcsetattr(fd, termios.TCSADRAIN, new_attrs)
+            # Byte-at-a-time through an incremental decoder: a multi-byte UTF-8
+            # character must not be dropped when its bytes straddle a read
+            # boundary (a fixed os.read(fd, 4) with errors="ignore" silently
+            # ate characters during fast pastes).
+            decoder = codecs.getincrementaldecoder(sys.stdin.encoding or "utf-8")(
+                "replace"
+            )
+            while True:
+                b = os.read(fd, 1)
+                if not b:
+                    return ""  # stream EOF; caller raises EOFError
+                ch = decoder.decode(b)
+                if ch:
+                    return ch
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
 
@@ -75,6 +133,10 @@ def _read_password(prompt: str, *, out: "TextIO | None" = None) -> str:
     chars: list[str] = []
     while True:
         key = _getch()
+        if key == "":  # stream ended mid-line: abort, don't submit a partial
+            out.write("\n")
+            out.flush()
+            raise EOFError
         for ch in key:  # a paste can deliver several chars per read
             if ch in _SUBMITS:
                 out.write("\n")

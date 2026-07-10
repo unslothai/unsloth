@@ -1064,24 +1064,55 @@ def _cloudflare_tunnel_should_start(
     return host in ("0.0.0.0", "::") and not api_only
 
 
-def _terminal_password_gate(*, tunnel_will_start: bool) -> "Tuple[bool, bool]":
+def _stream_isatty(stream) -> bool:
+    """isatty() that treats broken streams as non-interactive.
+
+    isatty() itself can raise under service wrappers (closed stdin ->
+    ValueError; sys.stdin None in Windows GUI processes -> AttributeError);
+    any such stream cannot host a masked prompt, which is a fallback case,
+    not an error.
+    """
+    try:
+        return stream.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _terminal_password_gate(
+    *,
+    tunnel_will_start: bool,
+    host: str,
+    secure: bool,
+    api_only: bool,
+    frontend_served: bool,
+    is_colab: bool = False,
+) -> "Tuple[bool, bool]":
     """Force a terminal password change before the public tunnel goes up.
 
     When the Cloudflare tunnel is about to publish Studio on the internet and
     the seeded admin password was never changed, ask for a new password in the
     terminal (masked, with confirmation) before any public URL exists. The CLI
     normally does this before re-exec'ing the backend; this is the backstop for
-    direct `python run.py` launches and older-CLI installs.
+    direct `python run.py` launches and older-CLI installs. Must run BEFORE the
+    uvicorn socket binds: on a wildcard bind the served HTML injects the
+    bootstrap credential for first login, so a pre-gate listener would hand the
+    default password to anyone who can reach the raw port while the operator is
+    still typing.
 
-    Returns (proceed, changed):
-      proceed False -> the user aborted the prompt (Ctrl-C/EOF); fail closed.
-      changed True  -> the password was updated here; the caller must drop the
-                       now-stale app.state.bootstrap_password.
+    Returns (proceed, drop_bootstrap_injection):
+      proceed False -> abort the launch (interactive refusal, or a headless
+                       public launch that nothing would protect); fail closed.
+      drop_bootstrap_injection True -> the caller must null
+                       app.state.bootstrap_password: either the password just
+                       changed here (stale) or Studio is about to serve a
+                       public URL with the default credential still active and
+                       must not hand it out in the HTML.
 
-    Without a usable terminal (stdin/stderr not ttys) the prompt is skipped
-    with a warning and the bootstrap deadline (arm'd below) remains the
-    protection. Deliberately NOT wrapped in a broad try/except: an auth
-    storage failure must abort startup rather than expose the default
+    Without a usable terminal the prompt is skipped: if the bootstrap deadline
+    (arm'd later in run_server) will protect the launch, warn and proceed;
+    when even that is disabled (api-only, timeout 0) there is no safeguard at
+    all, so refuse to start. Deliberately NOT wrapped in a broad try/except:
+    an auth storage failure must abort startup rather than expose the default
     credential.
     """
     if not tunnel_will_start:
@@ -1089,12 +1120,19 @@ def _terminal_password_gate(*, tunnel_will_start: bool) -> "Tuple[bool, bool]":
 
     from auth import hashing as _auth_hashing
     from auth import storage as _auth_storage
+    from auth.bootstrap_timeout import (
+        bootstrap_timeout_seconds,
+        should_arm_bootstrap_timeout,
+    )
     from auth.terminal_prompt import (
         prompt_for_password_change,
         should_prompt_password_change,
     )
 
     _admin = _auth_storage.DEFAULT_ADMIN_USERNAME
+    # This gate can run before uvicorn's lifespan startup, so seed the admin
+    # row ourselves on a fresh install (idempotent; lifespan's own call no-ops).
+    _auth_storage.ensure_default_admin()
     requires_change = _auth_storage.requires_password_change(_admin)
     if not requires_change:
         return True, False
@@ -1102,20 +1140,50 @@ def _terminal_password_gate(*, tunnel_will_start: bool) -> "Tuple[bool, bool]":
     if not should_prompt_password_change(
         tunnel_will_start = tunnel_will_start,
         requires_change = requires_change,
-        stdin_isatty = sys.stdin.isatty(),
-        stderr_isatty = sys.stderr.isatty(),
+        stdin_isatty = _stream_isatty(sys.stdin),
+        stderr_isatty = _stream_isatty(sys.stderr),
     ):
+        # No terminal. Only proceed if the bootstrap deadline will actually
+        # arm for this launch; promising a shutdown that never comes (api-only
+        # binds never arm it, UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables it)
+        # would leave the default credential public indefinitely.
+        deadline_arms = should_arm_bootstrap_timeout(
+            host = host,
+            secure = secure,
+            api_only = api_only,
+            frontend_served = frontend_served,
+            is_colab = is_colab,
+            requires_change = True,
+            timeout_seconds = bootstrap_timeout_seconds(),
+        )
+        if not deadline_arms:
+            print(
+                "Refusing to publish Studio on a public Cloudflare URL: the "
+                "default admin password was never changed, no terminal is "
+                "attached to change it here, and the bootstrap shutdown "
+                "deadline does not apply to this launch (api-only, or "
+                "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0). Change the password "
+                "first (run `unsloth studio` locally and log in, or re-run "
+                "with a terminal attached), then retry.",
+                file = sys.stderr,
+                flush = True,
+            )
+            return False, False
+        _bootstrap_file = _auth_storage.DB_PATH.parent / ".bootstrap_password"
         print(
-            "  WARNING: the default admin password is still active while Studio is "
-            "about to be published on a public Cloudflare URL, and no terminal is "
-            "attached to change it here. Change it in the web UI as soon as "
-            "possible; if the web UI is served, Studio shuts down after the "
-            "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "
-            "unless the password is changed.",
+            "  WARNING: the default admin password is still active while "
+            "Studio is about to be published on a public Cloudflare URL, and "
+            "no terminal is attached to change it here. The public page will "
+            "NOT auto-fill the bootstrap credential; read it on this machine "
+            f"from {_bootstrap_file}, log in, and change it promptly. Studio "
+            "shuts down after the bootstrap deadline "
+            "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) unless the "
+            "password is changed.",
             file = sys.stderr,
             flush = True,
         )
-        return True, False
+        # Never serve the default credential in HTML over a public URL.
+        return True, True
 
     def _is_current_password(candidate: str) -> bool:
         record = _auth_storage.get_user_and_secret(_admin)
@@ -1127,9 +1195,10 @@ def _terminal_password_gate(*, tunnel_will_start: bool) -> "Tuple[bool, bool]":
     def _apply_change(new_password: str) -> None:
         # Same server-side effects as routes/auth.py change_password: rehash +
         # rotate the JWT secret (invalidates access tokens) and revoke refresh
-        # tokens so no pre-change token outlives the default credential.
-        _auth_storage.update_password(_admin, new_password)
-        _auth_storage.revoke_user_refresh_tokens(_admin)
+        # tokens in the SAME transaction so no pre-change token survives.
+        _auth_storage.update_password(
+            _admin, new_password, revoke_refresh_tokens = True
+        )
 
     changed = prompt_for_password_change(
         min_length = _auth_storage.MIN_PASSWORD_LENGTH,
@@ -1395,6 +1464,41 @@ def run_server(
 
     app.state.trigger_shutdown = _trigger_shutdown
 
+    # Never publish Studio while the seeded default admin password is still
+    # active: ask for a new one in the terminal first (or warn / fail closed
+    # when no terminal is attached; see _terminal_password_gate). Must run
+    # BEFORE the uvicorn socket binds: on a wildcard --cloudflare launch the
+    # served HTML injects the bootstrap credential for first login, so a
+    # pre-gate listener would hand the default password to anyone who can
+    # reach the raw port while the operator is still typing.
+    _pw_proceed, _pw_drop_bootstrap = _terminal_password_gate(
+        tunnel_will_start = _cloudflare_tunnel_should_start(
+            cloudflare = cloudflare,
+            host = host,
+            secure = secure,
+            api_only = api_only,
+            is_colab = _IS_COLAB,
+        ),
+        host = host,
+        secure = secure,
+        api_only = api_only,
+        frontend_served = bool(frontend_path) and not api_only,
+        is_colab = _IS_COLAB,
+    )
+    if not _pw_proceed:
+        print(
+            "Not starting Studio; set a new admin password first, or launch "
+            "without --secure/--cloudflare.",
+            file = sys.stderr,
+            flush = True,
+        )
+        sys.exit(1)
+    if _pw_drop_bootstrap:
+        # Either the password just changed here (the captured bootstrap value
+        # is stale) or a public URL is about to serve with the default
+        # credential still active (never inject it into the HTML then).
+        app.state.bootstrap_password = None
+
     # Run server in a daemon thread with explicit new_event_loop() +
     # run_until_complete() (not asyncio.run) so nest_asyncio's patches don't
     # interfere when Colab/IPython already runs a loop on the main thread.
@@ -1464,28 +1568,6 @@ def run_server(
         is_colab = _IS_COLAB,
     )
     _cloudflare_requested = _cloudflare_enabled
-
-    # Never publish a public URL while the seeded default admin password is
-    # still active: ask for a new one in the terminal first (or warn + rely on
-    # the bootstrap deadline when no terminal is attached). Must stay BEFORE
-    # start_studio_tunnel below.
-    _pw_proceed, _pw_changed = _terminal_password_gate(
-        tunnel_will_start = _cloudflare_enabled
-    )
-    if not _pw_proceed:
-        print(
-            "Password change aborted; not starting the public Cloudflare tunnel. "
-            "Re-run and set a new admin password, or launch without "
-            "--secure/--cloudflare.",
-            file = sys.stderr,
-            flush = True,
-        )
-        _graceful_shutdown(_server)
-        sys.exit(1)
-    if _pw_changed:
-        # The app captured the bootstrap password at creation for the frontend
-        # first-login injection; it is stale (and sensitive) now.
-        app.state.bootstrap_password = None
 
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup

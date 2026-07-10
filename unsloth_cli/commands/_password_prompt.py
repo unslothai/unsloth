@@ -27,6 +27,49 @@ _BACKSPACE_CHARS = ("\x7f", "\x08")
 _SUBMIT_CHARS = ("\r", "\n")
 
 
+class _RestoreTtyOnSignals:
+    """Restore terminal attrs if SIGTERM/SIGHUP kills the prompt mid-read.
+
+    A finally block cannot run when a default-disposition signal terminates
+    the process, which would leave the shared terminal in cbreak/no-echo mode.
+    Best-effort: silently a no-op off the main thread or on platforms without
+    the signals.
+    """
+
+    def __init__(self, fd: int, old_attrs) -> None:
+        self._fd = fd
+        self._old_attrs = old_attrs
+        self._previous: list = []
+
+    def __enter__(self) -> "_RestoreTtyOnSignals":
+        import signal
+        import termios
+
+        def _restore_and_reraise(signum, frame):
+            termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_attrs)
+            signal.signal(signum, signal.SIG_DFL)
+            signal.raise_signal(signum)
+
+        for name in ("SIGTERM", "SIGHUP"):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                self._previous.append((sig, signal.signal(sig, _restore_and_reraise)))
+            except (ValueError, OSError):  # non-main thread / unsupported
+                pass
+        return self
+
+    def __exit__(self, *exc) -> None:
+        import signal
+
+        for sig, previous in self._previous:
+            try:
+                signal.signal(sig, previous)
+            except (ValueError, OSError):
+                pass
+
+
 def _read_masked_posix(prompt: str, out: TextIO) -> str:
     import termios
     import tty
@@ -37,28 +80,39 @@ def _read_masked_posix(prompt: str, out: TextIO) -> str:
     out.flush()
     chars: list[str] = []
     try:
-        # cbreak (not raw) keeps ISIG, so Ctrl-C still delivers SIGINT and
-        # raises KeyboardInterrupt; the finally below restores the terminal.
-        tty.setcbreak(fd)
-        while True:
-            ch = sys.stdin.read(1)
-            if ch in _SUBMIT_CHARS or ch == "":
-                break
-            if ch == "\x04":  # Ctrl-D
-                if not chars:
+        with _RestoreTtyOnSignals(fd, old_attrs):
+            # cbreak + ISIG off (mirrors studio/backend/auth/terminal_prompt.py):
+            # with ISIG on, Ctrl-Z would suspend the process mid-read and hand
+            # the shell a terminal stuck in no-echo mode before the finally
+            # below could restore it. Ctrl-C/Ctrl-Z arrive as \x03/\x1a instead
+            # and are handled here, after the terminal is restored.
+            tty.setcbreak(fd)
+            new_attrs = termios.tcgetattr(fd)
+            new_attrs[3] &= ~termios.ISIG
+            termios.tcsetattr(fd, termios.TCSADRAIN, new_attrs)
+            while True:
+                ch = sys.stdin.read(1)
+                if ch == "":  # stream ended mid-line: abort, don't submit
                     raise EOFError
-                continue
-            if ch in _BACKSPACE_CHARS:
-                if chars:
-                    chars.pop()
-                    out.write("\b \b")
-                    out.flush()
-                continue
-            if ch < " ":  # other control characters
-                continue
-            chars.append(ch)
-            out.write("*")
-            out.flush()
+                if ch in _SUBMIT_CHARS:
+                    break
+                if ch == "\x03":  # Ctrl-C (ISIG off: surfaces as a char)
+                    raise KeyboardInterrupt
+                if ch in ("\x04", "\x1a"):  # Ctrl-D / Ctrl-Z
+                    if not chars:
+                        raise EOFError
+                    continue
+                if ch in _BACKSPACE_CHARS:
+                    if chars:
+                        chars.pop()
+                        out.write("\b \b")
+                        out.flush()
+                    continue
+                if ch < " ":  # other control characters
+                    continue
+                chars.append(ch)
+                out.write("*")
+                out.flush()
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
         out.write("\n")
