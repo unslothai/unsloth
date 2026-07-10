@@ -169,6 +169,32 @@ def test_param_groups_splits_embedding_lr():
     assert embed["lr"] == 5e-6 and len(embed["params"]) == 1
 
 
+def test_param_groups_emit_named_pairs():
+    # Params must be (name, param) pairs so gefen keeps real names (period_one_substrings).
+    p = _FakeParam()
+    model = _FakeModel([("model.layers.0.self_attn.q_proj.weight", p)])
+    groups = gefenx.make_gefenx_param_groups(model, lr = 1e-4, weight_decay = 0.0)
+    entry = groups[0]["params"][0]
+    assert isinstance(entry, tuple) and entry[0] == "model.layers.0.self_attn.q_proj.weight"
+    assert entry[1] is p
+
+
+def test_param_groups_embedding_only_omits_empty_group():
+    # All trainable params are PEFT modules_to_save + embedding_lr => a single
+    # embeddings group, NOT an empty non_embeddings group (gefen rejects empties).
+    model = _FakeModel(
+        [
+            ("model.embed_tokens.modules_to_save.default.weight", _FakeParam()),
+            ("lm_head.modules_to_save.default.weight", _FakeParam()),
+        ]
+    )
+    groups = gefenx.make_gefenx_param_groups(model, lr = 1e-4, weight_decay = 0.0, embedding_lr = 5e-6)
+    assert len(groups) == 1
+    assert groups[0]["lr"] == 5e-6
+    assert len(groups[0]["params"]) == 2
+    assert all(len(g["params"]) > 0 for g in groups)
+
+
 # --------------------------------------------------------------------------- #
 # build_gefenx_optimizer
 # --------------------------------------------------------------------------- #
@@ -502,6 +528,54 @@ def test_real_gefenx_muon_updates_all_params_cpu():
     opt.step()
     opt.zero_grad()
     assert _num_changed(torch, before, model) == len(before)
+
+
+def test_real_gefenx_preserves_param_names():
+    # gefen must receive real names (not synthesized group_i_param_j), otherwise
+    # GefenXConfig.period_one_substrings can never match.
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("gefen")
+
+    model = torch.nn.Sequential(torch.nn.Embedding(16, 8), torch.nn.Linear(8, 8))
+    opt = gefenx.build_gefenx_optimizer(
+        model,
+        _GefenXConfig(fused = False, period_one_substrings = ("embed",)),
+        lr = 1e-3,
+        weight_decay = 0.0,
+        betas = (0.9, 0.999),
+        eps = 1e-8,
+    )
+    names = [opt.state[p].get("name") for g in opt.param_groups for p in g["params"]]
+    assert names and not any(str(n).startswith("group_") for n in names)
+
+
+def test_real_gefenx_embedding_only_builds():
+    # Regression: an embeddings-only run (all trainable params are modules_to_save)
+    # with embedding_lr set must not crash on an empty non_embeddings group.
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("gefen")
+    from gefen import Gefen
+
+    class _EmbedOnly(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = torch.nn.Parameter(torch.randn(8, 4))
+
+        def named_parameters(self, *a, **k):
+            yield "base.embed_tokens.modules_to_save.default.weight", self.w
+
+    model = _EmbedOnly()
+    opt = gefenx.build_gefenx_optimizer(
+        model,
+        _GefenXConfig(fused = False),
+        lr = 1e-3,
+        weight_decay = 0.0,
+        betas = (0.9, 0.999),
+        eps = 1e-8,
+        embedding_lr = 5e-6,
+    )
+    assert isinstance(opt, Gefen)
+    assert all(len(g["params"]) > 0 for g in opt.param_groups)
 
 
 @pytest.mark.skipif(not _CUDA, reason = "requires NVIDIA CUDA for the fused gefen kernels")

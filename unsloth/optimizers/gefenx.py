@@ -182,6 +182,13 @@ def make_gefenx_param_groups(
     Matches Unsloth's ``_create_unsloth_optimizer`` embedding split: params saved
     via PEFT ``modules_to_save`` (embeddings / heads trained at full rank) get the
     dedicated ``embedding_lr`` when one is provided; everything else shares ``lr``.
+
+    Params are emitted as ``(name, param)`` pairs so gefen keeps the real
+    parameter names — otherwise it synthesises ``group_i_param_j`` names and
+    ``GefenXConfig.period_one_substrings`` (matched against names) never fires.
+    Only non-empty buckets become groups: gefen rejects an empty parameter group,
+    so an embeddings-only run (all trainable params are ``modules_to_save``) would
+    otherwise crash on the empty ``non_embeddings`` group.
     """
     non_embeddings: List[Any] = []
     embeddings: List[Any] = []
@@ -195,17 +202,21 @@ def make_gefenx_param_groups(
             print(
                 f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
             )
-            embeddings.append(param)
+            embeddings.append((name, param))
         else:
-            non_embeddings.append(param)
+            non_embeddings.append((name, param))
 
-    param_groups: List[Dict[str, Any]] = [
-        {"params": non_embeddings, "weight_decay": weight_decay, "lr": lr},
-    ]
+    param_groups: List[Dict[str, Any]] = []
+    if non_embeddings:
+        param_groups.append({"params": non_embeddings, "weight_decay": weight_decay, "lr": lr})
     if embeddings:
         param_groups.append(
             {"params": embeddings, "weight_decay": weight_decay, "lr": embedding_lr}
         )
+    if not param_groups:
+        # No trainable params at all — hand gefen a single (empty) group so it
+        # raises its own clear "empty parameter list" error.
+        param_groups.append({"params": non_embeddings, "weight_decay": weight_decay, "lr": lr})
     return param_groups
 
 
