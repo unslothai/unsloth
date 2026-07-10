@@ -4099,3 +4099,93 @@ class TestRound38Bypasses:
     )
     def test_round38_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound39Bypasses:
+    """Thirty-ninth-round Codex findings (follow-ups on the round-36..38 git / env / import-vetter
+    work): sys.meta_path mutation that removes the workdir-module vetter, env -i / env -u
+    GIT_CONFIG_* stripping the git hook suppression, git include.path / includeIf.*.path pulling
+    in a hook-capable config, and (P2) single-quoted $() over-blocked as a command substitution.
+    The runtime-guard items (pyc-only import, from-os sink import, benign-attr FP) are covered in
+    test_sandbox_runtime_backstop.py."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Removing / reordering / replacing sys.meta_path drops the sandbox import vetter, so
+            # a later planted workdir module imports without source review. No sandboxed compute
+            # legitimately mutates the import finder chain.
+            "import sys\nsys.meta_path.pop(0)",
+            "import sys\nsys.meta_path.clear()",
+            "import sys\nsys.meta_path.remove(x)",
+            "import sys\nsys.meta_path.insert(0, x)",
+            "import sys\nsys.meta_path[:] = []",
+            "import sys\nsys.meta_path[0] = x",
+            "import sys\nsys.meta_path = []",
+            "import sys\ndel sys.meta_path[0]",
+            "import sys\nmp = sys.meta_path\nmp.pop(0)",
+            "import sys\nlist.insert(sys.meta_path, 0, x)",
+        ],
+    )
+    def test_sys_meta_path_mutation_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # env -i / --ignore-environment starts git with an empty environment, and env -u
+            # GIT_CONFIG_COUNT / --unset=GIT_CONFIG_* removes the injected core.hooksPath
+            # suppression, so a planted .git/hooks/* runs in the unguarded git child.
+            "import os\nos.system('env -i PATH=/usr/bin:/bin HOME=. git commit -m x')",
+            "import os\nos.system('env -u GIT_CONFIG_COUNT git commit -m x')",
+            "import os\nos.system('env --ignore-environment git commit -m x')",
+            "import subprocess\nsubprocess.run(['env', '-i', 'PATH=/bin', 'git', 'commit'])",
+        ],
+    )
+    def test_env_strips_git_hook_suppression_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # include.path / includeIf.<cond>.path pull in a config file that can set
+            # core.hooksPath, re-enabling a planted hook despite the direct key being blocked.
+            "import os\nos.system('git -c include.path=/tmp/evil.cfg status')",
+            "import os\nos.system('git config include.path evil.cfg')",
+            "import os\nos.system('git -c includeIf.gitdir:/x/.path=/tmp/e.cfg status')",
+        ],
+    )
+    def test_git_include_path_config_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A $() / backtick substitution runs inside DOUBLE quotes, so a reader payload leaks.
+            'import os\nos.system(\'echo "$(cat /etc/passwd)"\')',
+            "import os\nos.system('echo \"`cat /etc/passwd`\"')",
+        ],
+    )
+    def test_double_quoted_command_sub_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # $() / backticks inside SINGLE quotes are literal (POSIX suppresses substitution), so
+            # a literal string that merely contains them must NOT be blocked as a secret read.
+            "import os\nos.system(\"echo '$(cat /etc/passwd)'\")",
+            "import os\nos.system(\"printf '%s' '`cat /etc/passwd`'\")",
+            # Reading sys.meta_path (iteration) is fine; only Store / Del / method-mutation blocks.
+            "import sys\nfor f in sys.meta_path:\n    print(f)",
+            # env with a benign PATH prefix and no -i / -u before a non-git command stays allowed.
+            "import os\nos.system('env PATH=/opt/bin:$PATH ls')",
+            "import os\nos.system('env -i PATH=/bin ls')",
+            # A benign git include is still git usage; only exec-capable configs block, and a plain
+            # user config / benign git commit stays allowed.
+            "import os\nos.system('git -c user.name=me commit -m x')",
+            "import os\nos.system('git commit -m x')",
+        ],
+    )
+    def test_round39_benign_allowed(self, code):
+        _ok(code)

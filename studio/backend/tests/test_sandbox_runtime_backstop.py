@@ -683,6 +683,84 @@ def test_sandboxed_malicious_workdir_module_import_denied():
 
 
 @_POSIX_ONLY
+def test_sandboxed_pyc_only_workdir_module_import_denied():
+    # A sandboxed snippet can write a legacy sourceless `evil.pyc` directly in the workdir and
+    # `import evil`; PathFinder returns a `.pyc` origin the source scanner cannot read. The vetter
+    # must refuse any non-source workdir module rather than letting the default sourceless loader
+    # execute its bytecode (which would run an unguarded os.system child).
+    import importlib.util
+    import marshal
+
+    session = "backstop-workdir-pyc"
+    workdir = get_sandbox_workdir(session)
+    src = "import os\nos.system('echo PWNED_PYC')\n"
+    pyc = importlib.util.MAGIC_NUMBER + (b"\x00" * 12) + marshal.dumps(compile(src, "evilpyc.py", "exec"))
+    target = os.path.join(workdir, "evilpyc.pyc")
+    with open(target, "wb") as f:
+        f.write(pyc)
+    try:
+        out = _python_exec(
+            "import evilpyc; print('REACHED_' + 'BODY')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "PWNED_PYC" not in out
+        assert "REACHED_BODY" not in out
+        assert "sandbox:" in out or "ImportError" in out
+    finally:
+        os.remove(target)
+
+
+@_POSIX_ONLY
+def test_sandboxed_from_os_import_sink_workdir_module_denied():
+    # `from os import system; system('...')` binds a BARE sink name; the earlier vetter only
+    # rejected `import subprocess` / `from subprocess ...`, so the from-os form slipped through
+    # and ran an unguarded shell child at import time. The vetter now refuses it.
+    session = "backstop-workdir-fromos"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "evilfromos.py"), "w") as f:
+        f.write("from os import system\nsystem('echo PWNED_FROMOS')\n")
+    try:
+        out = _python_exec(
+            "import evilfromos; print('REACHED_' + 'BODY')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "PWNED_FROMOS" not in out
+        assert "REACHED_BODY" not in out
+        assert "sandbox:" in out or "ImportError" in out
+    finally:
+        os.remove(os.path.join(workdir, "evilfromos.py"))
+
+
+@_POSIX_ONLY
+def test_sandboxed_benign_attr_named_sink_workdir_module_allowed():
+    # A benign workdir module with a DATA attribute that merely shares a name with an os sink
+    # (p.system = 'linux') must still import: the vetter scopes rejection to actual sink calls
+    # and to sink references rooted at os / posix, not any same-named attribute.
+    session = "backstop-workdir-attrfp"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "helper_attr.py"), "w") as f:
+        f.write("class P:\n    pass\np = P()\np.system = 'linux'\nVALUE = p.system\n")
+    try:
+        out = _python_exec(
+            "import helper_attr; print('HELPER', helper_attr.VALUE)",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "HELPER linux" in out
+        assert "sandbox:" not in out
+    finally:
+        os.remove(os.path.join(workdir, "helper_attr.py"))
+
+
+@_POSIX_ONLY
 def test_sandboxed_realpath_monkeypatch_write_escape_denied(tmp_path):
     # Sandboxed code reassigns os.path.realpath to a lambda that echoes an in-workdir
     # path, then writes to an absolute path outside the workdir. If the guard read

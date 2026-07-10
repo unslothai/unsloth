@@ -450,6 +450,11 @@ def _git_config_key_is_exec(key: str) -> bool:
     k = key.strip().lower()
     if k in _GIT_EXEC_CONFIG_KEYS:
         return True
+    # include.path / includeIf.<cond>.path pull in another config file whose contents git then
+    # honors, so an included workdir config can set core.hooksPath / core.fsmonitor (re-enabling a
+    # planted hook) even though the direct key is blocked. Treat any include*.path key as exec.
+    if k == "include.path" or (k.startswith("includeif.") and k.endswith(".path")):
+        return True
     # filter.<name>.clean/smudge/process, diff.<name>.command, merge.<name>.driver take commands.
     parts = k.split(".")
     if len(parts) == 3:
@@ -1470,6 +1475,8 @@ def _find_blocked_commands(command: str) -> set[str]:
         # relative write subcommand (env -C /tmp git init) resolves under DIR. Scan back to the
         # previous separator for such a wrapper; if DIR escapes the workdir, git operates outside.
         _git_cwd_escapes = False
+        _env_suppress_dropped = False
+        _seg_has_env = False
         for _bk in range(i - 1, -1, -1):
             _bt = tokens[_bk]
             if _bt in _SHELL_SEPARATORS or _bt in _SHELL_KEYWORDS_AS_SEP:
@@ -1479,8 +1486,22 @@ def _find_blocked_commands(command: str) -> set[str]:
                     _git_cwd_escapes = True
             elif _bt.startswith("--chdir=") and _arg_escapes_workdir(_bt.split("=", 1)[1]):
                 _git_cwd_escapes = True
+            # env -i / --ignore-environment starts git with an EMPTY environment, and env -u
+            # GIT_CONFIG_COUNT / --unset=GIT_CONFIG_* strips just the suppression var; either
+            # removes the injected core.hooksPath suppression so a planted .git/hooks/* runs in
+            # the unguarded git child. Only attribute these flags to an actual env wrapper.
+            if _bt in ("-i", "--ignore-environment"):
+                _env_suppress_dropped = True
+            elif _bt == "-u" and _bk + 1 < len(tokens) and tokens[_bk + 1].startswith("GIT_CONFIG"):
+                _env_suppress_dropped = True
+            elif _bt.startswith("--unset=") and _bt.split("=", 1)[1].startswith("GIT_CONFIG"):
+                _env_suppress_dropped = True
+            elif _token_basename(_bt) == "env":
+                _seg_has_env = True
         if _git_cwd_escapes:
             blocked.add("git-write-outside")
+        if _env_suppress_dropped and _seg_has_env:
+            blocked.add("git-config-env-override")
         _seg = []
         for k in range(i + 1, len(tokens)):
             if tokens[k] in _SHELL_SEPARATORS or tokens[k] in _SHELL_KEYWORDS_AS_SEP:
@@ -4958,15 +4979,27 @@ def _join_chdir(base, newdir):
 
 def _extract_command_subs(s):
     """Extract the inner payloads of ``$(...)`` and backtick command substitutions from a
-    shell string, INCLUDING those inside double quotes (bash runs a substitution regardless
-    of surrounding quotes: ``echo "$(head /etc/passwd)"``). Returns a list of inner command
-    strings for recursive read scanning. ``$((arith))`` yields a harmless ``(arith)`` payload
-    that scans clean."""
+    shell string. Substitutions run inside DOUBLE quotes (``echo "$(head /etc/passwd)"``) but
+    are suppressed entirely inside SINGLE quotes (``echo '$(head /etc/passwd)'`` is a literal),
+    so single-quoted spans are skipped to avoid over-blocking benign literals. Returns a list of
+    inner command strings for recursive read scanning. ``$((arith))`` yields a harmless
+    ``(arith)`` payload that scans clean."""
     subs = []
     i, n = 0, len(s)
+    in_double = False
     while i < n:
         c = s[i]
-        if c == "`":
+        # A single quote OUTSIDE double quotes opens a literal span in which $() / backticks do
+        # not expand; skip to its close. (Inside double quotes a `'` is an ordinary character.)
+        if c == "'" and not in_double:
+            j = s.find("'", i + 1)
+            if j == -1:
+                break  # unterminated single quote: rest is literal
+            i = j + 1
+        elif c == '"':
+            in_double = not in_double
+            i += 1
+        elif c == "`":
             j = s.find("`", i + 1)
             if j == -1:
                 break
@@ -6351,6 +6384,47 @@ def _check_signal_escape_patterns(
                     return True
             return False
 
+        def _is_sys_meta_path_expr(self, n):
+            # `sys.meta_path` (attribute form) or getattr(sys, 'meta_path') -- the import
+            # finder chain into which the sandbox installs its workdir-module vetter.
+            if (
+                isinstance(n, ast.Attribute)
+                and n.attr == "meta_path"
+                and _ast_name_matches(n.value, self.sys_aliases)
+            ):
+                return True
+            if (
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name)
+                and n.func.id == "getattr"
+                and len(n.args) >= 2
+                and _ast_name_matches(n.args[0], self.sys_aliases)
+                and _extract_string_from_node(n.args[1]) == "meta_path"
+            ):
+                return True
+            if (
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and n.func.attr in ("__getattribute__", "__getattr__")
+                and len(n.args) >= 2
+                and _ast_name_matches(n.args[0], self.sys_aliases)
+                and _extract_string_from_node(n.args[1]) == "meta_path"
+            ):
+                return True
+            return False
+
+        def _is_sys_meta_path(self, n):
+            # `sys.meta_path` (or getattr form), or a single-assignment alias of either
+            # (mp = sys.meta_path; mp.pop(0)). Used by the import-hook mutation checks: removing
+            # / reordering the vetter lets a planted workdir module import without source review.
+            if self._is_sys_meta_path_expr(n):
+                return True
+            if _analyzer_on and isinstance(n, ast.Name):
+                rhs = _scope_idx.resolve(n.id, n, "rhsnode")
+                if rhs is not None and self._is_sys_meta_path_expr(rhs):
+                    return True
+            return False
+
         def _is_namespace_dict_expr(self, n):
             # globals() / locals() / vars() with no args, or a single-assignment alias of one
             # (g = globals(); g['__builtins__']). Used by the namespace-dict subscript check.
@@ -7196,6 +7270,67 @@ def _check_signal_escape_patterns(
                         "(can drop a guarded module for reimport)"
                     )
                 elif (
+                    # sys.meta_path.pop(0) / .clear() / .remove(...) / .insert(...) / .append(...)
+                    # / .extend(...) / .reverse() / .sort() removes or reorders the import finder
+                    # chain, dropping the sandbox's workdir-module vetter so a planted workdir
+                    # helper (import evil) loads without source review and runs an unguarded sink.
+                    # No sandboxed compute legitimately mutates the import finder chain.
+                    isinstance(func, ast.Attribute)
+                    and func.attr
+                    in (
+                        "pop",
+                        "clear",
+                        "remove",
+                        "insert",
+                        "append",
+                        "extend",
+                        "reverse",
+                        "sort",
+                        "__setitem__",
+                        "__delitem__",
+                        "__iadd__",
+                    )
+                    and self._is_sys_meta_path(func.value)
+                ):
+                    dynamic_desc = (
+                        f"sys.meta_path.{func.attr}(...) mutates the import finder chain "
+                        "(can remove the sandbox workdir-module vetter)"
+                    )
+                elif (
+                    # The same mutation via an UNBOUND list method: list.pop(sys.meta_path, 0) /
+                    # list.insert(sys.meta_path, ...). The receiver is `list`, not sys.meta_path,
+                    # so the bound-method check above misses it; here sys.meta_path is the first arg.
+                    isinstance(func, ast.Attribute)
+                    and func.attr
+                    in (
+                        "pop",
+                        "clear",
+                        "remove",
+                        "insert",
+                        "append",
+                        "extend",
+                        "reverse",
+                        "sort",
+                        "__setitem__",
+                        "__delitem__",
+                        "__iadd__",
+                    )
+                    and node.args
+                    and self._is_sys_meta_path(node.args[0])
+                    and (
+                        (isinstance(func.value, ast.Name) and func.value.id == "list")
+                        or (
+                            isinstance(func.value, ast.Call)
+                            and isinstance(func.value.func, ast.Name)
+                            and func.value.func.id == "type"
+                        )
+                    )
+                ):
+                    dynamic_desc = (
+                        f"unbound list.{func.attr}(sys.meta_path, ...) mutates the import finder "
+                        "chain (can remove the sandbox workdir-module vetter)"
+                    )
+                elif (
                     # globals().get('__builtins__') / locals().get(...) / vars().get(...)
                     # -- the .get() twin of the globals()['__builtins__'] subscript form.
                     isinstance(func, ast.Attribute)
@@ -7441,6 +7576,23 @@ def _check_signal_escape_patterns(
                         "description": "MRO access on a file class recovers an unguarded base (gadget)",
                     }
                 )
+            elif (
+                node.attr == "meta_path"
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+                and _ast_name_matches(node.value, self.sys_aliases)
+            ):
+                # Reassigning / deleting sys.meta_path (sys.meta_path = []) replaces the whole
+                # import finder chain, dropping the sandbox's workdir-module vetter. Reading it
+                # (Load) stays allowed; only Store / Del is a mutation.
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(node, "lineno", -1),
+                        "description": (
+                            "sys.meta_path reassignment can remove the sandbox workdir-module vetter"
+                        ),
+                    }
+                )
             self.generic_visit(node)
 
         def _is_fileclass_recovery_expr(self, expr):
@@ -7575,6 +7727,20 @@ def _check_signal_escape_patterns(
                         "type": "dynamic_exec",
                         "line": getattr(node, "lineno", -1),
                         "description": "sys.modules mutation (del / assign) can drop a guarded module",
+                    }
+                )
+            if isinstance(node.ctx, (ast.Store, ast.Del)) and self._is_sys_meta_path(v):
+                # `sys.meta_path[:] = []` / `del sys.meta_path[0]` / `sys.meta_path[0] = x`
+                # removes or reorders the import finder chain, dropping the sandbox's
+                # workdir-module vetter so a planted helper imports without source review.
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(node, "lineno", -1),
+                        "description": (
+                            "sys.meta_path mutation (del / assign) can remove the sandbox "
+                            "workdir-module vetter"
+                        ),
                     }
                 )
             # globals()['__builtins__'] / locals()[...] / vars()[...] pulls the builtins
@@ -9744,6 +9910,14 @@ try:
         "posix_spawn", "posix_spawnp",
     })
     _GUARD_EXEC_MODS = frozenset({"subprocess", "pty"})
+    # os / posix expose the exec-attr sinks (os.system, os.execv, ...); a sink attribute rooted at
+    # one of these is a command-exec sink even without a direct call (x = os.system; x('id')).
+    _GUARD_EXEC_RECEIVERS = frozenset({"os", "posix"})
+    def _guard_attr_root(_v):
+        # Base Name id of an attribute chain (os.path -> 'os'); None if not Name-rooted.
+        while isinstance(_v, _gast.Attribute):
+            _v = _v.value
+        return _v.id if isinstance(_v, _gast.Name) else None
     def _guard_module_src_unsafe(_src):
         try:
             _tree = _gast.parse(_src)
@@ -9755,13 +9929,28 @@ try:
                     if _al.name.split(".")[0] in _GUARD_EXEC_MODS:
                         return True
             elif isinstance(_nd, _gast.ImportFrom):
-                if (_nd.module or "").split(".")[0] in _GUARD_EXEC_MODS:
+                _mroot = (_nd.module or "").split(".")[0]
+                if _mroot in _GUARD_EXEC_MODS:
+                    return True
+                # `from os import system` / `from os import *` binds a BARE sink name into the
+                # module namespace; a later bare system('id') call has no os. attribute to catch.
+                if _mroot in _GUARD_EXEC_RECEIVERS:
+                    for _al in _nd.names:
+                        if _al.name == "*" or _al.name in _GUARD_EXEC_ATTRS:
+                            return True
+            elif isinstance(_nd, _gast.Call):
+                # An ACTUAL invocation of a sink-named method on any receiver (os.system(...),
+                # or an aliased o.system(...)) is a command-exec call regardless of receiver.
+                if isinstance(_nd.func, _gast.Attribute) and _nd.func.attr in _GUARD_EXEC_ATTRS:
+                    return True
+                if isinstance(_nd.func, _gast.Name) and _nd.func.id in (
+                    "eval", "exec", "compile", "__import__"):
                     return True
             elif isinstance(_nd, _gast.Attribute):
-                if _nd.attr in _GUARD_EXEC_ATTRS:
-                    return True
-            elif isinstance(_nd, _gast.Call) and isinstance(_nd.func, _gast.Name):
-                if _nd.func.id in ("eval", "exec", "compile", "__import__"):
+                # A sink-named attribute REFERENCE (even uncalled) rooted at os / posix
+                # (x = os.system). A same-named attribute on an unrelated object
+                # (p.system = 'linux') is NOT a sink, so require a sink-module receiver root.
+                if _nd.attr in _GUARD_EXEC_ATTRS and _guard_attr_root(_nd.value) in _GUARD_EXEC_RECEIVERS:
                     return True
         return False
     class _GuardWorkdirImportVetter:
@@ -9771,14 +9960,21 @@ try:
             except _bi.BaseException:
                 return None
             _orig = getattr(_spec, "origin", None) if _spec is not None else None
-            if not _orig or not _orig.endswith(".py"):
-                return None
+            if not _orig:
+                return None  # namespace / builtin / frozen: no file to vet, not workdir-sourced
             try:
                 _rp = _os.path.realpath(_orig)
             except _bi.BaseException:
                 return None
             if not (_rp == _GUARD_WORKDIR_REAL or _rp.startswith(_GUARD_WORKDIR_REAL + _os.sep)):
                 return None  # not a workdir module; let the default finders load it
+            # A workdir module must be a .py we can read + scan. A sourceless .pyc / native .so /
+            # any other non-source file under the workdir cannot be statically vetted, so refuse
+            # it: a planted legacy evil.pyc would otherwise run its bytecode via the default
+            # sourceless loader, never reaching the source scan below.
+            if not _orig.endswith(".py"):
+                raise _bi.ImportError(
+                    "sandbox: refusing to import non-source workdir module " + _name)
             try:
                 _fh = _io.open(_orig, "r", encoding="utf-8", errors="replace")
                 try:
