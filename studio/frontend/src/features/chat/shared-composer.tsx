@@ -82,6 +82,7 @@ import {
 import {
   loadedGpuMemoryFields,
   type ReasoningEffort,
+  reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
@@ -943,7 +944,10 @@ export function SharedComposer({
         gpuLayers: store.gpuLayers,
         nCpuMoe: store.nCpuMoe,
         splitRatio: store.splitRatio,
-        selectedGpuIds: store.selectedGpuIds,
+        // Reconcile the pick against the GPUs present now, like the model-switch
+        // path: an early remember-restore can hold a stale cross-host pick that
+        // /load would reject (the device cache is populated by send time).
+        selectedGpuIds: reconcilePersistedGpuIds(store.selectedGpuIds),
         tensorParallel: store.tensorParallel,
         customContextLength: store.customContextLength,
       };

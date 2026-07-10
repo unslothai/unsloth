@@ -268,6 +268,23 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         )
         self.assertFalse(ok)
 
+    def test_zero_estimate_bypasses_floor(self):
+        # Deliberate zero-offload (manual gpu_layers=0, no companions): estimate
+        # 0 means no VRAM held, so even near-full GPUs (free 1 GB < the 4 GB
+        # safety floor) must not 409 the load.
+        ok, info, _ = self._run(devices = _devices((0, 80, 79)), required_override = 0.0)
+        self.assertTrue(ok)
+        self.assertEqual(info["reason"], "cpu_only")
+
+    def test_zero_estimate_bypasses_floor_with_explicit_pick(self):
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 79), (1, 80, 79)),
+            required_override = 0.0,
+            gpu_ids = [0, 1],
+        )
+        self.assertTrue(ok)
+        self.assertEqual(info["mode"], "explicit")
+
     def test_estimate_unavailable_refuses(self):
         # No override and the estimator can't size it -> default-deny.
         ok, info, _ = self._run(devices = _devices((0, 80, 0)), required_override = None, estimate = None)

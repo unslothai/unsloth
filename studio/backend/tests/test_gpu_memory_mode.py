@@ -645,17 +645,34 @@ def test_zero_offload_flag_false_without_companions():
     # CPU-only by construction: False lets the training coordinator skip
     # unloading a server that holds no VRAM.
     cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0", "--fit", "off"]
-    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)]) is False
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is False
 
 
-@pytest.mark.parametrize("companion", ["--mmproj", "--model-draft"])
+@pytest.mark.parametrize(
+    "companion",
+    ["--mmproj", "--model-draft", "-md", "--spec-draft-model", "-hfd"],
+)
 def test_zero_offload_flag_true_with_companion(companion):
-    # mmproj / MTP drafter offload to GPU regardless of --gpu-layers, so the
-    # server still holds VRAM and training must unload it.
+    # mmproj / a drafter offload to GPU regardless of --gpu-layers, so the
+    # server still holds VRAM and training must unload it. Drafter detection
+    # reuses the extras parser, so pass-through aliases count too.
     cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0", companion, "x.gguf"]
-    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)]) is True
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is True
+
+
+def test_zero_offload_flag_true_with_inline_companion_forms():
+    cmd = ["llama-server", "-m", "model.gguf", "--spec-draft-model=x.gguf"]
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is True
+    cmd = ["llama-server", "-m", "model.gguf", "--mmproj=proj.gguf"]
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is True
+
+
+def test_zero_offload_flag_true_with_env_drafter():
+    cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0"]
+    env = {"LLAMA_ARG_SPEC_DRAFT_MODEL": "x.gguf"}
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], env) is True
 
 
 def test_zero_offload_flag_none_without_gpus():
     cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0"]
-    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, []) is None
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [], {}) is None

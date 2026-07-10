@@ -259,6 +259,15 @@ def can_load_chat_during_training(
             mode = "explicit" if requested_gpu_ids else "gguf"
             return False, {"mode": mode, "reason": "estimate_unavailable"}
 
+        if is_gguf and required_gb <= 0:
+            # Deliberate zero-offload (manual gpu_layers=0, no companions): the
+            # server holds no model/KV VRAM -- the same load the unload path
+            # skips as CPU-only -- so don't hold it to the safety floor a GPU
+            # load needs; that would 409 exactly when the GPUs are busy, the
+            # one case gpu_layers=0 exists for.
+            mode = "explicit" if requested_gpu_ids else "gguf"
+            return True, {"mode": mode, "reason": "cpu_only", "required_gb": 0.0}
+
         free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
         if requested_gpu_ids:
             # Invalid ids -> load_model 400s first, so don't block; missing id = 0.

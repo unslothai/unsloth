@@ -7558,7 +7558,7 @@ class LlamaCppBackend:
                 _deliberate_cpu_only = gpu_memory_mode == "manual" and gpu_layers == 0
                 if _deliberate_cpu_only:
                     self._gpu_offload_active = self._zero_offload_gpu_flag(
-                        _last_spawn_cmd, _detected_gpus
+                        _last_spawn_cmd, _detected_gpus, env
                     )
                 else:
                     self._gpu_offload_active = self._classify_gpu_offload(
@@ -8083,18 +8083,25 @@ class LlamaCppBackend:
         return classify_gpu_offload_lines(self._stdout_lines)
 
     @staticmethod
-    def _zero_offload_gpu_flag(spawn_cmd: list, detected_gpus: list) -> Optional[bool]:
+    def _zero_offload_gpu_flag(
+        spawn_cmd: list, detected_gpus: list, env: Optional[Mapping[str, str]] = None
+    ) -> Optional[bool]:
         """GPU-residency flag for a deliberate manual zero-offload load. The
         main model is CPU-only by construction, but launched companions (mmproj
-        / an MTP drafter) offload to the GPU regardless of ``--gpu-layers`` --
-        and the counted-offload classifier, keyed on the main model's layer
-        line, can't see them. True when a companion is in the launched argv
+        / a drafter) offload to the GPU regardless of ``--gpu-layers`` -- and
+        the counted-offload classifier, keyed on the main model's layer line,
+        can't see them. True when a companion is in the launched argv or env
         (the server still holds VRAM, so training must unload it), False when
         none is (nothing to free; training leaves the server alone), None
-        without a detected GPU (the existing no-signal convention)."""
+        without a detected GPU (the existing no-signal convention). The drafter
+        check reuses the extras parser, so pass-through aliases (-md,
+        --spec-draft-model, HF forms) and the LLAMA_ARG_SPEC_DRAFT_* env count
+        too, not just the Studio-emitted --model-draft."""
         if not detected_gpus:
             return None
-        return any(f in spawn_cmd for f in ("--mmproj", "--model-draft"))
+        if any(str(a).startswith("--mmproj") for a in spawn_cmd):
+            return True
+        return _extra_args_mtp_draft_path(spawn_cmd, env) is not None
 
     def load_cancelled(self) -> bool:
         """True if a load was cancelled (e.g. via unload/_cancel_event) and not

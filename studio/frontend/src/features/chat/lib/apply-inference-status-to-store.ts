@@ -215,7 +215,12 @@ export function applyActiveModelStatusToStore(
     loadedIsMultimodal: isMultimodalResponse(status),
     loadedIsDiffusion: status.is_diffusion ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
+    // The spec / KV seeds share the GPU-fields reseed mechanism below: a
+    // non-GGUF status leaves their loaded baselines null, so the "unseeded"
+    // guard re-fires every refresh -- hold them too while a staged pick's
+    // settings are being edited, or the refresh resets the staged edit.
     ...(seedLoadParams &&
+      prevState.pendingSelection == null &&
       prevState.loadedSpeculativeType === null && {
         speculativeType: currentSpecType,
         loadedSpeculativeType: currentSpecType,
@@ -228,6 +233,7 @@ export function applyActiveModelStatusToStore(
         loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
       }),
     ...(seedLoadParams &&
+      prevState.pendingSelection == null &&
       status.cache_type_kv !== undefined &&
       prevState.loadedKvCacheDtype === null && {
         kvCacheDtype: status.cache_type_kv,
@@ -239,7 +245,13 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
+    // A non-GGUF status never sets loadedGpuMemoryMode, so this "unseeded"
+    // guard stays true across refreshes there and the reseed repeats. That
+    // repeat is an idempotent reset -- except while the user is editing a
+    // staged GGUF pick (pendingSelection), whose Manual knob edits it would
+    // clobber mid-edit, so hold the seeding until the staging resolves.
     ...(seedLoadParams &&
+      prevState.pendingSelection == null &&
       prevState.loadedGpuMemoryMode === null &&
       loadedGpuMemoryFields(status)),
     ...(status.chat_template_override !== undefined &&
