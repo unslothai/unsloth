@@ -2329,10 +2329,7 @@ def apply_gpu_ids(gpu_ids) -> None:
                 _xpu_hinted = bool(os.environ.get("ZE_AFFINITY_MASK")) and _cuda_hidden
                 _is_xpu = _xpu_build and (
                     _xpu_hinted
-                    or (
-                        getattr(_ver, "cuda", None) is None
-                        and getattr(_ver, "hip", None) is None
-                    )
+                    or (getattr(_ver, "cuda", None) is None and getattr(_ver, "hip", None) is None)
                 )
         except Exception as e:
             logger.debug(
