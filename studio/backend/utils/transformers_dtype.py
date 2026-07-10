@@ -11,8 +11,9 @@ the name the installed version accepts instead.
 Answers the same question as ``unsloth_zoo.hf_utils.HAS_TORCH_DTYPE`` but derives
 it independently, for two reasons. It uses a ``packaging.version`` check rather
 than that constant's ``"torch_dtype" in PretrainedConfig.__doc__`` sniffing, which
-reports the wrong name under ``python -OO`` / ``PYTHONOPTIMIZE=2`` (docstrings are
-stripped to ``None``). And it avoids importing the constant at all: the RAG
+raises ``TypeError`` under ``python -OO`` / ``PYTHONOPTIMIZE=2`` (docstrings are
+stripped to ``None``, and ``"torch_dtype" in None`` is a type error). And it avoids
+importing the constant at all: the RAG
 embedder warms here at startup in the lean main process, and reading it would run
 ``unsloth_zoo``'s package ``__init__`` (torch import, GPU/Pytorch checks, the
 patching banner) as a side effect. The embedder is deliberately torch-optional (it
@@ -31,7 +32,11 @@ def _has_torch_dtype_kwarg() -> bool:
     try:
         import transformers
         from packaging.version import Version
-        return Version(transformers.__version__) < Version("4.56.0")
+        # Compare on the release tuple so a pre-release of the rename version
+        # (``4.56.0.dev0``/``rc1``, which sort *below* ``4.56.0``) still counts as
+        # new and picks ``dtype`` -- those builds already accept it, and picking
+        # ``torch_dtype`` there would re-emit the very warning this suppresses.
+        return Version(transformers.__version__).release < (4, 56, 0)
     except Exception:
         return False
 
