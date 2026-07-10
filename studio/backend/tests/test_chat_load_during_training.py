@@ -856,7 +856,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 local_cpu = self.route._estimate_gguf_required_gb(
                     cfg,
                     llama_extra_args = [
-                        "--model-draft", str(draft), "--spec-draft-ngl", "0",
+                        "--model-draft",
+                        str(draft),
+                        "--spec-draft-ngl",
+                        "0",
                     ],
                     **kwargs,
                 )

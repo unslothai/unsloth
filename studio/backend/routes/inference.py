@@ -3560,8 +3560,7 @@ def _estimate_gguf_required_gb(
         # the guard floor -- and a drafter forced to CPU holds no VRAM either.
         # mmproj is mode-independent and always charged.
         charge_mtp = (
-            _spec_mode_may_emit_drafter(speculative_type, llama_extra_args)
-            and not draft_on_cpu
+            _spec_mode_may_emit_drafter(speculative_type, llama_extra_args) and not draft_on_cpu
         )
 
         main = getattr(config, "gguf_file", None)
