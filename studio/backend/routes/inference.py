@@ -3462,8 +3462,7 @@ def _diffusion_guard_gpu_ids(
         # the common naming (DiffusionGemma and friends) up front -- else the
         # guard sizes the aggregate pool for a load that runs on one device.
         ident = " ".join(
-            str(getattr(config, attr, "") or "")
-            for attr in ("identifier", "gguf_hf_repo")
+            str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo")
         ).lower()
         if "diffusion" in ident:
             return _collapse()
