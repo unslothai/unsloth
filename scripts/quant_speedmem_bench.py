@@ -414,7 +414,12 @@ def _encode_once(bag) -> None:
 
 
 # ── VAE loading + latent shape (reused from quant_accuracy_sweep) ──────────────
-def _load_vae(repo: str, device: str, *, force_fp32: bool = False):
+def _load_vae(
+    repo: str,
+    device: str,
+    *,
+    force_fp32: bool = False,
+):
     import torch
 
     diffusers = _import_diffusers()
