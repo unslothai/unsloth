@@ -3460,3 +3460,62 @@ class TestRound31Bypasses:
     )
     def test_round31_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound32Bypasses:
+    """Thirty-second-round Codex findings: shell compound-statement condition bodies mistaken
+    for the command word, chrt / mktemp missing from the command-prefix / child-writer lists,
+    and alias-unaware sys.modules / namespace-dict / builtins subscript+import checks."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # if / while / until run their CONDITION command; the child writer must be scanned.
+            "import os\nos.system('if touch /tmp/escape; then :; fi')",
+            "import os\nos.system('while touch /tmp/x; do :; done')",
+            "import os\nos.system('until rm -rf /; do :; done')",
+            "import subprocess\nsubprocess.run('if touch /tmp/x; then :; fi', shell=True)",
+        ],
+    )
+    def test_shell_condition_body_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # chrt [opts] <prio> <command> execs the command; mktemp writes at a chosen path.
+            "import os\nos.system('chrt -o 0 touch /tmp/escape')",
+            "import subprocess\nsubprocess.run(['chrt', '-o', '0', 'touch', '/tmp/x'])",
+            "import os\nos.system('mktemp /tmp/unsloth.XXXXXX')",
+            "import subprocess\nsubprocess.run(['mktemp', '-d', '/tmp/dir.XXXXXX'])",
+        ],
+    )
+    def test_chrt_and_mktemp_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Alias-unaware loader-table / namespace-dict / builtins recovery.
+            "import sys\nm = sys.modules\nm['os'].system('rm -rf /')",
+            "import sys\nm = sys.modules\nm.get('os').system('rm -rf /')",
+            "g = globals()\ng['__builtins__'].__import__('os').system('rm -rf /')",
+            "b = __builtins__\nb.__import__('os').system('rm -rf /')",
+        ],
+    )
+    def test_alias_module_recovery_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign compound statements, scheduler view, normal dict/globals, mktemp-free.
+            "import os\nos.system('if ls data; then echo ok; fi')",
+            "import os\nos.system('chrt -p 1234')",
+            "d = {'os': 1}\nprint(d.get('os'), d['os'])",
+            "g = globals()\nprint(g.get('x'))",
+            "import sys\nprint('json' in sys.modules)",
+        ],
+    )
+    def test_round32_benign_allowed(self, code):
+        _ok(code)

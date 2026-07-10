@@ -189,6 +189,9 @@ _CHILD_WRITE_COMMANDS = frozenset(
         "unrar",
         "cpio",
         "rsync",
+        # mktemp creates a file / dir at a caller-chosen template path (mktemp
+        # /tmp/x.XXXXXX, mktemp -d), writing outside the workdir in an unguarded child.
+        "mktemp",
     }
 )
 _BLOCKED_COMMANDS_COMMON = _BLOCKED_COMMANDS_COMMON | _INTERPRETER_COMMANDS | _CHILD_WRITE_COMMANDS
@@ -210,8 +213,12 @@ _BLOCKED_COMMANDS = (
 
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
-# Bash keywords starting a new command position (then $cmd, do $cmd, etc.).
-_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif"})
+# Bash keywords whose FOLLOWING word is a new command position: the compound-statement
+# headers (if / while / until / elif run their CONDITION command) and the body markers
+# (then / do / else). `if touch x; then :; fi` executes `touch` as the condition command, so
+# these must reset command position -- otherwise the header word is mistaken for the command
+# and the real command it precedes is skipped as an argument.
+_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif", "if", "while", "until"})
 # POSIX / common shell binaries. A shell without an inline `-c` payload runs unscanned
 # code (a script file, -s / stdin, or a bare stdin-reading shell), so it is denied.
 _SHELL_BINARIES = frozenset({"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"})
@@ -315,6 +322,9 @@ _COMMAND_PREFIXES = frozenset(
         "doas",
         "su",
         "xargs",
+        # chrt [options] <priority> <command> [<arg>...]: util-linux scheduler wrapper that
+        # execs the following command, so chrt -o 0 touch /tmp/x must resolve to touch.
+        "chrt",
     }
 )
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -4398,7 +4408,22 @@ def _is_sensitive_abs_path(s):
     return any(tok in low for tok in _SANDBOX_SENSITIVE_TOKENS)
 
 
-_READ_SCAN_SEPARATORS = (";", "&&", "||", "|", "&", "(", ")", "`", "{", "}", "\n")
+# Punctuation separators plus the bash compound-statement keywords (if/while/until/then/do/
+# else/elif), so a reader in a CONDITION body (`if cat $SECRET; then :; fi`) is scanned at
+# command position rather than treated as an argument of the keyword.
+_READ_SCAN_SEPARATORS = (
+    ";",
+    "&&",
+    "||",
+    "|",
+    "&",
+    "(",
+    ")",
+    "`",
+    "{",
+    "}",
+    "\n",
+) + tuple(_SHELL_KEYWORDS_AS_SEP)
 
 
 def _join_chdir(base, newdir):
@@ -5659,6 +5684,36 @@ def _check_signal_escape_patterns(
                     return True
             return False
 
+        def _is_namespace_dict_expr(self, n):
+            # globals() / locals() / vars() with no args, or a single-assignment alias of one
+            # (g = globals(); g['__builtins__']). Used by the namespace-dict subscript check.
+            def _direct(x):
+                return (
+                    isinstance(x, ast.Call)
+                    and isinstance(x.func, ast.Name)
+                    and x.func.id in ("globals", "locals", "vars")
+                    and not x.args
+                )
+
+            if _direct(n):
+                return True
+            if _analyzer_on and isinstance(n, ast.Name):
+                rhs = _scope_idx.resolve(n.id, n, "rhsnode")
+                if rhs is not None and _direct(rhs):
+                    return True
+            return False
+
+        def _is_builtins_ref(self, n):
+            # The builtins module (builtins / __builtins__ / an import alias), or a
+            # single-assignment alias of one (b = __builtins__; b.__import__('os')).
+            if _ast_name_matches(n, self.builtins_aliases):
+                return True
+            if _analyzer_on and isinstance(n, ast.Name):
+                rhs = _scope_idx.resolve(n.id, n, "rhsnode")
+                if rhs is not None and _ast_name_matches(rhs, self.builtins_aliases):
+                    return True
+            return False
+
         def _is_compile_result(self, arg):
             """True when ``arg`` is a ``compile(...)`` code object (bare / builtins /
             single-assignment alias / inline-container unwrap). Used to catch code objects
@@ -6156,10 +6211,11 @@ def _check_signal_escape_patterns(
                         and _ast_name_matches(_ecf.value, self.importlib_aliases)
                     )
                     or (
-                        # builtins.__import__('os') / __builtins__.__import__(...)
+                        # builtins.__import__('os') / __builtins__.__import__(...), incl. a
+                        # single-assignment alias (b = __builtins__; b.__import__('os')).
                         isinstance(_ecf, ast.Attribute)
                         and _ecf.attr == "__import__"
-                        and _ast_name_matches(_ecf.value, self.builtins_aliases)
+                        and self._is_builtins_ref(_ecf.value)
                     )
                     or (
                         # single-assignment `im = importlib.import_module` in scope.
@@ -6313,12 +6369,11 @@ def _check_signal_escape_patterns(
                             "(attribute-name obfuscation)"
                         )
                 elif (
-                    # sys.modules.get('os') -- the .get() twin of sys.modules['os'].
+                    # sys.modules.get('os') -- the .get() twin of sys.modules['os'], incl. a
+                    # single-assignment alias (m = sys.modules; m.get('os')).
                     isinstance(func, ast.Attribute)
                     and func.attr == "get"
-                    and isinstance(func.value, ast.Attribute)
-                    and func.value.attr == "modules"
-                    and _ast_name_matches(func.value.value, self.sys_aliases)
+                    and self._is_sys_modules(func.value)
                     and node.args
                 ):
                     # Constant-fold the key so sys.modules.get('o' + 's') is caught, not
@@ -6734,8 +6789,10 @@ def _check_signal_escape_patterns(
             # name), sys.modules[name] = ...) stay allowed.
             v = node.value
             # sys.modules[...] (attribute form), getattr(sys, 'modules')[...], or
-            # object.__getattribute__(sys, 'modules')[...] all index the loader table.
-            is_sys_modules = self._is_sys_modules_expr(v)
+            # object.__getattribute__(sys, 'modules')[...] all index the loader table -- as
+            # does a single-assignment alias (m = sys.modules; m['os']), so use the alias-aware
+            # helper the mutation checks already use.
+            is_sys_modules = self._is_sys_modules(v)
             if isinstance(node.ctx, ast.Load) and is_sys_modules:
                 # Constant-fold the key so sys.modules['o' + 's'] is caught, not just a
                 # bare literal; a truly dynamic key (sys.modules[name]) stays allowed.
@@ -6764,12 +6821,7 @@ def _check_signal_escape_patterns(
             # namespace (or a dangerous module) out of the namespace dict, e.g.
             # getattr(globals()['__builtins__'], '__import__')('os'). Flag a Load of a
             # dangerous literal key off a bare globals()/locals()/vars() call.
-            if isinstance(node.ctx, ast.Load) and (
-                isinstance(v, ast.Call)
-                and isinstance(v.func, ast.Name)
-                and v.func.id in ("globals", "locals", "vars")
-                and not v.args
-            ):
+            if isinstance(node.ctx, ast.Load) and self._is_namespace_dict_expr(v):
                 key = _const_fold(node.slice, _const_env)
                 if isinstance(key, str) and (
                     key in ("__builtins__", "__builtin__")
