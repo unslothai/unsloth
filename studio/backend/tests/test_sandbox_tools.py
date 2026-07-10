@@ -4494,3 +4494,73 @@ class TestRound43Bypasses:
     )
     def test_round43_benign_compile_allowed(self, code):
         _ok(code)
+
+
+class TestRound44Bypasses:
+    """Forty-fourth-round Codex findings. The FunctionType producer gadget, the subscript-stored
+    exec alias, and the command-position shell-keyword FP are static; the workdir-module
+    deserializer item is covered in test_sandbox_runtime_backstop.py."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # types.FunctionType() executes ANY code object, not only a compile() one. A code
+            # object from another producer (codeop.compile_command, a loader's get_code(), or an
+            # opaque name) runs source the recursive analysis never saw, so the gadget fails closed.
+            "import types, codeop\n"
+            "types.FunctionType(codeop.compile_command('import os', '<s>', 'exec'), globals())()",
+            "import types\n"
+            "from importlib.machinery import SourceFileLoader\n"
+            "types.FunctionType(SourceFileLoader('m', 'x.py').get_code(), {})()",
+            "import types\ndef producer():\n    return _external\n"
+            "types.FunctionType(producer(), {})()",
+        ],
+    )
+    def test_functiontype_unvetted_code_object_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_functiontype_ordinary_code_object_allowed(self):
+        # fn.__code__ is an ordinary in-source function's code, analyzed normally -- still allowed.
+        _ok("import types\ndef g():\n    return 1\ntypes.FunctionType(g.__code__, {})")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Storing a dynamic-exec builtin into a CONTAINER element hides it from the name /
+            # attribute call checks; the later subscript call runs an unreviewed payload.
+            "d = {}\nd['e'] = exec\nd['e'](\"import os\\nos.system('touch /tmp/pwn')\")",
+            "lst = [None]\nlst[0] = eval\nlst[0](\"__import__('os').system('touch /tmp/pwn')\")",
+            "d = {}\nd['c'] = compile\nc = d['c']('import os', '<s>', 'exec')",
+        ],
+    )
+    def test_subscript_stored_exec_alias_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_subscript_stored_benign_value_allowed(self):
+        # A non-sink value stored in a container slot is ordinary code -- not flagged.
+        _ok("d = {}\nd['x'] = 5\nd['y'] = len\nprint(d['x'], d['y']([1, 2]))")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # if / while / until are compound-statement HEADERS only at command position; after a
+            # command word they are ordinary arguments, so `echo if touch` is not a `touch` run.
+            "import os\nos.system('echo if touch')",
+            "import os\nos.system('echo while rm')",
+            "import os\nos.system('printf %s until cp')",
+        ],
+    )
+    def test_shell_keyword_as_argument_allowed(self, code):
+        _ok(code)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A real compound header still runs its condition / body command -- must stay blocked.
+            "import os\nos.system('if touch x; then :; fi')",
+            "import os\nos.system('while true; do rm -rf /tmp/x; done')",
+            "import os\nos.system('touch x')",
+        ],
+    )
+    def test_shell_keyword_compound_header_still_blocked(self, code):
+        assert _check_code_safety(code) is not None, code

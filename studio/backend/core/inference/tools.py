@@ -1167,11 +1167,22 @@ def _find_blocked_commands(command: str) -> set[str]:
     prev_was_flag = False  # previous token (while a wrapper is pending) takes an operand
     cur_wrapper = None  # the active wrapper's basename (drives per-wrapper option arity)
     for token in tokens:
-        if token in _SHELL_SEPARATORS or token in _SHELL_KEYWORDS_AS_SEP:
+        if token in _SHELL_SEPARATORS:
             expect_command = True
             prefix_pending = False
             prev_was_flag = False
             cur_wrapper = None
+            continue
+        if token in _SHELL_KEYWORDS_AS_SEP:
+            # if / while / until / then / do / else / elif start a NEW command position ONLY when
+            # they appear at command position (the compound-statement header: `if touch x; then`).
+            # After a command word they are ordinary arguments -- bash does not run the next word as
+            # a command in `echo if touch`, so only reset there. Real separators (; | && ...) above
+            # always reset regardless of position.
+            if expect_command:
+                prefix_pending = False
+                prev_was_flag = False
+                cur_wrapper = None
             continue
         if token.startswith("-"):
             # Flags belong to the active command, but keep expect_command while a
@@ -6701,41 +6712,16 @@ def _check_signal_escape_patterns(
                     return True
             return False
 
-        def _is_compile_result(self, arg):
-            """True when ``arg`` is a ``compile(...)`` code object (bare / builtins /
-            single-assignment alias / inline-container unwrap). Used to catch code objects
-            executed through ``types.FunctionType`` instead of eval/exec."""
-            # (compile(src, ...),)[0] / [compile(...)][0] / {'k': compile(...)}['k']: a
-            # trivial container unwrap hiding the compile() code object from the direct-call
-            # check. Resolve the indexed element and recurse.
-            if isinstance(arg, ast.Subscript):
-                container = arg.value
-                ci = _const_fold(arg.slice, _const_env)
-                if isinstance(container, (ast.List, ast.Tuple)) and isinstance(ci, int):
-                    if -len(container.elts) <= ci < len(container.elts):
-                        return self._is_compile_result(container.elts[ci])
-                if isinstance(container, ast.Dict) and ci is not None:
-                    for k, v in zip(container.keys, container.values):
-                        if k is not None and _const_fold(k, _const_env) == ci:
-                            return self._is_compile_result(v)
-                return False
-            if isinstance(arg, ast.Call):
-                af = arg.func
-                if isinstance(af, ast.Name):
-                    if af.id == "compile" or self.exec_from_aliases.get(af.id) == "compile":
-                        return True
-                    if _analyzer_on and _scope_idx.resolve(af.id, arg, "execb") == "compile":
-                        return True
-                elif (
-                    isinstance(af, ast.Attribute)
-                    and af.attr == "compile"
-                    and _ast_name_matches(af.value, self.builtins_aliases)
-                ):
-                    return True
-            if _analyzer_on and isinstance(arg, ast.Name):
-                if _scope_idx.resolve(arg.id, arg, "compiledany"):
-                    return True
-            return False
+        def _functiontype_arg_is_vetted(self, arg):
+            """True only when a ``types.FunctionType(code, ...)`` first arg is statically KNOWN to
+            be an ordinary in-source function's code object -- ``fn.__code__`` / ``meth.__func__``
+            -- whose body the analyzer already walked. Fails CLOSED for everything else: a
+            ``compile(...)`` result, a loader's ``get_code()``, ``codeop.compile_command()``,
+            ``marshal.loads()``, a bare name / alias, or a container unwrap all yield a code object
+            running source the recursive eval/exec analysis never saw, so FunctionType is the
+            execution gadget and must be blocked. (Denylisting only ``compile`` left other producers
+            open; an allowlist of the one benign shape is robust against new producers.)"""
+            return isinstance(arg, ast.Attribute) and arg.attr in ("__code__", "__func__")
 
         def _attr_obfuscation_targets(self):
             # Modules whose DYNAMIC attribute / dict access (getattr, vars, __dict__) is
@@ -6751,6 +6737,45 @@ def _check_signal_escape_patterns(
                 | self.builtins_aliases
                 | set(self.deserialize_module_aliases)
             )
+
+        def _stores_hidden_sink(self, value):
+            # A dynamic-exec builtin (exec / eval / compile / __import__), bare / builtins-attr /
+            # scope alias, being stashed for later obfuscated invocation.
+            if isinstance(value, ast.Name):
+                if value.id in _DYNAMIC_EXEC_BUILTINS or value.id == "__import__":
+                    return True
+                if value.id in self.exec_from_aliases:
+                    return True
+                if _analyzer_on and _scope_idx.resolve(value.id, value, "execb"):
+                    return True
+            if (
+                isinstance(value, ast.Attribute)
+                and value.attr in (_DYNAMIC_EXEC_BUILTINS | {"__import__"})
+                and _ast_name_matches(value.value, self.builtins_aliases)
+            ):
+                return True
+            return False
+
+        def visit_Assign(self, node):
+            # d['e'] = exec / lst[0] = eval -- storing a dynamic-exec builtin into a CONTAINER
+            # element (not a plain name, which the alias tracker already follows) hides the sink
+            # from the name / attribute call checks, and the later d['e'](payload) then runs
+            # unreviewed. There is no benign reason to stash exec / eval / compile / __import__ in
+            # a container slot, so flag the store itself.
+            if any(isinstance(t, ast.Subscript) for t in node.targets) and self._stores_hidden_sink(
+                node.value
+            ):
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(node, "lineno", -1),
+                        "description": (
+                            "a dynamic-exec builtin stored into a container element "
+                            "(obfuscated exec alias)"
+                        ),
+                    }
+                )
+            self.generic_visit(node)
 
         def visit_Call(self, node):
             # operator.methodcaller('system', 'rm -rf /')(os) applies a deferred method to a
@@ -7673,10 +7698,10 @@ def _check_signal_escape_patterns(
                         )
                     )
                     and node.args
-                    and self._is_compile_result(node.args[0])
+                    and not self._functiontype_arg_is_vetted(node.args[0])
                 ):
                     dynamic_desc = (
-                        "types.FunctionType() executes a compile() code object "
+                        "types.FunctionType() executes an unvetted code object "
                         "(bypasses the eval/exec gate)"
                     )
                 elif (
@@ -10223,6 +10248,15 @@ try:
     # os / posix expose the exec-attr sinks (os.system, os.execv, ...); a sink attribute rooted at
     # one of these is a command-exec sink even without a direct call (x = os.system; x('id')).
     _GUARD_EXEC_RECEIVERS = frozenset({"os", "posix"})
+    # Deserializers that run an attacker-controlled reduce payload (which can spawn an unguarded
+    # child via posix.system in the reducer): pickle & friends, marshal, dill, cloudpickle,
+    # jsonpickle. The malicious bytes live OUTSIDE this source, so a workdir helper that calls one
+    # is refused. (yaml / torch / numpy have safe modes and are left to the top-level analyzer;
+    # importing pickle for pickle.dumps stays allowed -- only the load sinks are refused.)
+    _GUARD_DESER_MODS = frozenset(
+        {"pickle", "_pickle", "cpickle", "marshal", "dill", "cloudpickle", "jsonpickle"}
+    )
+    _GUARD_DESER_ATTRS = frozenset({"loads", "load", "Unpickler", "decode"})
     def _guard_attr_root(_v):
         # Base Name id of an attribute chain (os.path -> 'os'); None if not Name-rooted.
         while isinstance(_v, _gast.Attribute):
@@ -10239,6 +10273,7 @@ try:
         # as an attribute (builtins.eval / b.exec) are recognized alongside the bare names.
         _recv = set(_GUARD_EXEC_RECEIVERS)
         _bi = {"builtins", "__builtins__"}
+        _deser = set(_GUARD_DESER_MODS)
         for _nd in _gast.walk(_tree):
             if isinstance(_nd, _gast.Import):
                 for _al in _nd.names:
@@ -10246,6 +10281,8 @@ try:
                         _recv.add(_al.asname or _al.name)
                     elif _al.name == "builtins":
                         _bi.add(_al.asname or _al.name)
+                    elif _al.name in _GUARD_DESER_MODS:
+                        _deser.add(_al.asname or _al.name)
         for _nd in _gast.walk(_tree):
             if isinstance(_nd, _gast.Import):
                 for _al in _nd.names:
@@ -10274,6 +10311,13 @@ try:
                     for _al in _nd.names:
                         if _al.name == "*" or _al.name in _GUARD_EXEC_ATTRS:
                             return True
+                # `from pickle import loads` / `from pickle import *` binds a bare deserializer
+                # sink; a later bare loads(evil) has no module attribute to catch. (dumps stays
+                # allowed -- only the load sinks are refused.)
+                if _mroot in _GUARD_DESER_MODS:
+                    for _al in _nd.names:
+                        if _al.name == "*" or _al.name in _GUARD_DESER_ATTRS:
+                            return True
             elif isinstance(_nd, _gast.Call):
                 # An ACTUAL invocation of a sink-named method on any receiver (os.system(...),
                 # or an aliased o.system(...)) is a command-exec call regardless of receiver.
@@ -10290,6 +10334,16 @@ try:
                     isinstance(_nd.func, _gast.Attribute)
                     and _nd.func.attr in ("eval", "exec", "compile", "__import__")
                     and _guard_attr_root(_nd.func.value) in _bi
+                ):
+                    return True
+                # A deserializer call (pickle.loads / marshal.load / dill.load /
+                # pickle.Unpickler(f) / jsonpickle.decode) runs an attacker-controlled reduce
+                # payload whose bytes live outside this source, so refuse it -- rooted at a
+                # deserializer module / alias so a benign json.load / config.load is untouched.
+                if (
+                    isinstance(_nd.func, _gast.Attribute)
+                    and _nd.func.attr in _GUARD_DESER_ATTRS
+                    and _guard_attr_root(_nd.func.value) in _deser
                 ):
                     return True
             elif isinstance(_nd, _gast.Attribute):

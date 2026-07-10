@@ -999,6 +999,62 @@ def test_sandboxed_benign_urllib_parse_workdir_module_allowed():
 
 
 @_POSIX_ONLY
+def test_sandboxed_deserializer_workdir_module_denied():
+    # A workdir helper that calls pickle.loads runs an attacker-controlled reduce payload (whose
+    # bytes live outside the helper source) -- here the reducer spawns os.system -- so the import
+    # vetter must refuse it even though the malicious call is not spelled in the source.
+    import pickle
+
+    class _Evil:
+        def __reduce__(self):
+            return (os.system, ("echo PWNED_DESER",))
+
+    evil = pickle.dumps(_Evil())
+    helper = "import pickle\nprint('DESER_REACHED')\npickle.loads(%r)\n" % (evil,)
+    session = "backstop-workdir-deser"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "evildeser.py"), "w") as f:
+        f.write(helper)
+    try:
+        out = _python_exec(
+            "import evildeser; print('REACHED_' + 'BODY')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "PWNED_DESER" not in out
+        assert "DESER_REACHED" not in out
+        assert "REACHED_BODY" not in out
+        assert "sandbox:" in out or "ImportError" in out
+    finally:
+        os.remove(os.path.join(workdir, "evildeser.py"))
+
+
+@_POSIX_ONLY
+def test_sandboxed_benign_json_workdir_module_allowed():
+    # json.load / json.loads do NOT run a reduce payload and are not in the deserializer set, so a
+    # workdir helper using json must still import.
+    session = "backstop-workdir-json"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "okjson.py"), "w") as f:
+        f.write("import json\nVALUE = json.loads('[1, 2, 3]')\nprint('JSON_OK')\n")
+    try:
+        out = _python_exec(
+            "import okjson; print('REACHED', okjson.VALUE)",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "JSON_OK" in out
+        assert "REACHED [1, 2, 3]" in out
+        assert "sandbox:" not in out
+    finally:
+        os.remove(os.path.join(workdir, "okjson.py"))
+
+
+@_POSIX_ONLY
 def test_sandboxed_realpath_monkeypatch_write_escape_denied(tmp_path):
     # Sandboxed code reassigns os.path.realpath to a lambda that echoes an in-workdir
     # path, then writes to an absolute path outside the workdir. If the guard read
