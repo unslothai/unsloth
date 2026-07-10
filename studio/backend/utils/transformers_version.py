@@ -910,9 +910,11 @@ _config_mapping_cache: dict[str, frozenset[str]] = {}
 def _latest_tier_disabled() -> bool:
     """Kill switch shared with utils.transformers_latest: lets operators roll
     back a provisioned latest sidecar without deleting files."""
-    return (
-        os.environ.get("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "").strip().lower()
-        in ("1", "true", "yes", "on")
+    return os.environ.get("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
     )
 
 
@@ -922,9 +924,7 @@ def _overlay_transformers_dir(tier: str) -> str | None:
         # latest participates only with a valid pin (activation refuses unpinned,
         # so mapping from a partial/manual dir would route to a dead tier) and
         # while the kill switch is off.
-        if tier == "latest" and (
-            _latest_tier_disabled() or latest_venv_pinned_version() is None
-        ):
+        if tier == "latest" and (_latest_tier_disabled() or latest_venv_pinned_version() is None):
             return None
         root = {
             "530": _VENV_T5_530_DIR,
