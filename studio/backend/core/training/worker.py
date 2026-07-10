@@ -1936,7 +1936,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         # miss returns applied=False, so an exception here is a real failure
         # applying the masking and must fail the run instead of silently
         # training on full sequences.
-        from utils.datasets import apply_completion_masking
+        from utils.datasets.completion_masking import apply_completion_masking
         trainer, _masking_applied = apply_completion_masking(
             trainer,
             model_name,

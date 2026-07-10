@@ -43,11 +43,6 @@ from .model_mappings import (
     is_gpt_oss_model_name,
 )
 
-from .completion_masking import (
-    apply_completion_masking as apply_completion_masking,
-    lookup_manual_markers as lookup_manual_markers,
-)
-
 # Legacy dataset_utils.py imports kept for backward compat
 from .dataset_utils import (
     check_dataset_format,
@@ -84,9 +79,6 @@ __all__ = [
     "MODEL_TO_TEMPLATE_MAPPER",
     "TEMPLATE_TO_RESPONSES_MAPPER",
     "is_gpt_oss_model_name",
-    # Completion masking
-    "apply_completion_masking",
-    "lookup_manual_markers",
     # Main entry points
     "check_dataset_format",
     "format_and_template_dataset",

@@ -70,7 +70,7 @@ from core.inference.llama_cpp import _hf_offline_if_dns_dead
 from utils.models import is_vision_model, detect_audio_type
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
-from utils.datasets import apply_completion_masking
+from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from utils.datasets import apply_completion_masking, lookup_manual_markers
+from utils.datasets.completion_masking import apply_completion_masking, lookup_manual_markers
 from utils.datasets.model_mappings import TEMPLATE_TO_RESPONSES_MAPPER
 
 
