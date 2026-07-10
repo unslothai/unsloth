@@ -187,6 +187,7 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 .pre-commit-cache/
+.benchmarks/
 
 # PyPI configuration file and IDE/Editors
 .pypirc
