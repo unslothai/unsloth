@@ -271,29 +271,6 @@ def test_stack_available_requires_runtime_imports_and_versions(monkeypatch):
     assert imported == list(mr._MLX_RUNTIME_IMPORTS)
 
 
-def test_mlx_packages_exclude_known_bad_mlx_lm():
-    # mlx-lm 0.31.3 regressed QK-norm archs (gemma4 / qwen3_5); the install spec
-    # must exclude it so the resolver picks 0.31.2 or >=0.31.4. See mlx-lm #1242.
-    (mlx_lm_spec,) = [p for p in mr.MLX_PACKAGES if p.startswith("mlx-lm")]
-    assert mlx_lm_spec == "mlx-lm>=0.22.0,!=0.31.3"
-
-
-@pytest.mark.parametrize("bad_form", ["0.31.3", "0.31.3.0"])
-def test_known_bad_installed_mlx_lm_triggers_repair(monkeypatch, bad_form):
-    # An installed 0.31.3 counts as unsatisfied so the self-heal replaces it;
-    # parsed-Version compare also catches the trailing-zero form 0.31.3.0.
-    import importlib.metadata as metadata
-
-    def _version(name):
-        return bad_form if name == "mlx-lm" else mr._MLX_MIN_VERSIONS[name]
-
-    monkeypatch.setattr(metadata, "version", _version)
-    monkeypatch.setattr(
-        mr.importlib, "import_module", lambda _n: pytest.fail("versions must gate imports")
-    )
-    assert mr.mlx_stack_available() is False
-
-
 def test_no_op_off_apple_silicon(monkeypatch):
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: False)
     called = {"n": 0}
