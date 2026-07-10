@@ -428,9 +428,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         config = SimpleNamespace(is_gguf = True, identifier = "org/repo-GGUF")
         # The estimator returns (main, companion) parts: main distributes, the
         # companion lands on one device, so the guard receives them separately.
-        with patch.object(
-            self.route, "_estimate_gguf_required_gb", return_value = (12.5, 1.5)
-        ):
+        with patch.object(self.route, "_estimate_gguf_required_gb", return_value = (12.5, 1.5)):
             self._guard(
                 config = config,
                 captured = captured,
@@ -445,12 +443,8 @@ class TestChatLoadGuardRoute(unittest.TestCase):
     def test_gguf_diffusion_marks_single_device(self):
         captured = []
         config = SimpleNamespace(is_gguf = True, identifier = "unsloth/DiffusionGemma-GGUF")
-        with patch.object(
-            self.route, "_estimate_gguf_required_gb", return_value = (12.5, 0.0)
-        ):
-            self._guard(
-                config = config, captured = captured, training_active = True, decision = (True, {})
-            )
+        with patch.object(self.route, "_estimate_gguf_required_gb", return_value = (12.5, 0.0)):
+            self._guard(config = config, captured = captured, training_active = True, decision = (True, {}))
         self.assertTrue(captured[0]["gguf_single_device"])
 
 
@@ -670,7 +664,9 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
         with (
             patch.object(mc, "list_gguf_variants", fake_list),
-            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3) as comp,
+            patch.object(
+                self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3
+            ) as comp,
         ):
             main_gb, companion_gb = self.route._estimate_gguf_required_gb(cfg, hf_token = "tok")
         self.assertEqual(captured["token"], "tok")  # token threaded for gated repos
@@ -680,7 +676,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
-
         cfg = SimpleNamespace(
             gguf_file = None,
             gguf_mmproj_file = None,
@@ -720,7 +715,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # Fraction None (can't read layers) -> no scale; the full estimate stands
         # so training can't be OOM'd.
         import tempfile
-
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "model.gguf"
             p.write_bytes(b"x" * 1000)
@@ -762,7 +756,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # A projector / drafter is GPU-resident no matter the spec mode or CPU
         # flags -- the conservative bound charges it, over-refusing at worst.
         import tempfile
-
         with tempfile.TemporaryDirectory() as d:
             main = Path(d) / "model.gguf"
             main.write_bytes(b"x" * 1000)
@@ -786,7 +779,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
     def test_unsizable_extras_drafter_denies(self):
         # An HF-repo drafter can't be sized pre-download -> None (default-deny).
         import tempfile
-
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "model.gguf"
             p.write_bytes(b"x" * 1000)
@@ -860,12 +852,16 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # Name match catches DiffusionGemma pre-download (no header needed); a
         # plainly-named dense model with no local file is not diffusion.
         diff = SimpleNamespace(
-            identifier = "unsloth/DiffusionGemma-4B-GGUF", gguf_hf_repo = None,
-            gguf_file = None, gguf_variant = None,
+            identifier = "unsloth/DiffusionGemma-4B-GGUF",
+            gguf_hf_repo = None,
+            gguf_file = None,
+            gguf_variant = None,
         )
         dense = SimpleNamespace(
-            identifier = "unsloth/gemma-4-E2B-it-GGUF", gguf_hf_repo = None,
-            gguf_file = None, gguf_variant = None,
+            identifier = "unsloth/gemma-4-E2B-it-GGUF",
+            gguf_hf_repo = None,
+            gguf_file = None,
+            gguf_variant = None,
         )
         self.assertTrue(self.route._is_diffusion_gguf(diff))
         self.assertFalse(self.route._is_diffusion_gguf(dense))
@@ -875,13 +871,14 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # the name) must still be caught via the on-disk header, or the guard
         # would size it multi-GPU and OOM the single device it runs on.
         import tempfile
-
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "model.gguf"
             p.write_bytes(b"x" * 100)
             cfg = SimpleNamespace(
-                identifier = "/models/model.gguf", gguf_hf_repo = None,
-                gguf_file = str(p), gguf_variant = None,
+                identifier = "/models/model.gguf",
+                gguf_hf_repo = None,
+                gguf_file = str(p),
+                gguf_variant = None,
             )
             with (
                 patch(
@@ -942,7 +939,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
     def test_kv_helper_graceful_on_non_gguf(self):
         import tempfile
-
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "not-a.gguf"
             p.write_bytes(b"not a gguf")
@@ -961,14 +957,20 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             def _can_estimate_kv(self):
                 return True
 
-            def _estimate_kv_cache_bytes(self, ctx, n_parallel = 1):
+            def _estimate_kv_cache_bytes(
+                self,
+                ctx,
+                n_parallel = 1,
+            ):
                 seen["ctx"] = ctx
                 seen["n_parallel"] = n_parallel
                 return ctx * n_parallel * (1024**2)  # 1 MiB per ctx unit per slot
 
         with patch.object(self.route, "LlamaCppBackend", _FakeBackend):
             r = self.route
-            self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "131072"]), 128.0)
+            self.assertAlmostEqual(
+                r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "131072"]), 128.0
+            )
             self.assertEqual(seen["ctx"], 131072)
             self.assertEqual(seen["n_parallel"], 1)  # default single slot
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "1024"]), 4.0)
@@ -978,7 +980,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "oops"]), 4.0)
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, None, 4), 16.0)
             self.assertEqual(seen["n_parallel"], 4)
-
 
 
 # ── load_model integration: authoritative 409, and no unload before refusal ──

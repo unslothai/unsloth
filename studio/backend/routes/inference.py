@@ -3376,10 +3376,7 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
 
 
 def _remote_gguf_companion_bytes(
-    repo: str,
-    *,
-    hf_token: Optional[str],
-    include_mmproj: bool,
+    repo: str, *, hf_token: Optional[str], include_mmproj: bool
 ) -> int:
     """Bytes of MTP/mmproj companion GGUFs llama-server auto-downloads. 0 on error,
     so it can only add headroom, never refuse a load by itself."""
@@ -3442,8 +3439,7 @@ def _is_diffusion_gguf(config: ModelConfig) -> bool:
     locally-renamed file that loses the name still routes correctly -- mirrors
     load_model's arch-prefix OR canvas-marker detection."""
     ident = " ".join(
-        str(getattr(config, attr, "") or "")
-        for attr in ("identifier", "gguf_hf_repo", "gguf_file")
+        str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo", "gguf_file")
     ).lower()
     if "diffusion" in ident:
         return True
@@ -3454,7 +3450,6 @@ def _is_diffusion_gguf(config: ModelConfig) -> bool:
             variant = getattr(config, "gguf_variant", None)
             if repo and variant:
                 from hub.utils.gguf import resolve_local_gguf_path
-
                 main = resolve_local_gguf_path(repo, variant)
         if not main or not Path(main).is_file():
             return False
@@ -3463,7 +3458,7 @@ def _is_diffusion_gguf(config: ModelConfig) -> bool:
             read_gguf_general_metadata,
         )
 
-        arch = ((read_gguf_general_metadata(str(main)) or {}).get("general.architecture") or "")
+        arch = (read_gguf_general_metadata(str(main)) or {}).get("general.architecture") or ""
         return arch.lower().startswith("diffusion") or bool(
             gguf_header_has_key(str(main), "diffusion.canvas_length")
         )
@@ -3561,7 +3556,6 @@ def _estimate_gguf_required_gb(
             )
             if not zero_offload:
                 from hub.utils.gguf import resolve_local_gguf_path
-
                 cached = resolve_local_gguf_path(repo, variant)
                 main_gb = _local_main_gb(cached) if cached else size / (1024**3)
         elif main and Path(main).is_file():
