@@ -316,9 +316,7 @@ def test_quantize_explicit_denied_scheme_stays_dense(monkeypatch):
     _stub_casters(monkeypatch, recorder)
     monkeypatch.setitem(dp._TE_FAMILY_SCHEME_DENY, "z-image", frozenset({TE_QUANT_FP8_DYNAMIC}))
     pipe = types.SimpleNamespace(text_encoder = object())
-    assert (
-        quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic", family = "z-image") is None
-    )
+    assert quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic", family = "z-image") is None
     assert recorder == []  # denied before any cast
 
 
