@@ -789,9 +789,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
             ):
                 kwargs = dict(gpu_memory_mode = "manual", gpu_layers = 0)
-                off = self.route._estimate_gguf_required_gb(
-                    cfg, speculative_type = "off", **kwargs
-                )
+                off = self.route._estimate_gguf_required_gb(cfg, speculative_type = "off", **kwargs)
                 ngram = self.route._estimate_gguf_required_gb(
                     cfg, speculative_type = "ngram", **kwargs
                 )
