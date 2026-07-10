@@ -304,7 +304,17 @@ _SQLITE_DOTFILE_RE = re.compile(
 # sqlite3 CLI options that consume a SEPARATED operand (so the value after them is NOT the
 # database filename). Only -init also reads a file (its value is path-checked at the call site).
 _SQLITE_OPERAND_OPTS = frozenset(
-    {"-init", "-cmd", "-mode", "-separator", "-newline", "-nullvalue", "-lookaside", "-mmap", "-maxsize"}
+    {
+        "-init",
+        "-cmd",
+        "-mode",
+        "-separator",
+        "-newline",
+        "-nullvalue",
+        "-lookaside",
+        "-mmap",
+        "-maxsize",
+    }
 )
 
 
@@ -2004,9 +2014,8 @@ def _find_blocked_commands(command: str) -> set[str]:
         elif _cw in _XARGS_INTERP:
             for _ci2 in range(_cwidx + 1, len(_xseg)):
                 _ct2 = _xseg[_ci2].lower()
-                _is_code_flag = (
-                    _ct2 in ("-c", "-e", "--eval")
-                    or (_ct2.startswith("-") and not _ct2.startswith("--") and _ct2.endswith("c"))
+                _is_code_flag = _ct2 in ("-c", "-e", "--eval") or (
+                    _ct2.startswith("-") and not _ct2.startswith("--") and _ct2.endswith("c")
                 )
                 if _is_code_flag and _ci2 + 1 < len(_xseg) and _repl in _xseg[_ci2 + 1]:
                     blocked.add("xargs-replace-exec")  # stdin flows into interpreter code
