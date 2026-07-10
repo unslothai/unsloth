@@ -591,45 +591,87 @@ def _find_blocked_commands(command: str) -> set[str]:
                 blocked |= _find_blocked_commands(payload)
             break
 
+    def _command_word_indices():
+        # Indices of the REAL command word at each command position, skipping FOO=bar
+        # assignments and wrapper prefixes (env / nice / timeout / xargs / ...) plus their
+        # numeric / separated-option arguments, so `env sed`, `timeout 5 bash` resolve to
+        # sed / bash. Mirrors the main command-position scan above.
+        out = []
+        expect = True
+        pending = False
+        prev_flag = False
+        for _i, _tok in enumerate(tokens):
+            if _tok in _SHELL_SEPARATORS or _tok in _SHELL_KEYWORDS_AS_SEP:
+                expect = True
+                pending = False
+                prev_flag = False
+                continue
+            if _tok.startswith("-"):
+                if not pending:
+                    expect = False
+                else:
+                    prev_flag = True
+                continue
+            if not expect:
+                continue
+            if _ASSIGNMENT_RE.match(_tok):
+                continue
+            if pending and _is_wrapper_numeric_arg(_tok):
+                prev_flag = False
+                continue
+            _base = _token_basename(_tok)
+            if (
+                pending
+                and prev_flag
+                and _base not in _BLOCKED_COMMANDS
+                and _base not in _COMMAND_PREFIXES
+            ):
+                prev_flag = False
+                continue
+            prev_flag = False
+            if _base in _COMMAND_PREFIXES:
+                pending = True
+                continue
+            out.append(_i)
+            expect = False
+            pending = False
+        return out
+
+    _cmd_word_idx = _command_word_indices()
+
     # A shell binary invoked with a SCRIPT FILE (`bash s.sh`) or `-s` (read the script from
     # stdin) runs unscanned shell code in the same unguarded environment; only the inline
     # `-c '...'` form is statically analyzable (handled above). Block a command-position
-    # shell whose operands include a non-flag argument (the script) and no -c/-lc flag.
-    _at_cmd_sh = True
-    for i, tok in enumerate(tokens):
-        if tok in _SHELL_SEPARATORS or tok in _SHELL_KEYWORDS_AS_SEP:
-            _at_cmd_sh = True
+    # shell whose operands include a non-flag argument (the script) and no -c/-lc flag. Using
+    # the wrapper-aware command-word indices so `env bash s.sh` / `timeout 5 bash s.sh` are
+    # not hidden behind the wrapper prefix.
+    for i in _cmd_word_idx:
+        tok = tokens[i]
+        if os.path.basename(tok).lower() not in _SHELLS:
             continue
-        if _at_cmd_sh and os.path.basename(tok).lower() in _SHELLS:
-            _has_c = False
-            _script = None
-            for k in range(i + 1, len(tokens)):
-                t = tokens[k]
-                if t in _SHELL_SEPARATORS or t in _SHELL_KEYWORDS_AS_SEP:
-                    break
-                tl = t.lower()
-                if tl == "-c" or (
-                    tl.startswith("-") and not tl.startswith("--") and tl.endswith("c")
-                ):
-                    _has_c = True
-                    break
-                if tl in ("-s", "--"):  # -s reads the script from stdin (unscanned)
-                    _script = t
-                    break
-                if t.startswith("-"):
-                    continue  # other shell flags: -l, -x, --login, --norc, ...
-                _script = t  # first non-flag operand is the script file
+        _has_c = False
+        _script = None
+        for k in range(i + 1, len(tokens)):
+            t = tokens[k]
+            if t in _SHELL_SEPARATORS or t in _SHELL_KEYWORDS_AS_SEP:
                 break
-            # Any command-position shell WITHOUT an inline `-c` payload runs unscanned code:
-            # a script file (bash s.sh), stdin via -s, or a bare shell that reads stdin
-            # (`printf 'evil' | bash`). Only the `-c '...'` form is statically analyzable, so
-            # block everything else.
-            if not _has_c:
-                blocked.add("shell-script:" + (_script or _token_basename(tok)))
-            _at_cmd_sh = False
-            continue
-        if not tok.startswith("-"):
-            _at_cmd_sh = False
+            tl = t.lower()
+            if tl == "-c" or (tl.startswith("-") and not tl.startswith("--") and tl.endswith("c")):
+                _has_c = True
+                break
+            if tl in ("-s", "--"):  # -s reads the script from stdin (unscanned)
+                _script = t
+                break
+            if t.startswith("-"):
+                continue  # other shell flags: -l, -x, --login, --norc, ...
+            _script = t  # first non-flag operand is the script file
+            break
+        # Any command-position shell WITHOUT an inline `-c` payload runs unscanned code:
+        # a script file (bash s.sh), stdin via -s, or a bare shell that reads stdin
+        # (`printf 'evil' | bash`). Only the `-c '...'` form is statically analyzable, so
+        # block everything else.
+        if not _has_c:
+            blocked.add("shell-script:" + (_script or _token_basename(tok)))
 
     # Output redirection (> / >> / &> / N>) runs in an unguarded child shell that follows
     # symlinks before any Python guard, so no filename target can be trusted: a relative
@@ -696,26 +738,22 @@ def _find_blocked_commands(command: str) -> set[str]:
         if not tok.startswith("-"):
             _at_cmd = False
 
-    # A command substitution in COMMAND POSITION ($(cmd) / `cmd` as the command word) runs
-    # whatever it expands to as the command name; the inner command may be benign (printf
-    # touch) while the expansion is a writer/interpreter (touch). The scanner cannot prove
-    # the expansion safe, so fail closed. (An argument-position substitution -- echo $(date),
-    # x=$(cmd) -- is not command-position and stays allowed.)
-    if re.search(r"(?:^|[\n;&|(])\s*(?:\$\(|`)", command):
-        blocked.add("command-substitution")
+    # An EXPANSION in COMMAND POSITION runs whatever it expands to as the command name and
+    # cannot be proven safe: a command substitution ($(printf touch) / `printf touch`), a
+    # variable-expanded command word (p=python3; $p -c ...), or a ${VAR} parameter expansion.
+    # Fail closed. (An argument-position expansion -- echo $(date), echo $HOME, x=$(cmd) -- is
+    # not at command position, so it stays allowed. ${IFS} is already expanded to whitespace
+    # above, so a `cat${IFS}x` command word is not misread as an expansion here.)
+    if re.search(r"(?:^|[\n;&|(])\s*(?:\$|`)", command):
+        blocked.add("command-expansion")
 
     # Some normally read-only utilities MUTATE files with certain flags (sed -i, sort -o
     # FILE, find ... -delete, dd of=FILE, tee FILE, truncate), writing/deleting OUTSIDE the
     # workdir in an unguarded child that no redirect token exposes. Treat the mutating
-    # invocation as a child writer.
-    _at_cmd = True
-    for i, tok in enumerate(tokens):
-        if tok in _SHELL_SEPARATORS or tok in _SHELL_KEYWORDS_AS_SEP:
-            _at_cmd = True
-            continue
-        if not _at_cmd:
-            continue
-        _at_cmd = False
+    # invocation as a child writer. Uses the wrapper-aware command-word indices so a wrapper
+    # prefix (env sed -i ..., nice sed -i ...) does not hide the mutating utility.
+    for i in _cmd_word_idx:
+        tok = tokens[i]
         _base = _token_basename(tok)
         if _base not in ("sed", "gsed", "ssed", "perl", "sort", "find", "dd", "tee", "truncate"):
             continue
@@ -3227,6 +3265,8 @@ def _build_scope_alias_index(tree, const_env):
     for scope in scopes:
         counts: dict[str, int] = {}
         rebound: set[str] = set()
+        global_names: set[str] = set()
+        nonlocal_names: set[str] = set()
         assigns: list[tuple[str, ast.expr]] = []
         allnames: set[str] = set()
         # Function parameters bind local names that lexically shadow an outer alias of
@@ -3242,8 +3282,12 @@ def _build_scope_alias_index(tree, const_env):
             if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
                 counts[n.id] = counts.get(n.id, 0) + 1
                 allnames.add(n.id)
-            elif isinstance(n, (ast.Global, ast.Nonlocal)):
+            elif isinstance(n, ast.Global):
                 rebound.update(n.names)
+                global_names.update(n.names)
+            elif isinstance(n, ast.Nonlocal):
+                rebound.update(n.names)
+                nonlocal_names.update(n.names)
             elif (
                 isinstance(n, ast.Assign)
                 and len(n.targets) == 1
@@ -3271,6 +3315,9 @@ def _build_scope_alias_index(tree, const_env):
                 counts[_tn] = counts.get(_tn, 0) + 1
                 allnames.add(_tn)
                 assigns.append((_tn, _gen.iter.elts[0]))
+        # A `global`/`nonlocal`-declared name is NOT a local binding, so it must not shadow an
+        # outer alias here (its assignment rebinds the target scope instead).
+        allnames -= rebound
         idx.assigned[scope] = allnames
         smap: dict[str, str] = {}
         emap: dict[str, str] = {}
@@ -3354,6 +3401,34 @@ def _build_scope_alias_index(tree, const_env):
                     dmap[_pn] = _ddfq
                 if _rhs_import_func(_de) and _pn not in imap:
                     imap[_pn] = True
+        # A `global name = <sink>` (or `nonlocal name = <sink>`) rebinds the name in the
+        # TARGET scope (module for global, nearest enclosing scope for nonlocal), NOT locally,
+        # so `global s; s = os.system; s('rm -rf /')` must record the alias in that target
+        # scope -- otherwise the local pass skips it (name in rebound) and the call resolves to
+        # nothing. Target scopes are processed before nested scopes, so setdefault preserves
+        # any alias they already hold.
+        if global_names or nonlocal_names:
+            for name, rhs in assigns:
+                if name in global_names:
+                    _target = tree
+                elif name in nonlocal_names:
+                    _target = idx.enclosing.get(scope)
+                else:
+                    continue
+                if _target is None:
+                    continue
+                _rhs_eff = _unwrap_container_index(rhs)
+                _gfq = _resolve_static_shell_sink(
+                    _rhs_eff, os_aliases, subprocess_aliases, from_aliases
+                )
+                if _gfq:
+                    idx.shell.setdefault(_target, {}).setdefault(name, _gfq)
+                _geb = _rhs_exec_builtin(_rhs_eff)
+                if _geb is not None:
+                    idx.execb.setdefault(_target, {}).setdefault(name, _geb)
+                _gdfq = _rhs_deserializer(_rhs_eff)
+                if _gdfq is not None:
+                    idx.deser.setdefault(_target, {}).setdefault(name, _gdfq)
         if smap:
             idx.shell[scope] = smap
         if emap:
@@ -4321,6 +4396,22 @@ def _check_signal_escape_patterns(
             sink (os.system / subprocess.*), a dynamic-import function, or a code
             deserializer. Returns a short description or None. The payloads such a sink runs
             never reach the recursive analyzer, so passing one by reference is unsafe."""
+            if isinstance(n, ast.Subscript):
+                # An inline literal-container index hides the sink from the name/attribute
+                # checks: map([eval][0], [...]) / partial({'e': exec}['e'], ...). Resolve the
+                # element node and describe it, the same unwrap direct calls already apply.
+                container = n.value
+                ci = _const_fold(n.slice, _const_env)
+                elt = None
+                if isinstance(container, (ast.List, ast.Tuple)) and isinstance(ci, int):
+                    if -len(container.elts) <= ci < len(container.elts):
+                        elt = container.elts[ci]
+                elif isinstance(container, ast.Dict) and ci is not None:
+                    for _k, _v in zip(container.keys, container.values):
+                        if _k is not None and _const_fold(_k, _const_env) == ci:
+                            elt = _v
+                            break
+                return self._sink_ref_desc(elt) if elt is not None else None
             if isinstance(n, ast.Name):
                 if n.id in _DYNAMIC_EXEC_BUILTINS:
                     return f"{n.id} (dynamic exec)"
@@ -4365,6 +4456,25 @@ def _check_signal_escape_patterns(
                     return f"{_fq} (shell)"
                 return None
             return None
+
+        def _is_sys_modules(self, n):
+            # `sys.modules` as the attribute form, or a single-assignment alias of it
+            # (m = sys.modules; m.pop('_io')). Used by the loader-table mutation checks.
+            if (
+                isinstance(n, ast.Attribute)
+                and n.attr == "modules"
+                and _ast_name_matches(n.value, self.sys_aliases)
+            ):
+                return True
+            if _analyzer_on and isinstance(n, ast.Name):
+                rhs = _scope_idx.resolve(n.id, n, "rhsnode")
+                if (
+                    isinstance(rhs, ast.Attribute)
+                    and rhs.attr == "modules"
+                    and _ast_name_matches(rhs.value, self.sys_aliases)
+                ):
+                    return True
+            return False
 
         def _is_compile_result(self, arg):
             """True when ``arg`` is a ``compile(...)`` code object (bare / builtins /
@@ -4911,9 +5021,7 @@ def _check_signal_escape_patterns(
                         "__setitem__",
                         "__delitem__",
                     )
-                    and isinstance(func.value, ast.Attribute)
-                    and func.value.attr == "modules"
-                    and _ast_name_matches(func.value.value, self.sys_aliases)
+                    and self._is_sys_modules(func.value)
                 ):
                     dynamic_desc = (
                         f"sys.modules.{func.attr}(...) mutates the loader table "
@@ -4936,9 +5044,7 @@ def _check_signal_escape_patterns(
                         "__delitem__",
                     )
                     and node.args
-                    and isinstance(node.args[0], ast.Attribute)
-                    and node.args[0].attr == "modules"
-                    and _ast_name_matches(node.args[0].value, self.sys_aliases)
+                    and self._is_sys_modules(node.args[0])
                     and (
                         (isinstance(func.value, ast.Name) and func.value.id == "dict")
                         or (
@@ -5170,6 +5276,25 @@ def _check_signal_escape_patterns(
                         "description": f"subscripted {_mro_shape} extracts a base class (gadget)",
                     }
                 )
+            # type(open).__dict__['__closure__'].__get__(open) / type(cell).__dict__[
+            # 'cell_contents'].__get__(cell): fetch a gadget descriptor from a type's __dict__
+            # BY NAME (a subscript, not an attribute node), then invoke __get__ to recover the
+            # guarded wrapper's original callable. Flag a __dict__ subscript keyed by a gadget
+            # dunder so the attribute-node gadget scan cannot be side-stepped this way.
+            if (
+                isinstance(node.ctx, ast.Load)
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "__dict__"
+            ):
+                _dk = _const_fold(node.slice, _const_env)
+                if isinstance(_dk, str) and _dk in _GADGET_DUNDERS:
+                    dynamic_exec.append(
+                        {
+                            "type": "dynamic_exec",
+                            "line": getattr(node, "lineno", -1),
+                            "description": f"__dict__[{_dk!r}] descriptor lookup (gadget)",
+                        }
+                    )
             # sys.modules['os'] pulls an already-loaded dangerous module out of the
             # loader table (os/subprocess are loaded by the host). Scope to a Load of a
             # dangerous LITERAL key so legit uses ("x" in sys.modules, sys.modules.get(
@@ -6388,20 +6513,15 @@ def _check_signal_escape_patterns(
         if not _is_str:
             # subprocess.run/call/Popen/check_output/check_call(cmd, shell=True): a string
             # command with shell=True runs through /bin/sh (these are in _SHELL_EXEC_FUNCS
-            # but not in _STRING_SHELL_SINKS, so check the shell= kwarg explicitly).
-            if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
-                if f.value.id in _subprocess_mod_aliases and f.attr in (
-                    "run",
-                    "call",
-                    "check_call",
-                    "check_output",
-                    "Popen",
-                ):
-                    for kw in node.keywords or []:
-                        if kw.arg == "shell" and not (
-                            isinstance(kw.value, ast.Constant) and kw.value.value is False
-                        ):
-                            _is_str = True
+            # but not in _STRING_SHELL_SINKS, so check the shell= kwarg explicitly). Uses the
+            # subprocess-exec callee resolver so the attribute, from-import (from subprocess
+            # import run as r) and single-assignment (r = subprocess.run) forms are all seen.
+            if _is_subprocess_exec_callee(f):
+                for kw in node.keywords or []:
+                    if kw.arg == "shell" and not (
+                        isinstance(kw.value, ast.Constant) and kw.value.value is False
+                    ):
+                        _is_str = True
         if not _is_str or not node.args:
             return False
         return _scan_one_command(_fold_read_arg(node.args[0]))
@@ -6822,7 +6942,19 @@ def _wrap1(mod, name, what):
     if orig is None:
         return
     @_gwraps(orig)
-    def w(path, *a, **k):
+    def w(*a, **k):
+        # The path may be positional OR a public keyword: os.mkdir(path=...),
+        # os.makedirs(name=...), os.removedirs(name=...). Extract it from whichever slot it
+        # arrived in so a keyword call is not broken (missing positional) while still confined.
+        _pk = None
+        if a:
+            path = a[0]
+        elif "path" in k:
+            path, _pk = k["path"], "path"
+        elif "name" in k:
+            path, _pk = k["name"], "name"
+        else:
+            return orig(*a, **k)  # let the original raise its own TypeError
         if any(k.get(_f) is not None for _f in ("dir_fd", "src_dir_fd", "dst_dir_fd")):
             _deny(path, what + " (dir_fd)")  # fd-relative target: a realpath check is meaningless
         if isinstance(path, int):
@@ -6833,7 +6965,13 @@ def _wrap1(mod, name, what):
         p = _fspath1(path)
         if not _within(p):
             _deny(p, what)
-        return orig(p, *a, **k)
+        # Pass the MATERIALIZED path back in the same slot it arrived (a stateful __fspath__
+        # cannot then return a different outside path to the real call).
+        if a:
+            return orig(p, *a[1:], **k)
+        k = dict(k)
+        k[_pk] = p
+        return orig(*a, **k)
     setattr(mod, name, w)
 
 # Path-first single-arg mutators. mkfifo/utime/setxattr/removexattr create or mutate

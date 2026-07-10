@@ -1012,3 +1012,41 @@ def test_sandboxed_workdir_module_shadowing_neutralized(tmp_path):
             shutil.rmtree(_pyc, ignore_errors = True)
         if os.path.exists(marker):
             os.remove(marker)
+
+
+@_POSIX_ONLY
+def test_sandboxed_keyword_path_mutator_allowed_and_confined():
+    # The mutator guard must accept the path via its public keyword (os.makedirs(name=...),
+    # os.mkdir(path=...)) instead of raising TypeError on a missing positional argument, while
+    # still confining the write. Clean any leftover dir first so the test is idempotent.
+    session = "backstop-kwpath"
+    workdir = get_sandbox_workdir(session)
+    import shutil as _sh
+
+    _sh.rmtree(os.path.join(workdir, "kwdir"), ignore_errors = True)
+    out = _python_exec(
+        "import os\nos.makedirs(name='kwdir/sub', exist_ok=True)\n"
+        "os.mkdir(path='kwdir/one')\nprint('KW-OK', os.path.isdir('kwdir/sub'))",
+        None,
+        30,
+        session,
+        disable_sandbox = False,
+    )
+    assert "KW-OK True" in out
+    assert "sandbox:" not in out
+    _sh.rmtree(os.path.join(workdir, "kwdir"), ignore_errors = True)
+
+
+@_POSIX_ONLY
+def test_sandboxed_keyword_path_mutator_escape_denied(tmp_path):
+    # A keyword path outside the workdir is still confined.
+    target = tmp_path / "kw_escape"
+    out = _python_exec(
+        f"import os\nos.makedirs(name={str(target)!r}, exist_ok=True)\nprint('MADE')",
+        None,
+        30,
+        "backstop-kwpath-escape",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()

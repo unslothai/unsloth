@@ -2433,3 +2433,87 @@ class TestRound18Bypasses:
     def test_network_alias_trusted_allowed(self):
         _ok("import requests as r\nr.get('https://huggingface.co/x')")
         _ok("import requests\nrequests.get(url='https://huggingface.co/x')")
+
+
+class TestRound19Bypasses:
+    """Nineteenth-round Codex findings: global/nonlocal sink aliases, variable-expanded and
+    wrapper-hidden command words, wrapper-hidden mutating utilities and shell scripts,
+    shell=True subprocess aliases, sys.modules aliases, descriptor-lookup gadgets, and
+    container-hidden sinks in higher-order calls."""
+
+    def test_global_alias_to_sink_blocked(self):
+        code = "def f():\n    global s\n    s = os.system\n    s('touch /tmp/x')\nimport os\nf()"
+        assert _check_code_safety(code) is not None, code
+
+    def test_benign_global_allowed(self):
+        _ok("def f():\n    global s\n    s = 5\n    return s\nprint(f())")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('p=python3; $p -c \"print(1)\"')",
+            "import os\nos.system('${CMD} -rf /')",
+            "import os\nos.system('cat f && $tool')",
+        ],
+    )
+    def test_variable_expanded_command_word_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('env sed -i s/a/b/ /tmp/victim')",
+            "import os\nos.system('nice sed -i s/a/b/ /tmp/victim')",
+            "import os\nos.system('timeout 5 sort -o /tmp/f /tmp/f')",
+        ],
+    )
+    def test_wrapper_hidden_mutating_util_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import os\nos.system('env bash s.sh')",
+            "import os\nos.system('timeout 5 bash s.sh')",
+            "import os\nos.system('nice sh script.sh')",
+        ],
+    )
+    def test_wrapper_hidden_shell_script_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from subprocess import run as r\nr('head -1 /etc/passwd', shell=True)",
+            "import subprocess\nr = subprocess.run\nr('cat /etc/shadow', shell=True)",
+        ],
+    )
+    def test_shell_true_subprocess_alias_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_sys_modules_alias_mutation_blocked(self):
+        code = "import sys\nm = sys.modules\nm.pop('_io', None)\nimport _io"
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "f = open\ntype(f).__dict__['__closure__'].__get__(f)",
+            "c = (lambda: x).__closure__[0]\ntype(c).__dict__['cell_contents'].__get__(c)",
+        ],
+    )
+    def test_descriptor_lookup_gadget_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "list(map([eval][0], [\"__import__('os').system('touch /tmp/x')\"]))",
+            "list(map({'e': exec}['e'], [\"import os\\nos.system('id')\"]))",
+        ],
+    )
+    def test_container_hidden_higher_order_sink_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_benign_higher_order_allowed(self):
+        _ok("print(list(map(str, [1, 2, 3])))")
