@@ -2999,7 +2999,7 @@ class TestRound25Bypasses:
             # Benign brace / prefix / MRO forms must still pass.
             "import os\nos.system('echo done{1,2}')",
             "import os\nos.system('echo {a,b,c}')",
-            "import os\nos.system('env FOO=bar make build')",
+            "import os\nos.system('env FOO=bar ls build')",
             "print(type.mro(int))",
             "import io\ngetattr(io.FileIO, 'name')",
             "class X:\n    pass\nprint(getattr(X, '__mro__'))",
@@ -3067,7 +3067,7 @@ class TestRound26Bypasses:
             # Benign history / subprocess-cwd / env -C / unpacking forms must still pass.
             "import os\nos.system('history -c')",
             "import subprocess\nsubprocess.run(['cat', 'data.txt'], cwd='logs')",
-            "import os\nos.system('env -C build make')",
+            "import os\nos.system('env -C build ls')",
             "import os\nos.system('env -C /app cat readme.md')",
             "a, b = 1, 2\nprint(a + b)",
             "a, b = 3, 4\na, b = b, a\nprint(a)",
@@ -3126,7 +3126,7 @@ class TestRound27Bypasses:
             # Benign local relative navigation / system binaries / dynamic cwd non-reader.
             "import subprocess\nsubprocess.run(['ls', '-la'])",
             "import subprocess\nsubprocess.run(['/bin/ls'])",
-            "import subprocess\nsubprocess.run(['make'], cwd=get_dir())",
+            "import subprocess\nsubprocess.run(['ls'], cwd=get_dir())",
             "import subprocess\nsubprocess.run(['bash', '-c', 'echo OK'], env={'BASH_ENV': ''})",
             "import subprocess\nsubprocess.run(['cat', 'data.txt'], cwd='logs')",
         ],
@@ -3896,4 +3896,97 @@ class TestRound36Bypasses:
         ],
     )
     def test_round36_benign_allowed(self, code):
+        _ok(code)
+
+
+class TestRound37Bypasses:
+    """Thirty-seventh-round Codex findings (follow-ups on the round-36 git / env work): a git
+    path operand resolved from a local variable, a single-assignment env mapping with an unsafe
+    PATH, env -C in an argv wrapper before git, execution-capable git configs (core.fsmonitor /
+    hooksPath override), env -S / --split-string sensitive reads, and the make recipe runner."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A git path operand from a locally-assigned absolute variable writes outside.
+            "import os\nos.system('OUT=/tmp/repo; git init $OUT')",
+            "import os\nos.system('OUT=/abs/x; git clone https://h/r $OUT')",
+        ],
+    )
+    def test_git_operand_expansion_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A single-assignment env mapping with an unsafe PATH lets a bare argv[0] resolve local.
+            "import subprocess\ne = {'PATH': '.'}\nsubprocess.run(['evil'], env=e)",
+            "import subprocess\ne = {'PATH': '~/bin'}\nsubprocess.run(['evil'], env=e)",
+        ],
+    )
+    def test_single_assignment_env_path_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # env -C /tmp before git in an argv changes git's cwd; the git backscan must see it.
+            "import subprocess\nsubprocess.run(['env', '-C', '/tmp', 'git', 'init', 'repo'])",
+            "import subprocess\nsubprocess.run(['env', '-C', '/tmp', 'git', 'init'])",
+        ],
+    )
+    def test_env_c_argv_git_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Execution-capable git configs run their value; core.hooksPath re-enables hooks.
+            "import os\nos.system('git -c core.fsmonitor=\"sh -c id\" status')",
+            "import os\nos.system(\"git -c core.sshCommand='touch /tmp/p' fetch\")",
+            "import os\nos.system(\"git config core.pager 'sh -c id'\")",
+            "import os\nos.system('git -c core.hooksPath=.git/hooks commit -m x')",
+            "import subprocess\nsubprocess.run(['git', '-c', 'core.pager=sh -c id', 'log'])",
+        ],
+    )
+    def test_git_exec_config_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # env -S / --split-string runs its operand as a command; a reader payload leaks a file.
+            "import os\nos.system(\"env --split-string='cat /etc/passwd'\")",
+            "import subprocess\nsubprocess.run(['env', '-S', 'cat /etc/passwd'])",
+        ],
+    )
+    def test_env_split_string_read_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # make runs shell recipes read from a workdir Makefile in an unguarded child.
+            "import subprocess\nsubprocess.run(['make'])",
+            "import os\nos.system('make build')",
+        ],
+    )
+    def test_make_recipe_runner_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Workdir-relative git, benign git configs / clone URL var, non-shell env, benign
+            # env -S command, and library imports must all still pass.
+            "import os\nos.system('OUT=sub; git init $OUT')",
+            "import os\nos.system('git clone https://github.com/x/y')",
+            "import os\nos.system('git -c user.name=me commit -m x')",
+            "import os\nos.system('git config user.email me@x.com')",
+            "import subprocess, os\nsubprocess.run(['ls'], env=os.environ.copy())",
+            "import subprocess\nsubprocess.run(['env', '-S', 'ls -la'])",
+            "import os\nos.system('env -C sub ls')",
+        ],
+    )
+    def test_round37_benign_allowed(self, code):
         _ok(code)

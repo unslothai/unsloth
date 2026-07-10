@@ -167,6 +167,12 @@ _PYTHON_LAUNCHER_COMMANDS = frozenset(
         "ipython3",
     }
 )
+# Recipe / task runners that execute shell commands read from a workdir control file (a
+# Makefile recipe, etc.) in an unguarded child, the same escape as the Python launchers: a
+# sandboxed snippet can write a Makefile whose recipe runs `echo x > /tmp/p` and then run
+# `make`. Deny the runner; in-workdir work belongs in the guarded tools. (Kept tight to the
+# common ones; a broader allowlisted-tooling relaxation is tracked separately.)
+_RECIPE_RUNNER_COMMANDS = frozenset({"make", "gmake"})
 # File-creating / writing coreutils. Same rationale as the interpreters: a spawned child
 # runs without the in-process realpath backstop, so subprocess.run(['touch', '/tmp/x']),
 # tee, cp, mv, ... write / create / delete outside the session workdir. In-workdir file
@@ -221,6 +227,7 @@ _BLOCKED_COMMANDS_COMMON = (
     _BLOCKED_COMMANDS_COMMON
     | _INTERPRETER_COMMANDS
     | _PYTHON_LAUNCHER_COMMANDS
+    | _RECIPE_RUNNER_COMMANDS
     | _CHILD_WRITE_COMMANDS
 )
 _BLOCKED_COMMANDS_WIN = frozenset(
@@ -388,6 +395,16 @@ def _arg_escapes_workdir(tok: str) -> bool:
     return ".." in t.split("/")
 
 
+def _git_operand_escapes(tok: str, assigns = None) -> bool:
+    """As _arg_escapes_workdir, but resolves a ``$VAR`` / ``${VAR}`` operand bound to an escaping
+    value earlier in the SAME command (``OUT=/tmp/repo; git init $OUT``). An unknown external
+    expansion is left to the literal check (so ``git clone $REPO_URL`` is not a false positive)."""
+    m = re.fullmatch(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", tok)
+    if m and assigns and m.group(1) in assigns:
+        return _arg_escapes_workdir(assigns[m.group(1)])
+    return _arg_escapes_workdir(tok)
+
+
 # git options whose VALUE is a path that a native git child writes to / operates in (the runtime
 # realpath backstop never sees a native git process). A value that escapes the workdir lets git
 # write outside the session: -C / --git-dir / --work-tree / --separate-git-dir (repo location),
@@ -405,6 +422,45 @@ _GIT_PATH_VALUE_OPTIONS = frozenset(
         "--output-directory",
     }
 )
+# git config keys whose value is a COMMAND git runs in an unguarded child (git -c KEY=CMD ... /
+# git config KEY CMD). core.fsmonitor / sshCommand / pager / editor / credential.helper /
+# diff.external / gpg.program / sequence.editor / uploadpack.packObjectsHook run their value;
+# core.hooksPath / init.templateDir re-point hooks (undoing the sandbox hook suppression).
+_GIT_EXEC_CONFIG_KEYS = frozenset(
+    {
+        "core.fsmonitor",
+        "core.sshcommand",
+        "core.pager",
+        "core.editor",
+        "core.hookspath",
+        "core.askpass",
+        "sequence.editor",
+        "diff.external",
+        "gpg.program",
+        "credential.helper",
+        "init.templatedir",
+        "uploadpack.packobjectshook",
+        "ssh.variant",
+    }
+)
+
+
+def _git_config_key_is_exec(key: str) -> bool:
+    """True for a git config key whose value git executes as a command (or that re-points hooks)."""
+    k = key.strip().lower()
+    if k in _GIT_EXEC_CONFIG_KEYS:
+        return True
+    # filter.<name>.clean/smudge/process, diff.<name>.command, merge.<name>.driver take commands.
+    parts = k.split(".")
+    if len(parts) == 3:
+        section, _, leaf = parts
+        if section == "filter" and leaf in ("clean", "smudge", "process"):
+            return True
+        if section == "diff" and leaf == "command":
+            return True
+        if section == "merge" and leaf == "driver":
+            return True
+    return False
 
 
 # The only shell redirection targets trusted without a realpath check: standard device
@@ -1430,8 +1486,16 @@ def _find_blocked_commands(command: str) -> set[str]:
         _gk = 0
         while _gk < len(_seg):
             _gt = _seg[_gk]
+            # git -c KEY=VALUE: an execution-capable config (core.fsmonitor / sshCommand / ...)
+            # runs VALUE in an unguarded child; core.hooksPath / init.templateDir re-enable
+            # planted hooks. Block the exec-capable configs (alias.*=! handled above).
+            if _gt == "-c" and _gk + 1 < len(_seg):
+                if _git_config_key_is_exec(_seg[_gk + 1].split("=", 1)[0]):
+                    blocked.add("git-exec-config")
+                _gk += 2
+                continue
             if _gt in _GIT_PATH_VALUE_OPTIONS and _gk + 1 < len(_seg):
-                if _arg_escapes_workdir(_seg[_gk + 1]):
+                if _git_operand_escapes(_seg[_gk + 1], _local_assigns):
                     blocked.add("git-write-outside")
                 _gk += 2
                 continue
@@ -1441,11 +1505,21 @@ def _find_blocked_commands(command: str) -> set[str]:
                     _oeq = _gt.split("=", 1)[1]
                     break
             if _oeq is not None:
-                if _arg_escapes_workdir(_oeq):
+                if _git_operand_escapes(_oeq, _local_assigns):
                     blocked.add("git-write-outside")
-            elif not _gt.startswith("-") and _arg_escapes_workdir(_gt):
+            elif not _gt.startswith("-") and _git_operand_escapes(_gt, _local_assigns):
                 blocked.add("git-write-outside")
             _gk += 1
+        # git config [options] KEY [VALUE]: setting an execution-capable config key (git config
+        # core.pager 'sh -c ...') runs its value on later git operations, like the -c form.
+        for _ci, _ct in enumerate(_seg):
+            if _ct == "config":
+                for _cj in range(_ci + 1, len(_seg)):
+                    if not _seg[_cj].startswith("-"):
+                        if _git_config_key_is_exec(_seg[_cj].split("=", 1)[0]):
+                            blocked.add("git-exec-config")
+                        break
+                break
 
     # hash -p PATHNAME NAME binds the command NAME to PATHNAME in the shell's hash table, so a
     # later bare `NAME` runs PATHNAME. With a local executable (hash -p ./evil ls; ls) that
@@ -5042,6 +5116,41 @@ def _scan_command_string_for_reads(
             if _r is not None:
                 return _r
 
+    # env -S 'cmd' / --split-string='cmd' splits its operand into a fresh command line that runs
+    # as the child, so a reader-only payload (env --split-string='cat /etc/passwd') is a host-file
+    # read even though env is a wrapper. Recurse each env split-string payload into the read scan.
+    for _si, _st in enumerate(ptoks):
+        _sl = _st.lower()
+        _spayload = None
+        if _sl in ("-s", "--split-string") and _si + 1 < len(ptoks):
+            _spayload = ptoks[_si + 1]
+        elif _sl.startswith("-s") and _sl != "-s" and not _sl.startswith("--"):
+            _spayload = _st[2:]  # glued short form: -S'cmd' / -Scmd
+        elif _sl.startswith("--split-string="):
+            _spayload = _st[len("--split-string=") :]
+        if not _spayload:
+            continue
+        # Confirm the split-string belongs to an `env` wrapper (not a -s flag of another command).
+        _is_env = False
+        for _sj in range(_si - 1, -1, -1):
+            _sp = ptoks[_sj]
+            if _sp in _READ_SCAN_SEPARATORS:
+                break
+            if _sp.startswith("-"):
+                continue
+            _is_env = os.path.basename(_sp).lower() == "env"
+            break
+        if _is_env:
+            _r = _scan_command_string_for_reads(
+                _spayload,
+                strict_traversal = strict_traversal,
+                cwd = cwd,
+                cwd_dynamic = cwd_dynamic,
+                _depth = _depth + 1,
+            )
+            if _r is not None:
+                return _r
+
     def _risky_read_target(tgt):
         if not tgt:
             return False
@@ -5621,13 +5730,13 @@ def _check_signal_escape_patterns(
                             found |= _check_shell_argv(arg.elts[_cmd_idx:])
                         # find -exec/-delete, sed -i, sort -o interpret LATER argv elements as
                         # actions / write flags, and git -c alias.X=!CMD hides a shell dispatch
-                        # in a config operand, so reconstruct a command line from the argv tail
-                        # and reuse the full scanner (which handles those forms).
+                        # in a config operand, so reconstruct a command line and reuse the full
+                        # scanner (which handles those forms). Reconstruct from the FULL argv (not
+                        # just the command word onward) so a preceding wrapper -- e.g. an escaping
+                        # env -C /tmp before git -- is still seen by the git cwd backscan.
                         elif _cmd_base in _ARGV_TAIL_SCAN_COMMANDS:
                             found |= _find_blocked_commands(
-                                " ".join(
-                                    shlex.quote(s) for s in str_elts[_cmd_idx:] if s is not None
-                                )
+                                " ".join(shlex.quote(s) for s in str_elts if s is not None)
                             )
                 continue
             for s in _extract_strings_from_list(arg):
@@ -6425,6 +6534,13 @@ def _check_signal_escape_patterns(
                 # of BASH_ENV / ENV (fail closed). Whether the child is a shell: shell=True, or
                 # the argv command word resolves to bash / sh.
                 _env_node = expanded_kwargs.get("env")
+                # A single-assignment env mapping (e = {'PATH': '.'}; run(['evil'], env=e)) reaches
+                # here as a Name; resolve it to its literal dict / dict() so the BASH_ENV and
+                # unsafe-PATH checks below still apply instead of silently passing.
+                if isinstance(_env_node, ast.Name) and _analyzer_on:
+                    _renv = _scope_idx.resolve(_env_node.id, _env_node, "rhsnode")
+                    if isinstance(_renv, (ast.Dict, ast.Call)):
+                        _env_node = _renv
                 if _env_node is not None:
                     _is_shell_child = _shell_maybe_true
                     if not _is_shell_child and isinstance(_argv0_node, (ast.List, ast.Tuple)):
@@ -8586,6 +8702,22 @@ def _check_signal_escape_patterns(
                             if _k + 1 < len(_elts) and _scan_one_command(_elts[_k + 1]):
                                 return True
                             break
+                # env -S 'payload' / --split-string in an argv (subprocess.run(['env', '-S',
+                # 'cat /etc/passwd'])) runs the split payload as the child; the -c block above
+                # only covers shell binaries, so reconstruct the argv and read-scan it when the
+                # resolved command word is env with a split-string flag.
+                if (
+                    all(_x is not None for _x in _elts)
+                    and any(os.path.basename(_x).lower() == "env" for _x in _elts)
+                    and any(
+                        _x in ("-S", "--split-string")
+                        or _x.startswith("--split-string=")
+                        or (_x.startswith("-S") and len(_x) > 2)
+                        for _x in _elts
+                    )
+                ):
+                    if _scan_one_command(" ".join(shlex.quote(_x) for _x in _elts)):
+                        return True
 
         _fq = _shell_string_sink_fq(f)
         _is_str = _fq in _STRING_SHELL_SINKS
@@ -9487,9 +9619,80 @@ try:
 except Exception:
     pass
 
+# Gate workdir MODULE imports: user code may `import helper` a sibling .py it wrote, but that
+# module's source was never seen by the static analyzer, so a planted workdir/evilmod.py could
+# run os.system('cat /etc/passwd') / subprocess at import time in the guarded interpreter (the
+# CHILD it spawns is unguarded). Install a meta-path finder that, for a module resolved FROM the
+# workdir, parses its source and refuses the import if it reaches a command-execution sink or
+# eval/exec/compile the runtime guard cannot confine. File reads/writes in the module are already
+# runtime-guarded, and library imports (site-packages) are not workdir-sourced so they pass
+# through untouched. (Direct sinks only; deeper obfuscation in a workdir module is an accepted
+# residual -- OS isolation remains the real boundary.)
+try:
+    import ast as _gast
+    import importlib.machinery as _gimach
+    _GUARD_WORKDIR_REAL = _os.path.realpath(__WORKDIR__)
+    _GUARD_EXEC_ATTRS = frozenset({
+        "system", "popen", "popen2", "popen3", "popen4", "startfile",
+        "execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe",
+        "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe",
+        "posix_spawn", "posix_spawnp",
+    })
+    _GUARD_EXEC_MODS = frozenset({"subprocess", "pty"})
+    def _guard_module_src_unsafe(_src):
+        try:
+            _tree = _gast.parse(_src)
+        except _bi.BaseException:
+            return True  # unparseable workdir module -> fail closed
+        for _nd in _gast.walk(_tree):
+            if isinstance(_nd, _gast.Import):
+                for _al in _nd.names:
+                    if _al.name.split(".")[0] in _GUARD_EXEC_MODS:
+                        return True
+            elif isinstance(_nd, _gast.ImportFrom):
+                if (_nd.module or "").split(".")[0] in _GUARD_EXEC_MODS:
+                    return True
+            elif isinstance(_nd, _gast.Attribute):
+                if _nd.attr in _GUARD_EXEC_ATTRS:
+                    return True
+            elif isinstance(_nd, _gast.Call) and isinstance(_nd.func, _gast.Name):
+                if _nd.func.id in ("eval", "exec", "compile", "__import__"):
+                    return True
+        return False
+    class _GuardWorkdirImportVetter:
+        def find_spec(self, _name, _path=None, _target=None):
+            try:
+                _spec = _gimach.PathFinder.find_spec(_name, _path, _target)
+            except _bi.BaseException:
+                return None
+            _orig = getattr(_spec, "origin", None) if _spec is not None else None
+            if not _orig or not _orig.endswith(".py"):
+                return None
+            try:
+                _rp = _os.path.realpath(_orig)
+            except _bi.BaseException:
+                return None
+            if not (_rp == _GUARD_WORKDIR_REAL or _rp.startswith(_GUARD_WORKDIR_REAL + _os.sep)):
+                return None  # not a workdir module; let the default finders load it
+            try:
+                _fh = _io.open(_orig, "r", encoding="utf-8", errors="replace")
+                try:
+                    _msrc = _fh.read()
+                finally:
+                    _fh.close()
+            except _bi.BaseException:
+                raise _bi.ImportError("sandbox: cannot vet workdir module " + _name)
+            if _guard_module_src_unsafe(_msrc):
+                raise _bi.ImportError(
+                    "sandbox: refusing to import unvetted workdir module " + _name)
+            return _spec
+    _sys.meta_path.insert(0, _GuardWorkdirImportVetter())
+except _bi.BaseException:
+    pass
+
 # All guard dependencies are now imported (and cached as the real, patched modules) with the
 # workdir kept off sys.path, so no workdir/*.py could shadow them. Restore the original path
-# for user code so ordinary sibling imports still resolve.
+# for user code so ordinary sibling imports still resolve (workdir modules are vetted above).
 _sys.path = _saved_path
 """
 

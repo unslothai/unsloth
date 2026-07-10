@@ -635,6 +635,54 @@ def test_sandboxed_imports_still_work_under_guard():
 
 
 @_POSIX_ONLY
+def test_sandboxed_benign_workdir_module_import_allowed():
+    # A benign sibling module (data / functions only) the user wrote must still import: the
+    # workdir import vetter only refuses modules that reach a command-execution sink.
+    session = "backstop-workdir-import-ok"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "helper_ok.py"), "w") as f:
+        f.write("VALUE = 42\ndef greet():\n    return 'hi'\n")
+    try:
+        out = _python_exec(
+            "import helper_ok; print('HELPER', helper_ok.VALUE, helper_ok.greet())",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "HELPER 42 hi" in out
+        assert "sandbox:" not in out
+    finally:
+        os.remove(os.path.join(workdir, "helper_ok.py"))
+
+
+@_POSIX_ONLY
+def test_sandboxed_malicious_workdir_module_import_denied():
+    # A planted workdir module whose top-level code runs os.system was never seen by the static
+    # analyzer; importing it would execute the sink in an unguarded child. The vetter refuses it.
+    session = "backstop-workdir-import-evil"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "evilmod.py"), "w") as f:
+        f.write("import os\nos.system('echo PWNED')\n")
+    try:
+        out = _python_exec(
+            "import evilmod; print('REACHED_' + 'BODY')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        # The import is refused before the module body (its os.system) runs, and before the
+        # trailing print. (The source line is echoed in the traceback, so assert on the sink
+        # output + the printed marker, not on the source text.)
+        assert "PWNED" not in out
+        assert "REACHED_BODY" not in out
+        assert "sandbox:" in out or "ImportError" in out
+    finally:
+        os.remove(os.path.join(workdir, "evilmod.py"))
+
+
+@_POSIX_ONLY
 def test_sandboxed_realpath_monkeypatch_write_escape_denied(tmp_path):
     # Sandboxed code reassigns os.path.realpath to a lambda that echoes an in-workdir
     # path, then writes to an absolute path outside the workdir. If the guard read
