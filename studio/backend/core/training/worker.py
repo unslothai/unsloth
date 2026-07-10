@@ -1934,7 +1934,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("status", status_message = "Configuring response-only training...")
         try:
             from utils.datasets import apply_completion_masking
-
             trainer, _masking_applied = apply_completion_masking(
                 trainer,
                 model_name,

@@ -26,7 +26,13 @@ def lookup_manual_markers(model_name):
     return template, None, None
 
 
-def apply_completion_masking(trainer, model_name, train_fn, num_proc = None, notify = None):
+def apply_completion_masking(
+    trainer,
+    model_name,
+    train_fn,
+    num_proc = None,
+    notify = None,
+):
     """Apply completion-only masking with auto-detection first and the manual
     template table as fallback.
 

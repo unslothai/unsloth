@@ -170,9 +170,7 @@ def test_manual_fallback_failure_propagates_to_caller():
 
 def test_notify_is_optional():
     train_fn = _Recorder(fail_auto = True)
-    _, applied = apply_completion_masking(
-        _Trainer(), "some-org/not-in-any-mapper", train_fn
-    )
+    _, applied = apply_completion_masking(_Trainer(), "some-org/not-in-any-mapper", train_fn)
     assert applied is False
 
 

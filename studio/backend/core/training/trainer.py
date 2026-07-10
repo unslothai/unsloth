@@ -3525,7 +3525,9 @@ class UnslothTrainer:
                             )
                             original_len = len(original_dataset_obj)
                             dropped = original_len - filtered_len
-                            drop_pct = round(100 * dropped / original_len, 1) if original_len > 0 else 0
+                            drop_pct = (
+                                round(100 * dropped / original_len, 1) if original_len > 0 else 0
+                            )
 
                             if filtered_len == 0 or drop_pct > 30:
                                 max_seq = training_args.get("max_seq_length", 2048)
