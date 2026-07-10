@@ -53,7 +53,16 @@ export function TrainingSection() {
   const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
   const pendingCount = useTrainingQueueStore((s) => s.pendingCount);
   const maxPending = useTrainingQueueStore((s) => s.maxPending);
-  const isQueueMode = isTrainingRunning || pendingCount > 0;
+  const activeQueueJobId = useTrainingQueueStore((s) => s.activeJobId);
+  const hasHydratedQueue = useTrainingQueueStore((s) => s.hasHydrated);
+  // Until the first queue snapshot arrives, prefer enqueueing over a direct
+  // start: a persisted queue may exist. A claimed item is no longer pending,
+  // but must still keep new work behind it while its runtime status catches up.
+  const isQueueMode =
+    !hasHydratedQueue ||
+    isTrainingRunning ||
+    activeQueueJobId !== null ||
+    pendingCount > 0;
   const isQueueFull = pendingCount >= maxPending;
   const isLoadingModel = store.isLoadingModelDefaults || store.isCheckingVision;
   const isModelCapabilitiesSettled = !!store.selectedModel && !isLoadingModel;
