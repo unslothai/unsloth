@@ -148,6 +148,25 @@ _INTERPRETER_COMMANDS = frozenset(
         "nawk",
     }
 )
+# Python console-script entry points that START A FRESH, UNGUARDED Python interpreter (their
+# shebang is the same interpreter whose bin dir the safe env prepends). Running a workdir file
+# through one -- subprocess.run(['pytest', 'test_evil.py']) / pip install <local sdist> -- is
+# the same child-process escape as a bare `python foo.py`, which is already blocked above, so
+# the launcher entry points are denied for consistency. In-workdir Python belongs in the
+# guarded python_execute tool. (This is deliberately tight to well-known launchers; a broader
+# allowlisted-tooling relaxation is tracked separately.)
+_PYTHON_LAUNCHER_COMMANDS = frozenset(
+    {
+        "pip",
+        "pip2",
+        "pip3",
+        "pipx",
+        "pytest",
+        "py.test",
+        "ipython",
+        "ipython3",
+    }
+)
 # File-creating / writing coreutils. Same rationale as the interpreters: a spawned child
 # runs without the in-process realpath backstop, so subprocess.run(['touch', '/tmp/x']),
 # tee, cp, mv, ... write / create / delete outside the session workdir. In-workdir file
@@ -198,7 +217,12 @@ _CHILD_WRITE_COMMANDS = frozenset(
         "mktemp",
     }
 )
-_BLOCKED_COMMANDS_COMMON = _BLOCKED_COMMANDS_COMMON | _INTERPRETER_COMMANDS | _CHILD_WRITE_COMMANDS
+_BLOCKED_COMMANDS_COMMON = (
+    _BLOCKED_COMMANDS_COMMON
+    | _INTERPRETER_COMMANDS
+    | _PYTHON_LAUNCHER_COMMANDS
+    | _CHILD_WRITE_COMMANDS
+)
 _BLOCKED_COMMANDS_WIN = frozenset(
     {
         "rmdir",
@@ -264,18 +288,51 @@ def _is_local_executable_path(tok: str) -> bool:
 
 def _path_value_is_unsafe(value: str) -> bool:
     """True when a PATH search list would let a BARE (no-slash) command resolve to a workdir
-    executable: any entry that is ``.``, empty (``:`` = cwd), or a relative directory. An
-    absolute (``/...``), ``~``-rooted, or variable (``$PATH`` / ``%VAR%``) entry is safe. Used
-    so a ``PATH=. evil`` prefix / ``env={'PATH': '.'}`` cannot smuggle an unguarded shebang
+    executable: any entry that is ``.``, empty (``:`` = cwd), a relative directory, or one that
+    expands to the session workdir. In the sandbox ``HOME`` and the child cwd ARE the workdir,
+    so ``~`` / ``~user`` and ``$HOME`` / ``$PWD`` (``${HOME}`` / ``${PWD}``) are unsafe. An
+    absolute (``/...``), ``%VAR%``, or other ``$VAR`` entry (``$PATH``, ``$CONDA_PREFIX/bin``,
+    assumed to expand to a trusted absolute path) is safe. Used so a ``PATH=. evil`` /
+    ``PATH=~/bin evil`` prefix / ``env={'PATH': '~/bin'}`` cannot smuggle an unguarded shebang
     past the bare-name PATH exemption in _is_local_executable_path."""
     for entry in value.replace("\\", "/").split(":"):
         e = entry.strip()
         if e in ("", "."):
             return True
-        if e.startswith(("/", "~", "$", "%")):
+        # ~ / ~user expand to HOME, which is the session workdir in the sandbox.
+        if e.startswith("~"):
+            return True
+        if e.startswith("$"):
+            name = e[1:]
+            if name.startswith("{"):
+                name = name[1:]
+            name = re.split(r"[/}]", name, maxsplit = 1)[0]
+            if name in ("HOME", "PWD"):
+                return True  # expands to the session workdir
+            continue  # $PATH / other vars: assume a trusted absolute expansion
+        if e.startswith(("/", "%")):
             continue
         return True  # a relative directory (relbin, ./tools)
     return False
+
+
+def _arg_escapes_workdir(tok: str) -> bool:
+    """True when a path-like argument can point OUTSIDE the session workdir: an absolute path
+    (``/tmp/x``), a ``~`` / ``~user`` home path (home == workdir, but a shell child follows the
+    real HOME), or any path with a ``..`` component that can traverse above the workdir. A
+    workdir-relative name (``sub/out``, ``repo``) stays inside and returns False. Used to confine
+    file-creating child commands (git init/clone <dir>, ...) that the runtime guard cannot see."""
+    t = tok.replace("\\", "/")
+    if t.startswith("/") or t.startswith("~"):
+        return True
+    return ".." in t.split("/")
+
+
+# git subcommands / global options that CREATE files or repositories at an arbitrary path in an
+# unguarded child (the runtime realpath backstop never sees a native git process). A path
+# operand or -C / --git-dir / --work-tree / --separate-git-dir value that escapes the workdir
+# lets git write outside the session (git init /tmp/x, git clone url /tmp/x, git -C /outside ...).
+_GIT_DIR_OPTIONS = frozenset({"--git-dir", "--work-tree", "--separate-git-dir"})
 
 
 # The only shell redirection targets trusted without a realpath check: standard device
@@ -999,6 +1056,13 @@ def _find_blocked_commands(command: str) -> set[str]:
         # regex below misses the wrapper case because $CMD is not right after a separator.
         if "$" in token or "`" in token:
             blocked.add("command-expansion")
+        # Glob metacharacters in a command NAME (/bin/s?, touc?, /bin/[bd]ash) are expanded by
+        # the shell to a matching path BEFORE command lookup, so the literal basename compared
+        # against the blocklist (s?, touc?) never matches the shell / writer it resolves to.
+        # The resolved binary cannot be proven safe, so fail closed. A bare `[` is the test
+        # builtin (not a glob), so exclude it.
+        if "*" in token or "?" in token or (token != "[" and "[" in token):
+            blocked.add("command-glob")
         if base in _BLOCKED_COMMANDS or _is_versioned_interpreter(base):
             blocked.add(base)
         # The `.` builtin is bash's `source`: `. evil.sh` runs an unscanned script in the
@@ -1259,6 +1323,35 @@ def _find_blocked_commands(command: str) -> set[str]:
                 if _t.startswith("alias.") and _k + 1 < len(_seg) and _seg[_k + 1].startswith("!"):
                     blocked.add("git-shell-alias")
                     break
+        # git init /tmp/x, git clone url /tmp/x, git worktree add /tmp/x, git -C /outside ...
+        # all create / operate on files outside the workdir in an unguarded native git child.
+        # Flag a path OPERAND (bare, non-flag) or a -C / --git-dir / --work-tree value that
+        # escapes the workdir. Workdir-relative git usage (git init, git clone url, git -C sub)
+        # and non-path operands (a clone URL, a config name=value) stay allowed.
+        _gk = 0
+        while _gk < len(_seg):
+            _gt = _seg[_gk]
+            if _gt == "-C" and _gk + 1 < len(_seg):
+                if _arg_escapes_workdir(_seg[_gk + 1]):
+                    blocked.add("git-write-outside")
+                _gk += 2
+                continue
+            if _gt in _GIT_DIR_OPTIONS and _gk + 1 < len(_seg):
+                if _arg_escapes_workdir(_seg[_gk + 1]):
+                    blocked.add("git-write-outside")
+                _gk += 2
+                continue
+            _oeq = None
+            for _opt in _GIT_DIR_OPTIONS:
+                if _gt.startswith(_opt + "="):
+                    _oeq = _gt.split("=", 1)[1]
+                    break
+            if _oeq is not None:
+                if _arg_escapes_workdir(_oeq):
+                    blocked.add("git-write-outside")
+            elif not _gt.startswith("-") and _arg_escapes_workdir(_gt):
+                blocked.add("git-write-outside")
+            _gk += 1
 
     # alias x='touch /tmp/p'; ...; x (with expand_aliases) runs the alias BODY at execution
     # time, but the command word `x` is unknown to the scanner. Scan the body of each alias
@@ -3497,6 +3590,46 @@ _UNPICKLER_MODULES = frozenset({"pickle", "_pickle", "dill", "cloudpickle"})
 _YAML_SAFE_LOADERS = frozenset({"SafeLoader", "CSafeLoader", "BaseLoader"})
 _YAML_LOAD_METHODS = frozenset({"load", "load_all"})
 
+# Pickle-backed loaders whose reduce payload executes arbitrary code, gated by a keyword like
+# yaml.load: torch.load runs a pickle unless weights_only is True (torch>=2.6 default), numpy.load
+# only unpickles with allow_pickle=True, and joblib.load is always pickle-backed. Tracked
+# separately from _CODE_DESERIALIZE_SINKS because the safe default forms must stay allowed.
+_PICKLE_LOADER_MODULES = frozenset({"torch", "numpy", "joblib"})
+
+
+def _kw_constant_truthy(node, name):
+    """The literal truthiness of keyword ``name`` in a call: True/False when it is a constant,
+    None when absent or non-constant. Used for the weights_only / allow_pickle gates."""
+    for kw in node.keywords:
+        if kw.arg == name:
+            if isinstance(kw.value, ast.Constant):
+                return bool(kw.value.value)
+            return None
+    return None
+
+
+def _kw_present(node, name):
+    """True when keyword ``name`` is passed in the call (any value)."""
+    return any(kw.arg == name for kw in node.keywords)
+
+
+def _pickle_loader_is_unsafe(fq, node):
+    """True when a torch.load / numpy.load / joblib.load call runs an UNVERIFIED pickle payload:
+    joblib.load always does; torch.load when weights_only is EXPLICITLY not-True (torch>=2.6
+    defaults it to True, so the bare torch.load(f) form relies on that safe default and stays
+    allowed); numpy.load only when allow_pickle is a constant True. So the safe forms
+    (torch.load(f), torch.load(f, weights_only=True), numpy.load(f)) return False."""
+    if fq == "joblib.load":
+        return True
+    if fq == "torch.load":
+        return (
+            _kw_present(node, "weights_only")
+            and _kw_constant_truthy(node, "weights_only") is not True
+        )
+    if fq == "numpy.load":
+        return _kw_constant_truthy(node, "allow_pickle") is True
+    return False
+
 
 def _yaml_loader_class_name(value):
     """Terminal attribute/name of a Loader= argument (yaml.SafeLoader -> SafeLoader)."""
@@ -5368,6 +5501,10 @@ def _check_signal_escape_patterns(
             # `from pickle import Unpickler [as X]`: Unpickler(f).load() reaches the same reduce
             # path as pickle.load; track the ctor alias so the .load() method call is flagged.
             self.unpickler_aliases: set[str] = set()
+            # import torch / numpy as np / joblib -> {alias: module}; from joblib import load ->
+            # {load: "joblib.load"}. Conditional pickle-backed loaders (see _pickle_loader_is_unsafe).
+            self.pickle_loader_module_aliases: dict[str, str] = {}
+            self.pickle_loader_func_aliases: dict[str, str] = {}
             # import types as t -> {"types", "t"}; from types import FunctionType as F -> {"F"}.
             # FunctionType(code, globals)() runs a code object WITHOUT eval/exec, so a
             # dynamic compile() result reaches execution through it (see visit_Call).
@@ -5442,6 +5579,11 @@ def _check_signal_escape_patterns(
                     self.gc_aliases.add(alias.asname or "gc")
                 if alias.name in _DESERIALIZE_MODULES:
                     self.deserialize_module_aliases[alias.asname or alias.name] = alias.name
+                # import torch / import numpy as np / import joblib: the top-level name (or its
+                # alias) is the receiver for torch.load / np.load / joblib.load.
+                _pl_top = alias.name.split(".")[0]
+                if _pl_top in _PICKLE_LOADER_MODULES and "." not in (alias.asname or alias.name):
+                    self.pickle_loader_module_aliases[alias.asname or alias.name] = _pl_top
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -5494,6 +5636,14 @@ def _check_signal_escape_patterns(
                         self.yaml_load_aliases[alias.asname or alias.name] = alias.name
                     elif alias.name == "Unpickler" and node.module in _UNPICKLER_MODULES:
                         self.unpickler_aliases.add(alias.asname or alias.name)
+            elif node.module in _PICKLE_LOADER_MODULES:
+                # from joblib import load / from torch import load: the bare-name form of the
+                # conditional pickle-backed loader; the safe-flag gate is applied at the call.
+                for alias in node.names:
+                    if alias.name == "load":
+                        self.pickle_loader_func_aliases[alias.asname or alias.name] = (
+                            f"{node.module}.load"
+                        )
             elif node.module == "types":
                 for alias in node.names:
                     if alias.name == "FunctionType":
@@ -6082,6 +6232,12 @@ def _check_signal_escape_patterns(
                 )
                 blocked_in_args = _check_args_for_blocked(all_call_args, _shell_maybe_true)
 
+                # The argv sequence can be given positionally (run(['bash', ...])) or through the
+                # public args= keyword (run(args=['bash', ...])), which this analyzer already
+                # collects in _CMD_KWARGS. Resolve either form so the executable= and shell-child
+                # checks below are not bypassed by moving the command into args=.
+                _argv0_node = node.args[0] if node.args else expanded_kwargs.get("args")
+
                 # subprocess(..., executable=PROG) makes PROG the real program while the argv
                 # TAIL still supplies its flags/args, so scanning executable and argv separately
                 # misses run(['x', '-i', 's/a/b/', '/f'], executable='/usr/bin/sed') (child runs
@@ -6091,10 +6247,9 @@ def _check_signal_escape_patterns(
                 if (
                     _exe is not None
                     and not _shell_maybe_true
-                    and node.args
-                    and isinstance(node.args[0], (ast.List, ast.Tuple))
+                    and isinstance(_argv0_node, (ast.List, ast.Tuple))
                 ):
-                    _tail = [_extract_string_from_node(e) for e in node.args[0].elts[1:]]
+                    _tail = [_extract_string_from_node(e) for e in _argv0_node.elts[1:]]
                     _combined = [_exe] + _tail
                     if all(_c is not None for _c in _combined):
                         blocked_in_args = blocked_in_args | _find_blocked_commands(
@@ -6111,12 +6266,8 @@ def _check_signal_escape_patterns(
                 _env_node = expanded_kwargs.get("env")
                 if _env_node is not None:
                     _is_shell_child = _shell_maybe_true
-                    if (
-                        not _is_shell_child
-                        and node.args
-                        and isinstance(node.args[0], (ast.List, ast.Tuple))
-                    ):
-                        _elts0 = [_extract_string_from_node(_e) for _e in node.args[0].elts]
+                    if not _is_shell_child and isinstance(_argv0_node, (ast.List, ast.Tuple)):
+                        _elts0 = [_extract_string_from_node(_e) for _e in _argv0_node.elts]
                         _ci0 = _blocked_in_argv(_elts0)[1]
                         if _ci0 is not None and _ci0 < len(_elts0) and _elts0[_ci0]:
                             _is_shell_child = (
@@ -6167,11 +6318,17 @@ def _check_signal_escape_patterns(
                         blocked_in_args = blocked_in_args | {"shell-startup-env:non-literal"}
 
                 # os.execl(path, a0, a1, ...) / os.execv(path, [a0, ...]) / os.spawnl(mode,
-                # path, a0, ...) spread the child's argv across separate positional args (or a
-                # single list), so scanning each string alone misses a mutating tail like
-                # `sed -i ...`. Reconstruct the executed command line (program path + argv[1:],
-                # since argv[0] is the cosmetic name) and run the full scanner over it.
-                if shell_func.startswith("os.exec") or shell_func.startswith("os.spawn"):
+                # path, a0, ...) / os.posix_spawn(path, argv, env) spread the child's argv across
+                # separate positional args (or a single list), so scanning each string alone
+                # misses a mutating tail like `sed -i ...`. posix_spawn(p) executes `path` while
+                # argv[0] is only cosmetic, so a literal-env form (env=() / a byte list) otherwise
+                # slips the non-literal-env fallback. Reconstruct the executed command line
+                # (program path + argv[1:], since argv[0] is cosmetic) and run the full scanner.
+                if (
+                    shell_func.startswith("os.exec")
+                    or shell_func.startswith("os.spawn")
+                    or shell_func.startswith("os.posix_spawn")
+                ):
                     _name = shell_func.split(".", 1)[1]
                     if _name.startswith("spawn"):  # spawn*(mode, path, ...)
                         _path_node = node.args[1] if len(node.args) > 1 else None
@@ -6473,12 +6630,30 @@ def _check_signal_escape_patterns(
                         and self._is_unpickler_ctor(_ecf.value)
                     ):
                         _deser_fq = "pickle.Unpickler.load"
+                    # torch.load(f, weights_only=False) / np.load(f, allow_pickle=True) /
+                    # joblib.load(f) run a pickle reduce payload; flag only the unsafe forms so
+                    # the safe defaults (torch.load(f), np.load(f)) stay allowed.
+                    if (
+                        _deser_fq is None
+                        and _ecf.attr == "load"
+                        and isinstance(_ecf.value, ast.Name)
+                    ):
+                        _pcanon = self.pickle_loader_module_aliases.get(_ecf.value.id)
+                        if _pcanon is not None:
+                            _plfq = f"{_pcanon}.load"
+                            if _pickle_loader_is_unsafe(_plfq, node):
+                                _deser_fq = _plfq
                 if _deser_fq is None and isinstance(_ecf, ast.Name):
                     # from yaml import load; load(data): apply the same safe-loader check to the
                     # bare-name alias so importing the function directly is not a bypass.
                     _ym = self.yaml_load_aliases.get(_ecf.id)
                     if _ym is not None and not _yaml_call_has_safe_loader(node):
                         _deser_fq = "yaml." + _ym
+                    # from joblib import load; load(f): the bare-name conditional pickle loader.
+                    if _deser_fq is None:
+                        _plf = self.pickle_loader_func_aliases.get(_ecf.id)
+                        if _plf is not None and _pickle_loader_is_unsafe(_plf, node):
+                            _deser_fq = _plf
                 if _analyzer_on and _deser_fq is not None:
                     dynamic_desc = f"{_deser_fq}() deserializes an unverifiable code payload"
                 elif is_dynamic_import:

@@ -3662,3 +3662,122 @@ class TestRound34Bypasses:
     )
     def test_round34_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound35Bypasses:
+    """Thirty-fifth-round Codex findings: ~ / $HOME / $PWD-rooted PATH entries (home == workdir),
+    git write subcommands / -C targeting outside the workdir, the args= keyword hiding a shell
+    child from the BASH_ENV check, os.posix_spawn skipping the exec/spawn argv reconstruction,
+    Python launcher console scripts (pip / pytest) starting an unguarded interpreter, glob
+    metacharacters in a command name, and the pickle-backed torch/joblib/numpy loaders."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # ~ / $HOME / $PWD expand to the session workdir, so a bare command resolves there.
+            "import os\nos.system('PATH=~/bin evil')",
+            "import os\nos.system('PATH=$HOME/bin evil')",
+            "import os\nos.system('PATH=$PWD/bin evil')",
+            "import subprocess\nsubprocess.run(['evil'], env={'PATH': '~/bin'})",
+        ],
+    )
+    def test_home_rooted_path_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # git init/clone/-C at an absolute / .. / ~ path writes outside the workdir.
+            "import os\nos.system('git init /tmp/x')",
+            "import subprocess\nsubprocess.run(['git', 'init', '/tmp/x'])",
+            "import subprocess\nsubprocess.run(['git', 'clone', 'https://github.com/a/b', '/tmp/x'])",
+            "import os\nos.system('git init ../outside')",
+            "import subprocess\nsubprocess.run(['git', '-C', '/tmp/repo', 'init'])",
+            "import os\nos.system('git --git-dir=/tmp/g --work-tree=/tmp/w checkout .')",
+        ],
+    )
+    def test_git_write_outside_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A shell child whose command is in the args= keyword must still get the BASH_ENV /
+            # opaque-env check (a non-literal env may carry a startup script).
+            "import subprocess\nsubprocess.run(args=['bash', '-c', 'echo ok'], env={'BASH_ENV': 'e.sh'})",
+            "import subprocess\nsubprocess.run(args=['bash', '-c', 'echo ok'], env=custom)",
+        ],
+    )
+    def test_args_kwarg_shell_child_env_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # posix_spawn(path, argv, env) executes `path`; argv[0] is cosmetic. Reconstruct
+            # path + argv[1:] so a mutating tail is caught even with a literal env (env=() / list).
+            "import os\nos.posix_spawn('/usr/bin/sed', ['x', '-i', 's/a/b/', '/tmp/out'], ())",
+            "import os\nos.posix_spawnp('sed', ['x', '-i', 's/a/b/', '/tmp/out'], [b'PATH=/usr/bin'])",
+        ],
+    )
+    def test_posix_spawn_reconstruction_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # pip / pytest console scripts start a fresh unguarded Python interpreter.
+            "import subprocess\nsubprocess.run(['pytest', 'test_evil.py'])",
+            "import os\nos.system('pip install requests')",
+            "import os\nos.system('pytest test_evil.py')",
+            "import os\nos.system('ipython evil.py')",
+        ],
+    )
+    def test_python_launcher_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Glob metacharacters in a command NAME are expanded to a matching path before lookup.
+            "import os\nos.system('/bin/s? -c \"echo hi\"')",
+            "import os\nos.system('/usr/bin/touc? /tmp/x')",
+            "import os\nos.system('/bin/[bd]ash -c id')",
+        ],
+    )
+    def test_command_name_glob_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Pickle-backed loaders run a reduce payload; flag the unsafe forms.
+            "import torch\ntorch.load('m.pt', weights_only=False)",
+            "import joblib\njoblib.load('m.pkl')",
+            "from joblib import load\nload('m.pkl')",
+            "import numpy as np\nnp.load('a.npy', allow_pickle=True)",
+        ],
+    )
+    def test_pickle_backed_loaders_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # $VAR (non-HOME) / absolute PATH entries, workdir-relative git, args= without a
+            # shell child, safe loader defaults, glob in ARGUMENT position must all still pass.
+            "import os\nos.system('PATH=/opt/conda/bin:$PATH ls -la')",
+            "import os\nos.system('PATH=$CONDA_PREFIX/bin:$PATH true')",
+            "import os\nos.system('git status')",
+            "import os\nos.system('git clone https://github.com/x/y')",
+            "import os\nos.system('git -C sub log --oneline')",
+            "import subprocess\nsubprocess.run(args=['echo', 'ok'], env=custom)",
+            "import torch\ntorch.load('m.pt')",
+            "import torch\ntorch.load('m.pt', weights_only=True)",
+            "import numpy as np\nnp.load('a.npy')",
+            "import os\nos.system('ls *.py')",
+            "import os\nos.system('[ -f x ] && echo hi')",
+        ],
+    )
+    def test_round35_benign_allowed(self, code):
+        _ok(code)
