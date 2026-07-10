@@ -109,15 +109,11 @@ def _input_values(kind: str) -> torch.Tensor:
 
 
 def _leaf_copy(value: torch.Tensor, *, requires_grad: bool = True) -> torch.Tensor:
-    return value.detach().clone(memory_format = torch.preserve_format).requires_grad_(
-        requires_grad
-    )
+    return value.detach().clone(memory_format = torch.preserve_format).requires_grad_(requires_grad)
 
 
 @pytest.mark.parametrize("input_kind", ("2d", "3d", "noncontiguous"))
-def test_lora_w_matches_dense_reference_outputs_and_gradients(
-    fast_lora_module, input_kind
-):
+def test_lora_w_matches_dense_reference_outputs_and_gradients(fast_lora_module, input_kind):
     generator = torch.Generator().manual_seed(20260710)
     input_values = _input_values(input_kind)
     weight_values = torch.randn((11, 7), generator = generator)
@@ -134,15 +130,11 @@ def test_lora_w_matches_dense_reference_outputs_and_gradients(
     reference_a = _leaf_copy(lora_a_values)
     reference_b = _leaf_copy(lora_b_values)
 
-    fast_output = fast_lora_module.LoRA_W.apply(
-        fast_x, fast_weight, None, fast_a, fast_b, scale
-    )
+    fast_output = fast_lora_module.LoRA_W.apply(fast_x, fast_weight, None, fast_a, fast_b, scale)
     reference_output = F.linear(reference_x, reference_weight) + (
         F.linear(F.linear(reference_x, reference_a), reference_b) * scale
     )
-    output_gradient = torch.randn(
-        fast_output.shape, generator = generator, dtype = fast_output.dtype
-    )
+    output_gradient = torch.randn(fast_output.shape, generator = generator, dtype = fast_output.dtype)
     (fast_output * output_gradient).sum().backward()
     (reference_output * output_gradient).sum().backward()
 
@@ -168,12 +160,8 @@ class _ToyLoraLinear(torch.nn.Module):
         self._fast_forward = fast_forward
         self.base_layer = _CountingLinear(7, 11, bias = True)
         self.base_layer.weight.requires_grad_(False)
-        self.lora_A = torch.nn.ModuleDict(
-            {"default": torch.nn.Linear(7, 3, bias = False)}
-        )
-        self.lora_B = torch.nn.ModuleDict(
-            {"default": torch.nn.Linear(3, 11, bias = False)}
-        )
+        self.lora_A = torch.nn.ModuleDict({"default": torch.nn.Linear(7, 3, bias = False)})
+        self.lora_B = torch.nn.ModuleDict({"default": torch.nn.Linear(3, 11, bias = False)})
         self.lora_dropout = torch.nn.ModuleDict({"default": torch.nn.Identity()})
         self.scaling = {"default": 0.375}
         self.use_dora = {"default": False}
@@ -206,8 +194,7 @@ def _reference_lora_forward(module: _ToyLoraLinear, x: torch.Tensor) -> torch.Te
             continue
         adapted_x = module.lora_dropout[adapter](x)
         result = result + (
-            module.lora_B[adapter](module.lora_A[adapter](adapted_x))
-            * module.scaling[adapter]
+            module.lora_B[adapter](module.lora_A[adapter](adapted_x)) * module.scaling[adapter]
         )
     return result
 
@@ -285,9 +272,7 @@ def _assert_standard_fallback_matches_reference(fast_lora_module, configure):
     "configure",
     (
         pytest.param(
-            lambda module: module.lora_dropout.__setitem__(
-                "default", torch.nn.Dropout(p = 0.25)
-            ),
+            lambda module: module.lora_dropout.__setitem__("default", torch.nn.Dropout(p = 0.25)),
             id = "dropout",
         ),
         pytest.param(
@@ -337,9 +322,7 @@ def test_adapter_names_delegate_to_mixed_batch_forward(fast_lora_module):
     result = module(values, adapter_names = ["default"] * values.shape[0])
 
     assert module.base_layer.forward_calls == 1
-    assert module.mixed_batch_calls == [
-        (("default",) * values.shape[0], (), {})
-    ]
+    assert module.mixed_batch_calls == [(("default",) * values.shape[0], (), {})]
     torch.testing.assert_close(
         result, F.linear(values, module.base_layer.weight, module.base_layer.bias) + 17.0
     )

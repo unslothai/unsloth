@@ -682,7 +682,9 @@ def fast_lora_forward_st(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor
 
             dropout = self.lora_dropout[active_adapter]
             lora_bias = getattr(self, "lora_bias", None)
-            has_lora_bias = bool(lora_bias.get(active_adapter, False)) if hasattr(lora_bias, "get") else False
+            has_lora_bias = (
+                bool(lora_bias.get(active_adapter, False)) if hasattr(lora_bias, "get") else False
+            )
             activation_fake_quantizer = getattr(
                 self.base_layer,
                 "activation_fake_quantizer",

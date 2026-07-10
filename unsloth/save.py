@@ -2696,15 +2696,16 @@ def _sentence_transformer_transformer_dir(save_directory, transformer_path):
     return transformer_dir
 
 
-def _gguf_source_directory(save_directory, original_path, prefer_save_directory = False):
+def _gguf_source_directory(
+    save_directory,
+    original_path,
+    prefer_save_directory = False,
+):
     """Choose the checkpoint consumed by GGUF conversion."""
-    if (
-        not prefer_save_directory
-        and original_path
-        and os.path.isdir(original_path)
-    ):
+    if not prefer_save_directory and original_path and os.path.isdir(original_path):
         return os.fspath(original_path)
     return os.fspath(save_directory)
+
 
 @_normalize_tied_weights_keys_for_save
 def unsloth_save_pretrained_gguf(
@@ -2791,9 +2792,7 @@ def unsloth_save_pretrained_gguf(
             except:
                 pass
 
-        transformer_dir = _sentence_transformer_transformer_dir(
-            save_directory, transformer_path
-        )
+        transformer_dir = _sentence_transformer_transformer_dir(save_directory, transformer_path)
 
         result = unsloth_save_pretrained_gguf(
             inner_model,

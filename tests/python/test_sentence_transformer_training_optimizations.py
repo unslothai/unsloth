@@ -72,7 +72,13 @@ def contrastive_module():
 
 
 class Transformer(torch.nn.Module):
-    def __init__(self, *, batch_norm = False, compiled = False, model_type = "bert"):
+    def __init__(
+        self,
+        *,
+        batch_norm = False,
+        compiled = False,
+        model_type = "bert",
+    ):
         super().__init__()
         self.embedding = torch.nn.Embedding(32, 4).double()
         with torch.no_grad():
@@ -82,9 +88,7 @@ class Transformer(torch.nn.Module):
             # Merely containing BatchNorm is enough to make row concatenation
             # unsafe while training, even when it is nested in an allowed module.
             self.batch_norm = torch.nn.BatchNorm1d(4).double()
-        self.auto_model = types.SimpleNamespace(
-            config = types.SimpleNamespace(model_type = model_type)
-        )
+        self.auto_model = types.SimpleNamespace(config = types.SimpleNamespace(model_type = model_type))
         if compiled:
             self.auto_model._orig_mod = object()
 
@@ -98,10 +102,9 @@ class Pooling(torch.nn.Module):
     def forward(self, features):
         result = dict(features)
         mask = features["attention_mask"].unsqueeze(-1).to(features["token_embeddings"].dtype)
-        result["sentence_embedding"] = (
-            (features["token_embeddings"] * mask).sum(dim = 1)
-            / mask.sum(dim = 1).clamp_min(1)
-        )
+        result["sentence_embedding"] = (features["token_embeddings"] * mask).sum(dim = 1) / mask.sum(
+            dim = 1
+        ).clamp_min(1)
         return result
 
 
@@ -173,12 +176,16 @@ class ToySentenceTransformer(torch.nn.Module):
 
 def _clone_features(features):
     return {
-        key: value.clone() if torch.is_tensor(value) else value
-        for key, value in features.items()
+        key: value.clone() if torch.is_tensor(value) else value for key, value in features.items()
     }
 
 
-def _feature_batch(batch_size, sequence_length, *, prompt_length = None):
+def _feature_batch(
+    batch_size,
+    sequence_length,
+    *,
+    prompt_length = None,
+):
     input_ids = torch.arange(1, batch_size * sequence_length + 1, dtype = torch.long)
     input_ids = input_ids.reshape(batch_size, sequence_length).remainder(24).add(1)
     features = {
@@ -186,9 +193,7 @@ def _feature_batch(batch_size, sequence_length, *, prompt_length = None):
         "attention_mask": torch.ones_like(input_ids),
     }
     if prompt_length is not None:
-        features["prompt_length"] = torch.full(
-            (batch_size,), prompt_length, dtype = torch.long
-        )
+        features["prompt_length"] = torch.full((batch_size,), prompt_length, dtype = torch.long)
     return features
 
 
@@ -204,8 +209,7 @@ def _assert_falls_back(contrastive_module, model, sentence_features):
 
 
 def test_combined_feature_batching_matches_separate_outputs_and_gradients_exactly(
-    contrastive_module,
-    monkeypatch,
+    contrastive_module, monkeypatch
 ):
     sentence_features = [
         {
@@ -234,9 +238,7 @@ def test_combined_feature_batching_matches_separate_outputs_and_gradients_exactl
     def unexpected_row_plan(*_args, **_kwargs):
         raise AssertionError("single-bucket concatenation must not build a row plan")
 
-    monkeypatch.setattr(
-        contrastive_module, "_prepare_bucket_row_plan", unexpected_row_plan
-    )
+    monkeypatch.setattr(contrastive_module, "_prepare_bucket_row_plan", unexpected_row_plan)
     actual = contrastive_module.encode_sentence_features(
         combined_model, [_clone_features(features) for features in sentence_features]
     )
@@ -249,7 +251,8 @@ def test_combined_feature_batching_matches_separate_outputs_and_gradients_exactl
         combined_call["input_ids"][:2, 3], torch.tensor((7, 7)), rtol = 0, atol = 0
     )
     torch.testing.assert_close(
-        combined_call["attention_mask"][:2, 3], torch.zeros(2, dtype = torch.long),
+        combined_call["attention_mask"][:2, 3],
+        torch.zeros(2, dtype = torch.long),
         rtol = 0,
         atol = 0,
     )
@@ -298,9 +301,7 @@ def test_feature_batching_falls_back_for_batch_dependent_or_custom_modules(
     )
 
 
-def test_feature_batching_uses_two_optimal_buckets_for_dissimilar_lengths(
-    contrastive_module,
-):
+def test_feature_batching_uses_two_optimal_buckets_for_dissimilar_lengths(contrastive_module):
     features = (_feature_batch(2, 2), _feature_batch(2, 8))
     model = ToySentenceTransformer()
 
@@ -309,15 +310,10 @@ def test_feature_batching_uses_two_optimal_buckets_for_dissimilar_lengths(
     )
 
     assert len(outputs) == 2
-    assert [tuple(call["input_ids"].shape) for call in model.forward_batches] == [
-        (2, 2),
-        (2, 8),
-    ]
+    assert [tuple(call["input_ids"].shape) for call in model.forward_batches] == [(2, 2), (2, 8)]
 
 
-def test_decoder_embedding_model_prefers_one_batch_within_double_padding_budget(
-    contrastive_module,
-):
+def test_decoder_embedding_model_prefers_one_batch_within_double_padding_budget(contrastive_module):
     features = (_feature_batch(2, 2), _feature_batch(2, 8))
     model = ToySentenceTransformer(model_type = "qwen3")
 
@@ -326,9 +322,7 @@ def test_decoder_embedding_model_prefers_one_batch_within_double_padding_budget(
     )
 
     assert len(outputs) == 2
-    assert [tuple(call["input_ids"].shape) for call in model.forward_batches] == [
-        (4, 8)
-    ]
+    assert [tuple(call["input_ids"].shape) for call in model.forward_batches] == [(4, 8)]
 
 
 def test_bucketed_feature_batching_restores_row_order_and_fp64_gradients_exactly(
@@ -375,9 +369,7 @@ def test_bucketed_feature_batching_restores_row_order_and_fp64_gradients_exactly
     ):
         assert actual_name == expected_name
         assert expected_parameter.grad is not None and actual_parameter.grad is not None
-        torch.testing.assert_close(
-            actual_parameter.grad, expected_parameter.grad, rtol = 0, atol = 0
-        )
+        torch.testing.assert_close(actual_parameter.grad, expected_parameter.grad, rtol = 0, atol = 0)
 
 
 def test_bucket_row_plan_reuses_indices_across_feature_keys_and_preserves_gradients(
@@ -408,9 +400,7 @@ def test_bucket_row_plan_reuses_indices_across_feature_keys_and_preserves_gradie
         rtol = 0,
         atol = 0,
     )
-    torch.testing.assert_close(
-        first_buckets[1], torch.tensor(((20, 21, 0, 0),)), rtol = 0, atol = 0
-    )
+    torch.testing.assert_close(first_buckets[1], torch.tensor(((20, 21, 0, 0),)), rtol = 0, atol = 0)
     torch.testing.assert_close(
         second_buckets[0], torch.ones((3, 2), dtype = torch.long), rtol = 0, atol = 0
     )
@@ -422,7 +412,8 @@ def test_bucket_row_plan_reuses_indices_across_feature_keys_and_preserves_gradie
     )
     gathered = contrastive_module._gather_unpadded_bucket_rows(unpadded, row_plan)
     torch.testing.assert_close(
-        gathered[0], torch.tensor((3.0, 1.0, 4.0), dtype = torch.float64),
+        gathered[0],
+        torch.tensor((3.0, 1.0, 4.0), dtype = torch.float64),
         rtol = 0,
         atol = 0,
     )
@@ -431,12 +422,14 @@ def test_bucket_row_plan_reuses_indices_across_feature_keys_and_preserves_gradie
     )
     (gathered[0] * torch.tensor((2.0, 3.0, 5.0))).sum().backward()
     torch.testing.assert_close(
-        unpadded[0].grad, torch.tensor((3.0, 0.0), dtype = torch.float64),
+        unpadded[0].grad,
+        torch.tensor((3.0, 0.0), dtype = torch.float64),
         rtol = 0,
         atol = 0,
     )
     torch.testing.assert_close(
-        unpadded[1].grad, torch.tensor((2.0, 5.0), dtype = torch.float64),
+        unpadded[1].grad,
+        torch.tensor((2.0, 5.0), dtype = torch.float64),
         rtol = 0,
         atol = 0,
     )
@@ -466,9 +459,7 @@ def test_feature_batching_materializes_generator_once(contrastive_module):
         pytest.param(torch.tensor(((1, 0, 1), (1, 1, 0))), id = "mask-hole"),
     ),
 )
-def test_feature_batching_falls_back_for_non_right_padded_masks(
-    contrastive_module, attention_mask
-):
+def test_feature_batching_falls_back_for_non_right_padded_masks(contrastive_module, attention_mask):
     features = [_feature_batch(2, 3), _feature_batch(2, 3)]
     features[0]["attention_mask"] = attention_mask
     _assert_falls_back(contrastive_module, ToySentenceTransformer(), features)
@@ -483,14 +474,10 @@ def test_feature_batching_falls_back_for_unknown_sequence_feature(contrastive_mo
 
 def test_feature_batching_falls_back_for_compiled_encoder_marker(contrastive_module):
     features = (_feature_batch(2, 4), _feature_batch(2, 4))
-    _assert_falls_back(
-        contrastive_module, ToySentenceTransformer(compiled = True), features
-    )
+    _assert_falls_back(contrastive_module, ToySentenceTransformer(compiled = True), features)
 
 
-def test_fused_contrastive_empty_batch_has_scalar_zero_and_zero_gradients(
-    contrastive_module,
-):
+def test_fused_contrastive_empty_batch_has_scalar_zero_and_zero_gradients(contrastive_module):
     anchors = torch.empty((0, 3), dtype = torch.float32, requires_grad = True)
     candidates = torch.arange(12, dtype = torch.float32).reshape(4, 3).requires_grad_()
 
@@ -515,9 +502,7 @@ def test_fused_contrastive_rejects_malformed_batch_cardinality(
     contrastive_module, anchor_count, candidate_count, message
 ):
     anchors = torch.zeros((anchor_count, 3), dtype = torch.float32, requires_grad = True)
-    candidates = torch.zeros(
-        (candidate_count, 3), dtype = torch.float32, requires_grad = True
-    )
+    candidates = torch.zeros((candidate_count, 3), dtype = torch.float32, requires_grad = True)
     with pytest.raises(ValueError, match = message):
         contrastive_module.FusedContrastiveLoss.apply(anchors, candidates, 1.0)
 
@@ -573,20 +558,25 @@ def test_unpadding_flash_dispatch_requires_cuda_half_or_bfloat16():
         if isinstance(node, ast.FunctionDef) and node.name == "_can_use_flash_attn_varlen"
     )
     namespace = {"torch": torch, "_FLASH_ATTN_VARLEN_AVAILABLE": True}
-    exec(compile(ast.Module(body = [helper], type_ignores = []), str(_SENTENCE_TRANSFORMER_PATH), "exec"), namespace)
+    exec(
+        compile(
+            ast.Module(body = [helper], type_ignores = []), str(_SENTENCE_TRANSFORMER_PATH), "exec"
+        ),
+        namespace,
+    )
     can_dispatch = namespace["_can_use_flash_attn_varlen"]
 
     assert not can_dispatch(types.SimpleNamespace(is_cuda = True, dtype = torch.float32))
     assert not can_dispatch(types.SimpleNamespace(is_cuda = False, dtype = torch.float16))
     assert can_dispatch(types.SimpleNamespace(is_cuda = True, dtype = torch.float16))
-    assert "_use_varlen = _orig_attn_impl == \"sdpa\"" in source
+    assert '_use_varlen = _orig_attn_impl == "sdpa"' in source
     assert '"deberta-v2"' in source
 
 
 def test_lora_fusion_rejects_trainable_bases_and_peft_variants():
     source = _SENTENCE_TRANSFORMER_PATH.read_text(encoding = "utf-8")
     assert 'getattr(base_weight, "requires_grad", False)' in source
-    assert 'adapter in lora_variant' in source
+    assert "adapter in lora_variant" in source
 
 
 def test_fused_qkv_cache_requires_same_self_attention_input():
@@ -597,7 +587,12 @@ def test_fused_qkv_cache_requires_same_self_attention_input():
         if isinstance(node, ast.FunctionDef) and node.name == "_same_projection_input"
     )
     namespace = {}
-    exec(compile(ast.Module(body = [helper], type_ignores = []), str(_SENTENCE_TRANSFORMER_PATH), "exec"), namespace)
+    exec(
+        compile(
+            ast.Module(body = [helper], type_ignores = []), str(_SENTENCE_TRANSFORMER_PATH), "exec"
+        ),
+        namespace,
+    )
     same_input = namespace["_same_projection_input"]
     query_states = torch.randn(2, 3, 4)
     encoder_states = query_states.clone()
@@ -614,7 +609,12 @@ def test_constructor_kwargs_are_collision_free_and_explicit_values_win():
         if isinstance(node, ast.FunctionDef) and node.name == "_merge_constructor_kwargs"
     )
     namespace = {}
-    exec(compile(ast.Module(body = [helper], type_ignores = []), str(_SENTENCE_TRANSFORMER_PATH), "exec"), namespace)
+    exec(
+        compile(
+            ast.Module(body = [helper], type_ignores = []), str(_SENTENCE_TRANSFORMER_PATH), "exec"
+        ),
+        namespace,
+    )
     merge_kwargs = namespace["_merge_constructor_kwargs"]
 
     captured = {}
@@ -628,11 +628,7 @@ def test_constructor_kwargs_are_collision_free_and_explicit_values_win():
             {"cache_folder": "warmed-cache", "revision": "pinned"},
         )
     )
-    assert captured == {
-        "cache_folder": "warmed-cache",
-        "custom_option": 7,
-        "revision": "pinned",
-    }
+    assert captured == {"cache_folder": "warmed-cache", "custom_option": 7, "revision": "pinned"}
 
 
 def test_transformers_v4_sdpa_patch_is_serialized():
@@ -657,24 +653,27 @@ def test_compile_threshold_heuristic_has_stable_boundaries():
     )
     helper.decorator_list = []
     namespace = {
-        "FastSentenceTransformer": types.SimpleNamespace(
-            ENCODER_MODEL_TYPES={"bert", "mpnet"}
-        )
+        "FastSentenceTransformer": types.SimpleNamespace(ENCODER_MODEL_TYPES = {"bert", "mpnet"})
     }
-    exec(compile(ast.Module(body = [helper], type_ignores = []), str(_SENTENCE_TRANSFORMER_PATH), "exec"), namespace)
+    exec(
+        compile(
+            ast.Module(body = [helper], type_ignores = []), str(_SENTENCE_TRANSFORMER_PATH), "exec"
+        ),
+        namespace,
+    )
     estimate = namespace["_estimate_compile_threshold"]
 
     def model(parameter_count, model_type):
-        parameter = types.SimpleNamespace(numel=lambda: parameter_count)
+        parameter = types.SimpleNamespace(numel = lambda: parameter_count)
         inner = types.SimpleNamespace(
-            parameters=lambda: iter((parameter,)),
-            config=types.SimpleNamespace(model_type=model_type),
+            parameters = lambda: iter((parameter,)),
+            config = types.SimpleNamespace(model_type = model_type),
         )
-        return [types.SimpleNamespace(auto_model=inner)]
+        return [types.SimpleNamespace(auto_model = inner)]
 
-    small = estimate(model(49_000_000, "bert"), batch_size=2, grad_accum=4, max_seq_length=512)
-    medium = estimate(model(50_000_000, "bert"), batch_size=2, grad_accum=4, max_seq_length=512)
-    long_run = estimate(model(50_000_000, "bert"), batch_size=8, grad_accum=8, max_seq_length=1024)
+    small = estimate(model(49_000_000, "bert"), batch_size = 2, grad_accum = 4, max_seq_length = 512)
+    medium = estimate(model(50_000_000, "bert"), batch_size = 2, grad_accum = 4, max_seq_length = 512)
+    long_run = estimate(model(50_000_000, "bert"), batch_size = 8, grad_accum = 8, max_seq_length = 1024)
     assert small >= 20
     assert medium >= 20
     assert long_run <= medium
@@ -714,9 +713,7 @@ def test_fused_contrastive_fp32_matches_dense_loss_and_gradients_exactly(
     contrastive_module, monkeypatch
 ):
     monkeypatch.setenv("UNSLOTH_CONTRASTIVE_CHUNK_SIZE", "2")
-    anchor_values = torch.tensor(
-        ((1.0, 0.0, 0.0, 0.0), (0.0, 2.0, 0.0, 0.0)), dtype = torch.float32
-    )
+    anchor_values = torch.tensor(((1.0, 0.0, 0.0, 0.0), (0.0, 2.0, 0.0, 0.0)), dtype = torch.float32)
     candidate_values = torch.tensor(
         (
             (0.0, 0.0, 1.0, 0.0),
@@ -731,9 +728,7 @@ def test_fused_contrastive_fp32_matches_dense_loss_and_gradients_exactly(
     dense_anchors = anchor_values.clone().requires_grad_()
     dense_candidates = candidate_values.clone().requires_grad_()
 
-    fused_loss = contrastive_module.FusedContrastiveLoss.apply(
-        fused_anchors, fused_candidates, 2.0
-    )
+    fused_loss = contrastive_module.FusedContrastiveLoss.apply(fused_anchors, fused_candidates, 2.0)
     dense_scores = (dense_anchors @ dense_candidates.t()) * 2.0
     dense_loss = F.cross_entropy(dense_scores, torch.arange(2))
     fused_loss.backward()
@@ -741,9 +736,7 @@ def test_fused_contrastive_fp32_matches_dense_loss_and_gradients_exactly(
 
     torch.testing.assert_close(fused_loss, dense_loss, rtol = 0, atol = 0)
     torch.testing.assert_close(fused_anchors.grad, dense_anchors.grad, rtol = 0, atol = 0)
-    torch.testing.assert_close(
-        fused_candidates.grad, dense_candidates.grad, rtol = 0, atol = 0
-    )
+    torch.testing.assert_close(fused_candidates.grad, dense_candidates.grad, rtol = 0, atol = 0)
     assert torch.count_nonzero(fused_anchors.grad) > 0
     assert torch.count_nonzero(fused_candidates.grad) > 0
 
@@ -802,9 +795,7 @@ def patched_pooling_class():
                 sys.modules[name] = saved
 
 
-def test_efficient_fp16_max_pooling_masks_with_negative_infinity(
-    patched_pooling_class,
-):
+def test_efficient_fp16_max_pooling_masks_with_negative_infinity(patched_pooling_class):
     pooling = patched_pooling_class()
     token_embeddings = torch.tensor(
         (
@@ -834,7 +825,8 @@ def test_efficient_fp16_max_pooling_masks_with_negative_infinity(
     sentence_embedding[0].sum().backward()
     assert token_embeddings.grad is not None
     torch.testing.assert_close(
-        token_embeddings.grad[0, 2], torch.zeros(2, dtype = torch.float16),
+        token_embeddings.grad[0, 2],
+        torch.zeros(2, dtype = torch.float16),
         rtol = 0,
         atol = 0,
     )
@@ -856,20 +848,16 @@ def test_fused_layernorm_mean_pool_cuda_matches_eager_forward_and_gradients():
     fused_layernorm = torch.nn.LayerNorm(16, device = device, dtype = torch.float16)
     eager_layernorm = copy.deepcopy(fused_layernorm)
 
-    fused_output = fused_layernorm_mean_pool(
-        fused_layernorm, fused_inputs, attention_mask
-    )
+    fused_output = fused_layernorm_mean_pool(fused_layernorm, fused_inputs, attention_mask)
     eager_tokens = eager_layernorm(eager_inputs)
-    eager_output = (
-        eager_tokens * attention_mask.unsqueeze(-1).to(eager_tokens.dtype)
-    ).sum(dim = 1) / attention_mask.sum(dim = 1, keepdim = True)
+    eager_output = (eager_tokens * attention_mask.unsqueeze(-1).to(eager_tokens.dtype)).sum(
+        dim = 1
+    ) / attention_mask.sum(dim = 1, keepdim = True)
     fused_output.float().square().mean().backward()
     eager_output.float().square().mean().backward()
 
     torch.testing.assert_close(fused_output, eager_output, rtol = 2e-3, atol = 2e-3)
-    torch.testing.assert_close(
-        fused_inputs.grad, eager_inputs.grad, rtol = 3e-3, atol = 3e-3
-    )
+    torch.testing.assert_close(fused_inputs.grad, eager_inputs.grad, rtol = 3e-3, atol = 3e-3)
     torch.testing.assert_close(
         fused_layernorm.weight.grad, eager_layernorm.weight.grad, rtol = 3e-3, atol = 3e-3
     )

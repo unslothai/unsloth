@@ -17,7 +17,9 @@ import types
 import pytest
 
 
-_SOURCE_PATH = Path(__file__).resolve().parents[2] / "unsloth" / "models" / "sentence_transformer.py"
+_SOURCE_PATH = (
+    Path(__file__).resolve().parents[2] / "unsloth" / "models" / "sentence_transformer.py"
+)
 _METHOD_NAMES = {
     "_sentence_transformer_constructor_kwargs",
     "_load_sentence_transformer_config",
@@ -67,7 +69,10 @@ def _load_contract_class():
         "os": os,
         "_CREATE_TRANSFORMER_MODULE_LOCK": threading.RLock(),
     }
-    exec(compile(ast.Module(body = [test_class], type_ignores = []), str(_SOURCE_PATH), "exec"), namespace)
+    exec(
+        compile(ast.Module(body = [test_class], type_ignores = []), str(_SOURCE_PATH), "exec"),
+        namespace,
+    )
     cls = namespace["FastSentenceTransformer"]
     # Methods in the extracted class resolve this name through their globals.
     namespace["FastSentenceTransformer"] = cls
@@ -79,7 +84,9 @@ def contract_class():
     return _load_contract_class()
 
 
-def test_local_sentence_transformer_adapter_resolves_base_model(contract_class, tmp_path, monkeypatch):
+def test_local_sentence_transformer_adapter_resolves_base_model(
+    contract_class, tmp_path, monkeypatch
+):
     cls, _namespace = contract_class
     (tmp_path / "modules.json").write_text(
         json.dumps(
@@ -198,9 +205,7 @@ def test_hub_adapter_subfolder_uses_pinned_offline_cache_contract(
     assert info["checkpoint_subfolder"] == "0_Transformer"
 
 
-def test_resolved_adapter_is_loaded_trainably_with_checkpoint_contract(
-    contract_class, monkeypatch
-):
+def test_resolved_adapter_is_loaded_trainably_with_checkpoint_contract(contract_class, monkeypatch):
     cls, _namespace = contract_class
     calls = []
     base_model = object()
@@ -301,9 +306,7 @@ def test_adapter_processor_is_restored_with_checkpoint_contract(contract_class, 
     ]
 
 
-def test_adapter_processor_falls_back_to_legacy_transformer_subfolder(
-    contract_class, monkeypatch
-):
+def test_adapter_processor_falls_back_to_legacy_transformer_subfolder(contract_class, monkeypatch):
     cls, _namespace = contract_class
     calls = []
     restored_processor = object()
@@ -365,18 +368,15 @@ def test_bare_adapter_metadata_overlays_base_sentence_transformer_config(contrac
 
 def test_peft_adapter_persists_resolved_base_revision(contract_class):
     cls, _namespace = contract_class
-    config = types.SimpleNamespace(
-        _commit_hash = "c9745ed1d9f207416be6d2e6f8de32d1f16199bf"
-    )
+    config = types.SimpleNamespace(_commit_hash = "c9745ed1d9f207416be6d2e6f8de32d1f16199bf")
 
     assert (
-        cls._base_model_revision_for_peft(config, {})
-        == "c9745ed1d9f207416be6d2e6f8de32d1f16199bf"
+        cls._base_model_revision_for_peft(config, {}) == "c9745ed1d9f207416be6d2e6f8de32d1f16199bf"
     )
     assert cls._base_model_revision_for_peft(config, {"revision": "explicit"}) == "explicit"
     assert cls._base_model_revision_for_peft(config, {"revision": None}) is None
     source = _SOURCE_PATH.read_text(encoding = "utf-8")
-    assert source.count("lora_config_kwargs[\"revision\"] = base_revision") == 2
+    assert source.count('lora_config_kwargs["revision"] = base_revision') == 2
 
 
 def test_reloaded_peft_model_is_reused_instead_of_double_wrapped(contract_class, monkeypatch):
@@ -387,7 +387,11 @@ def test_reloaded_peft_model_is_reused_instead_of_double_wrapped(contract_class,
         config = object()
         active_adapter = "default"
 
-        def set_adapter(self, adapter_name, inference_mode = True):
+        def set_adapter(
+            self,
+            adapter_name,
+            inference_mode = True,
+        ):
             events.append(("set_adapter", adapter_name, inference_mode))
 
         def train(self):
@@ -621,7 +625,11 @@ def test_transformer_module_config_processor_and_model_share_loading_contract(
     class FakeModel:
         config = types.SimpleNamespace(max_position_embeddings = 4096)
 
-        def forward(self, input_ids = None, attention_mask = None):
+        def forward(
+            self,
+            input_ids = None,
+            attention_mask = None,
+        ):
             return input_ids, attention_mask
 
     tokenizer = types.SimpleNamespace(do_lower_case = True, model_max_length = 2048)
@@ -714,10 +722,10 @@ def test_generic_processor_options_are_applied_during_pinned_load(contract_class
         "cache_dir": "custom-cache",
     }
     expected_processor_kwargs = {
-                "padding_side": "right",
-                "truncation_side": "left",
-                "model_max_length": 512,
-                **loading_contract,
+        "padding_side": "right",
+        "truncation_side": "left",
+        "model_max_length": 512,
+        **loading_contract,
     }
     assert calls == [
         ("FakeAutoConfig", "org/model", loading_contract),
@@ -725,8 +733,14 @@ def test_generic_processor_options_are_applied_during_pinned_load(contract_class
         ("FakeAutoTokenizer", "org/model", expected_processor_kwargs),
     ]
     assert inspect.getattr_static(FakeAutoConfig, "from_pretrained") is original_config_descriptor
-    assert inspect.getattr_static(FakeAutoProcessor, "from_pretrained") is original_processor_descriptor
-    assert inspect.getattr_static(FakeAutoTokenizer, "from_pretrained") is original_tokenizer_descriptor
+    assert (
+        inspect.getattr_static(FakeAutoProcessor, "from_pretrained")
+        is original_processor_descriptor
+    )
+    assert (
+        inspect.getattr_static(FakeAutoTokenizer, "from_pretrained")
+        is original_tokenizer_descriptor
+    )
 
 
 def test_qwen_prompt_config_is_pinned_and_user_values_win(contract_class, tmp_path):

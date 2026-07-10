@@ -11,22 +11,22 @@ from typing import Any
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline", type=Path, action="append", required=True)
-    parser.add_argument("--optimized", type=Path, action="append", required=True)
+    parser = argparse.ArgumentParser(description = __doc__)
+    parser.add_argument("--baseline", type = Path, action = "append", required = True)
+    parser.add_argument("--optimized", type = Path, action = "append", required = True)
     parser.add_argument(
         "--max-accuracy-drop",
-        type=float,
-        default=1 / 1024,
-        help="Allowed mean absolute accuracy drop (default: one 1024-row example).",
+        type = float,
+        default = 1 / 1024,
+        help = "Allowed mean absolute accuracy drop (default: one 1024-row example).",
     )
     parser.add_argument(
         "--max-margin-drop",
-        type=float,
-        default=1e-3,
-        help="Allowed mean cosine-margin drop.",
+        type = float,
+        default = 1e-3,
+        help = "Allowed mean cosine-margin drop.",
     )
-    parser.add_argument("--output", type=Path)
+    parser.add_argument("--output", type = Path)
     args = parser.parse_args()
     if len(args.baseline) != len(args.optimized):
         parser.error("--baseline and --optimized must be provided the same number of times")
@@ -36,13 +36,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def load(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding = "utf-8"))
 
 
 def require_equal(
-    baseline: dict[str, Any],
-    optimized: dict[str, Any],
-    path: tuple[str, ...],
+    baseline: dict[str, Any], optimized: dict[str, Any], path: tuple[str, ...]
 ) -> None:
     left: Any = baseline
     right: Any = optimized
@@ -55,9 +53,7 @@ def require_equal(
 
 
 def require_equal_if_present(
-    baseline: dict[str, Any],
-    optimized: dict[str, Any],
-    path: tuple[str, ...],
+    baseline: dict[str, Any], optimized: dict[str, Any], path: tuple[str, ...]
 ) -> None:
     left: Any = baseline
     right: Any = optimized
@@ -78,18 +74,13 @@ def require_equal_if_present(
 
 def require_optimized_fast_path(optimized: dict[str, Any], path: Path) -> None:
     model_contract = optimized["model_contract"]
-    if (
-        model_contract["fused_lora_layers"] <= 0
-        and model_contract["fused_lora_linears"] <= 0
-    ):
-        raise ValueError(
-            f"Optimized run did not activate an eager LoRA fast path: {path}"
-        )
+    if model_contract["fused_lora_layers"] <= 0 and model_contract["fused_lora_linears"] <= 0:
+        raise ValueError(f"Optimized run did not activate an eager LoRA fast path: {path}")
 
 
 def main() -> None:
     args = parse_args()
-    pairs = list(zip(args.baseline, args.optimized, strict=True))
+    pairs = list(zip(args.baseline, args.optimized, strict = True))
     rows: list[dict[str, Any]] = []
     seen_seeds: set[int] = set()
     campaign_contract: dict[str, Any] | None = None
@@ -154,15 +145,11 @@ def main() -> None:
             "dataset_selected": baseline["dataset"]["selected"],
             "target_modules": baseline["model_contract"]["target_modules"],
             "lora_config": baseline["model_contract"]["lora_config"],
-            "initial_frozen_sha256": baseline["model_contract"][
-                "initial_frozen_sha256"
-            ],
+            "initial_frozen_sha256": baseline["model_contract"]["initial_frozen_sha256"],
             "initial_frozen_values_sha256": baseline["model_contract"].get(
                 "initial_frozen_values_sha256"
             ),
-            "resolved_model_commit": baseline["model_contract"].get(
-                "resolved_model_commit"
-            ),
+            "resolved_model_commit": baseline["model_contract"].get("resolved_model_commit"),
             "eval_examples": baseline["quality"]["final"]["examples"],
         }
         if campaign_contract is None:
@@ -186,8 +173,7 @@ def main() -> None:
                 "baseline_accuracy": baseline_quality["triplet_accuracy"],
                 "optimized_accuracy": optimized_quality["triplet_accuracy"],
                 "accuracy_delta": (
-                    optimized_quality["triplet_accuracy"]
-                    - baseline_quality["triplet_accuracy"]
+                    optimized_quality["triplet_accuracy"] - baseline_quality["triplet_accuracy"]
                 ),
                 "baseline_mean_margin": baseline_quality["mean_margin"],
                 "optimized_mean_margin": optimized_quality["mean_margin"],
@@ -208,12 +194,8 @@ def main() -> None:
         "model": campaign_model,
         "campaign_contract": campaign_contract,
         "paired_runs": rows,
-        "mean_baseline_accuracy": statistics.mean(
-            row["baseline_accuracy"] for row in rows
-        ),
-        "mean_optimized_accuracy": statistics.mean(
-            row["optimized_accuracy"] for row in rows
-        ),
+        "mean_baseline_accuracy": statistics.mean(row["baseline_accuracy"] for row in rows),
+        "mean_optimized_accuracy": statistics.mean(row["optimized_accuracy"] for row in rows),
         "mean_accuracy_delta": accuracy_delta,
         "mean_margin_delta": margin_delta,
         "thresholds": {
@@ -223,11 +205,11 @@ def main() -> None:
         "checks": checks,
         "passed": all(checks.values()),
     }
-    rendered = json.dumps(result, indent=2)
+    rendered = json.dumps(result, indent = 2)
     print(rendered)
     if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered + "\n", encoding="utf-8")
+        args.output.parent.mkdir(parents = True, exist_ok = True)
+        args.output.write_text(rendered + "\n", encoding = "utf-8")
     if not result["passed"]:
         raise SystemExit(1)
 

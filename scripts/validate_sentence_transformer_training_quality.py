@@ -64,38 +64,38 @@ FeatureColumns = list[FeatureDict]
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("baseline", "optimized"), required=True)
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser = argparse.ArgumentParser(description = __doc__)
+    parser.add_argument("--mode", choices = ("baseline", "optimized"), required = True)
+    parser.add_argument("--model", default = DEFAULT_MODEL)
     parser.add_argument("--revision")
-    parser.add_argument("--seed", type=int, default=3407)
-    parser.add_argument("--steps", type=int, default=100)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--eval-batch-size", type=int)
-    parser.add_argument("--max-length", type=int, default=128)
-    parser.add_argument("--train-limit", type=int, default=FULL_TRAIN_LIMIT)
-    parser.add_argument("--eval-limit", type=int, default=FULL_EVAL_LIMIT)
-    parser.add_argument("--learning-rate", type=float, default=2e-5)
-    parser.add_argument("--weight-decay", type=float, default=0.01)
+    parser.add_argument("--seed", type = int, default = 3407)
+    parser.add_argument("--steps", type = int, default = 100)
+    parser.add_argument("--batch-size", type = int, default = 16)
+    parser.add_argument("--eval-batch-size", type = int)
+    parser.add_argument("--max-length", type = int, default = 128)
+    parser.add_argument("--train-limit", type = int, default = FULL_TRAIN_LIMIT)
+    parser.add_argument("--eval-limit", type = int, default = FULL_EVAL_LIMIT)
+    parser.add_argument("--learning-rate", type = float, default = 2e-5)
+    parser.add_argument("--weight-decay", type = float, default = 0.01)
     parser.add_argument(
         "--fused-optimizer",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use the current SentenceTransformer default fused AdamW implementation.",
+        action = argparse.BooleanOptionalAction,
+        default = True,
+        help = "Use the current SentenceTransformer default fused AdamW implementation.",
     )
     parser.add_argument(
         "--dtype",
-        choices=("float16", "bfloat16", "float32"),
-        default="bfloat16",
+        choices = ("float16", "bfloat16", "float32"),
+        default = "bfloat16",
     )
-    parser.add_argument("--offline", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--offline", action = argparse.BooleanOptionalAction, default = True)
     parser.add_argument(
         "--model-prompts",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Apply shipped query/document prompts to the corresponding columns.",
+        action = argparse.BooleanOptionalAction,
+        default = True,
+        help = "Apply shipped query/document prompts to the corresponding columns.",
     )
-    parser.add_argument("--output", type=Path)
+    parser.add_argument("--output", type = Path)
     args = parser.parse_args()
 
     if args.steps < 1:
@@ -133,9 +133,9 @@ def synchronize(device: torch.device) -> None:
 def sha256_json(value: Any) -> str:
     payload = json.dumps(
         value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+        ensure_ascii = False,
+        sort_keys = True,
+        separators = (",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
@@ -144,9 +144,9 @@ def canonical_row(row: dict[str, str]) -> bytes:
     payload = {column: row[column] for column in TEXT_COLUMNS}
     return json.dumps(
         payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+        ensure_ascii = False,
+        sort_keys = True,
+        separators = (",", ":"),
     ).encode("utf-8")
 
 
@@ -161,7 +161,7 @@ def content_digest(rows: Sequence[dict[str, str]]) -> str:
 
 def index_digest(indices: Sequence[int]) -> str:
     """Hash a compact JSON array of integer source-row indices."""
-    payload = json.dumps(list(indices), separators=(",", ":")).encode("ascii")
+    payload = json.dumps(list(indices), separators = (",", ":")).encode("ascii")
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -179,23 +179,23 @@ def load_dataset_contract(offline: bool) -> dict[str, Any]:
 
     parquet_paths = {
         split: hf_hub_download(
-            repo_id=DATASET_ID,
-            repo_type="dataset",
-            filename=f"{DATASET_CONFIG}/{split}-00000-of-00001.parquet",
-            revision=DATASET_REVISION,
-            local_files_only=offline,
+            repo_id = DATASET_ID,
+            repo_type = "dataset",
+            filename = f"{DATASET_CONFIG}/{split}-00000-of-00001.parquet",
+            revision = DATASET_REVISION,
+            local_files_only = offline,
         )
         for split in ("train", "dev")
     }
     source = {
-        split: Dataset.from_parquet(path, columns=list(TEXT_COLUMNS))
+        split: Dataset.from_parquet(path, columns = list(TEXT_COLUMNS))
         for split, path in parquet_paths.items()
     }
 
     train_indices = heapq.nsmallest(
         FULL_TRAIN_LIMIT,
         range(len(source["train"])),
-        key=lambda index: selection_rank("train", index),
+        key = lambda index: selection_rank("train", index),
     )
     full_train_rows = [source["train"][index] for index in train_indices]
     train_texts = {
@@ -207,7 +207,7 @@ def load_dataset_contract(offline: bool) -> dict[str, Any]:
     ranked_dev_indices = heapq.nsmallest(
         len(source["dev"]),
         range(len(source["dev"])),
-        key=lambda index: selection_rank("dev", index),
+        key = lambda index: selection_rank("dev", index),
     )
     for index in ranked_dev_indices:
         row = source["dev"][index]
@@ -268,9 +268,7 @@ def lora_targets(model: Any) -> list[str]:
 
 
 def load_model(
-    args: argparse.Namespace,
-    dtype: torch.dtype,
-    device: torch.device,
+    args: argparse.Namespace, dtype: torch.dtype, device: torch.device
 ) -> tuple[Any, dict[str, Any]]:
     """Load identical rank-16 feature-extraction LoRA configurations."""
     if args.mode == "baseline":
@@ -279,21 +277,21 @@ def load_model(
 
         model = SentenceTransformer(
             args.model,
-            device=str(device),
-            local_files_only=args.offline,
-            revision=args.revision,
-            model_kwargs={"dtype": dtype},
+            device = str(device),
+            local_files_only = args.offline,
+            revision = args.revision,
+            model_kwargs = {"dtype": dtype},
         )
         targets = lora_targets(model)
         lora_config = LoraConfig(
-            r=16,
-            lora_alpha=16,
-            target_modules=targets,
-            lora_dropout=0.0,
-            bias="none",
-            task_type="FEATURE_EXTRACTION",
-            use_rslora=False,
-            init_lora_weights=True,
+            r = 16,
+            lora_alpha = 16,
+            target_modules = targets,
+            lora_dropout = 0.0,
+            bias = "none",
+            task_type = "FEATURE_EXTRACTION",
+            use_rslora = False,
+            init_lora_weights = True,
         )
         seed_everything(args.seed)
         peft_model = get_peft_model(model[0].auto_model, lora_config)
@@ -312,26 +310,26 @@ def load_model(
 
         model = FastSentenceTransformer.from_pretrained(
             args.model,
-            max_seq_length=args.max_length,
-            dtype=dtype,
-            load_in_16bit=True,
-            device_map=str(device),
-            revision=args.revision,
-            local_files_only=args.offline,
+            max_seq_length = args.max_length,
+            dtype = dtype,
+            load_in_16bit = True,
+            device_map = str(device),
+            revision = args.revision,
+            local_files_only = args.offline,
         )
         targets = lora_targets(model)
         seed_everything(args.seed)
         model = FastSentenceTransformer.get_peft_model(
             model,
-            r=16,
-            lora_alpha=16,
-            lora_dropout=0.0,
-            bias="none",
-            target_modules=targets,
-            use_gradient_checkpointing=False,
-            random_state=args.seed,
-            use_rslora=False,
-            init_lora_weights=True,
+            r = 16,
+            lora_alpha = 16,
+            lora_dropout = 0.0,
+            bias = "none",
+            target_modules = targets,
+            use_gradient_checkpointing = False,
+            random_state = args.seed,
+            use_rslora = False,
+            init_lora_weights = True,
         )
 
         # The quality gate intentionally exercises the eager optimized path.
@@ -376,9 +374,9 @@ def reference_tokenizer(model_name: str, revision: str | None, offline: bool) ->
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
-        revision=revision,
-        local_files_only=offline,
-        trust_remote_code=True,
+        revision = revision,
+        local_files_only = offline,
+        trust_remote_code = True,
     )
     tokenizer.padding_side = "right"
     if tokenizer.pad_token_id is None:
@@ -391,10 +389,7 @@ def reference_tokenizer(model_name: str, revision: str | None, offline: bool) ->
 
 
 def model_prompt_contract(
-    model_name: str,
-    revision: str | None,
-    offline: bool,
-    enabled: bool,
+    model_name: str, revision: str | None, offline: bool, enabled: bool
 ) -> dict[str, Any]:
     """Load the pinned SentenceTransformer prompt config used by both modes."""
     if not enabled:
@@ -414,13 +409,12 @@ def model_prompt_contract(
     else:
         try:
             from huggingface_hub import hf_hub_download
-
             config_path = Path(
                 hf_hub_download(
-                    repo_id=model_name,
-                    filename="config_sentence_transformers.json",
-                    revision=revision,
-                    local_files_only=offline,
+                    repo_id = model_name,
+                    filename = "config_sentence_transformers.json",
+                    revision = revision,
+                    local_files_only = offline,
                 )
             )
         except Exception:
@@ -428,7 +422,7 @@ def model_prompt_contract(
 
     config: dict[str, Any] = {}
     if config_path is not None:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config = json.loads(config_path.read_text(encoding = "utf-8"))
     prompts = config.get("prompts", {}) or {}
     query = str(prompts.get("query", "") or "")
     document = ""
@@ -449,18 +443,15 @@ def model_prompt_contract(
 
 
 def build_training_schedule(
-    source_indices: Sequence[int],
-    steps: int,
-    batch_size: int,
-    seed: int,
+    source_indices: Sequence[int], steps: int, batch_size: int, seed: int
 ) -> list[list[int]]:
     """Return source-row index batches using an isolated deterministic RNG."""
-    generator = torch.Generator(device="cpu")
+    generator = torch.Generator(device = "cpu")
     generator.manual_seed(seed)
     schedule: list[list[int]] = []
     usable = len(source_indices) - (len(source_indices) % batch_size)
     while len(schedule) < steps:
-        permutation = torch.randperm(len(source_indices), generator=generator).tolist()
+        permutation = torch.randperm(len(source_indices), generator = generator).tolist()
         for offset in range(0, usable, batch_size):
             positions = permutation[offset : offset + batch_size]
             schedule.append([source_indices[position] for position in positions])
@@ -470,20 +461,17 @@ def build_training_schedule(
 
 
 def tokenize_rows(
-    tokenizer: Any,
-    rows: Sequence[dict[str, str]],
-    max_length: int,
-    prompts: dict[str, Any],
+    tokenizer: Any, rows: Sequence[dict[str, str]], max_length: int, prompts: dict[str, Any]
 ) -> FeatureColumns:
     columns: FeatureColumns = []
     for column_index, column in enumerate(TEXT_COLUMNS):
         prefix = prompts["query"] if column_index == 0 else prompts["document"]
         features = tokenizer(
             [prefix + row[column] for row in rows],
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            return_tensors="pt",
+            padding = True,
+            truncation = True,
+            max_length = max_length,
+            return_tensors = "pt",
         )
         columns.append(dict(features))
     return columns
@@ -611,8 +599,7 @@ def snapshot_parameters(
 
 
 def parameter_delta(
-    named_parameters: Sequence[tuple[str, torch.nn.Parameter]],
-    initial: dict[str, torch.Tensor],
+    named_parameters: Sequence[tuple[str, torch.nn.Parameter]], initial: dict[str, torch.Tensor]
 ) -> dict[str, float]:
     delta_squared = 0.0
     initial_squared = 0.0
@@ -635,9 +622,7 @@ def parameter_delta(
 
 
 def evaluate_triplets(
-    model: Any,
-    batches: Sequence[FeatureColumns],
-    device: torch.device,
+    model: Any, batches: Sequence[FeatureColumns], device: torch.device
 ) -> dict[str, float | int]:
     was_training = model.training
     model.eval()
@@ -652,10 +637,10 @@ def evaluate_triplets(
             for cpu_features in cpu_columns:
                 features = move_features(cpu_features, device)
                 embedding = model(features)["sentence_embedding"].float()
-                embeddings.append(torch.nn.functional.normalize(embedding, dim=-1))
+                embeddings.append(torch.nn.functional.normalize(embedding, dim = -1))
             anchor, positive, negative = embeddings
-            positive_cosine = (anchor * positive).sum(dim=-1)
-            negative_cosine = (anchor * negative).sum(dim=-1)
+            positive_cosine = (anchor * positive).sum(dim = -1)
+            negative_cosine = (anchor * negative).sum(dim = -1)
             margin = positive_cosine - negative_cosine
             correct += int((margin > 0).sum())
             examples += int(margin.numel())
@@ -734,7 +719,7 @@ def main() -> None:
         args.batch_size,
         args.seed,
     )
-    train_rows_by_index = dict(zip(train_indices, train_rows, strict=True))
+    train_rows_by_index = dict(zip(train_indices, train_rows, strict = True))
     tokenization_start = time.perf_counter()
     training_batches = prepare_batches(
         tokenizer,
@@ -747,7 +732,7 @@ def main() -> None:
         eval_indices[offset : offset + eval_batch_size]
         for offset in range(0, len(eval_indices), eval_batch_size)
     ]
-    eval_rows_by_index = dict(zip(eval_indices, eval_rows, strict=True))
+    eval_rows_by_index = dict(zip(eval_indices, eval_rows, strict = True))
     eval_batches = prepare_batches(
         tokenizer,
         eval_rows_by_index,
@@ -769,8 +754,7 @@ def main() -> None:
             plan = _bucketed_sentence_features(model, columns)
             bucket_counts.append(len(plan[0]) if plan is not None else len(columns))
         bucket_histogram = {
-            str(count): occurrences
-            for count, occurrences in sorted(Counter(bucket_counts).items())
+            str(count): occurrences for count, occurrences in sorted(Counter(bucket_counts).items())
         }
 
     all_named = list(model.named_parameters())
@@ -797,13 +781,13 @@ def main() -> None:
         MultipleNegativesRankingLoss,
     )
 
-    loss_module = MultipleNegativesRankingLoss(model=model)
+    loss_module = MultipleNegativesRankingLoss(model = model)
     fused_optimizer = args.fused_optimizer
     optimizer = torch.optim.AdamW(
         trainable_parameters,
-        lr=args.learning_rate,
-        weight_decay=args.weight_decay,
-        fused=fused_optimizer,
+        lr = args.learning_rate,
+        weight_decay = args.weight_decay,
+        fused = fused_optimizer,
     )
     checkpoints = checkpoint_labels(args.steps)
     checkpoint_results: list[dict[str, Any]] = []
@@ -815,10 +799,10 @@ def main() -> None:
     model.train()
     synchronize(device)
     training_start = time.perf_counter()
-    for step, cpu_columns in enumerate(training_batches, start=1):
-        optimizer.zero_grad(set_to_none=True)
+    for step, cpu_columns in enumerate(training_batches, start = 1):
+        optimizer.zero_grad(set_to_none = True)
         columns = [move_features(features, device) for features in cpu_columns]
-        loss = loss_module(columns, labels=None)
+        loss = loss_module(columns, labels = None)
         if not bool(torch.isfinite(loss)):
             raise FloatingPointError(f"Non-finite loss at step {step}: {float(loss)}")
         loss.backward()
@@ -926,9 +910,7 @@ def main() -> None:
             "final_trainable_sha256": final_trainable_sha256,
             "final_frozen_sha256": final_frozen_sha256,
             "final_frozen_values_sha256": final_frozen_values_sha256,
-            "frozen_parameters_unchanged": (
-                final_frozen_sha256 == initial_frozen_sha256
-            ),
+            "frozen_parameters_unchanged": (final_frozen_sha256 == initial_frozen_sha256),
             "fused_lora_layers": runtime["fused_lora_layers"],
             "fused_lora_linears": runtime["fused_lora_linears"],
         },
@@ -966,11 +948,11 @@ def main() -> None:
             "wall_seconds": total_seconds,
         },
     }
-    rendered = json.dumps(result, indent=2)
+    rendered = json.dumps(result, indent = 2)
     print(rendered)
     if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered + "\n", encoding="utf-8")
+        args.output.parent.mkdir(parents = True, exist_ok = True)
+        args.output.write_text(rendered + "\n", encoding = "utf-8")
 
 
 if __name__ == "__main__":

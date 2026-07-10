@@ -42,43 +42,43 @@ WORDS = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("baseline", "optimized"), required=True)
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--mode", choices = ("baseline", "optimized"), required = True)
+    parser.add_argument("--model", default = DEFAULT_MODEL)
     parser.add_argument("--revision")
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--max-length", type=int, default=128)
-    parser.add_argument("--warmup-steps", type=int, default=5)
-    parser.add_argument("--steps", type=int, default=20)
-    parser.add_argument("--seed", type=int, default=3407)
-    parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--compile-mode", default="default")
-    parser.add_argument("--dtype", choices=("float16", "bfloat16", "float32"), default="bfloat16")
-    parser.add_argument("--dropout", type=float)
+    parser.add_argument("--batch-size", type = int, default = 64)
+    parser.add_argument("--max-length", type = int, default = 128)
+    parser.add_argument("--warmup-steps", type = int, default = 5)
+    parser.add_argument("--steps", type = int, default = 20)
+    parser.add_argument("--seed", type = int, default = 3407)
+    parser.add_argument("--compile", action = argparse.BooleanOptionalAction, default = False)
+    parser.add_argument("--compile-mode", default = "default")
+    parser.add_argument("--dtype", choices = ("float16", "bfloat16", "float32"), default = "bfloat16")
+    parser.add_argument("--dropout", type = float)
     parser.add_argument(
         "--fused-optimizer",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use the current SentenceTransformer default fused AdamW implementation.",
+        action = argparse.BooleanOptionalAction,
+        default = True,
+        help = "Use the current SentenceTransformer default fused AdamW implementation.",
     )
-    parser.add_argument("--hard-negative", action="store_true")
+    parser.add_argument("--hard-negative", action = "store_true")
     parser.add_argument(
         "--asymmetric-lengths",
-        action="store_true",
-        help="Use short queries with longer positive/negative documents.",
+        action = "store_true",
+        help = "Use short queries with longer positive/negative documents.",
     )
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--offline", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--output", type = Path)
+    parser.add_argument("--offline", action = argparse.BooleanOptionalAction, default = True)
     parser.add_argument(
         "--trust-remote-code",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Allow model repositories to execute custom tokenizer/model code.",
+        action = argparse.BooleanOptionalAction,
+        default = False,
+        help = "Allow model repositories to execute custom tokenizer/model code.",
     )
     parser.add_argument(
         "--model-prompts",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Apply shipped query/document prompts to synthetic columns.",
+        action = argparse.BooleanOptionalAction,
+        default = True,
+        help = "Apply shipped query/document prompts to synthetic columns.",
     )
     args = parser.parse_args()
     for name in ("batch_size", "max_length", "warmup_steps", "steps"):
@@ -124,8 +124,13 @@ def make_texts(
     return queries, positives, negatives
 
 
-def move_features(features: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
-    return {key: value.to(device) if torch.is_tensor(value) else value for key, value in features.items()}
+def move_features(
+    features: dict[str, torch.Tensor], device: torch.device
+) -> dict[str, torch.Tensor]:
+    return {
+        key: value.to(device) if torch.is_tensor(value) else value
+        for key, value in features.items()
+    }
 
 
 def reference_tokenize(
@@ -140,9 +145,9 @@ def reference_tokenize(
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
-        revision=revision,
-        local_files_only=offline,
-        trust_remote_code=trust_remote_code,
+        revision = revision,
+        local_files_only = offline,
+        trust_remote_code = trust_remote_code,
     )
     tokenizer.padding_side = "right"
     if tokenizer.pad_token_id is None:
@@ -150,36 +155,32 @@ def reference_tokenize(
     return dict(
         tokenizer(
             texts,
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            return_tensors="pt",
+            padding = True,
+            truncation = True,
+            max_length = max_length,
+            return_tensors = "pt",
         )
     )
 
 
 def model_prompt_contract(
-    model_name: str,
-    revision: str | None,
-    offline: bool,
-    enabled: bool,
+    model_name: str, revision: str | None, offline: bool, enabled: bool
 ) -> dict[str, object]:
     config: dict[str, object] = {}
     if enabled:
         local_path = Path(model_name) / "config_sentence_transformers.json"
         try:
             if local_path.exists():
-                config = json.loads(local_path.read_text(encoding="utf-8"))
+                config = json.loads(local_path.read_text(encoding = "utf-8"))
             else:
                 from huggingface_hub import hf_hub_download
-
                 config_path = hf_hub_download(
-                    repo_id=model_name,
-                    filename="config_sentence_transformers.json",
-                    revision=revision,
-                    local_files_only=offline,
+                    repo_id = model_name,
+                    filename = "config_sentence_transformers.json",
+                    revision = revision,
+                    local_files_only = offline,
                 )
-                config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+                config = json.loads(Path(config_path).read_text(encoding = "utf-8"))
         except Exception:
             config = {}
     prompts = config.get("prompts", {}) if isinstance(config, dict) else {}
@@ -194,7 +195,7 @@ def model_prompt_contract(
         "enabled": enabled,
         "config_sha256": (
             hashlib.sha256(
-                json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                json.dumps(config, sort_keys = True, separators = (",", ":")).encode("utf-8")
             ).hexdigest()
             if config
             else None
@@ -206,6 +207,8 @@ def model_prompt_contract(
         "query_characters": len(query),
         "document_characters": len(document),
     }
+
+
 def feature_hash(*feature_sets: dict[str, torch.Tensor]) -> str:
     digest = hashlib.sha256()
     for features in feature_sets:
@@ -221,9 +224,7 @@ def feature_hash(*feature_sets: dict[str, torch.Tensor]) -> str:
     return digest.hexdigest()
 
 
-def parameter_hashes(
-    parameters: list[tuple[str, torch.nn.Parameter]],
-) -> tuple[str, str]:
+def parameter_hashes(parameters: list[tuple[str, torch.nn.Parameter]]) -> tuple[str, str]:
     named_digest = hashlib.sha256()
     values_digest = hashlib.sha256()
     for name, parameter in parameters:
@@ -283,7 +284,12 @@ def set_dropout(model, probability: float | None) -> None:
             module.p = probability
         config = getattr(module, "config", None)
         if config is not None:
-            for name in ("attention_probs_dropout_prob", "attention_dropout", "attn_pdrop", "hidden_dropout_prob"):
+            for name in (
+                "attention_probs_dropout_prob",
+                "attention_dropout",
+                "attn_pdrop",
+                "hidden_dropout_prob",
+            ):
                 if hasattr(config, name):
                     setattr(config, name, probability)
 
@@ -308,20 +314,20 @@ def load_model(args: argparse.Namespace, dtype: torch.dtype, device: torch.devic
 
         model = SentenceTransformer(
             args.model,
-            device=str(device),
-            local_files_only=args.offline,
-            revision=args.revision,
-            trust_remote_code=args.trust_remote_code,
-            model_kwargs={"dtype": dtype},
+            device = str(device),
+            local_files_only = args.offline,
+            revision = args.revision,
+            trust_remote_code = args.trust_remote_code,
+            model_kwargs = {"dtype": dtype},
         )
         targets = lora_targets(model)
         config = LoraConfig(
-            r=16,
-            lora_alpha=16,
-            target_modules=targets,
-            lora_dropout=0.0,
-            bias="none",
-            task_type="FEATURE_EXTRACTION",
+            r = 16,
+            lora_alpha = 16,
+            target_modules = targets,
+            lora_dropout = 0.0,
+            bias = "none",
+            task_type = "FEATURE_EXTRACTION",
         )
         seed_everything(args.seed)
         peft_model = get_peft_model(model[0].auto_model, config)
@@ -335,28 +341,28 @@ def load_model(args: argparse.Namespace, dtype: torch.dtype, device: torch.devic
 
     model = FastSentenceTransformer.from_pretrained(
         args.model,
-        max_seq_length=args.max_length,
-        dtype=dtype,
-        load_in_16bit=True,
-        device_map=str(device),
-        revision=args.revision,
-        trust_remote_code=args.trust_remote_code,
-        local_files_only=args.offline,
+        max_seq_length = args.max_length,
+        dtype = dtype,
+        load_in_16bit = True,
+        device_map = str(device),
+        revision = args.revision,
+        trust_remote_code = args.trust_remote_code,
+        local_files_only = args.offline,
     )
     targets = lora_targets(model)
     seed_everything(args.seed)
     model = FastSentenceTransformer.get_peft_model(
         model,
-        r=16,
-        lora_alpha=16,
-        lora_dropout=0.0,
-        target_modules=targets,
-        use_gradient_checkpointing=False,
-        random_state=args.seed,
+        r = 16,
+        lora_alpha = 16,
+        lora_dropout = 0.0,
+        target_modules = targets,
+        use_gradient_checkpointing = False,
+        random_state = args.seed,
     )
     compiled = bool(args.compile and getattr(model, "_compile_pending", False))
     if compiled:
-        FastSentenceTransformer._apply_torch_compile(model, mode=args.compile_mode)
+        FastSentenceTransformer._apply_torch_compile(model, mode = args.compile_mode)
         model._compile_pending = False
         model._benchmark_fused_lora_layers = 0
     else:
@@ -402,7 +408,6 @@ def main() -> None:
     model.train()
     if args.mode == "optimized":
         import unsloth
-
         implementation_file = str(Path(unsloth.__file__).resolve())
     else:
         implementation_file = str(Path(sys.modules[type(model).__module__].__file__).resolve())
@@ -442,7 +447,7 @@ def main() -> None:
     inputs_hash = feature_hash(*reference_columns)
     feature_columns = [move_features(features, device) for features in reference_columns]
     features_a, features_b = feature_columns[:2]
-    loss_module = MultipleNegativesRankingLoss(model=model)
+    loss_module = MultipleNegativesRankingLoss(model = model)
     combined_feature_eligible = None
     optimized_batching_enabled = None
     encoder_buckets_per_loss = None
@@ -467,7 +472,7 @@ def main() -> None:
     initial_trainable_hash, initial_trainable_values_hash = parameter_hashes(trainable_named)
     initial_frozen_hash, initial_frozen_values_hash = parameter_hashes(frozen_named)
     fused_optimizer = args.fused_optimizer
-    optimizer = torch.optim.AdamW(trainable, lr=2e-5, fused=fused_optimizer)
+    optimizer = torch.optim.AdamW(trainable, lr = 2e-5, fused = fused_optimizer)
 
     encoder_calls = None
     if not compiled:
@@ -478,11 +483,11 @@ def main() -> None:
             encoder_calls += 1
 
         call_probe = model.register_forward_pre_hook(count_encoder_calls)
-        probe_loss = loss_module(feature_columns, labels=None)
+        probe_loss = loss_module(feature_columns, labels = None)
         synchronize(device)
         del probe_loss
         call_probe.remove()
-        optimizer.zero_grad(set_to_none=True)
+        optimizer.zero_grad(set_to_none = True)
         seed_everything(args.seed)
 
     padding_ratio = 1.0 - sum(
@@ -499,15 +504,15 @@ def main() -> None:
                 {key: value.clone() for key, value in reference_columns[1].items()}, device
             )
             embeddings_a = torch.nn.functional.normalize(
-                model(eval_a)["sentence_embedding"].float(), dim=-1
+                model(eval_a)["sentence_embedding"].float(), dim = -1
             )
             embeddings_b = torch.nn.functional.normalize(
-                model(eval_b)["sentence_embedding"].float(), dim=-1
+                model(eval_b)["sentence_embedding"].float(), dim = -1
             )
             similarities = embeddings_a @ embeddings_b.t()
-            order = similarities.argsort(dim=1, descending=True)
-            targets = torch.arange(args.batch_size, device=device).unsqueeze(1)
-            ranks = (order == targets).nonzero(as_tuple=False)[:, 1] + 1
+            order = similarities.argsort(dim = 1, descending = True)
+            targets = torch.arange(args.batch_size, device = device).unsqueeze(1)
+            ranks = (order == targets).nonzero(as_tuple = False)[:, 1] + 1
             metrics = {
                 "recall_at_1": float((ranks == 1).float().mean()),
                 "mrr": float((1.0 / ranks.float()).mean()),
@@ -519,8 +524,8 @@ def main() -> None:
     initial_pair_metrics = evaluate_pairs()
 
     def train_step() -> float:
-        optimizer.zero_grad(set_to_none=True)
-        loss = loss_module(feature_columns, labels=None)
+        optimizer.zero_grad(set_to_none = True)
+        loss = loss_module(feature_columns, labels = None)
         loss.backward()
         optimizer.step()
         return float(loss.detach())
@@ -544,7 +549,7 @@ def main() -> None:
     model.eval()
     with torch.inference_mode():
         embedding = model(features_a)["sentence_embedding"].float()
-        embedding = torch.nn.functional.normalize(embedding, dim=-1)
+        embedding = torch.nn.functional.normalize(embedding, dim = -1)
         fingerprint = embedding[:4, :16].cpu()
 
     median_step = statistics.median(step_times)
@@ -605,11 +610,11 @@ def main() -> None:
         "final_trainable_sha256": parameter_hash(trainable_named),
         "embedding_fingerprint": fingerprint.tolist(),
     }
-    rendered = json.dumps(result, indent=2)
+    rendered = json.dumps(result, indent = 2)
     print(rendered)
     if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered + "\n", encoding="utf-8")
+        args.output.parent.mkdir(parents = True, exist_ok = True)
+        args.output.write_text(rendered + "\n", encoding = "utf-8")
 
 
 if __name__ == "__main__":

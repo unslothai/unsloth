@@ -70,7 +70,10 @@ def _has_standard_batch_independent_pipeline(model):
     modules = getattr(model, "_modules", None)
     if not modules:
         return False
-    if any(module.__class__.__name__ not in _BATCH_INDEPENDENT_PIPELINE_MODULES for module in modules.values()):
+    if any(
+        module.__class__.__name__ not in _BATCH_INDEPENDENT_PIPELINE_MODULES
+        for module in modules.values()
+    ):
         return False
     # BatchNorm and SyncBatchNorm deliberately couple rows while training.  The
     # top-level allowlist catches custom SentenceTransformer modules; this nested
@@ -176,16 +179,12 @@ def _minimum_cost_length_buckets(
             start = end - 1
             if previous_costs[start] != infinity:
                 line = (-start, previous_costs[start], start)
-                while len(hull) >= 2 and middle_line_is_redundant(
-                    hull[-2], hull[-1], line
-                ):
+                while len(hull) >= 2 and middle_line_is_redundant(hull[-2], hull[-1], line):
                     hull.pop()
                 hull.append(line)
 
             length = sorted_lengths[end - 1]
-            while len(hull) >= 2 and line_value(hull[0], length) >= line_value(
-                hull[1], length
-            ):
+            while len(hull) >= 2 and line_value(hull[0], length) >= line_value(hull[1], length):
                 hull.popleft()
             best_line = hull[0]
             current_costs[end] = end * length + line_value(best_line, length)
@@ -291,16 +290,12 @@ def _prepare_bucket_row_plan(bucket_flat_indices, batch_size, column_count):
             bucket_reorders.append(None)
         else:
             grouped_positions = {
-                flat_index: position
-                for position, flat_index in enumerate(grouped_flat_indices)
+                flat_index: position for position, flat_index in enumerate(grouped_flat_indices)
             }
-            bucket_reorders.append(
-                [grouped_positions[flat_index] for flat_index in flat_indices]
-            )
+            bucket_reorders.append([grouped_positions[flat_index] for flat_index in flat_indices])
 
     identity_order = all(
-        flat_index == position
-        for position, flat_index in enumerate(processing_order)
+        flat_index == position for position, flat_index in enumerate(processing_order)
     )
     index_groups = []
 
@@ -315,8 +310,7 @@ def _prepare_bucket_row_plan(bucket_flat_indices, batch_size, column_count):
         for rows_by_column in bucket_column_rows
     )
     reorder_groups = tuple(
-        None if reorder is None else add_index(reorder)
-        for reorder in bucket_reorders
+        None if reorder is None else add_index(reorder) for reorder in bucket_reorders
     )
     index_pool = _ReusableIndexPool(index_groups)
     return {
@@ -329,8 +323,7 @@ def _prepare_bucket_row_plan(bucket_flat_indices, batch_size, column_count):
             for groups in bucket_column_groups
         ),
         "bucket_reorders": tuple(
-            None if group is None else index_pool.index(group)
-            for group in reorder_groups
+            None if group is None else index_pool.index(group) for group in reorder_groups
         ),
         "bucket_sizes": tuple(len(indices) for indices in bucket_flat_indices),
         "index_pool": index_pool,
@@ -346,7 +339,11 @@ def _gather_unpadded_bucket_rows(values, row_plan):
     return torch.split(flattened, row_plan["bucket_sizes"], dim = 0)
 
 
-def _gather_single_bucket_rows(values, sequence_length = None, pad_value = 0):
+def _gather_single_bucket_rows(
+    values,
+    sequence_length = None,
+    pad_value = 0,
+):
     """Concatenate a column-major bucket without indices or row reordering."""
     if sequence_length is None:
         return torch.cat(values, dim = 0)
@@ -369,9 +366,7 @@ def _gather_padded_bucket_rows(values, row_plan, bucket_lengths, pad_value):
     buckets = []
     for bucket_index, sequence_length in enumerate(bucket_lengths):
         pieces = []
-        for value, index in zip(
-            values, row_plan["bucket_column_indices"][bucket_index]
-        ):
+        for value, index in zip(values, row_plan["bucket_column_indices"][bucket_index]):
             if index is None:
                 continue
             piece = value.index_select(0, index.on(value.device))
@@ -404,7 +399,9 @@ def _bucketed_sentence_features(model, sentence_features):
         return None
     if not all(isinstance(features, dict) for features in sentence_features):
         return None
-    if not all("input_ids" in features and "attention_mask" in features for features in sentence_features):
+    if not all(
+        "input_ids" in features and "attention_mask" in features for features in sentence_features
+    ):
         return None
 
     keys = tuple(sentence_features[0])
@@ -508,9 +505,7 @@ def _bucketed_sentence_features(model, sentence_features):
     if len(segments) == 1:
         bucket_flat_indices = [list(range(len(flat_lengths)))]
     else:
-        bucket_flat_indices = [
-            sorted_flat_indices[start:end] for start, end in segments
-        ]
+        bucket_flat_indices = [sorted_flat_indices[start:end] for start, end in segments]
 
     if len(bucket_flat_indices) == 1:
         bucket_length = max(flat_lengths)
@@ -540,8 +535,7 @@ def _bucketed_sentence_features(model, sentence_features):
         len(sentence_features),
     )
     bucket_lengths = tuple(
-        max(flat_lengths[index] for index in flat_indices)
-        for flat_indices in bucket_flat_indices
+        max(flat_lengths[index] for index in flat_indices) for flat_indices in bucket_flat_indices
     )
     bucket_features = [{} for _ in bucket_flat_indices]
     for key in keys:
@@ -588,7 +582,6 @@ def _combined_sentence_features(model, sentence_features):
     if len(bucket_features) != 1:
         return None, None
     return bucket_features[0], batch_sizes
-
 
 
 def encode_sentence_features(model, sentence_features):
@@ -768,7 +761,6 @@ class FastMultipleNegativesRankingLoss(torch.nn.Module):
             raise ValueError("Scale must be a positive value.")
         if similarity_fct is None:
             from sentence_transformers.util import cos_sim
-
             similarity_fct = cos_sim
         self.model = model
         self.scale = scale

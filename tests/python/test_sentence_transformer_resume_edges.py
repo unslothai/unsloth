@@ -16,16 +16,16 @@ import pytest
 torch = pytest.importorskip("torch")
 F = torch.nn.functional
 
-_SOURCE_PATH = Path(__file__).resolve().parents[2] / "unsloth" / "models" / "sentence_transformer.py"
+_SOURCE_PATH = (
+    Path(__file__).resolve().parents[2] / "unsloth" / "models" / "sentence_transformer.py"
+)
 _SAVE_PATH = Path(__file__).resolve().parents[2] / "unsloth" / "save.py"
 
 
 def _source_node(name: str, node_type):
     source_tree = ast.parse(_SOURCE_PATH.read_text(encoding = "utf-8"))
     return next(
-        node
-        for node in source_tree.body
-        if isinstance(node, node_type) and node.name == name
+        node for node in source_tree.body if isinstance(node, node_type) and node.name == name
     )
 
 
@@ -176,9 +176,7 @@ def test_guided_projection_load_resolves_remote_module_with_full_hub_contract(
 
 
 def test_full_finetune_resume_unfuses_before_upstream_strict_load(monkeypatch):
-    patch_function = _source_node(
-        "_patch_st_trainer_load_from_checkpoint", ast.FunctionDef
-    )
+    patch_function = _source_node("_patch_st_trainer_load_from_checkpoint", ast.FunctionDef)
     events = []
 
     class FakeModel(list):
@@ -238,12 +236,8 @@ def test_full_finetune_resume_unfuses_before_upstream_strict_load(monkeypatch):
     assert trainer.model.fused is True
 
 
-def test_managed_peft_resume_repatches_pooling_after_module_validation_error(
-    tmp_path, monkeypatch
-):
-    patch_function = _source_node(
-        "_patch_st_trainer_load_from_checkpoint", ast.FunctionDef
-    )
+def test_managed_peft_resume_repatches_pooling_after_module_validation_error(tmp_path, monkeypatch):
+    patch_function = _source_node("_patch_st_trainer_load_from_checkpoint", ast.FunctionDef)
     events = []
 
     class FakeModel(list):
@@ -284,7 +278,10 @@ def test_managed_peft_resume_repatches_pooling_after_module_validation_error(
         "_patch_fused_pooling": patch_fused_pooling,
         "_unpatch_fused_pooling": unpatch_fused_pooling,
     }
-    exec(compile(ast.Module(body = [patch_function], type_ignores = []), str(_SOURCE_PATH), "exec"), namespace)
+    exec(
+        compile(ast.Module(body = [patch_function], type_ignores = []), str(_SOURCE_PATH), "exec"),
+        namespace,
+    )
     namespace["_patch_st_trainer_load_from_checkpoint"]()
 
     checkpoint = tmp_path / "checkpoint"
@@ -321,9 +318,7 @@ def test_sentence_transformer_gguf_module_path_stays_within_save_directory(tmp_p
         resolve(tmp_path, "../outside")
 
 
-def test_sentence_transformer_gguf_recursion_forwards_imatrix_and_root_path(
-    tmp_path,
-):
+def test_sentence_transformer_gguf_recursion_forwards_imatrix_and_root_path(tmp_path):
     source_tree = ast.parse(_SAVE_PATH.read_text(encoding = "utf-8"))
     resolver = next(
         node
@@ -362,24 +357,24 @@ def test_sentence_transformer_gguf_recursion_forwards_imatrix_and_root_path(
         tokenizer = object()
 
         def __init__(self):
-            self.inner = types.SimpleNamespace(auto_model=object())
+            self.inner = types.SimpleNamespace(auto_model = object())
 
         def __getitem__(self, index):
             assert index == 0
             return self.inner
 
         def save_pretrained(self, directory):
-            os.makedirs(directory, exist_ok=True)
+            os.makedirs(directory, exist_ok = True)
             Path(directory, "modules.json").write_text(
                 json.dumps([{"type": "sentence_transformers.models.Transformer", "path": ""}]),
-                encoding="utf-8",
+                encoding = "utf-8",
             )
 
     imatrix = tmp_path / "calibration.dat"
     outer_exporter(
         SentenceTransformer(),
-        save_directory=tmp_path / "saved",
-        imatrix_file=imatrix,
+        save_directory = tmp_path / "saved",
+        imatrix_file = imatrix,
     )
 
     assert captured[0][1]["save_directory"] == str(tmp_path / "saved")
@@ -412,9 +407,7 @@ def test_sentence_transformer_gguf_recursion_keeps_just_saved_weights():
         )
         for call in recursive_calls
     )
-    assert 'del arguments["_prefer_save_directory"]' in _SAVE_PATH.read_text(
-        encoding = "utf-8"
-    )
+    assert 'del arguments["_prefer_save_directory"]' in _SAVE_PATH.read_text(encoding = "utf-8")
 
 
 def test_gguf_source_selection_prefers_fresh_sentence_transformer_weights(tmp_path):

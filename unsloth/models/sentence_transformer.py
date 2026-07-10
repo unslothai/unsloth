@@ -239,9 +239,7 @@ class GuidedProjectionPooling(nn.Module):
                 self.projection.state_dict(),
                 os.path.join(output_path, self.PROJECTION_WEIGHTS_NAME),
             )
-            stale_safetensors_path = os.path.join(
-                output_path, self.PROJECTION_SAFETENSORS_NAME
-            )
+            stale_safetensors_path = os.path.join(output_path, self.PROJECTION_SAFETENSORS_NAME)
             if os.path.exists(stale_safetensors_path):
                 os.remove(stale_safetensors_path)
 
@@ -344,10 +342,9 @@ def attach_guided_projection(
                 existing_projection = mod.projection
                 requested_output_dim = kwargs.get("output_dim", existing_projection.output_dim)
                 requested_dim = dim if dim is not None else existing_projection.dim
-                if (
-                    int(requested_dim) != int(existing_projection.dim)
-                    or int(requested_output_dim) != int(existing_projection.output_dim)
-                ):
+                if int(requested_dim) != int(existing_projection.dim) or int(
+                    requested_output_dim
+                ) != int(existing_projection.output_dim):
                     raise ValueError(
                         "Guided projection is already attached with a different dimension."
                     )
@@ -492,9 +489,7 @@ def _has_efficient_varlen_backend(config, device, dtype):
     ):
         return True
     hidden_size = int(getattr(config, "hidden_size", 0) or getattr(config, "dim", 0) or 0)
-    num_heads = int(
-        getattr(config, "num_attention_heads", 0) or getattr(config, "n_heads", 0) or 0
-    )
+    num_heads = int(getattr(config, "num_attention_heads", 0) or getattr(config, "n_heads", 0) or 0)
     if hidden_size <= 0 or num_heads <= 0 or hidden_size % num_heads:
         return False
     return dropout == 0.0 and _torch_varlen_runtime_available(
@@ -764,9 +759,7 @@ def _patch_encoder_attention_lora(model):
 
             def k_fused(x, *args, **kwargs):
                 cached = getattr(attn_mod, "_fused_k", None)
-                same_input = _same_projection_input(
-                    getattr(attn_mod, "_fused_q_input", None), x
-                )
+                same_input = _same_projection_input(getattr(attn_mod, "_fused_q_input", None), x)
                 if (
                     cached is not None
                     and same_input
@@ -780,9 +773,7 @@ def _patch_encoder_attention_lora(model):
 
             def v_fused(x, *args, **kwargs):
                 cached = getattr(attn_mod, "_fused_v", None)
-                same_input = _same_projection_input(
-                    getattr(attn_mod, "_fused_q_input", None), x
-                )
+                same_input = _same_projection_input(getattr(attn_mod, "_fused_q_input", None), x)
                 attn_mod._fused_q_input = None
                 if (
                     cached is not None
@@ -2827,9 +2818,7 @@ class FastSentenceTransformer(FastModel):
                 with open(modules_path, encoding = "utf8") as modules_file:
                     modules = json.load(modules_file)
                 for module in modules:
-                    if FastSentenceTransformer._is_transformer_module_ref(
-                        module.get("type", "")
-                    ):
+                    if FastSentenceTransformer._is_transformer_module_ref(module.get("type", "")):
                         transformer_subfolder = str(module.get("path", "") or "")
                         break
             except (OSError, TypeError, ValueError, json.JSONDecodeError) as exception:
@@ -2870,9 +2859,7 @@ class FastSentenceTransformer(FastModel):
                 adapter_subfolder = None
             else:
                 config_filename = (
-                    f"{subfolder}/adapter_config.json"
-                    if subfolder
-                    else "adapter_config.json"
+                    f"{subfolder}/adapter_config.json" if subfolder else "adapter_config.json"
                 )
                 try:
                     config_path = hf_hub_download(
@@ -3054,16 +3041,12 @@ class FastSentenceTransformer(FastModel):
         if getattr(model, "_compile_mode", None) is None:
             fused_attn_count = _patch_encoder_attention_lora(inner_model)
             if fused_attn_count > 0:
-                print(
-                    f"Unsloth: Fused LoRA QKV backward for {fused_attn_count} attention layer(s)"
-                )
+                print(f"Unsloth: Fused LoRA QKV backward for {fused_attn_count} attention layer(s)")
         return True
 
     @staticmethod
     def _sentence_transformer_model_config_kwargs(
-        sentence_transformer_cls,
-        model_config,
-        explicit_kwargs,
+        sentence_transformer_cls, model_config, explicit_kwargs
     ):
         """Merge saved SentenceTransformer settings with explicit user values."""
         constructor_params = inspect.signature(sentence_transformer_cls.__init__).parameters
@@ -3984,11 +3967,11 @@ class FastSentenceTransformer(FastModel):
 
         if pooling_mode == "mean":
             pooling_mode = FastSentenceTransformer._read_pooling_mode(
-            model_name,
-            token,
-            revision = revision,
-            local_files_only = local_files_only,
-            cache_folder = cache_dir or cache_folder,
+                model_name,
+                token,
+                revision = revision,
+                local_files_only = local_files_only,
+                cache_folder = cache_dir or cache_folder,
             )
 
         modules["1"] = Pooling(word_embedding_dimension = hidden_size, pooling_mode = pooling_mode)
@@ -4455,9 +4438,7 @@ class FastSentenceTransformer(FastModel):
                 adapter_model_kwargs = dict(kwargs.get("model_kwargs", {}) or {})
                 adapter_config_kwargs = dict(kwargs.get("config_kwargs", {}) or {})
                 adapter_processor_kwargs = dict(kwargs.get("tokenizer_kwargs", {}) or {})
-                adapter_processor_kwargs.update(
-                    dict(kwargs.get("processor_kwargs", {}) or {})
-                )
+                adapter_processor_kwargs.update(dict(kwargs.get("processor_kwargs", {}) or {}))
                 adapter_tokenizer = FastSentenceTransformer._load_adapter_processor(
                     model_name,
                     st_model.tokenizer,
@@ -4505,14 +4486,12 @@ class FastSentenceTransformer(FastModel):
                     local_files_only = _local_files_only,
                     cache_folder = _cache_folder,
                 )
-                checkpoint_st_config = (
-                    FastSentenceTransformer._load_sentence_transformer_config(
-                        model_name,
-                        token = token,
-                        revision = revision,
-                        local_files_only = _local_files_only,
-                        cache_folder = _cache_folder,
-                    )
+                checkpoint_st_config = FastSentenceTransformer._load_sentence_transformer_config(
+                    model_name,
+                    token = token,
+                    revision = revision,
+                    local_files_only = _local_files_only,
+                    cache_folder = _cache_folder,
                 )
                 adapter_st_config = FastSentenceTransformer._merge_sentence_transformer_configs(
                     base_st_config, checkpoint_st_config
@@ -4559,8 +4538,7 @@ class FastSentenceTransformer(FastModel):
                     print(f"Unsloth: Patched {ln_count} LayerNorm modules with Triton kernel")
 
             _fused_pooling_requested = (
-                _HAS_FUSED_POOLING
-                and os.environ.get("UNSLOTH_ST_FUSED_POOLING", "0") == "1"
+                _HAS_FUSED_POOLING and os.environ.get("UNSLOTH_ST_FUSED_POOLING", "0") == "1"
             )
             if _fused_pooling_requested and use_guided_projection:
                 print(
@@ -4742,9 +4720,7 @@ class FastSentenceTransformer(FastModel):
         # underlying Transformers model load.  Keep model/config kwargs useful
         # to the base loader, and translate cache_folder to Hugging Face's
         # cache_dir spelling.
-        _st_cache_dir = kwargs.get("cache_folder") or os.environ.get(
-            "SENTENCE_TRANSFORMERS_HOME"
-        )
+        _st_cache_dir = kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME")
         if _st_cache_dir is not None and "cache_dir" not in kwargs:
             kwargs["cache_dir"] = _st_cache_dir
         _fast_model_kwargs = dict(kwargs)
@@ -4894,10 +4870,8 @@ class FastSentenceTransformer(FastModel):
         ):
             st_device = None
 
-        _st_constructor_kwargs = (
-            FastSentenceTransformer._sentence_transformer_constructor_kwargs(
-                SentenceTransformer, kwargs
-            )
+        _st_constructor_kwargs = FastSentenceTransformer._sentence_transformer_constructor_kwargs(
+            SentenceTransformer, kwargs
         )
         _checkpoint_st_model_config = FastSentenceTransformer._load_sentence_transformer_config(
             model_name,
@@ -5356,7 +5330,6 @@ class FastSentenceTransformer(FastModel):
             )
             if is_quantized:
                 from ._utils import prepare_model_for_kbit_training
-
                 inner_model = prepare_model_for_kbit_training(
                     inner_model,
                     use_gradient_checkpointing = bool(use_gradient_checkpointing),
@@ -5398,7 +5371,6 @@ class FastSentenceTransformer(FastModel):
             qat_scheme = kwargs.get("qat_scheme", None)
             if qat_scheme is not None:
                 from ._utils import _prepare_model_for_qat
-
                 peft_model = _prepare_model_for_qat(peft_model, qat_scheme)
 
             # re-assign the peft model back to the transformer module.
@@ -5414,9 +5386,7 @@ class FastSentenceTransformer(FastModel):
             model._compile_pending = False
             fused_attn_count = _patch_encoder_attention_lora(peft_model)
             if fused_attn_count > 0:
-                print(
-                    f"Unsloth: Fused LoRA QKV backward for {fused_attn_count} attention layer(s)"
-                )
+                print(f"Unsloth: Fused LoRA QKV backward for {fused_attn_count} attention layer(s)")
             return model
         else:
             return FastModel.get_peft_model(
@@ -5499,9 +5469,7 @@ def _patch_sentence_transformer_trainer():
 
             estimated_steps = max_steps
             if estimated_steps <= 0:
-                train_dataset = kwargs.get("train_dataset") or (
-                    args[2] if len(args) > 2 else None
-                )
+                train_dataset = kwargs.get("train_dataset") or (args[2] if len(args) > 2 else None)
                 try:
                     dataset_size = len(train_dataset)
                     world_size = max(1, int(getattr(training_args, "world_size", 1)))
@@ -5521,7 +5489,11 @@ def _patch_sentence_transformer_trainer():
             compile_forced = compile_policy in ("1", "true", "on")
 
             if compile_disabled:
-                reason = "disabled by UNSLOTH_ST_COMPILE" if compile_policy != "auto" else "disabled on Windows after runtime calibration"
+                reason = (
+                    "disabled by UNSLOTH_ST_COMPILE"
+                    if compile_policy != "auto"
+                    else "disabled on Windows after runtime calibration"
+                )
                 print(f"Unsloth: Skipping torch.compile ({reason})")
                 model._compile_pending = False
                 fused_count = _enable_eager_lora_fusion(model)
@@ -5720,7 +5692,9 @@ def _patch_st_trainer_load_from_checkpoint():
                 )
         finally:
             if pooling_was_fused and not _patch_fused_pooling(self.model):
-                raise RuntimeError("Unsloth: Could not restore fused pooling after checkpoint load.")
+                raise RuntimeError(
+                    "Unsloth: Could not restore fused pooling after checkpoint load."
+                )
 
     SentenceTransformerTrainer._load_from_checkpoint = _unsloth_load_from_checkpoint
     SentenceTransformerTrainer._unsloth_load_from_checkpoint_patched = True
