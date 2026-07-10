@@ -3471,10 +3471,9 @@ class UnslothTrainer:
 
             # DeepSeek OCR handles this internally in its collator, so skip
             # Audio VLM handles label masking in its collator, so skip
-            # Markers are auto-detected from the chat template first
-            # (unsloth_zoo.get_chat_template_parts); the manual template table
-            # is the fallback when auto-detection raises. gpt-oss stays on its
-            # manual markers (see apply_completion_masking).
+            # Markers auto-detected from the chat template first, manual table
+            # as fallback; gpt-oss stays on its manual markers. See
+            # apply_completion_masking.
             if (
                 train_on_responses_enabled
                 and not self.is_audio_vlm
@@ -3491,10 +3490,10 @@ class UnslothTrainer:
                     else:
                         logger.info(f"{message}\n")
 
-                # No try/except: the helper handles detection failures (table
-                # fallback) and double misses (returns applied=False) itself, so
-                # an exception here is a real failure applying the masking and
-                # must fail the run rather than silently train on full sequences.
+                # No try/except: the helper handles detection failures and
+                # double misses itself, so an exception here is a real masking
+                # failure that must fail the run, not silently train on full
+                # sequences.
                 self.trainer, masking_applied = apply_completion_masking(
                     self.trainer,
                     self.model_name,
@@ -3509,13 +3508,13 @@ class UnslothTrainer:
                 if masking_applied:
                     try:
                         # ── Safety net: check if all samples were filtered out ──
-                        # train_on_responses_only masks non-response tokens with -100;
-                        # a row becomes all -100 (and Unsloth drops it) when the response
-                        # template is not found in the formatted text. That is usually a
+                        # train_on_responses_only masks non-response tokens with -100; a
+                        # row becomes all -100 (Unsloth drops it) when the response
+                        # template is not found in the formatted text. Usually a
                         # dataset/template mismatch (already-formatted data, or 'Train on
-                        # completions' applied to data that doesn't match the model's chat
-                        # template), and only sometimes max_seq_length truncating the
-                        # response away. Skip this len()-based check for streaming.
+                        # completions' on data that doesn't match the model's chat
+                        # template); only sometimes max_seq_length truncating the response
+                        # away. Skip this len()-based check for streaming.
                         if detect_streaming_dataset(self.trainer.train_dataset):
                             logger.info("Skipping post-filter length check for streaming dataset\n")
                         else:

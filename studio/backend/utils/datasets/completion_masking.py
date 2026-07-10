@@ -66,10 +66,9 @@ def apply_completion_masking(
 
     template, instruction_part, response_part = lookup_manual_markers(model_name)
 
-    # gpt-oss keeps its manual markers: with them, non-final assistant <|end|>
-    # tokens stay trained, whereas auto-detection would mask them. Preserve
-    # the current trained behavior. Renamed/private gpt-oss checkpoints miss
-    # the exact-name table, so default them to the gpt-oss template markers.
+    # gpt-oss keeps its manual markers: they keep non-final assistant <|end|>
+    # tokens trained, which auto-detection would mask. Renamed/private gpt-oss
+    # checkpoints miss the exact-name table, so default to the gpt-oss markers.
     if is_gpt_oss_model_name(model_name):
         if not (instruction_part and response_part):
             markers = TEMPLATE_TO_RESPONSES_MAPPER.get("gpt-oss")
@@ -81,19 +80,16 @@ def apply_completion_masking(
         processor = getattr(trainer, "processing_class", None) or getattr(
             trainer, "tokenizer", None
         )
-        # mlx-lm TokenizerWrapper delegates plain reads to the wrapped HF
-        # tokenizer but hides underscore attrs, so preset _unsloth_* markers
-        # are invisible through it and detection would hinge on the loader's
-        # __call__ patch. Unwrap to the real tokenizer (as zoo's MLX resolver
-        # does) before the preset check and detection.
+        # mlx-lm TokenizerWrapper hides underscore attrs, so preset _unsloth_*
+        # markers are invisible through it. Unwrap to the real tokenizer (as
+        # zoo's MLX resolver does) before the preset check and detection.
         if type(processor).__name__ == "TokenizerWrapper":
             wrapped = getattr(processor, "_tokenizer", None)
             if wrapped is not None:
                 processor = wrapped
         inner = getattr(processor, "tokenizer", processor)
         if hasattr(inner, "_unsloth_input_part") and hasattr(inner, "_unsloth_output_part"):
-            # Markers preset on the tokenizer (e.g. by get_chat_template); zoo
-            # reuses them when called bare. Application errors propagate.
+            # Markers preset on the tokenizer; zoo reuses them on a bare call.
             trainer = train_fn(trainer, **kwargs)
             notify(
                 "info",
@@ -103,6 +99,8 @@ def apply_completion_masking(
         auto_instruction = auto_response = None
         try:
             if detect_fn is None:
+                # Torch-backed import is fine: the MLX train_fn itself requires
+                # unsloth_zoo.dataset_utils, so a torch-free host cannot mask either way.
                 from unsloth_zoo.dataset_utils import get_chat_template_parts as detect_fn
             auto_instruction, auto_response = detect_fn(processor)
         except Exception as e:

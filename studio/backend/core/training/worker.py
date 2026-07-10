@@ -1932,12 +1932,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("eval_configured")
 
     # ── 7. Apply train_on_responses_only if requested ──
-    # Auto-detect instruction/response markers from the chat template first,
-    # then fall back to the manual template table if auto-detection raises.
-    # Mirror the CUDA path's skips: raw/CPT text has no chat turns to mask and
-    # Alpaca-rendered text does not contain the tokenizer's chat markers. Check
-    # the formatter's RESOLVED format too: format_type="auto" can land on alpaca
-    # or raw text, exactly as the CUDA path gates on dataset_final_format.
+    # Auto-detect markers from the chat template first, manual table as
+    # fallback. Mirror the CUDA skips: raw/CPT text has no chat turns and
+    # Alpaca-rendered text lacks the chat markers. Also check the resolved
+    # format, since format_type="auto" can land on alpaca or raw text.
     if (
         config.get("train_on_completions", False)
         and not raw_text_mode
@@ -1945,10 +1943,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
         and dataset_final_format not in ("alpaca", "raw_text")
     ):
         _send("status", status_message = "Configuring response-only training...")
-        # No catch: detection failures fall back inside the helper and a double
-        # miss returns applied=False, so an exception here is a real failure
-        # applying the masking and must fail the run instead of silently
-        # training on full sequences.
+        # No catch: the helper handles detection failures and double misses, so
+        # an exception here is a real masking failure that must fail the run,
+        # not silently train on full sequences.
         from utils.datasets.completion_masking import apply_completion_masking
         trainer, _masking_applied = apply_completion_masking(
             trainer,

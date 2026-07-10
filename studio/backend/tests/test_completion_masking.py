@@ -65,8 +65,7 @@ class _Notes:
 
 
 def test_unmapped_model_uses_auto_detection():
-    # No entry in MODEL_TO_TEMPLATE_MAPPER: previously masking was silently
-    # disabled; now the auto path applies it.
+    # Unmapped model: the auto path applies masking (was silently disabled).
     trainer = _Trainer()
     train_fn = _Recorder()
     notes = _Notes()
@@ -94,8 +93,8 @@ def test_mapped_model_prefers_auto_detection():
 
 
 def test_gpt_oss_stays_on_manual_markers():
-    # Deliberate exception: auto-detection would mask non-final assistant
-    # <|end|> tokens that the manual markers keep trained.
+    # gpt-oss is the deliberate exception: manual markers keep non-final
+    # assistant <|end|> tokens trained that auto-detection would mask.
     trainer = _Trainer()
     train_fn = _Recorder()
 
@@ -133,8 +132,8 @@ def test_auto_failure_falls_back_to_template_table():
 
 
 def test_application_failure_propagates_not_fallback():
-    # Detection succeeds; a failure while APPLYING the masking (dataset map,
-    # tokenization) must propagate, never silently fall back to full-sequence.
+    # Detection succeeds; a failure while APPLYING the masking must propagate,
+    # never silently fall back to full-sequence training.
     def train_fn(trainer, **kwargs):
         raise RuntimeError("dataset map worker crashed")
 
@@ -143,8 +142,7 @@ def test_application_failure_propagates_not_fallback():
 
 
 def test_preset_tokenizer_markers_used_directly():
-    # A tokenizer that already carries unsloth marker attrs skips detection;
-    # zoo reuses the stored parts when called bare.
+    # Preset unsloth marker attrs skip detection; zoo reuses them on a bare call.
     class _Tok:
         _unsloth_input_part = "<I>"
         _unsloth_output_part = "<O>"
@@ -196,8 +194,7 @@ def test_num_proc_forwarded_only_when_given():
 
 
 def test_manual_fallback_failure_propagates_to_caller():
-    # Both callsites wrap the helper in try/except and disable masking with
-    # their own user-visible message.
+    # Both callsites wrap the helper in try/except and disable masking on error.
     def train_fn(trainer, **kwargs):
         raise RuntimeError("boom")
 
@@ -227,8 +224,8 @@ def test_lookup_manual_markers():
 
 
 def test_renamed_gpt_oss_gets_template_markers():
-    # Not in the exact-name table, but name-detected as gpt-oss: must use the
-    # gpt-oss template markers, not fall through to full-sequence training.
+    # Name-detected as gpt-oss but not in the exact-name table: must use the
+    # gpt-oss markers, not fall through to full-sequence training.
     trainer = _Trainer()
     train_fn = _Recorder()
 
@@ -262,8 +259,8 @@ _FakeTokenizerWrapper.__name__ = "TokenizerWrapper"
 
 
 def test_mlx_tokenizer_wrapper_unwrapped_for_preset_markers():
-    # Markers live on the inner HF tokenizer; the wrapper hides them. The
-    # helper must unwrap so the preset bare-call path still fires on MLX.
+    # Markers live on the inner HF tokenizer that the wrapper hides; the helper
+    # must unwrap so the preset bare-call path still fires on MLX.
     class _Tok:
         _unsloth_input_part = "<I>"
         _unsloth_output_part = "<O>"
