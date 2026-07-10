@@ -296,7 +296,6 @@ export const ja = {
       description: "OpenAI互換 API を介して Unsloth にアクセスします。",
       readDocs: "API ドキュメントを読む",
       noAccess: "まだ API アクセス権がありません。",
-      newBadge: "新規",
       accessTokens: "アクセストークン",
       loadError: "API アクセス権を読み込めませんでした。",
       createError: "アクセストークンを作成できませんでした。",
