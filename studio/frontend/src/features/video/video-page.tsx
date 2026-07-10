@@ -194,6 +194,10 @@ function clipMeta(video: GalleryVideo): string {
 // "Encoding video…" during export) plus an ETA once known.
 function genStepLabel(p: VideoGenerateProgress): string {
   if (p.phase === "export") return "Encoding video…";
+  // Text encoding and the first-step warmup run inside the pipeline before the first
+  // scheduler tick, so step 0 means "working, not denoising yet" -- up to a minute at
+  // 720p. Label that phase honestly instead of sitting on "Denoising step 0/N".
+  if (p.step === 0) return "Preparing (text encoding + warmup)…";
   const base = p.total > 0 ? `Denoising step ${p.step}/${p.total}` : "Denoising…";
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
   return eta ? `${base} · ~${eta}` : base;
@@ -535,6 +539,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   // Live per-step progress (phase / step / total + ETA) polled during generation.
   const [genStep, setGenStep] = useState<VideoGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // visibilitychange handler active while a generation poll runs: background tabs clamp
+  // setInterval to >=1s (and can suspend it outright after ~5 min), so returning to the
+  // tab fires one immediate poll instead of waiting for a throttled tick.
+  const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<VideoStatus | null>(null);
   // Controlled so the body-portaled overlays force-close when this page is mounted but
   // off-tab (a hidden/inert parent can't contain a body portal): the model selector.
@@ -905,6 +913,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
       if (genPollTimer.current) clearInterval(genPollTimer.current);
+      if (genVisibilityListener.current) {
+        document.removeEventListener("visibilitychange", genVisibilityListener.current);
+        genVisibilityListener.current = null;
+      }
       dismissLoadToast();
     };
   }, [refreshStatus, dismissLoadToast, pollLoadProgress]);
@@ -1125,13 +1137,25 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     }
     // Poll the backend's per-step progress so the bar tracks the live denoising steps
     // and the encode phase, and drive completion off the terminal phase: "completed"
-    // carries the saved gallery record, "failed" the client-safe error.
-    genPollTimer.current = setInterval(async () => {
+    // carries the saved gallery record, "failed" the client-safe error. A named poll
+    // body (guarded against overlap) also serves the visibilitychange listener: a
+    // background tab's throttled interval catches up the moment the tab is visible.
+    let pollInFlight = false;
+    const stopGenPoll = () => {
+      if (genPollTimer.current) clearInterval(genPollTimer.current);
+      genPollTimer.current = null;
+      if (genVisibilityListener.current) {
+        document.removeEventListener("visibilitychange", genVisibilityListener.current);
+        genVisibilityListener.current = null;
+      }
+    };
+    const pollGenerateOnce = async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
       try {
         const p = await getVideoGenerateProgress();
         if (p.phase === "completed" || p.phase === "failed") {
-          if (genPollTimer.current) clearInterval(genPollTimer.current);
-          genPollTimer.current = null;
+          stopGenPoll();
           if (!isMounted.current) return;
           setBusy(null);
           setGenStep(null);
@@ -1161,8 +1185,17 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         });
       } catch {
         // transient; keep polling
+      } finally {
+        pollInFlight = false;
       }
-    }, 300);
+    };
+    if (genVisibilityListener.current)
+      document.removeEventListener("visibilitychange", genVisibilityListener.current);
+    genVisibilityListener.current = () => {
+      if (document.visibilityState === "visible") void pollGenerateOnce();
+    };
+    document.addEventListener("visibilitychange", genVisibilityListener.current);
+    genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
   }, [
     prompt,
     negativePrompt,

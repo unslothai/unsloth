@@ -321,6 +321,10 @@ function formatTimestamp(epochSeconds: number): string {
 // Bar label for an in-flight generation: step count plus an ETA once it's known
 // (formatEta returns "" for non-positive, so the last step shows just the step).
 function genStepLabel(p: DiffusionGenerateProgress): string {
+  // Text encoding (and any first-run warmup) happens before the first scheduler
+  // tick, so step 0 means "working, not denoising yet" -- label it that way
+  // instead of sitting on "Step 0/N".
+  if (p.step === 0) return "Preparing (text encoding + warmup)…";
   const base = `Step ${p.step}/${p.total_steps}`;
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
   return eta ? `${base} · ~${eta}` : base;
@@ -1042,6 +1046,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Live per-step progress (step / total + ETA) polled during generation.
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // visibilitychange handler active while a generation poll runs: background tabs clamp
+  // setInterval to >=1s (and can suspend it outright after ~5 min), so returning to the
+  // tab fires one immediate poll instead of waiting for a throttled tick.
+  const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
   // Controlled so the body-portaled overlays force-close when this page is mounted
   // but off-tab (a hidden/inert parent can't contain a body portal): the model
@@ -1473,6 +1481,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
       if (genPollTimer.current) clearInterval(genPollTimer.current);
+      if (genVisibilityListener.current) {
+        document.removeEventListener("visibilitychange", genVisibilityListener.current);
+        genVisibilityListener.current = null;
+      }
       dismissLoadToast();
     };
   }, [refreshStatus, dismissLoadToast, pollLoadProgress]);
@@ -1831,8 +1843,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setGenDone(0);
     setGenStep(null);
     // Poll the backend's per-step progress across the whole run (all sequential
-    // generations), so the bar tracks the live denoising steps.
-    genPollTimer.current = setInterval(async () => {
+    // generations), so the bar tracks the live denoising steps. A named poll body
+    // (guarded against overlap) also serves the visibilitychange listener: a
+    // background tab's throttled interval catches up the moment the tab is visible.
+    let pollInFlight = false;
+    const pollGenerateOnce = async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
       try {
         const p = await getGenerateProgress();
         // Skip the state update (and re-render) when nothing the bar shows moved.
@@ -1843,8 +1860,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         });
       } catch {
         // transient; keep polling
+      } finally {
+        pollInFlight = false;
       }
-    }, 300);
+    };
+    if (genVisibilityListener.current)
+      document.removeEventListener("visibilitychange", genVisibilityListener.current);
+    genVisibilityListener.current = () => {
+      if (document.visibilityState === "visible") void pollGenerateOnce();
+    };
+    document.addEventListener("visibilitychange", genVisibilityListener.current);
+    genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
     try {
       for (let i = 0; i < runs; i++) {
         // The page truly unmounted mid-run (app close / chat-only eject): stop
@@ -1913,6 +1939,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;
+      if (genVisibilityListener.current) {
+        document.removeEventListener("visibilitychange", genVisibilityListener.current);
+        genVisibilityListener.current = null;
+      }
       setBusy(null);
       setGenDone(null);
       setGenStep(null);
