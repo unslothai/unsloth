@@ -849,6 +849,38 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertEqual(self.route._diffusion_guard_gpu_ids(cfg, [1]), [1])
         self.assertIsNone(self.route._diffusion_guard_gpu_ids(cfg, None))
 
+    def test_extras_drafter_overrides_config_drafter_charge(self):
+        # extras --model-draft wins last-wins at launch, so only ONE drafter is
+        # resident; charging the config-owned MTP file too would double-count
+        # and over-block a low-layer load during training.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.gguf"
+            p.write_bytes(b"x" * 1000)
+            mtp = Path(d) / "mtp-config.gguf"
+            mtp.write_bytes(b"m" * 400)
+            draft = Path(d) / "draft-extras.gguf"
+            draft.write_bytes(b"y" * 500)
+            cfg = SimpleNamespace(
+                gguf_file = str(p),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = str(mtp),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
+            ):
+                gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    llama_extra_args = ["--model-draft", str(draft)],
+                    gpu_memory_mode = "manual",
+                    gpu_layers = 0,
+                )
+        self.assertAlmostEqual(gb, 500 / (1024**3), places = 9)
+
     def test_cpu_forced_drafter_not_charged(self):
         # --spec-draft-ngl 0 keeps the drafter off the GPU (the loader's own
         # budget skips it too), so the guard must not charge it or deny an HF

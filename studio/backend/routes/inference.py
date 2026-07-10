@@ -3566,8 +3566,13 @@ def _estimate_gguf_required_gb(
         # it -- an unused drafter must not push a deliberate CPU-only load over
         # the guard floor -- and a drafter forced to CPU holds no VRAM either.
         # mmproj is mode-independent and always charged.
+        # An explicit extras/env drafter OVERRIDES the config-owned file at
+        # launch (extras win last-wins; the loader budget sizes one drafter by
+        # the same precedence), so charging both would double-count.
         charge_mtp = (
-            _spec_mode_may_emit_drafter(speculative_type, llama_extra_args) and not draft_on_cpu
+            _spec_mode_may_emit_drafter(speculative_type, llama_extra_args)
+            and not draft_on_cpu
+            and not draft_path
         )
 
         main = getattr(config, "gguf_file", None)

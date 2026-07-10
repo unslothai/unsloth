@@ -85,14 +85,16 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
 }
 
 function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
-  // XPU indices are never pinnable: they are torch-xpu ordinals, and the GGUF
-  // launcher's applicators (CUDA/HIP visibility masks, Vulkan --device with
-  // ggml's own ordinals) have no defined mapping from that space, so a pick
-  // could silently land on the wrong device. Every gate keyed on physicalIndex
-  // (picker, persisted-pick reconcile) treats XPU devices as unpinnable. The
-  // backend flavor lives on the TOP-LEVEL device_backend field (/api/system's
-  // gpu object carries only available + devices).
-  const pinnableBackend = data?.device_backend !== "xpu";
+  // Unpinnable configurations must hide every pick surface: XPU indices are
+  // torch-xpu ordinals no applicator speaks, and Vulkan-only builds pin ggml's
+  // own ordinals -- /load and /validate 400 picks on both, so the backend
+  // reports gpu.gguf_gpu_ids_supported and every gate keyed on physicalIndex
+  // (picker, persisted-pick reconcile) follows it. The device flavor lives on
+  // the TOP-LEVEL device_backend field; absent support info defaults to
+  // pinnable (older backend).
+  const pinnableBackend =
+    data?.device_backend !== "xpu" &&
+    data?.gpu?.gguf_gpu_ids_supported !== false;
   return (data?.gpu?.devices ?? [])
     .filter((d) => typeof d.index === "number")
     .map((d) => ({
