@@ -766,6 +766,44 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
         self.assertIsNone(gb)
 
+    def test_mtp_companion_skipped_when_spec_mode_never_emits_it(self):
+        # "off"/"ngram" never launch the separate drafter, so it must not count
+        # toward the estimate (an unused drafter would push a CPU-only load over
+        # the guard floor). Default/auto keeps charging it (may emit).
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.gguf"
+            p.write_bytes(b"x" * 1000)
+            mtp = Path(d) / "mtp-draft.gguf"
+            mtp.write_bytes(b"y" * 400)
+            cfg = SimpleNamespace(
+                gguf_file = str(p),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = str(mtp),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
+            ):
+                kwargs = dict(gpu_memory_mode = "manual", gpu_layers = 0)
+                off = self.route._estimate_gguf_required_gb(
+                    cfg, speculative_type = "off", **kwargs
+                )
+                ngram = self.route._estimate_gguf_required_gb(
+                    cfg, speculative_type = "ngram", **kwargs
+                )
+                auto = self.route._estimate_gguf_required_gb(cfg, **kwargs)
+                extras_own_spec = self.route._estimate_gguf_required_gb(
+                    cfg, llama_extra_args = ["--spec-type", "ngram-mod"], **kwargs
+                )
+        self.assertEqual(off, 0.0)
+        self.assertEqual(ngram, 0.0)
+        self.assertAlmostEqual(auto, 400 / (1024**3), places = 9)
+        self.assertEqual(extras_own_spec, 0.0)
+
     def test_manual_charges_companions_in_full_not_scaled_by_gpu_layers(self):
         # A companion (mmproj / separate MTP drafter) is GPU-resident regardless of
         # the main --gpu-layers, so it must not be scaled by the fraction. At

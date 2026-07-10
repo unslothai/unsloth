@@ -974,11 +974,13 @@ export function SharedComposer({
         if (isAlreadyActive) {
           return "ready";
         }
+        const targetIsGguf =
+          sel.id.toLowerCase().endsWith(".gguf") || sel.ggufVariant != null;
         // Size validation exactly as the load below, so the training-guard
         // preflight checks the footprint that actually loads (under Manual + Auto
         // layers the load sends 0 / the pinned context, not raw maxSeqLength).
         const compareMaxSeqLength = resolveFitMaxSeqLength(
-          sel.id.toLowerCase().endsWith(".gguf") || sel.ggufVariant != null,
+          targetIsGguf,
           compareLoadKnobs.gpuMemoryMode,
           compareLoadKnobs.gpuLayers,
           compareLoadKnobs.customContextLength,
@@ -993,13 +995,20 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
-          // Size the guard against the GPUs the compare load will use.
-          gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
-          // Manual offload too, so the guard credits a low gpu_layers pick and
-          // re-checks the per-GPU split the same way the compare load does.
-          gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
-          gpu_layers: compareLoadKnobs.gpuLayers,
-          tensor_split: compareLoadKnobs.splitRatio ?? undefined,
+          // Size the guard against the GPUs and manual offload the compare load
+          // will use (the guard credits a low gpu_layers pick and re-checks a
+          // per-GPU split). GGUF-only, like the load below: a non-GGUF target
+          // must not inherit a hidden GGUF GPU pick.
+          ...(targetIsGguf
+            ? {
+                gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
+                gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
+                gpu_layers: compareLoadKnobs.gpuLayers,
+                tensor_split: compareLoadKnobs.splitRatio ?? undefined,
+              }
+            : {}),
+          // Decides whether the guard charges the separate MTP drafter.
+          speculative_type: specSettings.speculativeType,
         });
         if (
           validation.requires_trust_remote_code ||
@@ -1033,12 +1042,19 @@ export function SharedComposer({
           speculative_type: specSettings.speculativeType,
           spec_draft_n_max: specSettings.specDraftNMax,
           // Honor the Tensor Parallelism + GPU Memory choices on compare loads.
+          // GGUF-only, like the auto-load path: the picker is a GGUF control,
+          // so a non-GGUF target loads via HF auto-placement instead of being
+          // pinned to a leftover GGUF pick it can't even show.
           tensor_parallel: compareLoadKnobs.tensorParallel,
-          gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
-          gpu_layers: compareLoadKnobs.gpuLayers,
-          n_cpu_moe: compareLoadKnobs.nCpuMoe,
-          tensor_split: compareLoadKnobs.splitRatio ?? undefined,
-          gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
+          ...(targetIsGguf
+            ? {
+                gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
+                gpu_layers: compareLoadKnobs.gpuLayers,
+                n_cpu_moe: compareLoadKnobs.nCpuMoe,
+                tensor_split: compareLoadKnobs.splitRatio ?? undefined,
+                gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
+              }
+            : {}),
         });
         saveSpeculativeType(specSettings.speculativeType);
         // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too,
@@ -1052,6 +1068,17 @@ export function SharedComposer({
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
+        // Keep an explicit Manual+Auto context pin the load just applied (so a
+        // later Apply/Reset doesn't silently revert the model to auto-fit
+        // sizing), mirroring the interactive path's keepCustomCtx. Non-GGUF
+        // compare loads don't send the pin, so their baseline clears.
+        const keepCustomCtx =
+          targetIsGguf &&
+          compareLoadKnobs.gpuMemoryMode === "manual" &&
+          compareLoadKnobs.gpuLayers < 0 &&
+          (compareLoadKnobs.customContextLength ?? 0) > 0
+            ? compareLoadKnobs.customContextLength
+            : null;
         useChatRuntimeStore.setState({
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
@@ -1060,6 +1087,8 @@ export function SharedComposer({
           supportsTools: resp.supports_tools ?? false,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          customContextLength: keepCustomCtx,
+          loadedCustomContextLength: keepCustomCtx,
           ...loadedGpuMemoryFields(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the
           // GPU fields on every load path so the gate can't read stale.

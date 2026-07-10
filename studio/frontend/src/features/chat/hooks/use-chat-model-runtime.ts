@@ -667,6 +667,12 @@ export function useChatModelRuntime() {
               gpu_layers: validateGpuLayers,
               tensor_split:
                 (resetsPerModelSettings ? null : loadSplitRatio) ?? undefined,
+              // Anticipate the per-model reset like the knobs above: on a
+              // switch the load sends the persisted standing preference, not
+              // the old model's session pick.
+              speculative_type: resetsPerModelSettings
+                ? readPersistedSpeculativeType()
+                : loadSpeculativeType,
             });
             // Open the consent dialog when the model needs custom-code consent or has a
             // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the

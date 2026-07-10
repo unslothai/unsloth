@@ -1423,6 +1423,8 @@ async function autoLoadSmallestModel(): Promise<{
     gpu_ids?: number[];
     gpu_memory_mode?: "auto" | "manual";
     gpu_layers?: number;
+    // Decides whether the guard charges the separate MTP drafter.
+    speculative_type?: string | null;
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
@@ -1515,6 +1517,7 @@ async function autoLoadSmallestModel(): Promise<{
               gpu_ids: effectiveGpuIds ?? undefined,
               gpu_memory_mode: effectiveGpuMemoryMode,
               gpu_layers: effectiveGpuLayers,
+              speculative_type: effectiveSpeculativeType,
             }
           : {}),
       }))
@@ -1833,6 +1836,7 @@ async function autoLoadSmallestModel(): Promise<{
           gpu_ids: rt.selectedGpuIds ?? undefined,
           gpu_memory_mode: rt.gpuMemoryMode,
           gpu_layers: rt.gpuLayers,
+          speculative_type: specSettings.speculativeType,
         }))
       ) {
         toast.dismiss(toastId);

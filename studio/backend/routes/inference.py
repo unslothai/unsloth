@@ -3376,7 +3376,7 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
 
 
 def _remote_gguf_companion_bytes(
-    repo: str, *, hf_token: Optional[str], include_mmproj: bool
+    repo: str, *, hf_token: Optional[str], include_mmproj: bool, include_mtp: bool = True
 ) -> int:
     """Bytes of MTP/mmproj companion GGUFs llama-server auto-downloads. 0 on error,
     so it can only add headroom, never refuse a load by itself."""
@@ -3393,7 +3393,7 @@ def _remote_gguf_companion_bytes(
             # Root-level mtp- only: -hf auto-fetches the repo-root drafter, not
             # the MTP/ subdir copies (which now share the mtp- prefix too).
             is_root_mtp = "/" not in name and base.startswith("mtp-")
-            if is_root_mtp or (include_mmproj and "mmproj" in base):
+            if (is_root_mtp and include_mtp) or (include_mmproj and "mmproj" in base):
                 total += getattr(sibling, "size", 0) or 0
         return total
     except Exception as e:
@@ -3431,6 +3431,21 @@ def _estimate_gguf_kv_gb(
         return 0.0
 
 
+def _spec_mode_may_emit_drafter(
+    speculative_type: Optional[str], llama_extra_args: Optional[list[str]]
+) -> bool:
+    """Whether the launch can emit the separate MTP drafter. "off", "ngram",
+    and "ngram-simple" never do, and extras that set --spec-type suppress
+    Studio's emission (a user-supplied -md is charged as an extras drafter
+    instead); anything else (auto/mtp/mtp+ngram, unknown -> auto) may."""
+    from core.inference.llama_cpp import _canonicalize_spec_mode, _extra_args_set_spec_type
+
+    if _extra_args_set_spec_type(llama_extra_args):
+        return False
+    mode = _canonicalize_spec_mode(speculative_type) or "auto"
+    return mode not in ("off", "ngram", "ngram-simple")
+
+
 def _manual_gpu_layer_fraction(gguf_path: str, gpu_layers: int) -> Optional[float]:
     """Fraction of the model pinned on the GPU under manual ``--gpu-layers``, or
     None when the layer count can't be read (caller keeps the full estimate).
@@ -3455,6 +3470,7 @@ def _estimate_gguf_required_gb(
     n_parallel: int = 1,
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
     gpu_layers: int = -1,
+    speculative_type: Optional[str] = None,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -3488,12 +3504,19 @@ def _estimate_gguf_required_gb(
             else:
                 return None
 
+        # The separate MTP drafter launches only under spec modes that can emit
+        # it -- an unused drafter must not push a deliberate CPU-only load over
+        # the guard floor. mmproj is mode-independent and always charged.
+        charge_mtp = _spec_mode_may_emit_drafter(speculative_type, llama_extra_args)
+
         main = getattr(config, "gguf_file", None)
         main_bytes = 0
         if main and Path(main).is_file():
             main_bytes = LlamaCppBackend._get_gguf_size_bytes(str(main))
         companion_bytes = 0
         for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
+            if attr == "gguf_mtp_file" and not charge_mtp:
+                continue
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
                 companion_bytes += Path(f).stat().st_size
@@ -3519,7 +3542,10 @@ def _estimate_gguf_required_gb(
             if main_bytes is None:
                 return None
             companions = _remote_gguf_companion_bytes(
-                repo, hf_token = hf_token, include_mmproj = bool(has_vision)
+                repo,
+                hf_token = hf_token,
+                include_mmproj = bool(has_vision),
+                include_mtp = charge_mtp,
             )
             main_gb = main_bytes / (1024**3)
             # A repo-id GGUF already downloaded in the HF cache is local in all but
@@ -3561,6 +3587,7 @@ def _guard_chat_load_against_training(
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
     gpu_layers: int = -1,
     tensor_split: Optional[List[float]] = None,
+    speculative_type: Optional[str] = None,
 ) -> None:
     """Refuse loading a local chat model that would OOM an active training run.
     No-op when training is inactive or unknown. `load_in_4bit` must be the
@@ -3589,6 +3616,7 @@ def _guard_chat_load_against_training(
             n_parallel = n_parallel,
             gpu_memory_mode = gpu_memory_mode,
             gpu_layers = gpu_layers,
+            speculative_type = speculative_type,
         )
         if is_gguf
         else None
@@ -3889,38 +3917,11 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 f"from adapter_config.json / base model (requested {request.load_in_4bit})"
             )
 
-        # Refuse a load that would OOM active training, before the unload step below
-        # frees the resident model. Off-loop: guard does sync nvidia-smi / HF work.
-        await asyncio.to_thread(
-            _guard_chat_load_against_training,
-            config,
-            model_identifier = model_identifier,
-            hf_token = request.hf_token,
-            load_in_4bit = effective_load_in_4bit,
-            max_seq_length = request.max_seq_length,
-            requested_gpu_ids = effective_gpu_ids,
-            llama_extra_args = extra_llama_args,
-            n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
-            gpu_memory_mode = request.gpu_memory_mode,
-            gpu_layers = request.gpu_layers,
-            tensor_split = request.tensor_split,
-        )
-
-        # ── GGUF path: load via llama-server ──────────────────────
+        # Resolve inherited extras BEFORE the training guard below, so the
+        # guard sizes the same pass-through flags (ctx override, an inherited
+        # --model-draft) the actual load will append.
         if config.is_gguf:
             llama_backend = get_llama_cpp_backend()
-            unsloth_backend = get_inference_backend()
-
-            # Unload any active Unsloth model to free VRAM (off the event loop:
-            # unload takes _gen_lock and can wait on an in-flight stream).
-            if unsloth_backend.active_model_name:
-                logger.info(
-                    f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
-                )
-                await asyncio.to_thread(
-                    unsloth_backend.unload_model, unsloth_backend.active_model_name
-                )
-
             # Inherit llama_extra_args from the previous load when the request
             # omits the field (the chat-settings Apply path doesn't round-trip
             # them; explicit [] still clears). Gated on (model_identifier,
@@ -4006,6 +4007,39 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                                 "load (same model, shadow-stripped): %s",
                                 extra_llama_args,
                             )
+
+        # Refuse a load that would OOM active training, before the unload step below
+        # frees the resident model. Off-loop: guard does sync nvidia-smi / HF work.
+        await asyncio.to_thread(
+            _guard_chat_load_against_training,
+            config,
+            model_identifier = model_identifier,
+            hf_token = request.hf_token,
+            load_in_4bit = effective_load_in_4bit,
+            max_seq_length = request.max_seq_length,
+            requested_gpu_ids = effective_gpu_ids,
+            llama_extra_args = extra_llama_args,
+            n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
+            gpu_memory_mode = request.gpu_memory_mode,
+            gpu_layers = request.gpu_layers,
+            tensor_split = request.tensor_split,
+            speculative_type = request.speculative_type,
+        )
+
+        # ── GGUF path: load via llama-server ──────────────────────
+        if config.is_gguf:
+            llama_backend = get_llama_cpp_backend()
+            unsloth_backend = get_inference_backend()
+
+            # Unload any active Unsloth model to free VRAM (off the event loop:
+            # unload takes _gen_lock and can wait on an in-flight stream).
+            if unsloth_backend.active_model_name:
+                logger.info(
+                    f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
+                )
+                await asyncio.to_thread(
+                    unsloth_backend.unload_model, unsloth_backend.active_model_name
+                )
 
             # Route to HF or local mode based on config. Run in a thread so the
             # event loop stays free for progress polling and other requests
@@ -4486,6 +4520,7 @@ async def validate_model(
             gpu_memory_mode = request.gpu_memory_mode,
             gpu_layers = request.gpu_layers,
             tensor_split = request.tensor_split,
+            speculative_type = request.speculative_type,
         )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):

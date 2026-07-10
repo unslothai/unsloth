@@ -125,6 +125,9 @@ export async function validateModel(
       gpu_memory_mode: payload.gpu_memory_mode,
       gpu_layers: payload.gpu_layers,
       tensor_split: payload.tensor_split ?? null,
+      // Decides whether the guard charges the separate MTP drafter; omitted
+      // falls back to "auto" server-side (drafter charged, the over-estimate).
+      speculative_type: payload.speculative_type ?? null,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
