@@ -55,23 +55,30 @@ T2R = model_mappings.TEMPLATE_TO_RESPONSES_MAPPER
 # ── Fixed entries: markers derived from what each representative tokenizer
 #    actually renders (see PR for the token-level derivation). ──
 EXPECTED_FIXED = {
-    "mistral":        {"instruction": "[INST]", "response": "[/INST]"},
-    "llama":          {"instruction": "[INST]", "response": "[/INST]"},
-    "starling":       {"instruction": "GPT4 Correct User:", "response": "GPT4 Correct Assistant:"},
-    "glm":            {"instruction": "<|user|>", "response": "<|assistant|>"},
+    "mistral": {"instruction": "[INST]", "response": "[/INST]"},
+    "llama": {"instruction": "[INST]", "response": "[/INST]"},
+    "starling": {"instruction": "GPT4 Correct User:", "response": "GPT4 Correct Assistant:"},
+    "glm": {"instruction": "<|user|>", "response": "<|assistant|>"},
     "qwen3-thinking": {"instruction": "<|im_start|>user\n", "response": "<|im_start|>assistant\n"},
-    "zephyr":         {"instruction": "\n<|user|>\n", "response": "\n<|assistant|>\n"},
+    "zephyr": {"instruction": "\n<|user|>\n", "response": "\n<|assistant|>\n"},
 }
 
 # Spot-pin some known-good entries so a refactor cannot silently change them.
 EXPECTED_UNCHANGED = {
-    "qwen3":     {"instruction": "<|im_start|>user\n", "response": "<|im_start|>assistant\n"},
-    "llama-3.1": {"instruction": "<|start_header_id|>user<|end_header_id|>\n\n",
-                  "response": "<|start_header_id|>assistant<|end_header_id|>\n\n"},
-    "phi-4":     {"instruction": "<|im_start|>user<|im_sep|>", "response": "<|im_start|>assistant<|im_sep|>"},
-    "gemma-3":   {"instruction": "<start_of_turn>user\n", "response": "<start_of_turn>model\n"},
-    "gpt-oss":   {"instruction": "<|start|>user<|message|>",
-                  "response": "<|start|>assistant<|channel|>final<|message|>"},
+    "qwen3": {"instruction": "<|im_start|>user\n", "response": "<|im_start|>assistant\n"},
+    "llama-3.1": {
+        "instruction": "<|start_header_id|>user<|end_header_id|>\n\n",
+        "response": "<|start_header_id|>assistant<|end_header_id|>\n\n",
+    },
+    "phi-4": {
+        "instruction": "<|im_start|>user<|im_sep|>",
+        "response": "<|im_start|>assistant<|im_sep|>",
+    },
+    "gemma-3": {"instruction": "<start_of_turn>user\n", "response": "<start_of_turn>model\n"},
+    "gpt-oss": {
+        "instruction": "<|start|>user<|message|>",
+        "response": "<|start|>assistant<|channel|>final<|message|>",
+    },
 }
 
 
@@ -95,12 +102,12 @@ def test_no_marker_is_empty_or_whitespace():
 #    rendered two-turn fixture, and the final EOS label must never be -100. ──
 
 REPRESENTATIVES = {
-    "mistral":        ["unsloth/mistral-7b-instruct-v0.3"],
-    "llama":          ["unsloth/llama-2-7b-chat"],
-    "starling":       ["unsloth/Starling-LM-7B-beta"],
-    "glm":            ["unsloth/GLM-4.7-Flash"],
+    "mistral": ["unsloth/mistral-7b-instruct-v0.3"],
+    "llama": ["unsloth/llama-2-7b-chat"],
+    "starling": ["unsloth/Starling-LM-7B-beta"],
+    "glm": ["unsloth/GLM-4.7-Flash"],
     "qwen3-thinking": ["unsloth/Qwen3-4B-Thinking-2507", "Qwen/QwQ-32B"],
-    "zephyr":         ["unsloth/zephyr-sft"],
+    "zephyr": ["unsloth/zephyr-sft"],
 }
 
 FIXTURE = [
@@ -127,15 +134,21 @@ def _load_tokenizer(repo):
             import json as _json
             from huggingface_hub import hf_hub_download
             from transformers import PreTrainedTokenizerFast
+
             cfg = _json.load(open(hf_hub_download(repo, "tokenizer_config.json")))
             tok_file = hf_hub_download(repo, "tokenizer.json")
+
             def _tokval(v):
                 return v["content"] if isinstance(v, dict) else v
+
             return PreTrainedTokenizerFast(
-                tokenizer_file=tok_file,
-                chat_template=cfg.get("chat_template"),
-                **{k: _tokval(cfg[k]) for k in ("bos_token", "eos_token", "pad_token", "unk_token")
-                   if cfg.get(k) is not None},
+                tokenizer_file = tok_file,
+                chat_template = cfg.get("chat_template"),
+                **{
+                    k: _tokval(cfg[k])
+                    for k in ("bos_token", "eos_token", "pad_token", "unk_token")
+                    if cfg.get(k) is not None
+                },
             )
         except Exception as e:
             pytest.skip(f"tokenizer {repo} unavailable (offline?): {e}")
@@ -160,12 +173,17 @@ def test_fixed_markers_token_level(template, repo):
 
     msgs = [{"role": "system", "content": "You are a terse assistant."}] + FIXTURE
     try:
-        ids = tok.apply_chat_template(msgs, tokenize=True, add_generation_prompt=False)
+        ids = tok.apply_chat_template(msgs, tokenize = True, add_generation_prompt = False)
     except Exception:
-        ids = tok.apply_chat_template(FIXTURE, tokenize=True, add_generation_prompt=False)
+        ids = tok.apply_chat_template(FIXTURE, tokenize = True, add_generation_prompt = False)
 
-    fn = tor(None, instruction_part=parts["instruction"],
-             response_part=parts["response"], tokenizer=tok, return_function=True)
+    fn = tor(
+        None,
+        instruction_part = parts["instruction"],
+        response_part = parts["response"],
+        tokenizer = tok,
+        return_function = True,
+    )
     labels = fn({"input_ids": [list(ids)]})["labels"][0]
 
     n = len(ids)
@@ -184,9 +202,7 @@ def test_fixed_markers_token_level(template, repo):
     i = n - 1
     while i > 0 and tok.decode([ids[i]]).strip() == "":
         i -= 1
-    assert labels[i] != -100, (
-        f"final token {tok.convert_ids_to_tokens(int(ids[i]))!r} is masked"
-    )
+    assert labels[i] != -100, f"final token {tok.convert_ids_to_tokens(int(ids[i]))!r} is masked"
 
 
 if __name__ == "__main__":
