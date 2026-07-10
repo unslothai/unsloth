@@ -150,9 +150,7 @@ def test_direct_start_rejected_while_queue_has_active_item(monkeypatch, _isolate
     monkeypatch.setattr(training_routes, "get_training_backend", lambda: _isolated["backend"])
 
     response = asyncio.run(
-        training_routes.start_training(
-            _request(), current_subject = "tester", via_api_key = False
-        )
+        training_routes.start_training(_request(), current_subject = "tester", via_api_key = False)
     )
 
     assert response.status == "error"
