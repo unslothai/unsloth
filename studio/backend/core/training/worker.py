@@ -1894,6 +1894,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
         eval_steps = eval_steps_val,
     )
 
+    # Also gates the masking skip below, so defined outside the feature-detect block.
+    raw_text_mode = training_type == "Continued Pretraining" or format_type == "raw"
+
     # Feature-detect optional fields so this PR works without the paired zoo bump.
     _supported_fields = getattr(MLXTrainingConfig, "__dataclass_fields__", {})
     if "cast_norm_output_to_input_dtype" in _supported_fields:
@@ -1907,7 +1910,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
     if "append_eos" in _supported_fields:
-        raw_text_mode = training_type == "Continued Pretraining" or format_type == "raw"
         # Studio SFT formatting owns rendered examples; raw/CPT text still
         # needs MLX to append EOS like the CUDA raw-text path.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
