@@ -68,7 +68,7 @@ import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { loadModel, validateModel } from "./api/chat-api";
-import { resolveFitMaxSeqLength } from "./presets/preset-policy";
+import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
@@ -995,21 +995,11 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
-          // Size the guard against the GPUs and manual offload the compare load
-          // will use (the guard credits a low gpu_layers pick and re-checks a
-          // per-GPU split). GGUF-only, like the load below: a non-GGUF target
-          // must not inherit a hidden GGUF GPU pick.
+          // Scope the validate to the picked GPUs. GGUF-only, like the load
+          // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
           ...(targetIsGguf
-            ? {
-                gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
-                gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
-                gpu_layers: compareLoadKnobs.gpuLayers,
-                tensor_split: compareLoadKnobs.splitRatio ?? undefined,
-              }
+            ? { gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined }
             : {}),
-          // Decides whether the guard charges the separate MTP drafter.
-          speculative_type: specSettings.speculativeType,
-          tensor_parallel: compareLoadKnobs.tensorParallel,
         });
         if (
           validation.requires_trust_remote_code ||
@@ -1073,13 +1063,13 @@ export function SharedComposer({
         // later Apply/Reset doesn't silently revert the model to auto-fit
         // sizing), mirroring the interactive path's keepCustomCtx. Non-GGUF
         // compare loads don't send the pin, so their baseline clears.
-        const keepCustomCtx =
-          targetIsGguf &&
-          compareLoadKnobs.gpuMemoryMode === "manual" &&
-          compareLoadKnobs.gpuLayers < 0 &&
-          (compareLoadKnobs.customContextLength ?? 0) > 0
-            ? compareLoadKnobs.customContextLength
-            : null;
+        const keepCustomCtx = targetIsGguf
+          ? resolveManualAutoCtxPin(
+              compareLoadKnobs.gpuMemoryMode,
+              compareLoadKnobs.gpuLayers,
+              compareLoadKnobs.customContextLength,
+            )
+          : null;
         useChatRuntimeStore.setState({
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,

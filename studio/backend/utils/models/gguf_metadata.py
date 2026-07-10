@@ -283,13 +283,6 @@ def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
     }
 
 
-def read_gguf_moe_layer_count(path: str) -> Optional[int]:
-    """MoE expert-layer count (the manual --n-cpu-moe ceiling), 0 for a dense
-    model, or ``None`` if unreadable. Thin accessor over read_gguf_staged_dims."""
-    dims = read_gguf_staged_dims(path)
-    return dims["moe_layer_count"] if dims else None
-
-
 # Strings (8) and arrays (9) are handled inline.
 _FIXED_VTYPE_SIZES: Dict[int, int] = {
     0: 1,  # uint8
@@ -405,64 +398,6 @@ def _read_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
         if ckey in _BOOL_CACHE:
             return _BOOL_CACHE[ckey]
     result = _parse_gguf_bool(path, wanted_key)
-    with _CACHE_LOCK:
-        while len(_BOOL_CACHE) >= _CACHE_MAX_ENTRIES:
-            try:
-                _BOOL_CACHE.pop(next(iter(_BOOL_CACHE)))
-            except StopIteration:
-                break
-        _BOOL_CACHE[ckey] = result
-    return result
-
-
-def gguf_header_has_key(path: str, wanted_key: str) -> Optional[bool]:
-    """True/False whether the GGUF header contains ``wanted_key`` (any value
-    type), or ``None`` if the file is unreadable / not a GGUF. Same single-pass
-    walk as ``_parse_gguf_bool``, cached by (path, mtime, size, key)."""
-    fkey = _cache_key(path)
-    if fkey is None:
-        return None
-    ckey = (fkey, "has:" + wanted_key)
-    with _CACHE_LOCK:
-        if ckey in _BOOL_CACHE:
-            return _BOOL_CACHE[ckey]
-    result: Optional[bool] = None
-    try:
-        with open(path, "rb") as f:
-            head = f.read(24)
-            if len(head) >= 24:
-                magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
-                if magic == _GGUF_MAGIC:
-                    result = False
-                    for _ in range(kv_count):
-                        try:
-                            klen_bytes = f.read(8)
-                            if len(klen_bytes) < 8:
-                                break
-                            klen = struct.unpack("<Q", klen_bytes)[0]
-                            if klen > 1 << 20:  # 1 MB sanity bound
-                                break
-                            kbytes = f.read(klen)
-                            if len(kbytes) < klen:
-                                break
-                            key = kbytes.decode("utf-8", "replace")
-                            vt_bytes = f.read(4)
-                            if len(vt_bytes) < 4:
-                                break
-                            vtype = struct.unpack("<I", vt_bytes)[0]
-                            if key == wanted_key:
-                                result = True
-                                break
-                            if not _skip_gguf_value(f, vtype):
-                                break
-                        except (struct.error, UnicodeDecodeError):
-                            break
-    except OSError as e:
-        logger.debug(f"gguf_header_has_key: cannot open {path}: {e}")
-        result = None
-    except Exception as e:
-        logger.debug(f"gguf_header_has_key: parse failure on {path}: {e}")
-        result = None
     with _CACHE_LOCK:
         while len(_BOOL_CACHE) >= _CACHE_MAX_ENTRIES:
             try:

@@ -15,7 +15,6 @@ from utils.models.gguf_metadata import (
     pairing_score,
     read_gguf_context_length,
     read_gguf_general_metadata,
-    read_gguf_moe_layer_count,
     read_gguf_staged_dims,
     read_mmproj_audio_capability,
 )
@@ -155,61 +154,6 @@ def test_context_length_ignores_foreign_arch_key(tmp_path: Path):
     assert read_gguf_context_length(str(p)) is None
 
 
-# --- read_gguf_moe_layer_count -----------------------------------------
-
-
-def test_moe_layer_count_none_for_missing_or_non_gguf(tmp_path: Path):
-    assert read_gguf_moe_layer_count(str(tmp_path / "nope.gguf")) is None
-    p = tmp_path / "garbage.gguf"
-    p.write_bytes(b"not a gguf file at all")
-    assert read_gguf_moe_layer_count(str(p)) is None
-
-
-def test_moe_layer_count_zero_for_dense_model(tmp_path: Path):
-    # No expert_count key -> dense -> 0 (slider hidden).
-    p = _write_synthetic_gguf(
-        tmp_path / "dense.gguf",
-        {"general.architecture": "qwen3"},
-        extra_uint32 = {"qwen3.block_count": 36},
-    )
-    assert read_gguf_moe_layer_count(str(p)) == 0
-
-
-def test_moe_layer_count_all_moe(tmp_path: Path):
-    # Experts present, no leading dense -> every block is MoE.
-    p = _write_synthetic_gguf(
-        tmp_path / "moe.gguf",
-        {"general.architecture": "qwen35moe"},
-        extra_uint32 = {"qwen35moe.block_count": 40, "qwen35moe.expert_count": 256},
-    )
-    assert read_gguf_moe_layer_count(str(p)) == 40
-
-
-def test_moe_layer_count_subtracts_leading_dense(tmp_path: Path):
-    # GLM-4.7-Flash shape (deepseek2): block_count 47, 1 leading dense -> 46.
-    p = _write_synthetic_gguf(
-        tmp_path / "glm.gguf",
-        {"general.architecture": "deepseek2"},
-        extra_uint32 = {
-            "deepseek2.block_count": 47,
-            "deepseek2.expert_count": 64,
-            "deepseek2.leading_dense_block_count": 1,
-        },
-    )
-    assert read_gguf_moe_layer_count(str(p)) == 46
-
-
-def test_moe_layer_count_uint64_block_count(tmp_path: Path):
-    # block_count stored as uint64 (vtype 10) still parses.
-    p = _write_synthetic_gguf(
-        tmp_path / "moe64.gguf",
-        {"general.architecture": "gpt-oss"},
-        extra_uint32 = {"gpt-oss.expert_count": 32},
-        extra_uint64 = {"gpt-oss.block_count": 24},
-    )
-    assert read_gguf_moe_layer_count(str(p)) == 24
-
-
 # --- read_gguf_staged_dims (one pass: context + layer + moe counts) ----
 
 
@@ -250,6 +194,35 @@ def test_staged_dims_dense_model(tmp_path: Path):
         "context_length": 40960,
         "layer_count": 36,
         "moe_layer_count": 0,
+    }
+
+
+def test_staged_dims_all_moe_no_leading_dense(tmp_path: Path):
+    # Experts present, no leading_dense key -> every block is a MoE layer.
+    p = _write_synthetic_gguf(
+        tmp_path / "moe.gguf",
+        {"general.architecture": "qwen35moe"},
+        extra_uint32 = {"qwen35moe.block_count": 40, "qwen35moe.expert_count": 256},
+    )
+    assert read_gguf_staged_dims(str(p)) == {
+        "context_length": None,
+        "layer_count": 40,
+        "moe_layer_count": 40,
+    }
+
+
+def test_staged_dims_uint64_block_count(tmp_path: Path):
+    # block_count stored as uint64 (vtype 10) still parses; moe == block_count.
+    p = _write_synthetic_gguf(
+        tmp_path / "moe64.gguf",
+        {"general.architecture": "gpt-oss"},
+        extra_uint32 = {"gpt-oss.expert_count": 32},
+        extra_uint64 = {"gpt-oss.block_count": 24},
+    )
+    assert read_gguf_staged_dims(str(p)) == {
+        "context_length": None,
+        "layer_count": 24,
+        "moe_layer_count": 24,
     }
 
 

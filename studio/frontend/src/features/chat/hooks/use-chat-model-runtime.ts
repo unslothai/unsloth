@@ -48,6 +48,7 @@ import {
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
   resolveLoadMaxSeqLength,
+  resolveManualAutoCtxPin,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
@@ -665,26 +666,6 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               gpu_ids: validateGpuIds ?? undefined,
-              // Mirror /load's manual offload so the guard credits a low
-              // gpu_layers pick (most weights on CPU), like validateGpuLayers
-              // re-baselines the layer count above. The split re-baselines the
-              // same way (the reset below nulls it), so the guard re-checks the
-              // exact per-GPU shares /load will pin.
-              gpu_memory_mode: loadGpuMemoryMode,
-              gpu_layers: validateGpuLayers,
-              tensor_split:
-                (resetsPerModelSettings ? null : loadSplitRatio) ?? undefined,
-              // Anticipate the per-model reset like the knobs above: on a
-              // switch the load sends the persisted standing preference, not
-              // the old model's session pick.
-              speculative_type: resetsPerModelSettings
-                ? readPersistedSpeculativeType()
-                : loadSpeculativeType,
-              // The same KV dtype the load below sends, so the guard sizes the
-              // heavier f32 cache identically instead of defaulting to f16.
-              cache_type_kv: loadKvCacheDtype,
-              // Same TP as the load, so the guard sizes it per device.
-              tensor_parallel: loadTensorParallel,
             });
             // Open the consent dialog when the model needs custom-code consent or has a
             // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the
@@ -864,10 +845,11 @@ export function useChatModelRuntime() {
               : null;
             // Keep an explicit Manual+Auto context pin (so a later Apply doesn't
             // revert it to Auto); other cases baseline on ggufContextLength.
-            const keepCustomCtx =
-              loadGpuMemoryMode === "manual" && loadGpuLayers < 0 && (loadCustomContextLength ?? 0) > 0
-                ? loadCustomContextLength
-                : null;
+            const keepCustomCtx = resolveManualAutoCtxPin(
+              loadGpuMemoryMode,
+              loadGpuLayers,
+              loadCustomContextLength,
+            );
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
             const supportsReasoning = loadResponse.supports_reasoning ?? false;

@@ -112,28 +112,12 @@ export async function validateModel(
       native_path_lease: payload.nativePathLease ?? null,
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
-      // Send the intended load settings so validate's VRAM check matches the
-      // follow-up /load and doesn't unload for a load /load would then reject.
+      // Intended load settings so validate's preflight matches the follow-up
+      // /load; the training-coexistence guard (unchanged from main) sizes with
+      // max_seq_length / load_in_4bit, and gpu_ids scopes it to the picked GPUs.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
-      // Size the training-coexistence guard against the GPUs /load will use, not
-      // all visible ones, so validate and load agree on placement.
       gpu_ids: payload.gpu_ids,
-      // Manual offload settings too, so the guard credits a low gpu_layers pick
-      // (most weights on CPU) and re-checks a manual per-GPU split the same way
-      // /load does.
-      gpu_memory_mode: payload.gpu_memory_mode,
-      gpu_layers: payload.gpu_layers,
-      tensor_split: payload.tensor_split ?? null,
-      // A heavier KV cache doubles the KV bytes, so size the guard the same as
-      // the follow-up /load rather than defaulting to f16 and 409-ing later.
-      cache_type_kv: payload.cache_type_kv ?? null,
-      // Tensor parallelism shards evenly per GPU; the guard sizes it per device,
-      // so send it too or validate over-sizes as a free layer split.
-      tensor_parallel: payload.tensor_parallel ?? false,
-      // Decides whether the guard charges the separate MTP drafter; omitted
-      // falls back to "auto" server-side (drafter charged, the over-estimate).
-      speculative_type: payload.speculative_type ?? null,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);

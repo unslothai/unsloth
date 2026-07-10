@@ -46,6 +46,7 @@ from core.inference.llama_server_args import (
     parse_ctx_override,
     parse_split_mode_override,
     resolve_requested_ctx,
+    resolve_tensor_parallel,
     strip_shadowing_flags,
     strip_split_mode_only,
 )
@@ -1117,19 +1118,6 @@ def _mla_mtp_auto_enabled() -> bool:
         "yes",
         "on",
     )
-
-
-def _cmd_forces_tensor_split_mode(cmd: "Iterable[str]") -> bool:
-    """True when the argv's LAST -sm/--split-mode value is "tensor" (last-wins,
-    matching llama-server's CLI parse). Non-tensor modes are inert with zero
-    offloaded layers, so only tensor forces GPU visibility."""
-    args = [str(a) for a in cmd] if cmd else []
-    last: Optional[str] = None
-    for i, raw in enumerate(args):
-        flag, eq, inline = raw.partition("=")
-        if flag in ("-sm", "--split-mode"):
-            last = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-    return (last or "").strip().lower() == "tensor"
 
 
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
@@ -6865,24 +6853,25 @@ class LlamaCppBackend:
                     # Distribute the model across GPUs by the user's per-GPU shares
                     # (--tensor-split). Works with the default layer split and with
                     # tensor parallelism; --fit off means no fit/tensor abort. Only
-                    # when >1 GPU is in use AND the list matches that count: the
+                    # emit when >1 GPU is in use AND the list matches that count: the
                     # field is hidden (not cleared) when the picker narrows to one,
-                    # and a direct caller can send a stale ratio for a different
-                    # GPU set -- either way a mismatched split aborts llama-server
-                    # at launch, so fall back to the free-VRAM default instead.
+                    # and a direct caller can send a stale ratio for a different GPU
+                    # set. A length mismatch never reaches llama.cpp: too-short (and
+                    # moderately-too-long) lists just zero-pad, concentrating on the
+                    # listed GPUs, and only a 16+ entry list past llama.cpp's device
+                    # cap aborts, so Studio drops any mismatch to the free-VRAM default.
                     _split_gpus = self._effective_gpu_count(gpu_indices)
                     if tensor_split and _split_gpus > 1:
-                        # Sanitized-positive total, mirroring the training guard:
-                        # an all-zero/non-positive split assigns nothing anywhere.
+                        # An all-zero/non-positive split assigns nothing anywhere,
+                        # so fall through to the free-VRAM default in that case.
                         try:
                             _split_total = sum(max(float(x), 0.0) for x in tensor_split)
                         except (TypeError, ValueError):
                             _split_total = 0.0
                         if len(tensor_split) == _split_gpus and _split_total > 0:
-                            # Emit the same clamped-non-negative shares the
-                            # training guard validated, so a negative entry from
-                            # a direct caller can't launch a different placement
-                            # than the one the guard approved.
+                            # Clamp negatives to 0 so a negative entry from a
+                            # direct caller can't launch a placement different
+                            # from the ratio the UI showed.
                             _sanitized_split = [max(float(x), 0.0) for x in tensor_split]
                             cmd.extend(
                                 ["--tensor-split", ",".join(f"{x:g}" for x in _sanitized_split)]
@@ -6917,6 +6906,7 @@ class LlamaCppBackend:
                     self._ctx_integrity_flags(
                         n_parallel,
                         use_fit,
+                        auto_fit,
                         requested_ctx,
                         effective_ctx,
                         server_caps,
@@ -7208,7 +7198,7 @@ class LlamaCppBackend:
                     # Only a user-forced TENSOR split keeps the GPUs visible (it
                     # aborts under zero devices); row/layer modes are inert with
                     # nothing offloaded, so they don't defeat the zero-VRAM mask.
-                    and not _cmd_forces_tensor_split_mode(cmd)
+                    and not resolve_tensor_parallel(cmd, False)
                     and not self._cmd_has_gpu_companion(cmd, env)
                 )
                 if _cpu_only_zero_offload:
@@ -8308,6 +8298,10 @@ class LlamaCppBackend:
             # Clear healthy so a /load during the replacement's warm-up can't
             # short-circuit against the previous server's health (#5401).
             self._healthy = False
+            # Reset to unknown so the training guard treats the next (still
+            # loading) server as VRAM-resident rather than reading the killed
+            # server's stale zero-offload flag until the health probe reclassifies.
+            self._gpu_offload_active = None
             # Drives _wait_for_vram_settle in the next load_model; set in finally
             # so both in-process and frontend Apply paths record the kill.
             self._last_kill_monotonic = time.monotonic()
@@ -8904,7 +8898,12 @@ class LlamaCppBackend:
 
     @staticmethod
     def _ctx_integrity_flags(
-        n_parallel: int, use_fit: bool, requested_ctx: int, effective_ctx: int, caps: dict
+        n_parallel: int,
+        use_fit: bool,
+        auto_fit: bool,
+        requested_ctx: int,
+        effective_ctx: int,
+        caps: dict,
     ) -> list[str]:
         """Flags that keep the per-request window equal to the advertised ctx.
 
@@ -8912,10 +8911,11 @@ class LlamaCppBackend:
         ``--kv-unified`` default, silently splitting ``-c`` into per-slot
         windows of ``-c / N``; restore the shared pool so one request can use
         the full context. With ``--fit on``, ``--fit-ctx`` floors the fit step
-        -- at an explicitly requested ctx, else 8192 -- so it offloads or fails
-        instead of silently shrinking the window to a tiny size, and
-        ``--fit-target`` tightens the per-device VRAM margin so the fit packs
-        more onto the GPU.
+        at an explicitly requested ctx so it offloads or fails instead of
+        silently shrinking the window. The 8192 auto-floor and the tighter
+        ``--fit-target`` margin apply only under Manual + Auto (``auto_fit``),
+        which omits ``-c``: on the legacy auto path ``-c 0`` already pins the
+        native window and ``--fit-ctx 8192`` would override it down to 8192.
         """
         flags: list[str] = []
         if n_parallel > 1 and caps.get("supports_kv_unified"):
@@ -8924,11 +8924,11 @@ class LlamaCppBackend:
             if requested_ctx > 0 and effective_ctx > 0:
                 # Floor the fit step at the explicitly requested ctx.
                 flags.extend(["--fit-ctx", str(effective_ctx)])
-            else:
-                # Auto ctx: floor at 8192 so --fit doesn't shrink the window
-                # below a usable size.
+            elif auto_fit:
+                # Manual + Auto omits -c, so floor at 8192 so --fit doesn't
+                # shrink the window below a usable size.
                 flags.extend(["--fit-ctx", "8192"])
-        if use_fit and caps.get("supports_fit_target"):
+        if use_fit and auto_fit and caps.get("supports_fit_target"):
             # llama.cpp's --fit leaves 1 GiB free per device by default;
             # tighten that to 512 MiB so it packs more of the model onto
             # the GPU before spilling to system RAM.

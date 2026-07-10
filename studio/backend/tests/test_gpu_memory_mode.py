@@ -487,30 +487,20 @@ def test_manual_allows_tensor_parallel_via_split_mode():
     assert "if tp_tensor_split and len(tp_tensor_split) > 1:" in src
 
 
-def test_fit_auto_floors_fit_ctx_at_8192():
-    # Behavior: --fit on with an auto (0) context floors --fit-ctx at 8192.
-    caps = {"supports_fit_ctx": True, "supports_kv_unified": True}
-    flags = LlamaCppBackend._ctx_integrity_flags(1, True, 0, 0, caps)
-    assert flags[flags.index("--fit-ctx") + 1] == "8192"
-    # An explicit requested context floors at that value instead.
-    explicit = LlamaCppBackend._ctx_integrity_flags(1, True, 16384, 16384, caps)
-    assert explicit[explicit.index("--fit-ctx") + 1] == "16384"
-    # No --fit-ctx when the binary lacks support.
-    assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
-        1, True, 0, 0, {"supports_fit_ctx": False}
-    )
-
-
 def test_fit_sets_target_margin():
-    # Behavior: --fit on tightens the per-device VRAM margin to 512 MiB.
+    # Behavior: Manual + Auto (auto_fit) tightens the per-device VRAM margin to
+    # 512 MiB.
     caps = {"supports_fit_target": True}
-    flags = LlamaCppBackend._ctx_integrity_flags(1, True, 0, 0, caps)
+    flags = LlamaCppBackend._ctx_integrity_flags(1, True, True, 0, 0, caps)
     assert flags[flags.index("--fit-target") + 1] == "512"
+    # Not emitted on the legacy auto path (fit on but not auto_fit): -c 0 pins
+    # native there, so the tighter margin must not ride along.
+    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, True, False, 0, 0, caps)
     # Not emitted when fit is off.
-    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, False, 0, 0, caps)
+    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, False, False, 0, 0, caps)
     # Not emitted when the binary lacks support.
     assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
-        1, True, 0, 0, {"supports_fit_target": False}
+        1, True, True, 0, 0, {"supports_fit_target": False}
     )
 
 
@@ -566,18 +556,6 @@ def test_gpu_ids_reload_detection_is_order_insensitive():
     assert _target_state_gpu_ids(backend, [0]) is False
     # Dropping the pick (auto) -> reload.
     assert _target_state_gpu_ids(backend, None) is False
-
-
-def test_gpu_picker_filters_probe_and_masks():
-    src = _load_model_source()
-    # Auto selection only considers the picked devices.
-    assert "if gpu_ids:" in src
-    assert "g for g in gpus if g[0] in _picked" in src
-    # Auto-layers / manual (gpu_indices None) get pinned to the picked set.
-    assert "if gpu_ids and gpu_indices is None:" in src
-    assert "gpu_indices = sorted(gpu_ids)" in src
-    # Picked indices follow PCI-bus order so the UI index == llama.cpp's.
-    assert 'env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"' in src
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────
@@ -721,12 +699,3 @@ def test_cmd_companion_ignores_cpu_forced_drafter():
     assert has(cmd, {}) is True
 
 
-def test_cmd_forces_tensor_split_mode_scan():
-    # Only a last-wins "tensor" value defeats the zero-VRAM mask; row/layer
-    # modes are inert at zero offloaded layers.
-    scan = llama_cpp_module._cmd_forces_tensor_split_mode
-    assert scan(["llama-server", "--split-mode", "tensor"]) is True
-    assert scan(["llama-server", "-sm", "tensor"]) is True
-    assert scan(["llama-server", "--split-mode=row"]) is False
-    assert scan(["llama-server", "--split-mode", "tensor", "-sm", "row"]) is False
-    assert scan(["llama-server"]) is False

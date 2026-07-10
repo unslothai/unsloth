@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getInferenceStatus } from "../api/chat-api";
-import { mergeBackendRecommendedInference } from "../presets/preset-policy";
+import {
+  mergeBackendRecommendedInference,
+  resolveManualAutoCtxPin,
+} from "../presets/preset-policy";
 import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import {
   CHAT_REASONING_ENABLED_KEY,
@@ -193,6 +196,19 @@ export function applyActiveModelStatusToStore(
   // While a load is in flight, performLoad owns the load params. Seeding them
   // from a stale poll here would clobber the values the load dialog just set.
   const seedLoadParams = !prevState.modelLoading;
+  // A Manual + Auto-layers load sent its positive context pin as max_seq_length,
+  // and status only exposes the RESOLVED context; re-seed the pin from the
+  // requested value (parity with the load paths' keepCustomCtx). Baselines
+  // unconditionally: anything but an applicable pin is null, so a previous
+  // model's pin can't survive a model change underneath and reload at the old
+  // length.
+  const gpuPin = status.is_gguf
+    ? resolveManualAutoCtxPin(
+        status.gpu_memory_mode ?? "auto",
+        status.gpu_layers ?? -1,
+        status.requested_context_length ?? null,
+      )
+    : null;
 
   useChatRuntimeStore.setState({
     supportsReasoning,
@@ -259,42 +275,18 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
-    // A non-GGUF status never sets loadedGpuMemoryMode, so this "unseeded"
-    // guard stays true across refreshes there and the reseed repeats. That
-    // repeat is an idempotent reset -- except while the user is editing a
-    // staged GGUF pick (pendingSelection), whose Manual knob edits it would
-    // clobber mid-edit, so hold the seeding until the staging resolves.
+    // A non-GGUF status never sets loadedGpuMemoryMode, so this "unseeded" guard
+    // stays true across refreshes there and the reseed repeats. That repeat is an
+    // idempotent reset (including the pin baseline above) -- except while the user
+    // is editing a staged GGUF pick (pendingSelection), whose Manual knob edits it
+    // would clobber mid-edit, so hold the seeding until the staging resolves.
     ...(seedLoadParams &&
       prevState.pendingSelection == null &&
-      (prevState.loadedGpuMemoryMode === null || hydratingExistingModel) &&
-      loadedGpuMemoryFields(status)),
-    // A Manual + Auto-layers load with a positive context pin sent the pin as
-    // max_seq_length, and status only exposes the RESOLVED context -- re-seed
-    // the pin from the requested value (parity with the load paths'
-    // keepCustomCtx) or the next Apply sends 0 and silently reverts the model
-    // to auto-fit sizing. The seed always BASELINES: a hydrated model without
-    // an applicable pin clears it, so a previous model's pin can't survive a
-    // model change underneath and reload the new model at the old length.
-    ...(seedLoadParams &&
-      prevState.pendingSelection == null &&
-      (prevState.loadedGpuMemoryMode === null || hydratingExistingModel) &&
-      (() => {
-        // Baseline unconditionally (even for a non-GGUF status): a pin only
-        // applies to a Manual + Auto-layers GGUF, so anything else clears it --
-        // otherwise a previous GGUF's pin survives a model change underneath
-        // and reloads the new model at the old length.
-        const pin =
-          status.is_gguf &&
-          status.gpu_memory_mode === "manual" &&
-          (status.gpu_layers ?? -1) < 0 &&
-          (status.requested_context_length ?? 0) > 0
-            ? status.requested_context_length
-            : null;
-        return {
-          customContextLength: pin,
-          loadedCustomContextLength: pin,
-        };
-      })()),
+      (prevState.loadedGpuMemoryMode === null || hydratingExistingModel) && {
+        ...loadedGpuMemoryFields(status),
+        customContextLength: gpuPin,
+        loadedCustomContextLength: gpuPin,
+      }),
     ...(status.chat_template_override !== undefined &&
       prevState.loadedChatTemplateOverride === null &&
       prevState.chatTemplateOverride === null && {

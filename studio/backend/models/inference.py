@@ -176,22 +176,6 @@ class ValidateModelRequest(BaseModel):
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
     gpu_ids: Optional[List[int]] = Field(None)
-    # Manual GGUF offload, so validate's training-coexistence guard sizes the same
-    # GPU-resident footprint /load will (a low gpu_layers keeps most weights on
-    # CPU, a manual tensor_split re-enables the per-GPU check). Defaults preserve
-    # old behavior for callers that omit them.
-    gpu_memory_mode: Literal["auto", "manual"] = Field("auto")
-    gpu_layers: int = Field(-1, ge = -1)
-    tensor_split: Optional[List[float]] = Field(None)
-    # A heavier KV cache (f32) doubles the KV bytes, so validate's guard must
-    # size it the same as /load or it can pass a load /load then 409s.
-    cache_type_kv: Optional[str] = Field(None)
-    # Tensor parallelism shards the model evenly per GPU, so the guard sizes it
-    # per device -- validate must know it to match /load.
-    tensor_parallel: bool = Field(False)
-    # The spec mode decides whether the separate MTP drafter is charged in the
-    # guard estimate; omitted -> "auto" (drafter charged, the safe over-estimate).
-    speculative_type: Optional[str] = Field(None)
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "

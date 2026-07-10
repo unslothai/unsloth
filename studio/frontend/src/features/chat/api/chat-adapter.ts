@@ -54,7 +54,7 @@ import {
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
-import { resolveFitMaxSeqLength } from "../presets/preset-policy";
+import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import type { ModelType } from "../types";
@@ -1593,12 +1593,11 @@ async function autoLoadSmallestModel(): Promise<{
       // later Apply doesn't silently revert it to auto-fit sizing), mirroring
       // the interactive path's keepCustomCtx; other cases baseline on
       // ggufContextLength.
-      const keepCustomCtx =
-        effectiveGpuMemoryMode === "manual" &&
-        effectiveGpuLayers < 0 &&
-        (remembered?.contextLength ?? 0) > 0
-          ? (remembered?.contextLength ?? null)
-          : null;
+      const keepCustomCtx = resolveManualAutoCtxPin(
+        effectiveGpuMemoryMode,
+        effectiveGpuLayers,
+        remembered?.contextLength ?? null,
+      );
       useChatRuntimeStore.setState({
         ggufContextLength: loadResp.context_length ?? 131072,
         ggufMaxContextLength:

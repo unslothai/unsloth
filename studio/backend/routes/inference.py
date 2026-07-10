@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from starlette.requests import ClientDisconnect
-from typing import Any, Callable, List, Literal, Optional, Tuple, Union
+from typing import Any, Callable, List, Optional, Union
 import json
 import httpx
 from loggers import get_logger
@@ -3377,12 +3377,9 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
 
 def _remote_gguf_companion_bytes(
     repo: str, *, hf_token: Optional[str], include_mmproj: bool
-) -> Optional[int]:
-    """Bytes of MTP/mmproj companion GGUFs llama-server auto-downloads, or None
-    when the repo listing can't be read -- the caller treats an unverifiable
-    REQUIRED companion (a VLM's mmproj) as a default-deny rather than 0, so a
-    cached vision GGUF can't pass the training guard with its projector
-    uncounted and then OOM training."""
+) -> int:
+    """Bytes of MTP/mmproj companion GGUFs llama-server auto-downloads. 0 on error,
+    so it can only add headroom, never refuse a load by itself."""
     try:
         from huggingface_hub import model_info
 
@@ -3401,7 +3398,7 @@ def _remote_gguf_companion_bytes(
         return total
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
-        return None
+        return 0
 
 
 def _estimate_gguf_kv_gb(
@@ -3409,18 +3406,12 @@ def _estimate_gguf_kv_gb(
     max_seq_length: int,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
-    cache_type_kv: Optional[str] = None,
 ) -> float:
     """KV-cache VRAM (GB) at the larger of max_seq_length and any `--ctx-size`/`-c`
-    override, over n_parallel slots, priced at the EFFECTIVE cache dtype the load
-    will use (request field, else extras, else env; f16 default) -- a heavier
-    f32 cache doubles the bytes, so pricing it as f16 would under-estimate and
-    OOM training. 0 if metadata is unreadable."""
+    override, over n_parallel slots, with the default f16 cache so the estimate is
+    never below what the server allocates. 0 if metadata is unreadable."""
     try:
-        from core.inference.llama_server_args import (
-            parse_ctx_override,
-            resolve_cache_type_kv,
-        )
+        from core.inference.llama_server_args import parse_ctx_override
 
         probe = LlamaCppBackend()
         probe._read_gguf_metadata(gguf_path)
@@ -3433,135 +3424,11 @@ def _estimate_gguf_kv_gb(
         ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
         if ctx <= 0:
             return 0.0
-        # Match load_model's precedence: extras --cache-type-k/-v last-wins over
-        # the request field, then the inherited env override.
-        from core.inference.llama_cpp import _env_main_cache_type_for_budget
-
-        effective_kv = resolve_cache_type_kv(llama_extra_args, cache_type_kv) or (
-            _env_main_cache_type_for_budget()
-        )
-        kv = probe._estimate_kv_cache_bytes(ctx, effective_kv, n_parallel = max(1, n_parallel or 1))
+        kv = probe._estimate_kv_cache_bytes(ctx, n_parallel = max(1, n_parallel or 1))
         return kv / (1024**3)
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
         return 0.0
-
-
-def _mtp_may_engage(speculative_type: Optional[str], llama_extra_args: Optional[list[str]]) -> bool:
-    """Whether the launch may run MTP speculative decoding: auto/mtp/mtp+ngram
-    engage it, off/ngram/ngram-simple never do. Extras that set --spec-type own
-    the mode (a user -md drafter is still in play), so don't gate those out."""
-    from core.inference.llama_cpp import _canonicalize_spec_mode, _extra_args_set_spec_type
-
-    if _extra_args_set_spec_type(llama_extra_args):
-        return True
-    mode = _canonicalize_spec_mode(speculative_type) or "auto"
-    return mode not in ("off", "ngram", "ngram-simple")
-
-
-def _gguf_mtp_overhead_gb(
-    local_path: str,
-    config: ModelConfig,
-    max_seq_length: int,
-    llama_extra_args: Optional[list[str]],
-    n_parallel: int,
-    speculative_type: Optional[str],
-) -> float:
-    """Extra GPU VRAM (GB) an MTP drafter allocates BEYOND its file weights: its
-    own draft KV cache and, for MLA models under MTP (GLM-5.x/DeepSeek/Kimi), a
-    duplicated target-KV context (~a full main KV). The drafter file itself is
-    charged separately as a companion, so this reserves only the runtime buffers
-    -- reusing the loader's own _estimate_mtp_overhead_bytes so the guard matches
-    it. 0 when MTP won't engage (spec off / ngram) or the model isn't MTP-capable."""
-    try:
-        from core.inference.llama_cpp import _extra_args_mtp_draft_path
-        from core.inference.llama_server_args import parse_ctx_override
-
-        if not _mtp_may_engage(speculative_type, llama_extra_args):
-            return 0.0
-
-        probe = LlamaCppBackend()
-        probe._read_gguf_metadata(local_path)
-
-        drafter = _extra_args_mtp_draft_path(llama_extra_args)
-        if not (drafter and Path(drafter).is_file()):
-            cfg_mtp = getattr(config, "gguf_mtp_file", None)
-            drafter = cfg_mtp if (cfg_mtp and Path(cfg_mtp).is_file()) else None
-        # MTP-capable: an embedded head or a separate drafter.
-        if not (probe._nextn_predict_layers or drafter):
-            return 0.0
-
-        try:
-            ctx_override = parse_ctx_override(llama_extra_args) or 0
-        except Exception:
-            ctx_override = 0
-        ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
-        if ctx <= 0:
-            return 0.0
-
-        overhead = probe._estimate_mtp_overhead_bytes(
-            ctx,
-            drafter_path = drafter,
-            draft_weights_bytes = 0,  # the drafter file is charged as a companion
-            n_parallel = max(1, n_parallel or 1),
-            mtp_keeps_target_ctx = True,
-        )
-        return (overhead or 0) / (1024**3)
-    except Exception as e:
-        logger.debug("Could not size MTP overhead for the guard: %s", e)
-        return 0.0
-
-
-def _is_diffusion_gguf(config: ModelConfig) -> bool:
-    """Whether the pick is a block-diffusion GGUF (DiffusionGemma), which the
-    diffusion runner pins to a SINGLE device (see _start_diffusion_server), so
-    the training guard sizes it single-device. Name match first (works before a
-    download, and is all a fresh HF pick needs), else the on-disk header, so a
-    locally-renamed file that loses the name still routes correctly -- mirrors
-    load_model's arch-prefix OR canvas-marker detection."""
-    ident = " ".join(
-        str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo", "gguf_file")
-    ).lower()
-    if "diffusion" in ident:
-        return True
-    try:
-        main = getattr(config, "gguf_file", None)
-        if not (main and Path(main).is_file()):
-            repo = getattr(config, "gguf_hf_repo", None)
-            variant = getattr(config, "gguf_variant", None)
-            if repo and variant:
-                from hub.utils.gguf import resolve_local_gguf_path
-                main = resolve_local_gguf_path(repo, variant)
-        if not main or not Path(main).is_file():
-            return False
-        from utils.models.gguf_metadata import (
-            gguf_header_has_key,
-            read_gguf_general_metadata,
-        )
-
-        arch = (read_gguf_general_metadata(str(main)) or {}).get("general.architecture") or ""
-        return arch.lower().startswith("diffusion") or bool(
-            gguf_header_has_key(str(main), "diffusion.canvas_length")
-        )
-    except Exception as e:
-        logger.debug("Could not read diffusion arch for the guard: %s", e)
-        return False
-
-
-def _manual_gpu_layer_fraction(gguf_path: str, gpu_layers: int) -> Optional[float]:
-    """Fraction of the model pinned on the GPU under manual ``--gpu-layers``, or
-    None when the layer count can't be read (caller keeps the full estimate).
-    ``gpu_layers`` >= layer count -> 1.0 (all on GPU); 0 -> 0.0 (all on CPU)."""
-    try:
-        from utils.models.gguf_metadata import read_gguf_staged_dims
-
-        dims = read_gguf_staged_dims(gguf_path)
-        n_layers = dims.get("layer_count") if dims else None
-        if not n_layers:
-            return None
-        return min(max(gpu_layers, 0), n_layers) / n_layers
-    except Exception:
-        return None
 
 
 def _estimate_gguf_required_gb(
@@ -3570,127 +3437,116 @@ def _estimate_gguf_required_gb(
     max_seq_length: int = 0,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
-    gpu_memory_mode: Literal["auto", "manual"] = "auto",
-    gpu_layers: int = -1,
-    cache_type_kv: Optional[str] = None,
-    speculative_type: Optional[str] = None,
-) -> Optional[Tuple[float, float]]:
-    """Conservative GPU-VRAM upper bound for the training guard, as
-    ``(main_gb, companion_gb)``. ``main_gb`` (quantized weights + KV, scaled by
-    the manual ``--gpu-layers`` offload fraction) DISTRIBUTES across the allowed
-    GPUs the way llama.cpp splits it; ``companion_gb`` (mmproj + any MTP/draft
-    model) lands whole on ONE device, so the guard checks each against the right
-    capacity. This never *under*-estimates (which would OOM training): companions
-    are always charged in full -- an unused one (a disabled projector, a spec-off
-    drafter) only over-refuses during active training, the safe direction --
-    and an unsizable/unknown size returns ``None`` so the caller default-denies.
-    The only credited saving is the layer offload: ``gpu_layers=0`` needs no
-    header (CPU-only by construction), so it zeroes ``main_gb`` even before the
-    file downloads."""
+) -> Optional[float]:
+    """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
+    cache for local files (unreadable pre-download for remote). None when nothing
+    resolves so the caller default-denies."""
     try:
-        from core.inference.llama_cpp import _extra_args_mtp_draft_path
-
-        manual = gpu_memory_mode == "manual" and gpu_layers >= 0
-        zero_offload = manual and gpu_layers == 0
-
-        def _local_main_gb(path: str) -> float:
-            gb = LlamaCppBackend._get_gguf_size_bytes(path) / (1024**3) + _estimate_gguf_kv_gb(
-                path, max_seq_length, llama_extra_args, n_parallel, cache_type_kv
-            )
-            if manual:
-                frac = _manual_gpu_layer_fraction(path, gpu_layers)
-                if frac is not None:
-                    gb *= frac
-            return gb
-
-        # Companions always land on the GPU regardless of --gpu-layers, so
-        # charge every declared/extras one in full. An extras drafter that isn't
-        # a readable local file (an HF-repo form) can't be sized -> default-deny.
-        # mmproj allocates more VRAM than its file (vision runtime buffers); the
-        # loader charges _MMPROJ_VRAM_SAFETY (~1.4x), so mirror it here.
-        mmproj_factor = LlamaCppBackend._MMPROJ_VRAM_SAFETY
-        companion_bytes = 0
+        total_bytes = 0
+        main = getattr(config, "gguf_file", None)
+        if main and Path(main).is_file():
+            total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
         for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
-                size = Path(f).stat().st_size
-                companion_bytes += int(size * mmproj_factor) if attr == "gguf_mmproj_file" else size
-        draft_path = _extra_args_mtp_draft_path(llama_extra_args)
-        if draft_path:
-            if Path(draft_path).is_file():
-                companion_bytes += Path(draft_path).stat().st_size
-            else:
-                return None
+                total_bytes += Path(f).stat().st_size
+        if total_bytes > 0:
+            return total_bytes / (1024**3) + _estimate_gguf_kv_gb(
+                main, max_seq_length, llama_extra_args, n_parallel
+            )
 
-        main = getattr(config, "gguf_file", None)
         repo = getattr(config, "gguf_hf_repo", None)
         variant = getattr(config, "gguf_variant", None)
-        main_gb = 0.0
-        local_main = None  # the on-disk main file used for sizing, for MTP probing
         if repo and variant:
-            # Repo id: companions come from the repo listing (ModelConfig leaves
-            # gguf_mmproj_file unset here); the main model from the cached file
-            # (scaled) if downloaded, else the full remote size (safe).
             from utils.models.model_config import list_gguf_variants
 
             variants, has_vision = list_gguf_variants(repo, hf_token = hf_token)
-            size = next(
+            main_bytes = next(
                 (v.size_bytes for v in variants if v.quant.lower() == variant.lower()), None
             )
-            if size is None:
+            if main_bytes is None:
                 return None
-            remote_companions = _remote_gguf_companion_bytes(
+            companions = _remote_gguf_companion_bytes(
                 repo, hf_token = hf_token, include_mmproj = bool(has_vision)
             )
-            if remote_companions is None:
-                # Couldn't verify the companions. A vision GGUF's mmproj is
-                # required and GPU-resident, so an unverified one is a
-                # default-deny; without vision only an optional root drafter is
-                # at risk -- charge 0 rather than block every remote load on a
-                # transient listing error.
-                if has_vision:
-                    return None
-                remote_companions = 0
-            # Charge the vision runtime factor on the remote companions too (the
-            # root-mtp share also getting it is a safe over-estimate).
-            if has_vision:
-                remote_companions = int(remote_companions * mmproj_factor)
-            companion_bytes += remote_companions
-            cached = None
-            if not zero_offload:
-                from hub.utils.gguf import resolve_local_gguf_path
-                cached = resolve_local_gguf_path(repo, variant)
-                main_gb = _local_main_gb(cached) if cached else size / (1024**3)
-            local_main = cached
-        elif main and Path(main).is_file():
-            local_main = str(main)
-            if not zero_offload:
-                main_gb = _local_main_gb(local_main)
-        elif companion_bytes <= 0:
-            return None  # nothing resolves -> default-deny
-
-        # MTP runtime buffers (draft KV + an MLA target-KV copy) are GPU-resident
-        # beyond the drafter file, so charge them as a (non-distributable)
-        # companion. Needs a local header to size, and a zero-offload load still
-        # runs its drafter on the GPU.
-        companion_gb = companion_bytes / (1024**3)
-        if local_main:
-            companion_gb += _gguf_mtp_overhead_gb(
-                local_main, config, max_seq_length, llama_extra_args, n_parallel, speculative_type
-            )
-        elif repo and _mtp_may_engage(speculative_type, llama_extra_args):
-            # Uncached remote GGUF: no header to size the MTP overhead. An MLA
-            # MTP repo (draft KV + a duplicated target-KV copy) can allocate GiB
-            # the guard can't verify, so default-deny an MTP-named repo rather
-            # than under-estimate; the user loads it once (caches it) and the
-            # local branch then sizes it exactly.
-            ident = f"{getattr(config, 'identifier', '') or ''} {repo}".lower()
-            if "mtp" in ident:
-                return None
-        return main_gb, companion_gb
+            return (main_bytes + companions) / (1024**3)
+        return None
     except Exception as e:
         logger.warning(f"Could not size GGUF model for training guard: {e}")
         return None
+
+
+def _guard_chat_load_against_training(
+    config: ModelConfig,
+    *,
+    model_identifier: str,
+    hf_token: Optional[str],
+    load_in_4bit: bool,
+    max_seq_length: int,
+    requested_gpu_ids: Optional[List[int]],
+    llama_extra_args: Optional[list[str]] = None,
+    n_parallel: int = 1,
+) -> None:
+    """Refuse loading a local chat model that would OOM an active training run.
+    No-op when training is inactive or unknown. `load_in_4bit` must be the
+    effective quantization (see _effective_load_in_4bit). Raises HTTP 409 when the
+    model would not fit alongside training."""
+    from core.training import get_training_backend
+    from routes.training_vram import can_load_chat_during_training
+
+    try:
+        if not get_training_backend().is_training_active():
+            return
+    except Exception as e:
+        logger.warning("Could not check training state for chat-load guard: %s", e)
+        return
+
+    is_gguf = bool(getattr(config, "is_gguf", False))
+    required_override_gb = (
+        _estimate_gguf_required_gb(
+            config,
+            hf_token = hf_token,
+            max_seq_length = max_seq_length,
+            llama_extra_args = llama_extra_args,
+            n_parallel = n_parallel,
+        )
+        if is_gguf
+        else None
+    )
+
+    ok, info = can_load_chat_during_training(
+        model_name = model_identifier,
+        hf_token = hf_token,
+        load_in_4bit = load_in_4bit,
+        max_seq_length = max_seq_length,
+        requested_gpu_ids = requested_gpu_ids,
+        is_gguf = is_gguf,
+        required_override_gb = required_override_gb,
+    )
+    if ok:
+        return
+
+    usable = info.get("usable_gb")
+    needed = info.get("needed_gb")
+    if needed is None:
+        needed = info.get("required_gb")
+    if needed is not None and usable is not None:
+        detail = (
+            f"Not enough free GPU memory to load this model while training is "
+            f"running (needs ~{needed:.0f} GB including safety headroom, "
+            f"~{usable:.0f} GB free). Training was left untouched. Use an external "
+            f"provider, a smaller or more quantized model, or try again after "
+            f"training finishes."
+        )
+    else:
+        detail = (
+            "Can't load this model while training is running: its GPU memory use "
+            "could not be verified, so the load was refused to protect the "
+            "training run. Use an external provider or try again after training "
+            "finishes."
+        )
+    logger.info("Refusing chat-model load during training: %s", info)
+    raise HTTPException(status_code = 409, detail = detail)
 
 
 def _resolve_inherited_extra_args(
@@ -3701,11 +3557,8 @@ def _resolve_inherited_extra_args(
     effective_chat_template_override: Optional[str] = None,
 ) -> Optional[list[str]]:
     """Effective pass-through extras for a GGUF request that omitted the field:
-    the previous same-model load's extras, shadow-stripped -- resolved BEFORE
-    the training guard so it sizes the same flags (ctx override, an inherited
-    --model-draft) the actual load appends. /validate shares this so its guard
-    agrees with the /load that follows (its request simply has no extras
-    field, so it always takes the inherit path for a same-model reload)."""
+    the previous same-model load's extras, shadow-stripped, so a settings-Apply
+    reload (which does not round-trip the extras field) keeps them (#5401)."""
     if getattr(request, "llama_extra_args", None) is not None:
         return extra_llama_args
     if not getattr(config, "is_gguf", False):
@@ -3791,116 +3644,6 @@ def _resolve_inherited_extra_args(
                     extra_llama_args,
                 )
     return extra_llama_args
-
-
-def _guard_chat_load_against_training(
-    config: ModelConfig,
-    *,
-    model_identifier: str,
-    hf_token: Optional[str],
-    load_in_4bit: bool,
-    max_seq_length: int,
-    requested_gpu_ids: Optional[List[int]],
-    llama_extra_args: Optional[list[str]] = None,
-    n_parallel: int = 1,
-    gpu_memory_mode: Literal["auto", "manual"] = "auto",
-    gpu_layers: int = -1,
-    tensor_split: Optional[List[float]] = None,
-    cache_type_kv: Optional[str] = None,
-    speculative_type: Optional[str] = None,
-    tensor_parallel: bool = False,
-) -> None:
-    """Refuse loading a local chat model that would OOM an active training run.
-    No-op when training is inactive or unknown. `load_in_4bit` must be the
-    effective quantization (see _effective_load_in_4bit). Raises HTTP 409 when the
-    model would not fit alongside training. The GGUF estimate is a conservative
-    (main, companion) upper bound: the main model distributes across the allowed
-    GPUs, the companions land on one device, and a diffusion or manual-split load
-    runs on a single device -- see _estimate_gguf_required_gb / the guard."""
-    from core.training import get_training_backend
-    from routes.training_vram import can_load_chat_during_training
-
-    try:
-        if not get_training_backend().is_training_active():
-            return
-    except Exception as e:
-        logger.warning("Could not check training state for chat-load guard: %s", e)
-        return
-
-    is_gguf = bool(getattr(config, "is_gguf", False))
-    gguf_main_gb = None
-    gguf_companion_gb = 0.0
-    gguf_single_device = False
-    gguf_split_max_share = None
-    gguf_tensor_parallel = False
-    if is_gguf:
-        parts = _estimate_gguf_required_gb(
-            config,
-            hf_token = hf_token,
-            max_seq_length = max_seq_length,
-            llama_extra_args = llama_extra_args,
-            n_parallel = n_parallel,
-            gpu_memory_mode = gpu_memory_mode,
-            gpu_layers = gpu_layers,
-            cache_type_kv = cache_type_kv,
-            speculative_type = speculative_type,
-        )
-        if parts is not None:
-            gguf_main_gb, gguf_companion_gb = parts
-        # Diffusion runs the whole model on one device (see _start_diffusion_server).
-        gguf_single_device = _is_diffusion_gguf(config)
-        # Manual + pinned layers may distribute the main model per device: a
-        # per-GPU split concentrates up to its largest normalized share on one
-        # card, and tensor parallelism (--split-mode tensor) with no explicit
-        # ratio shards every layer evenly (1/N). The guard checks the tightest
-        # device against that share instead of the whole model.
-        if gpu_memory_mode == "manual" and gpu_layers >= 0:
-            if tensor_split:
-                shares = [max(float(s), 0.0) for s in tensor_split]
-                total = sum(shares)
-                if total > 0:
-                    gguf_split_max_share = max(shares) / total
-            else:
-                from core.inference.llama_server_args import _effective_tensor_parallel
-                gguf_tensor_parallel = _effective_tensor_parallel(llama_extra_args, tensor_parallel)
-
-    ok, info = can_load_chat_during_training(
-        model_name = model_identifier,
-        hf_token = hf_token,
-        load_in_4bit = load_in_4bit,
-        max_seq_length = max_seq_length,
-        requested_gpu_ids = requested_gpu_ids,
-        is_gguf = is_gguf,
-        gguf_main_gb = gguf_main_gb,
-        gguf_companion_gb = gguf_companion_gb,
-        gguf_single_device = gguf_single_device,
-        gguf_split_max_share = gguf_split_max_share,
-        gguf_tensor_parallel = gguf_tensor_parallel,
-    )
-    if ok:
-        return
-
-    usable = info.get("usable_gb")
-    needed = info.get("needed_gb")
-    if needed is None:
-        needed = info.get("required_gb")
-    if needed is not None and usable is not None:
-        detail = (
-            f"Not enough free GPU memory to load this model while training is "
-            f"running (needs ~{needed:.0f} GB including safety headroom, "
-            f"~{usable:.0f} GB free). Training was left untouched. Use an external "
-            f"provider, a smaller or more quantized model, or try again after "
-            f"training finishes."
-        )
-    else:
-        detail = (
-            "Can't load this model while training is running: its GPU memory use "
-            "could not be verified, so the load was refused to protect the "
-            "training run. Use an external provider or try again after training "
-            "finishes."
-        )
-    logger.info("Refusing chat-model load during training: %s", info)
-    raise HTTPException(status_code = 409, detail = detail)
 
 
 def _model_json_response(model, status_code: int = 200) -> Response:
@@ -4213,9 +3956,10 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 f"from adapter_config.json / base model (requested {request.load_in_4bit})"
             )
 
-        # Resolve inherited extras BEFORE the training guard below, so the
-        # guard sizes the same pass-through flags (ctx override, an inherited
-        # --model-draft) the actual load will append.
+        # Inherit the previous same-model load's pass-through extras when this
+        # request omits the field (a settings-Apply reload doesn't round-trip
+        # them); shadow-stripped so an inherited flag can't override a
+        # first-class field the caller did set (#5401).
         extra_llama_args = _resolve_inherited_extra_args(
             request,
             config,
@@ -4236,12 +3980,6 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             requested_gpu_ids = effective_gpu_ids,
             llama_extra_args = extra_llama_args,
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
-            gpu_memory_mode = request.gpu_memory_mode,
-            gpu_layers = request.gpu_layers,
-            tensor_split = request.tensor_split,
-            cache_type_kv = request.cache_type_kv,
-            speculative_type = request.speculative_type,
-            tensor_parallel = request.tensor_parallel,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -4687,7 +4425,6 @@ def _requires_security_review_for_model(
 @router.post("/validate", response_model = ValidateModelResponse)
 async def validate_model(
     request: ValidateModelRequest,
-    fastapi_request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -4750,13 +4487,6 @@ async def validate_model(
             except ValueError as exc:
                 raise HTTPException(status_code = 400, detail = str(exc)) from exc
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
-        # Resolve the same inherited extras /load will append (a validate request
-        # has no extras field, so a same-model reload always inherits), so this
-        # guard and /load's agree -- else validate can pass a smaller estimate,
-        # the frontend unloads the current model, and the follow-up /load 409s.
-        effective_extra_args = _resolve_inherited_extra_args(
-            request, config, model_identifier, None
-        )
         # Off-loop: guard does sync nvidia-smi / HF work.
         await asyncio.to_thread(
             _guard_chat_load_against_training,
@@ -4766,14 +4496,6 @@ async def validate_model(
             load_in_4bit = effective_load_in_4bit,
             max_seq_length = request.max_seq_length,
             requested_gpu_ids = effective_gpu_ids,
-            llama_extra_args = effective_extra_args,
-            n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
-            gpu_memory_mode = request.gpu_memory_mode,
-            gpu_layers = request.gpu_layers,
-            tensor_split = request.tensor_split,
-            cache_type_kv = request.cache_type_kv,
-            speculative_type = request.speculative_type,
-            tensor_parallel = request.tensor_parallel,
         )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
@@ -4831,7 +4553,9 @@ async def validate_model(
                         model_identifier, request.gguf_variant
                     )
                 if local_gguf:
-                    dims = read_gguf_staged_dims(local_gguf)
+                    # Header walk reads tokenizer arrays for dense models (tens of
+                    # ms); keep it off the event loop.
+                    dims = await asyncio.to_thread(read_gguf_staged_dims, local_gguf)
                     if dims:
                         context_length = dims["context_length"]
                         layer_count = dims["layer_count"]
