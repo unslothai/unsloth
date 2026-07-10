@@ -58,9 +58,19 @@ _FAMILIES: dict[str, dict[str, Any]] = {
     "sdxl": {"repo": "stabilityai/stable-diffusion-xl-base-1.0"},
     "flux.2": {"repo": "black-forest-labs/FLUX.2-dev"},
     # video families -- Conv3d VAEs, which is where the VAE actually holds real memory.
-    "ltx-2": {"repo": "Lightricks/LTX-2"},
-    "hunyuanvideo-1.5": {"repo": "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v"},
-    "wan2.2-ti2v-5b": {"repo": "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "vae_force_fp32": True},
+    # They are here for the ISOLATED te/vae modes only: the pipeline-level modes (dit,
+    # e2e) drive the image __call__ interface (.images[0], no frame kwargs), so those
+    # modes reject them and point at scripts/video_speedmem_bench.py instead.
+    "ltx-2": {"repo": "Lightricks/LTX-2", "video": True},
+    "hunyuanvideo-1.5": {
+        "repo": "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        "video": True,
+    },
+    "wan2.2-ti2v-5b": {
+        "repo": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        "vae_force_fp32": True,
+        "video": True,
+    },
 }
 
 _TE_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
@@ -656,15 +666,22 @@ def _e2e_run(
     diffusers = _import_diffusers()
     _empty()
     _reset_peak()
+    # Mirror the production loader's ordering: companion quantization applies to the
+    # CPU-built pipeline BEFORE placement (the loader quantizes ahead of
+    # apply_memory_plan), so the auto row loads like production for models whose
+    # dense companions do not fit, and load_peak_gb records the placement of the
+    # measured (quantized) configuration rather than the dense one.
     pipe = diffusers.DiffusionPipeline.from_pretrained(repo, torch_dtype = torch.bfloat16)
-    pipe = pipe.to("cuda")
-    load_peak = _peak_gb()
     te_scheme = vae_scheme = None
     if quant:
         te_scheme = quantize_text_encoders(
             pipe, _target(), mode = "auto", family = family, logger = logger
         )
         vae_scheme = quantize_vae(pipe, _target(), mode = "auto", family = family, logger = logger)
+    pipe = pipe.to("cuda")
+    _sync()
+    load_peak = _peak_gb()
+    if quant:
         _empty()
     weights_gb = _alloc_gb()
 
@@ -912,6 +929,13 @@ def main(argv = None) -> int:
     out.mkdir(parents = True, exist_ok = True)
 
     print(f"== speed+mem bench: family={args.family} mode={args.mode} ==", flush = True)
+    if args.mode in ("dit", "e2e") and _FAMILIES.get(args.family, {}).get("video"):
+        ap.error(
+            f"--mode {args.mode} drives the image pipeline interface (.images[0]); "
+            f"'{args.family}' is a video family -- measure its DiT with "
+            "scripts/video_speedmem_bench.py (frame kwargs, video call path). "
+            "The isolated te/vae modes still support video families here."
+        )
     if args.mode == "dit":
         schemes = [s.strip() for s in args.dit_schemes.split(",") if s.strip()]
         rows = measure_dit(

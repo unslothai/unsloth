@@ -50,6 +50,7 @@ from .diffusion_attention import (
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
+    TC_MAGCACHE,
     apply_step_cache,
     auto_cache_mode,
     auto_cache_quality,
@@ -705,6 +706,7 @@ class VideoBackend:
             # speed globals here (token-scoped, so a superseded load cannot clobber
             # the globals a newer in-flight load now owns).
             self._rollback_precommit_globals(token)
+            self._rollback_precommit_cfg_parallel(token)
             if self._load_token != token:
                 return
             logger.error("video.load_failed: %s", exc)
@@ -741,6 +743,21 @@ class VideoBackend:
         from . import diffusion_gguf_compile
 
         diffusion_gguf_compile.uninstall_all()
+
+    def _rollback_precommit_cfg_parallel(self, token: Optional[int]) -> None:
+        """Tear down a CFG-parallel proxy installed by a load that died BEFORE
+        committing _VideoLoadState. The proxy owns a daemon worker, the DiT
+        replica's VRAM, and possibly the process-global cuDNN attention patch;
+        with no committed state, _teardown_state would never reach it. Token-scoped
+        exactly like _rollback_precommit_globals."""
+        stored = getattr(self, "_precommit_cfg_parallel", None)
+        if stored is None:
+            return
+        stored_token, pipe, proxy = stored
+        if token is not None and stored_token is not None and stored_token != token:
+            return
+        self._precommit_cfg_parallel = None
+        teardown_cfg_parallel(pipe, proxy, logger = logger)
 
     # Base-repo subfolders an LTX-2.3 assembly reads: the checkpoint (plus the GGUF
     # repo's extras files) supplies the DiT, connectors, both VAEs and the vocoder,
@@ -1493,6 +1510,13 @@ class VideoBackend:
                 speed_active = effective_speed != SPEED_OFF,
                 logger = logger,
             )
+            if cfg_parallel_proxy is not None:
+                # Until the _VideoLoadState commit below, the proxy (daemon worker,
+                # DiT replica VRAM, process-global cuDNN patch) is owned by this
+                # stash: a cancellation or failure between install and commit is
+                # torn down by _run_load's error handler via
+                # _rollback_precommit_cfg_parallel, token-scoped like the globals.
+                self._precommit_cfg_parallel = (_load_token, pipe, cfg_parallel_proxy)
             if cfg_parallel_proxy is not None and cache_engaged:
                 # The load engaged the step cache on the primary BEFORE the proxy
                 # existed; re-engage THROUGH the proxy so the replica carries the same
@@ -1597,6 +1621,10 @@ class VideoBackend:
 
             with self._lock:
                 if _load_token is not None and _load_token != self._load_token:
+                    # The pre-commit CFG-parallel stash (torn down by _run_load's
+                    # error handler) still references the pipe, so the proxy, its
+                    # daemon worker, the replica's VRAM, and the cuDNN patch are
+                    # all rolled back even though no state was committed.
                     del pipe
                     clear_gpu_cache()
                     raise RuntimeError("Video load was cancelled or superseded.")
@@ -1631,8 +1659,10 @@ class VideoBackend:
                     cfg_parallel_handle = cfg_parallel_proxy,
                     resolved = resolved,
                 )
-                # Ownership of the globals transferred to _state / _teardown_state.
+                # Ownership of the globals and the CFG-parallel proxy transferred
+                # to _state / _teardown_state.
                 self._precommit_globals = None
+                self._precommit_cfg_parallel = None
         logger.info(
             "video.loaded: %s (%s, %s, offload=%s, speed=%s, quant=%s)",
             repo_id,
@@ -1840,6 +1870,37 @@ class VideoBackend:
                                 + ("reaches" if toggled else "is below")
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
+                elif state.transformer_cache == TC_MAGCACHE:
+                    # An EXPLICIT magcache choice never toggles off, but its ratio
+                    # curve, retention window, and skip budget are interpolated over
+                    # the CONFIGURED step count: a clip at a different step count
+                    # re-engages (marker carries "#s{steps}") so skips stay aligned
+                    # with the actual schedule. The user's on choice is preserved --
+                    # this only re-sizes the already-engaged cache.
+                    for view, expert_name in zip(
+                        _views_for(pipe, fam), _transformer_names(pipe, fam)
+                    ):
+                        transformer = getattr(view, "transformer", None)
+                        marker = getattr(transformer, "_unsloth_step_cache", None)
+                        # endswith, not substring: "#s5" would match inside "#s50".
+                        if not marker or str(marker).endswith(f"#s{int(steps)}"):
+                            continue
+                        _disengage_step_cache(
+                            transformer,
+                            reason = f"explicit magcache re-interpolating for {steps} steps",
+                            logger = logger,
+                        )
+                        apply_step_cache(
+                            view,
+                            mode = TC_MAGCACHE,
+                            threshold = state.cache_threshold,
+                            quant_active = state.cache_quant_active,
+                            family = fam.name,
+                            steps = steps,
+                            quality = state.cache_quality,
+                            expert = expert_name,
+                            logger = logger,
+                        )
                 if state.transformer_cache:
                     self._reset_step_cache(pipe)
                 # Dual-GPU CFG parallelism: resolve this generation's routing AFTER the

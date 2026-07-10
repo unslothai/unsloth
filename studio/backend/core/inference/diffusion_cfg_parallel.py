@@ -304,8 +304,13 @@ class CFGParallelProxy:
 
     def note_generation_done(self) -> None:
         """Commit the settled key after a COMPLETED generation; a cancelled/failed one
-        keeps the next dispatch inline (its compiles may not have finished)."""
-        self._settled_key = self._pending_key
+        keeps the next dispatch inline (its compiles may not have finished). A DISABLED
+        run (guidance near 1 -> num_conditions <= 1) never routed the replica, so its
+        key must not unlock thread dispatch either: the replica's first compile for
+        that shape would otherwise run concurrently with the primary on the next
+        CFG-enabled generation -- the exact race inline dispatch exists to serialize."""
+        if self.enabled:
+            self._settled_key = self._pending_key
 
     # ── the branch router ─────────────────────────────────────────────────────
     def _move(self, v: Any) -> Any:
@@ -583,6 +588,11 @@ def maybe_enable_cfg_parallel(
             torch.cuda.empty_cache()
         except Exception:  # noqa: BLE001
             pass
+        # No proxy was committed, so _teardown_state will never run for this install:
+        # a failure AFTER the process-global cuDNN patch landed (e.g. no patchable
+        # guider) must undo it here or every later single-device generation keeps
+        # running the direct aten replacement. No-op when the patch never installed.
+        _restore_threadsafe_cudnn_attention()
         return None, "replica install failed"
     if logger is not None:
         logger.info(

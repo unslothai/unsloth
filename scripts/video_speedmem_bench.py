@@ -622,6 +622,22 @@ def _timed_video(
             except Exception:
                 pass
 
+    # Clear step-cache residuals before EVERY generation, mirroring production
+    # (VideoBackend.generate calls _reset_step_cache before each run): diffusers keys
+    # the residuals on the long-lived transformer, so the measured iterations after a
+    # warmup at identical shape/seed would otherwise start against the previous clip's
+    # cache state -- a behavior users never get. Best-effort, uncached is a no-op.
+    for name in ("transformer", "transformer_2"):
+        module = getattr(pipe, name, None)
+        reset = getattr(module, "_reset_stateful_cache", None) or getattr(
+            module, "reset_stateful_hooks", None
+        )
+        if callable(reset):
+            try:
+                reset()
+            except Exception:
+                pass
+
     g = torch.Generator(device = "cuda").manual_seed(seed)
     step_ts: list[float] = []
     last = [0.0]

@@ -443,6 +443,62 @@ def test_cancelled_generation_stays_inline(monkeypatch):
     proxy.shutdown()
 
 
+def test_disabled_run_does_not_settle_thread_dispatch(monkeypatch):
+    # guidance ~1 (num_conditions <= 1) disables the overlap, so that run never
+    # routes -- or compiles -- the replica. Its completed key must NOT unlock thread
+    # dispatch: the next CFG-enabled run at the same shape still needs the inline
+    # pass that serializes the replica's first compile with the primary's.
+    proxy, _, _, guider = _make_proxy(monkeypatch)
+    guider.num_conditions = 1
+    plan = proxy.plan_generation(cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33)
+    assert plan["enabled"] is False
+    proxy.note_generation_done()
+    guider.num_conditions = 2
+    plan = proxy.plan_generation(cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33)
+    assert plan["enabled"] is True and plan["dispatch"] == "inline"  # replica still cold
+    proxy.note_generation_done()
+    plan = proxy.plan_generation(cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33)
+    assert plan["dispatch"] == "thread"  # settled by an ENABLED completed run
+    proxy.shutdown()
+
+
+def test_install_failure_after_cudnn_patch_restores_it(monkeypatch):
+    # A failure between the process-global cuDNN patch and the proxy commit (here: no
+    # patchable guider) has no committed proxy for _teardown_state to reach, so the
+    # install path itself must restore the patch before falling back single-device.
+    import core.inference.diffusion_cfg_parallel as cp
+
+    _stub_torch(monkeypatch)
+    calls: list = []
+    monkeypatch.setattr(
+        cp,
+        "_install_threadsafe_cudnn_attention",
+        lambda logger = None: (calls.append("install"), True)[1],
+    )
+    monkeypatch.setattr(
+        cp, "_restore_threadsafe_cudnn_attention", lambda: calls.append("restore")
+    )
+
+    class _LoadableDiT(_FakeDiT):
+        @classmethod
+        def from_pretrained(cls, *a, **k):
+            return cls(device_index = 1)
+
+        def to(self, *a, **k):
+            return self
+
+        def eval(self):
+            return self
+
+    pipe = _CtxPipe(_LoadableDiT())
+    pipe.guider = None  # raises AFTER the patch install
+    proxy, reason = _gate(
+        monkeypatch, pipe, _fam(), speed_active = False, attention_backend = None
+    )
+    assert proxy is None and reason == "replica install failed"
+    assert calls == ["install", "restore"]
+
+
 # ── teardown ──────────────────────────────────────────────────────────────────────
 def test_teardown_restores_pipe_and_guider(monkeypatch):
     proxy, primary, _, guider = _make_proxy(monkeypatch)

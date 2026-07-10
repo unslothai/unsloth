@@ -1303,6 +1303,56 @@ def test_video_step_cache_auto_toggles_on_actual_steps(fake_runtime):
     backend.unload()
 
 
+def test_explicit_magcache_reinterpolates_on_step_change(fake_runtime):
+    # An EXPLICIT magcache load never toggles off, but its calibrated curve,
+    # retention window, and skip budget are interpolated over the CONFIGURED step
+    # count: a clip at a different step count must re-engage so skips stay aligned
+    # with the actual schedule (auto already does this via maybe_toggle_step_cache).
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        model_kind = "pipeline",
+        transformer_cache = "magcache",
+    )
+    assert backend.status()["transformer_cache"] == "magcache"
+    cfg = backend._state.pipe.transformer.cache_config
+    assert cfg[0] == "magcache" and cfg[1]["num_inference_steps"] == 50  # load default
+    backend.generate(prompt = "a sloth", steps = 30)
+    cfg = backend._state.pipe.transformer.cache_config
+    assert cfg[0] == "magcache" and cfg[1]["num_inference_steps"] == 30
+    # Explicit stays ON even below the auto min-steps bar: only the sizing changes.
+    backend.generate(prompt = "a sloth", steps = 8)
+    cfg = backend._state.pipe.transformer.cache_config
+    assert cfg[1]["num_inference_steps"] == 8
+    assert backend.status()["transformer_cache"] == "magcache"
+    backend.unload()
+
+
+def test_rollback_precommit_cfg_parallel_is_token_scoped(fake_runtime, monkeypatch):
+    # A load that installed the CFG-parallel proxy and then died (cancelled or
+    # failed) before committing _VideoLoadState has nothing for _teardown_state to
+    # reach: _run_load's error handler must tear the stash down -- but only for its
+    # own token, so a superseded worker cannot clobber the proxy a newer in-flight
+    # load now owns.
+    from core.inference import video as video_mod
+
+    calls = []
+    monkeypatch.setattr(
+        video_mod,
+        "teardown_cfg_parallel",
+        lambda pipe, proxy, logger = None: calls.append((pipe, proxy)),
+    )
+    backend = VideoBackend()
+    pipe, proxy = object(), object()
+    backend._precommit_cfg_parallel = (7, pipe, proxy)
+    backend._rollback_precommit_cfg_parallel(8)  # stale worker: leave the stash alone
+    assert calls == [] and backend._precommit_cfg_parallel is not None
+    backend._rollback_precommit_cfg_parallel(7)  # owning worker: torn down + cleared
+    assert calls == [(pipe, proxy)] and backend._precommit_cfg_parallel is None
+    backend._rollback_precommit_cfg_parallel(7)  # idempotent
+    assert len(calls) == 1
+
+
 def test_wan_frame_snapping_4k_plus_1(fake_runtime):
     # Wan snaps num_frames to 4k+1 (temporal factor 4), unlike LTX-2's 8k+1.
     backend = VideoBackend()

@@ -805,7 +805,8 @@ def maybe_toggle_step_cache(
         want
         and engaged
         and mode == TC_MAGCACHE
-        and f"#s{int(steps)}" not in str(engaged)
+        # endswith, not substring: "#s5" would match inside "#s50".
+        and not str(engaged).endswith(f"#s{int(steps)}")
         and _disengage_step_cache(
             transformer, reason = f"magcache re-interpolating for {steps} steps", logger = logger
         )
