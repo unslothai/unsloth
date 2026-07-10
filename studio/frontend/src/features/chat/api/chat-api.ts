@@ -125,6 +125,9 @@ export async function validateModel(
       gpu_memory_mode: payload.gpu_memory_mode,
       gpu_layers: payload.gpu_layers,
       tensor_split: payload.tensor_split ?? null,
+      // A heavier KV cache doubles the KV bytes, so size the guard the same as
+      // the follow-up /load rather than defaulting to f16 and 409-ing later.
+      cache_type_kv: payload.cache_type_kv ?? null,
       // Decides whether the guard charges the separate MTP drafter; omitted
       // falls back to "auto" server-side (drafter charged, the over-estimate).
       speculative_type: payload.speculative_type ?? null,

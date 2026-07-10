@@ -548,7 +548,14 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             patch.object(self.route, "load_inference_config", return_value = {}),
             _stub_guard_deps(training_active = training_active, decision = decision, captured = captured),
         ):
-            return asyncio.run(self.route.validate_model(request, current_subject = "test-user"))
+            fastapi_request = SimpleNamespace(
+                app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+            )
+            return asyncio.run(
+                self.route.validate_model(
+                    request, fastapi_request = fastapi_request, current_subject = "test-user"
+                )
+            )
 
     def test_ok_when_training_inactive(self):
         resp = self._validate(training_active = False, decision = (False, {}))
@@ -605,8 +612,15 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             ),
             _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
         ):
+            fastapi_request = SimpleNamespace(
+                app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+            )
             with self.assertRaises(HTTPException) as exc:
-                asyncio.run(self.route.validate_model(request, current_subject = "u"))
+                asyncio.run(
+                    self.route.validate_model(
+                        request, fastapi_request = fastapi_request, current_subject = "u"
+                    )
+                )
         self.assertEqual(exc.exception.status_code, 400)
         self.assertIn("gpu_ids", exc.exception.detail.lower())
         self.assertNotIn("not supported", exc.exception.detail.lower())
@@ -690,6 +704,47 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(main_gb, 10.0, places = 6)  # full remote (not downloaded)
         self.assertAlmostEqual(companion_gb, 2.0, places = 6)
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
+
+    def test_unsized_remote_vision_companion_denies(self):
+        # A VLM's mmproj is required and GPU-resident; if the repo listing can't
+        # be read (offline / transient error -> None), the guard can't verify it,
+        # so default-deny rather than pass with the projector uncounted.
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+        with (
+            patch.object(mc, "list_gguf_variants", return_value = ([variant], True)),
+            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = None),
+        ):
+            self.assertIsNone(self.route._estimate_gguf_required_gb(cfg))
+
+    def test_unsized_remote_companion_without_vision_charges_zero(self):
+        # No required projector: an unsized optional drafter is best-effort 0,
+        # not a hard block on every remote load during a transient error.
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+        with (
+            patch.object(mc, "list_gguf_variants", return_value = ([variant], False)),
+            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = None),
+        ):
+            main_gb, companion_gb = self.route._estimate_gguf_required_gb(cfg)
+        self.assertAlmostEqual(main_gb, 10.0, places = 6)
+        self.assertEqual(companion_gb, 0.0)
 
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
@@ -974,14 +1029,13 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             def _can_estimate_kv(self):
                 return True
 
-            def _estimate_kv_cache_bytes(
-                self,
-                ctx,
-                n_parallel = 1,
-            ):
+            def _estimate_kv_cache_bytes(self, ctx, cache_type_kv = None, *, n_parallel = 1):
                 seen["ctx"] = ctx
                 seen["n_parallel"] = n_parallel
-                return ctx * n_parallel * (1024**2)  # 1 MiB per ctx unit per slot
+                seen["cache_type_kv"] = cache_type_kv
+                # f32 doubles the bytes vs the f16 default, like the real one.
+                per_elem = 2 if (cache_type_kv or "f16").lower() == "f32" else 1
+                return ctx * n_parallel * per_elem * (1024**2)
 
         with patch.object(self.route, "LlamaCppBackend", _FakeBackend):
             r = self.route
@@ -997,6 +1051,14 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "oops"]), 4.0)
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, None, 4), 16.0)
             self.assertEqual(seen["n_parallel"], 4)
+            # f32 KV doubles the bytes vs the f16 default (heavier cache priced
+            # correctly so the guard never under-estimates during training).
+            self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, None, 1, "f32"), 8.0)
+            self.assertEqual(seen["cache_type_kv"], "f32")
+            # extras --cache-type-k last-wins over the request field.
+            self.assertAlmostEqual(
+                r._estimate_gguf_kv_gb("m", 4096, ["--cache-type-k", "f32"], 1, "f16"), 8.0
+            )
 
 
 # ── load_model integration: authoritative 409, and no unload before refusal ──

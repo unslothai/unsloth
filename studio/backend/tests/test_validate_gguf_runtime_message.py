@@ -4,6 +4,7 @@
 """/api/inference/validate and /load must surface an actionable "install the runtime"
 message when a GGUF model's llama-server is missing, not a generic error."""
 
+from types import SimpleNamespace
 import asyncio
 import importlib.util
 import unittest
@@ -45,7 +46,7 @@ class TestValidateGgufRuntimeMessage(unittest.TestCase):
             patch.object(route.ModelConfig, "from_identifier", side_effect = side_effect),
         ):
             with self.assertRaises(HTTPException) as exc:
-                asyncio.run(route.validate_model(request, current_subject = "test-user"))
+                asyncio.run(route.validate_model(request, fastapi_request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))), current_subject = "test-user"))
         return exc.exception
 
     def test_missing_llama_server_returns_actionable_message(self):

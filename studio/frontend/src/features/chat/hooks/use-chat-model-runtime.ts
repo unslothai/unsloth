@@ -680,6 +680,9 @@ export function useChatModelRuntime() {
               speculative_type: resetsPerModelSettings
                 ? readPersistedSpeculativeType()
                 : loadSpeculativeType,
+              // The same KV dtype the load below sends, so the guard sizes the
+              // heavier f32 cache identically instead of defaulting to f16.
+              cache_type_kv: loadKvCacheDtype,
             });
             // Open the consent dialog when the model needs custom-code consent or has a
             // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the

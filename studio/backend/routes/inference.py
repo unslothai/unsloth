@@ -3377,9 +3377,12 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
 
 def _remote_gguf_companion_bytes(
     repo: str, *, hf_token: Optional[str], include_mmproj: bool
-) -> int:
-    """Bytes of MTP/mmproj companion GGUFs llama-server auto-downloads. 0 on error,
-    so it can only add headroom, never refuse a load by itself."""
+) -> Optional[int]:
+    """Bytes of MTP/mmproj companion GGUFs llama-server auto-downloads, or None
+    when the repo listing can't be read -- the caller treats an unverifiable
+    REQUIRED companion (a VLM's mmproj) as a default-deny rather than 0, so a
+    cached vision GGUF can't pass the training guard with its projector
+    uncounted and then OOM training."""
     try:
         from huggingface_hub import model_info
 
@@ -3398,7 +3401,7 @@ def _remote_gguf_companion_bytes(
         return total
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
-        return 0
+        return None
 
 
 def _estimate_gguf_kv_gb(
@@ -3406,12 +3409,18 @@ def _estimate_gguf_kv_gb(
     max_seq_length: int,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    cache_type_kv: Optional[str] = None,
 ) -> float:
     """KV-cache VRAM (GB) at the larger of max_seq_length and any `--ctx-size`/`-c`
-    override, over n_parallel slots, with the default f16 cache so the estimate is
-    never below what the server allocates. 0 if metadata is unreadable."""
+    override, over n_parallel slots, priced at the EFFECTIVE cache dtype the load
+    will use (request field, else extras, else env; f16 default) -- a heavier
+    f32 cache doubles the bytes, so pricing it as f16 would under-estimate and
+    OOM training. 0 if metadata is unreadable."""
     try:
-        from core.inference.llama_server_args import parse_ctx_override
+        from core.inference.llama_server_args import (
+            parse_ctx_override,
+            resolve_cache_type_kv,
+        )
 
         probe = LlamaCppBackend()
         probe._read_gguf_metadata(gguf_path)
@@ -3424,7 +3433,16 @@ def _estimate_gguf_kv_gb(
         ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
         if ctx <= 0:
             return 0.0
-        kv = probe._estimate_kv_cache_bytes(ctx, n_parallel = max(1, n_parallel or 1))
+        # Match load_model's precedence: extras --cache-type-k/-v last-wins over
+        # the request field, then the inherited env override.
+        from core.inference.llama_cpp import _env_main_cache_type_for_budget
+
+        effective_kv = resolve_cache_type_kv(llama_extra_args, cache_type_kv) or (
+            _env_main_cache_type_for_budget()
+        )
+        kv = probe._estimate_kv_cache_bytes(
+            ctx, effective_kv, n_parallel = max(1, n_parallel or 1)
+        )
         return kv / (1024**3)
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
@@ -3491,6 +3509,7 @@ def _estimate_gguf_required_gb(
     n_parallel: int = 1,
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
     gpu_layers: int = -1,
+    cache_type_kv: Optional[str] = None,
 ) -> Optional[Tuple[float, float]]:
     """Conservative GPU-VRAM upper bound for the training guard, as
     ``(main_gb, companion_gb)``. ``main_gb`` (quantized weights + KV, scaled by
@@ -3512,7 +3531,7 @@ def _estimate_gguf_required_gb(
 
         def _local_main_gb(path: str) -> float:
             gb = LlamaCppBackend._get_gguf_size_bytes(path) / (1024**3) + _estimate_gguf_kv_gb(
-                path, max_seq_length, llama_extra_args, n_parallel
+                path, max_seq_length, llama_extra_args, n_parallel, cache_type_kv
             )
             if manual:
                 frac = _manual_gpu_layer_fraction(path, gpu_layers)
@@ -3551,9 +3570,19 @@ def _estimate_gguf_required_gb(
             )
             if size is None:
                 return None
-            companion_bytes += _remote_gguf_companion_bytes(
+            remote_companions = _remote_gguf_companion_bytes(
                 repo, hf_token = hf_token, include_mmproj = bool(has_vision)
             )
+            if remote_companions is None:
+                # Couldn't verify the companions. A vision GGUF's mmproj is
+                # required and GPU-resident, so an unverified one is a
+                # default-deny; without vision only an optional root drafter is
+                # at risk -- charge 0 rather than block every remote load on a
+                # transient listing error.
+                if has_vision:
+                    return None
+                remote_companions = 0
+            companion_bytes += remote_companions
             if not zero_offload:
                 from hub.utils.gguf import resolve_local_gguf_path
                 cached = resolve_local_gguf_path(repo, variant)
@@ -3683,6 +3712,7 @@ def _guard_chat_load_against_training(
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
     gpu_layers: int = -1,
     tensor_split: Optional[List[float]] = None,
+    cache_type_kv: Optional[str] = None,
 ) -> None:
     """Refuse loading a local chat model that would OOM an active training run.
     No-op when training is inactive or unknown. `load_in_4bit` must be the
@@ -3715,6 +3745,7 @@ def _guard_chat_load_against_training(
             n_parallel = n_parallel,
             gpu_memory_mode = gpu_memory_mode,
             gpu_layers = gpu_layers,
+            cache_type_kv = cache_type_kv,
         )
         if parts is not None:
             gguf_main_gb, gguf_companion_gb = parts
@@ -4104,6 +4135,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             gpu_memory_mode = request.gpu_memory_mode,
             gpu_layers = request.gpu_layers,
             tensor_split = request.tensor_split,
+            cache_type_kv = request.cache_type_kv,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -4548,7 +4580,9 @@ def _requires_security_review_for_model(
 
 @router.post("/validate", response_model = ValidateModelResponse)
 async def validate_model(
-    request: ValidateModelRequest, current_subject: str = Depends(get_current_subject)
+    request: ValidateModelRequest,
+    fastapi_request: Request,
+    current_subject: str = Depends(get_current_subject),
 ):
     """
     Lightweight validation endpoint for model identifiers.
@@ -4627,9 +4661,11 @@ async def validate_model(
             max_seq_length = request.max_seq_length,
             requested_gpu_ids = effective_gpu_ids,
             llama_extra_args = effective_extra_args,
+            n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
             gpu_memory_mode = request.gpu_memory_mode,
             gpu_layers = request.gpu_layers,
             tensor_split = request.tensor_split,
+            cache_type_kv = request.cache_type_kv,
         )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):

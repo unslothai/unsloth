@@ -183,6 +183,9 @@ class ValidateModelRequest(BaseModel):
     gpu_memory_mode: Literal["auto", "manual"] = Field("auto")
     gpu_layers: int = Field(-1, ge = -1)
     tensor_split: Optional[List[float]] = Field(None)
+    # A heavier KV cache (f32) doubles the KV bytes, so validate's guard must
+    # size it the same as /load or it can pass a load /load then 409s.
+    cache_type_kv: Optional[str] = Field(None)
     # The spec mode decides whether the separate MTP drafter is charged in the
     # guard estimate; omitted -> "auto" (drafter charged, the safe over-estimate).
     speculative_type: Optional[str] = Field(None)
