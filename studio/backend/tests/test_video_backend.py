@@ -394,9 +394,16 @@ def fake_runtime(monkeypatch):
     diffusers.HunyuanVideo15Pipeline = _FakeHV15Pipeline
     diffusers.HunyuanVideo15Transformer3DModel = _FakeTransformer
     diffusers.FirstBlockCacheConfig = lambda threshold = None: ("fbcache", threshold)
+    # diffusers.hooks.MagCacheConfig: the auto cache mode for the HunyuanVideo-1.5 and
+    # Wan2.2-TI2V-5B families (calibrated curves); the fake records its kwargs so the
+    # cache tests can assert the engaged mode + step count.
+    diffusers_hooks = types.ModuleType("diffusers.hooks")
+    diffusers_hooks.MagCacheConfig = lambda **kwargs: ("magcache", kwargs)
+    diffusers.hooks = diffusers_hooks
 
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", diffusers_hooks)
     monkeypatch.setattr("core.inference.video.clear_gpu_cache", lambda: None)
     # MP4 encode needs real frames + PyAV; the backend contract under test is the
     # byte handoff, so stub the encoder.
@@ -1249,12 +1256,13 @@ def test_video_speed_off_skips_hunyuan_trim(fake_runtime, monkeypatch):
 
 
 def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
-    # Unset step cache is AUTO, decided from the model's default schedule: Wan's
-    # 50-step default engages FBCache at load; the LTX distilled 8-step default
-    # keeps it off. Both are re-checked per generation (toggle test below).
+    # Unset step cache is AUTO, decided from the model's default schedule: Wan
+    # TI2V-5B's 50-step default engages its auto mode (MagCache, calibrated curve) at
+    # load; the LTX distilled 8-step default keeps it off. Both are re-checked per
+    # generation (toggle test below).
     backend = VideoBackend()
     status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
-    assert status["transformer_cache"] == "fbcache"
+    assert status["transformer_cache"] == "magcache"
     assert status["resolved"]["transformer_cache"]["source"] == "auto"
     backend.unload()
 
@@ -1276,11 +1284,14 @@ def test_video_step_cache_auto_toggles_on_actual_steps(fake_runtime):
     # it. An explicit "off" never toggles.
     backend = VideoBackend()
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
-    assert backend.status()["transformer_cache"] == "fbcache"
+    assert backend.status()["transformer_cache"] == "magcache"
     backend.generate(prompt = "a sloth", steps = 8)
     assert backend.status()["transformer_cache"] is None
     backend.generate(prompt = "a sloth", steps = 30)
-    assert backend.status()["transformer_cache"] == "fbcache"
+    assert backend.status()["transformer_cache"] == "magcache"
+    # The re-engage interpolated the calibrated curve over the ACTUAL step count.
+    cfg = backend._state.pipe.transformer.cache_config
+    assert cfg[0] == "magcache" and cfg[1]["num_inference_steps"] == 30
     backend.unload()
 
     backend.load_pipeline(

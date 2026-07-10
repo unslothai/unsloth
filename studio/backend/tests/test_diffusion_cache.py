@@ -513,11 +513,18 @@ def test_normalize_accepts_magcache():
 def test_auto_cache_mode_per_family():
     # HunyuanVideo-1.5: FBCache free-runs (no cap / no error budget) and derails the
     # trajectory (measured LPIPS 0.54 at its default threshold), so auto engages the
-    # bounded MagCache there; every other family keeps the measured FBCache default.
+    # bounded MagCache there. Wan2.2-TI2V-5B: both modes hold composition, but MagCache
+    # dominates the accuracy/speed frontier (1.65x at pairwise LPIPS 0.034 vs FBCache's
+    # 1.49x at 0.031; 1.73x/0.044 vs 1.71x/0.083 at the fast points), so auto engages
+    # MagCache with its calibrated curve. Wan2.2-A14B measured the OTHER way (FBCache
+    # 0.12 at 2.88x/0.128 dominates balanced MagCache's 1.80x/0.145; the 16-step
+    # high-noise expert starves MagCache's budget), so the MoE stays on FBCache. Every
+    # other family keeps the measured FBCache default.
     assert auto_cache_mode("hunyuanvideo-1.5") == TC_MAGCACHE
     assert auto_cache_mode("hunyuanvideo-1.5-720p") == TC_MAGCACHE
     assert auto_cache_mode("HunyuanVideo-1.5-720p") == TC_MAGCACHE
-    for other in (None, "", "flux", "wan2.2-ti2v-5b", "ltx-2", "z-image"):
+    assert auto_cache_mode("wan2.2-ti2v-5b") == TC_MAGCACHE
+    for other in (None, "", "flux", "wan2.2-t2v-a14b", "ltx-2", "z-image"):
         assert auto_cache_mode(other) == TC_FBCACHE
 
 
@@ -609,6 +616,118 @@ def test_toggle_magcache_disengages_below_bar(monkeypatch):
         _pipe(t), steps = 8, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
     )
     assert mode is None and t.disables == 1
+
+
+# ── per-expert magcache curves (dual-expert MoE, Wan2.2-A14B) ───────────────────────
+from core.inference.diffusion_cache import (  # noqa: E402
+    _MAGCACHE_CALIBRATION_STEPS,
+    _magcache_ratio_key,
+)
+
+
+def test_magcache_ratio_key_primary_and_expert():
+    # The primary transformer resolves the bare family key (back-compat with every
+    # single-DiT family); a second expert resolves "family::expert".
+    assert _magcache_ratio_key("wan2.2-t2v-a14b", None) == "wan2.2-t2v-a14b"
+    assert _magcache_ratio_key("wan2.2-t2v-a14b", "transformer") == "wan2.2-t2v-a14b"
+    assert (
+        _magcache_ratio_key("Wan2.2-T2V-A14B", "transformer_2")
+        == "wan2.2-t2v-a14b::transformer_2"
+    )
+
+
+def test_magcache_expert_resolves_its_own_curve(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    from core.inference import diffusion_cache as dc_mod
+
+    primary_curve = tuple([1.0] * 15)
+    expert_curve = tuple([0.99] * 35)
+    monkeypatch.setitem(dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe", primary_curve)
+    monkeypatch.setitem(
+        dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe::transformer_2", expert_curve
+    )
+    t = _MixinTransformer()
+    engaged = apply_step_cache(
+        _pipe(t), mode = "magcache", family = "fam-moe", steps = 50,
+        expert = "transformer_2",
+    )
+    assert engaged == TC_MAGCACHE
+    assert t.enabled_with.mag_ratios == list(expert_curve)
+
+
+def test_magcache_expert_subcurve_scales_step_count(monkeypatch):
+    # An expert sub-curve covers only that expert's slice of the calibration schedule
+    # (the hook counts the expert's OWN forwards from 0), so the configured step count
+    # scales by steps / calibration-steps: a 35-of-50 sub-curve at a 30-step request
+    # configures round(35 * 30 / 50) = 21 steps -- NOT the full 30.
+    _stub_diffusers_with_magcache(monkeypatch)
+    from core.inference import diffusion_cache as dc_mod
+
+    expert_curve = tuple([0.99] * 35)
+    monkeypatch.setitem(
+        dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe::transformer_2", expert_curve
+    )
+    t = _MixinTransformer()
+    apply_step_cache(
+        _pipe(t), mode = "magcache", family = "fam-moe", steps = 30,
+        expert = "transformer_2",
+    )
+    assert t.enabled_with.num_inference_steps == round(35 * 30 / _MAGCACHE_CALIBRATION_STEPS)
+    # At the calibration step count itself the sub-curve maps 1:1.
+    t2 = _MixinTransformer()
+    apply_step_cache(
+        _pipe(t2), mode = "magcache", family = "fam-moe",
+        steps = _MAGCACHE_CALIBRATION_STEPS, expert = "transformer_2",
+    )
+    assert t2.enabled_with.num_inference_steps == 35
+
+
+def test_magcache_full_curve_keeps_requested_steps(monkeypatch):
+    # A full 50-entry curve interpolates to the requested count directly (the
+    # single-DiT behaviour is unchanged by the expert plumbing).
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _MixinTransformer()
+    apply_step_cache(
+        _pipe(t), mode = "magcache", family = "wan2.2-ti2v-5b", steps = 30,
+        expert = "transformer",
+    )
+    assert t.enabled_with.num_inference_steps == 30
+    assert len(t.enabled_with.mag_ratios) == _MAGCACHE_CALIBRATION_STEPS
+
+
+def test_magcache_expert_without_curve_runs_uncached(monkeypatch):
+    # A second expert with no calibrated sub-curve must run uncached, NOT silently
+    # reuse the primary's curve (the experts split the schedule; the curves differ).
+    _stub_diffusers_with_magcache(monkeypatch)
+    from core.inference import diffusion_cache as dc_mod
+
+    monkeypatch.setitem(dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe", tuple([1.0] * 15))
+    t = _MixinTransformer()
+    assert (
+        apply_step_cache(
+            _pipe(t), mode = "magcache", family = "fam-moe", steps = 50,
+            expert = "transformer_2",
+        )
+        is None
+    )
+    assert t.enabled_with is None
+
+
+def test_toggle_threads_expert_through(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    from core.inference import diffusion_cache as dc_mod
+
+    expert_curve = tuple([0.98] * 35)
+    monkeypatch.setitem(
+        dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe::transformer_2", expert_curve
+    )
+    t = _ToggleTransformer()
+    mode = maybe_toggle_step_cache(
+        _pipe(t), steps = 50, mode = TC_MAGCACHE, family = "fam-moe",
+        expert = "transformer_2",
+    )
+    assert mode == TC_MAGCACHE
+    assert t.enabled_with.mag_ratios == list(expert_curve)
 
 
 # ── cache quality presets (speed/accuracy knob) ────────────────────────────────────

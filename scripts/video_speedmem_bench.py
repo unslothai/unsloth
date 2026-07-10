@@ -304,6 +304,26 @@ _CONFIGS: dict[str, dict[str, Any]] = {
     "shipped_nocache": dict(
         te = "auto", vae = "auto", dit = "auto", speed = "default", attn = "auto", cache = "off"
     ),
+    # Compile-parity isolation: the same compiled stack as "cudnn" but with inductor's
+    # emulate_precision_casts turned back OFF after the speed layer set it, so the row
+    # measures the numeric + speed effect of the round-2 parity flag per family.
+    "epc_off": dict(
+        te = "none",
+        vae = "none",
+        dit = "none",
+        speed = "default",
+        attn = "auto",
+        cache = "off",
+        epc = False,
+    ),
+    # Explicit cache modes at the dense compiled stack (bypass the family AUTO policy),
+    # for FBCache-vs-MagCache head-to-head rows at identical settings.
+    "fbcache_explicit": dict(
+        te = "none", vae = "none", dit = "none", speed = "default", attn = "auto", cache = "fbcache"
+    ),
+    "magcache_explicit": dict(
+        te = "none", vae = "none", dit = "none", speed = "default", attn = "auto", cache = "magcache"
+    ),
 }
 
 
@@ -475,15 +495,24 @@ def _apply_levers(
 
     # Step cache FIRST (compile keys fullgraph off an active cache); per expert.
     cache_active = False
-    if cfg["cache"] == "auto":
+    if cfg["cache"] in ("auto", "fbcache", "magcache"):
         # Per-family auto mode, exactly like the loader (video.py): MagCache for the
-        # HunyuanVideo-1.5 families, FBCache elsewhere.
-        cache_request = auto_cache_mode(fam_name) if default_steps >= FBCACHE_MIN_STEPS else None
+        # HunyuanVideo-1.5 families, FBCache elsewhere. An explicit "fbcache"/"magcache"
+        # config value bypasses the auto policy (the head-to-head rows).
+        if cfg["cache"] == "auto":
+            cache_request = (
+                auto_cache_mode(fam_name) if default_steps >= FBCACHE_MIN_STEPS else None
+            )
+        else:
+            cache_request = cfg["cache"]
         if cache_request is not None:
             # Quality preset resolution, exactly like the loader (video.py): an unset
-            # request takes the family's measured auto default.
+            # request takes the family's measured auto default. Expert names zip with
+            # the views (the loader's expert-view iteration contract) so a dual-expert
+            # MoE resolves per-expert MagCache curves.
             quality = normalize_cache_quality(cache_quality) or auto_cache_quality(fam_name)
-            for v in views:
+            experts = ("transformer", "transformer_2")
+            for v, expert in zip(views, experts):
                 engaged["cache"] = apply_step_cache(
                     v,
                     mode = cache_request,
@@ -492,6 +521,7 @@ def _apply_levers(
                     family = fam_name,
                     steps = default_steps,
                     quality = quality,
+                    expert = expert,
                     logger = logger,
                 )
             cache_active = engaged["cache"] not in (None, "off")
@@ -525,6 +555,16 @@ def _apply_levers(
                 logger = logger,
             )
     engaged["_effective_speed"] = speed
+    # emulate_precision_casts A/B: the speed layer sets the flag True inside
+    # _compile_repeated_blocks; compile is lazy (first forward), so flipping it back off
+    # here gives the pre-round-2 inductor numerics for the whole run ("epc_off" config).
+    if not cfg.get("epc", True):
+        try:
+            import torch
+            torch._inductor.config.emulate_precision_casts = False
+            engaged["epc"] = False
+        except Exception:
+            pass
     return engaged
 
 
@@ -565,7 +605,7 @@ def _timed_video(
         views = [pipe]
         if getattr(pipe, "transformer_2", None) is not None:
             views.append(_SecondExpertView(pipe))
-        for v in views:
+        for v, expert in zip(views, ("transformer", "transformer_2")):
             try:
                 maybe_toggle_step_cache(
                     v,
@@ -574,7 +614,9 @@ def _timed_video(
                     threshold = cache_threshold,
                     mode = auto_cache_mode(family),
                     family = family,
-                    quality = normalize_cache_quality(cache_quality) or auto_cache_quality(family),
+                    quality = normalize_cache_quality(cache_quality)
+                    or auto_cache_quality(family),
+                    expert = expert,
                     logger = logger,
                 )
             except Exception:

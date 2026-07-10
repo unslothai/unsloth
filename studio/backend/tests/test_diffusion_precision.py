@@ -592,6 +592,27 @@ def test_select_te_auto_resolves_dense_for_hunyuanvideo15(monkeypatch):
     assert select_te_quant_scheme(_target(), "auto", family = "qwen-image") == TE_QUANT_FP8_DYNAMIC
 
 
+def test_select_te_auto_resolves_dense_for_wan_a14b_but_not_wan_5b(monkeypatch):
+    # Wan2.2-A14B: TE fp8_dynamic alone costs pairwise LPIPS 0.1195 vs the dense-TE
+    # stack for a 1.03x once-per-generation encode (146.7 -> 142.7 s e2e), so AUTO
+    # keeps the encoder dense. Wan2.2-TI2V-5B shares the UMT5 encoder but measured
+    # in-bar (0.0396 pairwise) at a real 1.09x on its far faster DiT, so it keeps the
+    # normal ladder.
+    _stub_tq_select(monkeypatch, cc = (10, 0), consumer = False)
+    _allow_te(monkeypatch, {TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8})
+    assert select_te_quant_scheme(_target(), "auto", family = "wan2.2-t2v-a14b") is None
+    assert select_te_quant_scheme(_target(), "auto", family = "Wan2.2-T2V-A14B") is None
+    assert (
+        select_te_quant_scheme(_target(), "auto", family = "wan2.2-ti2v-5b")
+        == TE_QUANT_FP8_DYNAMIC
+    )
+    # The auto-dense table steers only the DEFAULT; an explicit request stays verbatim.
+    assert (
+        select_te_quant_scheme(_target(), "fp8_dynamic", family = "wan2.2-t2v-a14b")
+        == TE_QUANT_FP8_DYNAMIC
+    )
+
+
 def test_select_te_explicit_scheme_still_honored_for_hunyuanvideo15(monkeypatch):
     # The auto-dense table steers only the DEFAULT; an explicit request stays verbatim
     # (select returns it as-is; quantize_text_encoders re-gates hardware support).
@@ -601,3 +622,28 @@ def test_select_te_explicit_scheme_still_honored_for_hunyuanvideo15(monkeypatch)
         select_te_quant_scheme(_target(), "fp8_dynamic", family = "hunyuanvideo-1.5-720p")
         == TE_QUANT_FP8_DYNAMIC
     )
+
+
+def test_select_te_auto_ltx2_denies_fp8_dynamic_falls_to_layerwise_fp8(monkeypatch):
+    # LTX-2's Gemma3-27B encoder BLACK-FRAMES the whole clip under torchao per-row
+    # compute fp8 (measured pairwise vs the dense encoder: mean luma 137.9 -> 0.0,
+    # LPIPS 0.78), while layerwise fp8 is near-lossless (0.0043) at the same shrink --
+    # so the family deny drops fp8_dynamic and auto falls through (int8 has no ltx-2
+    # keep-bf16 schedule) to layerwise fp8.
+    _stub_tq_select(monkeypatch, cc = (10, 0), consumer = False)
+    _allow_te(monkeypatch, {TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8})
+    assert select_te_quant_scheme(_target(), "auto", family = "ltx-2") == TE_QUANT_FP8
+
+
+def test_quantize_explicit_fp8_dynamic_refused_for_ltx2(monkeypatch):
+    # The deny contract covers EXPLICIT requests too: black frames are a model-level
+    # breakage, not a preference, so the encoder stays dense instead.
+    _allow_te(monkeypatch, {TE_QUANT_FP8_DYNAMIC})
+    calls: list = []
+    monkeypatch.setattr(dp, "_cast_fp8_dynamic", lambda enc, tgt: calls.append(enc))
+    pipe = types.SimpleNamespace(text_encoder = object())
+    assert (
+        quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic", family = "ltx-2")
+        is None
+    )
+    assert calls == []

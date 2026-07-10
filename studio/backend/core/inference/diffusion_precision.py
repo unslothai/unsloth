@@ -126,16 +126,31 @@ _TE_AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
 
 # Text encoders whose activation ranges break a scheme at the MODEL level (measured hidden-state
 # cosine vs bf16, via scripts/diffusion_quant_builder.py). Populated from the accuracy sweep; a
-# denied scheme is skipped by ``auto`` and refused when requested explicitly. Empty by default:
-# int8 already gates on a per-family keep-bf16 schedule (``_TE_INT8_SKIP``), so this is for the
-# rarer case where even keep-bf16 int8 (or fp8) misses the bar for a specific encoder.
-_TE_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {}
+# denied scheme is skipped by ``auto`` and refused when requested explicitly. int8 already gates
+# on a per-family keep-bf16 schedule (``_TE_INT8_SKIP``), so this is for the rarer case where a
+# scheme breaks the encoder outright.
+#   ltx-2 / fp8_dynamic: torchao per-row compute-fp8 on the Gemma3-27B encoder BLACK-FRAMES the
+#   whole clip (B200, measured pairwise vs the dense encoder at identical seed/settings: mean
+#   luma 137.9 -> 0.0, LPIPS 0.78; reproduced at 1216x704/33f/40 steps compiled and 384x256/9f/10
+#   steps eager). Layerwise fp8 on the same encoder is near-lossless (pairwise LPIPS 0.0043) at
+#   the same ~2x shrink, so auto falls through to it -- the deny costs nothing.
+_TE_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
+    "ltx-2": frozenset({TE_QUANT_FP8_DYNAMIC}),
+}
 
 # Families whose AUTO text-encoder quant resolves dense (see select_te_quant_scheme):
 # measured out-of-bar trajectory drift for zero speed win on the video families below.
 # Unlike the deny table this only steers the AUTO default; an explicit scheme request
 # (text_encoder_quant="fp8_dynamic") is still honored verbatim.
-_TE_AUTO_DENSE_FAMILIES: frozenset[str] = frozenset({"hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"})
+#   wan2.2-t2v-a14b: TE fp8_dynamic ALONE moves the clip to pairwise LPIPS 0.1195 vs
+#   the dense-TE stack (B200, 1280x720/33f/50 steps, identical seed) for 146.7 ->
+#   142.7 s e2e -- the UMT5 encoder runs once per generation, so the 1.03x is noise
+#   next to being the dominant accuracy cost. The dual-expert MoE trajectory amplifies
+#   the conditioning perturbation ~3x harder than the same encoder on wan2.2-ti2v-5b
+#   (0.0396 pairwise, kept quantized there for a real 1.09x on its much faster DiT).
+_TE_AUTO_DENSE_FAMILIES: frozenset[str] = frozenset(
+    {"hunyuanvideo-1.5", "hunyuanvideo-1.5-720p", "wan2.2-t2v-a14b"}
+)
 
 # Map a TE torchao scheme to the transformer smoke-probe scheme (same torchao GEMM), so ``auto``
 # degrades gracefully when a build lacks a kernel. Layerwise fp8 has no torchao GEMM to probe.

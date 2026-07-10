@@ -237,19 +237,109 @@ _MAGCACHE_480P_RATIOS = (
     0.8967,
     0.8382,
 )
+# Wan2.2-TI2V-5B, calibrated at 1280x704 / 33 frames / 50 steps on the family base
+# checkpoint (B200, trim-less compiled stack). Cond/uncond branches agree within
+# 0.0008, so one (conditional) curve serves both CFG contexts.
+_MAGCACHE_WAN5B_RATIOS = (
+    1.0,
+    0.9906,
+    0.9996,
+    0.9936,
+    0.9968,
+    0.9958,
+    0.9956,
+    0.9953,
+    0.9957,
+    0.9954,
+    0.9941,
+    0.9958,
+    0.9933,
+    0.9938,
+    0.9948,
+    0.9936,
+    0.9948,
+    0.9925,
+    0.994,
+    0.9927,
+    0.9913,
+    0.9919,
+    0.9918,
+    0.9907,
+    0.989,
+    0.9901,
+    0.9892,
+    0.9903,
+    0.9884,
+    0.9868,
+    0.9851,
+    0.9848,
+    0.9849,
+    0.9831,
+    0.9818,
+    0.9804,
+    0.9781,
+    0.9756,
+    0.9733,
+    0.9717,
+    0.9688,
+    0.9646,
+    0.9611,
+    0.9559,
+    0.9503,
+    0.9443,
+    0.938,
+    0.9315,
+    0.9227,
+    0.9208,
+)
+
+# All curves are calibrated at the family's default 50-step schedule. A single-DiT
+# curve therefore has 50 entries and MagCacheConfig interpolates it to the actual step
+# count. A dual-expert MoE (Wan2.2-A14B) runs each expert on a SLICE of the schedule
+# (the boundary_ratio split) and the MagCache hook counts each expert's OWN forwards
+# from 0, so each expert carries its own curve, keyed "family::transformer_2" for the
+# second expert, whose length is the number of steps that expert ran during the 50-step
+# calibration; engage-time scales it proportionally to the requested step count (the
+# boundary split is a fixed fraction of the schedule for a given checkpoint).
+_MAGCACHE_CALIBRATION_STEPS = 50
+
 _MAGCACHE_FAMILY_RATIOS: dict[str, tuple[float, ...]] = {
     "hunyuanvideo-1.5": _MAGCACHE_480P_RATIOS,
     "hunyuanvideo-1.5-720p": _MAGCACHE_720P_RATIOS,
+    "wan2.2-ti2v-5b": _MAGCACHE_WAN5B_RATIOS,
 }
+
+
+def _magcache_ratio_key(family: Optional[str], expert: Optional[str]) -> str:
+    """The `_MAGCACHE_FAMILY_RATIOS` key for a (family, expert) pair: the bare family
+    name for the primary ``transformer``, ``family::expert`` for a second expert."""
+    fam = str(family or "").strip().lower()
+    exp = str(expert or "").strip().lower()
+    if exp in ("", "transformer"):
+        return fam
+    return f"{fam}::{exp}"
 
 # Families whose AUTO step-cache decision engages MagCache instead of FBCache. On
 # HunyuanVideo-1.5 FBCache free-runs (no skip cap, no error budget) and derails the
 # trajectory (LPIPS 0.54 + a luma shift at its default threshold), while MagCache holds
-# the same composition at 1.5x -- see the constants above. Every other family keeps the
-# measured FBCache default. An EXPLICIT "fbcache"/"magcache" request always wins.
+# the same composition at 1.5x -- see the constants above. On Wan2.2-TI2V-5B both modes
+# stay composition-true, but MagCache dominates the accuracy/speed frontier (B200,
+# 1280x704/33f/50 steps, pairwise LPIPS vs the same uncached compiled stack): balanced
+# MagCache 1.65x at 0.034 vs FBCache 0.08 at 1.49x/0.031, and at the fast points 1.73x
+# at 0.044 vs 1.71x at 0.083 -- FBCache's error grows unboundedly past its threshold
+# while MagCache's budget caps it. On Wan2.2-A14B (dual-expert MoE) the OPPOSITE holds
+# (B200, 1280x720/33f/50 steps, per-expert calibrated curves, same pairwise protocol):
+# FBCache 0.12 at 2.88x/0.128 dominates balanced MagCache (1.80x/0.145) and FBCache
+# 0.08 sits at 1.28x/0.098 vs MagCache quality's 1.14x/0.074 -- the 16-step high-noise
+# expert leaves MagCache too few forwards to skip within its error budget -- so the
+# family keeps the FBCache default and no calibrated curve ships (an explicit magcache
+# request runs uncached with a warning rather than engaging a measured-worse mode).
+# Every other family keeps the measured FBCache default. An EXPLICIT
+# "fbcache"/"magcache" request always wins.
 _FAMILY_AUTO_CACHE_MODE: dict[str, str] = {
     "hunyuanvideo-1.5": TC_MAGCACHE,
     "hunyuanvideo-1.5-720p": TC_MAGCACHE,
+    "wan2.2-ti2v-5b": TC_MAGCACHE,
 }
 
 
@@ -293,6 +383,17 @@ def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
 # via TransformerBlockRegistry.get first so a diffusers release that ships the
 # registration natively makes this a no-op.
 #   transformer class -> ((block module, block class, hs index, ehs index), ...)
+#
+# LTX-2 is DELIBERATELY absent: its LTX2VideoTransformerBlock is also unregistered in
+# diffusers 0.39, but it returns (hidden_states, audio_hidden_states) -- a JOINT
+# video+audio stream -- while both cache hook families cache/skip only the single
+# ``hidden_states`` stream and, on a skipped step, fetch the parameter literally named
+# ``encoder_hidden_states`` (the TEXT embeddings) for the second return slot. A naive
+# registration would therefore feed text embeddings into the next block's audio input
+# on every skipped step. Step caching for LTX-2 needs a dual-stream cache
+# implementation, not a metadata entry; until then the family runs uncached (verified:
+# enable_cache raises "not registered" and the load proceeds uncached, and the
+# distilled LTX-2.3 checkpoints run 8-step schedules below FBCACHE_MIN_STEPS anyway).
 _EXTRA_BLOCK_METADATA: dict[str, tuple[tuple[str, str, int, Optional[int]], ...]] = {
     "HunyuanVideo15Transformer3DModel": (
         (
@@ -480,6 +581,7 @@ def apply_step_cache(
     family: Optional[str] = None,
     steps: Optional[int] = None,
     quality: Optional[str] = None,
+    expert: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[str]:
     """Engage step caching on ``pipe.transformer``. Returns the mode actually engaged, or
@@ -489,8 +591,12 @@ def apply_step_cache(
     magcache skip cap / retention window); an explicit ``threshold`` still wins over the
     preset's threshold. The magcache mode additionally needs ``family`` (to look up the
     calibrated ratio curve) and ``steps`` (MagCache interpolates that curve over the
-    configured step count and sizes its no-skip retention window from it). Best-effort:
-    never raises for an incompatible model."""
+    configured step count and sizes its no-skip retention window from it); a dual-expert
+    MoE caller passes ``expert`` (the pipe attribute the view exposes, e.g.
+    "transformer_2") so each expert gets ITS OWN calibrated curve -- the experts split
+    the schedule at the boundary timestep, and the hook counts each expert's own
+    forwards from 0, so one shared full-schedule curve would be misaligned for both.
+    Best-effort: never raises for an incompatible model."""
     mode = normalize_transformer_cache(mode)
     if mode is None or mode == TC_AUTO:
         # AUTO must be resolved by the loader (step-count policy) before reaching the
@@ -531,14 +637,15 @@ def apply_step_cache(
     _ensure_block_metadata_registered(transformer, logger)
     try:
         if mode == TC_MAGCACHE:
-            ratios = _MAGCACHE_FAMILY_RATIOS.get(str(family or "").strip().lower())
+            ratio_key = _magcache_ratio_key(family, expert)
+            ratios = _MAGCACHE_FAMILY_RATIOS.get(ratio_key)
             if ratios is None:
                 # No silent FBCache fallback: the family was routed to magcache exactly
                 # because FBCache derails it, so an uncalibrated checkpoint runs uncached.
                 _warn(
                     logger,
                     mode,
-                    RuntimeError(f"no calibrated mag_ratios for family '{family}'"),
+                    RuntimeError(f"no calibrated mag_ratios for '{ratio_key}'"),
                 )
                 return None
             if not steps or int(steps) <= 0:
@@ -546,11 +653,22 @@ def apply_step_cache(
                 return None
             from diffusers.hooks import MagCacheConfig
 
+            # A full-schedule curve (one entry per calibration step) interpolates to the
+            # requested step count directly. An expert SUB-curve (dual-expert MoE) covers
+            # only that expert's slice of the calibration schedule, and the hook indexes
+            # it by the expert's own forward count, so scale its configured step count by
+            # the same steps/calibration ratio: the boundary split is a fixed fraction of
+            # the schedule, so the expert runs ~len(ratios) * steps / 50 forwards.
+            num_steps = int(steps)
+            if len(ratios) != _MAGCACHE_CALIBRATION_STEPS:
+                num_steps = max(
+                    1, round(len(ratios) * int(steps) / _MAGCACHE_CALIBRATION_STEPS)
+                )
             config: Any = MagCacheConfig(
                 threshold = thr,
                 max_skip_steps = mag_skip,
                 retention_ratio = mag_retention,
-                num_inference_steps = int(steps),
+                num_inference_steps = num_steps,
                 mag_ratios = list(ratios),
             )
             # The curve is interpolated over the CONFIGURED step count, so the marker
@@ -668,6 +786,7 @@ def maybe_toggle_step_cache(
     mode: str = TC_FBCACHE,
     family: Optional[str] = None,
     quality: Optional[str] = None,
+    expert: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[str]:
     """Generation-time enable/disable for an AUTO cache decision, keyed on the actual
@@ -701,6 +820,7 @@ def maybe_toggle_step_cache(
             family = family,
             steps = steps,
             quality = quality,
+            expert = expert,
             logger = logger,
         )
     if not want and engaged:

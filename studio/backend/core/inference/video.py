@@ -1360,7 +1360,11 @@ class VideoBackend:
                 auto_cache_mode(fam.name) if default_cache_steps >= FBCACHE_MIN_STEPS else None
             )
         cache_engaged = None
-        for view in views:
+        # Each view is zipped with the pipe attribute it exposes as ``transformer`` (the
+        # expert-view iteration contract): a dual-expert MoE's second view passes
+        # expert="transformer_2" so MagCache resolves THAT expert's calibrated curve --
+        # the experts split the schedule at the boundary timestep, so their curves differ.
+        for view, expert_name in zip(views, _transformer_names(pipe, fam)):
             engaged = apply_step_cache(
                 view,
                 mode = cache_request,
@@ -1373,6 +1377,7 @@ class VideoBackend:
                 family = fam.name,
                 steps = default_cache_steps,
                 quality = cache_quality,
+                expert = expert_name,
                 logger = logger,
             )
             if view is pipe:
@@ -1808,7 +1813,9 @@ class VideoBackend:
                 # MoE toggles both experts.
                 if state.cache_auto:
                     toggled = state.transformer_cache
-                    for view in _views_for(pipe, fam):
+                    for view, expert_name in zip(
+                        _views_for(pipe, fam), _transformer_names(pipe, fam)
+                    ):
                         toggled = maybe_toggle_step_cache(
                             view,
                             steps = steps,
@@ -1817,6 +1824,7 @@ class VideoBackend:
                             mode = auto_cache_mode(fam.name),
                             family = fam.name,
                             quality = state.cache_quality,
+                            expert = expert_name,
                             logger = logger,
                         )
                     if toggled != state.transformer_cache:
