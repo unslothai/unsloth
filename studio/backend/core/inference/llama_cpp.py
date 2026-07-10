@@ -6860,9 +6860,7 @@ class LlamaCppBackend:
                     _split_gpus = self._effective_gpu_count(gpu_indices)
                     if tensor_split and _split_gpus > 1:
                         if len(tensor_split) == _split_gpus:
-                            cmd.extend(
-                                ["--tensor-split", ",".join(f"{x:g}" for x in tensor_split)]
-                            )
+                            cmd.extend(["--tensor-split", ",".join(f"{x:g}" for x in tensor_split)])
                             manual_tensor_split_emitted = True
                         else:
                             logger.warning(
