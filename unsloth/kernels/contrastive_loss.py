@@ -586,6 +586,7 @@ def _combined_sentence_features(model, sentence_features):
 
 def encode_sentence_features(model, sentence_features):
     """Encode compatible MNRL rows in adaptive length buckets."""
+
     def sentence_embedding_only(features):
         features["_unsloth_sentence_embedding_only"] = True
         try:

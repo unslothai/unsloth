@@ -883,11 +883,18 @@ def test_combined_pooling_modes_and_observable_outputs_keep_parity(contrastive_m
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "_ensure_pooling_flags"
     )
-    namespace = {"_POOLING_MODE_FLAGS": {
-        "cls": "pooling_mode_cls_token",
-        "mean": "pooling_mode_mean_tokens",
-    }}
-    exec(compile(ast.Module(body = [helper], type_ignores = []), str(_SENTENCE_TRANSFORMER_PATH), "exec"), namespace)
+    namespace = {
+        "_POOLING_MODE_FLAGS": {
+            "cls": "pooling_mode_cls_token",
+            "mean": "pooling_mode_mean_tokens",
+        }
+    }
+    exec(
+        compile(
+            ast.Module(body = [helper], type_ignores = []), str(_SENTENCE_TRANSFORMER_PATH), "exec"
+        ),
+        namespace,
+    )
     pooling = types.SimpleNamespace(pooling_mode = ["cls", "mean"])
     namespace["_ensure_pooling_flags"](pooling)
     assert pooling.pooling_mode_cls_token is True
