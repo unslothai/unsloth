@@ -2,8 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type TranslationKey, useT } from "@/i18n";
-import { Tick02Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type Palette,
   type ResolvedTheme,
@@ -129,20 +127,16 @@ export function PaletteCards() {
             onClick={() => setPalette(opt.value)}
             aria-pressed={active}
             data-palette-value={opt.value}
-            // Active ring and check are CSS-driven off html[data-palette]
-            // (see .palette-card in index.css) so they move in the same
-            // style pass that swaps the tokens; keying them off React state
-            // leaves the ring on the old card until the app finishes
-            // re-rendering.
+            // The active ring is CSS-driven off html[data-palette] (see
+            // .palette-card in index.css) so it moves in the same style
+            // pass that swaps the tokens; keying it off React state leaves
+            // the ring on the old card until the app finishes re-rendering.
             className="palette-card flex flex-col gap-2 rounded-xl border border-border p-2.5 text-left transition-colors"
           >
             <PalettePreview colors={PREVIEWS[opt.value][resolved]} />
-            <div className="flex items-center justify-between gap-2 px-0.5">
+            <div className="flex items-center gap-2 px-0.5">
               <span className="text-sm font-medium text-foreground">
                 {t(opt.labelKey)}
-              </span>
-              <span className="palette-card-check size-4 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                <HugeiconsIcon icon={Tick02Icon} className="size-3" />
               </span>
             </div>
           </button>

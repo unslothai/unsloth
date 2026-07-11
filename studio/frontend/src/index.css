@@ -172,10 +172,7 @@
 	--bypass: #c99d00;
 	--border: oklch(0.9208 0.0101 164.8536);
 	--input: oklch(0.9208 0.0101 164.8536);
-	/* Selection and focus outlines: the border tone pulled toward the
-	   foreground, never plain black/white. Resolved at use, so every
-	   palette and mode derives its own value from its --border. */
-	--ring: color-mix(in srgb, var(--border) 55%, var(--foreground));
+	--ring: #262626;
 	--chart-1: #17b88b;
 	--chart-2: oklch(0.694 0.1395 136.6059);
 	--chart-3: oklch(0.7014 0.1193 197.5897);
@@ -191,7 +188,7 @@
 	--sidebar-accent: oklch(0.96 0.0279 166.55);
 	--sidebar-accent-foreground: oklch(0.2868 0.0649 159.9823);
 	--sidebar-border: #f2f2f2;
-	--sidebar-ring: var(--ring);
+	--sidebar-ring: #262626;
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
@@ -313,6 +310,7 @@
 	   tiles, quant chips) and keep subtle contrast on card. */
 	--border: #303030;
 	--input: #303030;
+	--ring: #ececec;
 	--chart-1: oklch(0.7511 0.1407 166.2284);
 	--chart-2: oklch(0.75 0.14 136.5572);
 	--chart-3: oklch(0.7554 0.1285 197.339);
@@ -327,6 +325,7 @@
 	--sidebar-accent: #2a2a2a;
 	--sidebar-accent-foreground: #ececec;
 	--sidebar-border: #2a2a2a;
+	--sidebar-ring: #ececec;
 	--destructive-foreground: oklch(1 0 0);
 	/* Match light's radius so every rounded-* element is the same in both themes. */
 	--radius: 1.1rem;
@@ -423,6 +422,7 @@
 	--bypass: #9a7b1e;
 	--border: #e6e6e6;
 	--input: #e6e6e6;
+	--ring: #1a1c1f;
 	--chart-1: #339cff;
 	--chart-2: #8fa3b8;
 	--chart-3: #0f6fd6;
@@ -437,6 +437,7 @@
 	--sidebar-accent: #ececec;
 	--sidebar-accent-foreground: #1a1c1f;
 	--sidebar-border: #f2f2f2;
+	--sidebar-ring: #1a1c1f;
 
 	--nav-fg: #2d2f31;
 	--nav-fg-muted: #8f8f8f;
@@ -461,6 +462,7 @@
 	--control-accent: #4dabff;
 	--control-accent-foreground: #ffffff;
 	--bypass: #d9b40b;
+	--ring: #ececec;
 	--chart-1: #4dabff;
 	--chart-2: #8ab6de;
 	--chart-3: #1f7fe8;
@@ -468,6 +470,7 @@
 	--chart-5: #6d87a3;
 	--sidebar-primary: #ececec;
 	--sidebar-primary-foreground: #0d0d0d;
+	--sidebar-ring: #ececec;
 }
 
 /* -------------------------------- Minimal -------------------------------- */
@@ -489,6 +492,7 @@
 	--bypass: #6f6f6f;
 	--border: #e2e2e2;
 	--input: #e2e2e2;
+	--ring: #171717;
 	--chart-1: #171717;
 	--chart-2: #4d4d4d;
 	--chart-3: #7a7a7a;
@@ -502,6 +506,7 @@
 	--sidebar-accent: #ebebeb;
 	--sidebar-accent-foreground: #171717;
 	--sidebar-border: #e8e8e8;
+	--sidebar-ring: #171717;
 
 	--nav-fg: #333333;
 	--nav-fg-muted: #8a8a8a;
@@ -523,6 +528,7 @@
 	--primary: #ededed;
 	--primary-foreground: #111111;
 	--bypass: #9c9c9c;
+	--ring: #ededed;
 	--chart-1: #ededed;
 	--chart-2: #bdbdbd;
 	--chart-3: #8f8f8f;
@@ -530,6 +536,7 @@
 	--chart-5: #3d3d3d;
 	--sidebar-primary: #ededed;
 	--sidebar-primary-foreground: #111111;
+	--sidebar-ring: #ededed;
 }
 
 /* ---------------------------------------------------------------------------
@@ -624,13 +631,10 @@ html[data-chat-font] .aui-root {
 	font-family: var(--custom-chat-font);
 }
 
-/* Palette cards: the active ring and check key off html[data-palette] so
-   they swap in the same style pass that swaps the color tokens. Driving
-   them from React state paints one frame late while the whole page
-   recalculates, which briefly leaves the ring on the previous card. */
-.palette-card-check {
-	display: none;
-}
+/* Palette cards: the active ring keys off html[data-palette] so it swaps
+   in the same style pass that swaps the color tokens. Driving it from
+   React state paints one frame late while the whole page recalculates,
+   which briefly leaves the ring on the previous card. */
 .palette-card:hover {
 	border-color: color-mix(in srgb, var(--ring) 40%, transparent);
 }
@@ -639,11 +643,6 @@ html[data-chat-font] .aui-root {
 :root[data-palette="minimal"] .palette-card[data-palette-value="minimal"] {
 	border-color: var(--ring);
 	box-shadow: 0 0 0 1px var(--ring);
-}
-:root:not([data-palette]) .palette-card[data-palette-value="standard"] .palette-card-check,
-:root[data-palette="classic"] .palette-card[data-palette-value="classic"] .palette-card-check,
-:root[data-palette="minimal"] .palette-card[data-palette-value="minimal"] .palette-card-check {
-	display: flex;
 }
 
 /* Settings search: brief highlight on the row a result jumped to. */
@@ -999,9 +998,6 @@ html[data-chat-font] .aui-root {
 		@apply rounded-[20px] transition-colors;
 		border: 1px solid var(--border);
 		background-color: var(--background);
-	}
-	.panel-text-surface:hover {
-		border-color: color-mix(in srgb, var(--border) 75%, var(--foreground));
 	}
 	.dark .panel-text-surface {
 		border-color: transparent;

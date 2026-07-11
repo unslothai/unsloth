@@ -216,7 +216,7 @@ export function SettingsDialog() {
           </DialogDescription>
           <div className="flex h-full min-h-0 max-sm:flex-col">
             <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-muted/20 p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
-              <div className="relative mt-3 mb-2 max-sm:hidden">
+              <div className="relative mx-1 mt-3 mb-2 max-sm:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
@@ -247,7 +247,7 @@ export function SettingsDialog() {
                 )}
               </div>
               {results ? (
-                <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pb-1 max-sm:hidden">
+                <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 pb-1 max-sm:hidden">
                   {results.length === 0 ? (
                     <p className="px-3 py-2 text-sm text-muted-foreground">
                       {t("settings.dialog.searchNoResults")}
@@ -284,7 +284,7 @@ export function SettingsDialog() {
               ) : null}
               <p
                 className={cn(
-                  "pl-3 pt-3 pb-2.5 text-[13px] font-medium text-muted-foreground max-sm:hidden",
+                  "pl-4 pt-3 pb-2.5 text-[13px] font-medium text-muted-foreground max-sm:hidden",
                   results !== null && "hidden",
                 )}
               >
@@ -292,7 +292,7 @@ export function SettingsDialog() {
               </p>
               <nav
                 className={cn(
-                  "flex flex-col gap-0.5 max-sm:flex-row max-sm:overflow-x-auto",
+                  "flex flex-col gap-0.5 px-1 max-sm:flex-row max-sm:overflow-x-auto",
                   results !== null && "max-sm:flex hidden",
                 )}
               >
