@@ -24,10 +24,10 @@ import {
 } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
+import { MicIcon } from "@/lib/mic-icon";
 import {
   Copy01Icon,
   Delete02Icon,
-  Mic02Icon,
   PlusSignIcon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
@@ -274,7 +274,7 @@ function DictationTest() {
             </>
           ) : (
             <>
-              <HugeiconsIcon icon={Mic02Icon} className="mr-1.5 size-3.5" />
+              <MicIcon className="mr-1.5 size-3.5" />
               {t("settings.voice.dictation.startTest")}
             </>
           )}
@@ -470,7 +470,7 @@ export function VoiceTab() {
             </Select>
           ) : (
             <Button variant="outline" size="sm" onClick={requestAccess}>
-              <HugeiconsIcon icon={Mic02Icon} className="mr-1.5 size-3.5" />
+              <MicIcon className="mr-1.5 size-3.5" />
               {t("settings.voice.dictation.allowMicrophone")}
             </Button>
           )}

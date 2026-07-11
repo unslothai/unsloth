@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { MicIcon } from "@/lib/mic-icon";
 import {
   Cancel01Icon,
   CloudIcon,
@@ -16,14 +17,13 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   Message01Icon,
-  Mic02Icon,
   PaintBrush02Icon,
   Settings02Icon,
   UserIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
-import { useEffect, useRef } from "react";
+import { type FC, useEffect, useRef } from "react";
 import {
   type SettingsTab,
   useSettingsDialogStore,
@@ -42,7 +42,9 @@ import { FloatingMonitor } from "@/components/floating-monitor";
 interface TabDef {
   id: SettingsTab;
   labelKey: TranslationKey;
-  icon: typeof Settings02Icon;
+  icon?: typeof Settings02Icon;
+  /** Plain component icon, for icons shared with chat (not hugeicons). */
+  iconComponent?: FC<{ className?: string }>;
   badgeKey?: TranslationKey;
 }
 
@@ -79,7 +81,7 @@ const TABS: TabDef[] = [
   {
     id: "voice",
     labelKey: "settings.tabs.voice",
-    icon: Mic02Icon,
+    iconComponent: MicIcon,
     badgeKey: "common.new",
   },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
@@ -208,11 +210,15 @@ export function SettingsDialog() {
                           }
                         />
                       )}
-                      <HugeiconsIcon
-                        icon={tab.icon}
-                        strokeWidth={1.75}
-                        className="relative z-10 size-icon"
-                      />
+                      {tab.iconComponent ? (
+                        <tab.iconComponent className="relative z-10 size-icon" />
+                      ) : tab.icon ? (
+                        <HugeiconsIcon
+                          icon={tab.icon}
+                          strokeWidth={1.75}
+                          className="relative z-10 size-icon"
+                        />
+                      ) : null}
                       <span className="relative z-10 min-w-0 truncate">
                         {t(tab.labelKey)}
                       </span>
