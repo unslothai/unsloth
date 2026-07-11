@@ -225,3 +225,17 @@ def test_min_password_length_single_source():
     assert "MIN_PASSWORD_LENGTH" in models_src
     assert not re.search(r"min_length\s*=\s*8\b", models_src)
     assert auth_storage.MIN_PASSWORD_LENGTH == 8
+
+
+def test_lifespan_honors_bootstrap_suppression_in_source():
+    # The lifespan runs AFTER the gate and re-reads the bootstrap password
+    # into app.state; without the suppress flag it would overwrite the gate's
+    # None and the public HTML would inject the default credential again.
+    main_src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+    assert "suppress_bootstrap_injection" in main_src
+    # Every lifespan capture of the bootstrap password must be flag-guarded.
+    for line in main_src.splitlines():
+        if "storage.get_bootstrap_password()" in line and "=" in line:
+            assert "_suppress_bootstrap" in line, line
+    run_src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
+    assert "app.state.suppress_bootstrap_injection = True" in run_src

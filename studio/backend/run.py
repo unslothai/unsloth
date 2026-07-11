@@ -1086,7 +1086,7 @@ def _terminal_password_gate(
     api_only: bool,
     frontend_served: bool,
     is_colab: bool = False,
-) -> "Tuple[bool, bool]":
+) -> Tuple[bool, bool]:
     """Force a terminal password change before the public tunnel goes up.
 
     When the Cloudflare tunnel is about to publish Studio on the internet and
@@ -1495,6 +1495,10 @@ def run_server(
         # Either the password just changed here (the captured bootstrap value
         # is stale) or a public URL is about to serve with the default
         # credential still active (never inject it into the HTML then).
+        # The lifespan startup runs AFTER this and re-reads the bootstrap
+        # password into app.state, so a plain None here would be overwritten;
+        # the persistent flag makes the lifespan skip that re-read.
+        app.state.suppress_bootstrap_injection = True
         app.state.bootstrap_password = None
 
     # Run server in a daemon thread with explicit new_event_loop() +
