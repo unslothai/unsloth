@@ -1285,7 +1285,10 @@ def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
             root_real = os.path.realpath(str(root))
         except OSError:
             continue
-        if target_real == root_real or target_real.startswith(root_real + os.sep):
+        # A drive root ("D:\\") already ends in a separator; don't require a
+        # doubled one, or descendants of a drive root would be rejected.
+        root_prefix = root_real if root_real.endswith(os.sep) else root_real + os.sep
+        if target_real == root_real or target_real.startswith(root_prefix):
             return True
     return False
 

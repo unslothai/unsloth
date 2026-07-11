@@ -23,6 +23,24 @@ class _HTTPException(Exception):
         self.detail = detail
 
 
+def _extract_routes_function(name: str, ns_extra: Optional[dict] = None) -> dict:
+    """Exec a single top-level function out of routes/models.py without importing
+    the module (which pulls in FastAPI and the rest of the backend)."""
+    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )
+    module = ast.Module(body = [fn], type_ignores = [])
+    ast.fix_missing_locations(module)
+    ns = {"os": os, "Path": Path, "Optional": Optional}
+    if ns_extra:
+        ns.update(ns_extra)
+    exec(compile(module, "<extracted routes/models.py>", "exec"), ns)
+    return ns
+
+
 def _stub_windows(monkeypatch, existing_drives):
     """Simulate Windows exposing only *existing_drives* (e.g. {"C", "D"}) as
     readable drive roots, so the test does not depend on the host's real FS.
@@ -137,3 +155,19 @@ def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
     # The simulated Windows drive root is now browsable, and a model dir on it resolves.
     assert drive_root.resolve() in allowlist
     assert ns["_resolve_browse_target"](str(model_dir), allowlist) == model_dir.resolve()
+
+
+def test_is_path_inside_allowlist_allows_descendants_of_drive_root(monkeypatch):
+    # A drive root ("D:\\") already ends in a separator. The descendant check must
+    # not require a doubled separator, or subfolders under a drive root 403.
+    ns = _extract_routes_function("_is_path_inside_allowlist")
+    # Identity realpath so a separator-terminated root survives the check; use the
+    # host's own os.sep so the doubled-separator bug is exercised natively.
+    monkeypatch.setattr(os.path, "realpath", lambda p: str(p))
+    sep = os.sep
+    root = f"X{sep}"          # drive-root analog: a root that ends in the separator
+    child = f"X{sep}models"
+
+    assert ns["_is_path_inside_allowlist"](root, [root]) is True     # the root itself
+    assert ns["_is_path_inside_allowlist"](child, [root]) is True    # a descendant
+    assert ns["_is_path_inside_allowlist"](f"Y{sep}models", [root]) is False  # unrelated
