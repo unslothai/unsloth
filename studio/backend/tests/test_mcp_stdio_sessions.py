@@ -340,7 +340,7 @@ def test_close_unblocks_no_limit_call(fake_clients):
     assert results and results[0].startswith("Error: MCP tool 'slow' failed")
 
 
-def test_discard_defers_close_while_another_call_is_borrowed(fake_clients):
+def test_lock_wait_timeout_spares_the_borrowed_session(fake_clients):
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     session = next(iter(mcp_client._stdio_sessions.values()))
     fake_clients[0].call_delay = 1.0
@@ -357,15 +357,45 @@ def test_discard_defers_close_while_another_call_is_borrowed(fake_clients):
             if session.in_flight >= 1:
                 break
         time.sleep(0.01)
-    # A second same-scope call times out and discards the shared session; the
-    # close must wait for the slow borrower instead of killing its call.
+    # A second same-scope call times out waiting for the call lock; it never
+    # touched the transport, so the shared session must stay alive and cached.
     out = call_tool_sync(STDIO_URL, None, "fast", {}, timeout = 0.05, scope = "chat")
     assert "timed out" in out
     assert fake_clients[0].exited == 0
     slow.join(10.0)
     assert results == ["call-2"]
+    assert fake_clients[0].exited == 0
+    assert len(mcp_client._stdio_sessions) == 1
+
+
+def test_stale_session_close_deferred_until_borrower_drains(fake_clients):
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    session = next(iter(mcp_client._stdio_sessions.values()))
+    fake_clients[0].call_delay = 0.8
+    results: list[str] = []
+    slow = threading.Thread(
+        target = lambda: results.append(
+            call_tool_sync(STDIO_URL, None, "slow", {}, timeout = None, scope = "chat")
+        )
+    )
+    slow.start()
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        with mcp_client._stdio_sessions_lock:
+            if session.in_flight >= 1:
+                break
+        time.sleep(0.01)
+    # The subprocess "dies" mid-call: a new caller replaces the stale session,
+    # but its close must wait for the slow borrower instead of killing its call.
+    fake_clients[0].connected = False
+    out = call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    assert out == "call-1"
+    assert len(fake_clients) == 2
+    assert fake_clients[0].exited == 0
+    slow.join(10.0)
+    assert results == ["call-2"]
     assert fake_clients[0].exited == 1  # last borrower performed the deferred close
-    assert mcp_client._stdio_sessions == {}
+    assert len(mcp_client._stdio_sessions) == 1
 
 
 def test_error_on_closed_session_does_not_retry(fake_clients):
@@ -389,10 +419,66 @@ def test_config_check_blocks_stale_publish(fake_clients):
     assert fake_clients[0].exited == 1
 
 
-def test_close_generation_keys_hold_no_env_values(fake_clients):
-    close_stdio_sessions(STDIO_URL, {"API_KEY": "sk-secret"})
-    assert mcp_client._stdio_cfg_close_gen
-    assert all("sk-secret" not in repr(k) for k in mcp_client._stdio_cfg_close_gen)
+def test_close_generation_keys_hold_no_secrets(fake_clients):
+    secret_url = "npx server --token sk-url-secret"
+    close_stdio_sessions(secret_url, {"API_KEY": "sk-env-secret"})
+    close_stdio_sessions(secret_url)
+    gen_keys = list(mcp_client._stdio_cfg_close_gen) + list(mcp_client._stdio_url_close_gen)
+    assert gen_keys
+    # These maps are never pruned: neither command/URL nor env may persist.
+    assert all(
+        "sk-url-secret" not in repr(k) and "sk-env-secret" not in repr(k) for k in gen_keys
+    )
+
+
+def test_overlapping_calls_serialize_on_shared_session(fake_clients, monkeypatch):
+    class OverlapDetect(FakeClient):
+        active = 0
+        max_active = 0
+
+        async def call_tool(self, name, args):
+            OverlapDetect.active += 1
+            OverlapDetect.max_active = max(OverlapDetect.max_active, OverlapDetect.active)
+            try:
+                await asyncio.sleep(0.2)
+                return await super().call_tool(name, args)
+            finally:
+                OverlapDetect.active -= 1
+
+    monkeypatch.setattr(
+        mcp_client, "_client", lambda url, headers, use_oauth = False: OverlapDetect(url)
+    )
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    workers = [
+        threading.Thread(target = lambda: call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat"))
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(10.0)
+    # A stateful server must never see interleaved same-scope operations.
+    assert OverlapDetect.max_active == 1
+    assert len(fake_clients) == 1
+
+
+def test_timeout_budget_spans_connect_and_call(fake_clients, monkeypatch):
+    class SlowBoth(FakeClient):
+        async def __aenter__(self):
+            await asyncio.sleep(0.4)
+            return await super().__aenter__()
+
+        async def call_tool(self, name, args):
+            await asyncio.sleep(0.5)
+            return await super().call_tool(name, args)
+
+    monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: SlowBoth(url))
+    start = time.monotonic()
+    # 0.4s connect + 0.5s call vs a 0.6s budget: the call must inherit only
+    # the remaining ~0.2s, not a fresh full window.
+    out = call_tool_sync(STDIO_URL, None, "t", {}, timeout = 0.6, scope = "chat")
+    assert "timed out" in out
+    assert time.monotonic() - start < 2.0
 
 
 def test_close_narrowed_by_headers_spares_other_env(fake_clients):

@@ -278,6 +278,7 @@ class _StdioSession:
         self.closed = threading.Event()
         self.defunct = False  # discarded; close once in_flight drains (see _retire)
         self._close_lock = threading.Lock()
+        self.call_lock = threading.Lock()  # serializes tool calls on this session
         self.last_used = time.monotonic()
         self.in_flight = 0  # guarded by _stdio_sessions_lock
         self.loop = asyncio.new_event_loop()
@@ -429,17 +430,21 @@ def _headers_key(headers: Optional[dict]) -> tuple:
     return tuple(sorted((headers or {}).items()))
 
 
-def _cfg_close_key(url: str, headers: Optional[dict]) -> tuple:
-    # Env values can hold secrets and this map is never pruned; key by digest
-    # so closed/edited configs don't retain them in memory forever.
-    digest = hashlib.sha256(repr(_headers_key(headers)).encode()).hexdigest()
-    return (url, digest)
+def _url_close_key(url: str) -> str:
+    # Commands/URLs (token args, embedded credentials) and env values can hold
+    # secrets and these maps are never pruned; key by digest so closed/edited
+    # configs don't retain them in memory forever.
+    return hashlib.sha256(url.encode()).hexdigest()
+
+
+def _cfg_close_key(url: str, headers: Optional[dict]) -> str:
+    return hashlib.sha256(repr((url, _headers_key(headers))).encode()).hexdigest()
 
 
 def _stdio_close_generation(url: str, headers: Optional[dict]) -> tuple[int, int, int]:
     return (
         _stdio_close_all_gen,
-        _stdio_url_close_gen.get(url, 0),
+        _stdio_url_close_gen.get(_url_close_key(url), 0),
         _stdio_cfg_close_gen.get(_cfg_close_key(url, headers), 0),
     )
 
@@ -477,8 +482,11 @@ def _return_stdio_key_lock(key: tuple, key_lock: _StdioKeyLock) -> None:
 
 
 def _get_stdio_session(
-    url: str, headers: Optional[dict], scope: Optional[str], timeout, cancel_event, config_check
+    url: str, headers: Optional[dict], scope: Optional[str], deadline, cancel_event, config_check
 ) -> _StdioSession:
+    """``deadline`` is the caller's absolute monotonic budget (None = no limit):
+    the key-lock wait and the connect share it, so a slow startup can't stack
+    full timeout windows (see _call_stdio_tool)."""
     global _stdio_reaper_started
     key = _session_key(url, headers, scope)
     with _stdio_sessions_lock:
@@ -490,12 +498,15 @@ def _get_stdio_session(
         # Poll the acquire with connect()'s deadline/cancel semantics: a second
         # same-scope call must not block uncancellably behind another caller's
         # slow startup (e.g. a first-run npx download).
-        window = _STDIO_CONNECT_TIMEOUT if timeout is None else min(timeout, _STDIO_CONNECT_TIMEOUT)
-        deadline = time.monotonic() + window
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        window = (
+            _STDIO_CONNECT_TIMEOUT if remaining is None else min(remaining, _STDIO_CONNECT_TIMEOUT)
+        )
+        lock_deadline = time.monotonic() + window
         while not key_lock.lock.acquire(timeout = 0.05):
             if cancel_event is not None and cancel_event.is_set():
                 raise _MCPCancelled
-            if time.monotonic() >= deadline:
+            if time.monotonic() >= lock_deadline:
                 raise asyncio.TimeoutError
         try:
             stale = None
@@ -510,7 +521,10 @@ def _get_stdio_session(
                 _retire_stdio_session(stale)
             session = _StdioSession(url, headers)
             try:
-                session.connect(timeout, cancel_event)
+                session.connect(
+                    None if deadline is None else max(0.0, deadline - time.monotonic()),
+                    cancel_event,
+                )
             except Exception:
                 session.close()
                 raise
@@ -587,7 +601,8 @@ def close_stdio_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> N
         if url is None:
             _stdio_close_all_gen += 1
         elif hk is None:
-            _stdio_url_close_gen[url] = _stdio_url_close_gen.get(url, 0) + 1
+            uk = _url_close_key(url)
+            _stdio_url_close_gen[uk] = _stdio_url_close_gen.get(uk, 0) + 1
         else:
             cfg = _cfg_close_key(url, headers)
             _stdio_cfg_close_gen[cfg] = _stdio_cfg_close_gen.get(cfg, 0) + 1
@@ -750,6 +765,14 @@ def _call_stdio_tool(
 ) -> Any:
     if cancel_event is not None and cancel_event.is_set():
         raise _MCPCancelled
+    # One deadline covers the key-lock wait, connect, call-lock wait, and the
+    # call itself, matching the one-shot/HTTP paths where the timeout wrapped
+    # connect plus call in a single window.
+    deadline = None if timeout is None else time.monotonic() + timeout
+
+    def _remaining() -> Optional[float]:
+        return None if deadline is None else max(0.0, deadline - time.monotonic())
+
     # Callers without a Studio session id must retain the former one-shot
     # behavior: no browser/cookie/tool state can leak into another request.
     # Use an ephemeral key (and close it below) rather than the shared empty
@@ -759,11 +782,27 @@ def _call_stdio_tool(
         scope = f"request-{uuid.uuid4().hex}"
     key = _session_key(url, headers, scope)
     for fresh in (False, True):
-        session = _get_stdio_session(url, headers, scope, timeout, cancel_event, config_check)
+        session = _get_stdio_session(url, headers, scope, deadline, cancel_event, config_check)
+        try:
+            # Serialize calls per session: overlapping same-scope calls must
+            # not interleave operations on one stateful server (browser, REPL).
+            while not session.call_lock.acquire(timeout = 0.05):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise _MCPCancelled
+                rem = _remaining()
+                if rem is not None and rem <= 0:
+                    raise asyncio.TimeoutError
+        except BaseException:
+            # Never touched the transport: keep the session for its borrower.
+            _release_stdio_session(session)
+            if ephemeral:
+                _drop_stdio_session(key, session)
+            raise
         discard_session = ephemeral
         try:
-            coro = _race_tool_call(session.client.call_tool(name, args), timeout, cancel_event)
-            return session.run(coro, timeout)
+            rem = _remaining()
+            coro = _race_tool_call(session.client.call_tool(name, args), rem, cancel_event)
+            return session.run(coro, rem)
         except (_MCPCancelled, asyncio.TimeoutError):
             # _race_tool_call cancels the pending call but cancellation is
             # cooperative. Never return this client to the cache while the
@@ -791,6 +830,7 @@ def _call_stdio_tool(
                 raise
             _drop_stdio_session(key, session)
         finally:
+            session.call_lock.release()
             _release_stdio_session(session)
             if discard_session:
                 _drop_stdio_session(key, session)
