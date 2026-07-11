@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -98,6 +99,15 @@ def test_stdio_sessions_keyed_by_url_and_env(fake_clients):
     assert len(fake_clients) == 3
 
 
+def test_stdio_sessions_scoped_per_chat(fake_clients):
+    # Two conversations must not share one stateful server process.
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat-a")
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat-b")
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat-a")
+    assert len(fake_clients) == 2
+    assert fake_clients[0].calls and len(fake_clients[0].calls) == 2
+
+
 def test_dead_stdio_session_recovers(fake_clients):
     assert call_tool_sync(STDIO_URL, None, "t", {}) == "call-1"
     # Subprocess dies between calls: next call reconnects instead of failing.
@@ -138,6 +148,43 @@ def test_timeout_keeps_stdio_session(fake_clients):
     # The session survives a slow tool call (the browser is not torn down).
     assert call_tool_sync(STDIO_URL, None, "t", {}) == "call-2"
     assert len(fake_clients) == 1
+
+
+def test_no_timeout_allows_long_call(fake_clients):
+    call_tool_sync(STDIO_URL, None, "t", {})
+    fake_clients[0].call_delay = 0.2
+    # timeout=None means no deadline: the call must not be treated as wedged.
+    assert call_tool_sync(STDIO_URL, None, "slow", {}, timeout = None) == "call-2"
+
+
+def test_connect_races_cancel_event(fake_clients, monkeypatch):
+    class SlowStart(FakeClient):
+        async def __aenter__(self):
+            await asyncio.sleep(5.0)
+            return await super().__aenter__()
+
+    monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: SlowStart(url))
+    ev = threading.Event()
+    threading.Timer(0.1, ev.set).start()
+    start = time.monotonic()
+    out = call_tool_sync(STDIO_URL, None, "t", {}, cancel_event = ev)
+    assert out == "Error: MCP tool 't' cancelled"
+    assert time.monotonic() - start < 3.0
+    assert mcp_client._stdio_sessions == {}
+
+
+def test_connect_respects_caller_timeout(fake_clients, monkeypatch):
+    class SlowStart(FakeClient):
+        async def __aenter__(self):
+            await asyncio.sleep(5.0)
+            return await super().__aenter__()
+
+    monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: SlowStart(url))
+    start = time.monotonic()
+    out = call_tool_sync(STDIO_URL, None, "t", {}, timeout = 0.2)
+    assert "timed out" in out
+    assert time.monotonic() - start < 3.0
+    assert mcp_client._stdio_sessions == {}
 
 
 def test_cancel_pre_set_spawns_nothing(fake_clients):

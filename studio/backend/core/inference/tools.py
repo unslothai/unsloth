@@ -1010,6 +1010,7 @@ def execute_tool(
             timeout = effective_timeout,
             use_oauth = bool(server.get("use_oauth")),
             cancel_event = cancel_event,
+            scope = session_id,
         )
     if name == "web_search":
         return _web_search(

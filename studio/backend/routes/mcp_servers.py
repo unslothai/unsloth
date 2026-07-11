@@ -210,8 +210,7 @@ async def update_mcp_server(
     mcp_servers_db.update_server(server_id, changes)
     # A new endpoint/auth makes cached tools wrong and disabling makes them
     # unreachable, so drop them and let the next send re-probe; a rename
-    # leaves them valid. Also close any persistent stdio session for the old
-    # endpoint (off-loop: closing joins the session thread).
+    # leaves them valid. Live stdio sessions for the old endpoint close too.
     if changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS:
         invalidate_tool_cache(server_id)
         await asyncio.to_thread(close_stdio_sessions, old["url"])

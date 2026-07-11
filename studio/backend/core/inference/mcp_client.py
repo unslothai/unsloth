@@ -240,22 +240,28 @@ def _client(
     return Client(transport_cls(url = url, headers = headers or None, auth = auth))
 
 
-# ── Persistent stdio sessions ────────────────────────────────────────────────
-# A stdio MCP server owns live state (a playwright browser, a DB handle); a
-# one-shot client per call resets that state, so e.g. browser_navigate +
-# browser_take_screenshot screenshotted a fresh about:blank tab. Keep one
-# connected client per (command, env) on a dedicated event-loop thread and
-# reap it after idling.
+# Persistent stdio sessions: a stdio MCP server owns live state (a browser, a
+# DB handle), so keep one connected client per (command, env, chat session) on
+# a dedicated event-loop thread instead of respawning per call.
 
 _STDIO_SESSION_IDLE_TTL = 300.0
 _STDIO_SESSION_REAP_INTERVAL = 30.0
-# Generous: the first call may download the package (`npx -y ...`).
-_STDIO_CONNECT_TIMEOUT = 60.0
+_STDIO_CONNECT_TIMEOUT = 60.0  # allows first-run `npx -y ...` package download
 _STDIO_CLOSE_TIMEOUT = 10.0
+_STDIO_WEDGE_MARGIN = 15.0
 
 
 class _SessionWedged(Exception):
     pass
+
+
+def _abort_future(future) -> None:
+    # Let the cancelled coroutine unwind before its loop is stopped.
+    future.cancel()
+    try:
+        future.result(1.0)
+    except BaseException:  # noqa: BLE001
+        pass
 
 
 class _StdioSession:
@@ -278,14 +284,26 @@ class _StdioSession:
         finally:
             self.loop.close()
 
-    def connect(self) -> None:
+    def connect(self, timeout: Optional[float], cancel_event) -> None:
         async def _open():
             client = _client(self.url, self.headers)
             await client.__aenter__()
             return client
 
         future = asyncio.run_coroutine_threadsafe(_open(), self.loop)
-        self.client = future.result(_STDIO_CONNECT_TIMEOUT)
+        window = _STDIO_CONNECT_TIMEOUT if timeout is None else min(timeout, _STDIO_CONNECT_TIMEOUT)
+        deadline = time.monotonic() + window
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                _abort_future(future)
+                raise _MCPCancelled
+            try:
+                self.client = future.result(0.05)
+                return
+            except (concurrent.futures.TimeoutError, asyncio.TimeoutError):
+                if time.monotonic() >= deadline:
+                    _abort_future(future)
+                    raise asyncio.TimeoutError
 
     def is_connected(self) -> bool:
         client = self.client
@@ -301,9 +319,9 @@ class _StdioSession:
         self.last_used = time.monotonic()
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
         try:
-            # The coroutine enforces the tool timeout itself; the margin only
-            # guards a wedged loop.
-            return future.result((timeout or 300.0) + 15.0)
+            # The coroutine enforces the tool timeout; the margin only catches
+            # a wedged loop. No deadline at all when the caller set none.
+            return future.result(None if timeout is None else timeout + _STDIO_WEDGE_MARGIN)
         except (concurrent.futures.TimeoutError, asyncio.TimeoutError):
             if future.done():
                 raise  # the call's own timeout; the session stays usable
@@ -313,56 +331,85 @@ class _StdioSession:
             self.last_used = time.monotonic()
 
     def close(self) -> None:
-        client, self.client = self.client, None
-        if client is not None:
+        client = getattr(self, "client", None)
+        self.client = None
+        loop = getattr(self, "loop", None)
+        loop_alive = loop is not None and not loop.is_closed()
+        if client is not None and loop_alive:
             try:
-                future = asyncio.run_coroutine_threadsafe(
-                    client.__aexit__(None, None, None), self.loop
+                asyncio.run_coroutine_threadsafe(client.__aexit__(None, None, None), loop).result(
+                    _STDIO_CLOSE_TIMEOUT
                 )
-                future.result(_STDIO_CLOSE_TIMEOUT)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("MCP stdio session close failed for %r: %s", self.url, exc)
-        self.loop.call_soon_threadsafe(self.loop.stop)
-        self._thread.join(timeout = 5.0)
+                logger.warning(
+                    "MCP stdio session close failed for %r: %s", getattr(self, "url", ""), exc
+                )
+        if loop_alive:
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                pass
+        thread = getattr(self, "_thread", None)
+        if thread is not None:
+            thread.join(timeout = 5.0)
 
 
 _stdio_sessions: dict[tuple, _StdioSession] = {}
+# Per-key locks so a slow connect/close never blocks unrelated servers; the
+# global lock only guards the dicts.
+_stdio_key_locks: dict[tuple, threading.Lock] = {}
 _stdio_sessions_lock = threading.Lock()
 _stdio_reaper_started = False
 
 
-def _session_key(url: str, headers: Optional[dict]) -> tuple:
-    return (url, tuple(sorted((headers or {}).items())))
+def _session_key(url: str, headers: Optional[dict], scope: Optional[str]) -> tuple:
+    return (url, tuple(sorted((headers or {}).items())), scope or "")
 
 
-def _get_stdio_session(url: str, headers: Optional[dict]) -> _StdioSession:
+def _checkout_stdio_session(key: tuple) -> Optional[_StdioSession]:
+    session = _stdio_sessions.get(key)
+    if session is not None and session.is_connected():
+        session.last_used = time.monotonic()
+        session.in_flight += 1
+        return session
+    return None
+
+
+def _get_stdio_session(
+    url: str, headers: Optional[dict], scope: Optional[str], timeout, cancel_event
+) -> _StdioSession:
     global _stdio_reaper_started
-    key = _session_key(url, headers)
+    key = _session_key(url, headers, scope)
     with _stdio_sessions_lock:
-        stale = None
-        session = _stdio_sessions.get(key)
-        if session is not None and session.is_connected():
-            session.last_used = time.monotonic()
-            session.in_flight += 1
-            return session
+        session = _checkout_stdio_session(key)
         if session is not None:
-            stale = _stdio_sessions.pop(key)
+            return session
+        key_lock = _stdio_key_locks.setdefault(key, threading.Lock())
+    with key_lock:
+        stale = None
+        with _stdio_sessions_lock:
+            session = _checkout_stdio_session(key)
+            if session is not None:
+                return session
+            if key in _stdio_sessions:
+                stale = _stdio_sessions.pop(key)
         if stale is not None:
             stale.close()
         session = _StdioSession(url, headers)
         try:
-            session.connect()
+            session.connect(timeout, cancel_event)
         except Exception:
             session.close()
             raise
-        session.in_flight = 1
-        _stdio_sessions[key] = session
-        if not _stdio_reaper_started:
-            _stdio_reaper_started = True
-            threading.Thread(
-                target = _stdio_session_reaper, name = "mcp-stdio-reaper", daemon = True
-            ).start()
-            atexit.register(close_stdio_sessions)
+        with _stdio_sessions_lock:
+            session.in_flight = 1
+            _stdio_sessions[key] = session
+            if not _stdio_reaper_started:
+                _stdio_reaper_started = True
+                threading.Thread(
+                    target = _stdio_session_reaper, name = "mcp-stdio-reaper", daemon = True
+                ).start()
+                atexit.register(close_stdio_sessions)
         return session
 
 
@@ -372,8 +419,7 @@ def _release_stdio_session(session: _StdioSession) -> None:
         session.last_used = time.monotonic()
 
 
-def _drop_stdio_session(url: str, headers: Optional[dict], session: _StdioSession) -> None:
-    key = _session_key(url, headers)
+def _drop_stdio_session(key: tuple, session: _StdioSession) -> None:
     with _stdio_sessions_lock:
         if _stdio_sessions.get(key) is session:
             _stdio_sessions.pop(key)
@@ -381,11 +427,12 @@ def _drop_stdio_session(url: str, headers: Optional[dict], session: _StdioSessio
 
 
 def close_stdio_sessions(url: Optional[str] = None) -> None:
-    """Close every persistent stdio session, or only those for ``url`` (used
-    when a server is deleted or its endpoint/env/enabled state changes)."""
+    """Close all persistent stdio sessions, or only those for ``url``."""
     with _stdio_sessions_lock:
         keys = [k for k in _stdio_sessions if url is None or k[0] == url]
         sessions = [_stdio_sessions.pop(k) for k in keys]
+        if url is None:
+            _stdio_key_locks.clear()
     for session in sessions:
         session.close()
 
@@ -492,9 +539,8 @@ def _flatten_result(result: Any) -> str:
 
 
 async def _race_tool_call(call_coro, timeout: Optional[float], cancel_event) -> Any:
-    """Await ``call_coro`` under ``timeout``, polling ``cancel_event`` (50 ms
-    cadence, matching routes/inference.py's cancel watcher) so a /cancel POST
-    interrupts even mid-network-read."""
+    """Await ``call_coro`` under ``timeout``, polling ``cancel_event`` so a
+    /cancel POST interrupts even mid-network-read."""
 
     async def _watch_cancel() -> None:
         while cancel_event is not None and not cancel_event.is_set():
@@ -525,26 +571,33 @@ async def _race_tool_call(call_coro, timeout: Optional[float], cancel_event) -> 
 
 
 def _call_stdio_tool(
-    url: str, headers: Optional[dict], name: str, args: dict, timeout, cancel_event
+    url: str,
+    headers: Optional[dict],
+    name: str,
+    args: dict,
+    timeout,
+    cancel_event,
+    scope: Optional[str],
 ) -> Any:
     if cancel_event is not None and cancel_event.is_set():
         raise _MCPCancelled
+    key = _session_key(url, headers, scope)
     for fresh in (False, True):
-        session = _get_stdio_session(url, headers)
+        session = _get_stdio_session(url, headers, scope, timeout, cancel_event)
         try:
             coro = _race_tool_call(session.client.call_tool(name, args), timeout, cancel_event)
             return session.run(coro, timeout)
         except (_MCPCancelled, asyncio.TimeoutError):
             raise
         except _SessionWedged:
-            _drop_stdio_session(url, headers, session)
+            _drop_stdio_session(key, session)
             raise asyncio.TimeoutError
         except Exception:
             # A dead subprocess surfaces as a transport error; retry once on a
             # fresh session. Tool-level failures leave the session connected.
             if fresh or session.is_connected():
                 raise
-            _drop_stdio_session(url, headers, session)
+            _drop_stdio_session(key, session)
         finally:
             _release_stdio_session(session)
     raise RuntimeError("unreachable")
@@ -558,15 +611,11 @@ def call_tool_sync(
     timeout: Optional[float] = 300.0,
     use_oauth: bool = False,
     cancel_event = None,
+    scope: Optional[str] = None,
 ) -> str:
-    """Synchronously call an MCP tool.
-
-    stdio servers go through a persistent session so server-side state (e.g. a
-    browser) survives across calls; HTTP servers stay one-shot per call.
-
-    ``cancel_event``: optional ``threading.Event``. When set, the in-flight call
-    is cancelled and a cancellation Error returned.
-    """
+    """Synchronously call an MCP tool. stdio servers reuse a persistent session
+    keyed by (command, env, scope); HTTP servers stay one-shot per call.
+    ``cancel_event`` (threading.Event) cancels the in-flight call when set."""
 
     async def _one_shot() -> Any:
         async with _client(url, headers, use_oauth) as client:
@@ -574,13 +623,14 @@ def call_tool_sync(
 
     try:
         if is_stdio(url):
-            result = _call_stdio_tool(url, headers, name, args, timeout, cancel_event)
+            result = _call_stdio_tool(url, headers, name, args, timeout, cancel_event, scope)
         else:
             result = asyncio.run(_race_tool_call(_one_shot(), timeout, cancel_event))
     except _MCPCancelled:
         return f"Error: MCP tool '{name}' cancelled"
     except asyncio.TimeoutError:
-        return f"Error: MCP tool '{name}' timed out after {timeout:g}s"
+        suffix = f" after {timeout:g}s" if timeout is not None else ""
+        return f"Error: MCP tool '{name}' timed out{suffix}"
     except Exception as exc:
         logger.exception("MCP call_tool failed for %s: %s", name, exc)
         return f"Error: MCP tool '{name}' failed: {exc}"
