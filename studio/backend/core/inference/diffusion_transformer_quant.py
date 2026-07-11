@@ -574,6 +574,51 @@ def make_filter_fn(
     return filter_fn
 
 
+def torchao_quantized_param_fqns(module: Any) -> list[str]:
+    """FQNs of ``module`` parameters whose tensors are torchao subclasses.
+
+    torchao's ``quantize_`` mutates the module in place, swapping Linear/Conv weights
+    to tensor subclasses one submodule at a time -- so an exception mid-pass (OOM on a
+    14B DiT, a layer a kernel rejects) leaves the EARLIER layers quantized. A module in
+    that state must fail the load: it cannot run as the dense module the caller would
+    otherwise report (offload's ``Module.to()`` hard-crashes on torchao tensors, and
+    mixed dense/quant weights are an unvalidated numeric state). Detection keys on the
+    tensor class's module path ("torchao" in ``type(t).__module__``), which covers every
+    torchao subclass family (affine / float8 / nvfp4 / mx) without importing torchao.
+    Best-effort: an unscannable module reports no leftovers (the pre-check behaviour)."""
+    names: list[str] = []
+    named = getattr(module, "named_parameters", None)
+    if not callable(named):
+        return names
+    try:
+        for name, param in named():
+            for tensor in (param, getattr(param, "data", None)):
+                if tensor is None:
+                    continue
+                if "torchao" in (getattr(type(tensor), "__module__", "") or ""):
+                    names.append(name)
+                    break
+    except Exception:  # noqa: BLE001 -- scan is best-effort; report what was found
+        pass
+    return names
+
+
+def raise_if_partially_quantized(module: Any, *, what: str, exc: Exception) -> None:
+    """After an in-place ``quantize_``/caster failure: if ``module`` was left PARTIALLY
+    quantized (some torchao tensor-subclass params present), raise so the load fails
+    with a clear error instead of the caller reporting a dense fallback and running a
+    half-quantized module. A clean failure (no torchao params) returns, keeping the
+    best-effort dense-fallback contract."""
+    leftover = torchao_quantized_param_fqns(module)
+    if not leftover:
+        return
+    raise RuntimeError(
+        f"{what} failed midway and left {len(leftover)} parameter(s) quantized "
+        f"(e.g. '{leftover[0]}'); the module is partially quantized and cannot fall "
+        f"back to dense -- reload the model (original error: {exc})"
+    ) from exc
+
+
 def quantize_transformer(
     pipe: Any,
     target: Any,
@@ -625,6 +670,11 @@ def quantize_transformer(
             pass
         return scheme
     except Exception as exc:  # noqa: BLE001 — leave the transformer dense -> GGUF fallback
+        # quantize_ swaps weights module-by-module, so a mid-pass failure may have left
+        # some layers quantized: that state cannot run as dense (offload's Module.to()
+        # crashes on torchao tensors; mixed precision is unvalidated), so fail the load
+        # instead of reporting a dense fallback. A clean miss stays best-effort dense.
+        raise_if_partially_quantized(transformer, what = f"transformer_quant {scheme}", exc = exc)
         _warn(logger, scheme, exc)
         return None
 

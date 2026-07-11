@@ -721,3 +721,42 @@ def test_fp8_dynamic_filter_skips_zero_row_linear(monkeypatch):
     live = types.SimpleNamespace(weight = _FakeWeight([[0.5, 0.5], [0.5, 0.5]]))
     assert ff(dead, "text_model.encoder.layers.2.self_attn.out_proj") is False
     assert ff(live, "text_model.encoder.layers.2.mlp.fc1") is True
+
+
+# ── partial in-place cast detection (fails the load, not a silent dense report) ────
+class _TorchaoLikeTensor:
+    """Detection keys on the tensor class's module path ("torchao" in __module__)."""
+
+
+_TorchaoLikeTensor.__module__ = "torchao.quantization.linear_activation_quantized_tensor"
+
+
+class _PartiallyCastEncoder:
+    def __init__(self):
+        self._swapped = False
+
+    def named_parameters(self):
+        if self._swapped:
+            yield ("model.layers.0.mlp.up_proj.weight", _TorchaoLikeTensor())
+        yield ("model.layers.1.mlp.up_proj.weight", types.SimpleNamespace())
+
+
+def test_quantize_partial_cast_failure_fails_load(monkeypatch):
+    # The caster mutates the encoder in place module-by-module: a mid-pass failure
+    # that left torchao params behind must raise (the encoder cannot run as the dense
+    # module a best-effort fallback would report), unlike the clean failure above.
+    _stub_torch(monkeypatch)
+    hooks = types.ModuleType("diffusers.hooks")
+    casting = types.ModuleType("diffusers.hooks.layerwise_casting")
+    casting.DEFAULT_SKIP_MODULES_PATTERN = ("norm",)
+
+    def _swap_one_then_boom(module, **kwargs):
+        module._swapped = True
+        raise RuntimeError("encoder cast failed mid-pass")
+
+    hooks.apply_layerwise_casting = _swap_one_then_boom
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
+    monkeypatch.setitem(sys.modules, "diffusers.hooks.layerwise_casting", casting)
+    pipe = types.SimpleNamespace(text_encoder = _PartiallyCastEncoder())
+    with pytest.raises(RuntimeError, match = "partially quantized"):
+        quantize_text_encoders(pipe, _target(), mode = "fp8")

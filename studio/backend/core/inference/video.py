@@ -408,16 +408,18 @@ def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
 
 # ── dual-DiT (Wan2.2-A14B MoE) helpers ────────────────────────────────────────
 #
-# The imported optimisation helpers (apply_speed_optims / apply_attention_backend /
-# apply_step_cache) and the dense quantiser all read ``pipe.transformer`` and act on
-# that ONE denoiser -- correct for every single-DiT family (LTX-2, Wan2.2-TI2V-5B).
 # Wan2.2-A14B is a dual-expert MoE: ``transformer`` handles the high-noise steps and
 # ``transformer_2`` the low-noise steps (pipeline_wan.py routes by boundary_ratio), so
 # an optimisation applied only to ``transformer`` would leave the second expert eager /
-# unquantised / on the wrong attention kernel for half the schedule. Rather than fork
-# each helper, present the second DiT to them AS ``pipe.transformer`` via a thin proxy
-# and call the helper a second time, so the helpers stay untouched and single-DiT loads
-# are bit-identical (the proxy is only built for is_moe families).
+# unquantised / uncached for half the schedule. Two helper shapes exist:
+#   - apply_speed_optims / apply_attention_backend / install_hunyuan_attention_trim fan
+#     out over EVERY denoiser DiT internally (_denoiser_dits / _attention_dits cover a
+#     present ``transformer_2``), so the loader calls them ONCE on the pipe.
+#   - apply_step_cache and the dense quantiser read ``pipe.transformer`` and act on
+#     that ONE denoiser (the cache additionally needs a per-expert calibrated curve).
+#     Rather than fork them, present the second DiT AS ``pipe.transformer`` via a thin
+#     proxy view and call the helper once per expert, so the helpers stay untouched and
+#     single-DiT loads are bit-identical (the proxy is only built for is_moe families).
 
 
 def _transformer_names(pipe: Any, fam: VideoFamily) -> tuple[str, ...]:
@@ -468,6 +470,42 @@ def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
     if fam.is_moe and getattr(pipe, "transformer_2", None) is not None:
         return (pipe, _SecondDiTView(pipe))
     return (pipe,)
+
+
+def _step_cache_all_or_none(
+    pipe: Any,
+    fam: VideoFamily,
+    engage_fn: Any,
+    *,
+    logger: Any,
+) -> tuple[Optional[str], Optional[str]]:
+    """Run ``engage_fn(view, expert_name)`` (apply_step_cache or the auto toggle) over
+    every expert and enforce ALL-OR-NONE, mirroring the transactional quant loop: on a
+    mixed outcome (the cache engaged on some experts but not all -- apply_step_cache
+    never raises, it returns None and rolls back only that one transformer) the engaged
+    expert(s) are disengaged and the cache is reported off with the failure surfaced.
+    Without this, a second-expert failure would leave the FIRST expert cached while
+    status keys on it and reports the whole MoE as cached (half the schedule then runs
+    uncached at a mismatched quality/perf point). Returns (mode-or-None, failure
+    reason-or-None); a single-DiT family can never see a mixed outcome, so its
+    behaviour is unchanged."""
+    results: list[tuple[Any, str, Optional[str]]] = []
+    for view, expert_name in zip(_views_for(pipe, fam), _transformer_names(pipe, fam)):
+        results.append((view, expert_name, engage_fn(view, expert_name)))
+    engaged = [(view, name, mode) for view, name, mode in results if mode is not None]
+    if engaged and len(engaged) < len(results):
+        missing = ", ".join(name for _, name, mode in results if mode is None)
+        for view, name, _mode in engaged:
+            _disengage_step_cache(
+                getattr(view, "transformer", None),
+                reason = f"all-or-none rollback: cache did not engage on {missing}",
+                logger = logger,
+            )
+        return None, (
+            f"step cache engaged on only {len(engaged)}/{len(results)} experts "
+            f"({missing} failed); disengaged all experts and running uncached"
+        )
+    return (engaged[0][2] if engaged else None), None
 
 
 class VideoBackend:
@@ -1476,20 +1514,22 @@ class VideoBackend:
             cache_request = (
                 auto_cache_mode(fam.name) if default_cache_steps >= FBCACHE_MIN_STEPS else None
             )
-        cache_engaged = None
-        # Each view is zipped with the pipe attribute it exposes as ``transformer`` (the
+        # Each expert view passes the pipe attribute it exposes as ``transformer`` (the
         # expert-view iteration contract): a dual-expert MoE's second view passes
         # expert="transformer_2" so MagCache resolves THAT expert's calibrated curve --
-        # the experts split the schedule at the boundary timestep, so their curves differ.
-        for view, expert_name in zip(views, _transformer_names(pipe, fam)):
-            engaged = apply_step_cache(
+        # the experts split the schedule at the boundary timestep, so their curves
+        # differ. All-or-none across experts (mirroring the quant loop above): a mixed
+        # outcome is rolled back and reported uncached instead of leaving one expert
+        # cached while status reports the whole MoE as cached.
+        def _engage_load_cache(view: Any, expert_name: str) -> Optional[str]:
+            return apply_step_cache(
                 view,
                 mode = cache_request,
                 threshold = transformer_cache_threshold,
                 # A quantized transformer's block residuals are larger, so it needs the
                 # higher FBCache trigger threshold to cache at all. Mirror the image path
                 # (diffusion.py): both an engaged transformer_quant AND a GGUF checkpoint
-                # (quantized weights) count as quant-active here (cache_quant_active, L1172).
+                # (quantized weights) count as quant-active here (cache_quant_active).
                 quant_active = cache_quant_active,
                 family = fam.name,
                 steps = default_cache_steps,
@@ -1497,14 +1537,18 @@ class VideoBackend:
                 expert = expert_name,
                 logger = logger,
             )
-            if view is pipe:
-                cache_engaged = engaged
+
+        cache_engaged, cache_partial_reason = _step_cache_all_or_none(
+            pipe, fam, _engage_load_cache, logger = logger
+        )
         # The auto decision can flip at generation time, but only on a DiT that
         # supports caching at all (a non-CacheMixin transformer can never engage).
         cache_may_toggle = cache_auto and callable(
             getattr(getattr(pipe, "transformer", None), "enable_cache", None)
         )
-        if cache_auto:
+        if cache_partial_reason:
+            cache_reason = cache_partial_reason
+        elif cache_auto:
             if cache_engaged:
                 cache_reason = (
                     f"auto: {default_cache_steps}-step default schedule reaches "
@@ -1519,37 +1563,32 @@ class VideoBackend:
                 )
         else:
             cache_reason = "requested"
-        attention_engaged = None
-        attention_trim_engaged = False
-        speed_optims: tuple = ()
         # A dense torchao transformer on the pipeline path is not a GGUF one, so is_gguf
         # keys off the load kind (gguf) AND no quant having engaged.
         gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
-        for view in views:
-            # apply_attention_backend acts on ``view.transformer``; calling it once per
-            # view sets the kernel on each expert. The engaged values match across
-            # experts (same device/family/mode), so record the first pass.
-            # HunyuanVideo-1.5 only: drop the ~99% zero-padded text tokens from the joint
-            # attention so it runs the fused (cuDNN/flash) SDPA kernel instead of the dense-mask
-            # fallback (~18x/DiT-forward at 121 frames, cosine ~1.0). Must precede the backend set
-            # so the requested kernel pins onto the new processors. No-op for every other family.
-            # A speed lever like the attention backend below, so honor an explicit Speed="off" (the
-            # bit-exact reference path keeps the stock dense-mask attention).
-            trim = (
-                install_hunyuan_attention_trim(view, fam, logger = logger)
-                if effective_speed != SPEED_OFF
-                else False
-            )
-            engaged = apply_attention_backend(
-                view,
-                select_attention_backend(
-                    target, attention_backend, speed_active = effective_speed != SPEED_OFF
-                ),
-                logger = logger,
-            )
-            if view is pipe:
-                attention_engaged = engaged
-                attention_trim_engaged = trim
+        # install_hunyuan_attention_trim and apply_attention_backend fan out over every
+        # denoiser DiT internally (diffusion_attention._attention_dits covers
+        # ``transformer`` AND a present ``transformer_2``), so ONE pipe-level call
+        # covers a dual-expert MoE -- a per-view loop would pass the second expert
+        # through them twice (idempotent, but wasted work).
+        # Trim is HunyuanVideo-1.5 only: drop the ~99% zero-padded text tokens from the joint
+        # attention so it runs the fused (cuDNN/flash) SDPA kernel instead of the dense-mask
+        # fallback (~18x/DiT-forward at 121 frames, cosine ~1.0). Must precede the backend set
+        # so the requested kernel pins onto the new processors. No-op for every other family.
+        # A speed lever like the attention backend below, so honor an explicit Speed="off" (the
+        # bit-exact reference path keeps the stock dense-mask attention).
+        attention_trim_engaged = (
+            install_hunyuan_attention_trim(pipe, fam, logger = logger)
+            if effective_speed != SPEED_OFF
+            else False
+        )
+        attention_engaged = apply_attention_backend(
+            pipe,
+            select_attention_backend(
+                target, attention_backend, speed_active = effective_speed != SPEED_OFF
+            ),
+            logger = logger,
+        )
         # Pre-warmed torch.compile cache (Mega-cache), mirroring the image backend: when a
         # compiled tier will run, point inductor at a per-fingerprint dir and load a matching
         # bundle BEFORE the first compiled forward. Measured on HunyuanVideo-1.5-480p (B200):
@@ -1587,23 +1626,25 @@ class VideoBackend:
             # failed or cancelled load must restore TORCHINDUCTOR_CACHE_DIR itself
             # (_run_load's error handler, token-scoped like the globals).
             self._precommit_compile_cache = (_load_token, compile_ctx)
-        for view in views:
-            applied = apply_speed_optims(
-                view,
-                target,
-                is_gguf = gguf_transformer,
-                family = fam,
-                speed_mode = effective_speed,
-                # An auto cache that could still engage mid-session also drops
-                # fullgraph: enabling FBCache under a fullgraph-compiled DiT would
-                # crash the first cached generation.
-                cache_active = cache_engaged is not None or cache_may_toggle,
-                offload_active = plan.offload_policy != "none",
-            )
-            if view is pipe:
-                speed_optims = tuple(k for k, v in applied.items() if v) + (
-                    ("hunyuan_attn_trim",) if attention_trim_engaged else ()
-                )
+        # apply_speed_optims fans out over every denoiser DiT internally
+        # (diffusion_speed._denoiser_dits: the regional compile and the qkv fusion
+        # cover ``transformer_2``; the VAE/global levers are pipe-level), so one
+        # pipe-level call covers a dual-expert MoE.
+        applied = apply_speed_optims(
+            pipe,
+            target,
+            is_gguf = gguf_transformer,
+            family = fam,
+            speed_mode = effective_speed,
+            # An auto cache that could still engage mid-session also drops
+            # fullgraph: enabling FBCache under a fullgraph-compiled DiT would
+            # crash the first cached generation.
+            cache_active = cache_engaged is not None or cache_may_toggle,
+            offload_active = plan.offload_policy != "none",
+        )
+        speed_optims = tuple(k for k, v in applied.items() if v) + (
+            ("hunyuan_attn_trim",) if attention_trim_engaged else ()
+        )
         with self._generate_lock:
             # A cancelled/superseded load must not place weights on the GPU the arbiter
             # may already have handed to another backend; recheck right before placement
@@ -2281,11 +2322,12 @@ class VideoBackend:
                 # drops it. Explicit choices never toggle. Runs per view so a dual-DiT
                 # MoE toggles both experts.
                 if state.cache_auto:
-                    toggled = state.transformer_cache
-                    for view, expert_name in zip(
-                        _views_for(pipe, fam), _transformer_names(pipe, fam)
-                    ):
-                        toggled = maybe_toggle_step_cache(
+                    # All-or-none across MoE experts, exactly like the load path: a
+                    # mixed toggle outcome (one expert engaged, one not) is rolled
+                    # back and reported uncached instead of keying status on
+                    # whichever expert happened to be toggled last.
+                    def _toggle_cache(view: Any, expert_name: str) -> Optional[str]:
+                        return maybe_toggle_step_cache(
                             view,
                             steps = steps,
                             quant_active = state.cache_quant_active,
@@ -2296,6 +2338,10 @@ class VideoBackend:
                             expert = expert_name,
                             logger = logger,
                         )
+
+                    toggled, toggle_partial_reason = _step_cache_all_or_none(
+                        pipe, fam, _toggle_cache, logger = logger
+                    )
                     if toggled != state.transformer_cache:
                         # _VideoLoadState is frozen (loads swap it as one unit); this
                         # tracks the pipe-level toggle that already happened so
@@ -2304,7 +2350,7 @@ class VideoBackend:
                         entry = (state.resolved or {}).get("transformer_cache")
                         if isinstance(entry, dict):
                             entry["value"] = toggled or "off"
-                            entry["reason"] = (
+                            entry["reason"] = toggle_partial_reason or (
                                 f"auto: {steps}-step generation "
                                 + ("reaches" if toggled else "is below")
                                 + f" {FBCACHE_MIN_STEPS}"

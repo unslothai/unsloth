@@ -336,6 +336,14 @@ def quantize_vae(
             _cast_vae_fp8(vae, target)
         return mode
     except Exception as exc:  # noqa: BLE001 — leave the VAE dense
+        # fp8_dynamic's quantize_ swaps conv/linear weights module-by-module, so a
+        # mid-pass failure may have left the VAE PARTIALLY quantized -- fail the load
+        # for that instead of reporting a dense fallback (mixed dense/quant weights
+        # are unvalidated and offload's Module.to() crashes on torchao tensors). A
+        # clean miss (nothing swapped, e.g. layerwise fp8) stays best-effort dense.
+        from .diffusion_transformer_quant import raise_if_partially_quantized
+
+        raise_if_partially_quantized(vae, what = f"vae_quant {mode}", exc = exc)
         _warn(logger, mode, exc)
         return None
 

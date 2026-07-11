@@ -151,6 +151,7 @@ class CFGParallelProxy:
         *,
         compiled: bool,
         explicit_on: bool,
+        device_match: bool = True,
         logger: Any = None,
     ) -> None:
         import torch
@@ -161,6 +162,10 @@ class CFGParallelProxy:
         self._logger = logger
         self._compiled = bool(compiled)
         self._explicit_on = bool(explicit_on)
+        # False when the replica sits on a DIFFERENT GPU model/arch than the primary
+        # (explicit-on only; auto declines the mismatch at the gate): eager kernels
+        # differ across archs, so lossless must never be reported for the pair.
+        self._device_match = bool(device_match)
         self._ctx: Optional[str] = None
         self.enabled = False
         self.dispatch = "inline"
@@ -292,7 +297,9 @@ class CFGParallelProxy:
         # artifacts, amplified over the trajectory -- the cache state does not change
         # that (its computed steps run the per-device compiled inners), so identity
         # keys on the KERNELS alone and only an explicit "on" accepts compiled drift.
-        lossless = not self._compiled
+        # A replica on a DIFFERENT device model/arch (explicit-on only) runs different
+        # eager kernels too, so it is never lossless either.
+        lossless = not self._compiled and self._device_match
         cfg_active = getattr(self._guider, "num_conditions", 2) > 1
         self.enabled = cfg_active and not self._broken and (lossless or self._explicit_on)
         self.dispatch = "thread" if key == self._settled_key else "inline"
@@ -447,11 +454,34 @@ def _restore_threadsafe_cudnn_attention() -> None:
 
 
 # ── gate + build ──────────────────────────────────────────────────────────────────
-def _pick_secondary_device(primary_index: int) -> tuple[Optional[int], int]:
-    """(most-free visible CUDA device != primary, its free bytes)."""
+def _device_identity(idx: int) -> Optional[tuple]:
+    """(device name, compute capability) for CUDA device ``idx``, or None when the
+    props cannot be queried (a stubbed/old torch): identity is then treated as
+    unknown and the check stays best-effort rather than blocking the engage."""
     import torch
 
-    best, best_free = None, -1
+    try:
+        return (
+            str(torch.cuda.get_device_name(idx)),
+            tuple(torch.cuda.get_device_capability(idx)),
+        )
+    except Exception:  # noqa: BLE001 -- unqueryable props: identity unknown
+        return None
+
+
+def _pick_secondary_device(primary_index: int) -> tuple[Optional[int], int, bool]:
+    """(secondary CUDA device != primary, its free bytes, identity-match flag).
+
+    The bit-identity contract needs the SAME kernels on both branches, and eager
+    kernel selection is arch-dependent (cuDNN heuristics, SM-count-dependent tiling),
+    so the picker prefers the most-free device whose (name, capability) MATCH the
+    primary's; only when no matching device exists does it fall back to the most-free
+    mismatched one (so an explicit ``on`` can still engage, lossy). An unqueryable
+    identity counts as a match (best-effort, the pre-check behaviour)."""
+    import torch
+
+    primary_id = _device_identity(primary_index)
+    best, best_free, best_match = None, -1, False
     for idx in range(torch.cuda.device_count()):
         if idx == primary_index:
             continue
@@ -459,9 +489,11 @@ def _pick_secondary_device(primary_index: int) -> tuple[Optional[int], int]:
             free, _total = torch.cuda.mem_get_info(idx)
         except Exception:  # noqa: BLE001 -- device unqueryable: skip it
             continue
-        if free > best_free:
-            best, best_free = idx, free
-    return best, best_free
+        candidate_id = _device_identity(idx)
+        match = primary_id is None or candidate_id is None or candidate_id == primary_id
+        if (match, free) > (best_match, best_free):
+            best, best_free, best_match = idx, free, match
+    return best, best_free, best_match
 
 
 def maybe_enable_cfg_parallel(
@@ -532,10 +564,35 @@ def maybe_enable_cfg_parallel(
         if p_dev.type != "cuda":
             return None, f"primary DiT is on {p_dev.type}, not cuda"
         weight_bytes = sum(p.numel() * p.element_size() for p in primary.parameters())
-        secondary, free = _pick_secondary_device(p_dev.index or 0)
+        primary_index = p_dev.index or 0
+        secondary, free, device_match = _pick_secondary_device(primary_index)
         need = weight_bytes + _REPLICA_HEADROOM_BYTES
         if secondary is None:
             return None, "no queryable secondary CUDA device"
+        if not device_match:
+            # A different GPU model/arch runs different eager kernels (cuDNN
+            # heuristics, SM-count-dependent tiling), so the byte-identity the AUTO
+            # policy promises cannot hold across the pair. Auto declines; an explicit
+            # "on" proceeds but is downgraded to lossy (plan_generation reports
+            # lossless=False) with a warning.
+            primary_name = (_device_identity(primary_index) or ("unknown",))[0]
+            secondary_name = (_device_identity(secondary) or ("unknown",))[0]
+            if not explicit_on:
+                return None, (
+                    f"secondary cuda:{secondary} ({secondary_name}) is a different device "
+                    f"than the primary ({primary_name}); eager kernels are arch-dependent, "
+                    "so bit-identity cannot hold -- request cfg_parallel=on to accept the "
+                    "divergence"
+                )
+            if logger is not None:
+                logger.warning(
+                    "diffusion.cfg_parallel: replica device cuda:%d (%s) differs from the "
+                    "primary (%s); explicit on proceeds but the output is NOT bit-identical "
+                    "to the single-GPU run (lossless=False)",
+                    secondary,
+                    secondary_name,
+                    primary_name,
+                )
         if free < need:
             return None, (
                 f"secondary cuda:{secondary} has {free / 2**30:.1f} GiB free, "
@@ -589,6 +646,7 @@ def maybe_enable_cfg_parallel(
             guider,
             compiled = compiled,
             explicit_on = explicit_on,
+            device_match = device_match,
             logger = logger,
         )
         pipe.transformer = proxy

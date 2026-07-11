@@ -736,3 +736,72 @@ def test_quantize_transformer_fp8_wan_excludes_condition_embedder(monkeypatch):
     assert (
         filt(big, "blocks.0.attn2.to_k") is True
     )  # cross-attn K/V stay fp8 (embedder bias rescues rows)
+
+
+# ── partial in-place quant detection (torchao_quantized_param_fqns) ────────────────
+class _TorchaoLikeTensor:
+    """Stands in for a torchao tensor subclass: detection keys on the class's module
+    path, so the fake just claims a torchao __module__."""
+
+
+_TorchaoLikeTensor.__module__ = "torchao.dtypes.affine_quantized_tensor"
+
+
+class _MutableDiT:
+    """A fake transformer whose quantize_ pass 'swapped' one weight before failing."""
+
+    def __init__(self):
+        self._swapped = False
+
+    def named_parameters(self):
+        if self._swapped:
+            yield ("blocks.0.attn.to_q.weight", _TorchaoLikeTensor())
+        yield ("blocks.1.attn.to_q.weight", types.SimpleNamespace())
+
+
+def test_torchao_param_scan_detects_swapped_weights():
+    dit = _MutableDiT()
+    assert tq.torchao_quantized_param_fqns(dit) == []
+    dit._swapped = True
+    assert tq.torchao_quantized_param_fqns(dit) == ["blocks.0.attn.to_q.weight"]
+    # Unscannable object -> no leftovers reported (best-effort, the pre-check path).
+    assert tq.torchao_quantized_param_fqns(object()) == []
+
+
+def test_quantize_transformer_partial_failure_raises(monkeypatch):
+    # quantize_ swaps weights module-by-module, so a mid-pass exception (OOM on a 14B
+    # DiT, a layer a kernel rejects) can leave earlier layers quantized. That module
+    # cannot run as dense (offload's Module.to() crashes on torchao tensors), so the
+    # load must FAIL with a clear error instead of reporting a dense fallback.
+    monkeypatch.setattr(
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_FP8
+    )
+    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
+    tqz = types.ModuleType("torchao.quantization")
+
+    def _convert_one_then_boom(module, config, filter_fn = None):
+        module._swapped = True  # the in-place swap of the first submodule
+        raise RuntimeError("OOM mid-conversion")
+
+    tqz.quantize_ = _convert_one_then_boom
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+    pipe = types.SimpleNamespace(transformer = _MutableDiT())
+    with pytest.raises(RuntimeError, match = "partially quantized"):
+        quantize_transformer(pipe, _target(), mode = "fp8")
+
+
+def test_quantize_transformer_clean_failure_still_falls_back_dense(monkeypatch):
+    # A failure that swapped NOTHING keeps the best-effort contract: dense fallback.
+    monkeypatch.setattr(
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_FP8
+    )
+    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
+    tqz = types.ModuleType("torchao.quantization")
+
+    def _boom(module, config, filter_fn = None):
+        raise RuntimeError("failed before any swap")
+
+    tqz.quantize_ = _boom
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+    pipe = types.SimpleNamespace(transformer = _MutableDiT())
+    assert quantize_transformer(pipe, _target(), mode = "fp8") is None

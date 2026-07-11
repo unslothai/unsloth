@@ -540,3 +540,38 @@ def test_quantize_vae_fp8_dynamic_probes_conv3d_for_video_vae(monkeypatch):
         == VAE_QUANT_FP8_DYNAMIC
     )
     assert len(calls) == 1
+
+
+# ── partial in-place quant detection (fails the load, not a silent dense report) ───
+class _TorchaoLikeTensor:
+    """Detection keys on the tensor class's module path ("torchao" in __module__)."""
+
+
+_TorchaoLikeTensor.__module__ = "torchao.dtypes.affine_quantized_tensor"
+
+
+class _PartiallyQuantizedVae:
+    def __init__(self):
+        self._swapped = False
+
+    def named_parameters(self):
+        if self._swapped:
+            yield ("decoder.up_blocks.0.conv.weight", _TorchaoLikeTensor())
+        yield ("decoder.up_blocks.1.conv.weight", types.SimpleNamespace())
+
+
+def test_quantize_vae_partial_cast_failure_fails_load(monkeypatch):
+    # fp8_dynamic's quantize_ swaps conv/linear weights module-by-module: a mid-pass
+    # failure that left torchao params behind must raise instead of reporting a dense
+    # fallback (mixed weights are unvalidated; offload's Module.to() crashes on them).
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow_vae(monkeypatch, {VAE_QUANT_FP8})
+
+    def _swap_one_then_boom(v, t):
+        v._swapped = True
+        raise RuntimeError("mid-pass conv failure")
+
+    monkeypatch.setattr(vq, "_cast_vae_fp8", _swap_one_then_boom)
+    pipe = types.SimpleNamespace(vae = _PartiallyQuantizedVae())
+    with pytest.raises(RuntimeError, match = "partially quantized"):
+        quantize_vae(pipe, _target(), mode = "fp8")

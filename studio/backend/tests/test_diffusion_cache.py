@@ -143,6 +143,37 @@ def test_explicit_threshold_overrides_quant(monkeypatch):
     assert t.enabled_with.threshold == 0.2
 
 
+def test_a14b_balanced_pins_quant_threshold(monkeypatch):
+    # Wan2.2-A14B's effective default is quant-active (unset precision auto-promotes to
+    # fp8 on reference hardware), and the generic 0.08 -> 0.12 promotion violates the
+    # family's <= 0.08 quality gate (fb@0.12 measured pairwise LPIPS 0.128) -- so the
+    # balanced preset pins 0.08 with quant active too. Other families keep the table.
+    _stub_diffusers(monkeypatch)
+    t = _MixinTransformer()
+    apply_step_cache(_pipe(t), mode = "fbcache", quant_active = True, family = "wan2.2-t2v-a14b")
+    assert t.enabled_with.threshold == DEFAULT_FBCACHE_THRESHOLD
+    other = _MixinTransformer()
+    apply_step_cache(_pipe(other), mode = "fbcache", quant_active = True, family = "ltx-2")
+    assert other.enabled_with.threshold == QUANT_FBCACHE_THRESHOLD
+
+
+def test_a14b_pin_scope_is_balanced_only(monkeypatch):
+    # The pin is (family, balanced)-scoped: an explicit threshold still wins, and the
+    # explicit "fast" preset keeps the generic quant table (the 2.9x point stays one
+    # request away).
+    _stub_diffusers(monkeypatch)
+    t = _MixinTransformer()
+    apply_step_cache(
+        _pipe(t), mode = "fbcache", threshold = 0.12, quant_active = True, family = "wan2.2-t2v-a14b"
+    )
+    assert t.enabled_with.threshold == 0.12
+    fast = _MixinTransformer()
+    apply_step_cache(
+        _pipe(fast), mode = "fbcache", quality = "fast", quant_active = True, family = "wan2.2-t2v-a14b"
+    )
+    assert fast.enabled_with.threshold == 0.15
+
+
 def test_non_cachemixin_runs_uncached(monkeypatch):
     # A transformer without enable_cache (e.g. Z-Image) must NOT install the standalone hook
     # -- its pipeline opens no cache_context, so it runs uncached instead of crashing at gen.

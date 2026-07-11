@@ -67,7 +67,9 @@ CACHE_QUALITY_LEVELS = (CQ_QUALITY, CQ_BALANCED, CQ_FAST)
 # (0.06, 2, 0.3) = 1.64x at LPIPS 0.050 (30 steps: 1.63x at 0.093) vs balanced
 # (0.12, 3, 0.2) = 2.17x at LPIPS 0.129 (30 steps: 2.02x at 0.201). Skip counts bind on
 # the cap + retention window below threshold ~0.12, which is why quality tightens all
-# three rather than just the threshold.
+# three rather than just the threshold. Re-measured at the production 121-frame default
+# (same protocol): quality = 1.69x at 0.042 (720p) / 1.66x at 0.018 (480p) -- the
+# 33-frame operating points transfer (see the ratio-curve note below).
 _MAGCACHE_QUALITY_PRESETS: dict[str, tuple[float, int, float]] = {
     CQ_QUALITY: (0.06, 2, 0.3),
     CQ_BALANCED: (DEFAULT_MAGCACHE_THRESHOLD, MAGCACHE_MAX_SKIP_STEPS, MAGCACHE_RETENTION_RATIO),
@@ -82,6 +84,24 @@ _FBCACHE_QUALITY_THRESHOLDS: dict[str, tuple[float, float]] = {
     CQ_QUALITY: (0.04, 0.06),
     CQ_BALANCED: (DEFAULT_FBCACHE_THRESHOLD, QUANT_FBCACHE_THRESHOLD),
     CQ_FAST: (QUANT_FBCACHE_THRESHOLD, 0.15),
+}
+
+# Per-family FBCache threshold overrides: (family, preset) -> (dense, quant-active).
+# Wan2.2-A14B: on reference hardware the UNSET precision auto-promotes to fp8, which
+# made the generic quant-active promotion (0.08 -> 0.12) the family's EFFECTIVE
+# default -- but fb@0.12 measures pairwise LPIPS 0.128 (2.88x, dense probe, B200,
+# 1280x720/33f/50 steps), far over the <= 0.08 quality gate the balanced preset is
+# held to, and the round-3 adjudication that kept FBCache as the auto mode assumed
+# the 0.08 point (1.28x/0.098). No compliant faster point exists (fb@0.04 is SLOWER
+# than uncached at 0.016; MagCache was measured worse), so balanced pins 0.08 with
+# quant active too: quality first, the fast points stay one explicit preset away.
+# Operating point with the shipped quant actually engaged (fp8 DiTs, production
+# shape 1280x720/81f/50 steps, pairwise vs the same fp8 uncached load, B200):
+# fb@0.08 = 1.08x at LPIPS 0.129, vs the old effective default fb@0.12 = 2.58x at
+# 0.181 -- fp8's residual noise makes the quantised cache trip the quality gate at
+# ANY speedup, so 0.08 is the least-drift cache-on point, not a compliant one.
+_FAMILY_FBCACHE_THRESHOLDS: dict[tuple[str, str], tuple[float, float]] = {
+    ("wan2.2-t2v-a14b", CQ_BALANCED): (DEFAULT_FBCACHE_THRESHOLD, DEFAULT_FBCACHE_THRESHOLD),
 }
 
 
@@ -133,6 +153,16 @@ FBCACHE_MIN_STEPS = 20
 # 50-step curve within 0.027 after nearest-interpolation, so ONE curve per family is
 # enough -- diffusers interpolates it to the actual step count. Conditional-branch curve
 # per the MagCache calibration guidance.
+#
+# Frame-count transfer VALIDATED at the production default (121 frames): these curves
+# were calibrated on 33-frame clips, and recalibrating each family at its production
+# shape (121f / 50 steps / default resolution, B200) moves the curve by <= 0.024 max
+# abs entry diff (hv720 0.019, hv480 0.021, wan5b 0.024) -- small enough that the auto
+# preset's skip schedule is UNCHANGED: the 33f-curve and fresh-121f-curve runs produced
+# byte-identical frames on every family, so the 33f curves ship as-is. Measured at 121f
+# with the shipped curves (pairwise LPIPS vs the same-load uncached compiled stack):
+# hv720 quality 1.69x at 0.042, hv480 quality 1.66x at 0.018, wan5b balanced 1.74x at
+# 0.026 -- each inside the gate its 33f adjudication was held to.
 _MAGCACHE_720P_RATIOS = (
     1.0,
     1.0226,
@@ -617,7 +647,12 @@ def apply_step_cache(
         preset_thr, mag_skip, mag_retention = _MAGCACHE_QUALITY_PRESETS[quality]
         thr = threshold if threshold is not None else preset_thr
     else:
-        dense_thr, quant_thr = _FBCACHE_QUALITY_THRESHOLDS[quality]
+        # A family override wins over the generic preset table (Wan2.2-A14B pins its
+        # balanced threshold to the quality-gated 0.08 even when quant is active).
+        dense_thr, quant_thr = _FAMILY_FBCACHE_THRESHOLDS.get(
+            (str(family or "").strip().lower(), quality),
+            _FBCACHE_QUALITY_THRESHOLDS[quality],
+        )
         thr = threshold if threshold is not None else (quant_thr if quant_active else dense_thr)
     # Engage only via the transformer's native enable_cache (the diffusers CacheMixin path):
     # the lower-level apply_first_block_cache hook would install on a non-CacheMixin

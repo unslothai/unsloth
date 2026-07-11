@@ -2079,3 +2079,94 @@ def test_begin_generate_preempts_running_prewarm(fake_runtime, monkeypatch):
         time.sleep(0.02)
     assert backend._generate_job_active is False
     backend.unload()
+
+
+# ── all-or-none step cache across MoE experts (_step_cache_all_or_none) ────────────
+def _moe_pipe_and_fam():
+    fam = types.SimpleNamespace(is_moe = True, name = "wan2.2-t2v-a14b")
+    t1 = types.SimpleNamespace(tag = "expert1")
+    t2 = types.SimpleNamespace(tag = "expert2")
+    pipe = types.SimpleNamespace(transformer = t1, transformer_2 = t2)
+    return pipe, fam, t1, t2
+
+
+def test_step_cache_all_or_none_rolls_back_second_expert_failure(monkeypatch):
+    # apply_step_cache never raises -- a second-expert failure returns None for that
+    # expert while the FIRST stays cached. The helper must disengage the engaged
+    # expert and report the cache off (all-or-none, mirroring the quant loop).
+    import core.inference.video as video
+
+    pipe, fam, t1, _t2 = _moe_pipe_and_fam()
+    disengaged: list = []
+    monkeypatch.setattr(
+        video,
+        "_disengage_step_cache",
+        lambda transformer, *, reason, logger = None: disengaged.append((transformer, reason)) or True,
+    )
+    calls: list = []
+
+    def engage(view, expert_name):
+        calls.append(expert_name)
+        return "fbcache" if expert_name == "transformer" else None
+
+    mode, reason = video._step_cache_all_or_none(pipe, fam, engage, logger = None)
+    assert calls == ["transformer", "transformer_2"]
+    assert mode is None
+    assert reason is not None and "1/2" in reason and "transformer_2" in reason
+    assert len(disengaged) == 1 and disengaged[0][0] is t1
+
+
+def test_step_cache_all_or_none_rolls_back_first_expert_failure(monkeypatch):
+    # Mirror image: only the SECOND expert engaged -> it is the one disengaged.
+    import core.inference.video as video
+
+    pipe, fam, _t1, t2 = _moe_pipe_and_fam()
+    disengaged: list = []
+    monkeypatch.setattr(
+        video,
+        "_disengage_step_cache",
+        lambda transformer, *, reason, logger = None: disengaged.append(transformer) or True,
+    )
+    mode, reason = video._step_cache_all_or_none(
+        pipe, fam,
+        lambda view, expert_name: "magcache" if expert_name == "transformer_2" else None,
+        logger = None,
+    )
+    assert mode is None and reason is not None
+    assert disengaged == [t2]
+
+
+def test_step_cache_all_or_none_uniform_outcomes(monkeypatch):
+    # Both experts engaged -> the mode is reported with no rollback; neither engaged
+    # -> plain uncached with no failure reason (the pre-existing best-effort path).
+    import core.inference.video as video
+
+    pipe, fam, _t1, _t2 = _moe_pipe_and_fam()
+    monkeypatch.setattr(
+        video,
+        "_disengage_step_cache",
+        lambda transformer, *, reason, logger = None: pytest.fail("no rollback on uniform outcome"),
+    )
+    assert video._step_cache_all_or_none(
+        pipe, fam, lambda view, expert_name: "fbcache", logger = None
+    ) == ("fbcache", None)
+    assert video._step_cache_all_or_none(
+        pipe, fam, lambda view, expert_name: None, logger = None
+    ) == (None, None)
+
+
+def test_step_cache_all_or_none_single_dit(monkeypatch):
+    # A single-DiT family runs the engage exactly once and can never see a mixed
+    # outcome -- behaviour identical to the pre-helper loop.
+    import core.inference.video as video
+
+    fam = types.SimpleNamespace(is_moe = False, name = "wan2.2-ti2v-5b")
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace(), transformer_2 = None)
+    calls: list = []
+
+    def engage(view, expert_name):
+        calls.append((view, expert_name))
+        return "magcache"
+
+    assert video._step_cache_all_or_none(pipe, fam, engage, logger = None) == ("magcache", None)
+    assert calls == [(pipe, "transformer")]

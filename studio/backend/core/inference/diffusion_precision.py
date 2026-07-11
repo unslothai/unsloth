@@ -362,6 +362,14 @@ def quantize_text_encoders(
             caster(encoder, target)
             cast.append(attr)
         except Exception as exc:  # noqa: BLE001 — leave this encoder dense
+            # The torchao casters mutate the encoder in place module-by-module, so a
+            # mid-pass failure may have left it PARTIALLY quantized -- a state that
+            # cannot run as the dense encoder this fallback would report (and that
+            # offload's Module.to() hard-crashes on). Fail the load for that; a clean
+            # miss (nothing swapped, e.g. layerwise fp8) stays best-effort dense.
+            from .diffusion_transformer_quant import raise_if_partially_quantized
+
+            raise_if_partially_quantized(encoder, what = f"text_encoder_quant {mode}:{attr}", exc = exc)
             _warn(logger, f"{mode}:{attr}", exc)
     return mode if cast else None
 

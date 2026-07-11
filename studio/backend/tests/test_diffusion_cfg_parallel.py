@@ -132,20 +132,30 @@ def _stub_torch(
     *,
     device_count = 2,
     free = None,
+    names = None,
+    caps = None,
+    with_identity = True,
 ):
     torch = types.ModuleType("torch")
     torch.Tensor = _FakeTensor
     free = free if free is not None else {}
+    names = names if names is not None else {}
+    caps = caps if caps is not None else {}
 
     def _mem_get_info(idx):
         return free.get(idx, (64 << 30, 80 << 30))
 
-    torch.cuda = types.SimpleNamespace(
+    cuda_kwargs = dict(
         is_available = lambda: device_count > 0,
         device_count = lambda: device_count,
         mem_get_info = _mem_get_info,
         empty_cache = lambda: None,
     )
+    if with_identity:
+        # Homogeneous by default so the pre-identity-gate tests keep engaging.
+        cuda_kwargs["get_device_name"] = lambda idx: names.get(idx, "Fake GPU")
+        cuda_kwargs["get_device_capability"] = lambda idx: caps.get(idx, (9, 0))
+    torch.cuda = types.SimpleNamespace(**cuda_kwargs)
     torch.inference_mode = contextlib.nullcontext
     monkeypatch.setitem(sys.modules, "torch", torch)
     return torch
@@ -157,12 +167,20 @@ def _make_proxy(
     compiled = False,
     explicit_on = False,
     fail_enable = False,
+    device_match = True,
 ):
     _stub_torch(monkeypatch)
     primary = _FakeDiT(device_index = 0)
     replica = _FakeDiT(device_index = 1, fail_enable = fail_enable)
     guider = types.SimpleNamespace(forward = lambda *a, **k: ("combined", a, k), num_conditions = 2)
-    proxy = CFGParallelProxy(primary, replica, guider, compiled = compiled, explicit_on = explicit_on)
+    proxy = CFGParallelProxy(
+        primary,
+        replica,
+        guider,
+        compiled = compiled,
+        explicit_on = explicit_on,
+        device_match = device_match,
+    )
     return proxy, primary, replica, guider
 
 
@@ -289,8 +307,69 @@ def test_pick_secondary_prefers_most_free(monkeypatch):
         device_count = 3,
         free = {1: (10 << 30, 80 << 30), 2: (40 << 30, 80 << 30)},
     )
-    idx, free = _pick_secondary_device(0)
-    assert idx == 2 and free == 40 << 30
+    idx, free, match = _pick_secondary_device(0)
+    assert idx == 2 and free == 40 << 30 and match is True
+
+
+# ── device identity (bit-identity needs the SAME kernels -> the same arch) ─────────
+def test_pick_secondary_prefers_identity_match_over_free(monkeypatch):
+    # cuda:2 has the most free VRAM but is a different model; cuda:1 matches the
+    # primary, so the picker takes it (bit-identity beats headroom).
+    _stub_torch(
+        monkeypatch,
+        device_count = 3,
+        free = {1: (30 << 30, 80 << 30), 2: (60 << 30, 80 << 30)},
+        names = {0: "NVIDIA B200", 1: "NVIDIA B200", 2: "NVIDIA H100"},
+    )
+    idx, free, match = _pick_secondary_device(0)
+    assert idx == 1 and free == 30 << 30 and match is True
+
+
+def test_pick_secondary_falls_back_to_mismatch(monkeypatch):
+    # No matching device exists: the most-free mismatched one is still returned (an
+    # explicit "on" can engage it, lossy), flagged match=False.
+    _stub_torch(monkeypatch, names = {0: "NVIDIA B200", 1: "NVIDIA H100"})
+    idx, _free, match = _pick_secondary_device(0)
+    assert idx == 1 and match is False
+
+
+def test_pick_secondary_unknown_identity_counts_as_match(monkeypatch):
+    # A torch without queryable device props (identity unknown) must stay best-effort:
+    # the check never blocks what the pre-identity-gate behaviour allowed.
+    _stub_torch(monkeypatch, with_identity = False)
+    idx, _free, match = _pick_secondary_device(0)
+    assert idx == 1 and match is True
+
+
+def test_gate_auto_declines_device_mismatch(monkeypatch):
+    _stub_torch(monkeypatch, names = {0: "NVIDIA B200", 1: "NVIDIA H100"})
+    proxy, reason = _gate(monkeypatch, _CtxPipe(_FakeDiT()), _fam())
+    assert proxy is None
+    assert "different device" in reason and "cfg_parallel=on" in reason
+
+
+def test_gate_auto_declines_capability_mismatch(monkeypatch):
+    # Same marketing name, different compute capability: still a different arch.
+    _stub_torch(monkeypatch, caps = {0: (10, 0), 1: (9, 0)})
+    proxy, reason = _gate(monkeypatch, _CtxPipe(_FakeDiT()), _fam())
+    assert proxy is None and "different device" in reason
+
+
+def test_gate_explicit_on_allows_device_mismatch(monkeypatch):
+    # Explicit "on" passes the identity gate (downgraded to lossy); it then fails soft
+    # at the replica load (the fake DiT has no from_pretrained), proving the gate order.
+    _stub_torch(monkeypatch, names = {0: "NVIDIA B200", 1: "NVIDIA H100"})
+    proxy, reason = _gate(monkeypatch, _CtxPipe(_FakeDiT()), _fam(), requested = "on")
+    assert proxy is None and reason == "replica load failed"
+
+
+def test_plan_lossy_on_device_mismatch(monkeypatch):
+    # An explicit-on engage across mismatched devices must never report lossless, even
+    # on the (otherwise byte-identical) eager tier.
+    proxy, _, _, _ = _make_proxy(monkeypatch, explicit_on = True, device_match = False)
+    plan = proxy.plan_generation(cache_engaged = False, steps = 30, width = 1280, height = 720, frames = 33)
+    assert plan["enabled"] is True and plan["lossless"] is False
+    proxy.shutdown()
 
 
 # ── proxy semantics ───────────────────────────────────────────────────────────────
