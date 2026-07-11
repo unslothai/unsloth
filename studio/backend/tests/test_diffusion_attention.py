@@ -449,3 +449,68 @@ def test_install_failure_falls_back_to_native(monkeypatch):
     monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
     t = _FakeTransformer(fail = True)
     assert apply_attention_backend(_pipe(t), "sage") is None
+
+
+# ── kernels-package install gate (huggingface_hub compatibility) ─────────────────
+
+
+def test_kernels_install_skipped_on_pre_1x_hub(monkeypatch):
+    # Every current `kernels` release needs huggingface_hub >= 1.0, and with an older
+    # hub the damage is NOT contained: `import kernels` raises at module scope and
+    # diffusers imports kernels whenever it is installed, so a single auto-install
+    # would brick every later pipeline import (measured: hub 0.36 + kernels 0.13/0.16
+    # both break the HunyuanVideo-1.5 pipeline import). The installer must refuse.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(att, "_kernels_hub_compatible", lambda logger = None: False)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("flash_4_hub")
+    assert run.calls == []
+    # The refusal is a policy decision, not a failed attempt: nothing memoised, so a
+    # later request on a fixed environment can still install.
+    assert "kernels" not in att._INSTALL_ATTEMPTED
+
+
+def test_kernels_install_allowed_on_hub_1x(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(att, "_kernels_hub_compatible", lambda logger = None: True)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("flash_4_hub")
+    assert len(run.calls) == 1 and "kernels" in run.calls[0]
+
+
+def test_kernels_gate_only_applies_to_kernels_package(monkeypatch):
+    # sage/xformers/flash-attn wheels do not import huggingface_hub at module scope,
+    # so the hub gate must not block them.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(att, "_kernels_hub_compatible", lambda logger = None: False)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("sage")
+    assert len(run.calls) == 1 and "sageattention" in run.calls[0]
+
+
+def test_kernels_hub_compatible_reads_hub_version(monkeypatch):
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.36.2")
+    assert att._kernels_hub_compatible() is False
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "1.23.0")
+    assert att._kernels_hub_compatible() is True
+
+    def _boom(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    # Undeterminable hub -> keep the previous (permissive) behaviour.
+    monkeypatch.setattr(importlib.metadata, "version", _boom)
+    assert att._kernels_hub_compatible() is True

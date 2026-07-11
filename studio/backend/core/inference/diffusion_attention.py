@@ -196,6 +196,25 @@ _ATTENTION_INSTALL_ENV = "UNSLOTH_DIFFUSION_ATTENTION_INSTALL"
 _INSTALL_ATTEMPTED: set[str] = set()
 
 
+def _kernels_hub_compatible(logger: Any = None) -> bool:
+    """Whether installing the ``kernels`` package is SAFE next to the resident
+    huggingface_hub. Every current ``kernels`` release (>= 0.13) builds its dependency
+    tables with huggingface_hub >= 1.0's strict-dataclass API, and with an older hub
+    the breakage is NOT contained to the backend: ``import kernels`` raises at module
+    scope, and diffusers imports ``kernels`` whenever it is installed -- so EVERY later
+    pipeline import in every process crashes until the package is uninstalled
+    (measured: hub 0.36 + kernels 0.13/0.16 both brick the HunyuanVideo-1.5 pipeline
+    import). transformers/diffusers stacks pinned to hub < 1.0 therefore must not
+    auto-install it; the requested hub backend falls back to native instead. An
+    undeterminable hub version allows the install (previous behaviour)."""
+    try:
+        from importlib.metadata import version
+
+        return int(version("huggingface_hub").split(".", 1)[0]) >= 1
+    except Exception:  # noqa: BLE001 -- unknown hub -> keep the previous behaviour
+        return True
+
+
 def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> None:
     """Best-effort wheel-only install of the package ``backend`` needs, when allowed.
 
@@ -213,6 +232,15 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
     module, package = spec
     gate = os.environ.get(_ATTENTION_INSTALL_ENV, "auto").strip().lower()
     if gate in ("0", "false", "no", "off"):
+        return
+    if package == "kernels" and not _kernels_hub_compatible(logger):
+        if logger is not None:
+            logger.warning(
+                "diffusion.attention: not installing 'kernels' for backend=%s -- the "
+                "resident huggingface_hub is < 1.0 and a kernels install would break "
+                "every later diffusers pipeline import; using the default backend",
+                backend,
+            )
         return
     try:
         if importlib.util.find_spec(module) is not None:
