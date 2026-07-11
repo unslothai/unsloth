@@ -275,18 +275,27 @@ def compile_prewarm_decision(
         # speed=max compiles dynamic=False: a graph is keyed to the exact shape,
         # so a tiny warmup shape would compile a graph the user's request never
         # runs and the real shape would still pay its own compile.
-        return False, "skipped: speed=max compiles static per-shape graphs a warmup shape cannot serve"
+        return (
+            False,
+            "skipped: speed=max compiles static per-shape graphs a warmup shape cannot serve",
+        )
     if not bool(getattr(fam, "supports_compile_prewarm", True)):
         return False, "family opted out (supports_compile_prewarm=False)"
     if offload_policy != "none":
         # Offload wraps block forwards in disabled onload hooks (the compiled-inner
         # arming skips them) and every warmup forward would stream the full DiT
         # over PCIe -- all cost, none of the measured warmup benefit.
-        return False, "skipped: offload streams weights per forward; the warmup would only churn transfers"
+        return (
+            False,
+            "skipped: offload streams weights per forward; the warmup would only churn transfers",
+        )
     if cfg_parallel_active:
         # The CFG-parallel proxy serialises compile-sensitive runs through its own
         # per-(shape, steps, cache) planner; an unplanned warmup would bypass it.
-        return False, "skipped: CFG parallel plans compile-sensitive runs through its own dispatcher"
+        return (
+            False,
+            "skipped: CFG parallel plans compile-sensitive runs through its own dispatcher",
+        )
     return True, (
         "background warmup generation absorbs the first-generation compile hitch "
         "(measured 11.3s -> 2.1s warm-cache, ~54s cold, HunyuanVideo-1.5-480p on B200)"
