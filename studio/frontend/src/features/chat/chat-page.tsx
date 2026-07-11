@@ -1110,6 +1110,8 @@ export function validateChatSearch(search: Record<string, unknown>): ChatSearch 
 type PendingHubAutoLoad = {
   selection: SelectedModelInput;
   contextKey: string;
+  originCheckpoint: string;
+  originGgufVariant: string | null;
 };
 
 // `search` comes from RootLayout (not useSearch) so ChatPage stays mounted off-route
@@ -1738,9 +1740,15 @@ export function ChatPage({
           hasGgufSource(selection) &&
           !selection.isDownloaded);
       if (wantManagerStage) {
-        setPendingHubAutoLoad({ selection, contextKey: chatContextKey });
+        setPendingHubAutoLoad({
+          selection,
+          contextKey: chatContextKey,
+          originCheckpoint: store.params.checkpoint,
+          originGgufVariant: store.activeGgufVariant,
+        });
         return;
       }
+      setPendingHubAutoLoad(null);
       const previousConfig = currentRuntimePerModelConfig({
         includeMaxSeqLength: true,
       });
@@ -1768,7 +1776,14 @@ export function ChatPage({
         return;
       }
       setPendingHubAutoLoad(null);
-      if (!active || pending.contextKey !== chatContextKey) {
+      const store = useChatRuntimeStore.getState();
+      if (
+        !active ||
+        pending.contextKey !== chatContextKey ||
+        normalizeModelRef(pending.originCheckpoint) !==
+          normalizeModelRef(store.params.checkpoint) ||
+        pending.originGgufVariant !== store.activeGgufVariant
+      ) {
         return;
       }
       void stageOrLoad({ ...pending.selection, isDownloaded: true });
@@ -1883,6 +1898,7 @@ export function ChatPage({
       const currentCheckpoint = store.params.checkpoint;
       const currentVariant = store.activeGgufVariant;
       if (!value) return;
+      setPendingHubAutoLoad(null);
       const isSameLoadedModel =
         value === currentCheckpoint &&
         (meta?.ggufVariant ?? null) === (currentVariant ?? null);
