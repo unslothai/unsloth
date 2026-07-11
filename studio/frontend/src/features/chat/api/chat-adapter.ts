@@ -173,6 +173,7 @@ interface ResponseDetailsMetadata {
     artifacts: boolean;
     confirmToolCalls: boolean;
     bypassPermissions: boolean;
+    permissionMode?: string;
   };
 }
 
@@ -1917,6 +1918,7 @@ export function createOpenAIStreamAdapter(
         mcpEnabledForChat,
         confirmToolCalls,
         bypassPermissions,
+        permissionMode,
         webFetchToolsEnabled,
         ragEnabled,
         ragSource,
@@ -2608,6 +2610,7 @@ export function createOpenAIStreamAdapter(
             artifacts: renderHtmlToolEnabledForThisTurn,
             confirmToolCalls,
             bypassPermissions,
+            permissionMode,
           },
         });
         const externalCapabilities = getProviderCapabilities(
@@ -2939,10 +2942,13 @@ export function createOpenAIStreamAdapter(
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
-                  // Bypass Permissions wins: never request the confirm gate
-                  // while bypassing, and tell the backend to drop the sandbox.
-                  confirm_tool_calls: confirmToolCalls && !bypassPermissions,
+                  // Level decides the gate: ask/auto request it ("auto"
+                  // only pauses calls the backend flags as unsafe), off and
+                  // full never prompt, full also drops the sandbox.
+                  confirm_tool_calls:
+                    permissionMode === "ask" || permissionMode === "auto",
                   bypass_permissions: bypassPermissions,
+                  permission_mode: permissionMode,
                   // Scope: thread_id = this thread's docs, kb_id = a KB,
                   // project_id = the thread's project sources (auto-on whenever
                   // the project has indexed sources, no Docs pill needed).

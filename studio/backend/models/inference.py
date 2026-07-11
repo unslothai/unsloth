@@ -777,6 +777,17 @@ class ChatCompletionRequest(BaseModel):
         False,
         description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
     )
+    permission_mode: Optional[Literal["ask", "auto", "off", "full"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Permission level for local tool calls. 'ask' pauses every "
+            "call for approval (requires confirm_tool_calls). 'auto' ('Approve for "
+            "me') only pauses calls detected as potentially unsafe (state-mutating "
+            "terminal/python/MCP calls); read-only calls run immediately, and the "
+            "sandbox stays on. 'full' is equivalent to bypass_permissions=true (no "
+            "confirmation, no sandbox). Unset behaves as 'ask'."
+        ),
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
@@ -1686,6 +1697,10 @@ class AnthropicMessagesRequest(BaseModel):
     bypass_permissions: Optional[bool] = Field(
         False,
         description = "[x-unsloth] Bypass Permissions: when true, disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits) for server-side tool calls. Secret env vars are still stripped. Declared explicitly (not relied on via extra='allow') so omitted requests default to False instead of raising AttributeError.",
+    )
+    permission_mode: Optional[Literal["ask", "auto", "off", "full"]] = Field(
+        None,
+        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' only pauses calls detected as potentially unsafe, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset behaves as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,

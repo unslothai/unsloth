@@ -6936,6 +6936,7 @@ async def openai_chat_completions(
                     confirm_tool_calls = bool(payload.confirm_tool_calls)
                     and not bool(payload.bypass_permissions),
                     bypass_permissions = bool(payload.bypass_permissions),
+                    permission_mode = payload.permission_mode,
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -8231,6 +8232,7 @@ async def openai_chat_completions(
                 confirm_tool_calls = bool(payload.confirm_tool_calls)
                 and not bool(payload.bypass_permissions),
                 bypass_permissions = bool(payload.bypass_permissions),
+                permission_mode = payload.permission_mode,
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
             )
@@ -11759,6 +11761,7 @@ async def anthropic_messages(
                 rag_scope = getattr(payload, "rag_scope", None),
                 disable_parallel_tool_use = _disable_parallel,
                 bypass_permissions = bool(payload.bypass_permissions),
+                permission_mode = getattr(payload, "permission_mode", None),
             )
 
         if payload.stream:

@@ -427,6 +427,7 @@ def run_safetensors_tool_loop(
     rag_scope: Optional[dict] = None,
     confirm_tool_calls: bool = False,
     bypass_permissions: bool = False,
+    permission_mode: Optional[str] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -451,6 +452,16 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
+
+    # Normalize the mode (mirrors the GGUF loop): "full" and
+    # bypass_permissions are the same switch; unset/unknown behaves as "ask".
+    # "off" keeps the sandbox but never prompts.
+    if permission_mode == "full":
+        bypass_permissions = True
+    elif bypass_permissions:
+        permission_mode = "full"
+    elif permission_mode not in ("ask", "auto", "off"):
+        permission_mode = "ask"
 
     # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to web_search.
     from core.inference.tools import build_rag_autoinject
@@ -1055,8 +1066,20 @@ def run_safetensors_tool_loop(
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
 
             # Bypass wins over the confirm gate at the loop level too, so a
-            # direct internal caller passing both flags never prompts.
-            needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
+            # direct internal caller passing both flags never prompts. In
+            # "auto" mode only calls detected as potentially unsafe pause.
+            # "off" never prompts (sandbox stays on).
+            needs_confirm = (
+                bool(confirm_tool_calls)
+                and not bypass_permissions
+                and permission_mode != "off"
+            )
+            if needs_confirm and permission_mode == "auto":
+                from core.inference.tools import is_potentially_unsafe_tool_call
+
+                needs_confirm = is_potentially_unsafe_tool_call(
+                    decision.tool_name, decision.arguments
+                )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event = decision.tool_start_event()

@@ -179,6 +179,12 @@ export const en = {
         revoked: "All preview links revoked",
         revokeError: "Couldn't revoke preview links",
       },
+      permissions: {
+        sectionTitle: "Permissions",
+        bypassLabel: "Bypass permissions",
+        bypassDescription:
+          "How Studio approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
+      },
       notifications: {
         sectionTitle: "Notifications",
         showLlamaUpdates: "llama.cpp update notifications",

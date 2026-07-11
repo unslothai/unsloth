@@ -1296,6 +1296,7 @@ class InferenceOrchestrator:
         rag_scope: Optional[dict] = None,
         confirm_tool_calls: bool = False,
         bypass_permissions: bool = False,
+        permission_mode: Optional[str] = None,
         use_adapter: Optional[Union[bool, str]] = None,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
@@ -1362,6 +1363,7 @@ class InferenceOrchestrator:
             rag_scope = rag_scope,
             confirm_tool_calls = confirm_tool_calls,
             bypass_permissions = bypass_permissions,
+            permission_mode = permission_mode,
         )
 
     def generate_with_adapter_control(

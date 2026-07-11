@@ -48,7 +48,6 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
-  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -62,6 +61,7 @@ import {
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
 import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
+import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
@@ -524,10 +524,6 @@ export function SharedComposer({
   );
   const setWebFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.setWebFetchToolsEnabled,
-  );
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  const setBypassPermissions = useChatRuntimeStore(
-    (s) => s.setBypassPermissions,
   );
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
@@ -1617,29 +1613,10 @@ export function SharedComposer({
             </PillGlyph>
             <span>Compare</span>
           </button>
-          {/* Bypass sits immediately after Compare and ahead of every other
-              tool pill (Search, Code, ...) so the active danger state reads
-              first; only Compare outranks it. */}
-          {bypassPermissions && (
-            <button
-              type="button"
-              onClick={() => setBypassPermissions(false)}
-              className="composer-pill-btn"
-              data-active="true"
-              data-variant="danger"
-              aria-label="Disable Bypass permissions"
-              title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
-            >
-              <PillGlyph>
-                <HugeiconsIcon
-                  icon={ShieldBanIcon}
-                  strokeWidth={2}
-                  className="size-[15px]"
-                />
-              </PillGlyph>
-              <span>Bypass permissions</span>
-            </button>
-          )}
+          {/* Permission-level pill sits immediately after Compare and ahead
+              of every other tool pill (Search, Code, ...) so the Full access
+              danger state reads first; only Compare outranks it. */}
+          <PermissionModeComposerPill side="top" />
           <button
             type="button"
             disabled={searchDisabled}

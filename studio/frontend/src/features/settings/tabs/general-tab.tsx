@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
-import { useChatRuntimeStore } from "@/features/chat";
+import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
 import { openModelsDir } from "@/features/native-intents";
 import { emitTrainingRunsChanged } from "@/features/training";
 import {
@@ -77,6 +77,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_settings_active_tab",
   // Chat runtime prefs
   "unsloth_chat_auto_title",
+  "unsloth_chat_permission_mode",
   "unsloth_hf_token",
   "unsloth_auto_heal_tool_calls",
   "unsloth_nudge_tool_calls",
@@ -579,6 +580,15 @@ export function GeneralTab() {
           description={t("settings.general.autoTitleNewChatsDescription")}
         >
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.permissions.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.permissions.bypassLabel")}
+          description={t("settings.general.permissions.bypassDescription")}
+        >
+          <PermissionModeDropdown />
         </SettingsRow>
       </SettingsSection>
 

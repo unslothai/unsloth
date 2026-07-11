@@ -8966,16 +8966,36 @@ class LlamaCppBackend:
         disable_parallel_tool_use: bool = False,
         confirm_tool_calls: bool = False,
         bypass_permissions: bool = False,
+        permission_mode: Optional[str] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
+
+        permission_mode: "ask" confirms every call (with confirm_tool_calls),
+        "auto" only pauses calls detected as potentially unsafe, "off" never
+        pauses (sandbox stays on), "full" is the same as bypass_permissions.
+        Unset/unknown behaves as "ask".
 
         Yields dicts:
           {"type": "status", "text": "Searching: ..."/"Reading: ..."}   -- tool status updates
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
-        from core.inference.tools import build_rag_autoinject, execute_tool
+        from core.inference.tools import (
+            build_rag_autoinject,
+            execute_tool,
+            is_potentially_unsafe_tool_call,
+        )
+
+        # Normalize the mode: "full" and bypass_permissions are the same
+        # switch, whichever arrives first wins toward the permissive side.
+        # "off" keeps the sandbox but never prompts.
+        if permission_mode == "full":
+            bypass_permissions = True
+        elif bypass_permissions:
+            permission_mode = "full"
+        elif permission_mode not in ("ask", "auto", "off"):
+            permission_mode = "ask"
 
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
@@ -9922,7 +9942,18 @@ class LlamaCppBackend:
 
                     # Bypass wins over the confirm gate at the loop level too,
                     # so a direct internal caller with both flags never prompts.
-                    needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
+                    # In "auto" mode only calls detected as potentially unsafe
+                    # pause; read-only calls run straight through. "off" never
+                    # prompts (sandbox stays on).
+                    needs_confirm = (
+                        bool(confirm_tool_calls)
+                        and not bypass_permissions
+                        and permission_mode != "off"
+                    )
+                    if needs_confirm and permission_mode == "auto":
+                        needs_confirm = is_potentially_unsafe_tool_call(
+                            decision.tool_name, decision.arguments
+                        )
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None

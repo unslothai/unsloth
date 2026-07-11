@@ -6,16 +6,6 @@ import {
   AlertDescription,
   AlertTitle,
 } from "@/components/ui/alert";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -80,6 +70,7 @@ import { Fragment, type ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
+import { PermissionModeDropdown } from "./permission-mode-select";
 import {
   type ExternalProviderConfig,
   getExternalProviderApiKey,
@@ -2034,7 +2025,7 @@ function NudgeToolCallsToggle() {
 function ConfirmToolCallsToggle() {
   const confirmToolCalls = useChatRuntimeStore((s) => s.confirmToolCalls);
   const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
     <div className="flex items-center justify-between gap-3">
@@ -2044,32 +2035,30 @@ function ConfirmToolCallsToggle() {
             Confirm tool calls
           </span>
           <InfoHint>
-            When on, local Studio tool calls pause for your approval before they
-            run. Provider-hosted tools are not gated here.
+            When on, every local Studio tool call pauses for your approval
+            before it runs (the "Ask for approval" level). When off, tool calls
+            run without prompts inside the sandbox (the "Off" level).
+            Provider-hosted tools are not gated here.
           </InfoHint>
         </div>
-        {bypassPermissions ? (
+        {permissionMode === "full" ? (
           <span className="text-[11px] text-muted-foreground">
-            Overridden by Bypass permissions
+            Overridden by Full access (Bypass permissions)
           </span>
         ) : null}
       </div>
       <Switch
         className="panel-switch"
-        checked={confirmToolCalls && !bypassPermissions}
+        checked={confirmToolCalls && permissionMode !== "full"}
         onCheckedChange={setConfirmToolCalls}
-        disabled={bypassPermissions}
+        disabled={permissionMode === "full"}
       />
     </div>
   );
 }
 
 function BypassPermissionsToggle() {
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  const setBypassPermissions = useChatRuntimeStore(
-    (s) => s.setBypassPermissions,
-  );
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -2079,50 +2068,23 @@ function BypassPermissionsToggle() {
             Bypass permissions
           </span>
           <InfoHint>
-            Dangerous. Runs every tool call with no confirmation and disables
-            the python/terminal sandbox. Environment secrets are stripped, but
-            code can still read files and credentials on your machine.
+            How Studio approves tool calls before they run. "Ask for approval"
+            pauses every call, "Approve for me" only pauses potentially unsafe
+            ones, "Off" never pauses (sandbox stays on), and "Full access" is
+            dangerous: no confirmations and the python/terminal sandbox is
+            disabled. Environment secrets are stripped, but code can still read
+            files and credentials on your machine.
           </InfoHint>
         </div>
-        <Switch
-          className="panel-switch"
-          checked={bypassPermissions}
-          onCheckedChange={(next) => {
-            if (next) setDialogOpen(true);
-            else setBypassPermissions(false);
-          }}
-        />
+        {/* Fixed width so the row doesn't resize per level; long labels
+            ellipsize inside the trigger. */}
+        <PermissionModeDropdown triggerClassName="h-7 w-[160px]" />
       </div>
-      {bypassPermissions ? (
+      {permissionMode === "full" ? (
         <span className="text-[11px] text-bypass">
           Tool calls run with no confirmation and no sandbox.
         </span>
       ) : null}
-      <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <AlertDialogContent size="sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Enable Bypass permissions?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Bypass permissions is dangerous since the AI model might delete,
-              corrupt your machine, and or cause real world damage to you or the
-              world - only accept if you are certain
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
-              onClick={() => {
-                setBypassPermissions(true);
-                setDialogOpen(false);
-              }}
-            >
-              I understand
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

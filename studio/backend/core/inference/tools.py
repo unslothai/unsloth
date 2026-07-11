@@ -271,6 +271,294 @@ def _find_blocked_commands(command: str) -> set[str]:
     return blocked
 
 
+# ── "Approve for me" (permission_mode="auto") safety detection ──────────────
+# Auto mode only pauses tool calls detected as potentially unsafe; everything
+# below classifies a call. The sandbox stays ON in auto mode, so this gate
+# only decides prompting; hard blocks (blocklist, rlimits) still apply at
+# execution time. Classification fails closed: anything unparseable or not
+# provably read-only counts as unsafe and asks.
+
+# Read-only commands allowed to run without confirmation in auto mode.
+_AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
+    {
+        "ls",
+        "dir",
+        "pwd",
+        "cd",
+        "cat",
+        "head",
+        "tail",
+        "less",
+        "more",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "find",
+        "fd",
+        "wc",
+        "sort",
+        "uniq",
+        "cut",
+        "tr",
+        "diff",
+        "cmp",
+        "file",
+        "stat",
+        "du",
+        "df",
+        "ps",
+        "date",
+        "cal",
+        "whoami",
+        "id",
+        "uname",
+        "hostname",
+        "uptime",
+        "which",
+        "whereis",
+        "type",
+        "basename",
+        "dirname",
+        "realpath",
+        "readlink",
+        "md5",
+        "md5sum",
+        "shasum",
+        "sha1sum",
+        "sha256sum",
+        "cksum",
+        "tree",
+        "printenv",
+        "echo",
+        "printf",
+        "true",
+        "false",
+        "test",
+        "[",
+        "seq",
+        "nl",
+        "od",
+        "xxd",
+        "hexdump",
+        "strings",
+        "column",
+        "paste",
+        "join",
+        "comm",
+        "expand",
+        "unexpand",
+        "fold",
+        "fmt",
+        "rev",
+        "tac",
+        "locale",
+        "arch",
+        "nproc",
+        "sw_vers",
+        "jq",
+        "awk",
+    }
+)
+# Benign wrappers: they count as safe AND forward command position to their
+# target (which is then checked itself). sudo/su/chroot/etc. are deliberately
+# absent, so they classify as unsafe.
+_AUTO_SAFE_WRAPPERS = frozenset(
+    {"env", "command", "time", "timeout", "nice", "ionice", "stdbuf", "nohup", "xargs"}
+)
+
+# MCP tools whose names look read-only auto-run; anything else asks.
+_AUTO_SAFE_MCP_TOOL_RE = re.compile(
+    r"^(get|list|search|read|fetch|query|find|describe|show|view|lookup|"
+    r"retrieve|count|status|info|help|check)(?:[_\-].*)?$",
+    re.IGNORECASE,
+)
+
+# Python: modules whose import alone signals side effects auto mode should ask
+# about (process spawning, network, bulk file ops, low-level memory).
+_AUTO_UNSAFE_PY_MODULES = frozenset(
+    {
+        "subprocess",
+        "shutil",
+        "socket",
+        "ctypes",
+        "multiprocessing",
+        "pty",
+        "fcntl",
+        "requests",
+        "urllib",
+        "http",
+        "httpx",
+        "aiohttp",
+        "ftplib",
+        "smtplib",
+        "telnetlib",
+        "paramiko",
+    }
+)
+# Attribute calls that mutate the filesystem / spawn processes (os.remove,
+# Path.write_text, sock.connect, ...) regardless of how the module was bound.
+_AUTO_UNSAFE_PY_ATTRS = frozenset(
+    {
+        "remove",
+        "unlink",
+        "rmdir",
+        "removedirs",
+        "rename",
+        "renames",
+        "replace",
+        "rmtree",
+        "move",
+        "copy",
+        "copy2",
+        "copyfile",
+        "copytree",
+        "chmod",
+        "chown",
+        "system",
+        "popen",
+        "execv",
+        "execve",
+        "execl",
+        "execlp",
+        "execvp",
+        "spawnl",
+        "spawnv",
+        "fork",
+        "kill",
+        "killpg",
+        "symlink",
+        "link",
+        "mkdir",
+        "makedirs",
+        "truncate",
+        "touch",
+        "write_text",
+        "write_bytes",
+        "urlopen",
+        "urlretrieve",
+        "connect",
+        "bind",
+        "sendall",
+    }
+)
+_PY_WRITE_MODE_RE = re.compile(r"[wax+]")
+
+
+def _open_call_writes(node) -> bool:
+    """True when an ``open(...)`` AST call requests a write/append mode."""
+    mode = None
+    if len(node.args) >= 2:
+        mode = node.args[1]
+    for kw in node.keywords or []:
+        if kw.arg == "mode":
+            mode = kw.value
+    if mode is None:
+        return False  # default "r"
+    if isinstance(mode, ast.Constant) and isinstance(mode.value, str):
+        return bool(_PY_WRITE_MODE_RE.search(mode.value))
+    return True  # dynamic mode: cannot prove read-only
+
+
+def _terminal_is_potentially_unsafe(command: str) -> bool:
+    """Classify a terminal command for auto mode (fail closed)."""
+    if not command or not command.strip():
+        return False
+    # Redirections and substitutions can hide writes or nested commands; a
+    # quoted ">" false-positives into a prompt, which is the safe direction.
+    if ">" in command or "`" in command or "$(" in command or "<(" in command:
+        return True
+    try:
+        lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return True
+    expect_command = True
+    prefix_pending = False
+    for token in tokens:
+        if token in _SHELL_SEPARATORS or token in _SHELL_KEYWORDS_AS_SEP:
+            expect_command = True
+            prefix_pending = False
+            continue
+        if token.startswith("-"):
+            if not prefix_pending:
+                expect_command = False
+            continue
+        if not expect_command:
+            continue
+        if _ASSIGNMENT_RE.match(token):
+            continue
+        if prefix_pending and token.lstrip("-").isdigit():
+            continue
+        base = os.path.basename(token.strip(";&|()`{}")).lower()
+        stem, ext = os.path.splitext(base)
+        if ext in {".exe", ".com", ".bat", ".cmd"}:
+            base = stem
+        if base in _AUTO_SAFE_WRAPPERS:
+            prefix_pending = True
+            continue
+        if base not in _AUTO_SAFE_TERMINAL_COMMANDS:
+            return True
+        expect_command = False
+        prefix_pending = False
+    return False
+
+
+def _python_is_potentially_unsafe(code: str) -> bool:
+    """Classify python-tool code for auto mode (fail closed)."""
+    if not code or not code.strip():
+        return False
+    # Anything the sandbox's static analysis already objects to would be
+    # refused at execution time; surface it as a confirmation first.
+    if _check_code_safety(code) is not None:
+        return True
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False  # runs into a normal traceback; nothing to guard
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in _AUTO_UNSAFE_PY_MODULES:
+                    return True
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.split(".")[0] in _AUTO_UNSAFE_PY_MODULES:
+                return True
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name):
+                if func.id in {"exec", "eval", "__import__", "breakpoint"}:
+                    return True
+                if func.id == "open" and _open_call_writes(node):
+                    return True
+            elif isinstance(func, ast.Attribute):
+                if func.attr in _AUTO_UNSAFE_PY_ATTRS:
+                    return True
+                if func.attr == "open" and _open_call_writes(node):
+                    return True
+    return False
+
+
+def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
+    """Whether a tool call must still pause for approval in auto mode.
+
+    Used by permission_mode="auto" ("Approve for me"): read-only calls
+    auto-run, anything that can mutate state, execute arbitrary code, or is
+    simply unrecognized asks first. Unknown tools fail closed.
+    """
+    if name in ("web_search", "search_knowledge_base", "render_html"):
+        return False
+    if name.startswith(MCP_TOOL_PREFIX):
+        tool_name = name.split("__", 2)[-1]
+        return not _AUTO_SAFE_MCP_TOOL_RE.match(tool_name)
+    if name == "terminal":
+        return _terminal_is_potentially_unsafe(str(arguments.get("command", "")))
+    if name == "python":
+        return _python_is_potentially_unsafe(str(arguments.get("code", "")))
+    return True
+
+
 def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
