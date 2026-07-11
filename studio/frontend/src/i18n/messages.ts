@@ -77,7 +77,8 @@ function interpolate(
 }
 
 function warnMissingEnglishMessage(key: string): void {
-  if (import.meta.env.DEV) {
+  // Optional chain so translate() also works outside Vite (Node tooling).
+  if (import.meta.env?.DEV) {
     console.warn(`[i18n] Missing English translation for key "${key}".`);
   }
 }
