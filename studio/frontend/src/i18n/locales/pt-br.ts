@@ -217,6 +217,91 @@ export const ptBR = {
         light: "Claro",
         dark: "Escuro",
       },
+      palette: {
+        label: "Paleta de cores",
+        description: "Cores usadas no Studio, nos modos claro e escuro.",
+        standard: "Padrão",
+        classic: "Clássico",
+        minimal: "Minimalista",
+      },
+      custom: {
+        reset: "Redefinir",
+        resetAll: "Redefinir personalização",
+        preferencesTitle: "Preferências",
+        colors: {
+          description:
+            "Aplica-se ao modo em uso. Troque o esquema de cores para editar o outro.",
+          lightGroup: "Tema claro",
+          darkGroup: "Tema escuro",
+          accent: "Destaque",
+          background: "Fundo",
+          foreground: "Texto",
+        },
+        fontDefault: "Padrão",
+        fontBundledGroup: "Integradas",
+        fontImportedGroup: "Importadas",
+        fontDeviceGroup: "Neste dispositivo",
+        fontDeviceLoading: "Procurando fontes do dispositivo…",
+        fontSearch: "Buscar fontes…",
+        fontNoResults: "Nenhuma fonte encontrada.",
+        colorPicker: {
+          hue: "Matiz",
+          hex: "Cor hexadecimal",
+          eyedropper: "Escolher uma cor da tela",
+        },
+        uiFont: {
+          label: "Fonte da interface",
+          description: "Fonte usada na interface.",
+        },
+        codeFont: {
+          label: "Fonte de código",
+          description: "Fonte usada em código e diffs.",
+        },
+        importFont: {
+          label: "Importar fonte",
+          description:
+            "Adicione um arquivo de fonte do seu dispositivo (máx. 1,5 MB).",
+          button: "Importar fonte…",
+          remove: "Remover",
+          errorInvalidType:
+            "Tipo de arquivo não suportado. Use .woff2, .woff, .ttf ou .otf.",
+          errorTooLarge: "O arquivo de fonte é muito grande (máx. 1,5 MB).",
+          errorLimit: "Você pode importar até 3 fontes.",
+          errorFailed: "Não foi possível carregar este arquivo de fonte.",
+        },
+        uiFontSize: {
+          label: "Tamanho da fonte da interface",
+          description: "Ajuste o tamanho base da interface do Studio.",
+        },
+        codeFontSize: {
+          label: "Tamanho da fonte de código",
+          description: "Ajuste o tamanho base do código.",
+        },
+        fontSmoothing: {
+          label: "Suavização de fonte",
+          description: "Usar anti-aliasing suavizado nas fontes.",
+        },
+        contrast: {
+          label: "Contraste",
+          description: "Intensidade das bordas e do texto secundário.",
+        },
+        reduceMotion: {
+          label: "Reduzir movimento",
+          description: "Reduza as animações ou siga o sistema.",
+          system: "Sistema",
+          on: "Ativado",
+          off: "Desativado",
+        },
+        pointerCursors: {
+          label: "Usar cursor de ponteiro",
+          description:
+            "Muda o cursor para ponteiro ao passar sobre elementos interativos.",
+        },
+        translucentSidebar: {
+          label: "Barra lateral translúcida",
+          description: "Deixa o conteúdo transparecer pela barra lateral.",
+        },
+      },
       language: {
         title: "Idioma",
         label: "Idioma de exibição",

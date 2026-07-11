@@ -258,6 +258,13 @@
 	--chat-icon-fg-hover: var(--foreground);
 	--chat-icon-bg-hover: #ededec;
 
+	/* Control accent: switches, "New" badges, notification-style chips.
+	   Follows the brand accent by default; palettes that keep their primary
+	   neutral (Classic) override this so small controls still get a hue.
+	   References resolve at use, so .dark's --primary flows through. */
+	--control-accent: var(--primary);
+	--control-accent-foreground: var(--primary-foreground);
+
 	/* Standard interactive-icon size for nav, menus, action bars, and
 	   in-message code-block actions. Sized one step above body text so
 	   icons read as minimally larger than adjacent labels (~14px text).
@@ -271,47 +278,47 @@
 }
 
 .dark {
-	/* Exact palette from apps/studio/index_chat.html mockup. Using hex so the
-	   rendered surface matches the mockup pixel-for-pixel — OKLCH conversion
-	   drifted ~3% darker and shifted the neutral hue. */
-	/* Slightly darker than --sidebar so the sidebar reads as its own surface. */
-	--background: #1a1b1e;
-	--foreground: #ececee;
-	--card: #2d2e32;
-	--card-foreground: #ececee;
-	--popover: #2d2e32;
-	--popover-foreground: #ececee;
+	/* Codex/ChatGPT-app dark surfaces, shared by ALL palettes: #181818 page,
+	   elevated #1f1f1f sidebar, #212121 cards. Palette dark blocks override
+	   only accent tokens so dark mode stays consistent across themes. */
+	--background: #181818;
+	--foreground: #ececec;
+	--card: #212121;
+	--card-foreground: #ececec;
+	--popover: #212121;
+	--popover-foreground: #ececec;
 	--primary: #17b88b;
 	--primary-foreground: oklch(1 0 0);
-	--secondary: #2e3035;
-	--secondary-foreground: #ececee;
-	--muted: #2e3035;
-	--muted-foreground: #999999;
+	--secondary: #242424;
+	--secondary-foreground: #ececec;
+	--muted: #242424;
+	--muted-foreground: #9b9b9b;
 	/* One step lighter than --popover so menu item hover reads clearly. */
-	--accent: #3a3d43;
-	--accent-foreground: #ececee;
+	--accent: #2e2e2e;
+	--accent-foreground: #ececec;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
 	/* --border / --input one step lighter than --muted so outlines and form
 	   borders stay visible on muted surfaces (right config panel, export
 	   tiles, quant chips) and keep subtle contrast on card. */
-	--border: #3a3d42;
-	--input: #3a3d42;
+	--border: #303030;
+	--input: #303030;
 	--ring: #17b88b;
 	--chart-1: oklch(0.7511 0.1407 166.2284);
 	--chart-2: oklch(0.75 0.14 136.5572);
 	--chart-3: oklch(0.7554 0.1285 197.339);
 	--chart-4: oklch(0.7503 0.1199 346.7805);
 	--chart-5: oklch(0.799 0.1196 84.6633);
-	/* A step lighter than --background; the tone difference is the separator. */
-	--sidebar: #1f2023;
-	--sidebar-foreground: #ececee;
+	/* Elevated (a step lighter than --background), Codex-style; the tone
+	   difference is the separator. */
+	--sidebar: #1f1f1f;
+	--sidebar-foreground: #ececec;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
-	--sidebar-accent: #2e3035;
-	--sidebar-accent-foreground: #ececee;
-	--sidebar-border: #2d2e32;
+	--sidebar-accent: #2a2a2a;
+	--sidebar-accent-foreground: #ececec;
+	--sidebar-border: #2a2a2a;
 	--sidebar-ring: #17b88b;
 	--destructive-foreground: oklch(1 0 0);
 	/* Match light's radius so every rounded-* element is the same in both themes. */
@@ -336,21 +343,23 @@
 	--shadow-xl: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 8px 10px 0px hsl(0 0% 0% / 0);
 	--shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 
-	--nav-fg: #c7c7c4;
-	--nav-fg-muted: #96979b;
-	--nav-surface-hover: #2e3035;
+	--nav-fg: #c9c9c9;
+	--nav-fg-muted: #969696;
+	--nav-surface-hover: #2a2a2a;
 	--nav-icon-idle: #5c5c5c;
-	--nav-beta-border: #3a3c3f;
-	--panel-surface-hover: #3a3c42;
+	--nav-beta-border: #333333;
+	--panel-surface-hover: #333333;
 	/* Right-side chat-parameters panel: matches the chat content
 	   surface in both themes — distinction from the left sidebar
-	   (#18181a, the deepest surface) is handled by the left border
-	   alone. Tracks `--background` so any future tweaks to the chat
-	   surface flow through automatically. */
+	   is handled by the left border alone. Tracks `--background` so
+	   any future tweaks to the chat surface flow through
+	   automatically. */
 	--panel-surface: var(--background);
 	--panel-surface-fg: var(--foreground);
-	--panel-input-surface: #2a2b2e;
-	--panel-input-surface-hover: #34373c;
+	/* Translucent white like the ChatGPT app's dark fields, so the same fill
+	   reads correctly on the #181818 page AND on #212121 cards/dialogs. */
+	--panel-input-surface: rgba(255, 255, 255, 0.07);
+	--panel-input-surface-hover: rgba(255, 255, 255, 0.11);
 	/* Soft neutral gray for muted text and sliders. Pure-ish #ababab
 	   reads as quiet on the dark panel without going colored. */
 	--panel-surface-fg-muted: #ababab;
@@ -362,7 +371,242 @@
 	   hover restores full --foreground for affordance. */
 	--chat-icon-fg: #d8d8d8;
 	--chat-icon-fg-hover: var(--foreground);
-	--chat-icon-bg-hover: #2d2e32;
+	--chat-icon-bg-hover: #2a2a2a;
+}
+
+/* ---------------------------------------------------------------------------
+   Color palettes.
+
+   The palette is a second theming dimension, orthogonal to light/dark. It is
+   carried on <html> as `data-palette` (managed by theme-store.ts alongside the
+   light/dark class):
+
+     (no attribute)            → Standard: the signature Unsloth green.
+     data-palette="classic"    → Classic: neutral grays with a calm steel-blue
+                                 accent; enterprise-safe, in the spirit of
+                                 Claude Code / Codex.
+     data-palette="minimal"    → Minimal: strictly black, white, and gray.
+
+   Each palette overrides only color tokens; typography, radii, spacing, and
+   shadows are inherited from the base :root/.dark blocks so layout is
+   identical across palettes. Light blocks are scoped with :not(.dark) so the
+   base .dark block always wins the mode dimension. */
+
+/* -------------------------------- Classic --------------------------------
+   Codex / ChatGPT-app clone: white content + #f9f9f9 sidebar in light,
+   #212121 content + #171717 sidebar in dark, neutral gray hovers, and the
+   Codex blue (#339cff) as the accent. */
+:root[data-palette="classic"]:not(.dark) {
+	--background: #ffffff;
+	--foreground: #1a1c1f;
+	--card: #ffffff;
+	--card-foreground: #1a1c1f;
+	--popover: #ffffff;
+	--popover-foreground: #1a1c1f;
+	/* Neutral primary like ChatGPT's black buttons; blue is reserved for
+	   small controls via --control-accent (toggles, badges, focus rings). */
+	--primary: #0d0d0d;
+	--primary-foreground: #ffffff;
+	--control-accent: #339cff;
+	--control-accent-foreground: #ffffff;
+	--secondary: #f5f5f5;
+	--secondary-foreground: #1a1c1f;
+	--muted: #f7f7f7;
+	--muted-foreground: #8f8f8f;
+	--accent: #ececec;
+	--accent-foreground: #1a1c1f;
+	--bypass: #9a7b1e;
+	--border: #e6e6e6;
+	--input: #e6e6e6;
+	--ring: #339cff;
+	--chart-1: #339cff;
+	--chart-2: #8fa3b8;
+	--chart-3: #0f6fd6;
+	--chart-4: #b8c4d0;
+	--chart-5: #5b7189;
+	--sidebar: #f9f9f9;
+	--sidebar-foreground: #1a1c1f;
+	--sidebar-primary: #0d0d0d;
+	--sidebar-primary-foreground: #ffffff;
+	--sidebar-accent: #ececec;
+	--sidebar-accent-foreground: #1a1c1f;
+	--sidebar-border: #ececec;
+	--sidebar-ring: #339cff;
+
+	--nav-fg: #2d2f31;
+	--nav-fg-muted: #8f8f8f;
+	--nav-surface-hover: #ececec;
+	--nav-icon-idle: #8f8f8f;
+	--nav-beta-border: #e0e0e0;
+	--panel-surface-hover: #ececec;
+	--panel-input-surface: #f4f4f4;
+	--panel-input-surface-hover: #ededed;
+	--panel-surface-fg-muted: #7a7c7e;
+	--panel-slider-fg: #9b9d9f;
+	--chat-icon-fg: #5d5f61;
+	--chat-icon-bg-hover: #ececec;
+}
+
+/* Dark surfaces come from the shared base .dark block; Classic only swaps
+   the accents: neutral (white) buttons like ChatGPT dark, Codex blue on
+   small controls via --control-accent. */
+:root[data-palette="classic"].dark {
+	--primary: #ececec;
+	--primary-foreground: #0d0d0d;
+	--control-accent: #4dabff;
+	--control-accent-foreground: #ffffff;
+	--bypass: #d9b40b;
+	--ring: #4dabff;
+	--chart-1: #4dabff;
+	--chart-2: #8ab6de;
+	--chart-3: #1f7fe8;
+	--chart-4: #b3d4f5;
+	--chart-5: #6d87a3;
+	--sidebar-primary: #ececec;
+	--sidebar-primary-foreground: #0d0d0d;
+	--sidebar-ring: #4dabff;
+}
+
+/* -------------------------------- Minimal -------------------------------- */
+:root[data-palette="minimal"]:not(.dark) {
+	--background: #ffffff;
+	--foreground: #171717;
+	--card: #ffffff;
+	--card-foreground: #171717;
+	--popover: #ffffff;
+	--popover-foreground: #171717;
+	--primary: #171717;
+	--primary-foreground: #ffffff;
+	--secondary: #f5f5f5;
+	--secondary-foreground: #262626;
+	--muted: #f5f5f5;
+	--muted-foreground: #6f6f6f;
+	--accent: #ebebeb;
+	--accent-foreground: #171717;
+	--bypass: #6f6f6f;
+	--border: #e2e2e2;
+	--input: #e2e2e2;
+	--ring: #171717;
+	--chart-1: #171717;
+	--chart-2: #4d4d4d;
+	--chart-3: #7a7a7a;
+	--chart-4: #a6a6a6;
+	--chart-5: #d1d1d1;
+	/* White sidebar on white content; the border alone is the separator. */
+	--sidebar: #ffffff;
+	--sidebar-foreground: #171717;
+	--sidebar-primary: #171717;
+	--sidebar-primary-foreground: #ffffff;
+	--sidebar-accent: #ebebeb;
+	--sidebar-accent-foreground: #171717;
+	--sidebar-border: #e8e8e8;
+	--sidebar-ring: #171717;
+
+	--nav-fg: #333333;
+	--nav-fg-muted: #8a8a8a;
+	--nav-surface-hover: #efefef;
+	--nav-icon-idle: #8f8f8f;
+	--nav-beta-border: #dddddd;
+	--panel-surface-hover: #ececec;
+	--panel-input-surface: #f4f4f4;
+	--panel-input-surface-hover: #ededed;
+	--panel-surface-fg-muted: #757575;
+	--panel-slider-fg: #9b9b9b;
+	--chat-icon-fg: #555555;
+	--chat-icon-bg-hover: #ececec;
+}
+
+/* Dark surfaces come from the shared base .dark block; Minimal only swaps
+   the accents to pure monochrome (white buttons, gray chart ramp). */
+:root[data-palette="minimal"].dark {
+	--primary: #ededed;
+	--primary-foreground: #111111;
+	--bypass: #9c9c9c;
+	--ring: #ededed;
+	--chart-1: #ededed;
+	--chart-2: #bdbdbd;
+	--chart-3: #8f8f8f;
+	--chart-4: #616161;
+	--chart-5: #3d3d3d;
+	--sidebar-primary: #ededed;
+	--sidebar-primary-foreground: #111111;
+	--sidebar-ring: #ededed;
+}
+
+/* ---------------------------------------------------------------------------
+   Appearance customization hooks (Settings → Appearance).
+
+   Every rule below is gated on a class or data attribute that
+   appearance-custom-store.ts toggles on <html>. With no customization active,
+   none of these selectors match and the stylesheet behaves exactly as stock.
+   Custom colors/fonts are applied as inline CSS variables on <html> (inline
+   wins over every :root/.dark/palette block), so they need no rules here. */
+
+/* Contrast slider: remap border and muted-text tokens by mixing their base
+   values toward the foreground (higher contrast) or background (lower).
+   --input mirrors --border in every palette, so it serves as the untouched
+   base for --border; --panel-surface-fg-muted is the closest stable base for
+   --muted-foreground. --contrast-mix / --contrast-target are set inline. */
+html[data-contrast-adjust] {
+	--border: color-mix(in oklab, var(--input), var(--contrast-target) var(--contrast-mix));
+	--sidebar-border: color-mix(in oklab, var(--input), var(--contrast-target) var(--contrast-mix));
+	--muted-foreground: color-mix(
+		in oklab,
+		var(--panel-surface-fg-muted),
+		var(--contrast-target) var(--contrast-mix)
+	);
+}
+
+/* Code font size: only overrides when the user sets an explicit size, so the
+   per-element Tailwind sizes stay authoritative by default. */
+html[data-code-font-size] :is(pre, code, kbd, samp) {
+	font-size: var(--custom-code-font-size) !important;
+}
+
+/* Pointer cursors: Codex-style hand cursor over interactive elements. */
+html.pointer-cursors
+	:is(
+		button:not(:disabled),
+		[role="button"],
+		a[href],
+		select,
+		summary,
+		[role="tab"],
+		[role="menuitem"],
+		[role="option"],
+		[role="switch"],
+		[role="checkbox"],
+		input[type="checkbox"],
+		input[type="radio"],
+		input[type="range"],
+		label[for]
+	) {
+	cursor: pointer;
+}
+
+/* Force reduced motion: collapses CSS animations/transitions app-wide.
+   JS-driven springs are handled separately via MotionConfig in the provider. */
+html.force-reduced-motion *,
+html.force-reduced-motion *::before,
+html.force-reduced-motion *::after {
+	animation-duration: 0.01ms !important;
+	animation-iteration-count: 1 !important;
+	transition-duration: 0.01ms !important;
+	scroll-behavior: auto !important;
+}
+
+/* Font smoothing toggle: back to the browser's subpixel default. */
+html.no-font-smoothing body {
+	-webkit-font-smoothing: auto;
+	-moz-osx-font-smoothing: auto;
+}
+
+/* Translucent sidebar: most visible in the floating/overlay sidebar, where
+   content actually sits behind the panel. */
+html.translucent-sidebar [data-slot="sidebar-inner"] {
+	background-color: color-mix(in srgb, var(--sidebar) 72%, transparent);
+	backdrop-filter: blur(18px) saturate(1.4);
+	-webkit-backdrop-filter: blur(18px) saturate(1.4);
 }
 
 @theme inline {
@@ -395,6 +639,8 @@
 	--color-secondary: var(--secondary);
 	--color-primary-foreground: var(--primary-foreground);
 	--color-primary: var(--primary);
+	--color-control-accent: var(--control-accent);
+	--color-control-accent-foreground: var(--control-accent-foreground);
 	--color-popover-foreground: var(--popover-foreground);
 	--color-popover: var(--popover);
 	--color-card-foreground: var(--card-foreground);
@@ -444,6 +690,8 @@
 	--color-panel-surface: var(--panel-surface);
 	--color-panel-surface-fg: var(--panel-surface-fg);
 	--color-panel-surface-fg-muted: var(--panel-surface-fg-muted);
+	--color-panel-input-surface: var(--panel-input-surface);
+	--color-panel-input-surface-hover: var(--panel-input-surface-hover);
 	--color-chat-icon-fg: var(--chat-icon-fg);
 	--color-chat-icon-fg-hover: var(--chat-icon-fg-hover);
 	--color-chat-icon-bg-hover: var(--chat-icon-bg-hover);

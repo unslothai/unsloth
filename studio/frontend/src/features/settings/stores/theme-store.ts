@@ -5,8 +5,16 @@ import { useSyncExternalStore } from "react";
 
 export type Theme = "light" | "dark" | "system";
 export type ResolvedTheme = "light" | "dark";
+export type Palette = "standard" | "classic" | "minimal";
 
 const STORAGE_KEY = "theme";
+const PALETTE_STORAGE_KEY = "palette";
+
+export const PALETTES: readonly Palette[] = ["standard", "classic", "minimal"];
+
+export function isPalette(value: unknown): value is Palette {
+  return value === "standard" || value === "classic" || value === "minimal";
+}
 
 function readStoredTheme(): Theme {
   if (typeof window === "undefined") return "system";
@@ -16,8 +24,20 @@ function readStoredTheme(): Theme {
   } catch {
     return "system";
   }
-  if (stored === "light" || stored === "dark" || stored === "system") return stored;
+  if (stored === "light" || stored === "dark" || stored === "system")
+    return stored;
   return "system";
+}
+
+function readStoredPalette(): Palette {
+  if (typeof window === "undefined") return "standard";
+  let stored: string | null = null;
+  try {
+    stored = window.localStorage.getItem(PALETTE_STORAGE_KEY);
+  } catch {
+    return "standard";
+  }
+  return isPalette(stored) ? stored : "standard";
 }
 
 function systemPrefersDark(): boolean {
@@ -39,6 +59,18 @@ function applyToDocument(resolved: ResolvedTheme) {
   cl.toggle("light", resolved === "light");
 }
 
+function applyPaletteToDocument(palette: Palette) {
+  if (typeof document === "undefined") return;
+  const el = document.documentElement;
+  // Standard is the base :root/.dark palette; no attribute keeps the DOM
+  // (and CSS selectors) simple for the default look.
+  if (palette === "standard") {
+    el.removeAttribute("data-palette");
+  } else {
+    el.setAttribute("data-palette", palette);
+  }
+}
+
 const listeners = new Set<() => void>();
 function subscribe(cb: () => void) {
   listeners.add(cb);
@@ -48,6 +80,7 @@ function subscribe(cb: () => void) {
   const mq = window.matchMedia("(prefers-color-scheme: dark)");
   const syncTheme = () => {
     applyToDocument(resolveTheme(readStoredTheme()));
+    applyPaletteToDocument(readStoredPalette());
     cb();
   };
   // Apply on mount so this store is the single source of truth for the DOM
@@ -56,8 +89,14 @@ function subscribe(cb: () => void) {
   // localStorage) falls back to its own default and shows light while the
   // control still reads "system".
   applyToDocument(resolveTheme(readStoredTheme()));
+  applyPaletteToDocument(readStoredPalette());
   const onStorage = (e: StorageEvent) => {
-    if (e.key === STORAGE_KEY || e.key === null) syncTheme();
+    if (
+      e.key === STORAGE_KEY ||
+      e.key === PALETTE_STORAGE_KEY ||
+      e.key === null
+    )
+      syncTheme();
   };
   mq.addEventListener("change", syncTheme);
   window.addEventListener("storage", onStorage);
@@ -102,4 +141,40 @@ export function useTheme(): {
   const theme = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const resolved = resolveTheme(theme);
   return { theme, resolved, setTheme };
+}
+
+function getPaletteSnapshot(): Palette {
+  return readStoredPalette();
+}
+
+function getPaletteServerSnapshot(): Palette {
+  return "standard";
+}
+
+/**
+ * Single source of truth for setting the color palette; mirrors setTheme so
+ * the data-palette attribute, localStorage, and React subscribers stay in
+ * sync.
+ */
+export function setPalette(next: Palette): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PALETTE_STORAGE_KEY, next);
+  } catch {
+    // ignore storage failures
+  }
+  applyPaletteToDocument(next);
+  listeners.forEach((cb) => cb());
+}
+
+export function usePalette(): {
+  palette: Palette;
+  setPalette: (next: Palette) => void;
+} {
+  const palette = useSyncExternalStore(
+    subscribe,
+    getPaletteSnapshot,
+    getPaletteServerSnapshot,
+  );
+  return { palette, setPalette };
 }

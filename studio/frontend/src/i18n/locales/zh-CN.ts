@@ -195,6 +195,88 @@ export const zhCN = {
         light: "浅色",
         dark: "深色",
       },
+      palette: {
+        label: "调色板",
+        description: "Studio 全局使用的配色，支持浅色和深色模式。",
+        standard: "标准",
+        classic: "经典",
+        minimal: "极简",
+      },
+      custom: {
+        reset: "重置",
+        resetAll: "重置自定义",
+        preferencesTitle: "偏好设置",
+        colors: {
+          description: "应用于当前模式。切换颜色主题可编辑另一种模式。",
+          lightGroup: "浅色主题",
+          darkGroup: "深色主题",
+          accent: "强调色",
+          background: "背景",
+          foreground: "前景",
+        },
+        fontDefault: "默认",
+        fontBundledGroup: "内置",
+        fontImportedGroup: "已导入",
+        fontDeviceGroup: "此设备",
+        fontDeviceLoading: "正在查找设备字体…",
+        fontSearch: "搜索字体…",
+        fontNoResults: "未找到字体。",
+        colorPicker: {
+          hue: "色相",
+          hex: "十六进制颜色",
+          eyedropper: "从屏幕取色",
+        },
+        uiFont: {
+          label: "界面字体",
+          description: "界面使用的字体。",
+        },
+        codeFont: {
+          label: "代码字体",
+          description: "代码和差异视图使用的字体。",
+        },
+        importFont: {
+          label: "导入字体",
+          description: "从设备添加字体文件（最大 1.5 MB）。",
+          button: "导入字体…",
+          remove: "移除",
+          errorInvalidType:
+            "不支持的文件类型。请使用 .woff2、.woff、.ttf 或 .otf。",
+          errorTooLarge: "字体文件过大（最大 1.5 MB）。",
+          errorLimit: "最多可导入 3 个字体。",
+          errorFailed: "无法加载此字体文件。",
+        },
+        uiFontSize: {
+          label: "界面字号",
+          description: "调整 Studio 界面的基准字号。",
+        },
+        codeFontSize: {
+          label: "代码字号",
+          description: "调整代码的基准字号。",
+        },
+        fontSmoothing: {
+          label: "字体平滑",
+          description: "使用平滑的字体抗锯齿。",
+        },
+        contrast: {
+          label: "对比度",
+          description: "边框和次要文本的强度。",
+        },
+        reduceMotion: {
+          label: "减少动态效果",
+          description: "减少动画，或跟随系统设置。",
+          system: "跟随系统",
+          on: "开",
+          off: "关",
+        },
+        pointerCursors: {
+          label: "使用指针光标",
+          description: "悬停在可交互元素上时将光标变为指针。",
+        },
+        translucentSidebar: {
+          label: "半透明侧边栏",
+          description: "让内容透过侧边栏显示。",
+        },
+      },
       layout: {
         title: "布局",
         compactSidebar: "默认固定侧边栏",

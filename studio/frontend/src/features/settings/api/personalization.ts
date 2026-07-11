@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import type { AppearanceCustomization } from "../stores/appearance-custom-store";
 
 export type PersonalizationProfile = {
   displayName: string;
@@ -13,7 +14,9 @@ export type PersonalizationProfile = {
 
 export type PersonalizationAppearance = {
   theme: "light" | "dark" | "system";
+  palette: "standard" | "classic" | "minimal";
   language: string | null;
+  customization: AppearanceCustomization;
 };
 
 export type Personalization = {
@@ -27,7 +30,9 @@ export type Personalization = {
 export async function loadPersonalization(): Promise<Personalization> {
   const res = await authFetch("/api/settings/personalization");
   if (!res.ok) {
-    throw new Error(await readFastApiError(res, "Failed to load personalization"));
+    throw new Error(
+      await readFastApiError(res, "Failed to load personalization"),
+    );
   }
   return (await res.json()) as Personalization;
 }
@@ -41,6 +46,8 @@ export async function savePersonalization(
     body: JSON.stringify(data),
   });
   if (!res.ok) {
-    throw new Error(await readFastApiError(res, "Failed to save personalization"));
+    throw new Error(
+      await readFastApiError(res, "Failed to save personalization"),
+    );
   }
 }

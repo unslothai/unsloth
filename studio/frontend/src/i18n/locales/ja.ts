@@ -218,6 +218,90 @@ export const ja = {
         light: "ライト",
         dark: "ダーク",
       },
+      palette: {
+        label: "カラーパレット",
+        description: "Studio 全体で使用される配色。ライト・ダーク両対応。",
+        standard: "スタンダード",
+        classic: "クラシック",
+        minimal: "ミニマル",
+      },
+      custom: {
+        reset: "リセット",
+        resetAll: "カスタマイズをリセット",
+        preferencesTitle: "環境設定",
+        colors: {
+          description:
+            "現在のモードに適用されます。もう一方はカラー構成を切り替えて編集します。",
+          lightGroup: "ライトテーマ",
+          darkGroup: "ダークテーマ",
+          accent: "アクセント",
+          background: "背景",
+          foreground: "文字色",
+        },
+        fontDefault: "デフォルト",
+        fontBundledGroup: "内蔵",
+        fontImportedGroup: "インポート済み",
+        fontDeviceGroup: "このデバイス",
+        fontDeviceLoading: "デバイスのフォントを検索中…",
+        fontSearch: "フォントを検索…",
+        fontNoResults: "フォントが見つかりません。",
+        colorPicker: {
+          hue: "色相",
+          hex: "16進カラー",
+          eyedropper: "画面から色を選択",
+        },
+        uiFont: {
+          label: "UI フォント",
+          description: "インターフェイスで使用するフォント。",
+        },
+        codeFont: {
+          label: "コードフォント",
+          description: "コードと差分で使用するフォント。",
+        },
+        importFont: {
+          label: "フォントをインポート",
+          description: "デバイスからフォントファイルを追加（最大 1.5 MB）。",
+          button: "フォントをインポート…",
+          remove: "削除",
+          errorInvalidType:
+            "サポートされていないファイル形式です。.woff2、.woff、.ttf、.otf を使用してください。",
+          errorTooLarge: "フォントファイルが大きすぎます（最大 1.5 MB）。",
+          errorLimit: "インポートできるフォントは最大 3 つです。",
+          errorFailed: "このフォントファイルを読み込めませんでした。",
+        },
+        uiFontSize: {
+          label: "UI フォントサイズ",
+          description: "Studio UI の基本サイズを調整します。",
+        },
+        codeFontSize: {
+          label: "コードフォントサイズ",
+          description: "コードの基本サイズを調整します。",
+        },
+        fontSmoothing: {
+          label: "フォントスムージング",
+          description: "滑らかなアンチエイリアスを使用します。",
+        },
+        contrast: {
+          label: "コントラスト",
+          description: "枠線と補助テキストの強さ。",
+        },
+        reduceMotion: {
+          label: "モーションを減らす",
+          description: "アニメーションを減らすか、システム設定に従います。",
+          system: "システム",
+          on: "オン",
+          off: "オフ",
+        },
+        pointerCursors: {
+          label: "ポインターカーソルを使用",
+          description:
+            "操作可能な要素にカーソルを合わせたときにポインターに変更します。",
+        },
+        translucentSidebar: {
+          label: "半透明サイドバー",
+          description: "サイドバー越しにコンテンツを透かします。",
+        },
+      },
       language: {
         title: "言語",
         label: "表示言語",
