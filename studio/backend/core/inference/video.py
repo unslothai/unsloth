@@ -490,6 +490,11 @@ class VideoBackend:
         # The post-load background compile prewarm thread (None until a compiled
         # load spawns one); kept for tests/diagnostics, never joined on the hot path.
         self._prewarm_thread: Optional[threading.Thread] = None
+        # The prewarm's cancel event, set (in addition to _active_generate_cancel)
+        # only while the prewarm runs. Real generations signal it on entry so they
+        # preempt the warmup at its next step boundary instead of queueing behind
+        # it; unlike _active_generate_cancel it can never point at a real job.
+        self._prewarm_cancel: Optional[threading.Event] = None
 
     # ── validation ───────────────────────────────────────────────────────────
 
@@ -1872,6 +1877,7 @@ class VideoBackend:
                 if self._generate_job_active or self._gen.get("active"):
                     return  # a real request beat us; it absorbs the warmup itself
                 self._active_generate_cancel = cancel
+                self._prewarm_cancel = cancel
             started = time.monotonic()
             try:
                 pipe = state.pipe
@@ -1947,6 +1953,8 @@ class VideoBackend:
                 with self._lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                    if self._prewarm_cancel is cancel:
+                        self._prewarm_cancel = None
 
     # ── generation ───────────────────────────────────────────────────────────
 
@@ -2002,6 +2010,13 @@ class VideoBackend:
                 raise RuntimeError(VIDEO_NOT_LOADED_MSG)
             if self._generate_job_active:
                 raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+            # A background compile prewarm may hold _generate_lock. Signal its
+            # dedicated cancel handle BEFORE registering ours so the real job
+            # preempts the warmup at its next step boundary instead of queueing
+            # behind the full warmup (which also left unload/cancel pointing at
+            # the wrong event once _active_generate_cancel was overwritten below).
+            if self._prewarm_cancel is not None:
+                self._prewarm_cancel.set()
             self._generate_job_active = True
             # Register the cancel event BEFORE the worker starts so a cancel (or an
             # unload) that lands in the spawn window still stops the run instead of
@@ -2147,6 +2162,12 @@ class VideoBackend:
         # begin_generate passes the event it already registered (so a cancel in the
         # spawn window is honoured); a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
+        if cancel_event is None:
+            # Direct callers skip begin_generate's preemption, so signal a
+            # running compile prewarm here too rather than queueing behind it.
+            with self._lock:
+                if self._prewarm_cancel is not None:
+                    self._prewarm_cancel.set()
         with self._generate_lock:
             with self._lock:
                 state = self._state

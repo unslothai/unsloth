@@ -2023,3 +2023,57 @@ def test_compile_prewarm_yields_to_generations_and_stale_tokens(fake_runtime):
     backend._compile_prewarm(backend._load_token)  # a request beat the warmup
     assert backend._state.pipe.last_kwargs is None
     backend._generate_job_active = False
+
+
+def test_begin_generate_preempts_running_prewarm(fake_runtime, monkeypatch):
+    # A real generation arriving while the prewarm holds _generate_lock must
+    # signal the prewarm's dedicated cancel handle (so the warmup aborts at its
+    # next step boundary instead of running to completion in front of the user
+    # job), and the prewarm must clear that handle when it exits.
+    import inspect
+    import threading as _threading
+    import time
+
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+
+    prewarm_entered = _threading.Event()
+    release_prewarm = _threading.Event()
+    pipe = backend._state.pipe
+    real_call = pipe.__class__.__call__
+
+    def _blocking_call(self, **kwargs):
+        if kwargs.get("prompt") == "warmup":
+            prewarm_entered.set()
+            release_prewarm.wait(timeout = 5)
+        return real_call(self, **kwargs)
+
+    # Keep the real signature visible: _compile_prewarm picks its cancel plumbing
+    # by inspecting pipe.__call__ for callback_on_step_end.
+    _blocking_call.__signature__ = inspect.signature(real_call)
+    monkeypatch.setattr(pipe.__class__, "__call__", _blocking_call)
+
+    prewarm = _threading.Thread(
+        target = backend._compile_prewarm, args = (backend._load_token,), daemon = True,
+    )
+    prewarm.start()
+    assert prewarm_entered.wait(timeout = 5), "prewarm never reached the pipe"
+    prewarm_cancel = backend._prewarm_cancel
+    assert prewarm_cancel is not None and not prewarm_cancel.is_set()
+
+    # The user job lands mid-warmup: it must fire the prewarm's cancel handle
+    # and own the active-cancel slot for the run that follows.
+    backend.begin_generate(prompt = "real request")
+    assert prewarm_cancel.is_set()
+    assert backend._active_generate_cancel is not prewarm_cancel
+
+    release_prewarm.set()
+    prewarm.join(timeout = 5)
+    assert not prewarm.is_alive()
+    assert backend._prewarm_cancel is None
+
+    deadline = time.monotonic() + 5
+    while backend._generate_job_active and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert backend._generate_job_active is False
+    backend.unload()
