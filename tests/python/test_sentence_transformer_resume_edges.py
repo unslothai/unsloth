@@ -669,3 +669,23 @@ def test_gguf_source_selection_prefers_fresh_sentence_transformer_weights(tmp_pa
     selected = select_source(freshly_saved, original, True)
     assert selected == str(freshly_saved)
     assert Path(selected, "weight.sentinel").read_text(encoding = "utf-8") == "fresh"
+
+
+def test_sentence_transformer_gguf_push_flag_fails_before_local_conversion():
+    source_tree = ast.parse(_SAVE_PATH.read_text(encoding = "utf-8"))
+    exporter = next(
+        node
+        for node in source_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "unsloth_save_pretrained_gguf"
+    )
+    st_branch = next(
+        node
+        for node in exporter.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "is_sentence_transformer"
+    )
+    assert isinstance(st_branch.body[0], ast.If)
+    assert isinstance(st_branch.body[0].test, ast.Name)
+    assert st_branch.body[0].test.id == "push_to_hub"
+    assert any(isinstance(node, ast.Raise) for node in ast.walk(st_branch.body[0]))

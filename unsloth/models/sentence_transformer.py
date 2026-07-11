@@ -1104,6 +1104,10 @@ def _patch_fused_pooling(st_model):
             return _original_pooling_forward(features)
 
         pooled = fused_layernorm_mean_pool(stored_ln, token_embeddings, attention_mask)
+        # The encoder's terminal LayerNorm is replaced by Identity while this
+        # optimization is active. Keep the public token-embedding feature equal
+        # to the unfused model for custom downstream modules / output_value.
+        features["token_embeddings"] = stored_ln(token_embeddings)
         features["sentence_embedding"] = pooled
         return features
 
@@ -1647,6 +1651,7 @@ def _patch_unpadded_encoder(st_model, model_type):
         config._unsloth_seq_lengths = None
 
     def _unpadded_forward(features, **kwargs):
+        sentence_embedding_only = bool(features.pop("_unsloth_sentence_embedding_only", False))
         attention_mask = features.get("attention_mask")
         if attention_mask is None:
             return _original_forward(features, **kwargs)
@@ -1654,6 +1659,15 @@ def _patch_unpadded_encoder(st_model, model_type):
         auto_model = transformer_mod.auto_model
         actual_model = auto_model._orig_mod if hasattr(auto_model, "_orig_mod") else auto_model
         if not actual_model.training:
+            return _original_forward(features, **kwargs)
+
+        # Packed rows cannot reproduce padded-token hidden states without also
+        # running the padded model, and downstream ST modules may consume either
+        # token_embeddings or all_layer_embeddings. Restrict unpadding to the
+        # MNRL path that explicitly requests only sentence embeddings.
+        if not sentence_embedding_only or bool(
+            getattr(getattr(actual_model, "config", None), "output_hidden_states", False)
+        ):
             return _original_forward(features, **kwargs)
 
         # Skip when compiled (recompiles on every shape) or when gradient
@@ -1992,9 +2006,11 @@ def _ensure_pooling_flags(pooling_mod):
     mode = getattr(pooling_mod, "pooling_mode", None)
     for attr in _POOLING_MODE_FLAGS.values():
         setattr(pooling_mod, attr, False)
-    target = _POOLING_MODE_FLAGS.get(mode)
-    if target is not None:
-        setattr(pooling_mod, target, True)
+    modes = mode if isinstance(mode, (list, tuple, set)) else (mode,)
+    for selected_mode in modes:
+        target = _POOLING_MODE_FLAGS.get(selected_mode)
+        if target is not None:
+            setattr(pooling_mod, target, True)
 
 
 _POOLING_PATCHED = False
@@ -4344,7 +4360,7 @@ class FastSentenceTransformer(FastModel):
                     except ImportError:
                         supports_flash_attn_2 = False
 
-            if supports_flash_attn_2:
+            if supports_flash_attn_2 and dtype in (torch.float16, torch.bfloat16):
                 attn_impl = "flash_attention_2"
             else:
                 # sdpa / eager / None (incl. DISABLE_SDPA_MODEL_NAMES handling) via

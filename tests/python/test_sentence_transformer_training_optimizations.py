@@ -873,3 +873,38 @@ def test_guided_projection_repeated_save_removes_alternate_weight_format(tmp_pat
         reloaded.projection.proj.weight,
         torch.full_like(reloaded.projection.proj.weight, 3.0),
     )
+
+
+def test_combined_pooling_modes_and_observable_outputs_keep_parity(contrastive_module, monkeypatch):
+    source = _SENTENCE_TRANSFORMER_PATH.read_text(encoding = "utf-8")
+    tree = ast.parse(source, filename = str(_SENTENCE_TRANSFORMER_PATH))
+    helper = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_ensure_pooling_flags"
+    )
+    namespace = {"_POOLING_MODE_FLAGS": {
+        "cls": "pooling_mode_cls_token",
+        "mean": "pooling_mode_mean_tokens",
+    }}
+    exec(compile(ast.Module(body = [helper], type_ignores = []), str(_SENTENCE_TRANSFORMER_PATH), "exec"), namespace)
+    pooling = types.SimpleNamespace(pooling_mode = ["cls", "mean"])
+    namespace["_ensure_pooling_flags"](pooling)
+    assert pooling.pooling_mode_cls_token is True
+    assert pooling.pooling_mode_mean_tokens is True
+
+    seen = []
+
+    def model(features):
+        seen.append(features.get("_unsloth_sentence_embedding_only"))
+        return {"sentence_embedding": torch.ones(1, 2)}
+
+    monkeypatch.setattr(contrastive_module, "_bucketed_sentence_features", lambda *_: None)
+    features = {"input_ids": torch.ones(1, 1, dtype = torch.long)}
+    contrastive_module.encode_sentence_features(model, [features])
+    assert seen == [True]
+    assert "_unsloth_sentence_embedding_only" not in features
+
+    assert 'features["token_embeddings"] = stored_ln(token_embeddings)' in source
+    assert "if not sentence_embedding_only or bool(" in source
+    assert "supports_flash_attn_2 and dtype in (torch.float16, torch.bfloat16)" in source

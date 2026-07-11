@@ -586,15 +586,22 @@ def _combined_sentence_features(model, sentence_features):
 
 def encode_sentence_features(model, sentence_features):
     """Encode compatible MNRL rows in adaptive length buckets."""
+    def sentence_embedding_only(features):
+        features["_unsloth_sentence_embedding_only"] = True
+        try:
+            return model(features)["sentence_embedding"]
+        finally:
+            features.pop("_unsloth_sentence_embedding_only", None)
+
     sentence_features = list(sentence_features)
     bucketed = _bucketed_sentence_features(model, sentence_features)
     if bucketed is None:
-        return [model(features)["sentence_embedding"] for features in sentence_features]
+        return [sentence_embedding_only(features) for features in sentence_features]
 
     bucket_features, batch_sizes, inverse_order = bucketed
     bucket_embeddings = []
     for features in bucket_features:
-        embeddings = model(features)["sentence_embedding"]
+        embeddings = sentence_embedding_only(features)
         expected_rows = features["input_ids"].shape[0]
         if embeddings.ndim < 1 or embeddings.shape[0] != expected_rows:
             # A custom module changed the batch dimension. This cannot safely be

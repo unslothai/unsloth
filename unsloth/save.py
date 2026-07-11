@@ -2771,6 +2771,11 @@ def unsloth_save_pretrained_gguf(
     """
     is_sentence_transformer = self.__class__.__name__ == "SentenceTransformer"
     if is_sentence_transformer:
+        if push_to_hub:
+            raise ValueError(
+                "Unsloth: Please use .push_to_hub_gguf() instead of "
+                ".save_pretrained_gguf() with push_to_hub=True"
+            )
         if not is_main_process:
             return None
 
