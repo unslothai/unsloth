@@ -17,6 +17,7 @@ from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
 )
+from hub.utils.gguf import iter_hf_cache_snapshots
 from utils.models.gguf_metadata import read_gguf_chat_template
 from utils.models.model_config import (
     _extract_quant_label,
@@ -25,7 +26,6 @@ from utils.models.model_config import (
     _is_mtp_drafter,
 )
 from utils.paths.path_utils import (
-    get_cache_path,
     is_local_path,
     normalize_path,
     resolve_cached_repo_id_case,
@@ -210,18 +210,6 @@ def _chat_template_from_dir(dir_path: Path, gguf_variant: Optional[str] = None) 
     return _chat_template_from_tokenizer_dir(dir_path) or from_gguf()
 
 
-def _snapshots_newest_first(snapshots_dir: Path) -> list[Path]:
-    dirs_with_mtime: list[tuple[float, Path]] = []
-    for entry in snapshots_dir.iterdir():
-        try:
-            if entry.is_dir():
-                dirs_with_mtime.append((entry.stat().st_mtime, entry))
-        except OSError:
-            continue
-    dirs_with_mtime.sort(key = lambda item: item[0], reverse = True)
-    return [entry for _, entry in dirs_with_mtime]
-
-
 def read_default_chat_template(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -250,14 +238,10 @@ def read_default_chat_template(
     resolved = resolve_cached_repo_id_case(name)
 
     try:
-        repo_dir = get_cache_path(resolved)
-        if repo_dir is not None and repo_dir.exists():
-            snapshots_dir = repo_dir / "snapshots"
-            if snapshots_dir.exists():
-                for snapshot in _snapshots_newest_first(snapshots_dir):
-                    template = _chat_template_from_dir(snapshot, gguf_variant)
-                    if template:
-                        return template
+        for snapshot in iter_hf_cache_snapshots(resolved):
+            template = _chat_template_from_dir(snapshot, gguf_variant)
+            if template:
+                return template
     except Exception as exc:
         logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
 

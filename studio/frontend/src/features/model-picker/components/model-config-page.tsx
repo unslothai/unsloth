@@ -30,11 +30,13 @@ import {
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
 import {
   DEFAULT_PER_MODEL_CONFIG,
+  KV_CACHE_DTYPES,
   MAX_SEQ_LENGTH_MAX,
   MAX_SEQ_LENGTH_MIN,
   MAX_SEQ_LENGTH_STEP,
   MTP_SPECULATIVE_TYPES,
   type PerModelConfig,
+  SPECULATIVE_TYPES,
   deletePerModelConfig,
   isDefaultConfig,
   normalizeMaxSeqLength,
@@ -52,6 +54,16 @@ const CONTROL_SURFACE =
   "rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1]";
 const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
 const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0`;
+
+const KV_CACHE_DTYPE_DEFAULT = "f16";
+const SPECULATIVE_TYPE_LABELS: Record<(typeof SPECULATIVE_TYPES)[number], string> =
+  {
+    auto: "Auto",
+    mtp: "MTP",
+    ngram: "Ngram",
+    "mtp+ngram": "MTP+Ngram",
+    off: "Off",
+  };
 
 function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
   return (
@@ -182,9 +194,9 @@ function GgufAdvancedSettings({
           </InfoHint>
         </div>
         <Select
-          value={config.kvCacheDtype ?? "f16"}
+          value={config.kvCacheDtype ?? KV_CACHE_DTYPE_DEFAULT}
           onValueChange={(v) =>
-            update({ kvCacheDtype: v === "f16" ? null : v })
+            update({ kvCacheDtype: v === KV_CACHE_DTYPE_DEFAULT ? null : v })
           }
         >
           <SelectTrigger
@@ -196,11 +208,14 @@ function GgufAdvancedSettings({
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-            <SelectItem value="f16">f16</SelectItem>
-            <SelectItem value="bf16">bf16</SelectItem>
-            <SelectItem value="q8_0">q8_0</SelectItem>
-            <SelectItem value="q5_1">q5_1</SelectItem>
-            <SelectItem value="q4_1">q4_1</SelectItem>
+            <SelectItem value={KV_CACHE_DTYPE_DEFAULT}>
+              {KV_CACHE_DTYPE_DEFAULT}
+            </SelectItem>
+            {KV_CACHE_DTYPES.map((dtype) => (
+              <SelectItem key={dtype} value={dtype}>
+                {dtype}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>
@@ -232,11 +247,11 @@ function GgufAdvancedSettings({
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-            <SelectItem value="auto">Auto</SelectItem>
-            <SelectItem value="mtp">MTP</SelectItem>
-            <SelectItem value="ngram">Ngram</SelectItem>
-            <SelectItem value="mtp+ngram">MTP+Ngram</SelectItem>
-            <SelectItem value="off">Off</SelectItem>
+            {SPECULATIVE_TYPES.map((type) => (
+              <SelectItem key={type} value={type}>
+                {SPECULATIVE_TYPE_LABELS[type]}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>
@@ -317,6 +332,12 @@ export function ModelConfigPage({
   const isActiveModel = loadedConfig != null;
   const runtimeMaxSeqLength = useChatRuntimeStore((s) => s.params.maxSeqLength);
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
+  const loadedDefaultChatTemplate = useChatRuntimeStore(
+    (s) => s.defaultChatTemplate,
+  );
+  const loadedMaxContextLength = useChatRuntimeStore(
+    (s) => s.ggufMaxContextLength,
+  );
   const [initialMaxSeqLength] = useState(
     () => normalizeMaxSeqLength(runtimeMaxSeqLength) ?? 4096,
   );
@@ -353,6 +374,14 @@ export function ModelConfigPage({
     target.id,
     !target.isGguf,
   );
+  const hasLoadedDefaultTemplate =
+    isActiveModel && loadedDefaultChatTemplate != null;
+  const resolvedDefaultTemplate = hasLoadedDefaultTemplate
+    ? loadedDefaultChatTemplate
+    : templateDefaults.template;
+  const resolvedDefaultLoading = hasLoadedDefaultTemplate
+    ? false
+    : templateDefaults.loading;
 
   const update = (patch: Partial<PerModelConfig>) =>
     setConfig((current) => ({ ...current, ...patch }));
@@ -454,7 +483,7 @@ export function ModelConfigPage({
         customContextLength:
           contextBaseline == null && config.customContextLength == null
             ? null
-            : resolveCustomContextLength(contextValue, nativeContextLength),
+            : resolveCustomContextLength(contextValue, contextBaseline),
       }
     : {
         ...config,
@@ -472,20 +501,21 @@ export function ModelConfigPage({
 
   const handleRun = () => {
     const defaultConfig = isDefaultConfig(runtimeConfig);
+    let saveFailed = false;
     if (remember) {
-      const saved = savePerModelConfig(
+      saveFailed = !savePerModelConfig(
         target.id,
         target.ggufVariant,
         runtimeConfig,
       );
-      if (!saved) {
-        toast.error("Couldn't save settings for this model.");
-        return;
-      }
     } else {
       deletePerModelConfig(target.id, target.ggufVariant);
     }
     if (persistenceOnly) {
+      if (saveFailed) {
+        toast.error("Couldn't save settings for this model.");
+        return;
+      }
       const nextRemember = remember && !defaultConfig;
       setSavedRemember(nextRemember);
       setRemember(nextRemember);
@@ -497,6 +527,9 @@ export function ModelConfigPage({
             : "Settings forgotten.",
       );
       return;
+    }
+    if (saveFailed) {
+      toast.error("Couldn't save these settings, loading with them anyway.");
     }
     onRun(runtimeConfig);
   };
@@ -566,6 +599,15 @@ export function ModelConfigPage({
                   aria-label="Context Length"
                 />
               ) : null}
+              {isActiveModel &&
+                loadedMaxContextLength != null &&
+                contextValue > loadedMaxContextLength && (
+                  <p className="text-[11px] text-amber-500">
+                    Exceeds estimated VRAM capacity (
+                    {loadedMaxContextLength.toLocaleString()} tokens). The model
+                    may use system RAM.
+                  </p>
+                )}
             </div>
 
             {showAdvanced && (
@@ -679,8 +721,8 @@ export function ModelConfigPage({
         open={templateOpen}
         onOpenChange={setTemplateOpen}
         value={config.chatTemplateOverride}
-        defaultTemplate={templateDefaults.template}
-        defaultLoading={templateDefaults.loading}
+        defaultTemplate={resolvedDefaultTemplate}
+        defaultLoading={resolvedDefaultLoading}
         readOnly={!target.isGguf}
         onSave={(override) => update({ chatTemplateOverride: override })}
       />

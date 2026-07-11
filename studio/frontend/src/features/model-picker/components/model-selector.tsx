@@ -542,6 +542,7 @@ function ModelSelectorContent({
               onSelect(visibleConfigTarget.id, {
                 ...visibleConfigTarget.meta,
                 config,
+                forceReload: true,
               })
             }
             loadedConfig={

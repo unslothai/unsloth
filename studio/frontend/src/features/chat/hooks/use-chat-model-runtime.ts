@@ -1179,10 +1179,10 @@ export function useChatModelRuntime() {
           resetLoadingUi();
         }
       } catch (error) {
-        if (abortCtrl.signal.aborted) return; // User cancelled, nothing to report
         if (typeof selection !== "string" && selection.previousConfig) {
           applyPerModelConfigToRuntime(selection.previousConfig);
         }
+        if (abortCtrl.signal.aborted) return; // User cancelled, nothing to report
         resetLoadingUi();
         const message =
           error instanceof Error ? error.message : "Failed to load model";

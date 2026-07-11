@@ -11,7 +11,6 @@ import {
   ModelSelector,
   type ModelSelectorChangeMeta,
   type PerModelConfig,
-  perModelConfigsEqual,
   resolveInitialConfig,
   SidebarModelConfig,
 } from "@/features/model-picker";
@@ -1887,20 +1886,7 @@ export function ChatPage({
       const isSameLoadedModel =
         value === currentCheckpoint &&
         (meta?.ggufVariant ?? null) === (currentVariant ?? null);
-      const metaIsGguf =
-        meta?.isGguf === true ||
-        meta?.ggufVariant != null ||
-        value.toLowerCase().endsWith(".gguf");
-      if (
-        isSameLoadedModel &&
-        (!meta?.config ||
-          perModelConfigsEqual(
-            meta.config,
-            currentRuntimePerModelConfig({
-              includeMaxSeqLength: !metaIsGguf,
-            }),
-          ))
-      ) {
+      if (isSameLoadedModel && !meta?.forceReload) {
         return;
       }
       if (meta?.source === "external" || isExternalModelId(value)) {
@@ -2103,6 +2089,7 @@ export function ChatPage({
         isGguf: activeModelIsGguf,
         isDownloaded: true,
         config,
+        forceReload: true,
       });
     },
     [
@@ -2731,7 +2718,7 @@ export function ChatPage({
         params={inferenceParams}
         onParamsChange={setInferenceParams}
         modelConfig={
-          view.mode !== "compare" && activeModelConfig ? (
+          view.mode !== "compare" && activeModelConfig && !modelLoading ? (
             <SidebarModelConfig
               modelId={inferenceParams.checkpoint}
               ggufVariant={activeGgufVariant ?? null}

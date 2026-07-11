@@ -31,6 +31,7 @@ from hub.services.models.common import (
     _is_checkpoint_weight_name,
     _is_gguf_filename,
     _is_main_gguf_filename,
+    _is_mmproj_filename,
     _is_transformers_safetensors_weight_name,
     _local_inventory_id,
     _prefer_complete_larger,
@@ -141,6 +142,14 @@ def _repo_gguf_last_modified(repo_info) -> float:
             if _is_main_gguf_filename(f.file_name):
                 latest = max(latest, _blob_mtime(f))
     return latest
+
+
+def _repo_has_mmproj(repo_info) -> bool:
+    return any(
+        _is_mmproj_filename(f.file_name)
+        for revision in repo_info.revisions
+        for f in revision.files
+    )
 
 
 def _cached_repo_file_name(file_obj) -> str:
@@ -270,6 +279,8 @@ def _scan_cached_gguf() -> list[dict]:
                         requires_variant = True,
                     )
                 )
+                if _repo_has_mmproj(repo_info):
+                    row["capabilities"]["supports_vision"] = True
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row
                 elif last_modified > existing.get("last_modified", 0.0):

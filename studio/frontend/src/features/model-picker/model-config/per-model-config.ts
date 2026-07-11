@@ -53,7 +53,7 @@ const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 const STORAGE_SCHEMA_VERSION = 1;
 const MAX_ENTRIES = 500;
-export const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
+const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
 export const MAX_CHAT_TEMPLATE_BYTES = 65_536;
 
 type StoredPerModelConfig = PerModelConfig & {
@@ -147,17 +147,6 @@ function deleteOldestEvictableEntry(
     return { key, value };
   }
   return null;
-}
-
-function isMostRecentEntry(map: StoredMap, key: string): boolean {
-  const keys = Object.keys(map);
-  return keys.length > 0 && keys[keys.length - 1] === key;
-}
-
-function touchEntry(map: StoredMap, key: string): void {
-  const value = map[key];
-  delete map[key];
-  map[key] = value;
 }
 
 function enforceStorageBudget(map: StoredMap, protectedKey?: string): boolean {
@@ -255,9 +244,12 @@ function migrateLegacyLoadSettingsOnce(): void {
     if (localStorage.getItem(LEGACY_MIGRATION_FLAG)) {
       return;
     }
-    const legacy = JSON.parse(
-      localStorage.getItem(LEGACY_STORAGE_KEY) ?? "null",
-    );
+    let legacy: unknown = null;
+    try {
+      legacy = JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY) ?? "null");
+    } catch {
+      legacy = null;
+    }
     if (!legacy || typeof legacy !== "object" || Array.isArray(legacy)) {
       localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
       return;
@@ -270,8 +262,6 @@ function migrateLegacyLoadSettingsOnce(): void {
     enforceStorageBudget(map);
     if (writeMap(map)) {
       localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
-    } else {
-      legacyMigrationChecked = false;
     }
   } catch (err) {
     console.warn("Failed to migrate legacy load settings:", err);
@@ -472,36 +462,13 @@ function deleteConfigEntriesForModelVariant(
   return changed;
 }
 
-function loadPerModelConfigInternal(
+function loadPerModelConfig(
   modelId: string,
-  ggufVariant: string | null | undefined,
-  touch: boolean,
+  ggufVariant?: string | null,
 ): PerModelConfig | null {
   const map = readMap();
   const key = findConfigKeyForModelVariant(map, modelId, ggufVariant);
-  if (!key) {
-    return null;
-  }
-  const config = normalize(map[key]);
-  if (touch && !isMostRecentEntry(map, key)) {
-    touchEntry(map, key);
-    writeMap(map);
-  }
-  return config;
-}
-
-export function loadPerModelConfig(
-  modelId: string,
-  ggufVariant?: string | null,
-): PerModelConfig | null {
-  return loadPerModelConfigInternal(modelId, ggufVariant, true);
-}
-
-export function hasPerModelConfig(
-  modelId: string,
-  ggufVariant?: string | null,
-): boolean {
-  return loadPerModelConfigInternal(modelId, ggufVariant, false) != null;
+  return key ? normalize(map[key]) : null;
 }
 
 export function isDefaultConfig(config: PerModelConfig): boolean {

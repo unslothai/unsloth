@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { looksLikeLocalPath, useHfTokenStore } from "@/features/hub";
+import { useHfTokenStore } from "@/features/hub";
 import { useEffect, useState } from "react";
 import { fetchModelMaxPositionEmbeddings } from "../api/model-metadata";
 import { fetchDefaultChatTemplate } from "../api/templates";
@@ -69,7 +69,7 @@ export function useDefaultChatTemplate(
         if (controller.signal.aborted) {
           return;
         }
-        if (!(template === null && looksLikeLocalPath(modelId))) {
+        if (template !== null) {
           cacheTemplate(cacheKey, template);
         }
         setFetched({

@@ -10,6 +10,7 @@ import {
   type CachedInventoryRow,
   type LocalInventoryRow,
   type LocalSource,
+  isHiddenModelId,
   useHubInventory,
 } from "@/features/hub";
 import { useMemo } from "react";
@@ -74,21 +75,35 @@ export function useChatPickerInventory(
   const cachedGguf = useMemo(
     () =>
       inventory.cachedRows
-        .filter((row) => row.modelFormat === "gguf" && isCompleteCachedRow(row))
+        .filter(
+          (row) =>
+            row.modelFormat === "gguf" &&
+            isCompleteCachedRow(row) &&
+            !isHiddenModelId(row.repoId),
+        )
         .map(toCachedGgufRepo),
     [inventory.cachedRows],
   );
   const cachedModels = useMemo(
     () =>
       inventory.cachedRows
-        .filter((row) => row.modelFormat !== "gguf" && isCompleteCachedRow(row))
+        .filter(
+          (row) =>
+            row.modelFormat !== "gguf" &&
+            isCompleteCachedRow(row) &&
+            !isHiddenModelId(row.repoId),
+        )
         .map(toCachedModelRepo),
     [inventory.cachedRows],
   );
   const localModels = useMemo(
     () =>
       inventory.localRows
-        .filter((row) => PICKER_LOCAL_SOURCES.has(row.source))
+        .filter(
+          (row) =>
+            PICKER_LOCAL_SOURCES.has(row.source) &&
+            !isHiddenModelId(row.modelId, row.repoId, row.path),
+        )
         .map(toLocalModelInfo),
     [inventory.localRows],
   );

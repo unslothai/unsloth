@@ -18,10 +18,11 @@ function cleanTemplate(value: string | null | undefined): string | null {
 
 export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
   const maxSeqLength = normalizeMaxSeqLength(config.maxSeqLength);
-  useChatRuntimeStore.setState((state) => ({
-    ...(maxSeqLength == null
-      ? {}
-      : { params: { ...state.params, maxSeqLength } }),
+  const store = useChatRuntimeStore.getState();
+  if (maxSeqLength != null && maxSeqLength !== store.params.maxSeqLength) {
+    store.setParams({ ...store.params, maxSeqLength });
+  }
+  useChatRuntimeStore.setState({
     customContextLength: config.customContextLength ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType:
@@ -30,7 +31,7 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
     specDraftNMax: config.specDraftNMax ?? null,
     tensorParallel: config.tensorParallel ?? false,
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
-  }));
+  });
 }
 
 export function applyModelLoadConfigToRuntime(

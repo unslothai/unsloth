@@ -1441,7 +1441,7 @@ async function autoLoadSmallestModel(): Promise<{
       ggufContextLength: null,
       currentCheckpoint: currentStore.params.checkpoint,
       activeGgufVariant: currentStore.activeGgufVariant,
-      maxSeqLength: candidate.maxSeqLength,
+      maxSeqLength: config.maxSeqLength ?? candidate.maxSeqLength,
       presetSource: currentStore.activePresetSource,
     });
     const effectiveSpeculativeType =
@@ -1489,6 +1489,9 @@ async function autoLoadSmallestModel(): Promise<{
     );
     store.setParams({
       ...store.params,
+      ...(candidate.kind === "gguf"
+        ? {}
+        : { maxSeqLength: effectiveMaxSeqLength }),
       maxTokens:
         candidate.kind === "gguf"
           ? loadResp.context_length ?? 131072

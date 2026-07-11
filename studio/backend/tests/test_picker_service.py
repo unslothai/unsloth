@@ -1,7 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-from picker.service import _find_gguf_in_dir, _iter_ggufs
+import json
+
+from picker.service import (
+    _chat_template_from_dir,
+    _chat_template_from_tokenizer_config,
+    _chat_template_from_tokenizer_dir,
+    _find_gguf_in_dir,
+    _iter_ggufs,
+    validate_chat_template,
+)
 
 
 def test_iter_ggufs_skips_gguf_companions(tmp_path):
@@ -46,3 +55,68 @@ def test_find_gguf_in_dir_matches_bpw_variant_base_label(tmp_path):
     assert _find_gguf_in_dir(tmp_path, "IQ4_XS") == target
     assert _find_gguf_in_dir(tmp_path, "IQ4_XS-3.53bpw") == target
     assert _find_gguf_in_dir(tmp_path, "Q4_K") is None
+
+
+def test_validate_chat_template_accepts_valid_and_empty():
+    assert validate_chat_template("{{ messages[0].content }}").valid is True
+    assert validate_chat_template("").valid is True
+    assert validate_chat_template("   ").valid is True
+
+
+def test_validate_chat_template_reports_syntax_error_with_line():
+    result = validate_chat_template("{% if %}{% endif %}")
+    assert result.valid is False
+    assert result.error is not None
+    assert result.error.startswith("Line ")
+
+
+def test_chat_template_from_tokenizer_config_reads_string():
+    assert _chat_template_from_tokenizer_config({"chat_template": "HELLO"}) == "HELLO"
+    assert _chat_template_from_tokenizer_config({"chat_template": "   "}) is None
+    assert _chat_template_from_tokenizer_config({}) is None
+
+
+def test_chat_template_from_tokenizer_config_prefers_named_default():
+    config = {
+        "chat_template": [
+            {"name": "tool_use", "template": "TOOL"},
+            {"name": "default", "template": "DEFAULT"},
+        ]
+    }
+    assert _chat_template_from_tokenizer_config(config) == "DEFAULT"
+
+
+def test_chat_template_from_tokenizer_config_falls_back_to_first_entry():
+    config = {
+        "chat_template": [
+            {"name": "tool_use", "template": "TOOL"},
+            {"name": "other", "template": "OTHER"},
+        ]
+    }
+    assert _chat_template_from_tokenizer_config(config) == "TOOL"
+
+
+def test_chat_template_from_tokenizer_dir_prefers_jinja_file(tmp_path):
+    (tmp_path / "chat_template.jinja").write_text("FROM_JINJA", encoding="utf-8")
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding="utf-8"
+    )
+    assert _chat_template_from_tokenizer_dir(tmp_path) == "FROM_JINJA"
+
+
+def test_chat_template_from_tokenizer_dir_reads_tokenizer_config(tmp_path):
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding="utf-8"
+    )
+    assert _chat_template_from_tokenizer_dir(tmp_path) == "FROM_CONFIG"
+
+
+def test_chat_template_from_dir_without_variant_prefers_tokenizer(tmp_path):
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding="utf-8"
+    )
+    assert _chat_template_from_dir(tmp_path) == "FROM_CONFIG"
+
+
+def test_chat_template_from_dir_returns_none_when_absent(tmp_path):
+    assert _chat_template_from_dir(tmp_path) is None
