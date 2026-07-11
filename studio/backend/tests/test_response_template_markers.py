@@ -9,10 +9,12 @@ never matches the rendered chat template masks every assistant token and the
 run dies on the all-labels-masked safety net. Six template families shipped
 such markers:
 
-  mistral / llama   - "[INST] " / " [/INST]": the surrounding spaces fold into
-                      the neighbouring tokens ("[INST]" and "[/INST]" are
-                      single special tokens in Mistral v0.3; SentencePiece
-                      pieces in Llama-2), so the padded strings never match.
+  mistral           - "[INST] " / " [/INST]": the surrounding spaces fold into
+                      the neighbouring tokens ("[INST]" is a single special
+                      token in Mistral v0.3), so the padded strings never match.
+  llama             - same space folding, plus llama-2 tokenizes [INST] after
+                      <s> as bare "[" on transformers 5.x while the standalone
+                      encoding gives "▁[", so the marker must anchor on <s>.
   starling          - trailing space after "GPT4 Correct Assistant:" folds
                       into the next content token ("▁Hello").
   glm               - "[gMASK]<sop>" renders once at text start, never before
@@ -56,7 +58,7 @@ T2R = model_mappings.TEMPLATE_TO_RESPONSES_MAPPER
 #    actually renders (see PR for the token-level derivation). ──
 EXPECTED_FIXED = {
     "mistral": {"instruction": "[INST]", "response": "[/INST]"},
-    "llama": {"instruction": "[INST]", "response": "[/INST]"},
+    "llama": {"instruction": "<s>[INST]", "response": "[/INST]"},
     "starling": {"instruction": "GPT4 Correct User:", "response": "GPT4 Correct Assistant:"},
     "glm": {"instruction": "<|user|>", "response": "<|assistant|>"},
     "qwen3-thinking": {"instruction": "<|im_start|>user\n", "response": "<|im_start|>assistant\n"},
@@ -175,8 +177,12 @@ def test_fixed_markers_token_level(template, repo):
     msgs = [{"role": "system", "content": "You are a terse assistant."}] + FIXTURE
     try:
         ids = tok.apply_chat_template(msgs, tokenize = True, add_generation_prompt = False)
+        if hasattr(ids, "keys"):
+            ids = ids["input_ids"]  # transformers 5.x returns a BatchEncoding
     except Exception:
         ids = tok.apply_chat_template(FIXTURE, tokenize = True, add_generation_prompt = False)
+        if hasattr(ids, "keys"):
+            ids = ids["input_ids"]
 
     fn = tor(
         None,

@@ -535,7 +535,10 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "response": "[/INST]",
     },
     "llama": {
-        "instruction": "[INST]",
+        # <s>-anchored: llama-2 tokenizes [INST] after <s> as bare "[" on
+        # transformers 5.x (standalone gives space-prefixed "▁["), so an
+        # unanchored marker misses every turn boundary there.
+        "instruction": "<s>[INST]",
         "response": "[/INST]",
     },
     "chatml": {
@@ -551,12 +554,12 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "response": "\n<|assistant|>\n",
     },
     "unsloth": {
-        "instruction": ">>> User: ",
-        "response": ">>> Assistant: ",
+        "instruction": ">>> User:",
+        "response": ">>> Assistant:",
     },
     "vicuna": {
-        "instruction": "USER: ",
-        "response": "ASSISTANT: ",
+        "instruction": "USER:",
+        "response": "ASSISTANT:",
     },
     "alpaca": {
         "instruction": "### Instruction:\n",
