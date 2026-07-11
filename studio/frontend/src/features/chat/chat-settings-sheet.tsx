@@ -2035,7 +2035,7 @@ function ConfirmToolCallsToggle() {
             Confirm tool calls
           </span>
           <InfoHint>
-            When on, every local Studio tool call pauses for your approval
+            When on, every local Unsloth tool call pauses for your approval
             before it runs (the "Ask for approval" level). When off, tool calls
             run without prompts inside the sandbox (the "Off" level).
             Provider-hosted tools are not gated here.
@@ -2061,25 +2061,18 @@ function BypassPermissionsToggle() {
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-            Bypass permissions
-          </span>
-          <InfoHint>
-            How Studio approves tool calls before they run. "Ask for approval"
-            pauses every call, "Approve for me" only pauses potentially unsafe
-            ones, "Off" never pauses (sandbox stays on), and "Full access" is
-            dangerous: no confirmations and the python/terminal sandbox is
-            disabled. Environment secrets are stripped, but code can still read
-            files and credentials on your machine.
-          </InfoHint>
-        </div>
-        {/* Fixed width so the row doesn't resize per level; long labels
-            ellipsize inside the trigger. */}
-        <PermissionModeDropdown triggerClassName="h-7 w-[160px]" />
+    <div className="flex flex-col gap-2">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="whitespace-nowrap text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Bypass permissions
+        </span>
+        <InfoHint>
+          How Unsloth approves tool calls before they run. Full access is
+          dangerous: it disables confirmations and the code sandbox.
+        </InfoHint>
       </div>
+      {/* Full width, styled like the panel selects/preset input. */}
+      <PermissionModeDropdown triggerClassName="h-9 w-full justify-between rounded-full border-0 bg-[var(--panel-input-surface)] px-3.5 text-[13px] font-medium text-nav-fg shadow-none hover:bg-[var(--panel-input-surface)]" />
       {permissionMode === "full" ? (
         <span className="text-[11px] text-bypass">
           Tool calls run with no confirmation and no sandbox.

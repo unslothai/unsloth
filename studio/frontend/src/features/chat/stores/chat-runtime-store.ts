@@ -53,7 +53,7 @@ export const CHAT_PERMISSION_MODE_KEY = "unsloth_chat_permission_mode";
  * - "auto" ("Approve for me"): only ask for calls the backend detects as
  *   potentially unsafe; read-only calls run immediately. Sandbox stays on.
  * - "off": never ask; tool calls run automatically inside the sandbox
- *   (the original Studio default before permission levels existed).
+ *   (the original default before permission levels existed).
  * - "full" ("Full access"): no confirmations and the python/terminal sandbox
  *   is disabled. Session-only; never restored from storage.
  */

@@ -204,9 +204,10 @@ export function PermissionModeDropdown({
             size="sm"
             className={cn(
               "gap-1.5",
+              triggerClassName,
+              // Last so a text color in triggerClassName cannot override it.
               permissionMode === "full" &&
                 "text-bypass hover:text-bypass border-bypass/50",
-              triggerClassName,
             )}
             aria-label="Permission level for tool calls"
           >

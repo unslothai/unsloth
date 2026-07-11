@@ -183,7 +183,7 @@ export const en = {
         sectionTitle: "Permissions",
         bypassLabel: "Bypass permissions",
         bypassDescription:
-          "How Studio approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
+          "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
       },
       notifications: {
         sectionTitle: "Notifications",
