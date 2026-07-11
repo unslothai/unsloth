@@ -40,8 +40,8 @@ import {
 
 /**
  * Permission levels for the Bypass permissions dropdowns (General settings,
- * chat settings sheet, composer "+" menu). Ordered by increasing
- * permissiveness; Full access sits last.
+ * chat settings sheet, composer "+" menu). Off sits last as the toggle that
+ * turns the feature off entirely.
  */
 export const PERMISSION_MODE_OPTIONS: readonly {
   value: PermissionMode;
@@ -62,18 +62,17 @@ export const PERMISSION_MODE_OPTIONS: readonly {
     icon: ShieldCheck,
   },
   {
-    value: "off",
-    label: "Off",
-    description:
-      "Never ask: tool calls run automatically inside the code sandbox",
-    icon: CircleOff,
-  },
-  {
     value: "full",
     label: "Full access",
     description:
       "Unrestricted: no approval prompts and the code sandbox is disabled",
     icon: CircleAlert,
+  },
+  {
+    value: "off",
+    label: "Off",
+    description: "Turn off bypass permissions",
+    icon: CircleOff,
   },
 ] as const;
 
@@ -101,10 +100,11 @@ export function PermissionModeMenuItems({
         <DropdownMenuItem
           key={option.value}
           onSelect={() => {
-            if (option.value === "full") {
-              if (permissionMode !== "full") {
-                onRequestFullAccess();
-              }
+            // Reselecting the active level toggles the feature off.
+            if (option.value === permissionMode) {
+              setPermissionMode("off");
+            } else if (option.value === "full") {
+              onRequestFullAccess();
             } else {
               setPermissionMode(option.value);
             }
@@ -263,6 +263,10 @@ export function PermissionModeComposerPill({
   const active = permissionModeOption(permissionMode);
   const ActiveIcon = active.icon;
   const fullAccess = permissionMode === "full";
+
+  // Off means the feature is off: no pill (re-enable via the "+" menu or
+  // settings, like the pre-levels bypass badge).
+  if (permissionMode === "off") return null;
 
   return (
     <DropdownMenu>
