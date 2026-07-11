@@ -172,7 +172,10 @@
 	--bypass: #c99d00;
 	--border: oklch(0.9208 0.0101 164.8536);
 	--input: oklch(0.9208 0.0101 164.8536);
-	--ring: #262626;
+	/* Selection and focus outlines: the border tone pulled toward the
+	   foreground, never plain black/white. Resolved at use, so every
+	   palette and mode derives its own value from its --border. */
+	--ring: color-mix(in srgb, var(--border) 55%, var(--foreground));
 	--chart-1: #17b88b;
 	--chart-2: oklch(0.694 0.1395 136.6059);
 	--chart-3: oklch(0.7014 0.1193 197.5897);
@@ -188,7 +191,7 @@
 	--sidebar-accent: oklch(0.96 0.0279 166.55);
 	--sidebar-accent-foreground: oklch(0.2868 0.0649 159.9823);
 	--sidebar-border: #f2f2f2;
-	--sidebar-ring: #262626;
+	--sidebar-ring: var(--ring);
 	--destructive-foreground: oklch(1 0 0);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
@@ -266,6 +269,11 @@
 	--control-accent: var(--primary);
 	--control-accent-foreground: var(--primary-foreground);
 
+	/* Status color for meaning-carrying marks (verified badges, token
+	   indicators). Pinned to the brand green in every palette and mode so
+	   the signal never changes with the theme. */
+	--verified: #17b88b;
+
 	/* Standard interactive-icon size for nav, menus, action bars, and
 	   in-message code-block actions. Sized one step above body text so
 	   icons read as minimally larger than adjacent labels (~14px text).
@@ -305,7 +313,6 @@
 	   tiles, quant chips) and keep subtle contrast on card. */
 	--border: #303030;
 	--input: #303030;
-	--ring: #ececec;
 	--chart-1: oklch(0.7511 0.1407 166.2284);
 	--chart-2: oklch(0.75 0.14 136.5572);
 	--chart-3: oklch(0.7554 0.1285 197.339);
@@ -320,7 +327,6 @@
 	--sidebar-accent: #2a2a2a;
 	--sidebar-accent-foreground: #ececec;
 	--sidebar-border: #2a2a2a;
-	--sidebar-ring: #ececec;
 	--destructive-foreground: oklch(1 0 0);
 	/* Match light's radius so every rounded-* element is the same in both themes. */
 	--radius: 1.1rem;
@@ -393,8 +399,8 @@
    base .dark block always wins the mode dimension. */
 
 /* -------------------------------- Classic --------------------------------
-   White content + #f9f9f9 sidebar in light, shared dark surfaces in dark,
-   neutral gray hovers, and blue (#339cff) as the accent. */
+   White content and the standard white sidebar in light, shared dark
+   surfaces in dark, neutral gray hovers, and blue (#339cff) as the accent. */
 :root[data-palette="classic"]:not(.dark) {
 	--background: #ffffff;
 	--foreground: #1a1c1f;
@@ -417,20 +423,20 @@
 	--bypass: #9a7b1e;
 	--border: #e6e6e6;
 	--input: #e6e6e6;
-	--ring: #1a1c1f;
 	--chart-1: #339cff;
 	--chart-2: #8fa3b8;
 	--chart-3: #0f6fd6;
 	--chart-4: #b8c4d0;
 	--chart-5: #5b7189;
-	--sidebar: #f9f9f9;
+	/* Same as the standard palette; the sidebar surface does not change
+	   with the palette. */
+	--sidebar: #ffffff;
 	--sidebar-foreground: #1a1c1f;
 	--sidebar-primary: #0d0d0d;
 	--sidebar-primary-foreground: #ffffff;
 	--sidebar-accent: #ececec;
 	--sidebar-accent-foreground: #1a1c1f;
-	--sidebar-border: #ececec;
-	--sidebar-ring: #1a1c1f;
+	--sidebar-border: #f2f2f2;
 
 	--nav-fg: #2d2f31;
 	--nav-fg-muted: #8f8f8f;
@@ -455,7 +461,6 @@
 	--control-accent: #4dabff;
 	--control-accent-foreground: #ffffff;
 	--bypass: #d9b40b;
-	--ring: #ececec;
 	--chart-1: #4dabff;
 	--chart-2: #8ab6de;
 	--chart-3: #1f7fe8;
@@ -463,7 +468,6 @@
 	--chart-5: #6d87a3;
 	--sidebar-primary: #ececec;
 	--sidebar-primary-foreground: #0d0d0d;
-	--sidebar-ring: #ececec;
 }
 
 /* -------------------------------- Minimal -------------------------------- */
@@ -485,7 +489,6 @@
 	--bypass: #6f6f6f;
 	--border: #e2e2e2;
 	--input: #e2e2e2;
-	--ring: #171717;
 	--chart-1: #171717;
 	--chart-2: #4d4d4d;
 	--chart-3: #7a7a7a;
@@ -499,7 +502,6 @@
 	--sidebar-accent: #ebebeb;
 	--sidebar-accent-foreground: #171717;
 	--sidebar-border: #e8e8e8;
-	--sidebar-ring: #171717;
 
 	--nav-fg: #333333;
 	--nav-fg-muted: #8a8a8a;
@@ -521,7 +523,6 @@
 	--primary: #ededed;
 	--primary-foreground: #111111;
 	--bypass: #9c9c9c;
-	--ring: #ededed;
 	--chart-1: #ededed;
 	--chart-2: #bdbdbd;
 	--chart-3: #8f8f8f;
@@ -529,7 +530,6 @@
 	--chart-5: #3d3d3d;
 	--sidebar-primary: #ededed;
 	--sidebar-primary-foreground: #111111;
-	--sidebar-ring: #ededed;
 }
 
 /* ---------------------------------------------------------------------------
@@ -642,6 +642,7 @@ html[data-chat-font] .aui-root {
 @theme inline {
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
+	--color-verified: var(--verified);
 	--color-sidebar-ring: var(--sidebar-ring);
 	--color-sidebar-border: var(--sidebar-border);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -815,6 +816,18 @@ html[data-chat-font] .aui-root {
 		margin-right: 0 !important;
 	}
 
+	/* Number fields use the shared grey stepper instead of native spinners. */
+	input[type="number"] {
+		appearance: textfield;
+		-moz-appearance: textfield;
+	}
+
+	input[type="number"]::-webkit-inner-spin-button,
+	input[type="number"]::-webkit-outer-spin-button {
+		-webkit-appearance: none;
+		margin: 0;
+	}
+
 	h1,
 	h2,
 	h3,
@@ -940,30 +953,40 @@ html[data-chat-font] .aui-root {
 		color: #9aa0a6;
 		letter-spacing: 0;
 	}
-	/* Neutral panel input surface — sidesteps the green cast on
-	   `--input` / `--border` (both have a small chroma at hue ~165 in
-	   light mode). Same value drives the preset input pill, the system
-	   prompt button, and the chat-template textarea so all three read
-	   as one quiet gray family, matching the focused-edit-number tint. */
+	/* Panel input fields. Light mode matches the settings fields: white
+	   fill with a subtle border. Dark mode keeps the borderless
+	   translucent surface shared with the rest of the panel. */
 	.panel-input-group {
 		@apply !h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-full pr-0 transition-colors focus-within:ring-0 focus-within:shadow-none;
-		border: 0 !important;
-		background-color: var(--panel-input-surface);
+		border: 1px solid var(--border) !important;
+		background-color: var(--background);
 	}
 	.panel-input-group:has([data-slot="input-group-control"]:focus-visible) {
-		border: 0 !important;
+		border-color: var(--ring) !important;
 		box-shadow: none;
 	}
-
-	/* Neutral surface for the larger panel text containers — system
-	   prompt preview button and chat-template textarea — so they share
-	   the same gray as the preset input pill and don't pick up the
-	   theme's slight green-cast `--input`. */
-	.panel-text-surface {
-		@apply rounded-[20px] border-0 transition-colors;
+	.dark .panel-input-group,
+	.dark .panel-input-group:has([data-slot="input-group-control"]:focus-visible) {
+		border: 0 !important;
 		background-color: var(--panel-input-surface);
 	}
+
+	/* Larger panel text containers (system prompt preview button and
+	   chat-template textarea) share the same treatment. */
+	.panel-text-surface {
+		@apply rounded-[20px] transition-colors;
+		border: 1px solid var(--border);
+		background-color: var(--background);
+	}
 	.panel-text-surface:hover {
+		border-color: color-mix(in srgb, var(--border) 75%, var(--foreground));
+	}
+	.dark .panel-text-surface {
+		border-color: transparent;
+		background-color: var(--panel-input-surface);
+	}
+	.dark .panel-text-surface:hover {
+		border-color: transparent;
 		background-color: var(--panel-input-surface-hover);
 	}
 

@@ -547,7 +547,7 @@ export const ModelInspector = memo(function ModelInspector({
               {model.owner.toLowerCase() === "unsloth" && (
                 <span
                   aria-label="Verified Unsloth"
-                  className="hub-verified-badge size-[18px] shrink-0 text-primary"
+                  className="hub-verified-badge size-[18px] shrink-0 text-verified"
                 />
               )}
             </div>

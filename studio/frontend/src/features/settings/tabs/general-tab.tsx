@@ -711,7 +711,7 @@ export function GeneralTab() {
         >
           <div className="flex flex-col items-end gap-1">
             <div className="flex items-center gap-2">
-              <div className="relative w-28">
+              <div className="flex items-center gap-1.5">
                 <Input
                   type="number"
                   min={uploadLimit?.minUploadSizeMb ?? 1}
@@ -720,9 +720,9 @@ export function GeneralTab() {
                   value={draftUploadLimit}
                   aria-label="Training dataset upload cap in MB"
                   onChange={(event) => setDraftUploadLimit(event.target.value)}
-                  className="h-8 w-full pr-10"
+                  className="h-8 w-24"
                 />
-                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-muted-foreground">
+                <span className="text-xs font-medium text-muted-foreground">
                   MB
                 </span>
               </div>

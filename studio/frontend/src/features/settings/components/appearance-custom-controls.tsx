@@ -604,7 +604,7 @@ function FontSizeInput({
           }
         }}
         aria-label={ariaLabel}
-        className="h-8 w-16 text-xs"
+        className="h-8 w-20 text-xs"
       />
       <span className="text-xs text-muted-foreground">px</span>
     </div>

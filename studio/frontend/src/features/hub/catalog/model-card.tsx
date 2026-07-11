@@ -295,7 +295,7 @@ export const ModelCard = memo(function ModelCard({
             {row.owner.toLowerCase() === "unsloth" && (
               <span
                 aria-label="Verified Unsloth"
-                className="hub-verified-badge size-3.5 shrink-0 text-primary"
+                className="hub-verified-badge size-3.5 shrink-0 text-verified"
               />
             )}
           </span>

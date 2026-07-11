@@ -515,7 +515,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
               {row.owner.toLowerCase() === "unsloth" && (
                 <span
                   aria-label="Verified Unsloth"
-                  className="hub-verified-badge size-3.5 shrink-0 text-primary"
+                  className="hub-verified-badge size-3.5 shrink-0 text-verified"
                 />
               )}
             </span>
@@ -712,7 +712,7 @@ export const InventoryRow = memo(function InventoryRow({
       {subLabel.toLowerCase() === "unsloth" && (
         <span
           aria-label="Verified Unsloth"
-          className="hub-verified-badge size-3.5 shrink-0 text-primary"
+          className="hub-verified-badge size-3.5 shrink-0 text-verified"
         />
       )}
     </span>
@@ -789,7 +789,7 @@ export const InventoryRow = memo(function InventoryRow({
                 {subLabel.toLowerCase() === "unsloth" && (
                   <span
                     aria-label="Verified Unsloth"
-                    className="hub-verified-badge size-3 shrink-0 text-primary"
+                    className="hub-verified-badge size-3 shrink-0 text-verified"
                   />
                 )}
               </span>

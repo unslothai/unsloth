@@ -50,7 +50,7 @@ export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = 
                 className={cn(
                   "inline-flex size-6 items-center justify-center rounded-full transition-colors",
                   hasToken
-                    ? "bg-primary/15 text-primary"
+                    ? "bg-verified/15 text-verified"
                     : "bg-foreground/[0.07] text-muted-foreground dark:bg-white/[0.07]",
                 )}
               >
@@ -65,7 +65,7 @@ export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = 
             <span
               className={cn(
                 "shrink-0 text-[11px] font-normal tabular-nums",
-                hasToken ? "text-primary" : "text-muted-foreground/70",
+                hasToken ? "text-verified" : "text-muted-foreground/70",
               )}
             >
               {hasToken ? "Set" : "Add"}
