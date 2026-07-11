@@ -383,6 +383,113 @@ def test_sandboxed_sqlite3_attach_local_allowed():
 
 
 @_POSIX_ONLY
+def test_sandboxed_sqlite3_connection_constructor_escape_denied(tmp_path):
+    # The public sqlite3.Connection('/outside.db') constructor creates the DB via the native
+    # extension without going through the guarded connect(); the guarded Connection subclass must
+    # confine the path at construction.
+    target = tmp_path / "conn_ctor_escape.db"
+    out = _python_exec(
+        f"import sqlite3\nc = sqlite3.Connection({str(target)!r})\n"
+        "c.execute('create table t(x)'); c.commit(); print('CTOR_OK')",
+        None,
+        30,
+        "backstop-sqlite-ctor-escape",
+        disable_sandbox = False,
+    )
+    assert "CTOR_OK" not in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_low_level_sqlite3_connection_constructor_escape_denied(tmp_path):
+    # _sqlite3.Connection is the raw C constructor, importable directly; it must be guarded too.
+    target = tmp_path / "low_conn_ctor_escape.db"
+    out = _python_exec(
+        f"import _sqlite3\nc = _sqlite3.Connection({str(target)!r})\n"
+        "c.execute('create table t(x)'); print('LOW_CTOR_OK')",
+        None,
+        30,
+        "backstop-sqlite-low-ctor-escape",
+        disable_sandbox = False,
+    )
+    assert "LOW_CTOR_OK" not in out
+    assert not target.exists()
+
+
+def test_sandboxed_sqlite3_connection_constructor_local_allowed():
+    # A workdir-relative sqlite3.Connection(...) opens and is usable.
+    out = _python_exec(
+        "import sqlite3\n"
+        "c = sqlite3.Connection('ctor_local.db')\n"
+        "c.execute('create table if not exists t(x)'); c.close(); print('CTOR_LOCAL_OK')",
+        None,
+        30,
+        "backstop-sqlite-ctor-local",
+        disable_sandbox = False,
+    )
+    assert "CTOR_LOCAL_OK" in out
+    assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_sqlite3_set_authorizer_none_attach_escape_denied(tmp_path):
+    # Removing the confinement authorizer (set_authorizer(None)) must NOT re-open the ATTACH
+    # escape: the guarded Connection composes its workdir confinement ahead of any caller
+    # callback and keeps it on set_authorizer(None).
+    target = tmp_path / "auth_removed_attach_escape.db"
+    out = _python_exec(
+        "import sqlite3\n"
+        "c = sqlite3.connect('backstop_authrm.db')\n"
+        "c.set_authorizer(None)\n"
+        f"c.execute(\"ATTACH DATABASE '{target}' AS ext\")\n"
+        "print('AUTH_REMOVED_ATTACH_OK')",
+        None,
+        30,
+        "backstop-sqlite-authrm-attach",
+        disable_sandbox = False,
+    )
+    assert "AUTH_REMOVED_ATTACH_OK" not in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_sqlite3_set_authorizer_none_vacuum_escape_denied(tmp_path):
+    # The same durability holds for VACUUM INTO after set_authorizer(None).
+    target = tmp_path / "auth_removed_vacuum_escape.db"
+    out = _python_exec(
+        "import sqlite3\n"
+        "c = sqlite3.connect('backstop_authrm_v.db')\n"
+        "c.execute('create table t(x)')\n"
+        "c.set_authorizer(None)\n"
+        f"c.execute(\"VACUUM INTO '{target}'\")\n"
+        "print('AUTH_REMOVED_VACUUM_OK')",
+        None,
+        30,
+        "backstop-sqlite-authrm-vacuum",
+        disable_sandbox = False,
+    )
+    assert "AUTH_REMOVED_VACUUM_OK" not in out
+    assert not target.exists()
+
+
+def test_sandboxed_sqlite3_user_authorizer_still_runs():
+    # A caller-supplied authorizer still composes (benign work is not broken by the confinement).
+    out = _python_exec(
+        "import sqlite3\n"
+        "c = sqlite3.connect('backstop_userauth.db')\n"
+        "def ok(*a):\n    return sqlite3.SQLITE_OK\n"
+        "c.set_authorizer(ok)\n"
+        "c.execute('create table if not exists t(x)'); c.close(); print('USERAUTH_OK')",
+        None,
+        30,
+        "backstop-sqlite-userauth",
+        disable_sandbox = False,
+    )
+    assert "USERAUTH_OK" in out
+    assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
 def test_sandboxed_getattr_gadget_dunder_workdir_module_denied():
     # A workdir helper recovering the guard wrapper's original open via a getattr gadget dunder
     # (getattr(open, '__closure__')) must be refused by the vetter, like the direct attribute form.

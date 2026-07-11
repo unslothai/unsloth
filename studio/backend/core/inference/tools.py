@@ -739,6 +739,11 @@ _COMMAND_PREFIXES = frozenset(
         # watch [options] command: repeatedly runs command (via sh -c, or exec with -x), so
         # watch -x touch /tmp/x / watch -n 2 rm -rf / must resolve to the wrapped command.
         "watch",
+        # taskset [options] <mask | -c cpu-list> <command> [<arg>...]: util-linux affinity
+        # wrapper that execs the following command, so taskset 1 touch /tmp/x / taskset -c 0,1
+        # rm -rf must resolve to the wrapped command (the mask / cpu-list is skipped as a
+        # numeric operand). The -p PID form operates on an existing process and execs nothing.
+        "taskset",
     }
 )
 # A shell assignment prefix: NAME=value or NAME+=value (bash append). The optional `+` is part
@@ -806,6 +811,9 @@ _WRAPPER_OPERAND_FLAGS = {
     "time": frozenset({"-f", "--format", "-o", "--output"}),
     "chrt": frozenset({"-T", "--sched-runtime", "-P", "--sched-period", "-D", "--sched-deadline"}),
     "watch": frozenset({"-n", "--interval"}),
+    # taskset -c CPU-LIST cmd (the cpu-list is a separated operand); -p PID targets an existing
+    # process (no command follows). The bare hex / decimal mask form is skipped as a numeric arg.
+    "taskset": frozenset({"-c", "--cpu-list", "-p", "--pid"}),
 }
 
 
@@ -858,8 +866,23 @@ def _is_wrapper_numeric_arg(token: str) -> bool:
     t = token.lstrip("-")
     if not t:
         return False
+    # A hex affinity mask (taskset 0x3 cmd).
+    if t[:2].lower() == "0x" and len(t) > 2:
+        try:
+            int(t, 16)
+            return True
+        except ValueError:
+            return False
+    # Strip a single trailing GNU timeout duration unit (timeout 5m / 0.5s).
     if len(t) > 1 and t[-1] in "smhd":
         t = t[:-1]
+    # A cpu-list / affinity mask of digits with , and - separators (taskset -c 0,1 / 0-3 cmd).
+    if (
+        any(c in ",-" for c in t)
+        and all(c in "0123456789,-" for c in t)
+        and any(c.isdigit() for c in t)
+    ):
+        return True
     try:
         float(t)
         return True
@@ -4698,12 +4721,18 @@ _CODE_DESERIALIZE_SINKS = frozenset(
         "yaml.unsafe_load_all",
         "yaml.full_load",
         "yaml.full_load_all",
+        # shelve is a dbm-backed dict that UNPICKLES a value on every read (shelf[key],
+        # shelf.get(key)), so shelve.open() on an attacker-planted dbm runs a pickle reduce
+        # payload just like pickle.load. The read can be aliased (d = shelve.open(...); d[k]),
+        # so the open() gateway call is flagged rather than only the direct-chain subscript.
+        # (A pure write-only shelf never unpickles; blocking it is an accepted narrow tradeoff.)
+        "shelve.open",
     }
 )
 # Modules whose load/loads/decode entry points run a pickle reduce payload; used to
 # resolve `import pickle as p; p.loads(x)` and `from pickle import loads as l`.
 _DESERIALIZE_MODULES = frozenset(
-    {"pickle", "marshal", "dill", "cloudpickle", "_pickle", "jsonpickle", "yaml"}
+    {"pickle", "marshal", "dill", "cloudpickle", "_pickle", "jsonpickle", "yaml", "shelve"}
 )
 # Modules exposing an Unpickler class whose .load() runs the same reduce payload as *.load:
 # pickle.Unpickler(f).load() / dill.Unpickler(f).load() bypass the *.load sink-name check.
@@ -7904,6 +7933,14 @@ def _check_signal_escape_patterns(
                 _ds = self.deserialize_aliases.get(n.id)
                 if _ds is not None:
                     return f"{_ds} (deserialize)"
+                # The subprocess / pty MODULE passed by reference (f(subprocess)) is a child-spawn
+                # primitive a callee can invoke as subprocess.run(...) with an unguarded escape;
+                # the recursive analyzer never sees that call, and a workdir helper receiving the
+                # module as a parameter cannot resolve it. Flag the module reference itself.
+                if n.id in self.subprocess_aliases:
+                    return "subprocess module (child spawn)"
+                if n.id in self.pty_aliases:
+                    return "pty module (child spawn)"
                 if _analyzer_on:
                     _r = _scope_idx.resolve(n.id, n, "shell")
                     if _r in _SHELL_EXEC_FUNCS:
@@ -9643,17 +9680,34 @@ def _check_signal_escape_patterns(
             # dangerous literal key off a bare globals()/locals()/vars() call.
             if isinstance(node.ctx, ast.Load) and self._is_namespace_dict_expr(v):
                 key = _const_fold(node.slice, _const_env)
-                if isinstance(key, str) and (
-                    key in ("__builtins__", "__builtin__")
-                    or key.split(".")[0] in _DANGEROUS_IMPORT_NAMES
-                ):
-                    dynamic_exec.append(
-                        {
-                            "type": "dynamic_exec",
-                            "line": getattr(node, "lineno", -1),
-                            "description": "namespace-dict access to builtins / a sensitive module",
-                        }
+                if isinstance(key, str):
+                    _ns_hit = (
+                        key in ("__builtins__", "__builtin__")
+                        or key.split(".")[0] in _DANGEROUS_IMPORT_NAMES
                     )
+                    if not _ns_hit and _analyzer_on:
+                        # The namespace dict also exposes a module-level / local ALIAS bound to a
+                        # sink (import os; f = os.system; globals()['f']('touch /tmp/p')), which
+                        # the literal-key check above misses. Resolve the key through the alias
+                        # index -- a shell / exec-builtin / deserializer sink alias makes the
+                        # namespace-dict lookup the sink itself. resolve() walks local->module,
+                        # matching globals() (module) and locals()/vars() (local) in the usual case.
+                        _ns_hit = (
+                            _scope_idx.resolve(key, node, "shell") is not None
+                            or _scope_idx.resolve(key, node, "execb") is not None
+                            or _scope_idx.resolve(key, node, "deser") is not None
+                        )
+                    if _ns_hit:
+                        dynamic_exec.append(
+                            {
+                                "type": "dynamic_exec",
+                                "line": getattr(node, "lineno", -1),
+                                "description": (
+                                    "namespace-dict access to builtins / a sensitive module "
+                                    "or a sink alias"
+                                ),
+                            }
+                        )
             self.generic_visit(node)
 
         def visit_ExceptHandler(self, node):
@@ -11914,52 +11968,109 @@ try:
             return 0  # SQLITE_OK
         return _auth
 
-    def _guard_sqlite_connect(_orig):
-        @_gwraps(_orig)
-        def w(*a, **k):
+    _SqliteConnBase = _sq3.Connection  # the original (unguarded) Connection class
+
+    class _GuardedSqliteConnection(_SqliteConnBase):
+        # A Connection subclass that (1) confines the database path AT CONSTRUCTION, so the direct
+        # constructor forms sqlite3.Connection('/tmp/x') / _sqlite3.Connection(...) are guarded just
+        # like connect(); and (2) makes the ATTACH / VACUUM INTO authorizer DURABLE:
+        # set_authorizer(cb) composes the workdir confinement AHEAD of the caller's callback, and
+        # set_authorizer(None) keeps the confinement -- so sandboxed code cannot drop the hook and
+        # then ATTACH DATABASE '/tmp/escape.db' / VACUUM INTO an outside file via native code.
+        def __init__(self, *a, **k):
             if a:
                 _db = a[0]
             elif "database" in k:
                 _db = k["database"]
             else:
-                return _orig(*a, **k)  # let sqlite3 raise its own TypeError
+                _db = None
             _uri = bool(k.get("uri", False))
-            # Materialize a path-like once so a stateful __fspath__ cannot pass the check
-            # with an in-workdir value and then hand sqlite a different outside path.
-            if not isinstance(_db, (str, bytes)):
+            # Materialize a path-like once so a stateful __fspath__ cannot pass the check with an
+            # in-workdir value and then hand sqlite a different outside path.
+            if _db is not None and not isinstance(_db, (str, bytes)):
                 _db = _fspath1(_db)
-            if not _sqlite_path_ok(_db, _uri):
-                _deny(_db, "sqlite3.connect")
-            if a:
-                _conn = _orig(_db, *a[1:], **k)
-            else:
-                k = dict(k)
-                k["database"] = _db
-                _conn = _orig(**k)
-            # Confine ATTACH / VACUUM INTO targets on the live connection too. Best-effort: a
-            # build without set_authorizer simply lacks this extra confinement.
+                if a:
+                    a = (_db,) + tuple(a[1:])
+                else:
+                    k = dict(k)
+                    k["database"] = _db
+            if _db is not None and not _sqlite_path_ok(_db, _uri):
+                _deny(_db, "sqlite3.Connection")
+            _SqliteConnBase.__init__(self, *a, **k)
+            self._sandbox_uri_on = _uri
+            # Install the initial confinement authorizer through the durable override below.
             try:
-                _conn.set_authorizer(_make_sqlite_authorizer(_uri))
+                self.set_authorizer(None)
             except Exception:
                 pass
-            return _conn
+
+        def set_authorizer(self, callback, *a, **k):
+            _confine = _make_sqlite_authorizer(getattr(self, "_sandbox_uri_on", False))
+
+            def _composed(_action, _a1, _a2, _dbname, _source):
+                if _confine(_action, _a1, _a2, _dbname, _source) != 0:
+                    return 1  # SQLITE_DENY -- an escaping ATTACH / VACUUM INTO target
+                if callback is None:
+                    return 0  # SQLITE_OK
+                return callback(_action, _a1, _a2, _dbname, _source)
+
+            # Route through the ORIGINAL C method (not the possibly-reassigned module attribute) so
+            # the confinement is always reinstalled and this override cannot recurse.
+            return _SqliteConnBase.set_authorizer(self, _composed, *a, **k)
+
+    _guard_conn_cache = {}
+
+    def _combined_guard_conn(_user):
+        # A caller-supplied Connection factory is COMBINED with the guard subclass (guard methods
+        # take MRO precedence) so the path confinement + durable authorizer still apply.
+        _g = _guard_conn_cache.get(_user)
+        if _g is None:
+            try:
+                _g = type("SandboxGuardedConnection", (_GuardedSqliteConnection, _user), {})
+            except Exception:
+                _g = _GuardedSqliteConnection
+            _guard_conn_cache[_user] = _g
+        return _g
+
+    def _guard_sqlite_connect(_orig):
+        @_gwraps(_orig)
+        def w(*a, **k):
+            # Force our guarded Connection subclass as the factory so the returned connection is
+            # path-confined and carries the durable authorizer; a caller factory is combined in.
+            _fac = k.get("factory")
+            if _fac is None:
+                k = dict(k)
+                k["factory"] = _GuardedSqliteConnection
+            elif not (isinstance(_fac, type) and issubclass(_fac, _GuardedSqliteConnection)):
+                k = dict(k)
+                k["factory"] = _combined_guard_conn(_fac)
+            return _orig(*a, **k)
         return w
 
-    _sq3_orig_connect = _sq3.connect
-    _sq3_guarded_connect = _guard_sqlite_connect(_sq3_orig_connect)
+    _sq3_guarded_connect = _guard_sqlite_connect(_sq3.connect)
     _sq3.connect = _sq3_guarded_connect
     try:
         _sq3.dbapi2.connect = _sq3_guarded_connect
     except Exception:
         pass
-    # The native _sqlite3 C extension still exposes the ORIGINAL connect, and it is importable
-    # directly (import _sqlite3; _sqlite3.connect('/tmp/escape.db')), bypassing the two Python
-    # bindings above. Wrap it too so the low-level entry point is confined; module attribute
-    # assignment on a C extension is allowed, but guard it in case a build disallows it.
+    # Confine the direct constructor forms too (sqlite3.Connection('/tmp/escape.db') /
+    # sqlite3.dbapi2.Connection / _sqlite3.Connection), which never go through connect(). Replacing
+    # the module attribute with the guarded subclass keeps isinstance() working (it IS a Connection)
+    # while routing construction through the confining __init__.
+    _sq3.Connection = _GuardedSqliteConnection
+    try:
+        _sq3.dbapi2.Connection = _GuardedSqliteConnection
+    except Exception:
+        pass
+    # The native _sqlite3 C extension still exposes the ORIGINAL connect / Connection, importable
+    # directly (import _sqlite3; _sqlite3.connect('/tmp/escape.db') / _sqlite3.Connection(...)),
+    # bypassing the bindings above. Wrap them too; module attribute assignment on a C extension is
+    # allowed, but guard it in case a build disallows it.
     try:
         import _sqlite3 as _lowsq3
 
         _lowsq3.connect = _guard_sqlite_connect(_lowsq3.connect)
+        _lowsq3.Connection = _GuardedSqliteConnection
     except Exception:
         pass
 except Exception:
@@ -12071,6 +12182,16 @@ try:
         "posix_spawn", "posix_spawnp",
     })
     _GUARD_EXEC_MODS = frozenset({"subprocess", "pty"})
+    # Child-spawning methods of the exec modules above. A workdir helper that IMPORTS subprocess /
+    # pty is already refused, but one that receives the module as an argument (def f(subprocess):
+    # subprocess.run([...])) has no import to reject, so a call rooted at a receiver literally named
+    # subprocess / pty (the injected module) is refused here regardless of import.
+    _GUARD_EXEC_MOD_ATTRS = {
+        "subprocess": frozenset(
+            {"run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput"}
+        ),
+        "pty": frozenset({"spawn", "fork"}),
+    }
     # os / posix expose the exec-attr sinks (os.system, os.execv, ...); a sink attribute rooted at
     # one of these is a command-exec sink even without a direct call (x = os.system; x('id')).
     _GUARD_EXEC_RECEIVERS = frozenset({"os", "posix"})
@@ -12209,6 +12330,17 @@ try:
                     and _guard_attr_root(_nd.func.value) in _recv
                 ):
                     return True
+                # A subprocess / pty child-spawn (subprocess.run([...]) / pty.spawn(...)) rooted at
+                # a receiver literally named subprocess / pty. A helper that IMPORTS these is already
+                # refused above; this catches the dependency-injected form (def f(subprocess):
+                # subprocess.run(...)) that has no import statement to reject.
+                if isinstance(_nd.func, _gast.Attribute):
+                    _mroot = _guard_attr_root(_nd.func.value)
+                    if (
+                        _mroot in _GUARD_EXEC_MOD_ATTRS
+                        and _nd.func.attr in _GUARD_EXEC_MOD_ATTRS[_mroot]
+                    ):
+                        return True
                 if isinstance(_nd.func, _gast.Name) and _nd.func.id in (
                     "eval", "exec", "compile", "__import__"):
                     return True

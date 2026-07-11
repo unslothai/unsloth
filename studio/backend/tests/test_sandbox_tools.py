@@ -5570,3 +5570,88 @@ class TestRound56Bypasses:
     )
     def test_round56_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound57Bypasses:
+    # taskset [options] <mask | -c cpu-list> <command> execs the following command, so it must be
+    # a command-prefix wrapper resolving to the wrapped command (the mask / cpu-list is skipped).
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "taskset 1 touch /tmp/p",
+            "taskset 0x3 touch /tmp/p",
+            "taskset -c 0,1 touch /tmp/p",
+            "taskset -c 0-3 rm -rf /tmp/x",
+            "taskset 1 nice -n 5 touch /tmp/p",
+        ],
+    )
+    def test_taskset_wrapper_resolves_command(self, cmd):
+        _blocked(_sh(cmd), expect_phrase = "blocked command")
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # taskset wrapping a benign command stays allowed; the -p PID form execs nothing.
+            "taskset 1 echo hi",
+            "taskset -c 0,1 echo hi",
+            "taskset -p 1234",
+        ],
+    )
+    def test_taskset_benign_allowed(self, cmd):
+        _ok(_sh(cmd))
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A namespace-dict lookup of an alias bound to a sink (f = os.system; globals()['f'](...))
+            # resolves through the alias index, not just literal builtins / module keys.
+            "import os\nf = os.system\nglobals()['f']('touch /tmp/p')",
+            "import os\nf = os.system\nlocals()['f']('touch /tmp/p')",
+            "import os\nf = os.system\nvars()['f']('touch /tmp/p')",
+            "import os\nf = os.system\nglobals()['f' + '']('touch /tmp/p')",
+            "import pickle\np = pickle.loads\nglobals()['p'](b'x')",
+        ],
+    )
+    def test_namespace_dict_sink_alias_blocked(self, code):
+        _blocked(code, expect_phrase = "namespace-dict access")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Passing the subprocess / pty MODULE by reference to a helper (which can spawn a child
+            # the recursive analyzer never sees) is blocked regardless of the callee's parameter name.
+            "import subprocess\ndef f(m):\n    m.run(['touch', '/tmp/p'])\nf(subprocess)",
+            "import subprocess as sp\ndef f(m):\n    m.run(['id'])\nf(sp)",
+            "import pty\ndef f(m):\n    m.spawn(['/bin/sh'])\nf(pty)",
+        ],
+    )
+    def test_injected_subprocess_module_blocked(self, code):
+        _blocked(code, expect_phrase = "child spawn")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # shelve.open() unpickles values on read, so it is a deserialization sink like
+            # pickle.load; the open() gateway is flagged to cover aliased reads.
+            "import shelve\nx = shelve.open('db')['k']",
+            "import shelve\nd = shelve.open('db')\nx = d['k']",
+            "import shelve\nd = shelve.open('db')\nx = d.get('k')",
+            "import shelve as s\ns.open('db')",
+            "from shelve import open as o\no('db')",
+        ],
+    )
+    def test_shelve_open_deserialize_blocked(self, code):
+        _blocked(code, expect_phrase = "shelve.open")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign forms across the round-57 checks stay allowed.
+            "import os\nf = os.system\n",  # a bare alias assignment is not a namespace-dict call
+            "x = 5\nprint(globals()['x'])",  # benign namespace-dict read of a non-sink
+            "import subprocess\nsubprocess.run(['ls'])",  # a direct benign-command subprocess run
+            "import os\ndef f(m):\n    return m.getcwd()\nf(os)",  # passing os (not subprocess/pty)
+        ],
+    )
+    def test_round57_benign_allowed(self, code):
+        _ok(code)
