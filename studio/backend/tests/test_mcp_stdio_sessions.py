@@ -426,9 +426,7 @@ def test_close_generation_keys_hold_no_secrets(fake_clients):
     gen_keys = list(mcp_client._stdio_cfg_close_gen) + list(mcp_client._stdio_url_close_gen)
     assert gen_keys
     # These maps are never pruned: neither command/URL nor env may persist.
-    assert all(
-        "sk-url-secret" not in repr(k) and "sk-env-secret" not in repr(k) for k in gen_keys
-    )
+    assert all("sk-url-secret" not in repr(k) and "sk-env-secret" not in repr(k) for k in gen_keys)
 
 
 def test_overlapping_calls_serialize_on_shared_session(fake_clients, monkeypatch):
