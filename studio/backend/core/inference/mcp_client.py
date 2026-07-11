@@ -339,6 +339,7 @@ class _StdioSession:
         loop = getattr(self, "loop", None)
         loop_alive = loop is not None and not loop.is_closed()
         if loop_alive:
+
             async def _shutdown() -> None:
                 # Runs on the loop thread, so it serializes with an aborted
                 # connect() that finished anyway and just published its client.
