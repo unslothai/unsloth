@@ -485,9 +485,8 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
-    # No "<think>" suffix: Qwen3-Thinking-2507 strips the think block from
-    # non-final assistant turns and QwQ renders none at all, so a marker
-    # holding it misses those turns and masks their responses.
+    # No "<think>" suffix: Qwen3-Thinking-2507 strips it from non-final turns
+    # and QwQ renders none, so a marker holding it masks those responses.
     "qwen3-thinking": {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
@@ -528,10 +527,9 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user<|im_sep|>",
         "response": "<|im_start|>assistant<|im_sep|>",
     },
-    # No surrounding spaces: with Mistral v0.3 the space around "[/INST]" folds
-    # into the neighbouring text tokens (and "[INST]"/"[/INST]" are single
-    # special tokens), so the padded strings never match and every assistant
-    # token gets masked. Same for Llama-2's SentencePiece tokenization.
+    # No surrounding spaces: in Mistral v0.3 they fold into neighbouring text
+    # tokens ("[INST]"/"[/INST]" are single special tokens), so padded strings
+    # never match and everything masks. Same for Llama-2's SentencePiece.
     "mistral": {
         "instruction": "[INST]",
         "response": "[/INST]",
@@ -544,11 +542,10 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
-    # Leading newline required: Zephyr's role tags are plain text (not special
-    # tokens) and SentencePiece tokenizes "<|assistant|>" differently at text
-    # start than after "</s>\n" mid-conversation. Without the "\n" anchor the
-    # markers only tokenize like the text-start form and never match real
-    # turns, so every assistant token gets masked.
+    # Leading newline required: Zephyr's role tags are plain text, and
+    # SentencePiece tokenizes "<|assistant|>" differently at text start than
+    # after "</s>\n". Without the "\n" anchor the markers never match real
+    # turns, so every assistant token masks.
     "zephyr": {
         "instruction": "\n<|user|>\n",
         "response": "\n<|assistant|>\n",
@@ -595,10 +592,9 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
-    # "[gMASK]<sop>" only appears once at the start of the rendered text, so a
-    # marker holding it matches no later user turn; "<think>" is generation
-    # scaffolding that GLM-4.x renders as a lone "</think>" on non-final turns,
-    # so "<|assistant|><think>" never matches and masks every assistant token.
+    # "[gMASK]<sop>" appears once at text start, so a marker holding it matches
+    # no later user turn; "<think>" is scaffolding GLM-4.x renders as a lone
+    # "</think>" on non-final turns, so "<|assistant|><think>" never matches.
     "glm": {
         "instruction": "<|user|>",
         "response": "<|assistant|>",
