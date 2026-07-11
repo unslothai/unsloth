@@ -551,10 +551,10 @@ async def lifespan(app: FastAPI):
         (_time.perf_counter() - _lifespan_started) * 1000,
     )
 
-    # run_server's pre-bind password gate sets suppress_bootstrap_injection
-    # when Studio is about to serve a public URL with the default credential
-    # still active: the bootstrap password must then never be (re)captured
-    # into app.state, or the served HTML would hand it to anyone on the link.
+    # run_server's pre-bind gate sets suppress_bootstrap_injection when Studio
+    # is about to serve a public URL with the default credential still active:
+    # the bootstrap password must then never be (re)captured into app.state, or
+    # the served HTML would hand it to anyone on the link.
     _suppress_bootstrap = getattr(app.state, "suppress_bootstrap_injection", False)
     if storage.ensure_default_admin():
         bootstrap_pw = None if _suppress_bootstrap else storage.get_bootstrap_password()

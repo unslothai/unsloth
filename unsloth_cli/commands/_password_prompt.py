@@ -80,11 +80,10 @@ def _read_masked_posix(prompt: str, out: TextIO) -> str:
     chars: list[str] = []
     try:
         with _RestoreTtyOnSignals(fd, old_attrs):
-            # cbreak + ISIG off (mirrors studio/backend/auth/terminal_prompt.py):
-            # with ISIG on, Ctrl-Z would suspend the process mid-read and hand
-            # the shell a terminal stuck in no-echo mode before the finally
-            # below could restore it. Ctrl-C/Ctrl-Z arrive as \x03/\x1a instead
-            # and are handled here, after the terminal is restored.
+            # cbreak + ISIG off (mirrors terminal_prompt.py): with ISIG on,
+            # Ctrl-Z would suspend mid-read and leave the shell a no-echo
+            # terminal before the finally could restore it. Ctrl-C/Ctrl-Z
+            # arrive as \x03/\x1a and are handled here, post-restore.
             tty.setcbreak(fd)
             new_attrs = termios.tcgetattr(fd)
             new_attrs[3] &= ~termios.ISIG

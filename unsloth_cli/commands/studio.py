@@ -483,10 +483,10 @@ def _connect_auth_db() -> sqlite3.Connection:
     auth_dir = STUDIO_HOME / "auth"
     auth_dir.mkdir(parents = True, exist_ok = True)
     conn = sqlite3.connect(auth_dir / "auth.db")
-    # Mirror backend storage.get_connection: on a fresh install THIS path can
-    # create auth/ and auth.db (the pre-exposure gate writes the new password
-    # hash + JWT secret here before the backend ever runs), and sqlite3.connect
-    # creates the DB 0644 under a 022 umask. Keep both private.
+    # Mirror backend storage.get_connection: on a fresh install this path can
+    # create auth/ and auth.db (the pre-exposure gate writes here before the
+    # backend runs), and sqlite3.connect makes the DB 0644 under a 022 umask.
+    # Keep both private.
     for _path, _mode in ((auth_dir, 0o700), (auth_dir / "auth.db", 0o600)):
         try:
             os.chmod(_path, _mode)
@@ -732,8 +732,8 @@ def _enforce_password_change_before_exposure(
     ):
         return
     # Inspection failures (unwritable STUDIO_HOME, locked DB) must not kill the
-    # launch: the backend still enforces auth and its bootstrap shutdown timer.
-    # A failure AFTER the user typed a new password stays fatal, below.
+    # launch: the backend still enforces auth and its shutdown timer. A failure
+    # AFTER the user typed a new password stays fatal, below.
     try:
         conn = _connect_auth_db()
     except (OSError, sqlite3.Error) as exc:
@@ -761,11 +761,9 @@ def _enforce_password_change_before_exposure(
         if not row or not row[2]:
             return
         if not _prompt_streams_interactive():
-            # Only proceed headless when the backend's bootstrap shutdown
-            # deadline will actually protect the launch. It never arms for
-            # api-only serving, and UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0
-            # disables it (mirrors auth/bootstrap_timeout.py semantics:
-            # unset/malformed -> default 1h, <= 0 -> disabled).
+            # Only proceed headless if the bootstrap shutdown deadline will
+            # protect the launch: it never arms for api-only, and
+            # UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables it.
             if api_only or not _bootstrap_deadline_active():
                 typer.echo(
                     "Error: refusing to publish Studio on a public Cloudflare "
@@ -1064,12 +1062,11 @@ def studio_default(
                 args.append("--silent")
             if api_only:
                 args.append("--api-only")
-            # Forward the default polarity explicitly: _find_run_py can fall back to
-            # an older run.py under the studio venv (whose --cloudflare defaulted on),
-            # so an unset default must not let a mixed install silently re-enable the
-            # tunnel. --secure implies the tunnel, so forward nothing then
-            # (--no-cloudflare would contradict --secure). The common in-venv launch
-            # skips this re-exec and keeps the tri-state None -> "(default)" banner.
+            # Forward polarity explicitly: _find_run_py can fall back to an older
+            # run.py (whose --cloudflare defaulted on), so an unset default must
+            # not let a mixed install silently re-enable the tunnel. --secure
+            # implies the tunnel, so forward nothing then (--no-cloudflare would
+            # contradict it).
             if cloudflare is True:
                 args.append("--cloudflare")
             elif not secure:
@@ -1490,10 +1487,10 @@ def run(
         # Typer claims --parallel outside ctx.args; without this the
         # child reverts to its default and silently drops the value.
         args.extend(["--parallel", str(parallel)])
-        # Always forward an explicit polarity: a mixed-version studio venv whose old
-        # default was --cloudflare-on must not silently re-enable the tunnel. --secure
-        # implies the tunnel, so forward nothing then and let --secure drive it
-        # (--no-cloudflare would contradict --secure).
+        # Always forward explicit polarity: a mixed-version studio venv whose old
+        # default was --cloudflare-on must not silently re-enable the tunnel.
+        # --secure implies the tunnel, so forward nothing then (--no-cloudflare
+        # would contradict it).
         if cloudflare is True:
             args.append("--cloudflare")
         elif not secure:

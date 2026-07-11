@@ -90,17 +90,16 @@ def _getch_posix() -> str:  # pragma: no cover - needs a real tty
     old_attrs = termios.tcgetattr(fd)
     try:
         with _RestoreTtyOnSignals(fd, old_attrs):
-            # cbreak (not raw): keep output post-processing, disable echo + line
-            # buffering. ISIG stays on in cbreak, so disable it here and surface
-            # Ctrl-C as \x03 to the caller loop, which restores the terminal first.
+            # cbreak (not raw) keeps output post-processing while disabling echo
+            # and line buffering. cbreak leaves ISIG on, so clear it and surface
+            # Ctrl-C as \x03 to the caller loop, which restores the tty first.
             tty.setcbreak(fd, termios.TCSADRAIN)
             new_attrs = termios.tcgetattr(fd)
             new_attrs[3] &= ~termios.ISIG
             termios.tcsetattr(fd, termios.TCSADRAIN, new_attrs)
-            # Byte-at-a-time through an incremental decoder: a multi-byte UTF-8
-            # character must not be dropped when its bytes straddle a read
-            # boundary (a fixed os.read(fd, 4) with errors="ignore" silently
-            # ate characters during fast pastes).
+            # Byte-at-a-time incremental decode so a multi-byte UTF-8 char whose
+            # bytes straddle a read boundary isn't dropped (a fixed os.read(fd, 4)
+            # with errors="ignore" silently ate characters during fast pastes).
             decoder = codecs.getincrementaldecoder(sys.stdin.encoding or "utf-8")("replace")
             while True:
                 b = os.read(fd, 1)

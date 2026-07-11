@@ -878,8 +878,7 @@ _cloudflare_url = None
 _public_reachable = None
 
 _cloudflare_requested = False
-# Cloudflare tunnel is opt-in (off unless --cloudflare / --secure is passed).
-# Tri-state, mirroring the CLI: None = unset/off by default, True = on,
+# Opt-in tri-state (mirrors the CLI): None = off by default, True = on,
 # False = explicit --no-cloudflare. run_server overwrites it before the banner.
 _cloudflare_flag = None
 
@@ -1130,8 +1129,8 @@ def _terminal_password_gate(
     )
 
     _admin = _auth_storage.DEFAULT_ADMIN_USERNAME
-    # This gate can run before uvicorn's lifespan startup, so seed the admin
-    # row ourselves on a fresh install (idempotent; lifespan's own call no-ops).
+    # Gate can run before lifespan startup: seed the admin row here on a fresh
+    # install (idempotent; lifespan's own call then no-ops).
     _auth_storage.ensure_default_admin()
     requires_change = _auth_storage.requires_password_change(_admin)
     if not requires_change:
@@ -1143,10 +1142,9 @@ def _terminal_password_gate(
         stdin_isatty = _stream_isatty(sys.stdin),
         stderr_isatty = _stream_isatty(sys.stderr),
     ):
-        # No terminal. Only proceed if the bootstrap deadline will actually
-        # arm for this launch; promising a shutdown that never comes (api-only
-        # binds never arm it, UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables it)
-        # would leave the default credential public indefinitely.
+        # No terminal: only proceed if the bootstrap deadline will arm here.
+        # api-only binds and UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 never arm it,
+        # which would leave the default credential public indefinitely.
         deadline_arms = should_arm_bootstrap_timeout(
             host = host,
             secure = secure,
@@ -1193,9 +1191,9 @@ def _terminal_password_gate(
         return _auth_hashing.verify_password(candidate, salt, pwd_hash)
 
     def _apply_change(new_password: str) -> None:
-        # Same server-side effects as routes/auth.py change_password: rehash +
-        # rotate the JWT secret (invalidates access tokens) and revoke refresh
-        # tokens in the SAME transaction so no pre-change token survives.
+        # Same effects as routes/auth.py change_password: rehash, rotate the JWT
+        # secret (invalidates access tokens), revoke refresh tokens in the SAME
+        # transaction so no pre-change token survives.
         _auth_storage.update_password(_admin, new_password, revoke_refresh_tokens = True)
 
     changed = prompt_for_password_change(
@@ -1264,12 +1262,11 @@ def run_server(
 
     initialize_parent_lifetime()
 
-    # Cloudflare tunnel is opt-in (tri-state: None = unset = off, True = on,
-    # False = explicit --no-cloudflare). --secure exposes ONLY the Cloudflare link,
-    # so it implies the tunnel: reject the explicit --secure --no-cloudflare
-    # contradiction, then force a loopback bind so the raw port is never public
-    # (even with -H 0.0.0.0). Otherwise keep the tri-state (None stays None) so the
-    # startup banner can tell "off by default" from an explicit --no-cloudflare.
+    # --secure exposes ONLY the Cloudflare link, so it implies the tunnel:
+    # reject the --secure --no-cloudflare contradiction, then force a loopback
+    # bind so the raw port is never public (even with -H 0.0.0.0). Otherwise
+    # keep the tri-state so the banner can tell "off by default" from an
+    # explicit --no-cloudflare.
     if secure:
         if cloudflare is False:
             raise SystemExit(
@@ -1462,13 +1459,10 @@ def run_server(
 
     app.state.trigger_shutdown = _trigger_shutdown
 
-    # Never publish Studio while the seeded default admin password is still
-    # active: ask for a new one in the terminal first (or warn / fail closed
-    # when no terminal is attached; see _terminal_password_gate). Must run
-    # BEFORE the uvicorn socket binds: on a wildcard --cloudflare launch the
-    # served HTML injects the bootstrap credential for first login, so a
-    # pre-gate listener would hand the default password to anyone who can
-    # reach the raw port while the operator is still typing.
+    # Never publish Studio with the seeded default password active: prompt for
+    # a new one first (or warn / fail closed headless; see
+    # _terminal_password_gate). Must run BEFORE the socket binds so a pre-gate
+    # listener can't hand out the bootstrap credential injected in the HTML.
     _pw_proceed, _pw_drop_bootstrap = _terminal_password_gate(
         tunnel_will_start = _cloudflare_tunnel_should_start(
             cloudflare = cloudflare,
@@ -1492,12 +1486,10 @@ def run_server(
         )
         sys.exit(1)
     if _pw_drop_bootstrap:
-        # Either the password just changed here (the captured bootstrap value
-        # is stale) or a public URL is about to serve with the default
-        # credential still active (never inject it into the HTML then).
-        # The lifespan startup runs AFTER this and re-reads the bootstrap
-        # password into app.state, so a plain None here would be overwritten;
-        # the persistent flag makes the lifespan skip that re-read.
+        # Password just changed (stale bootstrap value) or a public URL is
+        # about to serve with the default credential still active: don't leak
+        # it in the HTML. Lifespan runs AFTER this and re-reads the bootstrap
+        # password, so the flag (not a plain None) makes it skip that re-read.
         app.state.suppress_bootstrap_injection = True
         app.state.bootstrap_password = None
 
