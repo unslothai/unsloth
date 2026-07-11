@@ -594,6 +594,24 @@ html.force-reduced-motion *::after {
 	scroll-behavior: auto !important;
 }
 
+/* Same loader exceptions as the OS-level media block below: freezing
+   spinners removes the only signal that work is in flight. */
+html.force-reduced-motion .animate-spin {
+	animation-duration: 1.5s !important;
+	animation-iteration-count: infinite !important;
+}
+html.force-reduced-motion .generated-image-loading-dot {
+	animation-duration: 1850ms !important;
+	animation-iteration-count: infinite !important;
+}
+html.force-reduced-motion .loading-bar-slide {
+	animation-duration: 1.3s !important;
+	animation-iteration-count: infinite !important;
+}
+html.force-reduced-motion .unsloth-composer-plus svg {
+	transition-duration: 250ms !important;
+}
+
 /* Font smoothing toggle: back to the browser's subpixel default. */
 html.no-font-smoothing body {
 	-webkit-font-smoothing: auto;
@@ -1778,7 +1796,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.chat-artifact-pop-surface {
+		html:not(.force-motion) .chat-artifact-pop-surface {
 			transition: none;
 			transform: none;
 		}
@@ -2467,33 +2485,35 @@ html[data-chat-font] .aui-root {
  * so they keep animating.
  */
 @media (prefers-reduced-motion: reduce) {
-	*,
-	*::before,
-	*::after {
+	/* html.force-motion (Reduce motion set to Off) opts back out of the
+	   OS preference, so these rules only apply without it. */
+	html:not(.force-motion) *,
+	html:not(.force-motion) *::before,
+	html:not(.force-motion) *::after {
 		animation-duration: 0.01ms !important;
 		animation-iteration-count: 1 !important;
 		transition-duration: 0.01ms !important;
 		scroll-behavior: auto !important;
 	}
 
-	.animate-spin {
+	html:not(.force-motion) .animate-spin {
 		animation-duration: 1.5s !important;
 		animation-iteration-count: infinite !important;
 	}
 
-	.generated-image-loading-dot {
+	html:not(.force-motion) .generated-image-loading-dot {
 		animation-duration: 1850ms !important;
 		animation-iteration-count: infinite !important;
 	}
 
-	.loading-bar-slide {
+	html:not(.force-motion) .loading-bar-slide {
 		animation-duration: 1.3s !important;
 		animation-iteration-count: infinite !important;
 	}
 
 	/* Keep the plus/x morph animating under reduced motion (small rotation,
 	   like the spinners above). */
-	.unsloth-composer-plus svg {
+	html:not(.force-motion) .unsloth-composer-plus svg {
 		transition-duration: 250ms !important;
 	}
 }

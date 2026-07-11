@@ -111,6 +111,41 @@ def test_customization_imported_fonts_validated():
         )
 
 
+def _imported(fonts):
+    return {"appearance": {"customization": {"importedFonts": fonts}}}
+
+
+def test_imported_font_name_rejects_css_characters():
+    for bad in ['Ev"il', "Ev;il", "Ev{il", "Ev<il", "Ev'il"]:
+        with pytest.raises(ValidationError):
+            PersonalizationPayload.model_validate(
+                _imported([{"name": bad, "dataUrl": "data:font/woff2;base64,AAAA"}])
+            )
+
+
+def test_imported_font_data_url_must_be_base64():
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            _imported([{"name": "F", "dataUrl": "data:font/woff2;base64,?not base64?"}])
+        )
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            _imported([{"name": "F", "dataUrl": "data:application/json;base64,AAAA"}])
+        )
+
+
+def test_imported_fonts_total_size_capped():
+    big = "data:font/woff2;base64," + "A" * 1_600_000
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            _imported([{"name": f"F{i}", "dataUrl": big} for i in range(3)])
+        )
+    # Two fit under the aggregate cap.
+    PersonalizationPayload.model_validate(
+        _imported([{"name": f"F{i}", "dataUrl": big} for i in range(2)])
+    )
+
+
 def test_avatar_must_be_image_data_url():
     with pytest.raises(ValidationError):
         PersonalizationPayload.model_validate(

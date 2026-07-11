@@ -324,6 +324,7 @@ export const en = {
             "Unsupported file type. Use .woff2, .woff, .ttf, or .otf.",
           errorTooLarge: "Font file is too large (max 1.5 MB).",
           errorLimit: "You can import up to 3 fonts.",
+          errorStorageFull: "Not enough local storage for this font. Remove an imported font first.",
           errorFailed: "Could not load this font file.",
         },
         uiFontSize: {

@@ -23,6 +23,12 @@ export type ImportedFont = {
 export const MAX_IMPORTED_FONTS = 3;
 /** ~1.5 MB file → ~2 MB base64; must stay in sync with the backend cap. */
 export const MAX_IMPORTED_FONT_DATA_URL_LENGTH = 2_200_000;
+/**
+ * Aggregate cap across all imported fonts. localStorage quotas are commonly
+ * ~5M UTF-16 units per origin; staying under that keeps the persisted store
+ * writable even with other keys present.
+ */
+export const MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH = 4_400_000;
 
 export type AppearanceCustomization = {
   colors: { light: CustomModeColors; dark: CustomModeColors };
@@ -116,6 +122,7 @@ function sanitizeImportedFonts(value: unknown): ImportedFont[] {
   if (!Array.isArray(value)) return [];
   const fonts: ImportedFont[] = [];
   const seen = new Set<string>();
+  let total = 0;
   for (const entry of value) {
     if (fonts.length >= MAX_IMPORTED_FONTS) break;
     const source = (entry ?? {}) as Partial<ImportedFont>;
@@ -125,11 +132,13 @@ function sanitizeImportedFonts(value: unknown): ImportedFont[] {
     if (
       typeof dataUrl !== "string" ||
       dataUrl.length > MAX_IMPORTED_FONT_DATA_URL_LENGTH ||
+      total + dataUrl.length > MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH ||
       !FONT_DATA_URL_PATTERN.test(dataUrl)
     ) {
       continue;
     }
     seen.add(name);
+    total += dataUrl.length;
     fonts.push({ name, dataUrl });
   }
   return fonts;
@@ -414,5 +423,8 @@ export function applyCustomizationToDocument(
 
   el.classList.toggle("pointer-cursors", c.pointerCursors);
   el.classList.toggle("force-reduced-motion", c.reduceMotion === "on");
+  // "off" opts out of the OS reduced-motion preference for CSS animations;
+  // the media rules in index.css skip html.force-motion.
+  el.classList.toggle("force-motion", c.reduceMotion === "off");
   el.classList.toggle("no-font-smoothing", !c.fontSmoothing);
 }

@@ -31,6 +31,7 @@ import {
   type CustomModeColors,
   DEFAULT_CUSTOMIZATION,
   MAX_IMPORTED_FONTS,
+  MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH,
   type ReduceMotionSetting,
   UI_FONT_SIZE_RANGE,
   isDefaultCustomization,
@@ -472,6 +473,20 @@ export function ImportFontControls() {
       // type so the stored data URL passes frontend and backend validation.
       const base64 = result.slice(result.indexOf(",") + 1);
       const dataUrl = `data:${mime};base64,${base64}`;
+      // Keep the persisted store under the localStorage quota.
+      const existingTotal = importedFonts.reduce(
+        (sum, f) => sum + f.dataUrl.length,
+        0,
+      );
+      if (
+        existingTotal + dataUrl.length >
+        MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH
+      ) {
+        toast.error(
+          t("settings.appearance.custom.importFont.errorStorageFull"),
+        );
+        return;
+      }
       const taken = new Set<string>([
         ...BUNDLED_FONTS,
         ...importedFonts.map((f) => f.name),

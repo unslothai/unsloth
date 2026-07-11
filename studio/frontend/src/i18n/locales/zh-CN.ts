@@ -253,6 +253,7 @@ export const zhCN = {
             "不支持的文件类型。请使用 .woff2、.woff、.ttf 或 .otf。",
           errorTooLarge: "字体文件过大（最大 1.5 MB）。",
           errorLimit: "最多可导入 3 个字体。",
+          errorStorageFull: "本地存储空间不足。请先删除一个已导入的字体。",
           errorFailed: "无法加载此字体文件。",
         },
         uiFontSize: {

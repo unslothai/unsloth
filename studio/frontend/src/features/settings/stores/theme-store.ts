@@ -115,6 +115,17 @@ function getServerSnapshot(): Theme {
   return "system";
 }
 
+// Snapshot the RESOLVED mode too: under "system" the theme string never
+// changes when the OS scheme flips, so consumers keyed on `resolved`
+// (customization applier, mode-scoped settings) would not re-render.
+function getResolvedSnapshot(): ResolvedTheme {
+  return resolveTheme(readStoredTheme());
+}
+
+function getResolvedServerSnapshot(): ResolvedTheme {
+  return "light";
+}
+
 /**
  * Single source of truth for setting the theme. All writers (Settings dialog
  * control, sidebar dropdown toggler) route through this so the DOM class,
@@ -139,7 +150,11 @@ export function useTheme(): {
   setTheme: (next: Theme) => void;
 } {
   const theme = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
-  const resolved = resolveTheme(theme);
+  const resolved = useSyncExternalStore(
+    subscribe,
+    getResolvedSnapshot,
+    getResolvedServerSnapshot,
+  );
   return { theme, resolved, setTheme };
 }
 

@@ -277,6 +277,7 @@ export const ptBR = {
             "Tipo de arquivo não suportado. Use .woff2, .woff, .ttf ou .otf.",
           errorTooLarge: "O arquivo de fonte é muito grande (máx. 1,5 MB).",
           errorLimit: "Você pode importar até 3 fontes.",
+          errorStorageFull: "Sem espaço de armazenamento local para esta fonte. Remova uma fonte importada primeiro.",
           errorFailed: "Não foi possível carregar este arquivo de fonte.",
         },
         uiFontSize: {

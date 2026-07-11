@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import re
 from typing import Literal, Optional
 from urllib.parse import unquote, urlsplit
 
@@ -581,6 +582,19 @@ MAX_IMPORTED_FONTS = 3
 # ~1.5 MB font file as base64; matches MAX_IMPORTED_FONT_DATA_URL_LENGTH in
 # the frontend appearance-custom-store.
 MAX_FONT_DATA_URL_LENGTH = 2_200_000
+# Aggregate cap across all imported fonts; matches
+# MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH in the frontend so a synced payload
+# always fits the browser's localStorage quota.
+MAX_TOTAL_FONT_DATA_URL_LENGTH = 4_400_000
+
+# Characters that could terminate a CSS declaration or smuggle extra CSS if a
+# stored name ever reached a stylesheet; matches the frontend sanitizer.
+_FONT_NAME_FORBIDDEN = set(";{}()<>\"'")
+# Matches FONT_DATA_URL_PATTERN in the frontend appearance-custom-store.
+_FONT_DATA_URL_PATTERN = re.compile(
+    r"^data:(?:font/(?:woff2?|ttf|otf|sfnt)"
+    r"|application/(?:octet-stream|x-font-\w+|font-\w+));base64,[A-Za-z0-9+/=]+$"
+)
 
 
 class PersonalizationImportedFont(BaseModel):
@@ -589,11 +603,18 @@ class PersonalizationImportedFont(BaseModel):
     name: str = Field(..., min_length = 1, max_length = 100)
     dataUrl: str = Field(..., max_length = MAX_FONT_DATA_URL_LENGTH)
 
+    @field_validator("name")
+    @classmethod
+    def _validate_font_name(cls, value: str) -> str:
+        if any(c in _FONT_NAME_FORBIDDEN for c in value):
+            raise ValueError("Font name contains invalid characters.")
+        return value
+
     @field_validator("dataUrl")
     @classmethod
     def _validate_font_data_url(cls, value: str) -> str:
-        if not (value.startswith("data:font/") or value.startswith("data:application/")):
-            raise ValueError("dataUrl must be a font data URL.")
+        if not _FONT_DATA_URL_PATTERN.match(value):
+            raise ValueError("dataUrl must be a base64 font data URL.")
         return value
 
 
@@ -608,6 +629,15 @@ class PersonalizationCustomization(BaseModel):
     importedFonts: list[PersonalizationImportedFont] = Field(
         default_factory = list, max_length = MAX_IMPORTED_FONTS
     )
+
+    @field_validator("importedFonts")
+    @classmethod
+    def _validate_total_font_size(
+        cls, value: list[PersonalizationImportedFont]
+    ) -> list[PersonalizationImportedFont]:
+        if sum(len(f.dataUrl) for f in value) > MAX_TOTAL_FONT_DATA_URL_LENGTH:
+            raise ValueError("Imported fonts exceed the total size limit.")
+        return value
     uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
     codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
     contrast: int = Field(50, ge = 0, le = 100)

@@ -277,6 +277,7 @@ export const ja = {
             "サポートされていないファイル形式です。.woff2、.woff、.ttf、.otf を使用してください。",
           errorTooLarge: "フォントファイルが大きすぎます（最大 1.5 MB）。",
           errorLimit: "インポートできるフォントは最大 3 つです。",
+          errorStorageFull: "ローカルストレージの空き容量が足りません。先にインポート済みフォントを削除してください。",
           errorFailed: "このフォントファイルを読み込めませんでした。",
         },
         uiFontSize: {
