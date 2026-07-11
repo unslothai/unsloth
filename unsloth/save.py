@@ -2686,9 +2686,7 @@ def _sentence_transformer_transformer_dir(save_directory, transformer_path):
     save_root = os.path.realpath(os.path.abspath(os.fspath(save_directory)))
     if transformer_path is None or os.path.isabs(transformer_path):
         raise ValueError("Unsloth: Invalid SentenceTransformer Transformer module path.")
-    transformer_dir = os.path.realpath(
-        os.path.abspath(os.path.join(save_root, transformer_path))
-    )
+    transformer_dir = os.path.realpath(os.path.abspath(os.path.join(save_root, transformer_path)))
     try:
         inside_save_root = os.path.normcase(
             os.path.commonpath([save_root, transformer_dir])

@@ -346,9 +346,7 @@ def test_sentence_transformer_gguf_module_path_rejects_symlink_escape(tmp_path):
         resolve(save_root, "0_Transformer")
 
 
-def test_sentence_transformer_gguf_recursion_forwards_imatrix_and_root_path(
-    tmp_path,
-):
+def test_sentence_transformer_gguf_recursion_forwards_imatrix_and_root_path(tmp_path):
     source_tree = ast.parse(_SAVE_PATH.read_text(encoding = "utf-8"))
     resolver = next(
         node
@@ -418,7 +416,8 @@ def test_sentence_transformer_gguf_recursion_forwards_non_default_save_contract(
         node
         for node in source_tree.body
         if isinstance(node, ast.FunctionDef)
-        and node.name in {
+        and node.name
+        in {
             "_sentence_transformer_transformer_dir",
             "_gguf_source_directory",
             "unsloth_save_pretrained_gguf",
@@ -539,17 +538,18 @@ def test_sentence_transformer_gguf_non_main_process_does_not_write_or_recurse(tm
         def __getitem__(self, _index):
             raise AssertionError("non-main process must not enter recursive GGUF export")
 
-    assert outer_exporter(
-        SentenceTransformer(),
-        save_directory = tmp_path / "saved",
-        is_main_process = False,
-    ) is None
+    assert (
+        outer_exporter(
+            SentenceTransformer(),
+            save_directory = tmp_path / "saved",
+            is_main_process = False,
+        )
+        is None
+    )
     assert not (tmp_path / "saved").exists()
 
 
-def test_sentence_transformer_gguf_requested_upload_failure_preserves_local_artifact(
-    tmp_path,
-):
+def test_sentence_transformer_gguf_requested_upload_failure_preserves_local_artifact(tmp_path):
     function = _source_node("_save_pretrained_gguf", ast.FunctionDef)
     local_gguf = tmp_path / "model.Q8_0.gguf"
     upload_error = ConnectionError("hub unavailable sentinel")
@@ -583,7 +583,9 @@ def test_sentence_transformer_gguf_requested_upload_failure_preserves_local_arti
         "shutil": shutil,
         "unsloth_save_pretrained_gguf": local_export,
     }
-    exec(compile(ast.Module(body = [function], type_ignores = []), str(_SOURCE_PATH), "exec"), namespace)
+    exec(
+        compile(ast.Module(body = [function], type_ignores = []), str(_SOURCE_PATH), "exec"), namespace
+    )
 
     class Model:
         tokenizer = object()
