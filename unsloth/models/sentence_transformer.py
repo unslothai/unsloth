@@ -4438,6 +4438,7 @@ class FastSentenceTransformer(FastModel):
             )
             st_model = SentenceTransformer(
                 _model_load_name,
+                cache_folder = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
                 **_st_extra_kwargs,
             )
 
