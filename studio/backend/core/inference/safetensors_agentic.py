@@ -1070,13 +1070,10 @@ def run_safetensors_tool_loop(
             # "auto" mode only calls detected as potentially unsafe pause.
             # "off" never prompts (sandbox stays on).
             needs_confirm = (
-                bool(confirm_tool_calls)
-                and not bypass_permissions
-                and permission_mode != "off"
+                bool(confirm_tool_calls) and not bypass_permissions and permission_mode != "off"
             )
             if needs_confirm and permission_mode == "auto":
                 from core.inference.tools import is_potentially_unsafe_tool_call
-
                 needs_confirm = is_potentially_unsafe_tool_call(
                     decision.tool_name, decision.arguments
                 )
