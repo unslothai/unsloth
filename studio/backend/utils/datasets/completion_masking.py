@@ -68,13 +68,11 @@ def apply_completion_masking(
 
     template, instruction_part, response_part = lookup_manual_markers(model_name)
 
-    # gpt-oss goes auto-first too: the quantized/BF16 checkpoints ship a chat
-    # template without the <|channel|>final header, so the manual markers match
-    # nothing there (zero tokens trained). Auto derives markers from whichever
-    # template the checkpoint actually ships; the final <|return|>/<|end|> stays
-    # trained either way, and per the harmony format only the final terminator
-    # carries stop supervision. Renamed gpt-oss checkpoints miss the exact-name
-    # table, so give the fallback the gpt-oss template markers.
+    # gpt-oss goes auto-first: quantized/BF16 checkpoints ship a channel-less
+    # template, so the manual markers match nothing (zero tokens trained). Auto
+    # derives markers from whichever template ships, and per the harmony format
+    # only the final terminator carries stop supervision. Renamed checkpoints
+    # miss the exact-name table, so give the fallback the gpt-oss markers.
     if is_gpt_oss_model_name(model_name) and not (instruction_part and response_part):
         markers = TEMPLATE_TO_RESPONSES_MAPPER.get("gpt-oss")
         if markers:
