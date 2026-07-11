@@ -103,6 +103,71 @@ export const en = {
     voice: {
       title: "Voice",
       description: "Microphone, dictation, and read-aloud",
+      dictation: {
+        sectionTitle: "Dictation",
+        microphoneLabel: "Microphone",
+        microphoneDescription: "Used for dictation",
+        microphoneFallbackHint:
+          "Used for dictation. Falls back to the system default if the browser speech engine cannot use this device",
+        microphoneGrantDescription: "Allow mic access to show device names",
+        allowMicrophone: "Allow microphone",
+        micAccessBlocked:
+          "Microphone access was blocked. Allow microphone access for this Unsloth page, then try again.",
+        micAccessUnsupported:
+          "Microphone access is not supported in this browser or context.",
+        micOpenFailed:
+          "Could not open the selected microphone. Check permissions or pick another device.",
+        systemDefault: "System default",
+        savedMicDisconnected: "Saved microphone (not connected)",
+        languageLabel: "Dictation language",
+        languageDescription: "Language to recognize",
+        languageAuto: "Auto (browser language)",
+        testLabel: "Test dictation",
+        testDescription: "Speak to check your mic and settings",
+        startTest: "Start test",
+        stopTest: "Stop test",
+        listening: "Listening…",
+        testSaved: "Saved to recent dictations",
+        notSupported: "Not supported in this browser",
+      },
+      dictionary: {
+        sectionTitle: "Dictation dictionary",
+        sectionDescription: "Words or phrases dictation should recognize",
+        addEntry: "Add entry",
+      },
+      recents: {
+        sectionTitle: "Recent dictations",
+        sectionDescription:
+          "Your recent dictations will appear here so you can recover text",
+        empty: "No dictations yet",
+        copied: "Copied to clipboard",
+        copyFailed: "Could not copy to clipboard",
+        clear: "Clear recent dictations",
+      },
+      readAloud: {
+        sectionTitle: "Read aloud",
+        buttonLabel: "Read aloud button",
+        buttonDescription: "Show on assistant responses",
+        engineLabel: "TTS engine",
+        engineSystemDescription: "Built-in device voices",
+        engineStudioDescription: "Uses the loaded audio model (e.g. Orpheus)",
+        engineSystem: "System voices",
+        engineStudio: "Load TTS model",
+        modelLabel: "TTS model",
+        modelDescription:
+          "Load an audio model from the model selector (e.g. Orpheus TTS)",
+        voiceLabel: "Voice",
+        voiceDescription: "Best voices on this device",
+        speedLabel: "Speed",
+        pitchLabel: "Pitch",
+        volumeLabel: "Volume",
+        previewLabel: "Preview voice",
+        previewDescription: "Play a short sample",
+        previewAction: "Preview",
+        stopAction: "Stop",
+        ttsLabel: "Text to speech",
+        notSupported: "Not supported in this browser",
+      },
     },
     general: {
       title: "General",
@@ -448,7 +513,8 @@ export const en = {
       codingAgents: "Coding agents",
       codingAgentsHint:
         "Launch a coding agent against this server. It uses the loaded model; a local server mints an API key automatically, a remote one includes it in the command.",
-      codingAgentsSwap: "Swap claude for codex, openclaw, opencode, hermes, or pi.",
+      codingAgentsSwap:
+        "Swap claude for codex, openclaw, opencode, hermes, or pi.",
       codingAgentDetected: "Installed on this machine",
       codingAgentsDetectedHint: "Detected on this machine: {agents}.",
       relativeNever: "never",

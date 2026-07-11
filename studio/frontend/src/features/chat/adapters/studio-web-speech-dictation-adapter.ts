@@ -10,13 +10,24 @@ import {
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 
-const getSpeechRecognitionAPI = (): SpeechRecognitionConstructor | undefined => {
+const getSpeechRecognitionAPI = ():
+  | SpeechRecognitionConstructor
+  | undefined => {
   if (typeof window === "undefined") return undefined;
   return window.SpeechRecognition ?? window.webkitSpeechRecognition;
 };
 
 const stopStream = (stream: MediaStream | null) => {
   stream?.getTracks().forEach((track) => track.stop());
+};
+
+/** True for getUserMedia errors meaning the requested device is gone. */
+export const isMissingDeviceError = (error: unknown): boolean => {
+  const name =
+    error && typeof error === "object" && "name" in error
+      ? (error as { name?: unknown }).name
+      : undefined;
+  return name === "OverconstrainedError" || name === "NotFoundError";
 };
 
 const describeMediaError = (error: unknown): string => {
@@ -90,8 +101,12 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
     recognition.interimResults = this.interimResults;
 
     const speechStartCallbacks = new Set<() => void>();
-    const speechEndCallbacks = new Set<(result: DictationAdapter.Result) => void>();
-    const speechCallbacks = new Set<(result: DictationAdapter.Result) => void>();
+    const speechEndCallbacks = new Set<
+      (result: DictationAdapter.Result) => void
+    >();
+    const speechCallbacks = new Set<
+      (result: DictationAdapter.Result) => void
+    >();
 
     let stream: MediaStream | null = null;
     let finalTranscript = "";
@@ -172,7 +187,11 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
 
     recognition.addEventListener("result", (event) => {
       const speechEvent = event as SpeechRecognitionEvent;
-      for (let i = speechEvent.resultIndex; i < speechEvent.results.length; i++) {
+      for (
+        let i = speechEvent.resultIndex;
+        i < speechEvent.results.length;
+        i++
+      ) {
         const result = speechEvent.results[i];
         if (!result) continue;
         const transcript = result[0]?.transcript ?? "";
@@ -200,7 +219,10 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         finish("cancelled");
         return;
       }
-      const description = describeSpeechError(errorEvent.error, errorEvent.message);
+      const description = describeSpeechError(
+        errorEvent.error,
+        errorEvent.message,
+      );
       console.error("Dictation error:", errorEvent.error, errorEvent.message);
       toast.error(description);
       finish("error");
@@ -222,12 +244,9 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
           });
         } catch (error) {
           // Saved mic may be unplugged; fall back to the default device.
-          if (
-            micDeviceId !== "default" &&
-            error instanceof DOMException &&
-            (error.name === "OverconstrainedError" ||
-              error.name === "NotFoundError")
-          ) {
+          // Firefox and WebKit throw OverconstrainedError objects that are
+          // not DOMException instances, so match on the error name.
+          if (micDeviceId !== "default" && isMissingDeviceError(error)) {
             stream = await navigator.mediaDevices.getUserMedia({
               audio: baseAudio,
             });
@@ -242,13 +261,19 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         }
         const audioTrack = stream.getAudioTracks()[0];
         if (!audioTrack || audioTrack.readyState !== "live") {
-          throw new DOMException("No live microphone track is available.", "NotFoundError");
+          throw new DOMException(
+            "No live microphone track is available.",
+            "NotFoundError",
+          );
         }
         try {
           recognition.start(audioTrack);
         } catch (error) {
           // Older engines expose only start(); retry without the experimental track overload.
-          console.debug("Dictation start(audioTrack) failed; retrying start().", error);
+          console.debug(
+            "Dictation start(audioTrack) failed; retrying start().",
+            error,
+          );
           recognition.start();
         }
         started = true;

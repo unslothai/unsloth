@@ -29,6 +29,8 @@ export interface VoiceSettingsState {
   dictionary: string[];
   addDictionaryEntry: (value: string) => void;
   updateDictionaryEntry: (index: number, value: string) => void;
+  /** Trim the entry; drop it when it was left empty. Call on input blur. */
+  commitDictionaryEntry: (index: number) => void;
   removeDictionaryEntry: (index: number) => void;
 
   /** Final transcripts, newest first, so text can be recovered. */
@@ -80,11 +82,20 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           }
           return { dictionary: [...state.dictionary, trimmed] };
         }),
+      // Keeps the raw value (including spaces and empties) so the input can
+      // be edited freely; commitDictionaryEntry finalizes on blur.
       updateDictionaryEntry: (index, value) =>
         set((state) => {
-          const trimmed = value.trim().slice(0, MAX_DICTIONARY_ENTRY_LENGTH);
           const dictionary = [...state.dictionary];
           if (index < 0 || index >= dictionary.length) return state;
+          dictionary[index] = value.slice(0, MAX_DICTIONARY_ENTRY_LENGTH);
+          return { dictionary };
+        }),
+      commitDictionaryEntry: (index) =>
+        set((state) => {
+          const dictionary = [...state.dictionary];
+          if (index < 0 || index >= dictionary.length) return state;
+          const trimmed = dictionary[index]?.trim() ?? "";
           if (trimmed) {
             dictionary[index] = trimmed;
           } else {

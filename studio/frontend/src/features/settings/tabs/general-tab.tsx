@@ -30,6 +30,14 @@ import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Check, Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
+  EmbeddingModelBlockedError,
+  type EmbeddingModelSettings,
+  EmbeddingModelVerificationError,
+  loadEmbeddingModelSettings,
+  resetEmbeddingModelSettings,
+  updateEmbeddingModelSettings,
+} from "../api/embedding-model";
+import {
   type HelperPrecacheSettings,
   loadHelperPrecacheSettings,
   updateHelperPrecacheSettings,
@@ -41,14 +49,6 @@ import {
   rotatePreviewLinks,
   updatePreviewSharing,
 } from "../api/preview-sharing";
-import {
-  EmbeddingModelBlockedError,
-  type EmbeddingModelSettings,
-  EmbeddingModelVerificationError,
-  loadEmbeddingModelSettings,
-  resetEmbeddingModelSettings,
-  updateEmbeddingModelSettings,
-} from "../api/embedding-model";
 import {
   DEFAULT_UPLOAD_LIMIT_MB,
   type UploadLimitSettings,
@@ -107,6 +107,8 @@ const PREFS_KEYS: string[] = [
   // Update notifications
   "unsloth_show_llama_update_banner",
   "unsloth_monitor_overlay",
+  // Voice settings
+  "unsloth_voice_settings",
 ];
 
 // Set by resetAllPrefs so the unmount-commit effect skips writing back the
@@ -664,9 +666,7 @@ export function GeneralTab() {
                 }
                 onClick={() => void saveEmbeddingModel(false)}
               >
-                {isSavingEmbeddingModel
-                  ? t("common.saving")
-                  : t("common.save")}
+                {isSavingEmbeddingModel ? t("common.saving") : t("common.save")}
               </Button>
             </div>
             {embeddingModelError ? (

@@ -185,6 +185,16 @@ function speakWithStudioModel(
   let audio: HTMLAudioElement | null = null;
   let cancelled = false;
 
+  // Release the element and its multi-MB WAV data URL as soon as playback
+  // ends; the utterance object may stay referenced for a while.
+  const cleanup = () => {
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio = null;
+    }
+  };
+
   void (async () => {
     try {
       const url = await generateStudioTtsAudio(text, controller.signal);
@@ -192,14 +202,20 @@ function speakWithStudioModel(
       audio = new Audio(url);
       audio.playbackRate = ttsRate;
       audio.volume = ttsVolume;
-      audio.addEventListener("ended", () => handleEnd("finished"));
-      audio.addEventListener("error", () =>
-        handleEnd("error", new Error("Audio playback failed.")),
-      );
+      audio.addEventListener("ended", () => {
+        cleanup();
+        handleEnd("finished");
+      });
+      audio.addEventListener("error", () => {
+        if (cancelled) return;
+        cleanup();
+        handleEnd("error", new Error("Audio playback failed."));
+      });
       markRunning();
       await audio.play();
     } catch (error) {
       if (cancelled || controller.signal.aborted) return;
+      cleanup();
       handleEnd("error", error);
     }
   })();
@@ -208,10 +224,7 @@ function speakWithStudioModel(
     cancel: () => {
       cancelled = true;
       controller.abort();
-      if (audio) {
-        audio.pause();
-        audio.src = "";
-      }
+      cleanup();
       handleEnd("cancelled");
     },
   };

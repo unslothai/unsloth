@@ -18,7 +18,10 @@ import {
   curateSystemVoices,
   generateStudioTtsAudio,
 } from "@/features/chat/adapters/studio-speech-synthesis-adapter";
-import { StudioWebSpeechDictationAdapter } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import {
+  StudioWebSpeechDictationAdapter,
+  isMissingDeviceError,
+} from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import {
@@ -42,7 +45,7 @@ import {
 
 // Languages offered for browser speech recognition.
 const DICTATION_LANGUAGES: { value: string; label: string }[] = [
-  { value: "auto", label: "Auto (browser language)" },
+  { value: "auto", label: "" }, // label rendered via i18n
   { value: "en-US", label: "English (US)" },
   { value: "en-GB", label: "English (UK)" },
   { value: "zh-CN", label: "中文 (简体)" },
@@ -62,6 +65,7 @@ const TTS_PREVIEW_TEXT =
   "Hello from Unsloth Studio! This is a preview of the selected voice.";
 
 function useAudioInputDevices() {
+  const t = useT();
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [hasLabels, setHasLabels] = useState(false);
 
@@ -87,6 +91,11 @@ function useAudioInputDevices() {
 
   // Labels are hidden until mic permission; open a short stream to get them.
   const requestAccess = useCallback(async () => {
+    // Insecure contexts (plain http on a LAN address) have no mediaDevices.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast.error(t("settings.voice.dictation.micAccessUnsupported"));
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -94,11 +103,9 @@ function useAudioInputDevices() {
       stream.getTracks().forEach((track) => track.stop());
       await refresh();
     } catch {
-      toast.error(
-        "Microphone access was blocked. Allow microphone access for this Unsloth page, then try again.",
-      );
+      toast.error(t("settings.voice.dictation.micAccessBlocked"));
     }
-  }, [refresh]);
+  }, [refresh, t]);
 
   return { devices, hasLabels, requestAccess };
 }
@@ -120,22 +127,48 @@ function useSystemVoices() {
 
 /** Inline mic test: runs speech recognition and shows the live transcript. */
 function DictationTest() {
+  const t = useT();
   const [testing, setTesting] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [interim, setInterim] = useState("");
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // Mirrors the transcript state so onend can record it without stale closures.
+  const transcriptRef = useRef("");
 
-  const stop = useCallback(() => {
-    recognitionRef.current?.stop();
-    recognitionRef.current = null;
+  // Single cleanup path: the browser can end recognition on its own (silence
+  // timeout, service disconnect), so onend must release the mic and save the
+  // transcript, not just the Stop button.
+  const finalize = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+    recognitionRef.current = null;
+    if (transcriptRef.current) {
+      recordRecentDictation(transcriptRef.current);
+      transcriptRef.current = "";
+    }
     setTesting(false);
     setInterim("");
   }, []);
 
-  useEffect(() => stop, [stop]);
+  const stop = useCallback(() => {
+    const recognition = recognitionRef.current;
+    if (recognition) {
+      // onend fires next and runs finalize()
+      recognition.stop();
+    } else {
+      finalize();
+    }
+  }, [finalize]);
+
+  useEffect(
+    () => () => {
+      recognitionRef.current?.abort();
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    },
+    [],
+  );
 
   const start = useCallback(async () => {
     const SpeechRecognitionAPI =
@@ -143,6 +176,7 @@ function DictationTest() {
     if (!SpeechRecognitionAPI) return;
     setTranscript("");
     setInterim("");
+    transcriptRef.current = "";
 
     const { micDeviceId } = useVoiceSettingsStore.getState();
     let audioTrack: MediaStreamTrack | undefined;
@@ -157,12 +191,7 @@ function DictationTest() {
         });
       } catch (error) {
         // Saved mic may be unplugged; fall back to the default device.
-        if (
-          micDeviceId !== "default" &&
-          error instanceof DOMException &&
-          (error.name === "OverconstrainedError" ||
-            error.name === "NotFoundError")
-        ) {
+        if (micDeviceId !== "default" && isMissingDeviceError(error)) {
           stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         } else {
           throw error;
@@ -171,9 +200,7 @@ function DictationTest() {
       streamRef.current = stream;
       audioTrack = stream.getAudioTracks()[0];
     } catch {
-      toast.error(
-        "Could not open the selected microphone. Check permissions or pick another device.",
-      );
+      toast.error(t("settings.voice.dictation.micOpenFailed"));
       return;
     }
 
@@ -188,18 +215,21 @@ function DictationTest() {
         const text = result?.[0]?.transcript ?? "";
         if (result?.isFinal) {
           const corrected = applyDictationDictionary(text.trim());
-          setTranscript((prev) => (prev ? `${prev} ${corrected}` : corrected));
+          setTranscript((prev) => {
+            const next = prev ? `${prev} ${corrected}` : corrected;
+            transcriptRef.current = next;
+            return next;
+          });
         } else {
           interimText += text;
         }
       }
       setInterim(interimText);
     };
-    recognition.onerror = () => stop();
-    recognition.onend = () => {
-      setTesting(false);
-      setInterim("");
+    recognition.onerror = () => {
+      // an end event follows and finalize() runs there
     };
+    recognition.onend = () => finalize();
     try {
       if (audioTrack) {
         try {
@@ -211,27 +241,26 @@ function DictationTest() {
         recognition.start();
       }
     } catch {
-      stop();
+      finalize();
       return;
     }
     recognitionRef.current = recognition;
     setTesting(true);
-  }, [stop]);
+  }, [finalize, t]);
 
   const finishedTest = !testing && transcript;
 
   return (
     <div className="flex flex-col gap-2">
       <SettingsRow
-        label="Test dictation"
-        description="Speak to check your mic and settings"
+        label={t("settings.voice.dictation.testLabel")}
+        description={t("settings.voice.dictation.testDescription")}
       >
         <Button
           variant="outline"
           size="sm"
           onClick={() => {
             if (testing) {
-              if (transcript) recordRecentDictation(transcript);
               stop();
             } else {
               void start();
@@ -241,12 +270,12 @@ function DictationTest() {
           {testing ? (
             <>
               <SquareIcon className="mr-1.5 size-3 animate-pulse fill-current text-destructive" />
-              Stop test
+              {t("settings.voice.dictation.stopTest")}
             </>
           ) : (
             <>
               <HugeiconsIcon icon={Mic02Icon} className="mr-1.5 size-3.5" />
-              Start test
+              {t("settings.voice.dictation.startTest")}
             </>
           )}
         </Button>
@@ -262,12 +291,12 @@ function DictationTest() {
             </>
           ) : (
             <span className="text-muted-foreground">
-              {testing ? "Listening…" : ""}
+              {testing ? t("settings.voice.dictation.listening") : ""}
             </span>
           )}
           {finishedTest ? (
             <div className="mt-1 text-xs text-muted-foreground">
-              Saved to recent dictations
+              {t("settings.voice.dictation.testSaved")}
             </div>
           ) : null}
         </div>
@@ -288,6 +317,9 @@ export function VoiceTab() {
   const addDictionaryEntry = useVoiceSettingsStore((s) => s.addDictionaryEntry);
   const updateDictionaryEntry = useVoiceSettingsStore(
     (s) => s.updateDictionaryEntry,
+  );
+  const commitDictionaryEntry = useVoiceSettingsStore(
+    (s) => s.commitDictionaryEntry,
   );
   const removeDictionaryEntry = useVoiceSettingsStore(
     (s) => s.removeDictionaryEntry,
@@ -402,13 +434,15 @@ export function VoiceTab() {
         </p>
       </header>
 
-      <SettingsSection title="Dictation">
+      <SettingsSection title={t("settings.voice.dictation.sectionTitle")}>
         <SettingsRow
-          label="Microphone"
+          label={t("settings.voice.dictation.microphoneLabel")}
           description={
             hasLabels
-              ? "Used for dictation"
-              : "Allow mic access to show device names"
+              ? micDeviceId !== "default"
+                ? t("settings.voice.dictation.microphoneFallbackHint")
+                : t("settings.voice.dictation.microphoneDescription")
+              : t("settings.voice.dictation.microphoneGrantDescription")
           }
         >
           {hasLabels || devices.length > 0 ? (
@@ -417,7 +451,9 @@ export function VoiceTab() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="default">System default</SelectItem>
+                <SelectItem value="default">
+                  {t("settings.voice.dictation.systemDefault")}
+                </SelectItem>
                 {devices
                   .filter((d) => d.deviceId && d.deviceId !== "default")
                   .map((d, i) => (
@@ -427,7 +463,7 @@ export function VoiceTab() {
                   ))}
                 {!knownMic && micDeviceId !== "default" ? (
                   <SelectItem value={micDeviceId}>
-                    Saved microphone (not connected)
+                    {t("settings.voice.dictation.savedMicDisconnected")}
                   </SelectItem>
                 ) : null}
               </SelectContent>
@@ -435,14 +471,14 @@ export function VoiceTab() {
           ) : (
             <Button variant="outline" size="sm" onClick={requestAccess}>
               <HugeiconsIcon icon={Mic02Icon} className="mr-1.5 size-3.5" />
-              Allow microphone
+              {t("settings.voice.dictation.allowMicrophone")}
             </Button>
           )}
         </SettingsRow>
 
         <SettingsRow
-          label="Dictation language"
-          description="Language to recognize"
+          label={t("settings.voice.dictation.languageLabel")}
+          description={t("settings.voice.dictation.languageDescription")}
         >
           <Select
             value={dictationLanguage}
@@ -458,7 +494,9 @@ export function VoiceTab() {
             <SelectContent>
               {DICTATION_LANGUAGES.map(({ value, label }) => (
                 <SelectItem key={value} value={value}>
-                  {label}
+                  {value === "auto"
+                    ? t("settings.voice.dictation.languageAuto")
+                    : label}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -469,15 +507,15 @@ export function VoiceTab() {
           <DictationTest />
         ) : (
           <SettingsRow
-            label="Test dictation"
-            description="Not supported in this browser"
+            label={t("settings.voice.dictation.testLabel")}
+            description={t("settings.voice.dictation.notSupported")}
           />
         )}
       </SettingsSection>
 
       <SettingsSection
-        title="Dictation dictionary"
-        description="Words or phrases dictation should recognize"
+        title={t("settings.voice.dictionary.sectionTitle")}
+        description={t("settings.voice.dictionary.sectionDescription")}
       >
         {dictionary.map((entry, index) => (
           <div
@@ -488,6 +526,7 @@ export function VoiceTab() {
             <Input
               value={entry}
               onChange={(e) => updateDictionaryEntry(index, e.target.value)}
+              onBlur={() => commitDictionaryEntry(index)}
               className="h-8 flex-1 text-sm"
               aria-label={`Dictionary entry ${index + 1}`}
             />
@@ -524,18 +563,18 @@ export function VoiceTab() {
             disabled={!newEntry.trim()}
           >
             <HugeiconsIcon icon={PlusSignIcon} className="mr-1.5 size-3.5" />
-            Add entry
+            {t("settings.voice.dictionary.addEntry")}
           </Button>
         </div>
       </SettingsSection>
 
       <SettingsSection
-        title="Recent dictations"
-        description="Your recent dictations will appear here so you can recover text"
+        title={t("settings.voice.recents.sectionTitle")}
+        description={t("settings.voice.recents.sectionDescription")}
       >
         {recentDictations.length === 0 ? (
           <p className="py-3 text-sm text-muted-foreground">
-            No dictations yet
+            {t("settings.voice.recents.empty")}
           </p>
         ) : (
           <>
@@ -560,9 +599,9 @@ export function VoiceTab() {
                   onClick={async () => {
                     try {
                       await navigator.clipboard.writeText(item.text);
-                      toast.success("Copied to clipboard");
+                      toast.success(t("settings.voice.recents.copied"));
                     } catch {
-                      toast.error("Could not copy to clipboard");
+                      toast.error(t("settings.voice.recents.copyFailed"));
                     }
                   }}
                 >
@@ -581,29 +620,29 @@ export function VoiceTab() {
                   icon={Delete02Icon}
                   className="mr-1.5 size-3.5"
                 />
-                Clear recent dictations
+                {t("settings.voice.recents.clear")}
               </Button>
             </div>
           </>
         )}
       </SettingsSection>
 
-      <SettingsSection title="Read aloud">
+      <SettingsSection title={t("settings.voice.readAloud.sectionTitle")}>
         {ttsSupported ? (
           <>
             <SettingsRow
-              label="Read aloud button"
-              description="Show on assistant responses"
+              label={t("settings.voice.readAloud.buttonLabel")}
+              description={t("settings.voice.readAloud.buttonDescription")}
             >
               <Switch checked={ttsEnabled} onCheckedChange={setTtsEnabled} />
             </SettingsRow>
 
             <SettingsRow
-              label="TTS engine"
+              label={t("settings.voice.readAloud.engineLabel")}
               description={
                 ttsEngine === "studio"
-                  ? "Uses the loaded audio model (e.g. Orpheus)"
-                  : "Built-in device voices"
+                  ? t("settings.voice.readAloud.engineStudioDescription")
+                  : t("settings.voice.readAloud.engineSystemDescription")
               }
             >
               <Select
@@ -620,21 +659,25 @@ export function VoiceTab() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="system">System voices</SelectItem>
-                  <SelectItem value="studio">Load TTS model</SelectItem>
+                  <SelectItem value="system">
+                    {t("settings.voice.readAloud.engineSystem")}
+                  </SelectItem>
+                  <SelectItem value="studio">
+                    {t("settings.voice.readAloud.engineStudio")}
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </SettingsRow>
 
             {ttsEngine === "studio" ? (
               <SettingsRow
-                label="TTS model"
-                description="Load an audio model from the model selector (e.g. Orpheus TTS)"
+                label={t("settings.voice.readAloud.modelLabel")}
+                description={t("settings.voice.readAloud.modelDescription")}
               />
             ) : (
               <SettingsRow
-                label="Voice"
-                description="Best voices on this device"
+                label={t("settings.voice.readAloud.voiceLabel")}
+                description={t("settings.voice.readAloud.voiceDescription")}
               >
                 <Select value={ttsVoiceURI} onValueChange={setTtsVoiceURI}>
                   <SelectTrigger
@@ -645,7 +688,9 @@ export function VoiceTab() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className="max-h-72">
-                    <SelectItem value="default">System default</SelectItem>
+                    <SelectItem value="default">
+                      {t("settings.voice.dictation.systemDefault")}
+                    </SelectItem>
                     {voices.map((voice) => (
                       <SelectItem key={voice.voiceURI} value={voice.voiceURI}>
                         {voice.name} ({voice.lang})
@@ -656,7 +701,10 @@ export function VoiceTab() {
               </SettingsRow>
             )}
 
-            <SettingsRow label="Speed" description={`${ttsRate.toFixed(2)}x`}>
+            <SettingsRow
+              label={t("settings.voice.readAloud.speedLabel")}
+              description={`${ttsRate.toFixed(2)}x`}
+            >
               <Slider
                 value={[ttsRate]}
                 min={0.5}
@@ -669,7 +717,10 @@ export function VoiceTab() {
             </SettingsRow>
 
             {ttsEngine === "system" && (
-              <SettingsRow label="Pitch" description={`${ttsPitch.toFixed(2)}`}>
+              <SettingsRow
+                label={t("settings.voice.readAloud.pitchLabel")}
+                description={`${ttsPitch.toFixed(2)}`}
+              >
                 <Slider
                   value={[ttsPitch]}
                   min={0}
@@ -683,7 +734,7 @@ export function VoiceTab() {
             )}
 
             <SettingsRow
-              label="Volume"
+              label={t("settings.voice.readAloud.volumeLabel")}
               description={`${Math.round(ttsVolume * 100)}%`}
             >
               <Slider
@@ -698,8 +749,8 @@ export function VoiceTab() {
             </SettingsRow>
 
             <SettingsRow
-              label="Preview voice"
-              description="Play a short sample"
+              label={t("settings.voice.readAloud.previewLabel")}
+              description={t("settings.voice.readAloud.previewDescription")}
             >
               <Button
                 variant="outline"
@@ -709,7 +760,7 @@ export function VoiceTab() {
                 {previewing ? (
                   <>
                     <SquareIcon className="mr-1.5 size-3 animate-pulse fill-current text-destructive" />
-                    Stop
+                    {t("settings.voice.readAloud.stopAction")}
                   </>
                 ) : (
                   <>
@@ -717,7 +768,7 @@ export function VoiceTab() {
                       icon={VolumeHighIcon}
                       className="mr-1.5 size-3.5"
                     />
-                    Preview
+                    {t("settings.voice.readAloud.previewAction")}
                   </>
                 )}
               </Button>
@@ -725,8 +776,8 @@ export function VoiceTab() {
           </>
         ) : (
           <SettingsRow
-            label="Text to speech"
-            description="Not supported in this browser"
+            label={t("settings.voice.readAloud.ttsLabel")}
+            description={t("settings.voice.readAloud.notSupported")}
           />
         )}
       </SettingsSection>
