@@ -233,7 +233,7 @@ export function SettingsDialog() {
                         <button
                           type="button"
                           onClick={() => openResult(tab.id)}
-                          className="flex h-[30px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-[13.5px] font-medium text-muted-foreground transition-colors hover:bg-[#ececec] hover:text-black dark:hover:bg-[#3a3d43] dark:hover:text-white"
+                          className="flex h-[30px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-[13.5px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                         >
                           <HugeiconsIcon
                             icon={tab.icon}
@@ -247,7 +247,7 @@ export function SettingsDialog() {
                             key={entry}
                             type="button"
                             onClick={() => openResult(tab.id)}
-                            className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-[14px] text-foreground transition-colors hover:bg-[#ececec] hover:text-black dark:hover:bg-[#3a3d43] dark:hover:text-white"
+                            className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-[14px] text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                           >
                             <span className="min-w-0 truncate">{entry}</span>
                           </button>
@@ -278,14 +278,14 @@ export function SettingsDialog() {
                         "max-sm:shrink-0",
                         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                         active
-                          ? "text-black dark:text-white"
-                          : "text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec] dark:hover:bg-[#3a3d43] hover:text-black dark:hover:text-white",
+                          ? "text-accent-foreground"
+                          : "text-[#383835] dark:text-[#c7c7c4] hover:bg-accent hover:text-accent-foreground",
                       )}
                     >
                       {active && (
                         <motion.span
                           layoutId="settings-active-pill"
-                          className="absolute inset-0 rounded-full bg-[#ececec] dark:bg-[#3a3d43]"
+                          className="absolute inset-0 rounded-full bg-accent"
                           transition={
                             reduced
                               ? { duration: 0 }
@@ -321,7 +321,7 @@ export function SettingsDialog() {
               <button
                 type="button"
                 onClick={closeDialog}
-                className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#3a3d43] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label={t("settings.dialog.closeAriaLabel")}
               >
                 <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
