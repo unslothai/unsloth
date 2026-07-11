@@ -266,9 +266,7 @@ def _clamp_max_side(img: Any, max_side: int) -> Any:
     return img.resize((nw, nh), Image.LANCZOS)
 
 
-def _compile_shape_dims(
-    workflow: str, init_pil: Any, width: int, height: int
-) -> tuple[int, int]:
+def _compile_shape_dims(workflow: str, init_pil: Any, width: int, height: int) -> tuple[int, int]:
     """The (width, height) a generation's forward ACTUALLY runs at, for static
     compile-cache shape registration.
 
@@ -2921,9 +2919,7 @@ class DiffusionBackend:
                     # image-conditioned workflows run at the input image's size, not the
                     # slider's (see _compile_shape_dims), and a mis-registered slider
                     # shape would keep the truly-used shape out of the saved bundle.
-                    reg_width, reg_height = _compile_shape_dims(
-                        workflow, init_pil, width, height
-                    )
+                    reg_width, reg_height = _compile_shape_dims(workflow, init_pil, width, height)
                     compile_cache.register_shape(
                         state.compile_cache_ctx,
                         (reg_width, reg_height, int(batch_size)),
