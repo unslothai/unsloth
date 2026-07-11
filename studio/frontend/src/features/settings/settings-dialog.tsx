@@ -219,7 +219,7 @@ export function SettingsDialog() {
               <h2 className="pl-3 pr-2.5 pt-3.5 pb-3.5 text-[19px] font-semibold text-foreground max-sm:hidden">
                 {t("settings.dialog.title")}
               </h2>
-              <div className="relative mx-3 mt-1 mb-3 max-sm:hidden">
+              <div className="relative mt-1 mb-3 max-sm:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
