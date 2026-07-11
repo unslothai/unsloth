@@ -7348,6 +7348,16 @@ def _check_signal_escape_patterns(
             return node.value
         return None
 
+    def _extract_folded_string(node):
+        """Like _extract_string_from_node but also const-folds a computed string, so a folded
+        dynamic-attribute name is recognized: getattr(sys, 'meta_' + 'path') / a const-var
+        alias resolve to 'meta_path' exactly like the raw literal."""
+        _s = _extract_string_from_node(node)
+        if _s is not None:
+            return _s
+        _f = _const_fold(node, _const_env)
+        return _f if isinstance(_f, str) else None
+
     def _extract_env_scalar(node):
         """A str constant, a const-folded string (a const-var / concatenation via the module const
         env, ``P='.:/usr/bin'; ... P``), or a bytes constant / folded bytes decoded to str
@@ -8258,7 +8268,7 @@ def _check_signal_escape_patterns(
                 and n.func.id == "getattr"
                 and len(n.args) >= 2
                 and _ast_name_matches(n.args[0], self.sys_aliases)
-                and _extract_string_from_node(n.args[1]) == "modules"
+                and _extract_folded_string(n.args[1]) == "modules"
             ):
                 return True
             # object.__getattribute__(sys, 'modules') / type(sys).__getattribute__(sys,
@@ -8270,7 +8280,7 @@ def _check_signal_escape_patterns(
                 and n.func.attr in ("__getattribute__", "__getattr__")
                 and len(n.args) >= 2
                 and _ast_name_matches(n.args[0], self.sys_aliases)
-                and _extract_string_from_node(n.args[1]) == "modules"
+                and _extract_folded_string(n.args[1]) == "modules"
             ):
                 return True
             return False
@@ -8302,7 +8312,7 @@ def _check_signal_escape_patterns(
                 and n.func.id == "getattr"
                 and len(n.args) >= 2
                 and _ast_name_matches(n.args[0], self.sys_aliases)
-                and _extract_string_from_node(n.args[1]) == "meta_path"
+                and _extract_folded_string(n.args[1]) == "meta_path"
             ):
                 return True
             if (
@@ -8311,7 +8321,7 @@ def _check_signal_escape_patterns(
                 and n.func.attr in ("__getattribute__", "__getattr__")
                 and len(n.args) >= 2
                 and _ast_name_matches(n.args[0], self.sys_aliases)
-                and _extract_string_from_node(n.args[1]) == "meta_path"
+                and _extract_folded_string(n.args[1]) == "meta_path"
             ):
                 return True
             return False
@@ -9802,13 +9812,80 @@ def _check_signal_escape_patterns(
                 )
             self.generic_visit(node)
 
+        def _is_sqlite_module_ref(self, node):
+            # sqlite3 / _sqlite3 (Name) or sqlite3.dbapi2 (Attribute): the modules that export the
+            # guarded Connection subclass whose MRO still exposes the unguarded _sqlite3.Connection.
+            if isinstance(node, ast.Name):
+                return node.id in ("sqlite3", "_sqlite3")
+            if isinstance(node, ast.Attribute):
+                return (
+                    node.attr == "dbapi2"
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "sqlite3"
+                )
+            return False
+
+        def _is_type_of_guarded_instance(self, expr):
+            # ``type(<x>)`` where ``<x>`` constructs a guarded file / sqlite instance, so ``type(
+            # <x>)`` IS the guarded subclass and iterating its MRO recovers the unguarded base:
+            # type(io.FileIO('x')).mro(), type(sqlite3.connect(':memory:')).mro(). Only a single
+            # positional construction arg is matched, so type(x) on an opaque value does not.
+            if not (
+                isinstance(expr, ast.Call)
+                and isinstance(expr.func, ast.Name)
+                and expr.func.id == "type"
+                and len(expr.args) == 1
+                and not expr.keywords
+            ):
+                return False
+            arg = expr.args[0]
+            if not isinstance(arg, ast.Call):
+                return False
+            f = arg.func
+            if isinstance(f, ast.Attribute) and f.attr == "FileIO":
+                return True  # io.FileIO(...) / _io.FileIO(...)
+            if (
+                isinstance(f, ast.Attribute)
+                and f.attr in ("connect", "Connection")
+                and self._is_sqlite_module_ref(f.value)
+            ):
+                return True  # sqlite3.connect(...) / sqlite3.Connection(...)
+            return False
+
+        def _is_fileclass_recovery_direct(self, expr):
+            # io.FileIO / _io.FileIO (.FileIO) or a file object's type via .__class__
+            # (open.__class__, f.__class__).
+            if isinstance(expr, ast.Attribute) and expr.attr in ("FileIO", "__class__"):
+                return True
+            # The guarded sqlite3.Connection / _sqlite3.Connection / sqlite3.dbapi2.Connection
+            # subclass, whose MRO still exposes the unguarded _sqlite3.Connection base.
+            if (
+                isinstance(expr, ast.Attribute)
+                and expr.attr == "Connection"
+                and self._is_sqlite_module_ref(expr.value)
+            ):
+                return True
+            # type(<guarded file / sqlite instance>) is that same guarded subclass.
+            if self._is_type_of_guarded_instance(expr):
+                return True
+            return False
+
         def _is_fileclass_recovery_expr(self, expr):
-            """True when ``expr`` denotes a file/IO class whose MRO walk recovers an UNGUARDED
-            file primitive: the guarded ``io.FileIO`` / ``_io.FileIO`` (``.FileIO`` attribute)
-            or the type of a file object reached through ``.__class__`` (``open.__class__``,
-            ``f.__class__``). Ordinary class receivers (``int``, ``cls``, ``type('X', (), {})``)
-            are plain Names / Calls and do not match, so benign MRO introspection stays allowed."""
-            return isinstance(expr, ast.Attribute) and expr.attr in ("FileIO", "__class__")
+            """True when ``expr`` denotes a class whose MRO walk recovers an UNGUARDED primitive:
+            the guarded ``io.FileIO`` / ``_io.FileIO`` (``.FileIO`` attribute), the type of a file
+            object via ``.__class__`` (``open.__class__``, ``f.__class__``), the guarded
+            ``sqlite3.Connection`` subclass (whose base is the unguarded ``_sqlite3.Connection``),
+            or ``type(<guarded file / sqlite instance>)``. A single-assignment alias of any of these
+            (``t = type(io.FileIO('x')); t.mro()``) resolves through the scope index. Ordinary class
+            receivers (``int``, ``cls``, ``type(42)``, ``type('X', (), {})``) do not match, so benign
+            MRO introspection stays allowed."""
+            if self._is_fileclass_recovery_direct(expr):
+                return True
+            if _analyzer_on and isinstance(expr, ast.Name):
+                rhs = _scope_idx.resolve(expr.id, expr, "rhsnode")
+                if rhs is not None and self._is_fileclass_recovery_direct(rhs):
+                    return True
+            return False
 
         def _is_unbound_mro_gadget(self, node):
             """True when ``node`` is an UNBOUND MRO / getattribute call that recovers a file

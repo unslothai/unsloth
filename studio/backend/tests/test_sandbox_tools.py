@@ -5850,3 +5850,84 @@ class TestRound59Bypasses:
     )
     def test_round59_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound60Bypasses:
+    # Loader-table / import-finder gadget names written as a const-folded string
+    # (getattr(sys, 'meta_' + 'path')) must be recognized like the raw literal, so a folded
+    # getattr cannot drop the sandbox workdir-module vetter (meta_path) or a guarded module
+    # (modules) before importing an unguarded workdir child.
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import sys\ngetattr(sys, 'meta_' + 'path').pop(0)",
+            "import sys\ngetattr(sys, 'meta_' + 'path').clear()",
+            "import sys\nobject.__getattribute__(sys, 'meta_' + 'path').pop(0)",
+        ],
+    )
+    def test_folded_meta_path_mutation_blocked(self, code):
+        _blocked(code, expect_phrase = "import finder chain")
+
+    def test_folded_sys_modules_mutation_blocked(self):
+        _blocked(
+            "import sys\ngetattr(sys, 'mod' + 'ules').pop('os')",
+            expect_phrase = "loader table",
+        )
+
+    # del / assign of a folded loader-table subscript reaches the shared del/assign handler that
+    # blocks with a generic "drop a guarded module" message; the point is the folded form is caught.
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import sys\ndel getattr(sys, 'meta_' + 'path')[0]",
+            "import sys\ndel getattr(sys, 'mod' + 'ules')['os']",
+        ],
+    )
+    def test_folded_loader_subscript_del_blocked(self, code):
+        _blocked(code, expect_phrase = "(del / assign)")
+
+    # type(<guarded file/sqlite instance>).mro() / .__mro__ iterates a guarded subclass whose MRO
+    # exposes the original unguarded C base; block the whole-MRO access (and a same-name alias of
+    # the type(...) result), not just the subscripted / popped forms.
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import io\ntype(io.FileIO('/dev/null', 'r')).mro()",
+            "import io\nt = type(io.FileIO('/dev/null', 'r'))\nt.mro()",
+            "import io\nfor c in type(io.FileIO('/dev/null', 'r')).__mro__:\n    pass",
+            "import sqlite3\ntype(sqlite3.connect(':memory:')).mro()",
+        ],
+    )
+    def test_type_of_instance_mro_blocked(self, code):
+        _blocked(code, expect_phrase = "unguarded base")
+
+    # The guarded sqlite3.Connection subclass still exposes the unguarded _sqlite3.Connection base
+    # through its MRO, so a whole-MRO walk of sqlite3.Connection is a recovery gadget too.
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import sqlite3\nsqlite3.Connection.mro()",
+            "import sqlite3\nfor c in sqlite3.Connection.__mro__:\n    pass",
+            "import sqlite3\ngetattr(sqlite3.Connection, '__mro__')",
+            "import sqlite3\nsqlite3.dbapi2.Connection.mro()",
+        ],
+    )
+    def test_sqlite_connection_mro_blocked(self, code):
+        _blocked(code, expect_phrase = "unguarded base")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign round-60 forms stay allowed.
+            "import sys\nx = sys.meta_path",  # reading the finder chain
+            "import sys\nx = sys.meta_path[0]",  # reading one finder
+            "import sys\ngetattr(sys, 'argv')",  # a benign sys getattr
+            "int.mro()",  # ordinary MRO introspection
+            "type(42).mro()",  # type() of a non-guarded instance
+            "x = [].__class__",  # a plain class access
+            "import sqlite3\nsqlite3.connect(':memory:')",  # an in-memory connect
+            "d = {'a': 1}\nd.pop('a')",  # a plain dict pop, not a loader table
+        ],
+    )
+    def test_round60_benign_allowed(self, code):
+        _ok(code)
