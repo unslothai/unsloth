@@ -30,7 +30,11 @@ def _image(data: str = PNG_B64, mime: str = "image/png") -> SimpleNamespace:
     return SimpleNamespace(type = "image", data = data, mimeType = mime)
 
 
-def _result(*blocks, is_error = False, structured = None) -> SimpleNamespace:
+def _result(
+    *blocks,
+    is_error = False,
+    structured = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
         content = list(blocks),
         is_error = is_error,
@@ -60,10 +64,7 @@ def test_multiple_images_pluralized():
     flat = _flatten_result(_result(_image(), _image(mime = "image/jpeg")))
     body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
     assert "[2 images attached; displayed to the user]" in body
-    assert [img["mimeType"] for img in json.loads(payload)] == [
-        "image/png",
-        "image/jpeg",
-    ]
+    assert [img["mimeType"] for img in json.loads(payload)] == ["image/png", "image/jpeg"]
 
 
 def test_strip_result_for_model_drops_image_payload():
@@ -104,7 +105,9 @@ def test_oversized_budget_shared_across_images():
 
 
 def test_non_image_binary_block_still_ignored():
-    flat = _flatten_result(_result(SimpleNamespace(type = "audio", data = PNG_B64, mimeType = "audio/wav")))
+    flat = _flatten_result(
+        _result(SimpleNamespace(type = "audio", data = PNG_B64, mimeType = "audio/wav"))
+    )
     assert flat == ""
 
 
