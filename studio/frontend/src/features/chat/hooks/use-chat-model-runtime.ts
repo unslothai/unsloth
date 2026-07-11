@@ -43,6 +43,7 @@ import {
   mergeBackendRecommendedInference,
   resolveLoadMaxSeqLength,
 } from "../presets/preset-policy";
+import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import {
   isMultimodalResponse,
 } from "../types/api";
@@ -804,6 +805,23 @@ export function useChatModelRuntime() {
               }
             }
             await refresh({ signal: abortCtrl.signal });
+            if (
+              !isLora &&
+              !(loadResponse.is_lora ?? false) &&
+              !nativePathToken &&
+              !isLocalModelPath(modelId) &&
+              !isExternalModelId(modelId)
+            ) {
+              if (loadResponse.is_gguf || isGguf || ggufVariant) {
+                recordLastLocalModelLoad({
+                  id: modelId,
+                  kind: "gguf",
+                  ggufVariant: ggufVariant ?? null,
+                });
+              } else {
+                recordLastLocalModelLoad({ id: modelId, kind: "model" });
+              }
+            }
           } catch (error) {
             // Skip rollback if user cancelled -- model is already being unloaded.
             if (abortCtrl.signal.aborted) throw error;
