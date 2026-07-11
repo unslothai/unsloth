@@ -901,8 +901,6 @@ function serializeAssistantToolCallPart(
   return entry;
 }
 
-// MCP tool result whose image blocks were split off the text by the backend
-// `__MCP_IMAGES__:` sentinel (see mcp_client._flatten_result).
 export interface McpImageToolResult {
   text: string;
   images: { data: string; mimeType: string }[];
@@ -950,8 +948,6 @@ function serializeToolResultPart(
     // outputs still round-trip the follow-up turn to the provider.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
   } else if (isMcpImageToolResult(result)) {
-    // Replay only the text; base64 image payloads would flood the model
-    // context on every follow-up turn.
     content = result.text.length > 0 ? result.text : JSON.stringify({ result: "" });
   } else {
     try {

@@ -298,10 +298,7 @@ def invalidate_tool_cache(server_id: Optional[str] = None) -> None:
         _probe_cooloff_until.pop(server_id, None)
 
 
-# Frontend-only sentinel carrying tool-result image blocks (stripped for the
-# model in strip_result_for_model, like __IMAGES__).
 MCP_IMAGES_SENTINEL = "__MCP_IMAGES__:"
-# Base64 budget per result; oversized SSE frames stall the chat stream.
 MAX_IMAGE_PAYLOAD_CHARS = 12_000_000
 
 

@@ -260,7 +260,6 @@ function ToolFallbackArgs({
   );
 }
 
-// Shape produced by chat-adapter from the backend `__MCP_IMAGES__:` sentinel.
 interface McpImageResult {
   text: string;
   images: { data: string; mimeType: string }[];
