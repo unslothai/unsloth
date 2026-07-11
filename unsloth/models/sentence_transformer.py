@@ -2357,6 +2357,7 @@ def _save_pretrained_torchao(
             print(f"Unsloth: Uploaded to https://huggingface.co/{repo_id}")
         except Exception as e:
             print(f"Unsloth: Upload failed: {e}")
+            raise
 
 
 # Thanks Etherl:
@@ -2496,6 +2497,7 @@ def _save_pretrained_gguf(
             print(f"Unsloth: Uploaded to https://huggingface.co/{repo_id}")
         except Exception as e:
             print(f"Unsloth: Upload failed: {e}")
+            raise
 
     return result
 

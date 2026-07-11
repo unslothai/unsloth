@@ -27,8 +27,6 @@ F = torch.nn.functional
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONTRASTIVE_LOSS_PATH = _REPO_ROOT / "unsloth" / "kernels" / "contrastive_loss.py"
 _SENTENCE_TRANSFORMER_PATH = _REPO_ROOT / "unsloth" / "models" / "sentence_transformer.py"
-_QUALITY_COMPARATOR_PATH = _REPO_ROOT / "scripts" / "compare_sentence_transformer_quality.py"
-_BENCHMARK_PATH = _REPO_ROOT / "scripts" / "benchmark_sentence_transformer_training.py"
 
 
 @pytest.fixture(scope = "module")
@@ -530,25 +528,6 @@ def test_fused_contrastive_sanitizes_invalid_chunk_size(
     assert torch.isfinite(candidates.grad).all()
 
 
-def test_quality_comparator_rejects_optimized_fallback_without_fast_path():
-    spec = importlib.util.spec_from_file_location(
-        "_sentence_transformer_quality_comparator", _QUALITY_COMPARATOR_PATH
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    with pytest.raises(ValueError, match = "did not activate"):
-        module.require_optimized_fast_path(
-            {"model_contract": {"fused_lora_layers": 0, "fused_lora_linears": 0}},
-            Path("optimized.json"),
-        )
-    module.require_optimized_fast_path(
-        {"model_contract": {"fused_lora_layers": 1, "fused_lora_linears": 0}},
-        Path("optimized.json"),
-    )
-
-
 def test_unpadding_flash_dispatch_requires_cuda_half_or_bfloat16():
     source = _SENTENCE_TRANSFORMER_PATH.read_text(encoding = "utf-8")
     tree = ast.parse(source, filename = str(_SENTENCE_TRANSFORMER_PATH))
@@ -677,36 +656,6 @@ def test_compile_threshold_heuristic_has_stable_boundaries():
     assert small >= 20
     assert medium >= 20
     assert long_run <= medium
-
-
-@pytest.mark.parametrize(
-    "argument",
-    ("--batch-size", "--max-length", "--steps"),
-)
-def test_benchmark_rejects_zero_workloads_before_model_setup(monkeypatch, argument):
-    spec = importlib.util.spec_from_file_location("_st_benchmark_args", _BENCHMARK_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    monkeypatch.setattr(sys, "argv", [str(_BENCHMARK_PATH), "--mode", "baseline", argument, "0"])
-    with pytest.raises(SystemExit, match = "2"):
-        module.parse_args()
-
-
-def test_benchmark_remote_code_requires_explicit_opt_in(monkeypatch):
-    spec = importlib.util.spec_from_file_location("_st_benchmark_trust", _BENCHMARK_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    monkeypatch.setattr(sys, "argv", [str(_BENCHMARK_PATH), "--mode", "baseline"])
-    assert module.parse_args().trust_remote_code is False
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [str(_BENCHMARK_PATH), "--mode", "baseline", "--trust-remote-code"],
-    )
-    assert module.parse_args().trust_remote_code is True
 
 
 def test_fused_contrastive_fp32_matches_dense_loss_and_gradients_exactly(

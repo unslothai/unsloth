@@ -2683,12 +2683,16 @@ def push_to_ollama(tokenizer, gguf_location, username: str, model_name: str, tag
 
 def _sentence_transformer_transformer_dir(save_directory, transformer_path):
     """Resolve the saved Transformer module without leaving the model directory."""
-    save_root = os.path.abspath(os.fspath(save_directory))
+    save_root = os.path.realpath(os.path.abspath(os.fspath(save_directory)))
     if transformer_path is None or os.path.isabs(transformer_path):
         raise ValueError("Unsloth: Invalid SentenceTransformer Transformer module path.")
-    transformer_dir = os.path.abspath(os.path.join(save_root, transformer_path))
+    transformer_dir = os.path.realpath(
+        os.path.abspath(os.path.join(save_root, transformer_path))
+    )
     try:
-        inside_save_root = os.path.commonpath([save_root, transformer_dir]) == save_root
+        inside_save_root = os.path.normcase(
+            os.path.commonpath([save_root, transformer_dir])
+        ) == os.path.normcase(save_root)
     except ValueError:
         inside_save_root = False
     if not inside_save_root:
@@ -2769,6 +2773,9 @@ def unsloth_save_pretrained_gguf(
     """
     is_sentence_transformer = self.__class__.__name__ == "SentenceTransformer"
     if is_sentence_transformer:
+        if not is_main_process:
+            return None
+
         if tokenizer is None:
             tokenizer = self.tokenizer
 
@@ -2802,12 +2809,24 @@ def unsloth_save_pretrained_gguf(
             first_conversion = first_conversion,
             push_to_hub = False,
             token = token,
+            private = private,
+            is_main_process = is_main_process,
+            state_dict = state_dict,
+            save_function = save_function,
             max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            variant = variant,
+            save_peft_format = save_peft_format,
+            tags = tags,
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
+            save_method = save_method,
             imatrix_file = imatrix_file,
             _prefer_save_directory = True,
         )
+
+        if result is None:
+            return None
 
         gguf_files = result.get("gguf_files", [])
         new_gguf_locations = []

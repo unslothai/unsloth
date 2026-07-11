@@ -102,6 +102,19 @@ docker run -d -e JUPYTER_PASSWORD="mypassword" \
 To see developer, nightly and uninstallation etc. instructions, see [advanced installation](#-advanced-installation).
 
 ### Unsloth Core (code-based)
+
+#### SentenceTransformer runtime controls
+
+Unsloth tunes SentenceTransformer training automatically. These environment variables let you override the memory/throughput tradeoffs when diagnosing a workload:
+
+| Variable | Values and default | Effect |
+|---|---|---|
+| `UNSLOTH_ST_COMPILE` | `auto` (default), `1`/`true`/`on`, or `0`/`false`/`off` | `auto` compiles only when the estimated training run is long enough to repay compilation cost. Force it on for repeated/long runs, or off to avoid startup overhead. On Windows, `auto` leaves `torch.compile` disabled after runtime calibration; explicitly set `1` to opt in. |
+| `UNSLOTH_NUM_WORKERS` | unset (default) or `0` | For Unsloth-managed SentenceTransformer trainers whose worker count is still zero, the default raises `dataloader_num_workers` to `2` for input throughput. Set `0` to preserve single-process loading, which is useful for debugging, low-memory machines, and Windows workloads whose datasets cannot be pickled safely. |
+| `UNSLOTH_CHUNKED_CONTRASTIVE` | `0` (default) or `1` | Set `1` to compute supported in-batch contrastive losses in chunks. This lowers peak score-matrix memory at the cost of additional launches and potentially lower throughput; leave it at `0` for the fastest path when the full matrix fits. |
+
+Set variables before starting Python. For example, PowerShell uses `$env:UNSLOTH_ST_COMPILE='0'`; Linux, macOS, and WSL use `UNSLOTH_ST_COMPILE=0 python train.py`.
+
 #### Linux, WSL:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh

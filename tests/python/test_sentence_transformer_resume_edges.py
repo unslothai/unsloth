@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import types
 from typing import Optional
@@ -318,7 +320,35 @@ def test_sentence_transformer_gguf_module_path_stays_within_save_directory(tmp_p
         resolve(tmp_path, "../outside")
 
 
-def test_sentence_transformer_gguf_recursion_forwards_imatrix_and_root_path(tmp_path):
+def test_sentence_transformer_gguf_module_path_rejects_symlink_escape(tmp_path):
+    source_tree = ast.parse(_SAVE_PATH.read_text(encoding = "utf-8"))
+    helper = next(
+        node
+        for node in source_tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_sentence_transformer_transformer_dir"
+    )
+    namespace = {"os": os}
+    exec(compile(ast.Module(body = [helper], type_ignores = []), str(_SAVE_PATH), "exec"), namespace)
+    resolve = namespace["_sentence_transformer_transformer_dir"]
+
+    save_root = tmp_path / "saved"
+    outside = tmp_path / "outside"
+    save_root.mkdir()
+    outside.mkdir()
+    link = save_root / "0_Transformer"
+    try:
+        link.symlink_to(outside, target_is_directory = True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"directory symlinks are unavailable: {error}")
+
+    with pytest.raises(ValueError, match = "Invalid SentenceTransformer"):
+        resolve(save_root, "0_Transformer")
+
+
+def test_sentence_transformer_gguf_recursion_forwards_imatrix_and_root_path(
+    tmp_path,
+):
     source_tree = ast.parse(_SAVE_PATH.read_text(encoding = "utf-8"))
     resolver = next(
         node
@@ -380,6 +410,211 @@ def test_sentence_transformer_gguf_recursion_forwards_imatrix_and_root_path(tmp_
     assert captured[0][1]["save_directory"] == str(tmp_path / "saved")
     assert captured[0][1]["imatrix_file"] == imatrix
     assert captured[0][1]["_prefer_save_directory"] is True
+
+
+def test_sentence_transformer_gguf_recursion_forwards_non_default_save_contract(tmp_path):
+    source_tree = ast.parse(_SAVE_PATH.read_text(encoding = "utf-8"))
+    selected = [
+        node
+        for node in source_tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {
+            "_sentence_transformer_transformer_dir",
+            "_gguf_source_directory",
+            "unsloth_save_pretrained_gguf",
+        }
+    ]
+    for node in selected:
+        if node.name == "unsloth_save_pretrained_gguf":
+            node.decorator_list = []
+    namespace = {
+        "Callable": __import__("typing").Callable,
+        "List": __import__("typing").List,
+        "Optional": Optional,
+        "Union": __import__("typing").Union,
+        "os": os,
+        "shutil": shutil,
+        "torch": torch,
+    }
+    exec(compile(ast.Module(body = selected, type_ignores = []), str(_SAVE_PATH), "exec"), namespace)
+    outer_exporter = namespace["unsloth_save_pretrained_gguf"]
+    recursive_calls = []
+
+    def capture_recursive(model, **kwargs):
+        recursive_calls.append((model, kwargs))
+        return {"gguf_files": []}
+
+    namespace["unsloth_save_pretrained_gguf"] = capture_recursive
+
+    class SentenceTransformer:
+        tokenizer = object()
+
+        def __init__(self):
+            self.inner = types.SimpleNamespace(auto_model = object())
+
+        def __getitem__(self, index):
+            assert index == 0
+            return self.inner
+
+        def save_pretrained(self, directory, **_kwargs):
+            os.makedirs(directory, exist_ok = True)
+            Path(directory, "modules.json").write_text(
+                json.dumps([{"type": "sentence_transformers.models.Transformer", "path": ""}]),
+                encoding = "utf-8",
+            )
+
+    state_dict = {"sentinel": torch.tensor(1)}
+    save_function = object()
+    tags = ["embedding", "sentinel"]
+    outer_exporter(
+        SentenceTransformer(),
+        save_directory = tmp_path / "saved",
+        quantization_method = "q8_0",
+        first_conversion = "f32",
+        token = "token-sentinel",
+        private = True,
+        is_main_process = True,
+        state_dict = state_dict,
+        save_function = save_function,
+        max_shard_size = "17MB",
+        safe_serialization = False,
+        variant = "variant-sentinel",
+        save_peft_format = False,
+        tags = tags,
+        temporary_location = "temp-sentinel",
+        maximum_memory_usage = 0.42,
+        save_method = "merged_16bit",
+    )
+
+    forwarded = recursive_calls[0][1]
+    expected = {
+        "quantization_method": "q8_0",
+        "first_conversion": "f32",
+        "token": "token-sentinel",
+        "private": True,
+        "is_main_process": True,
+        "state_dict": state_dict,
+        "save_function": save_function,
+        "max_shard_size": "17MB",
+        "safe_serialization": False,
+        "variant": "variant-sentinel",
+        "save_peft_format": False,
+        "tags": tags,
+        "temporary_location": "temp-sentinel",
+        "maximum_memory_usage": 0.42,
+        "save_method": "merged_16bit",
+    }
+    for name, value in expected.items():
+        if name in {"state_dict", "save_function", "tags"}:
+            assert forwarded[name] is value
+        else:
+            assert forwarded[name] == value
+
+
+def test_sentence_transformer_gguf_non_main_process_does_not_write_or_recurse(tmp_path):
+    source_tree = ast.parse(_SAVE_PATH.read_text(encoding = "utf-8"))
+    exporter = next(
+        node
+        for node in source_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "unsloth_save_pretrained_gguf"
+    )
+    exporter.decorator_list = []
+    namespace = {
+        "Callable": __import__("typing").Callable,
+        "List": __import__("typing").List,
+        "Optional": Optional,
+        "Union": __import__("typing").Union,
+        "os": os,
+        "torch": torch,
+    }
+    exec(compile(ast.Module(body = [exporter], type_ignores = []), str(_SAVE_PATH), "exec"), namespace)
+    outer_exporter = namespace["unsloth_save_pretrained_gguf"]
+
+    class SentenceTransformer:
+        tokenizer = object()
+
+        def save_pretrained(self, _directory):
+            raise AssertionError("non-main process must not write SentenceTransformer files")
+
+        def __getitem__(self, _index):
+            raise AssertionError("non-main process must not enter recursive GGUF export")
+
+    assert outer_exporter(
+        SentenceTransformer(),
+        save_directory = tmp_path / "saved",
+        is_main_process = False,
+    ) is None
+    assert not (tmp_path / "saved").exists()
+
+
+def test_sentence_transformer_gguf_requested_upload_failure_preserves_local_artifact(
+    tmp_path,
+):
+    function = _source_node("_save_pretrained_gguf", ast.FunctionDef)
+    local_gguf = tmp_path / "model.Q8_0.gguf"
+    upload_error = ConnectionError("hub unavailable sentinel")
+
+    def local_export(_model, **kwargs):
+        local_gguf.write_bytes(b"local-gguf")
+        return {"gguf_files": [str(local_gguf)]}
+
+    class FailingApi:
+        def __init__(self, **_kwargs):
+            pass
+
+        def create_repo(self, **_kwargs):
+            return None
+
+        def upload_folder(self, **_kwargs):
+            raise upload_error
+
+    class FastSentenceTransformer:
+        @staticmethod
+        def _add_unsloth_branding(_directory):
+            return None
+
+    namespace = {
+        "FastSentenceTransformer": FastSentenceTransformer,
+        "HfApi": FailingApi,
+        "contextlib": contextlib,
+        "get_token": lambda: "default-token",
+        "json": json,
+        "os": os,
+        "shutil": shutil,
+        "unsloth_save_pretrained_gguf": local_export,
+    }
+    exec(compile(ast.Module(body = [function], type_ignores = []), str(_SOURCE_PATH), "exec"), namespace)
+
+    class Model:
+        tokenizer = object()
+
+        def __init__(self):
+            self.inner = types.SimpleNamespace(auto_model = object())
+
+        def __getitem__(self, index):
+            assert index == 0
+            return self.inner
+
+        def save_pretrained(self, directory):
+            os.makedirs(directory, exist_ok = True)
+            Path(directory, "modules.json").write_text(
+                json.dumps([{"type": "sentence_transformers.models.Transformer", "path": ""}]),
+                encoding = "utf-8",
+            )
+
+    save_directory = tmp_path / "saved"
+    with pytest.raises(ConnectionError, match = "hub unavailable sentinel") as raised:
+        namespace["_save_pretrained_gguf"](
+            Model(),
+            save_directory,
+            push_to_hub = True,
+            repo_id = "org/model",
+        )
+
+    assert raised.value is upload_error
+    preserved_gguf = save_directory / local_gguf.name
+    assert preserved_gguf.exists()
+    assert preserved_gguf.read_bytes() == b"local-gguf"
 
 
 def test_sentence_transformer_gguf_recursion_keeps_just_saved_weights():
