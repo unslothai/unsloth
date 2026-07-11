@@ -294,6 +294,15 @@ def _has_non_gguf_weights(path: Path) -> bool:
         return False
 
 
+def _dir_has_loadable_weights(path: Path) -> bool:
+    try:
+        if path.is_file():
+            return True
+        return any(path.glob("*.gguf")) or _has_non_gguf_weights(path)
+    except OSError:
+        return False
+
+
 def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
@@ -849,6 +858,7 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
                         if (
                             key in seen
                             or not scan_result_within_folder(m.path, folder_path)
+                            or not _dir_has_loadable_weights(Path(m.path))
                             or any(
                                 p in (".studio_links", "ollama_links") for p in Path(m.path).parts
                             )

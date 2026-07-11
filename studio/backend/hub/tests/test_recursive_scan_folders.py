@@ -149,6 +149,43 @@ def test_recursive_scan_rejects_symlinked_weight_files(tmp_path):
     assert not any("model-s" in m.path for m in recursive)
 
 
+def test_scan_result_within_folder_checks_weights_past_probe_window(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    model.mkdir(parents = True)
+    (model / "config.json").write_text("{}")
+    # Many non-weight files so the escaping weight sits well past the old probe cap.
+    for i in range(250):
+        (model / f"note{i:03d}.txt").write_text("x")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "real.safetensors").write_bytes(b"\0" * 8)
+    os.symlink(outside / "real.safetensors", model / "model.safetensors")
+
+    assert local_inventory.scan_result_within_folder(str(model), root) is False
+
+
+def test_scan_result_within_folder_accepts_contained_weights(tmp_path):
+    root = tmp_path / "root"
+    model = root / "model"
+    model.mkdir(parents = True)
+    (model / "model.safetensors").write_bytes(b"\0" * 8)
+
+    assert local_inventory.scan_result_within_folder(str(model), root) is True
+
+
+def test_recursive_scan_does_not_surface_config_only_intermediate(tmp_path):
+    (tmp_path / "family").mkdir()
+    (tmp_path / "family" / "config.json").write_text("{}")
+    _make_model_dir(tmp_path / "family" / "variant" / "model-real")
+
+    recursive = local_inventory._scan_custom_folder(tmp_path, recursive = True)
+    paths = {m.path for m in recursive}
+
+    assert any("model-real" in p for p in paths)
+    assert str(tmp_path / "family") not in paths
+
+
 def test_scan_custom_folder_recursive_does_not_duplicate(tmp_path):
     _make_model_dir(tmp_path / "sub" / "model-a")
 

@@ -196,12 +196,17 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
                         iter_recursive_scan_dirs,
                         scan_result_within_folder,
                     )
+                    recursive_budget = 200
                     for subdir in iter_recursive_scan_dirs(fp):
-                        found += [
-                            m
-                            for m in _scan_models_dir(subdir, limit = 200)
-                            if scan_result_within_folder(m.path, fp)
-                        ]
+                        if recursive_budget <= 0:
+                            break
+                        for m in _scan_models_dir(subdir, limit = recursive_budget):
+                            if not scan_result_within_folder(m.path, fp):
+                                continue
+                            found.append(m)
+                            recursive_budget -= 1
+                            if recursive_budget <= 0:
+                                break
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
     except Exception as exc:

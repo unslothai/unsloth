@@ -133,9 +133,10 @@ def scan_result_within_folder(path: str, folder_path: Path) -> bool:
     try:
         if not candidate.is_dir():
             return True
-        for index, entry in enumerate(candidate.iterdir(), start = 1):
-            if index > _MODEL_SIGNAL_PROBE_LIMIT:
-                break
+        # Validate every immediate weight file, not just the first probe window:
+        # the loader reads all of them, so a single symlink escaping the folder
+        # is enough to reject the row. This runs only on classified model dirs.
+        for entry in candidate.iterdir():
             try:
                 if entry.is_file() and _is_immediate_model_weight_file(entry):
                     if not path_is_same_or_child(entry, folder_path):
