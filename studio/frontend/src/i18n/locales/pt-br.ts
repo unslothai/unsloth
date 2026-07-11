@@ -197,9 +197,8 @@ export const ptBR = {
       avatarShapeCircle: "Círculo",
       avatarShapeRounded: "Arredondado",
       greetingSloth: "Preguiça na saudação",
-      greetingSlothDescription:
-        "Mostra a preguiça ao lado da mensagem de boas-vindas em novos chats.",
-      chooseSloth: "Ou escolha uma preguiça",
+      greetingSlothDescription: "Mostra a preguiça na saudação do chat.",
+      chooseSloth: "Ou escolha uma preguiça como foto de perfil",
       nameSaved: "Nome de perfil salvo",
       namePersistErrorTitle: "Não foi possível persistir o nome de perfil",
       namePersistErrorDescription:

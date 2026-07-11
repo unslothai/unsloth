@@ -245,9 +245,8 @@ export const en = {
       avatarShapeCircle: "Circle",
       avatarShapeRounded: "Rounded",
       greetingSloth: "Sloth in greeting",
-      greetingSlothDescription:
-        "Show the sloth next to the welcome message on new chats.",
-      chooseSloth: "Or pick a sloth",
+      greetingSlothDescription: "Show the sloth in the chat greeting.",
+      chooseSloth: "Or pick a sloth profile picture",
       nameSaved: "Profile name saved",
       namePersistErrorTitle: "Could not persist profile name",
       namePersistErrorDescription:

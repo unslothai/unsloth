@@ -624,6 +624,28 @@ html[data-chat-font] .aui-root {
 	font-family: var(--custom-chat-font);
 }
 
+/* Palette cards: the active ring and check key off html[data-palette] so
+   they swap in the same style pass that swaps the color tokens. Driving
+   them from React state paints one frame late while the whole page
+   recalculates, which briefly leaves the ring on the previous card. */
+.palette-card-check {
+	display: none;
+}
+.palette-card:hover {
+	border-color: color-mix(in srgb, var(--ring) 40%, transparent);
+}
+:root:not([data-palette]) .palette-card[data-palette-value="standard"],
+:root[data-palette="classic"] .palette-card[data-palette-value="classic"],
+:root[data-palette="minimal"] .palette-card[data-palette-value="minimal"] {
+	border-color: var(--ring);
+	box-shadow: 0 0 0 1px var(--ring);
+}
+:root:not([data-palette]) .palette-card[data-palette-value="standard"] .palette-card-check,
+:root[data-palette="classic"] .palette-card[data-palette-value="classic"] .palette-card-check,
+:root[data-palette="minimal"] .palette-card[data-palette-value="minimal"] .palette-card-check {
+	display: flex;
+}
+
 /* Settings search: brief highlight on the row a result jumped to. */
 .settings-search-hit {
 	animation: settings-search-hit 1.6s ease-out;

@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type TranslationKey, useT } from "@/i18n";
-import { cn } from "@/lib/utils";
 import { Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -129,23 +128,22 @@ export function PaletteCards() {
             type="button"
             onClick={() => setPalette(opt.value)}
             aria-pressed={active}
-            className={cn(
-              "flex flex-col gap-2 rounded-xl border p-2.5 text-left transition-colors",
-              active
-                ? "border-ring ring-1 ring-ring"
-                : "border-border hover:border-ring/40",
-            )}
+            data-palette-value={opt.value}
+            // Active ring and check are CSS-driven off html[data-palette]
+            // (see .palette-card in index.css) so they move in the same
+            // style pass that swaps the tokens; keying them off React state
+            // leaves the ring on the old card until the app finishes
+            // re-rendering.
+            className="palette-card flex flex-col gap-2 rounded-xl border border-border p-2.5 text-left transition-colors"
           >
             <PalettePreview colors={PREVIEWS[opt.value][resolved]} />
             <div className="flex items-center justify-between gap-2 px-0.5">
               <span className="text-sm font-medium text-foreground">
                 {t(opt.labelKey)}
               </span>
-              {active && (
-                <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                  <HugeiconsIcon icon={Tick02Icon} className="size-3" />
-                </span>
-              )}
+              <span className="palette-card-check size-4 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                <HugeiconsIcon icon={Tick02Icon} className="size-3" />
+              </span>
             </div>
           </button>
         );
