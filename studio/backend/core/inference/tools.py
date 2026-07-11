@@ -971,6 +971,7 @@ def execute_tool(
     cancel_event = None,
     timeout: int | None = _TIMEOUT_UNSET,
     session_id: str | None = None,
+    thread_id: str | None = None,
     rag_scope: dict | None = None,
     disable_sandbox: bool = False,
 ) -> str:
@@ -978,6 +979,8 @@ def execute_tool(
 
     ``timeout``: int seconds, ``None`` = no limit, unset = ``_EXEC_TIMEOUT``.
     ``session_id``: optional ID for per-conversation sandbox isolation.
+    ``thread_id``: optional conversation ID; scopes stateful MCP stdio sessions
+    per thread (session_id alone can be shared project-wide).
     ``rag_scope``: hidden per-request RAG context the model never sees; consumed
     by ``search_knowledge_base``.
     ``disable_sandbox``: Bypass Permissions; run python/terminal without the
@@ -1002,6 +1005,11 @@ def execute_tool(
             return f"Error: MCP server '{server_id}' is disabled"
         if is_stdio(server["url"]) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{server_id}' is disabled on this host"
+        # session_id (the sandbox id) is shared by all threads in a project;
+        # fold in thread_id so stdio sessions stay per-conversation.
+        mcp_scope = session_id
+        if thread_id:
+            mcp_scope = f"{session_id}:{thread_id}" if session_id else thread_id
         return call_tool_sync(
             url = server["url"],
             headers = parse_server_headers(server),
@@ -1010,7 +1018,7 @@ def execute_tool(
             timeout = effective_timeout,
             use_oauth = bool(server.get("use_oauth")),
             cancel_event = cancel_event,
-            scope = session_id,
+            scope = mcp_scope,
         )
     if name == "web_search":
         return _web_search(

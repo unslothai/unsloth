@@ -226,6 +226,47 @@ def test_reap_skips_in_flight_session(fake_clients, monkeypatch):
             session.in_flight = 0
 
 
+def test_close_during_connect_is_not_cached(fake_clients, monkeypatch):
+    class SlowStart(FakeClient):
+        async def __aenter__(self):
+            await asyncio.sleep(0.5)
+            return await super().__aenter__()
+
+    monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: SlowStart(url))
+    results: list[str] = []
+    worker = threading.Thread(
+        target = lambda: results.append(call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat"))
+    )
+    worker.start()
+    deadline = time.monotonic() + 5.0
+    while not fake_clients and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert fake_clients  # connect is in progress
+    # Server deleted/updated mid-connect: the session must not be cached after.
+    close_stdio_sessions(STDIO_URL)
+    worker.join(10.0)
+    assert results and results[0].startswith("Error: MCP tool 't' failed")
+    assert mcp_client._stdio_sessions == {}
+    assert fake_clients[0].exited == 1
+
+
+def test_connect_abort_race_still_closes_client(fake_clients, monkeypatch):
+    class WinsRace(FakeClient):
+        async def __aenter__(self):
+            try:
+                await asyncio.sleep(5.0)
+            except asyncio.CancelledError:
+                pass  # connect finishes just as the abort lands
+            return await super().__aenter__()
+
+    monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: WinsRace(url))
+    out = call_tool_sync(STDIO_URL, None, "t", {}, timeout = 0.1)
+    assert "timed out" in out
+    assert fake_clients[0].entered == 1
+    assert fake_clients[0].exited == 1  # no orphaned subprocess
+    assert mcp_client._stdio_sessions == {}
+
+
 def test_close_stdio_sessions_by_url(fake_clients):
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     call_tool_sync("npx other-server", None, "t", {}, scope = "chat")
@@ -235,6 +276,31 @@ def test_close_stdio_sessions_by_url(fake_clients):
     assert fake_clients[1].exited == 0
     assert len(mcp_client._stdio_sessions) == 1
     assert key not in mcp_client._stdio_key_locks
+
+
+def test_execute_tool_mcp_scope_is_per_thread(tmp_path, monkeypatch):
+    # session_id is the sandbox id and can be shared project-wide; the stdio
+    # session scope must also carry the per-conversation thread id.
+    from core.inference import tools as tools_mod
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
+    mcp_servers_db.create_server(id = "s1", display_name = "S", url = STDIO_URL, is_enabled = True)
+
+    scopes: list = []
+
+    def fake_call_tool_sync(**kwargs):
+        scopes.append(kwargs["scope"])
+        return "ok"
+
+    monkeypatch.setattr(tools_mod, "call_tool_sync", fake_call_tool_sync)
+    tools_mod.execute_tool("mcp__s1__t", {}, session_id = "project-p1", thread_id = "thread-a")
+    tools_mod.execute_tool("mcp__s1__t", {}, session_id = "project-p1", thread_id = "thread-b")
+    tools_mod.execute_tool("mcp__s1__t", {}, session_id = "sess-only")
+    tools_mod.execute_tool("mcp__s1__t", {}, thread_id = "thread-a")
+    assert scopes == ["project-p1:thread-a", "project-p1:thread-b", "sess-only", "thread-a"]
 
 
 def test_multi_block_result_flattens_through_session(fake_clients):

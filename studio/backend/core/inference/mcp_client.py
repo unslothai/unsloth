@@ -289,6 +289,10 @@ class _StdioSession:
         async def _open():
             client = _client(self.url, self.headers)
             await client.__aenter__()
+            # Publish on the loop thread with no await in between: if an abort
+            # races a just-completed connect, close() still sees the client and
+            # __aexit__s it instead of orphaning the subprocess.
+            self.client = client
             return client
 
         future = asyncio.run_coroutine_threadsafe(_open(), self.loop)
@@ -299,7 +303,7 @@ class _StdioSession:
                 _abort_future(future)
                 raise _MCPCancelled
             try:
-                self.client = future.result(0.05)
+                future.result(0.05)
                 return
             except (concurrent.futures.TimeoutError, asyncio.TimeoutError):
                 if time.monotonic() >= deadline:
@@ -332,24 +336,28 @@ class _StdioSession:
             self.last_used = time.monotonic()
 
     def close(self) -> None:
-        client = getattr(self, "client", None)
-        self.client = None
         loop = getattr(self, "loop", None)
         loop_alive = loop is not None and not loop.is_closed()
-        if client is not None and loop_alive:
+        if loop_alive:
+            async def _shutdown() -> None:
+                # Runs on the loop thread, so it serializes with an aborted
+                # connect() that finished anyway and just published its client.
+                client, self.client = self.client, None
+                if client is not None:
+                    await client.__aexit__(None, None, None)
+
             try:
-                asyncio.run_coroutine_threadsafe(client.__aexit__(None, None, None), loop).result(
-                    _STDIO_CLOSE_TIMEOUT
-                )
+                asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(_STDIO_CLOSE_TIMEOUT)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "MCP stdio session close failed for %r: %s", getattr(self, "url", ""), exc
                 )
-        if loop_alive:
             try:
                 loop.call_soon_threadsafe(loop.stop)
             except RuntimeError:
                 pass
+        else:
+            self.client = None
         thread = getattr(self, "_thread", None)
         if thread is not None:
             thread.join(timeout = 5.0)
@@ -371,6 +379,16 @@ class _StdioKeyLock:
 _stdio_key_locks: dict[tuple, _StdioKeyLock] = {}
 _stdio_sessions_lock = threading.Lock()
 _stdio_reaper_started = False
+# close_stdio_sessions() can only close sessions already published in
+# _stdio_sessions; one still inside connect() would be missed and cached
+# stale. Bump a generation on every close so that connect discards its
+# session instead of publishing it. Guarded by _stdio_sessions_lock.
+_stdio_close_all_gen = 0
+_stdio_url_close_gen: dict[str, int] = {}
+
+
+def _stdio_close_generation(url: str) -> tuple[int, int]:
+    return (_stdio_close_all_gen, _stdio_url_close_gen.get(url, 0))
 
 
 def _session_key(url: str, headers: Optional[dict], scope: Optional[str]) -> tuple:
@@ -424,6 +442,7 @@ def _get_stdio_session(
                     return session
                 if key in _stdio_sessions:
                     stale = _stdio_sessions.pop(key)
+                generation = _stdio_close_generation(url)
             if stale is not None:
                 stale.close()
             session = _StdioSession(url, headers)
@@ -433,14 +452,19 @@ def _get_stdio_session(
                 session.close()
                 raise
             with _stdio_sessions_lock:
-                session.in_flight = 1
-                _stdio_sessions[key] = session
-                if not _stdio_reaper_started:
-                    _stdio_reaper_started = True
-                    threading.Thread(
-                        target = _stdio_session_reaper, name = "mcp-stdio-reaper", daemon = True
-                    ).start()
-                    atexit.register(close_stdio_sessions)
+                closed_while_connecting = _stdio_close_generation(url) != generation
+                if not closed_while_connecting:
+                    session.in_flight = 1
+                    _stdio_sessions[key] = session
+                    if not _stdio_reaper_started:
+                        _stdio_reaper_started = True
+                        threading.Thread(
+                            target = _stdio_session_reaper, name = "mcp-stdio-reaper", daemon = True
+                        ).start()
+                        atexit.register(close_stdio_sessions)
+            if closed_while_connecting:
+                session.close()
+                raise RuntimeError("MCP server was updated or removed while connecting")
             return session
     finally:
         _return_stdio_key_lock(key, key_lock)
@@ -462,7 +486,12 @@ def _drop_stdio_session(key: tuple, session: _StdioSession) -> None:
 
 def close_stdio_sessions(url: Optional[str] = None) -> None:
     """Close all persistent stdio sessions, or only those for ``url``."""
+    global _stdio_close_all_gen
     with _stdio_sessions_lock:
+        if url is None:
+            _stdio_close_all_gen += 1
+        else:
+            _stdio_url_close_gen[url] = _stdio_url_close_gen.get(url, 0) + 1
         keys = [k for k in _stdio_sessions if url is None or k[0] == url]
         sessions = [_stdio_sessions.pop(k) for k in keys]
         for key in keys:

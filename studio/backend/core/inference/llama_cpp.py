@@ -8961,6 +8961,7 @@ class LlamaCppBackend:
         nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
@@ -9983,6 +9984,7 @@ class LlamaCppBackend:
                             cancel_event = cancel_event,
                             timeout = _effective_timeout,
                             session_id = session_id,
+                            thread_id = thread_id,
                             rag_scope = rag_scope,
                             disable_sandbox = bypass_permissions,
                         )

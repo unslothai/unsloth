@@ -815,6 +815,10 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
     )
+    thread_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Conversation ID for scoping stateful tool sessions (e.g. stdio MCP); stays per-thread where session_id may be shared project-wide.",
+    )
     rag_scope: Optional[dict] = Field(
         None,
         description = (

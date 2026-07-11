@@ -6929,6 +6929,7 @@ async def openai_chat_completions(
                     if payload.tool_call_timeout is not None
                     else 300,
                     session_id = payload.session_id,
+                    thread_id = payload.thread_id,
                     rag_scope = payload.rag_scope,
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
                     # Bypass Permissions takes precedence over the confirm gate:
@@ -8225,6 +8226,7 @@ async def openai_chat_completions(
                 if payload.tool_call_timeout is not None
                 else 300,
                 session_id = payload.session_id,
+                thread_id = payload.thread_id,
                 rag_scope = payload.rag_scope,
                 # Bypass Permissions takes precedence over the confirm gate:
                 # never prompt while bypassing.
