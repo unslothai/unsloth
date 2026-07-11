@@ -2085,6 +2085,17 @@ export function HubModelPicker({
     }),
     [gpu],
   );
+  // Variant expanders and format lists follow the same single-device budget as
+  // deviceBudget when this picker is task-scoped (Images/Video): the diffusion
+  // and video loaders place the whole pipeline on one device, so sorting and
+  // recommending quants against the summed multi-GPU total would mark variants
+  // as fitting that OOM at load. Chat pickers keep the summed total, where
+  // llama.cpp can split layers across devices.
+  const expanderGpuGb = gpu.available
+    ? task
+      ? gpu.maxDeviceMemoryGb
+      : gpu.memoryTotalGb
+    : undefined;
   const routedArtifactFor = useCallback(
     (group: CatalogGroup): ModelArtifact => {
       // Honor the format filter when routing a bare group click. A group is only
@@ -3092,7 +3103,7 @@ export function HubModelPicker({
             parentOptionKey={optionKey}
             onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
             onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
-            gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+            gpuGb={expanderGpuGb}
             systemRamGb={gpu.systemRamAvailableGb || undefined}
             variantActions={{
               onUpdate: (quant, expectedBytes) =>
@@ -3191,7 +3202,7 @@ export function HubModelPicker({
               optionProps={hubModelList.getOptionProps(optionKey, selected)}
               onClick={() => void routeGroupClick(group, expandKey)}
               vramStatus={null}
-              gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+              gpuGb={expanderGpuGb}
               className={downloadedRowButtonClassName}
             />
           </div>
@@ -3220,7 +3231,7 @@ export function HubModelPicker({
             recommendedArtifactId={routed.repoId}
             isRepoDownloaded={isRepoDownloaded}
             onSelect={onSelect}
-            gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+            gpuGb={expanderGpuGb}
             systemRamGb={gpu.systemRamAvailableGb || undefined}
             hfToken={hfToken || undefined}
             parentOptionKey={optionKey}
@@ -4192,7 +4203,7 @@ export function HubModelPicker({
                                 value === m.id,
                               )}
                               onClick={() => handleModelClick(m.id)}
-                              gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                              gpuGb={expanderGpuGb}
                             />
                           </div>
                         );
@@ -4341,7 +4352,7 @@ export function HubModelPicker({
                             isKnownGgufRepo(id) ? null : (vram?.status ?? null)
                           }
                           vramEst={isKnownGgufRepo(id) ? undefined : vram?.est}
-                          gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                          gpuGb={expanderGpuGb}
                           onArrowDownIntoChildren={
                             expandedGguf === id
                               ? () => {
