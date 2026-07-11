@@ -114,7 +114,6 @@ def _active_windows_drive_bitmask() -> int:
     """
     try:
         import ctypes
-
         return int(ctypes.windll.kernel32.GetLogicalDrives())
     except Exception:  # noqa: BLE001 -- best-effort; fall back to probing all letters
         return 0
