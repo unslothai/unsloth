@@ -209,7 +209,6 @@ def _kernels_hub_compatible(logger: Any = None) -> bool:
     undeterminable hub version allows the install (previous behaviour)."""
     try:
         from importlib.metadata import version
-
         return int(version("huggingface_hub").split(".", 1)[0]) >= 1
     except Exception:  # noqa: BLE001 -- unknown hub -> keep the previous behaviour
         return True

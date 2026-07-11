@@ -1853,9 +1853,7 @@ def _stub_compile_cache(monkeypatch, ctx = None):
         "save",
         lambda c, logger = None: calls["save"].append(c) or False,
     )
-    monkeypatch.setattr(
-        video_mod.compile_cache, "restore", lambda c: calls["restore"].append(c)
-    )
+    monkeypatch.setattr(video_mod.compile_cache, "restore", lambda c: calls["restore"].append(c))
     return calls
 
 
