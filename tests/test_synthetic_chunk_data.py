@@ -129,6 +129,43 @@ def test_chunk_data_uninitialized_error_names_real_class():
         os.unlink(path)
 
 
+def test_chunk_data_chunks_do_not_exceed_max_tokens():
+    # Every chunk must fit within max_tokens (= max_seq_length - 2*max_generation_tokens - 128).
+    # The multi-chunk path fed n_chunks points into linspace, but pairing boundaries[:-1] with
+    # boundaries[1:] turns N points into N-1 ranges, so it emitted one fewer, oversized chunk:
+    # chunks exceeded max_tokens and a document just over the threshold came back unsplit.
+    kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 760, overlap = 64)
+    max_tokens = 2048 - 760 * 2 - 128  # 400
+
+    for n_words in (500, 2000):
+        out, contents = _chunk("word " * n_words, kit = kit)
+        assert (
+            len(out) >= 2
+        ), f"a {n_words}-token doc (> max_tokens={max_tokens}) must be split, got {len(out)}"
+        for content in contents:
+            n_tokens = len(content.split())
+            assert (
+                n_tokens <= max_tokens
+            ), f"chunk has {n_tokens} tokens, exceeding max_tokens={max_tokens}"
+
+
+def test_chunk_data_does_not_over_split():
+    # n_chunks must be the *minimum* number of max_tokens-bounded chunks. Because
+    # consecutive chunks overlap, that count is ceil((length - overlap) / stride),
+    # not ceil(length / stride): the latter over-counts by one just past a stride
+    # multiple and emits an extra redundant chunk. With max_tokens=400 / overlap=64
+    # a 673-token doc fits in 2 chunks (~369 + ~368); the loose count gave 3 of ~267.
+    kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 760, overlap = 64)
+    max_tokens = 2048 - 760 * 2 - 128  # 400
+    out, contents = _chunk("word " * 673, kit = kit)
+    assert len(out) == 2, f"673-token doc should yield the minimal 2 chunks, got {len(out)}"
+    for content in contents:
+        n_tokens = len(content.split())
+        assert (
+            n_tokens <= max_tokens
+        ), f"chunk has {n_tokens} tokens, exceeding max_tokens={max_tokens}"
+
+
 if __name__ == "__main__":
     test_chunk_data_keeps_single_chunk_document()
     test_chunk_data_still_splits_long_document()
@@ -136,4 +173,6 @@ if __name__ == "__main__":
     test_chunk_data_short_document_is_not_split_into_fragments()
     test_chunk_data_rejects_overlap_not_smaller_than_chunk()
     test_chunk_data_uninitialized_error_names_real_class()
+    test_chunk_data_chunks_do_not_exceed_max_tokens()
+    test_chunk_data_does_not_over_split()
     print("OK")
