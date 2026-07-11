@@ -22,12 +22,22 @@ export function isLocalePreference(value: unknown): value is LocalePreference {
   return value === AUTO_LOCALE || isSupportedLocale(value);
 }
 
+function isTraditionalChinese(lowerTag: string): boolean {
+  if (lowerTag.includes("hant")) return true;
+  if (lowerTag.includes("hans")) return false;
+  const parts = lowerTag.split("-");
+  return parts.includes("tw") || parts.includes("hk") || parts.includes("mo");
+}
+
 function matchLocale(tag: string): Locale | null {
   const locales = Object.keys(LOCALES) as Locale[];
   const lower = tag.toLowerCase();
   const exact = locales.find((locale) => locale.toLowerCase() === lower);
   if (exact) return exact;
   const language = lower.split("-")[0];
+  // We only ship Simplified Chinese. Don't hand it to Traditional Chinese
+  // (zh-Hant / zh-TW / zh-HK / zh-MO) users; let them fall through instead.
+  if (language === "zh" && isTraditionalChinese(lower)) return null;
   return (
     locales.find((locale) => locale.toLowerCase().split("-")[0] === language) ??
     null
@@ -76,6 +86,7 @@ function writeStoredPreference(preference: LocalePreference): void {
 function syncDocumentLang(locale: Locale): void {
   if (typeof document === "undefined") return;
   document.documentElement.lang = locale;
+  document.documentElement.dir = LOCALES[locale].dir;
 }
 
 function notifySubscribers(): void {

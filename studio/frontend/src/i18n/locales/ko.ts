@@ -41,7 +41,7 @@ export const ko = {
       search: "검색",
       hub: "Hub",
       train: "학습",
-      recipes: "Recipes",
+      recipes: "레시피",
       export: "내보내기",
       recents: "최근 항목",
       noChatsYet: "아직 채팅이 없습니다",

@@ -41,7 +41,7 @@ export const fr = {
       search: "Rechercher",
       hub: "Hub",
       train: "Entraîner",
-      recipes: "Recipes",
+      recipes: "Recettes",
       export: "Exporter",
       recents: "Récents",
       noChatsYet: "Aucune discussion pour le moment",

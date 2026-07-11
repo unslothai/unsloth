@@ -41,7 +41,7 @@ export const de = {
       search: "Suchen",
       hub: "Hub",
       train: "Trainieren",
-      recipes: "Recipes",
+      recipes: "Rezepte",
       export: "Exportieren",
       recents: "Zuletzt verwendet",
       noChatsYet: "Noch keine Chats",

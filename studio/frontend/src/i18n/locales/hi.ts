@@ -41,7 +41,7 @@ export const hi = {
       search: "खोजें",
       hub: "Hub",
       train: "ट्रेन",
-      recipes: "Recipes",
+      recipes: "रेसिपी",
       export: "एक्सपोर्ट",
       recents: "हाल के",
       noChatsYet: "अभी तक कोई चैट नहीं",
