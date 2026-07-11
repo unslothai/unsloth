@@ -170,6 +170,8 @@ export function ChatTab() {
   }, [archivedChatsRequested, consumeArchivedChatsRequest]);
   const [exporting, setExporting] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
+  const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
   const collapseHtmlArtifacts = useChatRuntimeStore(
     (state) => state.collapseHtmlArtifacts,
   );
@@ -426,6 +428,15 @@ export function ChatTab() {
             checked={showResponseModel}
             onCheckedChange={setShowResponseModel}
           />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.chatDefaults")}>
+        <SettingsRow
+          label={t("settings.general.autoTitleNewChats")}
+          description={t("settings.general.autoTitleNewChatsDescription")}
+        >
+          <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
         </SettingsRow>
       </SettingsSection>
 

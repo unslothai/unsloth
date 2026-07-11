@@ -2,19 +2,27 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  loadPersonalization,
-  savePersonalization,
-  setTheme,
-  useTheme,
+  type AppearanceCustomization,
+  type Palette,
   type Theme,
+  isDefaultCustomization,
+  isPalette,
+  loadPersonalization,
+  sanitizeCustomization,
+  savePersonalization,
+  setPalette,
+  setTheme,
+  useAppearanceCustomStore,
+  usePalette,
+  useTheme,
 } from "@/features/settings";
 import {
   DEFAULT_LOCALE,
+  type Locale,
   getLocale,
   isSupportedLocale,
   setLocale,
   useLocale,
-  type Locale,
 } from "@/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -110,12 +118,14 @@ function profileSnapshot(): ProfileSnapshot {
 function payload(
   profile: ProfileSnapshot,
   theme: Theme,
+  palette: Palette,
+  customization: AppearanceCustomization,
   language: Locale | null,
 ): PersonalizationWrite {
   return {
     version: 1,
     profile: normalizeProfile(profile),
-    appearance: { theme, language },
+    appearance: { theme, palette, language, customization },
   };
 }
 
@@ -126,6 +136,8 @@ function serialized(data: PersonalizationWrite): string {
 function hasLocalSettings(
   profile: ProfileSnapshot,
   theme: Theme,
+  palette: Palette,
+  customization: AppearanceCustomization,
   language: Locale,
 ): boolean {
   return Boolean(
@@ -134,6 +146,8 @@ function hasLocalSettings(
       profile.avatarDataUrl ||
       profile.avatarShape !== "circle" ||
       theme !== "system" ||
+      palette !== "standard" ||
+      !isDefaultCustomization(customization) ||
       language !== DEFAULT_LOCALE,
   );
 }
@@ -144,10 +158,14 @@ export function usePersonalizationSync(enabled: boolean): void {
   const avatarDataUrl = useUserProfileStore((s) => s.avatarDataUrl);
   const avatarShape = useUserProfileStore((s) => s.avatarShape);
   const { theme } = useTheme();
+  const { palette } = usePalette();
+  const customization = useAppearanceCustomStore((s) => s.customization);
   const language = useLocale();
   const [hydratedGeneration, setHydratedGeneration] = useState(0);
   const authGenerationRef = useRef(0);
   const latestThemeRef = useRef(theme);
+  const latestPaletteRef = useRef(palette);
+  const latestCustomizationRef = useRef(customization);
   const latestLanguageRef = useRef(language);
   const lastSavedRef = useRef("");
   const saveInFlightRef = useRef(false);
@@ -165,6 +183,14 @@ export function usePersonalizationSync(enabled: boolean): void {
   useEffect(() => {
     latestThemeRef.current = theme;
   }, [theme]);
+
+  useEffect(() => {
+    latestPaletteRef.current = palette;
+  }, [palette]);
+
+  useEffect(() => {
+    latestCustomizationRef.current = customization;
+  }, [customization]);
 
   useEffect(() => {
     latestLanguageRef.current = language;
@@ -188,17 +214,38 @@ export function usePersonalizationSync(enabled: boolean): void {
             displayName: remote.profile.displayName ?? "",
             nickname: remote.profile.nickname ?? "",
             avatarDataUrl: remote.profile.avatarDataUrl ?? null,
-            avatarShape: remote.profile.avatarShape === "rounded" ? "rounded" : "circle",
+            avatarShape:
+              remote.profile.avatarShape === "rounded" ? "rounded" : "circle",
           };
           const nextTheme = remote.appearance.theme;
+          const nextPalette = isPalette(remote.appearance.palette)
+            ? remote.appearance.palette
+            : latestPaletteRef.current;
+          const nextCustomization = sanitizeCustomization(
+            remote.appearance.customization,
+          );
           const nextLanguage = isSupportedLocale(remote.appearance.language)
             ? remote.appearance.language
             : latestLanguageRef.current;
           useUserProfileStore.setState(nextProfile);
           if (nextTheme !== latestThemeRef.current) setTheme(nextTheme);
-          if (nextLanguage !== latestLanguageRef.current) setLocale(nextLanguage);
+          if (nextPalette !== latestPaletteRef.current) setPalette(nextPalette);
+          if (
+            JSON.stringify(nextCustomization) !==
+            JSON.stringify(latestCustomizationRef.current)
+          ) {
+            useAppearanceCustomStore.getState().replaceAll(nextCustomization);
+          }
+          if (nextLanguage !== latestLanguageRef.current)
+            setLocale(nextLanguage);
           lastSavedRef.current = serialized(
-            payload(nextProfile, nextTheme, nextLanguage),
+            payload(
+              nextProfile,
+              nextTheme,
+              nextPalette,
+              nextCustomization,
+              nextLanguage,
+            ),
           );
         } else {
           const rawProfile = profileSnapshot();
@@ -207,10 +254,26 @@ export function usePersonalizationSync(enabled: boolean): void {
             useUserProfileStore.setState(nextProfile);
           }
           const nextTheme = latestThemeRef.current;
+          const nextPalette = latestPaletteRef.current;
+          const nextCustomization = latestCustomizationRef.current;
           const nextLanguage = getLocale();
-          const nextPayload = payload(nextProfile, nextTheme, nextLanguage);
+          const nextPayload = payload(
+            nextProfile,
+            nextTheme,
+            nextPalette,
+            nextCustomization,
+            nextLanguage,
+          );
           const nextSerialized = serialized(nextPayload);
-          if (hasLocalSettings(nextProfile, nextTheme, nextLanguage)) {
+          if (
+            hasLocalSettings(
+              nextProfile,
+              nextTheme,
+              nextPalette,
+              nextCustomization,
+              nextLanguage,
+            )
+          ) {
             try {
               await savePersonalization(nextPayload);
               lastSavedRef.current = nextSerialized;
@@ -240,6 +303,8 @@ export function usePersonalizationSync(enabled: boolean): void {
     const current = payload(
       { displayName, nickname, avatarDataUrl, avatarShape },
       theme,
+      palette,
+      customization,
       language,
     );
     const currentSerialized = serialized(current);
@@ -261,6 +326,8 @@ export function usePersonalizationSync(enabled: boolean): void {
     avatarDataUrl,
     avatarShape,
     theme,
+    palette,
+    customization,
     language,
     drainSaveQueue,
   ]);

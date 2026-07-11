@@ -23,6 +23,7 @@ def test_defaults_fill_missing_fields():
     p = PersonalizationPayload.model_validate({})
     assert p.version == pers.PERSONALIZATION_VERSION
     assert p.appearance.theme == "system"
+    assert p.appearance.palette == "standard"
     assert p.profile.avatarShape == "circle"
     assert p.profile.displayName == ""
 
@@ -37,6 +38,82 @@ def test_unknown_keys_are_ignored():
 def test_invalid_theme_rejected():
     with pytest.raises(ValidationError):
         PersonalizationPayload.model_validate({"appearance": {"theme": "neon"}})
+
+
+def test_invalid_palette_rejected():
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate({"appearance": {"palette": "neon"}})
+
+
+def test_customization_defaults():
+    p = PersonalizationPayload.model_validate({})
+    c = p.appearance.customization
+    assert c.contrast == 50
+    assert c.reduceMotion == "system"
+    assert c.fontSmoothing is True
+    assert c.pointerCursors is False
+    assert c.translucentSidebar is False
+    assert c.colors.light.accent is None
+    assert c.uiFontSize is None
+
+
+def test_customization_invalid_values_rejected():
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            {"appearance": {"customization": {"colors": {"light": {"accent": "red"}}}}}
+        )
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            {"appearance": {"customization": {"uiFontSize": 99}}}
+        )
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            {"appearance": {"customization": {"contrast": 500}}}
+        )
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            {"appearance": {"customization": {"reduceMotion": "sometimes"}}}
+        )
+
+
+def test_customization_imported_fonts_validated():
+    ok = PersonalizationPayload.model_validate(
+        {
+            "appearance": {
+                "customization": {
+                    "importedFonts": [
+                        {"name": "My Font", "dataUrl": "data:font/woff2;base64,AAAA"}
+                    ]
+                }
+            }
+        }
+    )
+    assert ok.appearance.customization.importedFonts[0].name == "My Font"
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            {
+                "appearance": {
+                    "customization": {
+                        "importedFonts": [
+                            {"name": "Evil", "dataUrl": "https://example.com/font.woff2"}
+                        ]
+                    }
+                }
+            }
+        )
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            {
+                "appearance": {
+                    "customization": {
+                        "importedFonts": [
+                            {"name": f"Font {i}", "dataUrl": "data:font/ttf;base64,AAAA"}
+                            for i in range(4)
+                        ]
+                    }
+                }
+            }
+        )
 
 
 def test_avatar_must_be_image_data_url():
@@ -133,7 +210,29 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
             "avatarDataUrl": "/Sloth%20emojis/large%20sloth%20yay.png",
             "avatarShape": "rounded",
         },
-        "appearance": {"theme": "dark", "language": "en"},
+        "appearance": {
+            "theme": "dark",
+            "palette": "classic",
+            "language": "en",
+            "customization": {
+                "colors": {
+                    "light": {"accent": "#339cff", "background": None, "foreground": None},
+                    "dark": {"accent": None, "background": "#111111", "foreground": None},
+                },
+                "uiFont": "SF Pro Text",
+                "codeFont": None,
+                "importedFonts": [
+                    {"name": "SF Pro Text", "dataUrl": "data:font/woff2;base64,AAAA"}
+                ],
+                "uiFontSize": 14,
+                "codeFontSize": 13,
+                "contrast": 60,
+                "pointerCursors": True,
+                "reduceMotion": "off",
+                "fontSmoothing": True,
+                "translucentSidebar": True,
+            },
+        },
     }
     put = client.put("/api/settings/personalization", json = payload)
     assert put.status_code == 200

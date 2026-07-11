@@ -265,6 +265,90 @@ export const en = {
         light: "Light",
         dark: "Dark",
       },
+      palette: {
+        label: "Color palette",
+        description: "Colors used across Studio, in light and dark mode.",
+        standard: "Standard",
+        classic: "Classic",
+        minimal: "Minimal",
+      },
+      custom: {
+        reset: "Reset",
+        resetAll: "Reset customization",
+        preferencesTitle: "Preferences",
+        colors: {
+          description:
+            "Applies to the mode you're using now. Switch the color scheme to edit the other.",
+          lightGroup: "Light theme",
+          darkGroup: "Dark theme",
+          accent: "Accent",
+          background: "Background",
+          foreground: "Foreground",
+        },
+        fontDefault: "Default",
+        fontBundledGroup: "Built-in",
+        fontImportedGroup: "Imported",
+        fontDeviceGroup: "On this device",
+        fontDeviceLoading: "Looking for device fonts…",
+        fontSearch: "Search fonts…",
+        fontNoResults: "No fonts found.",
+        colorPicker: {
+          hue: "Hue",
+          hex: "Hex color",
+          eyedropper: "Pick a color from the screen",
+        },
+        uiFont: {
+          label: "UI font",
+          description: "Font used across the interface.",
+        },
+        codeFont: {
+          label: "Code font",
+          description: "Font used for code and diffs.",
+        },
+        importFont: {
+          label: "Import font",
+          description: "Add a font file from your device (max 1.5 MB).",
+          button: "Import font…",
+          remove: "Remove",
+          errorInvalidType:
+            "Unsupported file type. Use .woff2, .woff, .ttf, or .otf.",
+          errorTooLarge: "Font file is too large (max 1.5 MB).",
+          errorLimit: "You can import up to 3 fonts.",
+          errorFailed: "Could not load this font file.",
+        },
+        uiFontSize: {
+          label: "UI font size",
+          description: "Adjust the base size used for the Studio UI.",
+        },
+        codeFontSize: {
+          label: "Code font size",
+          description: "Adjust the base size used for code.",
+        },
+        fontSmoothing: {
+          label: "Font smoothing",
+          description: "Use smoothed font anti-aliasing.",
+        },
+        contrast: {
+          label: "Contrast",
+          description: "Strength of borders and secondary text.",
+        },
+        reduceMotion: {
+          label: "Reduce motion",
+          description: "Reduce animations or match your system.",
+          system: "System",
+          on: "On",
+          off: "Off",
+        },
+        pointerCursors: {
+          label: "Use pointer cursors",
+          description:
+            "Change the cursor to a pointer when hovering over interactive elements.",
+        },
+        translucentSidebar: {
+          label: "Translucent sidebar",
+          description: "Let content show through the sidebar.",
+        },
+      },
       language: {
         title: "Language",
         label: "Display language",

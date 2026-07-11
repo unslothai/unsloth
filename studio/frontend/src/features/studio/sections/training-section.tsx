@@ -175,7 +175,7 @@ export function TrainingSection() {
         {/* Start/Stop */}
         <Button
           data-tour="studio-start"
-          className="w-full cursor-pointer bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600"
+          className="w-full cursor-pointer bg-primary text-primary-foreground hover:bg-primary/90"
           onClick={() => void startTrainingRun()}
           disabled={isStarting || isIncompatible || store.isCheckingDataset || isLoadingModel || !configValidation.ok}
         >

@@ -562,11 +562,68 @@ class PersonalizationProfile(BaseModel):
         return value
 
 
+class PersonalizationCustomColors(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    accent: Optional[str] = Field(None, pattern = r"^#[0-9a-fA-F]{6}$")
+    background: Optional[str] = Field(None, pattern = r"^#[0-9a-fA-F]{6}$")
+    foreground: Optional[str] = Field(None, pattern = r"^#[0-9a-fA-F]{6}$")
+
+
+class PersonalizationCustomColorModes(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    light: PersonalizationCustomColors = Field(default_factory = PersonalizationCustomColors)
+    dark: PersonalizationCustomColors = Field(default_factory = PersonalizationCustomColors)
+
+
+MAX_IMPORTED_FONTS = 3
+# ~1.5 MB font file as base64; matches MAX_IMPORTED_FONT_DATA_URL_LENGTH in
+# the frontend appearance-custom-store.
+MAX_FONT_DATA_URL_LENGTH = 2_200_000
+
+
+class PersonalizationImportedFont(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    name: str = Field(..., min_length = 1, max_length = 100)
+    dataUrl: str = Field(..., max_length = MAX_FONT_DATA_URL_LENGTH)
+
+    @field_validator("dataUrl")
+    @classmethod
+    def _validate_font_data_url(cls, value: str) -> str:
+        if not (value.startswith("data:font/") or value.startswith("data:application/")):
+            raise ValueError("dataUrl must be a font data URL.")
+        return value
+
+
+class PersonalizationCustomization(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    colors: PersonalizationCustomColorModes = Field(default_factory = PersonalizationCustomColorModes)
+    uiFont: Optional[str] = Field(None, max_length = 200)
+    codeFont: Optional[str] = Field(None, max_length = 200)
+    importedFonts: list[PersonalizationImportedFont] = Field(
+        default_factory = list, max_length = MAX_IMPORTED_FONTS
+    )
+    uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
+    codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
+    contrast: int = Field(50, ge = 0, le = 100)
+    pointerCursors: bool = False
+    reduceMotion: Literal["system", "on", "off"] = "system"
+    fontSmoothing: bool = True
+    translucentSidebar: bool = False
+
+
 class PersonalizationAppearance(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
     theme: Literal["light", "dark", "system"] = "system"
+    palette: Literal["standard", "classic", "minimal"] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
+    customization: PersonalizationCustomization = Field(
+        default_factory = PersonalizationCustomization
+    )
 
 
 class PersonalizationPayload(BaseModel):
