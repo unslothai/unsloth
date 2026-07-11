@@ -946,6 +946,62 @@ def test_sandboxed_benign_attr_named_sink_workdir_module_allowed():
 
 
 @_POSIX_ONLY
+def test_sandboxed_benign_called_sink_name_workdir_module_allowed():
+    # A workdir helper that CALLS a method merely sharing a name with an os sink -- the ubiquitous
+    # platform.system(), or the module's own object method obj.system() -- must still import. The
+    # vetter now roots the exec-attr CALL rejection at an os / posix receiver (like the reference
+    # check), so a same-named call on an unrelated object is no longer misread as a shell escape.
+    session = "backstop-workdir-callfp"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "helper_call.py"), "w") as f:
+        f.write(
+            "import platform\n"
+            "class Runner:\n"
+            "    def system(self, x):\n"
+            "        return x * 2\n"
+            "PLAT = bool(platform.system())\n"
+            "VALUE = Runner().system(21)\n"
+        )
+    try:
+        out = _python_exec(
+            "import helper_call; print('HELPER', helper_call.VALUE)",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "HELPER 42" in out
+        assert "sandbox:" not in out
+    finally:
+        os.remove(os.path.join(workdir, "helper_call.py"))
+
+
+@_POSIX_ONLY
+def test_sandboxed_os_system_call_workdir_module_still_denied():
+    # The item-511 loosening must NOT reopen a real os.system escape: a workdir helper that calls
+    # os.system (rooted at the os module) still spawns an unguarded child, so it stays refused.
+    # (The command is assembled at runtime so the source echoed in the traceback does not itself
+    # contain the marker -- proving the sink never actually ran.)
+    session = "backstop-workdir-ossys"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "ossys_helper.py"), "w") as f:
+        f.write("import os\nos.system('echo ' + 'PWN' + 'MARK')\n")
+    try:
+        out = _python_exec(
+            "import ossys_helper; print('REACHED_' + 'BODY')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "PWNMARK" not in out
+        assert "REACHED_BODY" not in out
+        assert "sandbox:" in out or "ImportError" in out
+    finally:
+        os.remove(os.path.join(workdir, "ossys_helper.py"))
+
+
+@_POSIX_ONLY
 def test_sandboxed_workdir_module_meta_path_mutation_denied():
     # A workdir module that mutates the import machinery (sys.meta_path.pop(0)) would remove THIS
     # vetter, after which a second workdir module could import unscanned and run an unguarded

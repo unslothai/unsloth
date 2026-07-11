@@ -6688,6 +6688,13 @@ def _payload_calls_nonbuiltin_free_name(src, mode, free):
     return False
 
 
+# Native FFI modules that make UNGUARDED libc / syscall calls (ctypes.CDLL('libc').system,
+# cffi.FFI().dlopen), bypassing the Python open / os.open monkeypatches, so a literal `import
+# ctypes` in the submitted snippet is denied the same way as a dynamic import or a workdir helper
+# module importing one. (numpy / other compiled wheels are NOT here: they expose no raw-syscall API.)
+_NATIVE_ESCAPE_MODULES = frozenset({"ctypes", "_ctypes", "cffi"})
+
+
 def _check_signal_escape_patterns(
     code: str,
     _depth: int = 0,
@@ -7338,6 +7345,18 @@ def _check_signal_escape_patterns(
 
         def visit_Import(self, node):
             for alias in node.names:
+                # import ctypes / import ctypes.util / import cffi: native FFI, unguardable.
+                if alias.name.split(".")[0] in _NATIVE_ESCAPE_MODULES:
+                    dynamic_exec.append(
+                        {
+                            "type": "dynamic_exec",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                f"import of native FFI module {alias.name!r} makes unguarded "
+                                "libc / syscall calls that bypass the sandbox filesystem confinement"
+                            ),
+                        }
+                    )
                 if alias.name == "signal":
                     self.imports_signal = True
                     if alias.asname:
@@ -7382,6 +7401,18 @@ def _check_signal_escape_patterns(
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
+            # from ctypes import CDLL / from cffi import FFI: native FFI, unguardable.
+            if node.module and node.module.split(".")[0] in _NATIVE_ESCAPE_MODULES:
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(node, "lineno", -1),
+                        "description": (
+                            f"import from native FFI module {node.module!r} makes unguarded "
+                            "libc / syscall calls that bypass the sandbox filesystem confinement"
+                        ),
+                    }
+                )
             if node.module == "signal":
                 self.imports_signal = True
                 for alias in node.names:
@@ -7560,6 +7591,94 @@ def _check_signal_escape_patterns(
                     if k is not None and _const_fold(k, _const_env) == ci:
                         return _elt(v)
             return None
+
+        def _direct_exec_callee_id(self, func):
+            """Resolve a NON-composite callee expression to an eval/exec/compile id, else None.
+
+            Composite forms (a ternary `a if c else b`, a boolean fallback `x or eval`) are
+            peeled by _resolve_exec_callee, which delegates each branch here."""
+            if isinstance(func, ast.Name):
+                if func.id in _DYNAMIC_EXEC_BUILTINS:
+                    return func.id
+                if func.id in self.exec_from_aliases:
+                    return self.exec_from_aliases[func.id]  # from builtins import exec as e
+                if _analyzer_on:
+                    # single-assignment `e = exec` alias, resolved in the call's scope.
+                    return _scope_idx.resolve(func.id, func, "execb")
+                return None
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr in _DYNAMIC_EXEC_BUILTINS
+                and _ast_name_matches(func.value, self.builtins_aliases)
+            ):
+                return func.attr  # builtins.eval(...) / __builtins__.exec(...)
+            if isinstance(func, ast.Attribute) and func.attr == "__call__":
+                # eval.__call__("...") / exec.__call__(...) / builtins.eval.__call__(...)
+                _base = func.value
+                if isinstance(_base, ast.Name):
+                    if _base.id in _DYNAMIC_EXEC_BUILTINS:
+                        return _base.id
+                    if _base.id in self.exec_from_aliases:
+                        return self.exec_from_aliases[_base.id]
+                    if _analyzer_on:
+                        return _scope_idx.resolve(_base.id, _base, "execb")
+                    return None
+                if (
+                    isinstance(_base, ast.Attribute)
+                    and _base.attr in _DYNAMIC_EXEC_BUILTINS
+                    and _ast_name_matches(_base.value, self.builtins_aliases)
+                ):
+                    return _base.attr
+                return None
+            if (
+                _analyzer_on
+                and isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+            ):
+                # class-body alias reached as ClassName.attr (class C: e = eval; C.e('...')),
+                # or an instance-attribute alias (c.e = exec; c.e('...')).
+                _eid = _scope_idx.resolve_class_attr(func.value.id, func.attr, "execb")
+                if _eid is None:
+                    _eid = _scope_idx.resolve_instance_attr(func.value.id, func.attr, "execb")
+                return _eid
+            if isinstance(func, ast.Subscript):
+                # __builtins__['exec'] / builtins['eval']: a subscript of a builtins alias by a
+                # constant exec-builtin name. The container resolver below only walks user
+                # literals ({'e': exec}['e']), so the builtins mapping is handled explicitly.
+                if _ast_name_matches(func.value, self.builtins_aliases):
+                    _key = _const_fold(func.slice, _const_env)
+                    if isinstance(_key, str) and _key in _DYNAMIC_EXEC_BUILTINS:
+                        return _key
+                # ({'e': exec}['e'])(...) / [exec][0](...): an inline container hides the
+                # sink from the bare-name / attribute checks above.
+                return self._resolve_container_exec(func)
+            return None
+
+        def _resolve_exec_callee(
+            self,
+            func,
+            _depth = 0,
+        ):
+            """Resolve a callee expression to an eval/exec/compile id, peeling composites.
+
+            A ternary ((eval if c else exec)('...')) or a boolean fallback
+            ((getattr(__builtins__, 'ev', None) or eval)('...')) evaluates to a dynamic-exec
+            builtin without the callee being a bare Name / Attribute. Fail closed: for a
+            ternary or an and/or chain, ANY branch that can resolve to an exec builtin taints
+            the whole call, since which branch runs is not statically known."""
+            if _depth > 8 or func is None:
+                return None
+            if isinstance(func, ast.IfExp):
+                return self._resolve_exec_callee(
+                    func.body, _depth + 1
+                ) or self._resolve_exec_callee(func.orelse, _depth + 1)
+            if isinstance(func, ast.BoolOp):
+                for _v in func.values:
+                    _hit = self._resolve_exec_callee(_v, _depth + 1)
+                    if _hit is not None:
+                        return _hit
+                return None
+            return self._direct_exec_callee_id(func)
 
         def _resolve_container_deser(self, sub):
             """Resolve an inline literal-container index callee to a deserializer sink fq.
@@ -8681,56 +8800,10 @@ def _check_signal_escape_patterns(
                             )
 
             # --- Dynamic execution / obfuscation primitives ---
-            # eval / exec / compile (bare builtin or a single-assignment alias).
-            exec_func_id = None
-            if isinstance(func, ast.Name):
-                if func.id in _DYNAMIC_EXEC_BUILTINS:
-                    exec_func_id = func.id
-                elif func.id in self.exec_from_aliases:
-                    exec_func_id = self.exec_from_aliases[func.id]  # from builtins import exec as e
-                elif _analyzer_on:
-                    # single-assignment `e = exec` alias, resolved in the call's scope.
-                    exec_func_id = _scope_idx.resolve(func.id, func, "execb")
-            elif (
-                isinstance(func, ast.Attribute)
-                and func.attr in _DYNAMIC_EXEC_BUILTINS
-                and _ast_name_matches(func.value, self.builtins_aliases)
-            ):
-                exec_func_id = func.attr  # builtins.eval(...) / __builtins__.exec(...)
-            elif isinstance(func, ast.Attribute) and func.attr == "__call__":
-                # eval.__call__("...") / exec.__call__(...) / builtins.eval.__call__(...)
-                # invoke the builtin indirectly through its bound method; the payload is
-                # still node.args[0], so recover + recurse it exactly like a direct call.
-                _base = func.value
-                if isinstance(_base, ast.Name):
-                    if _base.id in _DYNAMIC_EXEC_BUILTINS:
-                        exec_func_id = _base.id
-                    elif _base.id in self.exec_from_aliases:
-                        exec_func_id = self.exec_from_aliases[_base.id]
-                    elif _analyzer_on:
-                        exec_func_id = _scope_idx.resolve(_base.id, _base, "execb")
-                elif (
-                    isinstance(_base, ast.Attribute)
-                    and _base.attr in _DYNAMIC_EXEC_BUILTINS
-                    and _ast_name_matches(_base.value, self.builtins_aliases)
-                ):
-                    exec_func_id = _base.attr
-            elif (
-                _analyzer_on
-                and isinstance(func, ast.Attribute)
-                and isinstance(func.value, ast.Name)
-            ):
-                # class-body alias reached as ClassName.attr (class C: e = eval; C.e('...')),
-                # or an instance-attribute alias (c.e = exec; c.e('...')).
-                exec_func_id = _scope_idx.resolve_class_attr(func.value.id, func.attr, "execb")
-                if exec_func_id is None:
-                    exec_func_id = _scope_idx.resolve_instance_attr(
-                        func.value.id, func.attr, "execb"
-                    )
-            elif isinstance(func, ast.Subscript):
-                # ({'e': exec}['e'])(...) / [exec][0](...): an inline container hides the
-                # sink from the bare-name / attribute checks above.
-                exec_func_id = self._resolve_container_exec(func)
+            # eval / exec / compile (bare builtin, single-assignment alias, builtins
+            # attribute / subscript, inline container, or an indirect callee expression --
+            # a ternary / boolean fallback -- that evaluates to one of them).
+            exec_func_id = self._resolve_exec_callee(func)
 
             if exec_func_id is not None:
                 if _analyzer_on:
@@ -10086,6 +10159,44 @@ def _check_signal_escape_patterns(
     _NET_URL_KWARGS = ("url",)
     _NET_ADDR_KWARGS = ("address", "sock_addr")
 
+    def _net_fold_str(_n):
+        # Fold a network target node to a concrete string: a module-level constant (via _const_env)
+        # or a function-local single-assignment string (u = 'http://x'; urlopen(u)).
+        _v = _const_fold(_n, _const_env)
+        if isinstance(_v, str):
+            return _v
+        if isinstance(_n, ast.Name):
+            _sv = _scope_idx.resolve(_n.id, _n, "strconst")
+            if isinstance(_sv, str):
+                return _sv
+        return None
+
+    def _net_leading_literal(_n):
+        # The LEADING literal text of an f-string / concatenation, up to its first dynamic part.
+        if isinstance(_n, ast.Constant) and isinstance(_n.value, str):
+            return _n.value
+        if isinstance(_n, ast.JoinedStr):
+            _out = ""
+            for _p in _n.values:
+                if isinstance(_p, ast.Constant) and isinstance(_p.value, str):
+                    _out += _p.value
+                else:
+                    break
+            return _out
+        if isinstance(_n, ast.BinOp) and isinstance(_n.op, ast.Add):
+            return _net_leading_literal(_n.left)
+        return ""
+
+    def _net_literal_host_prefix(_n):
+        # A host extracted from the leading literal of a non-fully-literal URL (f'https://hf.co/{x}',
+        # 'https://hf.co/' + p): the host must be terminated by a / ? # WITHIN the literal, so a
+        # dynamic tail cannot extend it (f'https://evil{x}.co/' has no literal host and returns None).
+        _pre = _net_leading_literal(_n)
+        if not _pre:
+            return None
+        _m = re.match(r"^\w+://([^/?#]+)[/?#]", _pre)
+        return _m.group(1) if _m else None
+
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def visit_Call(self, node):
             parts: list[str] = []
@@ -10129,11 +10240,32 @@ def _check_signal_escape_patterns(
                             a0 = _kw.value
                             break
                 host_lit = None
+                host_lit_opaque = False
                 if isinstance(a0, ast.Tuple) and a0.elts:
                     e0 = a0.elts[0]
                     if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
                         host_lit = e0.value
-                if host_lit:
+                    else:
+                        _folded = _net_fold_str(e0)
+                        if _folded is not None:
+                            host_lit = _folded
+                        else:
+                            # A raw AF_INET connect to an unresolved host (sock.connect(
+                            # (user_host, port))) is an egress the runtime cannot filter,
+                            # so fail closed exactly like the urllib / requests branch.
+                            host_lit_opaque = True
+                if host_lit_opaque:
+                    network_calls.append(
+                        {
+                            "type": "untrusted_host_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: non-literal network target cannot be checked "
+                                "against the sandbox allowlist"
+                            ),
+                        }
+                    )
+                elif host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(
                             {
@@ -10165,11 +10297,18 @@ def _check_signal_escape_patterns(
                         }
                     )
 
-                # 2) Extract literal host (URL string or (host, port) tuple). The host may be
+                # 2) Extract the host (URL string or (host, port) tuple). The host may be
                 # a positional first arg OR a keyword (requests.get(url=...),
-                # urlopen(url=...), create_connection(address=(host, port))).
+                # urlopen(url=...), create_connection(address=(host, port))). A non-literal
+                # arg is first folded to a concrete string (u = 'http://x'; get(u)), then
+                # reduced to its leading literal host prefix (f'https://hf.co/{path}', a
+                # 'https://hf.co/' + p concat) when a / ? # terminates the host inside the
+                # literal so a dynamic tail cannot extend it. A target that stays fully
+                # opaque fails closed: there is no runtime network filter, so an unresolved
+                # host (urlopen(user_input)) cannot be proven to be on the allowlist.
                 host_arg = None
                 url_arg = None
+                host_opaque = False
                 a0 = node.args[0] if node.args else None
                 if a0 is None:
                     for _kw in node.keywords or []:
@@ -10180,18 +10319,45 @@ def _check_signal_escape_patterns(
                             a0 = _kw.value
                             break
                 if a0 is not None:
-                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        url_arg = a0.value
-                    elif isinstance(a0, ast.Tuple) and a0.elts:
+                    if isinstance(a0, ast.Tuple) and a0.elts:
                         e0 = a0.elts[0]
                         if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
                             host_arg = e0.value
+                        else:
+                            _folded = _net_fold_str(e0)
+                            if _folded is not None:
+                                host_arg = _folded
+                            else:
+                                host_opaque = True
+                    elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                        url_arg = a0.value
+                    else:
+                        _folded = _net_fold_str(a0)
+                        if _folded is not None:
+                            url_arg = _folded
+                        else:
+                            _pref = _net_literal_host_prefix(a0)
+                            if _pref is not None:
+                                host_arg = _pref
+                            else:
+                                host_opaque = True
                 if url_arg and host_arg is None:
                     m = re.match(r"^\w+://([^/?#]+)", url_arg)
                     if m:
                         host_arg = m.group(1)
 
-                if host_arg:
+                if host_opaque:
+                    network_calls.append(
+                        {
+                            "type": "untrusted_host_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: non-literal network target cannot be checked "
+                                "against the sandbox allowlist"
+                            ),
+                        }
+                    )
+                elif host_arg:
                     if _is_metadata_host(host_arg):
                         network_calls.append(
                             {
@@ -12032,9 +12198,16 @@ try:
                         if _al.name == "*" or _al.name in _GUARD_DESER_ATTRS:
                             return True
             elif isinstance(_nd, _gast.Call):
-                # An ACTUAL invocation of a sink-named method on any receiver (os.system(...),
-                # or an aliased o.system(...)) is a command-exec call regardless of receiver.
-                if isinstance(_nd.func, _gast.Attribute) and _nd.func.attr in _GUARD_EXEC_ATTRS:
+                # An invocation of an os / posix command-exec sink (os.system(...), an aliased
+                # o.system(...), os.execv / os.posix_spawn) spawns an UNGUARDED child. Root it at
+                # an os / posix receiver -- like the sink-attribute REFERENCE check below -- so a
+                # benign same-named call on an unrelated object (platform.system(), a workdir
+                # helper's own obj.system() method, df.eval()) is not misread as a shell escape.
+                if (
+                    isinstance(_nd.func, _gast.Attribute)
+                    and _nd.func.attr in _GUARD_EXEC_ATTRS
+                    and _guard_attr_root(_nd.func.value) in _recv
+                ):
                     return True
                 if isinstance(_nd.func, _gast.Name) and _nd.func.id in (
                     "eval", "exec", "compile", "__import__"):

@@ -116,9 +116,24 @@ class TestUntrustedHostBlock:
             expect_phrase = "Blocked: host not in sandbox allowlist",
         )
 
-    def test_dynamic_url_not_statically_blocked(self):
-        # Static AST can't resolve runtime URLs; bash blocklist is the fallback.
-        _ok('import requests; url = "https://example.com/"; requests.get(url)')
+    def test_const_var_url_folded_and_checked(self):
+        # A URL bound to a single-assignment constant is folded and checked exactly like the
+        # literal form (there is no runtime network filter to fall back on), so the const-var
+        # requests.get(url) bypass is closed: an untrusted host is blocked, while a const var
+        # pointing at a trusted host still resolves and is allowed.
+        _blocked(
+            'import requests; url = "https://example.com/"; requests.get(url)',
+            expect_phrase = "Blocked: host not in sandbox allowlist",
+        )
+        _ok('import requests; url = "https://en.wikipedia.org/wiki/Foo"; requests.get(url)')
+
+    def test_fully_dynamic_url_fails_closed(self):
+        # A target that cannot be resolved to any concrete host (a genuine runtime value) can't
+        # be checked against the allowlist, so it fails closed rather than passing unchecked.
+        _blocked(
+            "import requests, sys; requests.get(sys.argv[1])",
+            expect_phrase = "non-literal network target",
+        )
 
 
 class TestHostNormalization:
@@ -5445,4 +5460,113 @@ class TestRound55Bypasses:
         ],
     )
     def test_round55_benign_allowed(self, code):
+        _ok(code)
+
+
+class TestRound56Bypasses:
+    # A dangerous payload (touch writes outside the workdir) reached through an INDIRECT eval /
+    # exec callee: a ternary, a boolean fallback, or a __builtins__['exec'] subscript. The callee
+    # resolver now peels these composite expressions and the recovered payload is analyzed, so an
+    # os.system('touch ...') / __import__('os').system('touch ...') escape is caught.
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # ternary whose branches are __builtins__['eval'] / __builtins__.eval
+            "(__builtins__['eval'] if isinstance(__builtins__, dict) else __builtins__.eval)"
+            '(\'__import__("os").system("touch /tmp/x")\')',
+            # __builtins__['exec'] subscript callee
+            "__builtins__['exec']('import os; os.system(\"touch /tmp/x\")')",
+            # boolean-fallback callee ( ... or eval )
+            "(getattr(__builtins__, 'ev', None) or eval)"
+            '(\'__import__("os").system("touch /tmp/x")\')',
+            # nested ternary inside a boolop
+            '((eval if True else exec) or exec)(\'__import__("os").system("touch /tmp/x")\')',
+        ],
+    )
+    def test_indirect_exec_callee_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A native FFI import gives the snippet UNGUARDED libc / syscall access (ctypes CDLL's
+            # libc.system / a raw write() bypassing the patched open), so the import is refused.
+            "import ctypes",
+            "import ctypes.util",
+            "import _ctypes",
+            "import cffi",
+            "from ctypes import CDLL",
+            "from ctypes.util import find_library",
+            "import ctypes as C",
+        ],
+    )
+    def test_native_ffi_import_blocked(self, code):
+        _blocked(code, expect_phrase = "native FFI module")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A network target that is not a literal is folded to a concrete host (a single-assign
+            # const var), reduced to its leading literal host (an f-string / concat whose host is
+            # terminated by / ? # inside the literal), or -- when fully opaque -- fails closed.
+            # const-var metadata host
+            (
+                'import requests\nu = "http://169.254.169.254/latest"\nrequests.get(u)',
+                "cloud-metadata host",
+            ),
+            # const-var untrusted host
+            (
+                'import urllib.request\nu = "http://example.com"\nurllib.request.urlopen(u)',
+                "host not in sandbox allowlist",
+            ),
+            # f-string with a dynamic HOST segment (no literal host boundary) -> opaque
+            (
+                'import requests, sys\nrequests.get(f"https://evil{sys.argv[1]}.com/a")',
+                "non-literal network target",
+            ),
+            # fully opaque urlopen target
+            (
+                "import urllib.request, sys\nurllib.request.urlopen(sys.argv[1])",
+                "non-literal network target",
+            ),
+            # raw socket connect to a dynamic host tuple
+            (
+                "import socket, sys\ns = socket.socket()\ns.connect((sys.argv[1], 443))",
+                "non-literal network target",
+            ),
+            # create_connection to a dynamic host tuple
+            (
+                "import socket, sys\nsocket.create_connection((sys.argv[1], 80))",
+                "non-literal network target",
+            ),
+        ],
+    )
+    def test_nonliteral_network_target_blocked(self, code):
+        _snippet, _phrase = code
+        _blocked(_snippet, expect_phrase = _phrase)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign forms across the round-56 checks stay allowed (the 99%-allow goal).
+            # plain literal eval / exec of harmless code
+            "eval('1 + 2')",
+            "exec('a = 1 + 2')",
+            # os.system with a benign read-only command is allowed by design
+            "import os\nos.system('id')",
+            # benign imports that share no FFI escape surface
+            "import os\nprint(os.getcwd())",
+            "import numpy as np\nprint(np.zeros(3))",
+            "import platform\nprint(platform.system())",
+            # a trusted host: literal, const-var, f-string with dynamic PATH, and concat
+            "import urllib.request\nurllib.request.urlopen('https://huggingface.co/x')",
+            'import requests\nu = "https://huggingface.co/api"\nrequests.get(u)',
+            'import requests\np = str(1)\nrequests.get(f"https://huggingface.co/{p}")',
+            'import requests\np = str(1)\nrequests.get("https://huggingface.co/" + p)',
+            # raw socket to a literal / const-var trusted host
+            "import socket\ns = socket.socket()\ns.connect(('huggingface.co', 443))",
+            'import socket\nh = "huggingface.co"\ns = socket.socket()\ns.connect((h, 443))',
+        ],
+    )
+    def test_round56_benign_allowed(self, code):
         _ok(code)
