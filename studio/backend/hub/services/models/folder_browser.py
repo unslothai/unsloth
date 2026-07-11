@@ -27,7 +27,10 @@ from hub.utils.paths import (
     studio_root,
     well_known_model_dirs,
 )
-from utils.paths.external_media import linux_run_media_mount_roots
+from utils.paths.external_media import (
+    linux_run_media_mount_roots,
+    windows_drive_roots,
+)
 from hub.services.models.common import _safe_is_dir
 from hub.services.models.local_inventory import _resolve_hf_cache_dir
 
@@ -177,6 +180,8 @@ def _build_browse_allowlist() -> list[Path]:
 
     _add(Path.home())
     for p in linux_run_media_mount_roots():
+        _add(p)
+    for p in windows_drive_roots():
         _add(p)
     _add(_resolve_hf_cache_dir())
     try:
@@ -494,6 +499,9 @@ def browse_folders_response(
     # Home first as the safe fallback.
     _add_sug(Path.home())
     for p in linux_run_media_mount_roots():
+        _add_sug(p)
+    # Windows drive roots so the user can hop between C:, D:, E: ...
+    for p in windows_drive_roots():
         _add_sug(p)
     # The HF cache root in use (honors HF_HOME / HF_HUB_CACHE), then the default.
     try:

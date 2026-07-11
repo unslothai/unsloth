@@ -1202,7 +1202,10 @@ def _build_browse_allowlist() -> list[Path]:
         legacy_hf_cache_dir,
         well_known_model_dirs,
     )
-    from utils.paths.external_media import linux_run_media_mount_roots
+    from utils.paths.external_media import (
+        linux_run_media_mount_roots,
+        windows_drive_roots,
+    )
     from storage.studio_db import list_scan_folders
 
     candidates: list[Path] = []
@@ -1219,6 +1222,8 @@ def _build_browse_allowlist() -> list[Path]:
 
     _add(Path.home())
     for p in linux_run_media_mount_roots():
+        _add(p)
+    for p in windows_drive_roots():
         _add(p)
     _add(_resolve_hf_cache_dir())
     try:
@@ -1450,7 +1455,10 @@ async def browse_folders(
     then hidden (if ``show_hidden=true``).
     """
     from utils.paths import hf_default_cache_dir, well_known_model_dirs
-    from utils.paths.external_media import linux_run_media_mount_roots
+    from utils.paths.external_media import (
+        linux_run_media_mount_roots,
+        windows_drive_roots,
+    )
     from storage.studio_db import contains_sensitive_path_component, list_scan_folders
 
     # Build once; the sandbox check and suggestion chips share it.
@@ -1560,6 +1568,9 @@ async def browse_folders(
     # Home first -- the safe fallback when everything else is cold.
     _add_sug(Path.home())
     for p in linux_run_media_mount_roots():
+        _add_sug(p)
+    # Windows drive roots so the user can hop between C:, D:, E: ...
+    for p in windows_drive_roots():
         _add_sug(p)
     # The HF cache root the process is actually using.
     try:

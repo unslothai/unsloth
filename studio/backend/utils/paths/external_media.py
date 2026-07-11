@@ -8,6 +8,8 @@ from __future__ import annotations
 import getpass
 import os
 import platform
+import string
+from collections.abc import Iterable
 from pathlib import Path
 
 from utils.paths.sensitive import (
@@ -97,4 +99,41 @@ def linux_run_media_mount_roots(
         if is_dir and os.access(resolved, os.R_OK | os.X_OK):
             seen.add(key)
             roots.append(resolved)
+    return roots
+
+
+def windows_drive_roots(
+    drive_letters: Iterable[str] = string.ascii_uppercase,
+) -> list[Path]:
+    """Readable logical drive roots (``C:\\``, ``D:\\`` ...) for the folder browser.
+
+    The Windows analog of :func:`linux_run_media_mount_roots`. Without it the
+    browser's allowlist and suggestion chips only reach roots on the home drive,
+    so a user cannot navigate from ``C:`` to ``D:``/``E:`` to pick a model
+    directory. Each candidate drive is included only if it currently resolves to
+    a readable directory, so absent/empty drives never show as dead entries.
+    Returns ``[]`` off Windows, so callers on Linux/macOS are unaffected.
+    """
+    if platform.system() != "Windows":
+        return []
+
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for letter in drive_letters:
+        letter = letter.strip().rstrip(":").upper()
+        if len(letter) != 1 or letter not in string.ascii_uppercase:
+            continue
+        root_text = f"{letter}:\\"
+        try:
+            if not os.path.isdir(root_text):
+                continue
+        except OSError:
+            continue
+        if not os.access(root_text, os.R_OK):
+            continue
+        key = os.path.normcase(root_text)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(Path(root_text))
     return roots
