@@ -2054,7 +2054,9 @@ def test_begin_generate_preempts_running_prewarm(fake_runtime, monkeypatch):
     monkeypatch.setattr(pipe.__class__, "__call__", _blocking_call)
 
     prewarm = _threading.Thread(
-        target = backend._compile_prewarm, args = (backend._load_token,), daemon = True,
+        target = backend._compile_prewarm,
+        args = (backend._load_token,),
+        daemon = True,
     )
     prewarm.start()
     assert prewarm_entered.wait(timeout = 5), "prewarm never reached the pipe"
