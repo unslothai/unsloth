@@ -236,6 +236,63 @@ def _scheduler_step_progress(pipe: Any, on_step: Any):
         scheduler.step = original
 
 
+# ── post-load compile prewarm ─────────────────────────────────────────────────
+# vLLM and SGLang guarantee that ALL compilation finishes at server startup
+# (dummy batches through every compiled shape) so no request ever pays a compile
+# mid-serving. The video backend's analogue: after a compiled-tier load commits,
+# a background thread runs one tiny throwaway generation so the first REAL
+# request starts at steady state. Measured through the real backend
+# (HunyuanVideo-1.5-480p, B200, 480x288/17f/30 steps, temp/vs_warm_probe.py):
+# with a warm Mega-cache bundle the first-generation extra drops 11.3 s -> 2.1 s
+# (a 9.0 s background warmup absorbs the dynamo tracing + cudnn autotune the
+# bundle cannot carry); on a cold start the full ~54 s compile moves off the
+# user's first request entirely. Steady state is untouched (the warmup adds no
+# lasting state: cache residuals are reset and the real generation re-seeds its
+# own generator). The shape is deliberately tiny -- the default tier compiles
+# dynamic=True, so one small trace serves every later resolution.
+_PREWARM_ENV = "UNSLOTH_DIFFUSION_COMPILE_PREWARM"
+_PREWARM_WIDTH = 192
+_PREWARM_HEIGHT = 128
+_PREWARM_FRAMES = 9
+_PREWARM_STEPS = 2
+
+
+def compile_prewarm_decision(
+    fam: VideoFamily,
+    *,
+    speed_mode: str,
+    speed_optims: tuple,
+    offload_policy: str,
+    cfg_parallel_active: bool,
+) -> tuple[bool, str]:
+    """Whether the post-load background compile prewarm should run, with the
+    resolved-record reason. Pure so it unit-tests without the runtime."""
+    if (os.environ.get(_PREWARM_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False, f"disabled via {_PREWARM_ENV}"
+    if "compiled" not in speed_optims:
+        return False, "not applicable (no regional compile engaged; nothing to prewarm)"
+    if speed_mode != SPEED_DEFAULT:
+        # speed=max compiles dynamic=False: a graph is keyed to the exact shape,
+        # so a tiny warmup shape would compile a graph the user's request never
+        # runs and the real shape would still pay its own compile.
+        return False, "skipped: speed=max compiles static per-shape graphs a warmup shape cannot serve"
+    if not bool(getattr(fam, "supports_compile_prewarm", True)):
+        return False, "family opted out (supports_compile_prewarm=False)"
+    if offload_policy != "none":
+        # Offload wraps block forwards in disabled onload hooks (the compiled-inner
+        # arming skips them) and every warmup forward would stream the full DiT
+        # over PCIe -- all cost, none of the measured warmup benefit.
+        return False, "skipped: offload streams weights per forward; the warmup would only churn transfers"
+    if cfg_parallel_active:
+        # The CFG-parallel proxy serialises compile-sensitive runs through its own
+        # per-(shape, steps, cache) planner; an unplanned warmup would bypass it.
+        return False, "skipped: CFG parallel plans compile-sensitive runs through its own dispatcher"
+    return True, (
+        "background warmup generation absorbs the first-generation compile hitch "
+        "(measured 11.3s -> 2.1s warm-cache, ~54s cold, HunyuanVideo-1.5-480p on B200)"
+    )
+
+
 def _detect_load_family(
     repo_id: str, gguf_filename: Optional[str], family_override: Optional[str]
 ) -> Optional[VideoFamily]:
@@ -421,6 +478,9 @@ class VideoBackend:
         # a second begin_generate() is refused while the first still runs (or is
         # about to run: generate() only sets _gen after taking its locks).
         self._generate_job_active = False
+        # The post-load background compile prewarm thread (None until a compiled
+        # load spawns one); kept for tests/diagnostics, never joined on the hot path.
+        self._prewarm_thread: Optional[threading.Thread] = None
 
     # ── validation ───────────────────────────────────────────────────────────
 
@@ -1603,6 +1663,13 @@ class VideoBackend:
                     logger = logger,
                 )
 
+            prewarm_on, prewarm_reason = compile_prewarm_decision(
+                fam,
+                speed_mode = effective_speed,
+                speed_optims = speed_optims,
+                offload_policy = offload_policy,
+                cfg_parallel_active = cfg_parallel_proxy is not None,
+            )
             resolved = build_resolved_record(
                 {
                     "memory_mode": (
@@ -1681,6 +1748,11 @@ class VideoBackend:
                         if getattr(fam, "vae_force_fp32", False)
                         else "not engaged (dense VAE loaded)",
                     ),
+                    "compile_prewarm": (
+                        None,
+                        "on" if prewarm_on else "off",
+                        prewarm_reason,
+                    ),
                 }
             )
 
@@ -1739,6 +1811,18 @@ class VideoBackend:
             effective_speed,
             transformer_quant_engaged or "off",
         )
+        if prewarm_on:
+            # Post-commit so a real request is never blocked behind an uncommitted
+            # load; the thread re-checks the token and yields to any generation
+            # that arrived first (which then pays -- and absorbs -- the warmup
+            # itself, exactly the pre-prewarm behaviour).
+            self._prewarm_thread = threading.Thread(
+                target = self._compile_prewarm,
+                args = (_load_token,),
+                daemon = True,
+                name = "video-compile-prewarm",
+            )
+            self._prewarm_thread.start()
         return self.status()
 
     @staticmethod
@@ -1756,6 +1840,104 @@ class VideoBackend:
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         return Path(hf_hub_download_with_xet_fallback(repo_id, gguf_filename or "", hf_token))
+
+    # ── post-load compile prewarm ─────────────────────────────────────────────
+
+    def _compile_prewarm(self, token: Optional[int]) -> None:
+        """Run one tiny throwaway generation so the first REAL request skips the
+        compile/trace warmup (see the module-level prewarm constants for the
+        measured numbers). Runs on a daemon thread under ``_generate_lock``,
+        registers itself as the active cancellable job (so unload / a new load /
+        cancel_generate can abort it at a step boundary, exactly like a real
+        generation), and never touches the user-visible ``_gen`` progress. A
+        failure or cancellation is logged and the load simply keeps the
+        pre-prewarm behaviour: the first real generation pays the warmup."""
+        import torch
+
+        cancel = threading.Event()
+        with self._generate_lock:
+            with self._lock:
+                state = self._state
+                if state is None or (token is not None and token != self._load_token):
+                    return  # superseded/unloaded before the warmup could start
+                if self._generate_job_active or self._gen.get("active"):
+                    return  # a real request beat us; it absorbs the warmup itself
+                self._active_generate_cancel = cancel
+            started = time.monotonic()
+            try:
+                pipe = state.pipe
+                fam = state.family
+                width, height = snap_video_size(fam, _PREWARM_WIDTH, _PREWARM_HEIGHT)
+                frames = snap_num_frames(fam, _PREWARM_FRAMES)
+                call_params = inspect.signature(pipe.__call__).parameters
+                kwargs: dict[str, Any] = {
+                    "prompt": "warmup",
+                    "num_inference_steps": _PREWARM_STEPS,
+                    "width": width,
+                    "height": height,
+                    "num_frames": frames,
+                    "generator": torch.Generator(device = state.device).manual_seed(0),
+                }
+                # Default guidance keeps the CFG branch structure of a real run
+                # (both guider branches trace), mirroring generate().
+                if fam.guidance_via_guider:
+                    pipe.guider.guidance_scale = float(fam.default_guidance)
+                else:
+                    kwargs[fam.cfg_kwarg] = float(fam.default_guidance)
+                if "frame_rate" in call_params:
+                    kwargs["frame_rate"] = float(fam.default_fps)
+
+                def _on_step(p, step_index, timestep, callback_kwargs):
+                    if cancel.is_set():
+                        p._interrupt = True
+                    return callback_kwargs
+
+                def _on_scheduler_step(done: int) -> None:
+                    if cancel.is_set():
+                        raise _VideoGenerationCancelled()
+
+                if "callback_on_step_end" in call_params:
+                    kwargs["callback_on_step_end"] = _on_step
+                    progress_ctx = contextlib.nullcontext()
+                else:
+                    progress_ctx = _scheduler_step_progress(pipe, _on_scheduler_step)
+                with torch.inference_mode(), progress_ctx:
+                    pipe(**kwargs)
+                if cancel.is_set():
+                    raise _VideoGenerationCancelled()
+                # Drop the warmup's step-cache residuals so the next real
+                # generation starts from the same state as an unwarmed load
+                # (generate() also resets per request; this is defence in depth).
+                if state.transformer_cache:
+                    self._reset_step_cache(pipe)
+                # The warmup just paid the compile: persist the Mega-cache bundle
+                # now (env-gated, idempotent) instead of waiting for the first
+                # real generation, mirroring generate()'s save point.
+                try:
+                    compile_cache.save(state.compile_cache_ctx, logger = logger)
+                except Exception:  # noqa: BLE001 -- cache persistence is best-effort
+                    pass
+                logger.info(
+                    "video.compile_prewarm: warmup absorbed the compile hitch in %.1fs "
+                    "(%dx%d, %d frames, %d steps)",
+                    time.monotonic() - started,
+                    width,
+                    height,
+                    frames,
+                    _PREWARM_STEPS,
+                )
+            except _VideoGenerationCancelled:
+                logger.info("video.compile_prewarm: cancelled (unload / new load / user cancel)")
+            except Exception as exc:  # noqa: BLE001 -- warmup is best-effort, never fatal
+                logger.warning(
+                    "video.compile_prewarm: failed (%s); the first generation pays the "
+                    "compile warmup instead",
+                    exc,
+                )
+            finally:
+                with self._lock:
+                    if self._active_generate_cancel is cancel:
+                        self._active_generate_cancel = None
 
     # ── generation ───────────────────────────────────────────────────────────
 

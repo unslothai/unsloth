@@ -1924,3 +1924,102 @@ def test_rollback_precommit_compile_cache_is_token_scoped(fake_runtime, monkeypa
     assert calls == [ctx] and backend._precommit_compile_cache is None
     backend._rollback_precommit_compile_cache(7)  # idempotent
     assert len(calls) == 1
+
+
+def test_compile_prewarm_decision_gates(monkeypatch):
+    # The pure gate: on only for a compiled DEFAULT-tier resident load on a family
+    # that allows it, with the env kill switch and the cfg-parallel/offload/max
+    # exclusions each carrying their own resolved reason.
+    import dataclasses
+
+    from core.inference import video as video_mod
+    from core.inference.video_families import detect_video_family
+
+    fam = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    base = dict(
+        speed_mode = "default",
+        speed_optims = ("compiled",),
+        offload_policy = "none",
+        cfg_parallel_active = False,
+    )
+
+    on, reason = video_mod.compile_prewarm_decision(fam, **base)
+    assert on is True and "absorbs" in reason
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_COMPILE_PREWARM", "0")
+    on, reason = video_mod.compile_prewarm_decision(fam, **base)
+    assert on is False and "UNSLOTH_DIFFUSION_COMPILE_PREWARM" in reason
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_COMPILE_PREWARM")
+
+    on, reason = video_mod.compile_prewarm_decision(
+        fam, **{**base, "speed_optims": ("cudnn_benchmark",)}
+    )
+    assert on is False and "no regional compile" in reason
+
+    on, reason = video_mod.compile_prewarm_decision(fam, **{**base, "speed_mode": "max"})
+    assert on is False and "static per-shape" in reason
+
+    opted_out = dataclasses.replace(fam, supports_compile_prewarm = False)
+    on, reason = video_mod.compile_prewarm_decision(opted_out, **base)
+    assert on is False and "family opted out" in reason
+
+    on, reason = video_mod.compile_prewarm_decision(fam, **{**base, "offload_policy": "group"})
+    assert on is False and "offload" in reason
+
+    on, reason = video_mod.compile_prewarm_decision(fam, **{**base, "cfg_parallel_active": True})
+    assert on is False and "CFG parallel" in reason
+
+
+def test_compile_prewarm_runs_after_compiled_load(fake_runtime, monkeypatch):
+    # A compiled default-tier load must spawn the background prewarm: one tiny
+    # snapped throwaway generation (192x128, 4k+1 frames, 2 steps) through the
+    # pipe, no user-visible progress, cancel slot cleared afterwards, and the
+    # resolved record says why it ran.
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(video_mod, "apply_speed_optims", lambda *a, **k: {"compiled": True})
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert status["resolved"]["compile_prewarm"]["value"] == "on"
+
+    thread = backend._prewarm_thread
+    assert thread is not None
+    thread.join(timeout = 5)
+    assert not thread.is_alive()
+
+    call = backend._state.pipe.last_kwargs
+    assert call is not None, "prewarm never reached the pipe"
+    assert call["prompt"] == "warmup"
+    assert call["num_inference_steps"] == 2
+    assert (call["width"], call["height"]) == (192, 128)
+    assert call["num_frames"] == 9  # 4k+1 lattice for Wan's frame_step=4
+    # The warmup is invisible: no generation progress, no leaked cancel event.
+    assert backend._gen.get("active") is False
+    assert backend._active_generate_cancel is None
+    backend.unload()
+
+
+def test_compile_prewarm_skipped_without_compile(fake_runtime):
+    # The fake runtime engages no speed optims, so the load has nothing to warm:
+    # no thread, no pipe call, and the resolved record carries the reason.
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert status["resolved"]["compile_prewarm"]["value"] == "off"
+    assert "no regional compile" in status["resolved"]["compile_prewarm"]["reason"]
+    assert backend._prewarm_thread is None
+    assert backend._state.pipe.last_kwargs is None
+
+
+def test_compile_prewarm_yields_to_generations_and_stale_tokens(fake_runtime):
+    # The worker must abort without touching the pipe when a real generation got
+    # in first (it absorbs the warmup itself) or when its load was superseded.
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+
+    backend._compile_prewarm(backend._load_token + 1)  # superseded load
+    assert backend._state.pipe.last_kwargs is None
+
+    backend._generate_job_active = True
+    backend._compile_prewarm(backend._load_token)  # a request beat the warmup
+    assert backend._state.pipe.last_kwargs is None
+    backend._generate_job_active = False
