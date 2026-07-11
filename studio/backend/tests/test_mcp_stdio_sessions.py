@@ -190,6 +190,52 @@ def test_connect_respects_caller_timeout(fake_clients, monkeypatch):
     assert mcp_client._stdio_sessions == {}
 
 
+def test_connect_failure_timeout_surfaces_immediately(fake_clients, monkeypatch):
+    class InitTimeout(FakeClient):
+        async def __aenter__(self):
+            raise asyncio.TimeoutError  # e.g. fastmcp's own init timeout
+
+    monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: InitTimeout(url))
+    start = time.monotonic()
+    out = call_tool_sync(STDIO_URL, None, "t", {}, timeout = 30.0)
+    assert "timed out" in out
+    # Must fail fast, not wait out the 30s/60s connect window.
+    assert time.monotonic() - start < 5.0
+    assert mcp_client._stdio_sessions == {}
+
+
+def test_key_lock_wait_honors_cancel_and_timeout(fake_clients, monkeypatch):
+    class SlowStart(FakeClient):
+        async def __aenter__(self):
+            await asyncio.sleep(1.5)
+            return await super().__aenter__()
+
+    monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: SlowStart(url))
+    first = threading.Thread(target = lambda: call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat"))
+    first.start()
+    key = mcp_client._session_key(STDIO_URL, None, "chat")
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        key_lock = mcp_client._stdio_key_locks.get(key)
+        if key_lock is not None and key_lock.lock.locked():
+            break
+        time.sleep(0.01)
+    # Second same-scope call is stuck behind the first slow connect: Stop must
+    # interrupt the key-lock wait, and a short tool timeout must bound it.
+    ev = threading.Event()
+    threading.Timer(0.2, ev.set).start()
+    start = time.monotonic()
+    out = call_tool_sync(STDIO_URL, None, "t", {}, cancel_event = ev, scope = "chat")
+    assert out == "Error: MCP tool 't' cancelled"
+    assert time.monotonic() - start < 1.0
+    start = time.monotonic()
+    out = call_tool_sync(STDIO_URL, None, "t", {}, timeout = 0.2, scope = "chat")
+    assert "timed out" in out
+    assert time.monotonic() - start < 1.0
+    first.join(10.0)
+    assert not first.is_alive()
+
+
 def test_cancel_pre_set_spawns_nothing(fake_clients):
     ev = threading.Event()
     ev.set()

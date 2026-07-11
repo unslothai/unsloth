@@ -314,6 +314,8 @@ class _StdioSession:
                 future.result(0.05)
                 return
             except (concurrent.futures.TimeoutError, asyncio.TimeoutError):
+                if future.done():
+                    raise  # the connect itself failed fast; don't wait out the window
                 if time.monotonic() >= deadline:
                     _abort_future(future)
                     raise asyncio.TimeoutError
@@ -485,7 +487,17 @@ def _get_stdio_session(
             return session
         key_lock = _borrow_stdio_key_lock(key)
     try:
-        with key_lock.lock:
+        # Poll the acquire with connect()'s deadline/cancel semantics: a second
+        # same-scope call must not block uncancellably behind another caller's
+        # slow startup (e.g. a first-run npx download).
+        window = _STDIO_CONNECT_TIMEOUT if timeout is None else min(timeout, _STDIO_CONNECT_TIMEOUT)
+        deadline = time.monotonic() + window
+        while not key_lock.lock.acquire(timeout = 0.05):
+            if cancel_event is not None and cancel_event.is_set():
+                raise _MCPCancelled
+            if time.monotonic() >= deadline:
+                raise asyncio.TimeoutError
+        try:
             stale = None
             with _stdio_sessions_lock:
                 session = _checkout_stdio_session(key)
@@ -529,6 +541,8 @@ def _get_stdio_session(
                 session.close()
                 raise RuntimeError("MCP server was updated or removed while connecting")
             return session
+        finally:
+            key_lock.lock.release()
     finally:
         _return_stdio_key_lock(key, key_lock)
 
