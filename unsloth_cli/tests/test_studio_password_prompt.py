@@ -397,3 +397,22 @@ def test_bootstrap_deadline_active_mirrors_backend_parsing(monkeypatch, raw, exp
     else:
         monkeypatch.setenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raw)
     assert studio_mod._bootstrap_deadline_active() is expected
+
+
+def test_connect_auth_db_creates_private_files(monkeypatch, tmp_path):
+    # Fresh install: the CLI gate writes the password hash + JWT secret before
+    # the backend ever runs, so this path must apply the same 0700/0600 modes
+    # as backend storage.get_connection (sqlite3.connect creates 0644 files
+    # under a 022 umask).
+    import os as _os
+    import stat
+
+    if _os.name == "nt":
+        pytest.skip("POSIX permission bits")
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    conn = studio_mod._connect_auth_db()
+    conn.close()
+    auth_dir = tmp_path / "auth"
+    assert stat.S_IMODE(auth_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE((auth_dir / "auth.db").stat().st_mode) == 0o600

@@ -483,6 +483,15 @@ def _connect_auth_db() -> sqlite3.Connection:
     auth_dir = STUDIO_HOME / "auth"
     auth_dir.mkdir(parents = True, exist_ok = True)
     conn = sqlite3.connect(auth_dir / "auth.db")
+    # Mirror backend storage.get_connection: on a fresh install THIS path can
+    # create auth/ and auth.db (the pre-exposure gate writes the new password
+    # hash + JWT secret here before the backend ever runs), and sqlite3.connect
+    # creates the DB 0644 under a 022 umask. Keep both private.
+    for _path, _mode in ((auth_dir, 0o700), (auth_dir / "auth.db", 0o600)):
+        try:
+            os.chmod(_path, _mode)
+        except OSError:
+            pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS auth_user (
