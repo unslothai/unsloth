@@ -638,6 +638,7 @@ class PersonalizationCustomization(BaseModel):
         if sum(len(f.dataUrl) for f in value) > MAX_TOTAL_FONT_DATA_URL_LENGTH:
             raise ValueError("Imported fonts exceed the total size limit.")
         return value
+
     uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
     codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
     contrast: int = Field(50, ge = 0, le = 100)
