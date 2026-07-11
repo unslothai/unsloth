@@ -75,10 +75,13 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     snapshot_device_memory,
 )
+from . import diffusion_compile_cache as compile_cache
 from .diffusion_speed import (
     SPEED_DEFAULT,
+    SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
+    compile_eligible,
     resolve_speed_mode,
     restore_backend_flags,
     snapshot_backend_flags,
@@ -318,6 +321,10 @@ class _VideoLoadState:
     # dispatch on it and _teardown_state frees the replica through it.
     cfg_parallel: Optional[str] = None
     cfg_parallel_handle: Any = None
+    # Pre-warmed torch.compile cache context (diffusion_compile_cache.CacheContext) when a
+    # compiled tier ran begin(); generate() persists the bundle after the first compiled
+    # generation (when saving is enabled) and _teardown_state restores the inductor dir.
+    compile_cache_ctx: Any = None
     resolved: Optional[dict] = None
 
 
@@ -712,6 +719,7 @@ class VideoBackend:
             # the globals a newer in-flight load now owns).
             self._rollback_precommit_globals(token)
             self._rollback_precommit_cfg_parallel(token)
+            self._rollback_precommit_compile_cache(token)
             if self._load_token != token:
                 return
             logger.error("video.load_failed: %s", exc)
@@ -763,6 +771,19 @@ class VideoBackend:
             return
         self._precommit_cfg_parallel = None
         teardown_cfg_parallel(pipe, proxy, logger = logger)
+
+    def _rollback_precommit_compile_cache(self, token: Optional[int]) -> None:
+        """Restore TORCHINDUCTOR_CACHE_DIR for a load that ran ``compile_cache.begin``
+        but died BEFORE committing _VideoLoadState (the committed path restores via
+        _teardown_state instead). Token-scoped exactly like _rollback_precommit_globals."""
+        stored = getattr(self, "_precommit_compile_cache", None)
+        if stored is None:
+            return
+        stored_token, ctx = stored
+        if token is not None and stored_token is not None and stored_token != token:
+            return
+        self._precommit_compile_cache = None
+        compile_cache.restore(ctx)
 
     # Base-repo subfolders an LTX-2.3 assembly reads: the checkpoint (plus the GGUF
     # repo's extras files) supplies the DiT, connectors, both VAEs and the vocoder,
@@ -1427,13 +1448,13 @@ class VideoBackend:
         attention_engaged = None
         attention_trim_engaged = False
         speed_optims: tuple = ()
+        # A dense torchao transformer on the pipeline path is not a GGUF one, so is_gguf
+        # keys off the load kind (gguf) AND no quant having engaged.
+        gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
         for view in views:
-            # apply_attention_backend / apply_speed_optims both act on ``view.transformer``;
-            # calling them once per view sets the kernel and compiles each expert. The
-            # engaged values match across experts (same device/family/mode), so record the
-            # first pass; a dense torchao transformer on the pipeline path is not a GGUF one,
-            # so is_gguf keys off the load kind (gguf) AND no quant having engaged.
-            gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
+            # apply_attention_backend acts on ``view.transformer``; calling it once per
+            # view sets the kernel on each expert. The engaged values match across
+            # experts (same device/family/mode), so record the first pass.
             # HunyuanVideo-1.5 only: drop the ~99% zero-padded text tokens from the joint
             # attention so it runs the fused (cuDNN/flash) SDPA kernel instead of the dense-mask
             # fallback (~18x/DiT-forward at 121 frames, cosine ~1.0). Must precede the backend set
@@ -1452,6 +1473,47 @@ class VideoBackend:
                 ),
                 logger = logger,
             )
+            if view is pipe:
+                attention_engaged = engaged
+                attention_trim_engaged = trim
+        # Pre-warmed torch.compile cache (Mega-cache), mirroring the image backend: when a
+        # compiled tier will run, point inductor at a per-fingerprint dir and load a matching
+        # bundle BEFORE the first compiled forward. Measured on HunyuanVideo-1.5-480p (B200):
+        # the first-generation compile extra drops 107.5 s -> 13.8 s from a 12.8 MB bundle
+        # (fresh inductor dir), and the persistent per-key dir alone recovers a restart to
+        # 11.7 s -- with the stock /tmp inductor dir that ~100 s is repaid after every reboot.
+        # A miss is silent -> local compile, exactly as before. Must run AFTER the attention
+        # backend set (the fingerprint keys on the engaged kernel) and BEFORE
+        # apply_speed_optims (whose compile the loaded artifacts serve).
+        compile_ctx = None
+        if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and compile_eligible(
+            target, is_gguf = gguf_transformer, family = fam
+        ):
+            compile_ctx = compile_cache.begin(
+                family = fam.name,
+                transformer = getattr(pipe, "transformer", None),
+                dtype = getattr(target, "dtype", None),
+                quant = transformer_quant_engaged,
+                attention_backend = attention_engaged,
+                compile_kwargs = {
+                    # Mirrors apply_speed_optims' fullgraph decision: an active step cache
+                    # (or one that may still toggle on) OR a planned offload graph-breaks,
+                    # so the cached bundle must be keyed on the same fullgraph setting.
+                    "fullgraph": cache_engaged is None
+                    and not cache_may_toggle
+                    and plan.offload_policy == "none",
+                    "dynamic": effective_speed != SPEED_MAX,
+                    "mode": "max-autotune-no-cudagraphs"
+                    if effective_speed == SPEED_MAX
+                    else "default",
+                },
+                logger = logger,
+            )
+            # Until the state commit below transfers ownership to _teardown_state, a
+            # failed or cancelled load must restore TORCHINDUCTOR_CACHE_DIR itself
+            # (_run_load's error handler, token-scoped like the globals).
+            self._precommit_compile_cache = (_load_token, compile_ctx)
+        for view in views:
             applied = apply_speed_optims(
                 view,
                 target,
@@ -1465,10 +1527,8 @@ class VideoBackend:
                 offload_active = plan.offload_policy != "none",
             )
             if view is pipe:
-                attention_engaged = engaged
-                attention_trim_engaged = trim
                 speed_optims = tuple(k for k, v in applied.items() if v) + (
-                    ("hunyuan_attn_trim",) if trim else ()
+                    ("hunyuan_attn_trim",) if attention_trim_engaged else ()
                 )
         with self._generate_lock:
             # A cancelled/superseded load must not place weights on the GPU the arbiter
@@ -1662,12 +1722,14 @@ class VideoBackend:
                     vae_quant = vae_quant_engaged,
                     cfg_parallel = "on" if cfg_parallel_proxy is not None else None,
                     cfg_parallel_handle = cfg_parallel_proxy,
+                    compile_cache_ctx = compile_ctx,
                     resolved = resolved,
                 )
-                # Ownership of the globals and the CFG-parallel proxy transferred
-                # to _state / _teardown_state.
+                # Ownership of the globals, the CFG-parallel proxy, and the compile
+                # cache context transferred to _state / _teardown_state.
                 self._precommit_globals = None
                 self._precommit_cfg_parallel = None
+                self._precommit_compile_cache = None
         logger.info(
             "video.loaded: %s (%s, %s, offload=%s, speed=%s, quant=%s)",
             repo_id,
@@ -2113,6 +2175,13 @@ class VideoBackend:
                         cfg_proxy.note_generation_done()
                     except Exception:  # noqa: BLE001
                         pass
+                # The first compiled generation just paid the compile cost; persist the
+                # warm torch.compile cache bundle when saving is enabled (distributor /
+                # first-run warm). Idempotent + best-effort -- never fails a generation.
+                try:
+                    compile_cache.save(state.compile_cache_ctx, logger = logger)
+                except Exception:  # noqa: BLE001 -- cache persistence is best-effort
+                    pass
 
                 self._gen.update(phase = "export", eta_seconds = None)
                 video_frames = output.frames[0]
@@ -2206,6 +2275,9 @@ class VideoBackend:
             state, self._state = self._state, None
         if state is not None:
             restore_backend_flags(state.backend_flags)
+            # Restore TORCHINDUCTOR_CACHE_DIR so a later load (or the image backend)
+            # does not inherit this load's per-fingerprint inductor dir. Idempotent.
+            compile_cache.restore(state.compile_cache_ctx)
             # A GGUF video load may have installed the process-wide compiled GGUF
             # dequantizer; restore the stock kernels so a later load that asked for
             # speed_mode=off gets the bit-identical path (mirrors the image unload).

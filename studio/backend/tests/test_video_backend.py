@@ -1833,3 +1833,96 @@ def test_detect_load_family_arch_fallback_for_local_gguf(tmp_path, monkeypatch):
         lambda p: {"general.architecture": "ltxv"},
     )
     assert vid._detect_load_family(str(d), "model.gguf", "ltx-2").name == "ltx-2"
+
+
+# ── pre-warmed torch.compile cache (Mega-cache) wiring ───────────────────────────
+
+
+def _stub_compile_cache(monkeypatch, ctx = None):
+    """Record begin/save/restore calls on the compile-cache module video.py imports."""
+    from core.inference import video as video_mod
+
+    calls = {"begin": [], "save": [], "restore": []}
+    monkeypatch.setattr(
+        video_mod.compile_cache,
+        "begin",
+        lambda **kwargs: calls["begin"].append(kwargs) or ctx,
+    )
+    monkeypatch.setattr(
+        video_mod.compile_cache,
+        "save",
+        lambda c, logger = None: calls["save"].append(c) or False,
+    )
+    monkeypatch.setattr(
+        video_mod.compile_cache, "restore", lambda c: calls["restore"].append(c)
+    )
+    return calls
+
+
+def test_video_compile_cache_begin_save_restore_lifecycle(fake_runtime, monkeypatch):
+    # A compiled-tier load must run compile_cache.begin BEFORE the speed profile
+    # (mega-cache load precedes the first compiled forward), commit the context to
+    # _VideoLoadState, persist the bundle after the first successful generation, and
+    # restore TORCHINDUCTOR_CACHE_DIR on unload -- mirroring the image backend.
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(video_mod, "compile_eligible", lambda *a, **k: True)
+    ctx = object()
+    calls = _stub_compile_cache(monkeypatch, ctx = ctx)
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert len(calls["begin"]) == 1
+    kwargs = calls["begin"][0]
+    assert kwargs["family"] == "wan2.2-ti2v-5b"
+    # The wan5b auto step cache engages (or may toggle) on the default 50-step
+    # schedule, so the cached bundle must be keyed fullgraph=False like the compile.
+    assert kwargs["compile_kwargs"]["fullgraph"] is False
+    assert kwargs["compile_kwargs"]["dynamic"] is True
+    assert backend._state.compile_cache_ctx is ctx
+
+    backend.generate(prompt = "a sloth")
+    assert calls["save"] == [ctx]
+
+    backend.unload()
+    assert calls["restore"] == [ctx]
+
+
+def test_video_compile_cache_skipped_on_speed_off_and_ineligible(fake_runtime, monkeypatch):
+    # Speed=off (bit-exact reference) or a compile-ineligible target must never touch
+    # the compile cache: no begin, no context, no restore side effects to leak.
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(video_mod, "compile_eligible", lambda *a, **k: True)
+    calls = _stub_compile_cache(monkeypatch, ctx = object())
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "off"
+    )
+    assert calls["begin"] == []
+    assert backend._state.compile_cache_ctx is None
+    backend.unload()
+
+    monkeypatch.setattr(video_mod, "compile_eligible", lambda *a, **k: False)
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert calls["begin"] == []
+    assert backend._state.compile_cache_ctx is None
+
+
+def test_rollback_precommit_compile_cache_is_token_scoped(fake_runtime, monkeypatch):
+    # A load that ran compile_cache.begin and then died before committing
+    # _VideoLoadState must restore TORCHINDUCTOR_CACHE_DIR itself -- but only for its
+    # own token, so a superseded worker cannot clobber the redirect a newer in-flight
+    # load now owns. Mirrors _rollback_precommit_cfg_parallel.
+    from core.inference import video as video_mod
+
+    calls = []
+    monkeypatch.setattr(video_mod.compile_cache, "restore", lambda ctx: calls.append(ctx))
+    backend = VideoBackend()
+    ctx = object()
+    backend._precommit_compile_cache = (7, ctx)
+    backend._rollback_precommit_compile_cache(8)  # stale worker: leave the stash alone
+    assert calls == [] and backend._precommit_compile_cache is not None
+    backend._rollback_precommit_compile_cache(7)  # owning worker: restored + cleared
+    assert calls == [ctx] and backend._precommit_compile_cache is None
+    backend._rollback_precommit_compile_cache(7)  # idempotent
+    assert len(calls) == 1
