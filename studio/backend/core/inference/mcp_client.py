@@ -356,6 +356,8 @@ class _StdioSession:
 
 
 _stdio_sessions: dict[tuple, _StdioSession] = {}
+
+
 # Per-key locks so a slow connect/close never blocks unrelated servers; the
 # global lock only guards the dicts.
 class _StdioKeyLock:

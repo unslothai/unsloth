@@ -121,9 +121,7 @@ def test_tool_error_does_not_recycle_session(fake_clients, monkeypatch):
     monkeypatch.setattr(
         mcp_client, "_client", lambda url, headers, use_oauth = False: ToolFailure(url)
     )
-    assert call_tool_sync(STDIO_URL, None, "boom", {}, scope = "chat").startswith(
-        "Error: MCP tool"
-    )
+    assert call_tool_sync(STDIO_URL, None, "boom", {}, scope = "chat").startswith("Error: MCP tool")
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-1"
     assert len(fake_clients) == 1
 
