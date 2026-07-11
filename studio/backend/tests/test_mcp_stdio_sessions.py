@@ -267,6 +267,73 @@ def test_connect_abort_race_still_closes_client(fake_clients, monkeypatch):
     assert mcp_client._stdio_sessions == {}
 
 
+def test_close_unblocks_no_limit_call(fake_clients):
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    session = next(iter(mcp_client._stdio_sessions.values()))
+    fake_clients[0].call_delay = 30.0
+    results: list[str] = []
+    worker = threading.Thread(
+        target = lambda: results.append(
+            call_tool_sync(STDIO_URL, None, "slow", {}, timeout = None, scope = "chat")
+        )
+    )
+    worker.start()
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        with mcp_client._stdio_sessions_lock:
+            if session.in_flight >= 1:
+                break
+        time.sleep(0.01)
+    # Server deleted while a no-limit call is in flight: the request thread
+    # must not hang forever on the stopped session loop.
+    close_stdio_sessions(STDIO_URL)
+    worker.join(5.0)
+    assert not worker.is_alive()
+    assert results and results[0].startswith("Error: MCP tool 'slow' failed")
+
+
+def test_discard_defers_close_while_another_call_is_borrowed(fake_clients):
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    session = next(iter(mcp_client._stdio_sessions.values()))
+    fake_clients[0].call_delay = 1.0
+    results: list[str] = []
+    slow = threading.Thread(
+        target = lambda: results.append(
+            call_tool_sync(STDIO_URL, None, "slow", {}, timeout = None, scope = "chat")
+        )
+    )
+    slow.start()
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        with mcp_client._stdio_sessions_lock:
+            if session.in_flight >= 1:
+                break
+        time.sleep(0.01)
+    # A second same-scope call times out and discards the shared session; the
+    # close must wait for the slow borrower instead of killing its call.
+    out = call_tool_sync(STDIO_URL, None, "fast", {}, timeout = 0.05, scope = "chat")
+    assert "timed out" in out
+    assert fake_clients[0].exited == 0
+    slow.join(10.0)
+    assert results == ["call-2"]
+    assert fake_clients[0].exited == 1  # last borrower performed the deferred close
+    assert mcp_client._stdio_sessions == {}
+
+
+def test_close_narrowed_by_headers_spares_other_env(fake_clients):
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    call_tool_sync(STDIO_URL, {"ENV_VAR": "b"}, "t", {}, scope = "chat")
+    # Two server rows can share a command with different envs; editing one
+    # must only close its own sessions.
+    close_stdio_sessions(STDIO_URL, None)
+    assert fake_clients[0].exited == 1
+    assert fake_clients[1].exited == 0
+    assert len(mcp_client._stdio_sessions) == 1
+    close_stdio_sessions(STDIO_URL)  # headers omitted: any env for the command
+    assert fake_clients[1].exited == 1
+    assert mcp_client._stdio_sessions == {}
+
+
 def test_close_stdio_sessions_by_url(fake_clients):
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     call_tool_sync("npx other-server", None, "t", {}, scope = "chat")

@@ -256,6 +256,10 @@ class _SessionWedged(Exception):
     pass
 
 
+class _SessionClosed(Exception):
+    """The session was closed (server update/delete/shutdown) mid-call."""
+
+
 def _abort_future(future) -> None:
     # Let the cancelled coroutine unwind before its loop is stopped.
     future.cancel()
@@ -270,6 +274,9 @@ class _StdioSession:
         self.url = url
         self.headers = headers
         self.client = None
+        self.closed = threading.Event()
+        self.defunct = False  # discarded; close once in_flight drains (see _retire)
+        self._close_lock = threading.Lock()
         self.last_used = time.monotonic()
         self.in_flight = 0  # guarded by _stdio_sessions_lock
         self.loop = asyncio.new_event_loop()
@@ -323,19 +330,37 @@ class _StdioSession:
     def run(self, coro, timeout: Optional[float]):
         self.last_used = time.monotonic()
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        # The coroutine enforces the tool timeout; the margin only catches a
+        # wedged loop. No deadline at all when the caller set none -- but poll
+        # so a session closed under us (server update/delete) can't hang the
+        # request thread forever on a stopped loop.
+        deadline = None if timeout is None else time.monotonic() + timeout + _STDIO_WEDGE_MARGIN
         try:
-            # The coroutine enforces the tool timeout; the margin only catches
-            # a wedged loop. No deadline at all when the caller set none.
-            return future.result(None if timeout is None else timeout + _STDIO_WEDGE_MARGIN)
-        except (concurrent.futures.TimeoutError, asyncio.TimeoutError):
-            if future.done():
-                raise  # the call's own timeout; the session stays usable
-            future.cancel()
-            raise _SessionWedged
+            while True:
+                try:
+                    return future.result(0.25)
+                except concurrent.futures.CancelledError:
+                    # Only close() cancels in-flight tasks (in _shutdown).
+                    raise _SessionClosed
+                except (concurrent.futures.TimeoutError, asyncio.TimeoutError):
+                    if future.done():
+                        raise  # the call's own timeout; the session stays usable
+                    if self.closed.is_set():
+                        future.cancel()
+                        raise _SessionClosed
+                    if deadline is not None and time.monotonic() >= deadline:
+                        future.cancel()
+                        raise _SessionWedged
         finally:
             self.last_used = time.monotonic()
 
     def close(self) -> None:
+        # Idempotent: a discard racing close_stdio_sessions() may close twice.
+        # Setting `closed` first also unblocks run() waiters (they poll it).
+        with self._close_lock:
+            if self.closed.is_set():
+                return
+            self.closed.set()
         loop = getattr(self, "loop", None)
         loop_alive = loop is not None and not loop.is_closed()
         if loop_alive:
@@ -346,6 +371,11 @@ class _StdioSession:
                 client, self.client = self.client, None
                 if client is not None:
                     await client.__aexit__(None, None, None)
+                # Cancel in-flight calls so they unwind before loop.stop
+                # (their run() waiters have already been released via `closed`).
+                for task in asyncio.all_tasks():
+                    if task is not asyncio.current_task():
+                        task.cancel()
 
             try:
                 asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(_STDIO_CLOSE_TIMEOUT)
@@ -386,14 +416,27 @@ _stdio_reaper_started = False
 # session instead of publishing it. Guarded by _stdio_sessions_lock.
 _stdio_close_all_gen = 0
 _stdio_url_close_gen: dict[str, int] = {}
+_stdio_cfg_close_gen: dict[tuple, int] = {}
+
+# close_stdio_sessions(url): match any env for that command.
+_ANY_HEADERS = object()
 
 
-def _stdio_close_generation(url: str) -> tuple[int, int]:
-    return (_stdio_close_all_gen, _stdio_url_close_gen.get(url, 0))
+def _headers_key(headers: Optional[dict]) -> tuple:
+    return tuple(sorted((headers or {}).items()))
+
+
+def _stdio_close_generation(url: str, headers: Optional[dict]) -> tuple[int, int, int]:
+    cfg = (url, _headers_key(headers))
+    return (
+        _stdio_close_all_gen,
+        _stdio_url_close_gen.get(url, 0),
+        _stdio_cfg_close_gen.get(cfg, 0),
+    )
 
 
 def _session_key(url: str, headers: Optional[dict], scope: Optional[str]) -> tuple:
-    return (url, tuple(sorted((headers or {}).items())), scope or "")
+    return (url, _headers_key(headers), scope or "")
 
 
 def _checkout_stdio_session(key: tuple) -> Optional[_StdioSession]:
@@ -443,9 +486,9 @@ def _get_stdio_session(
                     return session
                 if key in _stdio_sessions:
                     stale = _stdio_sessions.pop(key)
-                generation = _stdio_close_generation(url)
+                generation = _stdio_close_generation(url, headers)
             if stale is not None:
-                stale.close()
+                _retire_stdio_session(stale)
             session = _StdioSession(url, headers)
             try:
                 session.connect(timeout, cancel_event)
@@ -453,7 +496,7 @@ def _get_stdio_session(
                 session.close()
                 raise
             with _stdio_sessions_lock:
-                closed_while_connecting = _stdio_close_generation(url) != generation
+                closed_while_connecting = _stdio_close_generation(url, headers) != generation
                 if not closed_while_connecting:
                     session.in_flight = 1
                     _stdio_sessions[key] = session
@@ -475,6 +518,21 @@ def _release_stdio_session(session: _StdioSession) -> None:
     with _stdio_sessions_lock:
         session.in_flight = max(0, session.in_flight - 1)
         session.last_used = time.monotonic()
+        close_now = session.defunct and session.in_flight == 0
+    if close_now:
+        session.close()
+
+
+def _retire_stdio_session(session: _StdioSession) -> None:
+    """Close a discarded session, but only once no other borrower is mid-call
+    on it -- overlapping same-scope calls share one client, and one call's
+    timeout must not kill another's in-flight request. The last borrower's
+    _release_stdio_session() performs the deferred close."""
+    with _stdio_sessions_lock:
+        session.defunct = True
+        busy = session.in_flight > 0
+    if not busy:
+        session.close()
 
 
 def _drop_stdio_session(key: tuple, session: _StdioSession) -> None:
@@ -482,18 +540,29 @@ def _drop_stdio_session(key: tuple, session: _StdioSession) -> None:
         if _stdio_sessions.get(key) is session:
             _stdio_sessions.pop(key)
         _discard_stdio_key_lock(key)
-    session.close()
+    _retire_stdio_session(session)
 
 
-def close_stdio_sessions(url: Optional[str] = None) -> None:
-    """Close all persistent stdio sessions, or only those for ``url``."""
+def close_stdio_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> None:
+    """Close persistent stdio sessions: all of them (``url`` None), every env
+    for one command (``headers`` omitted), or one server config (url + headers).
+    Two server rows can share a command with different envs; editing one must
+    not kill the other's live state, so the routes pass the edited row's env."""
     global _stdio_close_all_gen
+    hk = None if headers is _ANY_HEADERS else _headers_key(headers)
     with _stdio_sessions_lock:
         if url is None:
             _stdio_close_all_gen += 1
-        else:
+        elif hk is None:
             _stdio_url_close_gen[url] = _stdio_url_close_gen.get(url, 0) + 1
-        keys = [k for k in _stdio_sessions if url is None or k[0] == url]
+        else:
+            cfg = (url, hk)
+            _stdio_cfg_close_gen[cfg] = _stdio_cfg_close_gen.get(cfg, 0) + 1
+        keys = [
+            k
+            for k in _stdio_sessions
+            if (url is None or k[0] == url) and (hk is None or k[1] == hk)
+        ]
         sessions = [_stdio_sessions.pop(k) for k in keys]
         for key in keys:
             _discard_stdio_key_lock(key)
@@ -670,6 +739,11 @@ def _call_stdio_tool(
         except _SessionWedged:
             discard_session = True
             raise asyncio.TimeoutError
+        except _SessionClosed:
+            # close_stdio_sessions() shut this session mid-call (server
+            # update/delete/shutdown); don't retry on the stale config.
+            discard_session = True
+            raise RuntimeError("MCP server was updated or removed during the call")
         except Exception:
             # A dead subprocess surfaces as a transport error; retry once on a
             # fresh session. Tool-level failures leave the session connected.
