@@ -872,11 +872,10 @@ def _cached_config_json(model_name: str, hf_token: str | None) -> dict | None:
     return _config_json_cache.get(_token_cache_key(model_name, hf_token))
 
 
-# --- Static tier from CONFIG_MAPPING_NAMES (no import, no network, no exec) ---
-# A model_type absent from an overlay's CONFIG_MAPPING_NAMES cannot load there.
-# Parse each sidecar's config map straight from source (AST only) and pick the
-# lowest tier that ships the model_type, so a new arch routes to the right
-# sidecar with no per-model table edit. Only ever upgrades default (never lowers).
+# --- Static tier from CONFIG_MAPPING_NAMES (AST only: no import/network/exec) ---
+# A model_type absent from an overlay's mapping can't load there. Parse each sidecar's
+# config map from source and pick the lowest tier that ships it, so a new arch routes
+# correctly with no per-model table edit. Only ever upgrades default, never lowers.
 _config_mapping_cache: dict[str, frozenset[str]] = {}
 
 
