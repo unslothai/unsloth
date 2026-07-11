@@ -22,6 +22,9 @@ export const zhCN = {
     shutdown: "关闭服务",
   },
   shell: {
+    beta: "BETA",
+    brand: "unsloth",
+    product: "Unsloth Studio",
     accountMenu: "{name} 账号菜单",
     updateAvailable: "有可用更新",
     aria: {
@@ -93,6 +96,7 @@ export const zhCN = {
       general: "通用",
       profile: "个人资料",
       appearance: "外观",
+      resources: "系统",
       chat: "聊天",
       connections: "连接",
       apiKeys: "API",
@@ -128,6 +132,51 @@ export const zhCN = {
       chatDefaults: "聊天默认设置",
       autoTitleNewChats: "自动为新聊天命名",
       autoTitleNewChatsDescription: "根据第一条消息生成简短标题。",
+      helperLlm: {
+        sectionTitle: "辅助 LLM",
+        preloadOnStartup: "启动时预缓存辅助 LLM",
+        preloadOnStartupDescription:
+          "启动时在后台下载 AI Assist 辅助模型。默认关闭；AI Assist 仍可按需获取。",
+        disabledByEnv:
+          "已由后端环境中的 UNSLOTH_HELPER_MODEL_DISABLE 禁用。",
+        loadError: "加载辅助 LLM 设置失败。",
+        saveError: "保存辅助 LLM 设置失败。",
+      },
+      modelAutoSwitch: {
+        sectionTitle: "模型自动切换（OpenAI API）",
+        enable: "按请求切换模型",
+        enableDescription:
+          "当兼容 OpenAI 的请求指定了另一个已下载的 GGUF 时，先加载它再提供服务。默认关闭；未知名称将继续使用已加载的模型。",
+        idleUnload: "空闲自动卸载",
+        idleUnloadDescription:
+          "空闲达到该秒数后卸载模型以释放 VRAM；下次请求会重新加载。设为 0 则保持加载。",
+        idleNeedsEnable:
+          "开启“按请求切换模型”，以便已卸载的模型在下次使用时重新加载。",
+        idleActiveViaEnv:
+          "空闲自动卸载已通过 UNSLOTH_MODEL_IDLE_TTL 环境变量启用。",
+        loadError: "加载模型自动切换设置失败。",
+        saveError: "保存模型自动切换设置失败。",
+        idleError: "请输入整数秒数（0 或以上）。",
+      },
+      previewSharing: {
+        sectionTitle: "预览分享",
+        enableLabel: "公开预览链接",
+        enableDescription:
+          "让任何持有签名链接的人无需登录即可与完成的模型聊天。关闭后将下线公开预览界面；已分享的链接将失效。",
+        loadError: "加载预览分享设置失败。",
+        saveError: "保存预览分享设置失败。",
+        revokeLabel: "撤销所有预览链接",
+        revokeDescription:
+          "轮换签名密钥，使你分享过的所有链接失效。新复制的链接仍可用。",
+        revokeAction: "撤销链接",
+        revoking: "撤销中...",
+        revokeConfirmTitle: "撤销所有预览链接？",
+        revokeConfirmDescription:
+          "你分享过的每个预览链接都将立即失效。此操作无法撤销。",
+        revokeConfirmAction: "撤销所有链接",
+        revoked: "所有预览链接已撤销",
+        revokeError: "无法撤销预览链接",
+      },
       notifications: {
         sectionTitle: "通知",
         showLlamaUpdates: "llama.cpp 更新通知",
@@ -144,6 +193,30 @@ export const zhCN = {
         maxUploadSizeDescription:
           "适用于训练数据集上传。默认值为 {defaultSize} MB。",
       },
+      rag: {
+        sectionTitle: "文档与 RAG",
+        embeddingModel: "Embedding 模型",
+        embeddingModelDescription:
+          "用于为文档建立索引和搜索的 Hugging Face 模型或本地路径。默认值为 {defaultModel}。",
+        reindexWarning:
+          "仅影响新建立索引的文档。更改模型后请重新上传已有文档。",
+        emptyError: "请输入 Hugging Face 模型 ID 或本地路径。",
+        loadError: "加载 embedding 模型设置失败。",
+        saveError: "保存 embedding 模型失败。",
+        saved: "Embedding 模型已保存。",
+        saveAnyway: "仍然保存",
+        resetAction: "重置为默认值",
+      },
+      storage: {
+        sectionTitle: "存储",
+        modelsFolder: "模型文件夹",
+        modelsFolderDescription: "已下载模型的存储位置。",
+        openAction: "打开",
+        copyAction: "复制路径",
+        copied: "路径已复制",
+        openError: "无法打开文件夹",
+        copyError: "无法复制路径",
+      },
       resetPreferences: {
         sectionTitle: "危险区域",
         label: "重置所有本地偏好设置",
@@ -158,7 +231,7 @@ export const zhCN = {
     },
     profile: {
       title: "个人资料",
-      description: "更新你在 Unsloth 中显示的个人资料。",
+      description: "你的个人资料在 Unsloth 中的显示方式。",
       changePicture: "更换头像",
       displayName: "显示名称",
       nickname: "Unsloth 应该怎么称呼你？",
@@ -201,9 +274,73 @@ export const zhCN = {
         compactSidebarDescription: "保持侧边栏展开，而不是折叠为图标。",
       },
     },
+    resources: {
+      title: "系统",
+      description: "监控此 Studio 服务器的硬件和存储。",
+      liveUpdates: "实时更新",
+      floatingWindow: "悬浮窗口",
+      disableOverlay: "禁用悬浮层",
+      liveMonitor: {
+        title: "实时监控",
+        cpu: "CPU",
+        ram: "RAM",
+        disk: "磁盘",
+        vram: "VRAM",
+        cpuCores: "{logical} 逻辑核心 / {physical} 物理核心",
+        currentLoad: "当前负载",
+        free: "{value} 可用",
+        noGpu: "无可见 GPU",
+      },
+      gpu: {
+        title: "GPU 设备",
+        noGpu: "未检测到可见 GPU。上方仅显示 CPU 资源。",
+        unknownDevice: "未知 GPU",
+        deviceWithIndex: "GPU {index}",
+        vramUtilization: "VRAM",
+        used: "已用 {value}",
+        free: "{value} 可用",
+        total: "共 {value}",
+      },
+      storage: {
+        title: "存储",
+        systemDisk: "系统磁盘",
+        diskUsage: "已用 {used} / {total}",
+        diskFree: "{free} 可用",
+        modelsFolder: "模型文件夹",
+        modelsFolderDescription: "已下载模型的存储位置。",
+        openAction: "打开",
+        copyAction: "复制路径",
+        copied: "路径已复制",
+        openError: "无法打开文件夹",
+        copyError: "无法复制路径",
+      },
+      environment: {
+        title: "环境",
+        backend: "后端",
+        python: "Python",
+        torch: "Torch",
+        transformers: "Transformers",
+        uptime: "运行时长",
+        processMemory: "进程内存",
+        notInstalled: "未安装",
+        unknown: "未知",
+      },
+    },
     chat: {
       title: "聊天",
       description: "管理此设备上保存的聊天记录。",
+      modelDisclaimer: "显示模型免责声明",
+      modelDisclaimerDescription:
+        "在聊天框下方显示“LLM 可能会出错”。",
+      artifacts: {
+        title: "Canvas",
+        collapseHtmlBlocks: "折叠 HTML 块",
+        collapseHtmlBlocksDescription:
+          "Canvas 模式会自动折叠完整 HTML。开启此项可在关闭 Canvas 时也折叠代码块中的 HTML 文档。",
+        allowNetworkAccess: "允许 Canvas 访问网络",
+        allowNetworkAccessDescription:
+          "允许 Canvas 预览从 CDN 加载脚本、样式、字体、媒体和网络资源。若需完全离线预览请保持关闭。",
+      },
       data: "数据",
       exportHistory: "导出聊天记录",
       exportHistoryDescription: "将所有聊天和消息下载为 JSON 文件。",
@@ -284,8 +421,10 @@ export const zhCN = {
       usageTools: "工具",
       exampleCurlTools: "curl + 工具",
       examplePythonTools: "Python + 工具",
+      exampleJavaScriptTools: "JavaScript + 工具",
       exampleCurlAdvanced: "curl + 高级",
       examplePythonAdvanced: "Python + 高级",
+      exampleJavaScriptAdvanced: "JavaScript + 高级",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "安全 HTTPS",
@@ -296,6 +435,12 @@ export const zhCN = {
       copy: "复制",
       copied: "已复制",
       setupDocs: "设置文档：",
+      codingAgents: "编程智能体",
+      codingAgentsHint:
+        "针对此服务器启动编程智能体。它会使用已加载的模型；本地服务器会自动生成 API 密钥，远程服务器则会将其包含在命令中。",
+      codingAgentsSwap: "可将 claude 替换为 codex、openclaw、opencode、hermes 或 pi。",
+      codingAgentDetected: "已安装在本机",
+      codingAgentsDetectedHint: "本机检测到：{agents}。",
       relativeNever: "从未",
       relativeJustNow: "刚刚",
       relativeHoursAgo: "{count} 小时前",
@@ -528,7 +673,7 @@ export const zhCN = {
         accessKeyId: "访问密钥 ID",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "秘密访问密钥",
-        secretAccessKeyPlaceholder: "您的 AWS 秘密访问密钥",
+        secretAccessKeyPlaceholder: "你的 AWS 秘密访问密钥",
         useIamRole: "使用 IAM 角色",
         useIamRoleTooltip: "使用 IAM 角色凭证而非访问密钥（推荐用于 EC2/SageMaker）",
         testConnection: "测试连接",
@@ -706,6 +851,9 @@ export const zhCN = {
         running: "训练进行中",
         errored: "训练出错",
       },
+      copyPreviewLink: "复制预览链接",
+      previewLinkCopied: "预览链接已复制",
+      previewLinkCopyFailed: "无法复制链接",
     },
     charts: {
       settings: "图表设置",
@@ -749,6 +897,7 @@ export const zhCN = {
     progress: {
       title: "训练进度",
       liveMetrics: "实时训练指标",
+      exportGguf: "导出为 GGUF",
       openConfig: "打开训练配置",
       configLabel: "训练配置",
       hyperparams: "超参数",
@@ -809,6 +958,7 @@ export const zhCN = {
       resumingTraining: "正在继续训练...",
       startingTraining: "正在开始训练...",
       dataset: "数据集",
+      datasetStreaming: "数据集：流式传输（无需完整下载）",
       modelWeights: "模型权重",
     },
     tour: {

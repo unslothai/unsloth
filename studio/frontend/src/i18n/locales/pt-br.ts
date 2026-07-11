@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { DeepPartialMessageTree } from "../types";
+import type { en } from "./en";
+
 export const ptBR = {
   common: {
     cancel: "Cancelar",
@@ -41,6 +44,7 @@ export const ptBR = {
       recipes: "Receitas",
       export: "Exportar",
       recents: "Recentes",
+      noChatsYet: "Nenhum chat ainda",
       settings: "Configurações",
       api: "API",
       lightMode: "Modo Claro",
@@ -143,6 +147,41 @@ export const ptBR = {
         loadError: "Falha ao carregar as configurações do LLM Auxiliar.",
         saveError: "Falha ao salvar as configurações do LLM Auxiliar.",
       },
+      modelAutoSwitch: {
+        sectionTitle: "Troca automática de modelo (API OpenAI)",
+        enable: "Trocar de modelo por requisição",
+        enableDescription:
+          "Quando uma requisição compatível com OpenAI nomear um GGUF baixado diferente, carrega-o antes de responder. Desativado por padrão; nomes desconhecidos continuam usando o modelo carregado.",
+        idleUnload: "Descarregamento automático por inatividade",
+        idleUnloadDescription:
+          "Descarrega o modelo após esta quantidade de segundos de inatividade para liberar VRAM; a próxima requisição o recarrega. 0 mantém o modelo carregado.",
+        idleNeedsEnable:
+          "Ative Trocar de modelo por requisição para que um modelo descarregado seja recarregado no próximo uso.",
+        idleActiveViaEnv:
+          "O descarregamento automático por inatividade está ativo por meio da variável de ambiente UNSLOTH_MODEL_IDLE_TTL.",
+        loadError: "Falha ao carregar as configurações de troca automática de modelo.",
+        saveError: "Falha ao salvar as configurações de troca automática de modelo.",
+        idleError: "Insira um número inteiro de segundos (0 ou mais).",
+      },
+      previewSharing: {
+        sectionTitle: "Compartilhamento de pré-visualização",
+        enableLabel: "Links públicos de pré-visualização",
+        enableDescription:
+          "Permite que qualquer pessoa com um link assinado converse com um modelo concluído, sem necessidade de login. Desative para tirar a superfície de pré-visualização pública do ar; os links compartilhados param de funcionar.",
+        loadError: "Falha ao carregar as configurações de compartilhamento de pré-visualização.",
+        saveError: "Falha ao salvar as configurações de compartilhamento de pré-visualização.",
+        revokeLabel: "Revogar todos os links de pré-visualização",
+        revokeDescription:
+          "Rotaciona o segredo de assinatura para que todos os links que você compartilhou parem de funcionar. Links copiados recentemente continuam funcionando.",
+        revokeAction: "Revogar links",
+        revoking: "Revogando...",
+        revokeConfirmTitle: "Revogar todos os links de pré-visualização?",
+        revokeConfirmDescription:
+          "Todos os links de pré-visualização que você compartilhou pararão de funcionar imediatamente. Isso não pode ser desfeito.",
+        revokeConfirmAction: "Revogar todos os links",
+        revoked: "Todos os links de pré-visualização foram revogados",
+        revokeError: "Não foi possível revogar os links de pré-visualização",
+      },
       notifications: {
         sectionTitle: "Notificações",
         showLlamaUpdates: "Notificações de atualização do llama.cpp",
@@ -159,6 +198,20 @@ export const ptBR = {
         maxUploadSize: "Limite de upload do dataset de treino",
         maxUploadSizeDescription:
           "O padrão é {defaultSize} MB.",
+      },
+      rag: {
+        sectionTitle: "Documentos e RAG",
+        embeddingModel: "Modelo de embedding",
+        embeddingModelDescription:
+          "Modelo do Hugging Face ou caminho local usado para indexar e buscar seus documentos. O padrão é {defaultModel}.",
+        reindexWarning:
+          "Afeta apenas documentos recém-indexados. Reenvie os documentos existentes após alterar o modelo.",
+        emptyError: "Insira um id de modelo do Hugging Face ou um caminho local.",
+        loadError: "Falha ao carregar a configuração do modelo de embedding.",
+        saveError: "Falha ao salvar o modelo de embedding.",
+        saved: "Modelo de embedding salvo.",
+        saveAnyway: "Salvar mesmo assim",
+        resetAction: "Redefinir para o padrão",
       },
       storage: {
         sectionTitle: "Armazenamento",
@@ -368,7 +421,7 @@ export const ptBR = {
       createError: "Não foi possível criar o token de acesso.",
       revokeError: "Não foi possível revogar o token de acesso.",
       never: "Nunca",
-      tokenNamePlaceholder: "Nome do token (ex: producao)",
+      tokenNamePlaceholder: "Nome do token (ex: produção)",
       newAccessTokenName: "Nome do novo token de acesso",
       createToken: "Criar token",
       creating: "Criando...",
@@ -394,6 +447,12 @@ export const ptBR = {
       copy: "Copiar",
       copied: "Copiado",
       setupDocs: "Docs de configuração:",
+      codingAgents: "Agentes de código",
+      codingAgentsHint:
+        "Inicie um agente de código conectado a este servidor. Ele usa o modelo carregado; um servidor local gera uma chave de API automaticamente, um remoto a inclui no comando.",
+      codingAgentsSwap: "Troque claude por codex, openclaw, opencode, hermes ou pi.",
+      codingAgentDetected: "Instalado nesta máquina",
+      codingAgentsDetectedHint: "Detectado nesta máquina: {agents}.",
       relativeNever: "nunca",
       relativeJustNow: "agora mesmo",
       relativeHoursAgo: "há {count}h",
@@ -646,6 +705,10 @@ export const ptBR = {
     params: {
       title: "Parâmetros",
       description: "Configure os hiperparâmetros de treinamento",
+      projectName: "Nome do Projeto",
+      optional: "Opcional",
+      projectNameDescription:
+        "Usado nos nomes das pastas de saída do treinamento, nos padrões de exportação e no histórico.",
       loraSettings: "Configurações do LoRA",
       trainingHyperparameters: "Hiperparâmetros de Treinamento",
       maxSteps: "Passos Máximos (Max Steps)",
@@ -762,11 +825,11 @@ export const ptBR = {
       visionIncompatible:
         "O modelo de texto não é compatível com um dataset multimodal. Mude para um modelo de visão ou escolha um dataset apenas de texto.",
       cancelTitle: "Cancelar Treinamento",
-      cancelDescription: "Deseja cancelar a execução de treinamento atual?",
+      cancelDescription: "Deseja cancelar a execução de treino atual?",
       continueAction: "Continuar Treinamento",
       cancelAction: "Cancelar Treinamento",
       stopTitle: "Interromper Treinamento",
-      stopDescription: "Escolha como você deseja interromper a execução de treinamento atual.",
+      stopDescription: "Escolha como você deseja interromper a execução de treino atual.",
       stopAction: "Interromper",
       stopping: "Interrompendo...",
       stopAndSave: "Interromper e Salvar",
@@ -818,6 +881,9 @@ export const ptBR = {
         running: "Treinamento em andamento",
         errored: "Treinamento com erro",
       },
+      copyPreviewLink: "Copiar link de pré-visualização",
+      previewLinkCopied: "Link de pré-visualização copiado",
+      previewLinkCopyFailed: "Não foi possível copiar o link",
     },
     charts: {
       settings: "Configurações do Gráfico",
@@ -884,6 +950,7 @@ export const ptBR = {
       loss: "Loss",
       lr: "LR",
       gradNorm: "Norma do Grad.",
+      project: "Projeto",
       model: "Modelo",
       method: "Método",
       elapsed: "Decorrido: {value}",
@@ -930,4 +997,4 @@ export const ptBR = {
       guidedTour: "Tour Guiado",
     },
   },
-} as const;
+} satisfies DeepPartialMessageTree<typeof en>;
