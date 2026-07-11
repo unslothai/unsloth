@@ -901,6 +901,35 @@ function serializeAssistantToolCallPart(
   return entry;
 }
 
+// MCP tool result whose image blocks were split off the text by the backend
+// `__MCP_IMAGES__:` sentinel (see mcp_client._flatten_result).
+export interface McpImageToolResult {
+  text: string;
+  images: { data: string; mimeType: string }[];
+}
+
+export function isMcpImageToolResult(
+  val: unknown,
+): val is McpImageToolResult {
+  if (typeof val !== "object" || val === null) {
+    return false;
+  }
+  const v = val as { text?: unknown; images?: unknown; sessionId?: unknown };
+  return (
+    typeof v.text === "string" &&
+    v.sessionId === undefined &&
+    Array.isArray(v.images) &&
+    v.images.length > 0 &&
+    v.images.every(
+      (img: unknown) =>
+        typeof img === "object" &&
+        img !== null &&
+        typeof (img as { data?: unknown }).data === "string" &&
+        typeof (img as { mimeType?: unknown }).mimeType === "string",
+    )
+  );
+}
+
 function serializeToolResultPart(
   part: ToolCallMessagePart,
 ): SerializedToolResult | null {
@@ -920,6 +949,10 @@ function serializeToolResultPart(
     // content; serialise a sentinel JSON so legitimately empty tool
     // outputs still round-trip the follow-up turn to the provider.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
+  } else if (isMcpImageToolResult(result)) {
+    // Replay only the text; base64 image payloads would flood the model
+    // context on every follow-up turn.
+    content = result.text.length > 0 ? result.text : JSON.stringify({ result: "" });
   } else {
     try {
       content = JSON.stringify(result);
@@ -3196,9 +3229,12 @@ export function createOpenAIStreamAdapter(
                     const rawResult = (toolEvent.result as string) ?? "";
                     const imgMarker = "\n__IMAGES__:";
                     const imgIdx = rawResult.lastIndexOf(imgMarker);
+                    const mcpImgMarker = "\n__MCP_IMAGES__:";
+                    const mcpImgIdx = rawResult.lastIndexOf(mcpImgMarker);
                     let parsedResult:
                       | string
                       | { text: string; images: string[]; sessionId: string }
+                      | McpImageToolResult
                       | {
                           image_b64: string;
                           image_mime: string;
@@ -3225,6 +3261,16 @@ export function createOpenAIStreamAdapter(
                         background: toolEvent.background as string | undefined,
                         prompt: toolEvent.prompt as string | undefined,
                       };
+                    } else if (mcpImgIdx !== -1) {
+                      const text = rawResult.slice(0, mcpImgIdx);
+                      try {
+                        const images = JSON.parse(
+                          rawResult.slice(mcpImgIdx + mcpImgMarker.length),
+                        ) as McpImageToolResult["images"];
+                        parsedResult = { text, images };
+                      } catch {
+                        parsedResult = rawResult;
+                      }
                     } else if (imgIdx !== -1) {
                       const text = rawResult.slice(0, imgIdx);
                       // Fall back to "_default" to match the backend sandbox

@@ -236,7 +236,7 @@ def is_tool_error(result: str) -> bool:
 def strip_result_for_model(result: str) -> str:
     """Remove frontend-only sentinels (image paths, RAG source map) before
     feeding the result back to the model."""
-    for sentinel in ("__IMAGES__:", "__RAG_SOURCES__:"):
+    for sentinel in ("__IMAGES__:", "__MCP_IMAGES__:", "__RAG_SOURCES__:"):
         if sentinel in result:
             result = result.split(sentinel, 1)[0].rstrip()
     return result

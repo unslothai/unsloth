@@ -33,7 +33,9 @@ const BINARY_KEY = /b64|base64|^(images?|audio|video)$/i;
 // base64 runs and the "__IMAGES__" suffix inside strings).
 function searchableText(value: unknown, depth = 0): string {
   if (typeof value === "string") {
-    const cut = value.indexOf("\n__IMAGES__:");
+    let cut = value.indexOf("\n__IMAGES__:");
+    const mcpCut = value.indexOf("\n__MCP_IMAGES__:");
+    if (mcpCut !== -1 && (cut === -1 || mcpCut < cut)) cut = mcpCut;
     return (cut === -1 ? value : value.slice(0, cut))
       .replace(/data:[^;,\s]+;base64,[A-Za-z0-9+/=]+/g, " ")
       .replace(/[A-Za-z0-9+/]{120,}={0,2}/g, " ");
