@@ -1010,8 +1010,7 @@ def execute_tool(
         # fold in thread_id so stdio sessions stay per-conversation. Quote the
         # parts so IDs containing ":" can't collide into one scope.
         mcp_scope = (
-            ":".join(urllib.parse.quote(p, safe = "") for p in (session_id, thread_id) if p)
-            or None
+            ":".join(urllib.parse.quote(p, safe = "") for p in (session_id, thread_id) if p) or None
         )
         headers = parse_server_headers(server)
         url = server["url"]
