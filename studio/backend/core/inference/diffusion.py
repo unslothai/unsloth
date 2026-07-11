@@ -95,6 +95,7 @@ from .diffusion_precision import normalize_te_quant, quantize_text_encoders
 from .diffusion_prequant import (
     load_prequantized_transformer,
     resolve_prequant_source,
+    usable_prequant_source,
 )
 from .diffusion_auto_policy import (
     build_resolved_record,
@@ -263,6 +264,24 @@ def _clamp_max_side(img: Any, max_side: int) -> Any:
     nw = max(1, int(round(w * scale)))
     nh = max(1, int(round(h * scale)))
     return img.resize((nw, nh), Image.LANCZOS)
+
+
+def _compile_shape_dims(
+    workflow: str, init_pil: Any, width: int, height: int
+) -> tuple[int, int]:
+    """The (width, height) a generation's forward ACTUALLY runs at, for static
+    compile-cache shape registration.
+
+    txt2img / reference / controlnet generate at the requested slider size, but the
+    image-conditioned workflows (img2img / inpaint / upscale / edit) derive the output
+    from the (resized/snapped) input image -- registering the slider values there would
+    mark a shape covered that was never compiled, so the truly-used shape never
+    re-dirties the bundle and warm restarts keep paying its compile. Mirrors the
+    width/height kwarg derivation in generate()."""
+    if workflow in ("txt2img", "reference", "controlnet") or init_pil is None:
+        return int(width), int(height)
+    iw, ih = init_pil.size
+    return int(iw), int(ih)
 
 
 # A small allowlist of well-known official base repos that may load as a full
@@ -1378,8 +1397,14 @@ class DiffusionBackend:
                             transformer_quant,  # normalized above
                             family = getattr(fam, "name", None),
                         )
+                        # usable_prequant_source (not resolve_): a request-supplied local
+                        # path that is missing or outside the allowlist must NOT count as a
+                        # prequant source here, or it would skip the dense-fit re-check and
+                        # _load_dense_quant_pipeline's refusal would fall back to
+                        # materialising the dense bf16 transformer AFTER the eviction --
+                        # exactly the OOM this re-check exists to prevent.
                         prequant = (
-                            resolve_prequant_source(
+                            usable_prequant_source(
                                 fam, scheme, path_override = transformer_prequant_path
                             )
                             if scheme is not None
@@ -2892,9 +2917,16 @@ class DiffusionBackend:
                 # with the enriched set. Idempotent + best-effort -- never fails a
                 # generation.
                 try:
+                    # Register the dims the forward ACTUALLY compiled with: the
+                    # image-conditioned workflows run at the input image's size, not the
+                    # slider's (see _compile_shape_dims), and a mis-registered slider
+                    # shape would keep the truly-used shape out of the saved bundle.
+                    reg_width, reg_height = _compile_shape_dims(
+                        workflow, init_pil, width, height
+                    )
                     compile_cache.register_shape(
                         state.compile_cache_ctx,
-                        (int(width), int(height), int(batch_size)),
+                        (reg_width, reg_height, int(batch_size)),
                         static = "compiled" in (state.speed_optims or ())
                         and compiled_shapes_are_static(state.pipe, state.speed_mode),
                     )

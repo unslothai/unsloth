@@ -139,6 +139,26 @@ def resolve_prequant_source(
     return None
 
 
+def usable_prequant_source(
+    fam: Any,
+    scheme: str,
+    *,
+    path_override: Optional[str] = None,
+) -> Optional[PrequantSource]:
+    """``resolve_prequant_source``, but a request-supplied local path counts only when
+    the loader would actually accept it: inside the ``UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH``
+    allowlist AND present on disk. A path that fails either check resolves to None so
+    memory planning falls back to the dense-fit checks up front -- otherwise
+    ``load_prequantized_transformer`` refuses the path only AFTER the resident pipeline
+    was evicted, and the dense bf16 fallback then materialises under a plan that never
+    budgeted for it (the evict-then-OOM those checks exist to prevent). Hosted-repo
+    sources are unaffected."""
+    src = resolve_prequant_source(fam, scheme, path_override = path_override)
+    if src is not None and src.kind == "path" and not local_prequant_path_ready(src.location):
+        return None
+    return src
+
+
 def load_prequantized_transformer(
     transformer_cls: Any,
     base: str,

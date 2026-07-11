@@ -188,15 +188,14 @@ def resolve_dense_quant_candidate(
         return None
     prequant_available = False
     try:
-        from .diffusion_prequant import local_prequant_path_ready, resolve_prequant_source
+        from .diffusion_prequant import usable_prequant_source
 
-        src = resolve_prequant_source(fam, scheme, path_override = prequant_path)
-        # A request-supplied local path override is only usable if the loader will accept it
-        # (allowlisted AND present); otherwise load_prequantized_transformer refuses it and
-        # rebuilds dense after the resident pipe is unloaded -- the evict-then-OOM this
-        # small-plan prefetch exists to avoid. Hosted-repo sources keep the existing signal.
-        if src is not None and src.kind == "path" and not local_prequant_path_ready(src.location):
-            src = None
+        # usable_ (not resolve_): a request-supplied local path override counts only when
+        # the loader will accept it (allowlisted AND present); otherwise
+        # load_prequantized_transformer refuses it and rebuilds dense after the resident
+        # pipe is unloaded -- the evict-then-OOM this small-plan prefetch exists to avoid.
+        # Hosted-repo sources keep the existing signal.
+        src = usable_prequant_source(fam, scheme, path_override = prequant_path)
         prequant_available = src is not None
     except Exception:  # noqa: BLE001 -- prequant probing must never sink the candidate
         prequant_available = False

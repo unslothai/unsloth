@@ -1101,6 +1101,59 @@ def test_image_conditioned_passes_image_size_not_slider(fake_runtime, tmp_path):
     assert _SizePipe.last == {"width": 96, "height": 64}
 
 
+def test_compile_shape_dims_follow_workflow():
+    """_compile_shape_dims mirrors generate()'s width/height derivation: slider size for
+    txt2img / reference / controlnet, the input image's size for the image-conditioned
+    workflows (whose forward runs at init_pil.size, whatever the sliders say)."""
+    from PIL import Image
+
+    from core.inference.diffusion import _compile_shape_dims
+
+    img = Image.new("RGB", (96, 64), (10, 20, 30))
+    assert _compile_shape_dims("txt2img", None, 1024, 512) == (1024, 512)
+    # reference generates at the slider size even though an init image is present.
+    assert _compile_shape_dims("reference", img, 1024, 512) == (1024, 512)
+    assert _compile_shape_dims("controlnet", None, 768, 768) == (768, 768)
+    for wf in ("img2img", "inpaint", "upscale", "edit"):
+        assert _compile_shape_dims(wf, img, 1024, 512) == (96, 64)
+
+
+def test_register_shape_uses_actual_forward_dims(fake_runtime, tmp_path, monkeypatch):
+    """The static compile-cache manifest must record the dims the forward ACTUALLY ran
+    at: an image-conditioned generate derives its output size from the input image, so
+    registering the slider values would mark a never-compiled shape as covered while the
+    truly-used shape never re-dirties/saves the bundle (warm restarts keep paying its
+    compile)."""
+    from core.inference import diffusion as diff
+
+    registered: list = []
+    monkeypatch.setattr(
+        diff.compile_cache,
+        "register_shape",
+        lambda ctx, shape, *, static: registered.append(tuple(shape)),
+    )
+    monkeypatch.setattr(diff.compile_cache, "save", lambda ctx, *, logger = None: True)
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+    # txt2img registers the requested slider size.
+    backend.generate(prompt = "x", steps = 4, width = 1024, height = 512, seed = 1)
+    assert registered[-1] == (1024, 512, 1)
+    # img2img runs at the INPUT image's 64x64; the 1024x512 slider must not be recorded.
+    backend.generate(
+        prompt = "x",
+        steps = 4,
+        width = 1024,
+        height = 512,
+        seed = 1,
+        init_image = _tiny_png_b64(),
+        strength = 0.5,
+    )
+    assert registered[-1] == (64, 64, 1)
+
+
 def test_edit_family_uses_own_pipeline_and_requires_image(fake_runtime, tmp_path):
     """An instruction-editing family (Qwen-Image-Edit) exposes only the 'edit' workflow,
     runs the image through its OWN loaded pipeline (no from_pipe), and rejects a call with
@@ -2495,7 +2548,9 @@ def test_dense_quant_prequant_skips_dense_refit(fake_runtime, tmp_path, monkeypa
     monkeypatch.setattr(
         dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
     )
-    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: "prequant/path")
+    # usable_ (not resolve_): the re-check site only honours a source the loader would
+    # actually accept, so the fake must present a USABLE one (e.g. a hosted repo).
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: "prequant/path")
     # Large dense shards cached: if the re-check ran, it would wrongly decline the fast path.
     monkeypatch.setattr(
         DiffusionBackend,
@@ -2532,6 +2587,58 @@ def test_dense_quant_prequant_skips_dense_refit(fake_runtime, tmp_path, monkeypa
     )
     assert dense_refit_ran == []  # prequant -> dense re-check skipped
     assert attempted == [True]  # fast path still attempted (with the prequant)
+
+
+def test_dense_quant_unusable_prequant_path_runs_dense_refit(fake_runtime, tmp_path, monkeypatch):
+    # A request-supplied transformer_prequant_path the loader will refuse (missing, or
+    # outside UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH) resolves to NO usable prequant source,
+    # so the dense-transformer fit re-check MUST run: with real device budgets it is what
+    # declines the fast path up front instead of evicting the resident pipeline and
+    # OOMing in the dense bf16 fallback _load_dense_quant_pipeline falls into.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    # The REAL usable_prequant_source refuses a non-allowlisted path (unit-tested in
+    # test_diffusion_prequant.py); returning None here pins that outcome at this site.
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_dense_transformer_resident_bytes",
+        staticmethod(lambda base: 999 * 1024**3),
+    )
+    dense_refit_ran = []
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        if transformer_resident_override_mib is not None:
+            dense_refit_ran.append(True)
+        return orig_plan(self, *a, **k)
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    monkeypatch.setattr(
+        DiffusionBackend, "_load_dense_quant_pipeline", lambda self, *a, **k: (None, None)
+    )
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+        transformer_prequant_path = str(tmp_path / "not-allowlisted.pt"),
+    )
+    # Unusable path -> no prequant shortcut -> the dense fit re-check ran.
+    assert dense_refit_ran == [True]
+    assert backend.status()["loaded"] is True
 
 
 def test_transformer_quant_unsupported_scheme_skips_dense_download(
