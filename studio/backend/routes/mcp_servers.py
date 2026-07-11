@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import json
 import uuid
 from urllib.parse import urlparse
@@ -13,6 +14,7 @@ from core.inference.mcp_client import (
     TOOL_CACHE_INVALIDATING_FIELDS,
     cache_tools,
     clear_oauth_tokens_async,
+    close_stdio_sessions,
     invalidate_tool_cache,
     is_stdio,
     list_tools_async,
@@ -208,9 +210,11 @@ async def update_mcp_server(
     mcp_servers_db.update_server(server_id, changes)
     # A new endpoint/auth makes cached tools wrong and disabling makes them
     # unreachable, so drop them and let the next send re-probe; a rename
-    # leaves them valid.
+    # leaves them valid. Also close any persistent stdio session for the old
+    # endpoint (off-loop: closing joins the session thread).
     if changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS:
         invalidate_tool_cache(server_id)
+        await asyncio.to_thread(close_stdio_sessions, old["url"])
     return _row_to_response(mcp_servers_db.get_server(server_id))
 
 
@@ -223,6 +227,7 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.delete_server(server_id)
     invalidate_tool_cache(server_id)
+    await asyncio.to_thread(close_stdio_sessions, old["url"])
 
 
 @router.post("/{server_id}/refresh", response_model = McpServerProbeResult)
