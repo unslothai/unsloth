@@ -5318,3 +5318,131 @@ class TestRound54Bypasses:
     )
     def test_round54_benign_allowed(self, code):
         _ok(code)
+
+
+def _sh(cmd):
+    return "import os\nos.system(%r)" % cmd
+
+
+class TestRound55Bypasses:
+    """Fifty-fifth-round Codex findings: command-scanner coverage gaps -- sqlite3 stdin SQL, sed -f
+    scripts, git EDITOR/VISUAL + object-dir env vars, find {} exec, openssl -out=, git exec-env
+    command values, git marks-file options, plus the assignment-prefix false positive."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # sqlite3 reads SQL from stdin (pipe / redirect) when no SQL argv is given.
+            _sh("printf '.shell touch /tmp/p\\n' | sqlite3 :memory:"),
+            _sh("sqlite3 :memory: < evil.sql"),
+        ],
+    )
+    def test_sqlite3_stdin_sql_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # sed -f / --file loads an uninspectable script that can carry w / e commands.
+            _sh("printf x | sed -n -f evil.sed"),
+            _sh("sed --file=evil.sed data.txt"),
+            _sh("sed -nf evil.sed data.txt"),
+        ],
+    )
+    def test_sed_script_file_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # git EDITOR / VISUAL fallback runs the value as the commit-message editor.
+            _sh("EDITOR='touch /tmp/p' git -c user.email=a@b -c user.name=c commit --allow-empty"),
+            _sh("VISUAL='touch /tmp/p' git commit --allow-empty"),
+            _sh("export EDITOR='touch /tmp/p'; git commit --allow-empty"),
+        ],
+    )
+    def test_git_editor_visual_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # GIT_OBJECT_DIRECTORY / GIT_COMMON_DIR point git's object store outside the workdir.
+            _sh("echo hi | GIT_OBJECT_DIRECTORY=/tmp git hash-object -w --stdin"),
+            _sh("GIT_COMMON_DIR=/tmp git rev-parse"),
+        ],
+    )
+    def test_git_object_directory_env_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    def test_find_exec_placeholder_blocked(self):
+        # find substitutes {} with the matched path, so -exec {} ; executes it.
+        assert _check_code_safety(_sh("find . -name evil -exec {} ';'")) is not None
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # openssl glued -out=FILE / -writerand=FILE forms escape the workdir.
+            _sh("openssl rand -out=/tmp/p 1"),
+            _sh("openssl rand -writerand=/tmp/r 1"),
+        ],
+    )
+    def test_openssl_glued_out_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A bare command (with args) stored in a git exec-env var runs in an unguarded child.
+            _sh("GIT_EXTERNAL_DIFF='touch /tmp/p' git diff"),
+            _sh("GIT_SSH_COMMAND='rm -rf /tmp/x' git fetch"),
+        ],
+    )
+    def test_git_exec_env_command_value_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # git fast-export / fast-import marks-file path options write / read an escaping path.
+            _sh("git fast-export --export-marks=/tmp/marks HEAD"),
+            _sh("git fast-import --import-marks=/tmp/m"),
+        ],
+    )
+    def test_git_marks_file_options_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A NAME=value shaped ARGUMENT to a printer is not an env assignment (P2 false positive),
+            # but a real export / prefix assignment still blocks.
+            (_sh("echo GIT_CONFIG_COUNT=0"), False),
+            (_sh("printf %s PATH=.:/bin"), False),
+            (_sh("PATH=. evilcmd"), True),
+            (_sh("export PATH=.:/bin; evilcmd"), True),
+            (_sh("export BASH_ENV=env.sh; bash -c 'echo ok'"), True),
+        ],
+    )
+    def test_assignment_prefix_position_aware(self, code):
+        _c, _blocked = code
+        assert (_check_code_safety(_c) is not None) is _blocked, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign forms across all round-55 checks stay allowed.
+            _sh("sqlite3 local.db 'select 1;'"),
+            _sh("sed -e 's/a/b/' data.txt"),
+            _sh("sed 's/a/b/' data.txt"),
+            _sh("EDITOR=vim git commit --allow-empty"),
+            _sh("GIT_OBJECT_DIRECTORY=objs git hash-object -w --stdin"),
+            _sh("find . -name '*.py' -exec cat {} ';'"),
+            _sh("openssl rand -out=key 1"),
+            _sh("GIT_PAGER=cat git log"),
+            _sh("git fast-export --export-marks=marks HEAD"),
+            _sh("export MYVAR=hello; echo hi"),
+        ],
+    )
+    def test_round55_benign_allowed(self, code):
+        _ok(code)

@@ -600,6 +600,11 @@ _GIT_PATH_VALUE_OPTIONS = frozenset(
         "--output",
         "-O",
         "--output-directory",
+        # fast-export / fast-import marks files: git writes / reads the given path from its
+        # unguarded child (git fast-export --export-marks=/tmp/marks HEAD).
+        "--export-marks",
+        "--import-marks",
+        "--import-marks-if-exists",
     }
 )
 # git config keys whose value is a COMMAND git runs in an unguarded child (git -c KEY=CMD ... /
@@ -1459,6 +1464,16 @@ def _find_blocked_commands(command: str) -> set[str]:
                 seg.append(tokens[j])
                 j += 1
             if seg:
+                # find substitutes `{}` with each matched path, so `-exec {} ;` EXECUTES the matched
+                # file -- a prior step can plant an executable ./evil and `find . -name evil -exec {}
+                # ';'` then runs that workdir shebang in an unguarded child. The reconstructed
+                # segment scan sees only the harmless-looking `{}`, so fail closed when the exec
+                # command word itself is (or starts with) the placeholder.
+                _ecw = seg[0]
+                if len(_ecw) >= 2 and _ecw[0] == _ecw[-1] and _ecw[0] in ("'", '"'):
+                    _ecw = _ecw[1:-1]
+                if _ecw == "{}" or _ecw.startswith("{}"):
+                    blocked.add("find-exec-placeholder")
                 blocked |= _find_blocked_commands(" ".join(seg))
 
     # Regex catches blocked words at command boundaries shlex misses: inside
@@ -1723,19 +1738,57 @@ def _find_blocked_commands(command: str) -> set[str]:
                 if _an in ("BASH_ENV", "ENV") and _av != "":
                     blocked.add("shell-startup-env:" + _an)
 
+    # A NAME=value token is an ENVIRONMENT assignment only in the command-PREFIX position (before
+    # the command word of its segment); after the command word it is an ARGUMENT the shell does not
+    # export (echo GIT_CONFIG_COUNT=0, printf %s PATH=.:/bin). Map each leading assignment token to
+    # its segment's command-word index (None if the segment is pure assignments).
+    def _assignment_prefix_map():
+        _cmd_sorted = sorted(_cmd_word_idx)
+        _bounds = []
+        _seg_start = 0
+        for _j in range(len(tokens) + 1):
+            if (
+                _j == len(tokens)
+                or tokens[_j] in _SHELL_SEPARATORS
+                or tokens[_j] in _SHELL_KEYWORDS_AS_SEP
+            ):
+                if _j > _seg_start:
+                    _bounds.append((_seg_start, _j))
+                _seg_start = _j + 1
+        _out = {}
+        for _a, _b in _bounds:
+            _cw = None
+            for _w in _cmd_sorted:
+                if _a <= _w < _b:
+                    _cw = _w
+                    break
+            # `export NAME=value` / `declare -x` / `typeset` set an env var even though NAME=value
+            # follows the command word, so their NAME=value ARGS are assignments too.
+            _exporter = _cw is not None and _token_basename(tokens[_cw]) in (
+                "export",
+                "declare",
+                "typeset",
+            )
+            for _j in range(_a, _b):
+                if _ASSIGNMENT_RE.match(tokens[_j]) and (_cw is None or _j < _cw or _exporter):
+                    _out[_j] = _cw
+        return _out
+
+    _assign_prefix = _assignment_prefix_map()
+
     # Local VAR=value bindings in this command, so a PATH component expanded from a locally-set
-    # variable (P=.; PATH=$P evil) can be resolved to its (unsafe) value.
+    # variable (P=.; PATH=$P evil) can be resolved to its (unsafe) value. Only real prefix
+    # assignments count (not a NAME=value printed as an argument).
     _local_assigns = {}
-    for _et in tokens:
-        if _ASSIGNMENT_RE.match(_et):
-            _n, _, _v = _et.partition("=")
-            _local_assigns[_n.rstrip("+")] = _v
+    for _ei in _assign_prefix:
+        _n, _, _v = tokens[_ei].partition("=")
+        _local_assigns[_n.rstrip("+")] = _v
 
     # Assignment prefixes that persist for the command's child: a non-empty BASH_ENV / ENV (sourced
     # by a later shell), a PATH with a cwd entry (a bare command resolves to a workdir shebang), and
-    # git path / config environment variables -- GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE point
-    # git's writes outside the workdir, and GIT_CONFIG_* override the sandbox's env-based hook
-    # suppression. Handle both NAME=value and NAME+=value (append).
+    # git path / config environment variables -- GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE /
+    # GIT_OBJECT_DIRECTORY / GIT_COMMON_DIR point git's repo / objects outside the workdir, and
+    # GIT_CONFIG_* override the sandbox's env-based hook suppression. Handle NAME=value / NAME+=value.
     _GIT_EXEC_ENV_VARS = frozenset(
         {
             "GIT_EXTERNAL_DIFF",
@@ -1748,12 +1801,26 @@ def _find_blocked_commands(command: str) -> set[str]:
             "GIT_PAGER",
         }
     )
-    for _ei, _et in enumerate(tokens):
-        if not _ASSIGNMENT_RE.match(_et):
-            continue
+    # git path-valued repository env vars whose escaping value writes outside the workdir from an
+    # unguarded git child (GIT_OBJECT_DIRECTORY=/tmp git hash-object -w --stdin).
+    _GIT_PATH_ENV_VARS = frozenset(
+        {
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+        }
+    )
+    for _ei, _cwidx in _assign_prefix.items():
+        _et = tokens[_ei]
         _an, _, _av = _et.partition("=")
         _append = _an.endswith("+")
         _an = _an.rstrip("+")
+        _cmd_base = _token_basename(tokens[_cwidx]) if _cwidx is not None else None
+        _cmd_is_git = _cmd_base == "git"
+        _is_exporter = _cmd_base in ("export", "declare", "typeset")
         if _an in ("BASH_ENV", "ENV") and _av != "":
             blocked.add("shell-startup-env:" + _an)
         # PATH=. cmd / PATH+=:. cmd: a relative / cwd entry lets a bare command word resolve to a
@@ -1763,9 +1830,10 @@ def _find_blocked_commands(command: str) -> set[str]:
             _pval = ("$PATH" + _av) if _append else _av
             if _path_value_is_unsafe(_pval, _local_assigns):
                 blocked.add("unsafe-path-assign")
-        # GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE set git's repo / tree / index path directly, so
-        # an escaping value writes outside the workdir (GIT_DIR=/tmp/x git init) with no --git-dir.
-        elif _an in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE") and _arg_escapes_workdir(_av):
+        # GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY / ... set git's repo /
+        # tree / index / object-store path directly, so an escaping value writes outside the workdir
+        # (GIT_DIR=/tmp/x git init, GIT_OBJECT_DIRECTORY=/tmp git hash-object -w) with no CLI flag.
+        elif _an in _GIT_PATH_ENV_VARS and _arg_escapes_workdir(_av):
             blocked.add("git-write-outside")
         # GIT_CONFIG[_GLOBAL/_SYSTEM/_COUNT/_KEY_*/_VALUE_*] re-point git config or drop the
         # sandbox's env-based hook suppression (GIT_CONFIG_COUNT=0 git ...), re-enabling a planted
@@ -1773,18 +1841,21 @@ def _find_blocked_commands(command: str) -> set[str]:
         elif _an == "GIT_CONFIG" or _an.startswith("GIT_CONFIG_"):
             blocked.add("git-config-env-override")
         # git runs the program named by these env vars (GIT_EXTERNAL_DIFF / GIT_ASKPASS /
-        # GIT_SSH[_COMMAND] / GIT_PROXY_COMMAND / GIT_EDITOR / GIT_PAGER); a value pointing at a
-        # WORKDIR executable (GIT_EXTERNAL_DIFF=./evil git diff) runs a planted helper in an
-        # unguarded git child. A bare command name (GIT_PAGER=cat) or a system tool stays allowed.
-        elif _an in _GIT_EXEC_ENV_VARS:
+        # GIT_SSH[_COMMAND] / GIT_PROXY_COMMAND / GIT_EDITOR / GIT_PAGER), and for a git child the
+        # standard EDITOR / VISUAL fallbacks name the commit-message editor too. Block a value that
+        # points at a WORKDIR executable (GIT_EXTERNAL_DIFF=./evil), a ~ path, OR whose command the
+        # scanner flags (GIT_EXTERNAL_DIFF='touch /tmp/p' -> touch writes outside). A bare system
+        # command (GIT_PAGER=cat, EDITOR=vim) stays allowed.
+        elif _an in _GIT_EXEC_ENV_VARS or (
+            _an in ("EDITOR", "VISUAL") and (_cmd_is_git or _is_exporter)
+        ):
             _gev = _av
             if len(_gev) >= 2 and _gev[0] == _gev[-1] and _gev[0] in ("'", '"'):
                 _gev = _gev[1:-1]
             _gecmd = _gev.split()[0] if _gev.split() else ""
-            # A workdir-reachable helper: a local / relative executable (./evil, sub/evil) or a ~
-            # (HOME == workdir) path. An absolute system tool (/usr/bin/ssh) and a bare PATH name
-            # (cat) stay allowed -- the attacker cannot plant a file outside the workdir.
             if _is_local_executable_path(_gecmd) or _gecmd.startswith("~"):
+                blocked.add("git-exec-env")
+            elif _gev and _find_blocked_commands(_gev):
                 blocked.add("git-exec-env")
 
     # git -c alias.X='!CMD' X / git config alias.X '!CMD': a git alias whose value starts with
@@ -2014,12 +2085,19 @@ def _find_blocked_commands(command: str) -> set[str]:
             t = tokens[k]
             if t in _SHELL_SEPARATORS or t in _SHELL_KEYWORDS_AS_SEP:
                 break
+            _op = None
             if t in _OPENSSL_WRITE_FLAGS and k + 1 < len(tokens):
-                _op = tokens[k + 1]
-                if _git_operand_escapes(_op, _local_assigns) or (
-                    _ossl_cwd_escapes and _operand_relative_local(_op)
-                ):
-                    blocked.add("openssl-write-outside")
+                _op = tokens[k + 1]  # separated form: -out FILE
+            else:
+                # glued form: -out=FILE / -writerand=FILE (openssl accepts -out outfile and =).
+                _oflag, _oeq, _oval = t.partition("=")
+                if _oeq and _oflag in _OPENSSL_WRITE_FLAGS:
+                    _op = _oval
+            if _op is not None and (
+                _git_operand_escapes(_op, _local_assigns)
+                or (_ossl_cwd_escapes and _operand_relative_local(_op))
+            ):
+                blocked.add("openssl-write-outside")
 
     # sqlite3 <DBFILE> creates / opens a database in an unguarded child (no realpath guard), and
     # its dot-commands (.output / .backup / .dump / .read ...) read + write arbitrary files. Flag
@@ -2033,12 +2111,28 @@ def _find_blocked_commands(command: str) -> set[str]:
         # even a RELATIVE DBFILE / dot-file / -init operand (sqlite3 db.sqlite ..., cwd=/tmp) land
         # outside; combine the escaping cwd with a relative operand below.
         _sqlite_cwd_escapes = _cwd_wrapper_escapes(tokens, i)
+        # sqlite3 [OPTIONS] [FILENAME [SQL]] reads SQL from STDIN when no SQL argv is given, so a
+        # dot-command fed via a pipe or `<` redirect (printf '.shell touch /tmp/p\n' | sqlite3
+        # :memory:) runs unscanned in the unguarded child. Detect a stdin source (this command is a
+        # pipe target, or has a `<` / heredoc input redirect) with no inline SQL and fail closed.
+        _sqlite_pipe_target = False
+        for _bk in range(i - 1, -1, -1):
+            _bt = tokens[_bk]
+            if _bt in _SHELL_SEPARATORS or _bt in _SHELL_KEYWORDS_AS_SEP:
+                _sqlite_pipe_target = _bt == "|"
+                break
+        _sqlite_stdin_redirect = False
+        _seen_sql = False
         _seen_db = False
         _sk = i + 1
         while _sk < len(tokens):
             t = tokens[_sk]
             if t in _SHELL_SEPARATORS or t in _SHELL_KEYWORDS_AS_SEP:
                 break
+            if t in ("<", "<<", "<<<", "0<"):
+                _sqlite_stdin_redirect = True
+                _sk += 2  # skip the redirect target too
+                continue
             # sqlite3 options that consume a SEPARATED operand; skip the value so it is not
             # mistaken for the DBFILE (only -init reads a file, checked via its own value here).
             if t in _SQLITE_OPERAND_OPTS:
@@ -2091,7 +2185,15 @@ def _find_blocked_commands(command: str) -> set[str]:
                     or (_sqlite_cwd_escapes and _operand_relative_local(_dbn))
                 ):
                     blocked.add("sqlite3-write-outside")
+            else:
+                # A bare operand after the DBFILE is inline SQL, so sqlite3 runs it and exits
+                # WITHOUT reading stdin (already scanned for dot-commands above).
+                _seen_sql = True
             _sk += 1
+        # No inline SQL argv + a stdin source (pipe / redirect) means the dot-commands come from
+        # unscanned stdin; fail closed (the .shell / .import / .output there are uninspectable).
+        if not _seen_sql and (_sqlite_pipe_target or _sqlite_stdin_redirect):
+            blocked.add("sqlite3-stdin-sql")
 
     # watch runs its command via `sh -c '<operands joined>'` UNLESS -x/--exec is given (then it
     # execs argv directly, resolved by the wrapper handling above). So a quoted payload
@@ -2303,6 +2405,18 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # sed --expression='w /tmp/x'). Detect the write / execute commands and flags in the
                 # script text; a plain s/word/x/ is not matched.
                 if _base in ("sed", "gsed", "ssed"):
+                    # A -f / --file script file is loaded from disk and can carry the same
+                    # w / W / e / r mutating + exec commands as an inline script, but its
+                    # contents are not statically visible (a planted workdir evil.sed with
+                    # `1w /tmp/p`). Fail closed on any -f / --file form (separated, glued, or
+                    # combined short group like -nf).
+                    if (
+                        a in ("-f", "--file")
+                        or al.startswith("--file=")
+                        or (_short and "f" in al[1:])
+                    ):
+                        blocked.add("sed-script-file:" + _base)
+                        break
                     _sed_script = None
                     if a in ("-e", "--expression") and k + 1 < len(tokens):
                         _sed_script = tokens[k + 1]  # -e SCRIPT (separated)
