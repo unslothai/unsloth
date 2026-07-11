@@ -5655,3 +5655,101 @@ class TestRound57Bypasses:
     )
     def test_round57_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound58Bypasses:
+    # bash # comments and unquoted newlines: a comment must terminate at its physical line (not the
+    # synthesized ; from a following newline), a mid-word # (echo ok#) is not a comment, and each
+    # physical line starts a fresh command position for both the write scan and the read scan.
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "echo ok #\nsed -i s/a/b/ /tmp/p",  # comment ends at newline, second line writes
+            "echo ok#; sed -i s/a/b/ /tmp/p",  # mid-word # is literal; ; then a writer
+            "true\ntouch /tmp/p",  # newline separates a fresh writer command
+        ],
+    )
+    def test_comment_and_newline_command_positions(self, cmd):
+        _blocked(_sh(cmd), expect_phrase = "blocked command")
+
+    def test_read_after_newline_scanned(self):
+        _blocked(_sh("echo ok\ncat /etc/passwd"), expect_phrase = "/etc/passwd")
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # sqlite dot-command file operands: .backup ?DB? FILE (file is LAST) and .open FILE.
+            "sqlite3 :memory: '.backup main /tmp/x'",
+            "sqlite3 :memory: '.save main /tmp/x'",
+            "sqlite3 :memory: '.open /tmp/x' 'create table t(x)'",
+            "sqlite3 :memory: '.open --new /tmp/x'",
+        ],
+    )
+    def test_sqlite_dotfile_operands(self, cmd):
+        _blocked(_sh(cmd), expect_phrase = "blocked command")
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "printf hi | iconv -o /tmp/p",  # -o FILE
+            "iconv --output=/tmp/p f",  # --output=FILE
+            "iconv --output /tmp/p f",  # --output FILE
+            "iconv -o/tmp/p f",  # glued -oFILE
+        ],
+    )
+    def test_iconv_output_escape(self, cmd):
+        _blocked(_sh(cmd), expect_phrase = "blocked command")
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "PATH=$(pwd) evil",  # command substitution in PATH value
+            "PATH=/x:$(pwd) evil",
+            "PATH=`pwd` evil",  # backtick form
+        ],
+    )
+    def test_path_command_substitution(self, cmd):
+        _blocked(_sh(cmd), expect_phrase = "blocked command")
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "git init $(printf /tmp/x)",  # $() operand
+            "git init `printf /tmp/y`",  # backtick operand
+            "git worktree add $(pwd)/out",
+        ],
+    )
+    def test_git_dynamic_path_operand(self, cmd):
+        _blocked(_sh(cmd), expect_phrase = "blocked command")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # timeit compiles + executes its stmt / setup STRING args, so an escape body blocks.
+            "import timeit\ntimeit.timeit(\"import os; os.system('touch /tmp/p')\", number=1)",
+            "import timeit\ntimeit.Timer(\"__import__('os').system('touch /tmp/p')\").timeit()",
+            'import timeit\ntimeit.timeit("x=1", setup="import os; os.system(\'touch /tmp/p\')")',
+            "import timeit as _t\n_t.repeat(\"import os; os.system('touch /tmp/p')\")",
+        ],
+    )
+    def test_timeit_string_execution(self, code):
+        _blocked(code, expect_phrase = "timeit")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign forms across the round-58 checks stay allowed.
+            _sh("echo hi # a trailing comment"),  # a real comment
+            _sh("echo ok\necho bye"),  # benign second line
+            _sh("git init repo"),  # workdir-relative git
+            _sh("iconv -f utf8 -t utf16 file.txt"),  # iconv with no output file
+            _sh("PATH=$PATH echo hi"),  # trusted PATH expansion
+            _sh("PATH=/usr/bin echo hi"),  # absolute PATH entry
+            _sh("sqlite3 :memory: '.backup main side.db'"),  # workdir-local backup
+            _sh("sqlite3 :memory: '.open local.db'"),  # workdir-local open
+            "import timeit\ntimeit.timeit('sum(range(10))', number=1)",  # benign timeit body
+            "import timeit\nt = timeit.default_timer()\nprint(t)",  # no code-string arg
+        ],
+    )
+    def test_round58_benign_allowed(self, code):
+        _ok(code)

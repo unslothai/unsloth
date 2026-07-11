@@ -292,15 +292,23 @@ _ARGV_TAIL_SCAN_COMMANDS = frozenset(
 _OPENSSL_WRITE_FLAGS = frozenset(
     {"-out", "-writerand", "-keyout", "-CAout", "-CAkeyout", "-CAserial"}
 )
+# iconv writes its converted output to the -o / --output file in an unguarded child, so an
+# escaping value writes a host path the realpath guard never sees (printf x | iconv -o /tmp/p).
+_ICONV_WRITE_FLAGS = frozenset({"-o", "--output"})
 # sqlite3 CLI dot-commands that WRITE (or read) an arbitrary file argument in the unguarded
 # child: `.output FILE` / `.once FILE` redirect query output to FILE, `.excel` / `.import` /
 # `.backup FILE` / `.save FILE` / `.dump FILE` / `.clone FILE` create files, `.log FILE` writes
 # a log, and `.read FILE` sources SQL from FILE. A FILE that escapes the workdir writes / reads a
 # host path the realpath guard never sees. The group captures the FILE operand for a path check.
 _SQLITE_DOTFILE_RE = re.compile(
-    r"(?m)^\s*\.(?:output|once|excel|import|backup|save|dump|clone|log|read)\b\s+(?:-{1,2}\S+\s+)*"
+    r"(?m)^\s*\.(?:output|once|excel|import|dump|clone|log|read)\b\s+(?:-{1,2}\S+\s+)*"
     r"(?P<f>(?:'[^']*'|\"[^\"]*\"|\S+))"
 )
+# .backup ?DB? FILE / .save ?DB? FILE put the written FILE LAST (an optional schema name precedes
+# it), and .open ?OPTIONS? FILE puts the opened/created database file after its options. The first
+# operand of these (a schema name, or an option token) is not the file, so capture the whole tail
+# and check the LAST bare operand instead of the first.
+_SQLITE_LASTFILE_RE = re.compile(r"(?m)^\s*\.(?:backup|save|open)\b[^\n]*")
 # sqlite3 dot-commands that RUN a system shell command in the unguarded child: `.shell CMD` /
 # `.system CMD` ("Run CMD ARGS... in a system shell"), and `.excel` (opens the result in a
 # system program). These execute regardless of any path check, so match the command itself.
@@ -429,6 +437,12 @@ def _path_value_is_unsafe(value: str, assignments = None) -> bool:
         # ~ / ~user expand to HOME, which is the session workdir in the sandbox.
         if e.startswith("~"):
             return True
+        # A command substitution $(...) / `...` in a PATH entry is a DYNAMIC value the analyzer
+        # cannot resolve (PATH=$(pwd) points the search list at the cwd, where an earlier sandboxed
+        # step may have planted an executable), so treat it as unsafe rather than a trusted $VAR
+        # expansion -- otherwise the $ branch below swallows $( as a non-matching variable.
+        if "$(" in e or "`" in e:
+            return True
         if e.startswith("${"):
             inner = e[2:]
             if inner.endswith("}"):
@@ -540,6 +554,12 @@ def _git_operand_escapes(tok: str, assigns = None) -> bool:
     earlier in the SAME command, as the WHOLE token (``OUT=/tmp/repo; git init $OUT``) OR as a
     PREFIX (``P=/tmp; git init $P/repo``, ``openssl rand -out $P/key``). An unknown external
     expansion is left to the literal check (so ``git clone $REPO_URL`` is not a false positive)."""
+    # A command substitution $(...) / `...` operand (git init $(printf /tmp/x)) is a DYNAMIC path
+    # the analyzer cannot resolve: the real shell expands it and native git creates the result
+    # outside the workdir, so fail closed. Tokenization splits `$(` into a bare `$` and `(`
+    # (and backticks into their own tokens), so the fragment left as the operand is `$` / `` ` ``.
+    if tok in ("$", "`") or "$(" in tok or "`" in tok:
+        return True
     m = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(.*)$", tok)
     if m and assigns and m.group(1) in assigns:
         return _arg_escapes_workdir(assigns[m.group(1)] + m.group(2))
@@ -1067,6 +1087,62 @@ def _rewrite_unquoted_newlines(command: str) -> str:
     return "".join(out)
 
 
+def _strip_bash_comments(command: str) -> str:
+    """Remove bash ``#`` comments, respecting quotes / escapes. A ``#`` begins a comment only at a
+    WORD BOUNDARY (start of string, or after unquoted whitespace / a metacharacter) and runs to the
+    end of the PHYSICAL line; a ``#`` inside a word (``echo ok#``) or inside quotes is literal. Run
+    BEFORE newline rewriting so each comment terminates at its real line break rather than a
+    synthesized ``;`` separator, and pair it with ``lexer.commenters = ""`` so shlex (whose default
+    ``#`` handling is not bash-accurate and fires mid-word) does not re-introduce the miss."""
+    out = []
+    q = None
+    i = 0
+    n = len(command)
+    boundary = True  # the start of the string is a word boundary
+    while i < n:
+        ch = command[i]
+        if q == "'":
+            out.append(ch)
+            if ch == "'":
+                q = None
+            boundary = False
+            i += 1
+            continue
+        if q == '"':
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(command[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                q = None
+            boundary = False
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(ch)
+            out.append(command[i + 1])
+            boundary = False
+            i += 2
+            continue
+        if ch in ("'", '"'):
+            out.append(ch)
+            q = ch
+            boundary = False
+            i += 1
+            continue
+        if ch == "#" and boundary:
+            # A comment runs to the end of the physical line; drop it but KEEP the newline so it
+            # still separates the following command.
+            while i < n and command[i] not in ("\n", "\r"):
+                i += 1
+            continue
+        out.append(ch)
+        boundary = ch in (" ", "\t", "\n", "\r", ";", "&", "|", "(", ")", "<", ">")
+        i += 1
+    return "".join(out)
+
+
 def _mask_quoted_separators(command: str) -> str:
     """Neutralize command-boundary characters that are DATA inside quotes (blank them to a
     space) so the regex command-position scan does not treat a quoted separator -- echo
@@ -1334,6 +1410,10 @@ def _find_blocked_commands(command: str) -> set[str]:
     """
     blocked: set[str] = set()
 
+    # Strip bash # comments FIRST (at their real physical-line boundaries), so a comment does not
+    # swallow the ` ; ` synthesized from a following newline (echo ok #\nsed -i ...) and a mid-word
+    # # (echo ok#; rm ...) is not mistaken by shlex for a comment. commenters is cleared below too.
+    command = _strip_bash_comments(command)
     # Normalize bash ANSI-C ($'...') / locale ($"...") quoting first: shlex leaves
     # `$'touch'` as `$touch`, so a writer/interpreter hidden behind ANSI-C quoting would
     # never match the blocklist even though bash decodes and runs it. Then expand ${IFS} to
@@ -1362,6 +1442,9 @@ def _find_blocked_commands(command: str) -> set[str]:
         else:
             lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`<")
             lexer.whitespace_split = True
+            lexer.commenters = (
+                ""  # bash comments are pre-stripped; shlex's # handling is not bash-accurate
+            )
             tokens = list(lexer)
     except ValueError:
         tokens = command.split()
@@ -1851,7 +1934,13 @@ def _find_blocked_commands(command: str) -> set[str]:
         # "$PATH" + value (a trailing / doubled separator or . entry is then the unsafe one).
         elif _an == "PATH":
             _pval = ("$PATH" + _av) if _append else _av
-            if _path_value_is_unsafe(_pval, _local_assigns):
+            # PATH=$(pwd) / PATH=/x:$(cmd): a command substitution in the value is a DYNAMIC search
+            # path (it can point at the cwd where an earlier step planted an exe). Tokenization
+            # splits `$(` into a trailing `$` on this token and a following `(`, so detect that
+            # shape here; a backtick form leaves an empty value token which _path_value_is_unsafe
+            # already flags.
+            _pathsub = _av.endswith("$") and _ei + 1 < len(tokens) and tokens[_ei + 1] == "("
+            if _pathsub or _path_value_is_unsafe(_pval, _local_assigns):
                 blocked.add("unsafe-path-assign")
         # GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY / ... set git's repo /
         # tree / index / object-store path directly, so an escaping value writes outside the workdir
@@ -1932,6 +2021,12 @@ def _find_blocked_commands(command: str) -> set[str]:
         _seg = []
         for k in range(i + 1, len(tokens)):
             if tokens[k] in _SHELL_SEPARATORS or tokens[k] in _SHELL_KEYWORDS_AS_SEP:
+                # A command substitution ( `...` / $(...) ) used as a git operand (git init
+                # `printf /tmp/x` / git worktree add $(pwd)/out) is split by tokenization into
+                # separator tokens; re-inject a backtick marker so the operand scan flags it as a
+                # dynamic escaping path. A backtick starts one directly; `$(` leaves a trailing `$`.
+                if tokens[k] == "`" or (tokens[k] == "(" and _seg and _seg[-1].endswith("$")):
+                    _seg.append("`")
                 break
             _seg.append(tokens[k])
         _joined = " ".join(_seg)
@@ -2122,6 +2217,30 @@ def _find_blocked_commands(command: str) -> set[str]:
             ):
                 blocked.add("openssl-write-outside")
 
+    # iconv -o FILE / --output FILE / --output=FILE / -oFILE writes FILE in an unguarded iconv
+    # child. Block when the output path escapes the workdir; a workdir-local -o and the no-output
+    # forms (iconv -f utf8 -t utf16 file, printing to stdout) stay allowed.
+    for i in _cmd_word_idx:
+        if _token_basename(tokens[i]) != "iconv":
+            continue
+        _ic_cwd_escapes = _cwd_wrapper_escapes(tokens, i)
+        for k in range(i + 1, len(tokens)):
+            t = tokens[k]
+            if t in _SHELL_SEPARATORS or t in _SHELL_KEYWORDS_AS_SEP:
+                break
+            _op = None
+            if t in _ICONV_WRITE_FLAGS and k + 1 < len(tokens):
+                _op = tokens[k + 1]  # separated form: -o FILE / --output FILE
+            elif t.startswith("--output="):
+                _op = t[len("--output=") :]
+            elif t.startswith("-o") and len(t) > 2:
+                _op = t[2:]  # glued short form: -oFILE
+            if _op is not None and (
+                _git_operand_escapes(_op, _local_assigns)
+                or (_ic_cwd_escapes and _operand_relative_local(_op))
+            ):
+                blocked.add("iconv-write-outside")
+
     # sqlite3 <DBFILE> creates / opens a database in an unguarded child (no realpath guard), and
     # its dot-commands (.output / .backup / .dump / .read ...) read + write arbitrary files. Flag
     # a DBFILE operand that escapes the workdir, and any dot-file target that escapes. A local DB
@@ -2188,6 +2307,23 @@ def _find_blocked_commands(command: str) -> set[str]:
                     or (_sqlite_cwd_escapes and _operand_relative_local(_dot_f))
                 ):
                     blocked.add("sqlite3-write-outside")
+            # .backup / .save / .open put the target FILE as the LAST operand (an optional schema
+            # name or option tokens precede it), so check the last bare operand for an escape.
+            for _m in _SQLITE_LASTFILE_RE.finditer(_unq):
+                try:
+                    _ops = shlex.split(_m.group(0).strip())
+                except ValueError:
+                    _ops = _m.group(0).split()
+                _tail = [
+                    _o for _o in _ops[1:] if not _o.startswith("-")
+                ]  # drop the dot-command word and option flags
+                if _tail:
+                    _bk_f = _tail[-1]
+                    if _bk_f not in ("stdout", "stderr", "off") and (
+                        _git_operand_escapes(_bk_f, _local_assigns)
+                        or (_sqlite_cwd_escapes and _operand_relative_local(_bk_f))
+                    ):
+                        blocked.add("sqlite3-write-outside")
             if t.startswith("-"):
                 _sk += 1
                 continue
@@ -6110,8 +6246,15 @@ def _scan_command_string_for_reads(
     recursively scanned, so a read hidden behind a normal command-prefix form is still caught."""
     if not command or _depth > 6:
         return None
+    # Strip bash # comments and rewrite unquoted newlines to `;` so each physical shell line starts
+    # a fresh command context: without this, `echo ok\ncat /etc/passwd` reads `cat /etc/passwd` as
+    # arguments of the non-reader `echo` and the real second-line read is missed.
     # Model bash brace expansion so a brace-hidden reader / path (`{cat,/etc/passwd}`) is seen.
-    cmd = _expand_braces(_expand_ifs(_normalize_ansi_c_quotes(command)))
+    cmd = _expand_braces(
+        _expand_ifs(
+            _normalize_ansi_c_quotes(_rewrite_unquoted_newlines(_strip_bash_comments(command)))
+        )
+    )
 
     def _traversal_hits_sensitive(norm):
         # A relative path that climbs out of the workdir with '..' can name a host secret
@@ -6162,6 +6305,9 @@ def _scan_command_string_for_reads(
     try:
         _lx = shlex.shlex(cmd, posix = True, punctuation_chars = ";&|()`<>")
         _lx.whitespace_split = True
+        _lx.commenters = (
+            ""  # bash comments are pre-stripped; shlex's # handling is not bash-accurate
+        )
         ptoks = list(_lx)
     except ValueError:
         ptoks = cmd.split()
@@ -6995,6 +7141,52 @@ def _check_signal_escape_patterns(
                 }
             )
 
+    def _analyze_timeit_code_arg(call_node, arg_node, label):
+        """Analyze a timeit stmt / setup argument, which timeit COMPILES and EXECUTES. A string
+        (literal or foldable) is recursed like an exec payload -- a benign body (sum(range(10)))
+        passes, a shell / escape body blocks. A non-string arg (a callable stmt, timeit's other
+        supported form) carries no source and is left alone, so ordinary timeit use is not blocked."""
+        if arg_node is None:
+            return
+        try:
+            _src = _const_fold(arg_node, _const_env)
+            if not isinstance(_src, str):
+                # A bare string literal that _const_fold declined (kept for clarity) is still source.
+                if isinstance(arg_node, ast.Constant) and isinstance(arg_node.value, str):
+                    _src = arg_node.value
+                else:
+                    return  # a callable stmt / opaque non-string arg carries no analyzable source
+            parsed_kind, _ = _safe_parse_inner(_src, "exec", _depth, _budget)
+            if parsed_kind == "PARSED":
+                _inner_safe, _inner_info = _check_signal_escape_patterns(_src, _depth + 1, _budget)
+                if not _inner_safe and not _inner_info.get("error"):
+                    dynamic_exec.append(
+                        {
+                            "type": "dynamic_exec",
+                            "line": getattr(call_node, "lineno", -1),
+                            "description": (
+                                f"timeit {label} string reaches unsafe operation: "
+                                f"{_first_unsafe_reason(_inner_info)}"
+                            ),
+                        }
+                    )
+            elif parsed_kind == "BOUND_HIT":
+                dynamic_exec.append(
+                    {
+                        "type": "dynamic_exec",
+                        "line": getattr(call_node, "lineno", -1),
+                        "description": f"timeit {label} string exceeds static-analysis bounds",
+                    }
+                )
+        except Exception:
+            dynamic_exec.append(
+                {
+                    "type": "dynamic_exec",
+                    "line": getattr(call_node, "lineno", -1),
+                    "description": f"timeit {label} string could not be statically verified",
+                }
+            )
+
     def _ast_name_matches(node, names):
         if isinstance(node, ast.Name):
             return node.id in names
@@ -7345,6 +7537,12 @@ def _check_signal_escape_patterns(
             self.runpy_aliases = {"runpy"}
             # from runpy import run_path as X / run_module as Y -> {"X", "Y"}.
             self.runpy_func_aliases: set[str] = set()
+            # import timeit as t -> {"timeit", "t"}. timeit.timeit / .repeat / Timer(...) COMPILE
+            # and EXECUTE their stmt / setup STRING args, so a string payload there is analyzed
+            # like an exec payload (a callable stmt carries no source and stays allowed).
+            self.timeit_aliases = {"timeit"}
+            # from timeit import timeit as X / repeat as Y / Timer as Z -> {"X", "Y", "Z"}.
+            self.timeit_func_aliases: set[str] = set()
             # import inspect as i -> {"inspect", "i"}. inspect.getclosurevars(fn) hands back
             # the cells a guard wrapper closes over (the original unguarded callable), so
             # treat it as a closure-recovery gadget like __closure__ / cell_contents.
@@ -7414,6 +7612,8 @@ def _check_signal_escape_patterns(
                     self.types_aliases.add(alias.asname or "types")
                 elif alias.name == "runpy":
                     self.runpy_aliases.add(alias.asname or "runpy")
+                elif alias.name == "timeit":
+                    self.timeit_aliases.add(alias.asname or "timeit")
                 elif alias.name == "inspect":
                     self.inspect_aliases.add(alias.asname or "inspect")
                 elif alias.name == "operator":
@@ -7524,6 +7724,12 @@ def _check_signal_escape_patterns(
                 for alias in node.names:
                     if alias.name in ("spawn", "fork"):
                         self.pty_func_aliases.add(alias.asname or alias.name)
+            elif node.module == "timeit":
+                # from timeit import timeit / repeat / Timer: bare-name aliases of the
+                # string-executing entry points.
+                for alias in node.names:
+                    if alias.name in ("timeit", "repeat", "Timer"):
+                        self.timeit_func_aliases.add(alias.asname or alias.name)
             elif node.module == "inspect":
                 for alias in node.names:
                     if alias.name == "getclosurevars":
@@ -8840,6 +9046,28 @@ def _check_signal_escape_patterns(
             # eval / exec / compile (bare builtin, single-assignment alias, builtins
             # attribute / subscript, inline container, or an indirect callee expression --
             # a ternary / boolean fallback -- that evaluates to one of them).
+            # timeit.timeit / .repeat / Timer(...) (attribute, from-import, or single-assignment
+            # alias) COMPILE and EXECUTE their stmt (arg0 / kw 'stmt') and setup (arg1 / kw 'setup')
+            # STRING args, so analyze those like exec payloads (a callable stmt carries no source).
+            if _analyzer_on and (
+                (
+                    isinstance(func, ast.Attribute)
+                    and func.attr in ("timeit", "repeat", "Timer")
+                    and _ast_name_matches(func.value, self.timeit_aliases)
+                )
+                or (isinstance(func, ast.Name) and func.id in self.timeit_func_aliases)
+                or self._rhs_module_attr(func, ("timeit", "repeat", "Timer"), self.timeit_aliases)
+            ):
+                _t_stmt = node.args[0] if node.args else None
+                _t_setup = node.args[1] if len(node.args) > 1 else None
+                for _kw in node.keywords:
+                    if _kw.arg == "stmt":
+                        _t_stmt = _kw.value
+                    elif _kw.arg == "setup":
+                        _t_setup = _kw.value
+                _analyze_timeit_code_arg(node, _t_stmt, "stmt")
+                _analyze_timeit_code_arg(node, _t_setup, "setup")
+
             exec_func_id = self._resolve_exec_callee(func)
 
             if exec_func_id is not None:
