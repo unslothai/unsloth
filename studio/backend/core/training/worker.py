@@ -1731,6 +1731,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # sharegpt+images) and text (alpaca/sharegpt/chatml → "text" column).
     format_type = config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
+    dataset_final_format = ""
     try:
         from utils.datasets import format_and_template_dataset
         def _fmt_progress(status_message = "", **_kw):
@@ -1796,6 +1797,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
             if info.get("success", True):
                 dataset = info.get("dataset", dataset)
+            dataset_final_format = str(info.get("final_format", "") or "").lower()
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
                     eval_dataset,
@@ -1894,6 +1896,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
         eval_steps = eval_steps_val,
     )
 
+    # Also gates the masking skip below, so defined outside the feature-detect block.
+    raw_text_mode = training_type == "Continued Pretraining" or format_type == "raw"
+
     # Feature-detect optional fields so this PR works without the paired zoo bump.
     _supported_fields = getattr(MLXTrainingConfig, "__dataclass_fields__", {})
     if "cast_norm_output_to_input_dtype" in _supported_fields:
@@ -1907,7 +1912,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
     if "append_eos" in _supported_fields:
-        raw_text_mode = training_type == "Continued Pretraining" or format_type == "raw"
         # Studio SFT formatting owns rendered examples; raw/CPT text still
         # needs MLX to append EOS like the CUDA raw-text path.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
@@ -1928,29 +1932,27 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("eval_configured")
 
     # ── 7. Apply train_on_responses_only if requested ──
-    if config.get("train_on_completions", False):
+    # Auto-detect markers from the chat template first, manual table as
+    # fallback. Mirror the CUDA skips: raw/CPT text has no chat turns and
+    # Alpaca-rendered text lacks the chat markers. Also check the resolved
+    # format, since format_type="auto" can land on alpaca or raw text.
+    if (
+        config.get("train_on_completions", False)
+        and not raw_text_mode
+        and format_type != "alpaca"
+        and dataset_final_format not in ("alpaca", "raw_text")
+    ):
         _send("status", status_message = "Configuring response-only training...")
-        try:
-            from utils.datasets import (
-                MODEL_TO_TEMPLATE_MAPPER,
-                TEMPLATE_TO_RESPONSES_MAPPER,
-            )
-
-            template_name = MODEL_TO_TEMPLATE_MAPPER.get(model_name.lower())
-            markers = TEMPLATE_TO_RESPONSES_MAPPER.get(template_name) if template_name else None
-            if markers:
-                trainer = train_on_responses_only(
-                    trainer,
-                    instruction_part = markers["instruction"],
-                    response_part = markers["response"],
-                )
-            else:
-                _send(
-                    "status",
-                    status_message = f"train_on_completions skipped (no template for {model_name})",
-                )
-        except Exception as e:
-            _send("status", status_message = f"train_on_completions failed: {e}")
+        # No catch: the helper handles detection failures and double misses, so
+        # an exception here is a real masking failure that must fail the run,
+        # not silently train on full sequences.
+        from utils.datasets.completion_masking import apply_completion_masking
+        trainer, _masking_applied = apply_completion_masking(
+            trainer,
+            model_name,
+            train_on_responses_only,
+            notify = lambda level, message: _send("status", status_message = message),
+        )
 
     # ── 8. Setup wandb / tensorboard ──
     wandb_run = None
