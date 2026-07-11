@@ -195,7 +195,9 @@ def test_connect_failure_timeout_surfaces_immediately(fake_clients, monkeypatch)
         async def __aenter__(self):
             raise asyncio.TimeoutError  # e.g. fastmcp's own init timeout
 
-    monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: InitTimeout(url))
+    monkeypatch.setattr(
+        mcp_client, "_client", lambda url, headers, use_oauth = False: InitTimeout(url)
+    )
     start = time.monotonic()
     out = call_tool_sync(STDIO_URL, None, "t", {}, timeout = 30.0)
     assert "timed out" in out
