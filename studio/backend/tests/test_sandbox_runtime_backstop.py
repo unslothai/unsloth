@@ -2461,3 +2461,117 @@ def test_sandboxed_docstring_same_line_write_denied(tmp_path):
     )
     assert "sandbox:" in out or "PermissionError" in out
     assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_assigned_os_alias_workdir_module_denied():
+    # import os; o = os; o.system(...) -- a whole-module assignment alias (not `import os as o`)
+    # must be followed in the vetter pre-pass so the aliased sink receiver is recognized.
+    _assert_workdir_module_denied(
+        "backstop-workdir-osassign",
+        "evilassign",
+        "import os\no = os\nprint('R61_ASSIGN')\no.system('echo PWN')\n",
+        "R61_ASSIGN",
+    )
+
+
+@_POSIX_ONLY
+def test_sandboxed_module_dict_subscript_workdir_module_denied():
+    # import os; os.__dict__['system'](...) -- a namespace-dict subscript through a guarded
+    # module's __dict__ reaches the sink the attribute checks miss; fail closed like vars(os).
+    _assert_workdir_module_denied(
+        "backstop-workdir-osdict",
+        "evildict",
+        "import os\nprint('R61_DICT')\nos.__dict__['system']('echo PWN')\n",
+        "R61_DICT",
+    )
+
+
+@_POSIX_ONLY
+def test_sandboxed_module_getattribute_workdir_module_denied():
+    # import os; os.__getattribute__('system')(...) -- a dynamic attribute lookup via the module
+    # dunder reaches the sink the builtin getattr(...) branch misses.
+    _assert_workdir_module_denied(
+        "backstop-workdir-osgetattr",
+        "evilga",
+        "import os\nprint('R61_GA')\nos.__getattribute__('system')('echo PWN')\n",
+        "R61_GA",
+    )
+
+
+@_POSIX_ONLY
+def test_sandboxed_mro_recovery_workdir_module_denied():
+    # io.FileIO.__mro__[1](...) recovers an unguarded base class in a vetted workdir helper; the
+    # vetter must treat __mro__ / mro as a gadget.
+    _assert_workdir_module_denied(
+        "backstop-workdir-mro",
+        "evilmro",
+        "import io\nprint('R61_MRO')\nc = io.FileIO.__mro__[1]\n",
+        "R61_MRO",
+    )
+
+
+@_POSIX_ONLY
+def test_sandboxed_sys_modules_subscript_workdir_module_denied():
+    # import sys; sys.modules['os'].system(...) recovers the guard-cached os module without an
+    # import, bypassing the denied-import path; access to sys.modules must be denied.
+    _assert_workdir_module_denied(
+        "backstop-workdir-sysmods",
+        "evilsysmods",
+        "import sys\nprint('R61_SYSMODS')\nsys.modules['os'].system('echo PWN')\n",
+        "R61_SYSMODS",
+    )
+
+
+@_POSIX_ONLY
+def test_sandboxed_benign_os_alias_workdir_module_allowed():
+    # A benign whole-module alias that only calls a NON-sink os attribute (o = os; o.getcwd())
+    # must still import -- the alias-following must not over-block ordinary os use.
+    session = "backstop-workdir-benignalias"
+    workdir = get_sandbox_workdir(session)
+    with open(os.path.join(workdir, "okalias.py"), "w") as f:
+        f.write("import os\no = os\nCWD = o.getcwd()\nprint('OKALIAS_' + 'BODY')\n")
+    try:
+        out = _python_exec(
+            "import okalias; print('IMPORTED_' + 'OK')",
+            None,
+            30,
+            session,
+            disable_sandbox = False,
+        )
+        assert "IMPORTED_OK" in out
+        assert "sandbox:" not in out
+    finally:
+        os.remove(os.path.join(workdir, "okalias.py"))
+
+
+@_POSIX_ONLY
+def test_sandboxed_sqlite_uri_xmode_memory_escape_denied(tmp_path):
+    # file:<path>?xmode=memory is an on-disk file (SQLite ignores the unknown xmode key), so the
+    # in-memory skip must NOT apply -- an escaping path via a uri connection is confined.
+    target = tmp_path / "sqlite_uri_escape.db"
+    out = _python_exec(
+        f"import sqlite3\nsqlite3.connect('file:{target}?xmode=memory', uri=True)\nprint('OPENED')",
+        None,
+        30,
+        "backstop-sqlite-uri-xmode",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+def test_sandboxed_sqlite_uri_real_memory_allowed():
+    # A genuine mode=memory URI parameter is a real in-memory database and must stay allowed.
+    out = _python_exec(
+        "import sqlite3\n"
+        "c = sqlite3.connect('file:r61mem?mode=memory&cache=shared', uri=True)\n"
+        "c.execute('create table t(x)')\nprint('MEM_OK')",
+        None,
+        30,
+        "backstop-sqlite-uri-mem",
+        disable_sandbox = False,
+    )
+    assert "MEM_OK" in out
+    assert "sandbox:" not in out

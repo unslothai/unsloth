@@ -5931,3 +5931,74 @@ class TestRound60Bypasses:
     )
     def test_round60_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound61Bypasses:
+    # Module-level request(method, url) APIs carry the URL at arg1 (arg0 is the HTTP method), so
+    # the host must be read from the second argument -- not the method string.
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import requests\nrequests.request('GET', 'http://169.254.169.254/')",
+            "import httpx\nhttpx.request('GET', 'http://169.254.169.254/')",
+            "import urllib3\nurllib3.request('GET', 'http://169.254.169.254/')",
+            "import requests\nrequests.api.request('GET', 'http://169.254.169.254/')",
+        ],
+    )
+    def test_request_method_url_at_arg1_blocked(self, code):
+        _blocked(code, expect_phrase = "cloud-metadata host")
+
+    # Public network client entry points (requests.api.*, ftplib, smtplib) were not in the prefix
+    # table, so a metadata / untrusted host reached through them bypassed the allowlist.
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import requests\nrequests.api.get('http://169.254.169.254/')",
+            "import ftplib\nftplib.FTP('169.254.169.254')",
+            "import ftplib\nftplib.FTP_TLS('169.254.169.254')",
+            "import ftplib\nftplib.FTP(host='169.254.169.254')",
+            "import smtplib\nsmtplib.SMTP('169.254.169.254')",
+            "import smtplib\nsmtplib.SMTP_SSL('169.254.169.254')",
+        ],
+    )
+    def test_network_client_entry_points_metadata_blocked(self, code):
+        _blocked(code, expect_phrase = "cloud-metadata host")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import ftplib\nftplib.FTP('untrusted.example')",
+            "import smtplib\nsmtplib.SMTP('untrusted.example', 587)",
+            "import requests\nrequests.api.get('http://untrusted.example/')",
+        ],
+    )
+    def test_network_client_entry_points_untrusted_blocked(self, code):
+        _blocked(code, expect_phrase = "not in sandbox allowlist")
+
+    # A sqlite operand whose absolute path carries an UNKNOWN query key that merely contains the
+    # text mode=memory (?xmode=memory) is still an on-disk file, so the escaping path must block --
+    # the in-memory skip only applies to a genuine first mode=memory parameter.
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "sqlite3 '/tmp/escape.db?xmode=memory' 'create table t(x)'",
+            "sqlite3 '/tmp/escape.db?cache=shared&xmode=memory' 'create table t(x)'",
+        ],
+    )
+    def test_sqlite_shell_xmode_memory_blocked(self, cmd):
+        _blocked(_sh(cmd), expect_phrase = "blocked command")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign round-61 forms stay allowed.
+            "import requests\nrequests.request('GET', 'https://huggingface.co/x')",
+            "import requests\nrequests.api.get('https://huggingface.co/x')",
+            "import ftplib\nftplib.FTP('huggingface.co')",
+            "import smtplib\nsmtplib.SMTP('huggingface.co')",
+            _sh("sqlite3 '/tmp/x?mode=memory' 'create table t(x)'"),  # genuine in-memory URI
+            _sh("sqlite3 'local.db' 'create table t(x)'"),  # workdir-relative db
+        ],
+    )
+    def test_round61_benign_allowed(self, code):
+        _ok(code)

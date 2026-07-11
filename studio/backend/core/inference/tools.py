@@ -587,6 +587,24 @@ def _cwd_wrapper_escapes(tokens, cmd_idx) -> bool:
     return False
 
 
+def _sqlite_uri_mode_is_memory(_s: str) -> bool:
+    """True only when a sqlite URI query string has a genuine mode=memory parameter. SQLite splits
+    query parameters on ``&`` and uses the FIRST occurrence of a repeated key, so an unknown key
+    (``xmode=memory``) or a later ``mode=`` is NOT in-memory -- a substring test wrongly treated
+    ``file:/tmp/escape.db?xmode=memory`` as in-memory and skipped path confinement. Percent-decodes
+    each key / value so a ``mode=m%65mory`` (which SQLite decodes) is still recognized."""
+
+    def _dec(_x):
+        return re.sub("%([0-9A-Fa-f]{2})", lambda _m: chr(int(_m.group(1), 16)), _x)
+
+    _q = _s.partition("?")[2]
+    for _pair in _q.split("&"):
+        _k, _sep, _v = _pair.partition("=")
+        if _dec(_k) == "mode":
+            return _dec(_v) == "memory"
+    return False
+
+
 def _operand_relative_local(tok: str) -> bool:
     """A literal RELATIVE path operand that resolves under the child cwd, so it escapes the workdir
     when the cwd itself escapes (paired with _cwd_wrapper_escapes). Absolute (``/x``), home (``~``),
@@ -600,7 +618,7 @@ def _operand_relative_local(tok: str) -> bool:
     if not _u or _u[0] in ("/", "~", "-") or "$" in _u or "`" in _u:
         return False
     _ul = _u.lower()
-    if _u == ":memory:" or _ul.startswith("file::memory:") or "mode=memory" in _ul:
+    if _u == ":memory:" or _ul.startswith("file::memory:") or _sqlite_uri_mode_is_memory(_ul):
         return False
     return True
 
@@ -2337,7 +2355,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                 _is_mem = (
                     _dbn in ("", ":memory:")
                     or _dblow.startswith("file::memory:")
-                    or "mode=memory" in _dblow
+                    or _sqlite_uri_mode_is_memory(_dblow)
                 )
                 if not _is_mem and (
                     _git_operand_escapes(_dbn, _local_assigns)
@@ -10125,7 +10143,11 @@ def _check_signal_escape_patterns(
         "requests.patch",
         "requests.head",
         "requests.request",
+        "requests.api.",
         "requests.Session",
+        "ftplib.FTP",
+        "smtplib.SMTP",
+        "smtplib.LMTP",
         "http.client.HTTPConnection",
         "http.client.HTTPSConnection",
         "socket.gethostbyname",
@@ -10550,7 +10572,17 @@ def _check_signal_escape_patterns(
     # u -> {"u": "urllib.request"}, from urllib import request as req -> {"req":
     # "urllib.request"}. Without this, r.get('http://169.254.169.254/') builds fq="r.get"
     # and skips every metadata / allowlist / upload check.
-    _NET_TOP_MODULES = ("socket", "urllib", "urllib3", "requests", "http", "httpx", "aiohttp")
+    _NET_TOP_MODULES = (
+        "socket",
+        "urllib",
+        "urllib3",
+        "requests",
+        "http",
+        "httpx",
+        "aiohttp",
+        "ftplib",
+        "smtplib",
+    )
     _net_aliases: dict[str, str] = {}
     for _n in ast.walk(tree):
         if isinstance(_n, ast.Import):
@@ -10577,6 +10609,23 @@ def _check_signal_escape_patterns(
             "socket.getaddrinfo",
             "socket.gethostbyname",
             "socket.gethostbyname_ex",
+            # ftplib / smtplib clients take a bare host (or host= keyword), not a URL.
+            "ftplib.FTP",
+            "ftplib.FTP_TLS",
+            "smtplib.SMTP",
+            "smtplib.SMTP_SSL",
+            "smtplib.LMTP",
+        }
+    )
+    # Module-level request(method, url, ...) APIs whose URL is the SECOND positional argument
+    # (the first is the HTTP method), so the host is read from args[1] like the client-instance
+    # .request() branch -- not args[0], which is just the method string.
+    _NET_REQUEST_METHOD_APIS = frozenset(
+        {
+            "requests.request",
+            "requests.api.request",
+            "httpx.request",
+            "urllib3.request",
         }
     )
     _NET_HOST_KWARGS = ("host",)
@@ -10873,7 +10922,10 @@ def _check_signal_escape_patterns(
                 # host=...)). Bare-host callees (HTTPConnection, getaddrinfo) treat the literal
                 # arg as a host directly; everything else parses a scheme://host URL. A target
                 # that stays fully opaque fails closed. See _net_check_target.
-                a0 = node.args[0] if node.args else None
+                # requests.request('GET', url) / httpx.request(...) / urllib3.request(...) carry
+                # the URL at arg1 (arg0 is the HTTP method); every other API carries it at arg0.
+                _url_idx = 1 if fq in _NET_REQUEST_METHOD_APIS else 0
+                a0 = node.args[_url_idx] if len(node.args) > _url_idx else None
                 if a0 is None:
                     for _kw in node.keywords or []:
                         if _kw.arg in _NET_URL_KWARGS or _kw.arg in _NET_ADDR_KWARGS:
@@ -12397,18 +12449,33 @@ try:
     # same re-exported _sqlite3.connect, so wrap once and reassign every reachable attribute.
     import sqlite3 as _sq3
 
+    def _sqlite_uri_pct(_s):
+        # Percent-decode a URI component with the captured _bi.chr / _bi.int so a sandboxed rebind
+        # of chr / int cannot skew the decode (SQLite decodes file:%2Ftmp%2Fx -> /tmp/x itself).
+        return _re.sub("%([0-9A-Fa-f]{2})", lambda _m: _bi.chr(_bi.int(_m.group(1), 16)), _s)
+
+    def _sqlite_uri_is_memory(_params):
+        # True only when the query has a genuine mode=memory parameter. SQLite splits query
+        # parameters on '&' and uses the FIRST occurrence of a repeated key, so an unknown key
+        # (xmode=memory) or a later mode= is NOT in-memory -- a substring test wrongly treated
+        # file:/tmp/escape.db?xmode=memory as in-memory and skipped path confinement.
+        for _pair in _params.split("&"):
+            _k, _sep, _v = _pair.partition("=")
+            if _sqlite_uri_pct(_k) == "mode":
+                return _sqlite_uri_pct(_v) == "memory"
+        return False
+
     def _sqlite_uri_path(_body):
         # Resolve a file: URI body (already stripped of the 'file:' prefix) to the concrete path
         # SQLite opens, or None for an in-memory / private target. Strips a //authority and
-        # percent-decodes the filename (SQLite decodes file:%2Ftmp%2Fx -> /tmp/x itself), using
-        # the captured _bi.chr / _bi.int so a sandboxed rebind of chr/int cannot skew the decode.
+        # percent-decodes the filename.
         _pth, _, _params = _body.partition("?")
-        if _pth == ":memory:" or _pth == "" or "mode=memory" in _params.lower():
+        if _pth == ":memory:" or _pth == "" or _sqlite_uri_is_memory(_params):
             return None
         if _pth.startswith("//"):
             _slash = _pth.find("/", 2)
             _pth = _pth[_slash:] if _slash != -1 else ""
-        return _re.sub("%([0-9A-Fa-f]{2})", lambda _m: _bi.chr(_bi.int(_m.group(1), 16)), _pth)
+        return _sqlite_uri_pct(_pth)
 
     def _sqlite_target_path(_db, _uri):
         # The concrete filesystem path to confine for a sqlite database argument, or None when it
@@ -12692,14 +12759,18 @@ try:
     # unguarded callable (open.__closure__[0].cell_contents, frame.f_locals['real']) or walk to
     # os / builtins. Mirrors the top-level _GADGET_DUNDERS; refuse them in a workdir helper too.
     _GUARD_GADGET_ATTRS = frozenset({
-        "__subclasses__", "__bases__", "__base__", "__globals__", "__builtins__",
+        "__subclasses__", "__bases__", "__base__", "__mro__", "mro", "__globals__", "__builtins__",
         "__closure__", "cell_contents", "f_locals", "f_globals", "f_back", "f_builtins",
         "tb_frame", "tb_next", "gi_frame", "cr_frame", "ag_frame",
         "settrace", "setprofile", "_getframe", "_current_frames", "currentframe",
     })
-    # sys attributes that reach the import machinery: mutating them removes the guard's import
-    # vetter so a sibling `import evil` loads unscanned.
-    _GUARD_IMPORT_MACHINERY = frozenset({"meta_path", "path_hooks", "path_importer_cache"})
+    # sys attributes that reach the import machinery: reading sys.modules recovers a guard-cached
+    # module (sys.modules['os']) without an import, and mutating meta_path / path_hooks /
+    # path_importer_cache removes the guard's import vetter so a sibling `import evil` loads
+    # unscanned.
+    _GUARD_IMPORT_MACHINERY = frozenset(
+        {"modules", "meta_path", "path_hooks", "path_importer_cache"}
+    )
     def _guard_attr_root(_v):
         # Base Name id of an attribute chain (os.path -> 'os'); None if not Name-rooted.
         while isinstance(_v, _gast.Attribute):
@@ -12744,8 +12815,45 @@ try:
                         _sysmod.add(_al.asname or _al.name)
                     elif _al.name == "importlib":
                         _implib.add(_al.asname or _al.name)
+        # Follow simple whole-module assignments (o = os; b = builtins; s = sys) so an aliased
+        # receiver reached only through assignment -- not `import os as o` -- is tracked too.
+        # Iterate to a fixpoint so a chain (o = os; p = o) is fully resolved before the sink checks.
+        _alias_groups = (_recv, _bi, _deser, _sysmod, _implib)
+        _changed = True
+        while _changed:
+            _changed = False
+            for _nd in _gast.walk(_tree):
+                if isinstance(_nd, _gast.Assign) and isinstance(_nd.value, _gast.Name):
+                    _srcid = _nd.value.id
+                    for _tgt in _nd.targets:
+                        if not isinstance(_tgt, _gast.Name):
+                            continue
+                        for _grp in _alias_groups:
+                            if _srcid in _grp and _tgt.id not in _grp:
+                                _grp.add(_tgt.id)
+                                _changed = True
         # Modules whose dynamic attribute / namespace-dict access (getattr / vars) is obfuscation.
         _obf = _recv | _bi | _deser | _sysmod | _implib
+        def _guard_dyn_attr_hit(_grecv, _gname):
+            # Classify a (receiver-root, attribute-name) dynamic lookup -- from getattr(recv, name)
+            # or recv.__getattribute__(name) -- against the guarded sink sets. A non-constant name
+            # (_gname is None) on a guarded receiver fails closed; a gadget dunder escapes on ANY
+            # receiver; a sink name is refused only on its matching guarded receiver.
+            if _gname is None:
+                return _grecv in _obf
+            if _gname in _GUARD_GADGET_ATTRS:
+                return True
+            if _grecv in _recv and _gname in _GUARD_EXEC_ATTRS:
+                return True
+            if _grecv in _bi and _gname in ("eval", "exec", "compile", "__import__"):
+                return True
+            if _grecv in _deser and _gname in _GUARD_DESER_ATTRS:
+                return True
+            if _grecv in _sysmod and _gname in _GUARD_IMPORT_MACHINERY:
+                return True
+            if _grecv in _implib and _gname in ("import_module", "reload", "__import__"):
+                return True
+            return False
         for _nd in _gast.walk(_tree):
             if isinstance(_nd, _gast.Import):
                 for _al in _nd.names:
@@ -12871,27 +12979,41 @@ try:
                         and isinstance(_nd.args[1].value, str)
                         else None
                     )
-                    if _gname is None:
-                        if _grecv in _obf:
-                            return True
+                    if _guard_dyn_attr_hit(_grecv, _gname):
+                        return True
+                # os.__getattribute__('system')('id') / sys.__getattr__('modules') (bound), and the
+                # unbound object.__getattribute__(os, 'system') / type.__getattribute__(...) forms:
+                # a dynamic attribute lookup that reaches a guarded sink the builtin getattr(...)
+                # branch and the direct-attribute checks miss. Classify it the same way.
+                if (
+                    isinstance(_nd.func, _gast.Attribute)
+                    and _nd.func.attr in ("__getattribute__", "__getattr__")
+                ):
+                    _baseroot = _guard_attr_root(_nd.func.value)
+                    if _baseroot in ("object", "type") and len(_nd.args) >= 2:
+                        _grecv = (
+                            _guard_attr_root(_nd.args[0])
+                            if isinstance(_nd.args[0], (_gast.Name, _gast.Attribute))
+                            else None
+                        )
+                        _gnamenode = _nd.args[1]
+                    elif (
+                        isinstance(_nd.func.value, (_gast.Name, _gast.Attribute))
+                        and len(_nd.args) >= 1
+                    ):
+                        _grecv = _baseroot
+                        _gnamenode = _nd.args[0]
                     else:
-                        # An introspection / frame gadget dunder via getattr reaches an escape on
-                        # ANY receiver -- getattr(open, '__closure__'), getattr(cell,
-                        # 'cell_contents') recover the guard wrapper's original unguarded open --
-                        # so reject the gadget name regardless of receiver (mirrors the direct
-                        # attribute check below).
-                        if _gname in _GUARD_GADGET_ATTRS:
-                            return True
-                        if _grecv in _recv and _gname in _GUARD_EXEC_ATTRS:
-                            return True
-                        if _grecv in _bi and _gname in ("eval", "exec", "compile", "__import__"):
-                            return True
-                        if _grecv in _deser and _gname in _GUARD_DESER_ATTRS:
-                            return True
-                        if _grecv in _sysmod and _gname in _GUARD_IMPORT_MACHINERY:
-                            return True
-                        if _grecv in _implib and _gname in (
-                            "import_module", "reload", "__import__"):
+                        _grecv = None
+                        _gnamenode = None
+                    if _grecv is not None:
+                        _gnm = (
+                            _gnamenode.value
+                            if isinstance(_gnamenode, _gast.Constant)
+                            and isinstance(_gnamenode.value, str)
+                            else None
+                        )
+                        if _guard_dyn_attr_hit(_grecv, _gnm):
                             return True
                 # vars(sys) / vars(os) / vars(builtins) exposes the module namespace dict for
                 # indirect access (vars(sys)['meta_path'][:] = [...], vars(os)['system']).
@@ -12915,6 +13037,18 @@ try:
                         return True
                     if _skey in ("eval", "exec", "compile", "__import__"):
                         return True
+                # os.__dict__['system'] / sys.__dict__['modules'] / pickle.__dict__['loads'] --
+                # a namespace-dict subscript reached through a guarded module's __dict__ is the
+                # obfuscated twin of the direct sink attribute (the attribute checks miss the
+                # subscript key). Fail closed wholesale, exactly like vars(<module>) above.
+                # builtins is handled by the key-specific branch above (its dict legitimately
+                # exposes many benign names), so exclude it here.
+                if (
+                    isinstance(_nd.value, _gast.Attribute)
+                    and _nd.value.attr == "__dict__"
+                    and _guard_attr_root(_nd.value.value) in (_recv | _deser | _sysmod | _implib)
+                ):
+                    return True
             elif isinstance(_nd, _gast.Attribute):
                 # An introspection / frame gadget attribute (open.__closure__[0].cell_contents,
                 # frame.f_locals['real'], ().__class__.__bases__[0].__subclasses__()) recovers a
@@ -12939,6 +13073,12 @@ try:
                 # sibling `import evil` loads unscanned. The top-level analyzer blocks such
                 # mutation in submitted code; refuse it inside a vetted workdir module too.
                 if _nd.attr in ("meta_path", "path_hooks", "path_importer_cache"):
+                    return True
+                # sys.modules['os'].system(...) recovers a guard-cached module without an import,
+                # bypassing both the denied-import path and the sink-root check (the receiver is a
+                # subscript, not an os name). Deny access to sys.modules in a vetted workdir module.
+                # Require a sys root so a benign .modules attribute (torch model.modules()) is kept.
+                if _nd.attr == "modules" and _guard_attr_root(_nd.value) in _sysmod:
                     return True
         return False
     def _guard_under_workdir(_p):
