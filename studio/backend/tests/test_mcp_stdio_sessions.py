@@ -320,6 +320,33 @@ def test_discard_defers_close_while_another_call_is_borrowed(fake_clients):
     assert mcp_client._stdio_sessions == {}
 
 
+def test_error_on_closed_session_does_not_retry(fake_clients):
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    session = next(iter(mcp_client._stdio_sessions.values()))
+    # A close can surface at the borrower as a plain transport error instead
+    # of _SessionClosed; that must not be treated as a crash and retried.
+    fake_clients[0].fail_next = True
+    session.closed.set()
+    out = call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    assert out == "Error: MCP tool 't' failed: MCP server was updated or removed during the call"
+    assert len(fake_clients) == 1  # no respawn for the removed config
+
+
+def test_config_check_blocks_stale_publish(fake_clients):
+    # Simulates a caller that read the server row before an update/delete:
+    # the row re-check runs after connect and must block caching.
+    out = call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat", config_check = lambda: False)
+    assert out.startswith("Error: MCP tool 't' failed")
+    assert mcp_client._stdio_sessions == {}
+    assert fake_clients[0].exited == 1
+
+
+def test_close_generation_keys_hold_no_env_values(fake_clients):
+    close_stdio_sessions(STDIO_URL, {"API_KEY": "sk-secret"})
+    assert mcp_client._stdio_cfg_close_gen
+    assert all("sk-secret" not in repr(k) for k in mcp_client._stdio_cfg_close_gen)
+
+
 def test_close_narrowed_by_headers_spares_other_env(fake_clients):
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     call_tool_sync(STDIO_URL, {"ENV_VAR": "b"}, "t", {}, scope = "chat")
@@ -368,6 +395,24 @@ def test_execute_tool_mcp_scope_is_per_thread(tmp_path, monkeypatch):
     tools_mod.execute_tool("mcp__s1__t", {}, session_id = "sess-only")
     tools_mod.execute_tool("mcp__s1__t", {}, thread_id = "thread-a")
     assert scopes == ["project-p1:thread-a", "project-p1:thread-b", "sess-only", "thread-a"]
+
+
+def test_execute_tool_config_check_tracks_row(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
+    mcp_servers_db.create_server(id = "s1", display_name = "S", url = STDIO_URL, is_enabled = True)
+
+    captured: dict = {}
+    monkeypatch.setattr(tools_mod, "call_tool_sync", lambda **kw: captured.update(kw) or "ok")
+    tools_mod.execute_tool("mcp__s1__t", {})
+    check = captured["config_check"]
+    assert check() is True
+    mcp_servers_db.update_server("s1", {"url": "npx different-server"})
+    assert check() is False
 
 
 def test_multi_block_result_flattens_through_session(fake_clients):

@@ -1010,15 +1010,30 @@ def execute_tool(
         mcp_scope = session_id
         if thread_id:
             mcp_scope = f"{session_id}:{thread_id}" if session_id else thread_id
+        headers = parse_server_headers(server)
+        url = server["url"]
+
+        def _config_current() -> bool:
+            # Re-read before a stdio session is cached: this call may have read
+            # the row just before an update/delete closed its sessions.
+            row = mcp_servers_db.get_server(server_id)
+            return (
+                row is not None
+                and bool(row.get("is_enabled"))
+                and row.get("url") == url
+                and parse_server_headers(row) == headers
+            )
+
         return call_tool_sync(
-            url = server["url"],
-            headers = parse_server_headers(server),
+            url = url,
+            headers = headers,
             name = tool_name,
             args = arguments,
             timeout = effective_timeout,
             use_oauth = bool(server.get("use_oauth")),
             cancel_event = cancel_event,
             scope = mcp_scope,
+            config_check = _config_current,
         )
     if name == "web_search":
         return _web_search(

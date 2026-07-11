@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import concurrent.futures
+import hashlib
 import json
 import os
 import shlex
@@ -426,12 +427,18 @@ def _headers_key(headers: Optional[dict]) -> tuple:
     return tuple(sorted((headers or {}).items()))
 
 
+def _cfg_close_key(url: str, headers: Optional[dict]) -> tuple:
+    # Env values can hold secrets and this map is never pruned; key by digest
+    # so closed/edited configs don't retain them in memory forever.
+    digest = hashlib.sha256(repr(_headers_key(headers)).encode()).hexdigest()
+    return (url, digest)
+
+
 def _stdio_close_generation(url: str, headers: Optional[dict]) -> tuple[int, int, int]:
-    cfg = (url, _headers_key(headers))
     return (
         _stdio_close_all_gen,
         _stdio_url_close_gen.get(url, 0),
-        _stdio_cfg_close_gen.get(cfg, 0),
+        _stdio_cfg_close_gen.get(_cfg_close_key(url, headers), 0),
     )
 
 
@@ -468,7 +475,7 @@ def _return_stdio_key_lock(key: tuple, key_lock: _StdioKeyLock) -> None:
 
 
 def _get_stdio_session(
-    url: str, headers: Optional[dict], scope: Optional[str], timeout, cancel_event
+    url: str, headers: Optional[dict], scope: Optional[str], timeout, cancel_event, config_check
 ) -> _StdioSession:
     global _stdio_reaper_started
     key = _session_key(url, headers, scope)
@@ -495,6 +502,18 @@ def _get_stdio_session(
             except Exception:
                 session.close()
                 raise
+            # A caller can read the server row, then lose to an update/delete
+            # whose close ran before our generation snapshot. Re-verify the row
+            # after connect; the generation check below covers a close landing
+            # between this check and publish.
+            if config_check is not None:
+                try:
+                    current = bool(config_check())
+                except Exception:  # noqa: BLE001
+                    current = False
+                if not current:
+                    session.close()
+                    raise RuntimeError("MCP server was updated or removed while connecting")
             with _stdio_sessions_lock:
                 closed_while_connecting = _stdio_close_generation(url, headers) != generation
                 if not closed_while_connecting:
@@ -556,7 +575,7 @@ def close_stdio_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> N
         elif hk is None:
             _stdio_url_close_gen[url] = _stdio_url_close_gen.get(url, 0) + 1
         else:
-            cfg = (url, hk)
+            cfg = _cfg_close_key(url, headers)
             _stdio_cfg_close_gen[cfg] = _stdio_cfg_close_gen.get(cfg, 0) + 1
         keys = [
             k
@@ -713,6 +732,7 @@ def _call_stdio_tool(
     timeout,
     cancel_event,
     scope: Optional[str],
+    config_check,
 ) -> Any:
     if cancel_event is not None and cancel_event.is_set():
         raise _MCPCancelled
@@ -725,7 +745,7 @@ def _call_stdio_tool(
         scope = f"request-{uuid.uuid4().hex}"
     key = _session_key(url, headers, scope)
     for fresh in (False, True):
-        session = _get_stdio_session(url, headers, scope, timeout, cancel_event)
+        session = _get_stdio_session(url, headers, scope, timeout, cancel_event, config_check)
         discard_session = ephemeral
         try:
             coro = _race_tool_call(session.client.call_tool(name, args), timeout, cancel_event)
@@ -745,6 +765,12 @@ def _call_stdio_tool(
             discard_session = True
             raise RuntimeError("MCP server was updated or removed during the call")
         except Exception:
+            if session.closed.is_set():
+                # An intentional close (server update/delete) can surface as a
+                # plain transport error or AttributeError instead of
+                # _SessionClosed; don't mistake it for a crash and retry.
+                discard_session = True
+                raise RuntimeError("MCP server was updated or removed during the call")
             # A dead subprocess surfaces as a transport error; retry once on a
             # fresh session. Tool-level failures leave the session connected.
             if fresh or session.is_connected():
@@ -766,11 +792,14 @@ def call_tool_sync(
     use_oauth: bool = False,
     cancel_event = None,
     scope: Optional[str] = None,
+    config_check = None,
 ) -> str:
     """Synchronously call an MCP tool. stdio servers reuse a persistent session
     keyed by (command, env, scope) only when ``scope`` is provided; calls
     without one stay one-shot. HTTP servers always stay one-shot.
-    ``cancel_event`` (threading.Event) cancels the in-flight call when set."""
+    ``cancel_event`` (threading.Event) cancels the in-flight call when set.
+    ``config_check`` (callable -> bool) re-validates the caller's server config
+    before a fresh stdio session is cached; False fails the call."""
 
     async def _one_shot() -> Any:
         async with _client(url, headers, use_oauth) as client:
@@ -778,7 +807,9 @@ def call_tool_sync(
 
     try:
         if is_stdio(url):
-            result = _call_stdio_tool(url, headers, name, args, timeout, cancel_event, scope)
+            result = _call_stdio_tool(
+                url, headers, name, args, timeout, cancel_event, scope, config_check
+            )
         else:
             result = asyncio.run(_race_tool_call(_one_shot(), timeout, cancel_event))
     except _MCPCancelled:
