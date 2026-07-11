@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import html
+import threading
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -19,8 +21,10 @@ from auth.storage import DEFAULT_ADMIN_USERNAME
 from models.inference import ChatCompletionRequest, LoadRequest
 from routes.inference import (
     disable_openai_auto_switch_for_request,
-    load_model,
+    load_model_for_preview,
+    note_preview_request,
     openai_chat_completions,
+    restore_displaced_model,
 )
 from state.tool_policy import tools_force_disabled
 from utils.client_ip import client_ip
@@ -40,6 +44,43 @@ _PREVIEW_MAX_OUTPUT_TOKENS = 1024
 # Capability-gated (signed ref required); resolve_preview_checkpoint pins `run`
 # under outputs_root. One model loads at a time, so serialize load+generate.
 _preview_lock = asyncio.Lock()
+
+# Once preview traffic has been idle this long, reload the model the preview
+# displaced (debounced so a visitor's conversation doesn't thrash the slot).
+_RESTORE_IDLE_SECONDS = 60.0
+_RESTORE_RETRY_SECONDS = 10.0
+
+_restore_state_lock = threading.Lock()
+_restore_deadline = 0.0
+_restore_task: asyncio.Task | None = None
+
+
+def _schedule_restore() -> None:
+    global _restore_deadline, _restore_task
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    with _restore_state_lock:
+        _restore_deadline = time.monotonic() + _RESTORE_IDLE_SECONDS
+        if _restore_task is None or _restore_task.done():
+            _restore_task = loop.create_task(_restore_when_idle())
+
+
+async def _restore_when_idle() -> None:
+    while True:
+        with _restore_state_lock:
+            wait = _restore_deadline - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+            continue
+        try:
+            if await restore_displaced_model():
+                return
+        except Exception as exc:
+            logger.warning("preview restore failed: %s", exc)
+            return
+        await asyncio.sleep(_RESTORE_RETRY_SECONDS)
 
 
 def _extract_token(request: Request) -> str | None:
@@ -151,6 +192,8 @@ async def _unlock_after(body_iterator):
             yield chunk
     finally:
         _preview_lock.release()
+        note_preview_request(-1)
+        _schedule_restore()
 
 
 async def _serve_chat(
@@ -162,10 +205,19 @@ async def _serve_chat(
     # Preview always serves the pinned checkpoint it loads below; a public caller's
     # `model` field must never trigger an OpenAI auto-switch to another GGUF.
     disable_openai_auto_switch_for_request(getattr(request, "scope", None))
-    await _preview_lock.acquire()
+    # Count before acquiring the lock so a waiting preview request is never
+    # mistaken for foreign inference traffic by the swap busy guard.
+    note_preview_request(1)
     keep_locked = False
+    locked = False
     try:
-        await load_model(LoadRequest(model_path = str(path)), request, DEFAULT_ADMIN_USERNAME)
+        await _preview_lock.acquire()
+        locked = True
+        # Guarded load: refuses (503) instead of evicting a model another request
+        # is actively using, and records what it displaced for the idle restore.
+        await load_model_for_preview(
+            LoadRequest(model_path = str(path)), request, DEFAULT_ADMIN_USERNAME
+        )
         # Beats a process-wide `--enable-tools` (enable_tools=False alone wouldn't).
         with tools_force_disabled():
             response = await openai_chat_completions(payload, request, DEFAULT_ADMIN_USERNAME)
@@ -175,7 +227,10 @@ async def _serve_chat(
         return response
     finally:
         if not keep_locked:
-            _preview_lock.release()
+            if locked:
+                _preview_lock.release()
+                _schedule_restore()
+            note_preview_request(-1)
 
 
 @router.get("")

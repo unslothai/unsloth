@@ -96,7 +96,7 @@ def client(tmp_path, monkeypatch, captured):
         captured["payload"] = payload
         return {"ok": True}
 
-    monkeypatch.setattr(preview, "load_model", _fake_load_model)
+    monkeypatch.setattr(preview, "load_model_for_preview", _fake_load_model)
     monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
 
     app = FastAPI()
@@ -291,7 +291,7 @@ def test_merged_checkpoint_strips_use_adapter(tmp_path, monkeypatch, captured):
         captured["payload"] = payload
         return {"ok": True}
 
-    monkeypatch.setattr(preview, "load_model", _fake_load)
+    monkeypatch.setattr(preview, "load_model_for_preview", _fake_load)
     monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
 
     app = FastAPI()
@@ -325,7 +325,7 @@ def test_streaming_holds_lock_until_drained(tmp_path, monkeypatch, captured):
     async def _fake_chat(payload, request, subject):
         return StreamingResponse(_gen())
 
-    monkeypatch.setattr(preview, "load_model", _fake_load_model)
+    monkeypatch.setattr(preview, "load_model_for_preview", _fake_load_model)
     monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
 
     async def _run():
@@ -494,3 +494,235 @@ def test_chat_rate_limited_returns_429(client, monkeypatch):
     r = client.post(url, json = body)
     assert r.status_code == 429
     assert r.headers.get("retry-after")
+
+
+# ── Model-slot guard and displaced-model restore ─────────────────────────────
+
+from types import SimpleNamespace
+
+from fastapi import HTTPException
+
+import routes.inference as inference
+from core.inference import llama_keepwarm
+from models.inference import LoadRequest
+
+
+@pytest.fixture
+def slot_state():
+    def _reset():
+        inference._clear_owner_load()
+        with inference._preview_slot_lock:
+            inference._preview_request_count = 0
+
+    _reset()
+    yield
+    _reset()
+
+
+@pytest.fixture
+def fake_slot(slot_state, monkeypatch):
+    state = {"ident": None, "loads": []}
+
+    async def _fake_impl(load_req, fastapi_request, subject):
+        state["loads"].append(load_req.model_path)
+        if state.get("fail_load"):
+            # Mirror a load that tears the old model down and then fails.
+            state["ident"] = None
+            raise HTTPException(status_code = 500, detail = "load failed")
+        state["ident"] = load_req.model_path
+
+    monkeypatch.setattr(inference, "_load_model_impl", _fake_impl)
+    monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: state["ident"])
+    monkeypatch.setattr(
+        llama_keepwarm, "other_inference_request_count", lambda **kw: state.get("busy", 0)
+    )
+    return state
+
+
+def test_preview_load_refused_while_inference_active(fake_slot):
+    # An owner model is loaded and another request is generating on it: the
+    # preview must refuse instead of tearing the model down mid-response.
+    fake_slot["ident"] = "owner-model"
+    fake_slot["busy"] = 1
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt"),
+                SimpleNamespace(app = None),
+                "admin",
+            )
+        return exc.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 503
+    assert exc.headers.get("Retry-After")
+    assert fake_slot["loads"] == []
+    assert fake_slot["ident"] == "owner-model"
+
+
+def test_preview_load_allowed_when_checkpoint_already_loaded(fake_slot):
+    # No swap needed: busy traffic on the already-loaded checkpoint is fine.
+    fake_slot["ident"] = "/outputs/run/ckpt"
+    fake_slot["busy"] = 1
+
+    asyncio.run(
+        inference.load_model_for_preview(
+            LoadRequest(model_path = "/outputs/run/ckpt"),
+            SimpleNamespace(app = None),
+            "admin",
+        )
+    )
+    assert fake_slot["loads"] == ["/outputs/run/ckpt"]
+
+
+def test_preview_waiters_do_not_trip_busy_guard(fake_slot):
+    # A second preview visitor queued on the preview lock is tracked in-flight,
+    # but must not read as foreign traffic (it can't be mid-generation).
+    fake_slot["ident"] = "owner-model"
+    fake_slot["busy"] = 1
+    inference.note_preview_request(1)
+    inference.note_preview_request(1)
+    try:
+        asyncio.run(
+            inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt"),
+                SimpleNamespace(app = None),
+                "admin",
+            )
+        )
+    finally:
+        inference.note_preview_request(-1)
+        inference.note_preview_request(-1)
+    assert fake_slot["loads"] == ["/outputs/run/ckpt"]
+
+
+def test_preview_restores_displaced_model(fake_slot):
+    fake_slot["ident"] = "owner-model"
+    inference._record_owner_load(LoadRequest(model_path = "owner-model"))
+
+    async def _run():
+        await inference.load_model_for_preview(
+            LoadRequest(model_path = "/outputs/run/ckpt"),
+            SimpleNamespace(app = None),
+            "admin",
+        )
+        assert fake_slot["ident"] == "/outputs/run/ckpt"
+        assert await inference.restore_displaced_model() is True
+
+    asyncio.run(_run())
+    assert fake_slot["loads"] == ["/outputs/run/ckpt", "owner-model"]
+    assert fake_slot["ident"] == "owner-model"
+    # Nothing left to restore afterwards.
+    assert asyncio.run(inference.restore_displaced_model()) is True
+    assert fake_slot["loads"] == ["/outputs/run/ckpt", "owner-model"]
+
+
+def test_restore_defers_while_inference_active(fake_slot):
+    fake_slot["ident"] = "owner-model"
+    inference._record_owner_load(LoadRequest(model_path = "owner-model"))
+
+    async def _run():
+        await inference.load_model_for_preview(
+            LoadRequest(model_path = "/outputs/run/ckpt"),
+            SimpleNamespace(app = None),
+            "admin",
+        )
+        fake_slot["busy"] = 1
+        assert await inference.restore_displaced_model() is False
+        fake_slot["busy"] = 0
+        assert await inference.restore_displaced_model() is True
+
+    asyncio.run(_run())
+    assert fake_slot["ident"] == "owner-model"
+
+
+def test_restore_stands_down_after_owner_reload(fake_slot):
+    fake_slot["ident"] = "owner-model"
+    inference._record_owner_load(LoadRequest(model_path = "owner-model"))
+
+    async def _run():
+        await inference.load_model_for_preview(
+            LoadRequest(model_path = "/outputs/run/ckpt"),
+            SimpleNamespace(app = None),
+            "admin",
+        )
+        # Owner deliberately loads a new model afterwards; the stale preview
+        # stash must not clobber it.
+        fake_slot["ident"] = "new-model"
+        inference._record_owner_load(LoadRequest(model_path = "new-model"))
+        assert await inference.restore_displaced_model() is True
+
+    asyncio.run(_run())
+    assert fake_slot["loads"] == ["/outputs/run/ckpt"]
+    assert fake_slot["ident"] == "new-model"
+
+
+def test_restore_after_failed_checkpoint_load(fake_slot):
+    # A checkpoint load can evict the owner's model and then fail; the restore
+    # must still bring the owner's model back.
+    fake_slot["ident"] = "owner-model"
+    inference._record_owner_load(LoadRequest(model_path = "owner-model"))
+    fake_slot["fail_load"] = True
+
+    async def _run():
+        with pytest.raises(HTTPException):
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt"),
+                SimpleNamespace(app = None),
+                "admin",
+            )
+        fake_slot["fail_load"] = False
+        assert await inference.restore_displaced_model() is True
+
+    asyncio.run(_run())
+    assert fake_slot["loads"] == ["/outputs/run/ckpt", "owner-model"]
+    assert fake_slot["ident"] == "owner-model"
+
+
+def test_restore_stands_down_when_slot_changed_hands(fake_slot):
+    fake_slot["ident"] = "owner-model"
+    inference._record_owner_load(LoadRequest(model_path = "owner-model"))
+
+    async def _run():
+        await inference.load_model_for_preview(
+            LoadRequest(model_path = "/outputs/run/ckpt"),
+            SimpleNamespace(app = None),
+            "admin",
+        )
+        # Slot no longer holds the preview checkpoint (e.g. unloaded/replaced
+        # outside the tracked paths): restoring would clobber, so stand down.
+        fake_slot["ident"] = "something-else"
+        assert await inference.restore_displaced_model() is True
+
+    asyncio.run(_run())
+    assert fake_slot["loads"] == ["/outputs/run/ckpt"]
+
+
+def test_chat_returns_503_when_model_busy(tmp_path, monkeypatch, slot_state):
+    # Route-level: the guard's 503 (with Retry-After) reaches the public caller
+    # through the real _serve_chat, which must release the preview lock.
+    outputs = tmp_path / "outputs"
+    _make_run(outputs)
+    _use_test_secret(monkeypatch)
+    from utils.paths import storage_roots as _sr
+
+    monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
+
+    async def _fake_impl(load_req, fastapi_request, subject):
+        raise AssertionError("must not load while busy")
+
+    monkeypatch.setattr(inference, "_load_model_impl", _fake_impl)
+    monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: "owner-model")
+    monkeypatch.setattr(llama_keepwarm, "other_inference_request_count", lambda **kw: 1)
+
+    app = FastAPI()
+    app.include_router(preview.router, prefix = "/p")
+    c = TestClient(app, raise_server_exceptions = False)
+    r = c.post(
+        f"/p/demorun/v1/chat/completions?k={_sig('demorun')}",
+        json = {"messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 503
+    assert r.headers.get("retry-after")
+    assert not preview._preview_lock.locked()
