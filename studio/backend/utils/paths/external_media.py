@@ -102,24 +102,48 @@ def linux_run_media_mount_roots(
     return roots
 
 
+def _active_windows_drive_bitmask() -> int:
+    """Bitmask of active logical drives from ``GetLogicalDrives`` (bit 0 = ``A:``),
+    or ``0`` when the call is unavailable.
+
+    This is a fast, non-blocking OS call. It lets :func:`windows_drive_roots`
+    skip the ``os.path.isdir`` probe on inactive drive letters — probing a
+    drive letter mapped to a disconnected network share can otherwise block the
+    caller for tens of seconds each. Returns ``0`` (probe every letter) when
+    ctypes/``windll`` is unavailable, so the helper degrades gracefully.
+    """
+    try:
+        import ctypes
+
+        return int(ctypes.windll.kernel32.GetLogicalDrives())
+    except Exception:  # noqa: BLE001 -- best-effort; fall back to probing all letters
+        return 0
+
+
 def windows_drive_roots(drive_letters: Iterable[str] = string.ascii_uppercase) -> list[Path]:
     """Readable logical drive roots (``C:\\``, ``D:\\`` ...) for the folder browser.
 
     The Windows analog of :func:`linux_run_media_mount_roots`. Without it the
     browser's allowlist and suggestion chips only reach roots on the home drive,
     so a user cannot navigate from ``C:`` to ``D:``/``E:`` to pick a model
-    directory. Each candidate drive is included only if it currently resolves to
-    a readable directory, so absent/empty drives never show as dead entries.
-    Returns ``[]`` off Windows, so callers on Linux/macOS are unaffected.
+    directory. Active drives are resolved from ``GetLogicalDrives`` first so
+    disconnected/unmapped letters are never probed (a stray ``os.path.isdir`` on
+    a dead network drive can hang for tens of seconds); each surviving candidate
+    is then included only if it resolves to a readable directory, so absent or
+    empty drives never show as dead entries. Returns ``[]`` off Windows, so
+    callers on Linux/macOS are unaffected.
     """
     if platform.system() != "Windows":
         return []
 
+    active_mask = _active_windows_drive_bitmask()
     roots: list[Path] = []
     seen: set[str] = set()
     for letter in drive_letters:
         letter = letter.strip().rstrip(":").upper()
         if len(letter) != 1 or letter not in string.ascii_uppercase:
+            continue
+        if active_mask and not active_mask & (1 << (ord(letter) - ord("A"))):
             continue
         root_text = f"{letter}:\\"
         try:

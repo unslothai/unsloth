@@ -25,8 +25,14 @@ class _HTTPException(Exception):
 
 def _stub_windows(monkeypatch, existing_drives):
     """Simulate Windows exposing only *existing_drives* (e.g. {"C", "D"}) as
-    readable drive roots, so the test does not depend on the host's real FS."""
+    readable drive roots, so the test does not depend on the host's real FS.
+
+    Overriding _active_windows_drive_bitmask keeps the test deterministic even on
+    a real Windows host, where the live GetLogicalDrives call would otherwise
+    return the host's actual drive layout."""
     monkeypatch.setattr(external_media.platform, "system", lambda: "Windows")
+    mask = sum(1 << (ord(d.upper()) - ord("A")) for d in existing_drives)
+    monkeypatch.setattr(external_media, "_active_windows_drive_bitmask", lambda: mask)
     present = {f"{d.upper()}:\\" for d in existing_drives}
     monkeypatch.setattr(external_media.os.path, "isdir", lambda p: str(p) in present)
     monkeypatch.setattr(external_media.os, "access", lambda p, _mode: str(p) in present)
