@@ -1092,6 +1092,15 @@
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
+	/* Permission-level pill: higher-contrast grey than the resting pills so
+	   the active level stays legible (darker in light mode, lighter in dark).
+	   Full access keeps the danger yellow below. */
+	.composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+		color: color-mix(in oklab, var(--foreground) 60%, transparent);
+	}
+	.dark .composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+		color: color-mix(in oklab, var(--foreground) 72%, transparent);
+	}
 	/* Bypass permissions badge: bright yellow text, no resting fill; the
 	   rounded hover pill picks up the yellow accent like other toggles. */
 	.composer-pill-btn[data-variant="danger"] {

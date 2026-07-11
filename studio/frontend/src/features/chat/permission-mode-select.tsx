@@ -273,7 +273,7 @@ export function PermissionModeComposerPill({
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
-          className="composer-pill-btn"
+          className="composer-pill-btn composer-pill-permissions"
           data-pill-label={active.label}
           data-active={fullAccess ? "true" : "false"}
           data-variant={fullAccess ? "danger" : undefined}
