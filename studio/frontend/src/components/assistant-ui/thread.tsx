@@ -96,6 +96,7 @@ import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-b
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -150,6 +151,8 @@ import {
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
+  Volume2Icon,
+  VolumeXIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -3907,6 +3910,7 @@ const EditAssistantMessageButton: FC = () => {
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
 
   return (
     <>
@@ -3923,6 +3927,28 @@ const AssistantActionBar: FC = () => {
         </ActionBarPrimitive.Reload>
         <ForkCountBadge />
         <DeleteMessageButton />
+        {ttsEnabled && (
+          <>
+            <MessagePrimitive.If speaking={false}>
+              <ActionBarPrimitive.Speak asChild={true}>
+                <TooltipIconButton tooltip="Read aloud" aria-label="Read aloud">
+                  <Volume2Icon strokeWidth={1.75} className="size-icon" />
+                </TooltipIconButton>
+              </ActionBarPrimitive.Speak>
+            </MessagePrimitive.If>
+            <MessagePrimitive.If speaking={true}>
+              <ActionBarPrimitive.StopSpeaking asChild={true}>
+                <TooltipIconButton
+                  tooltip="Stop reading"
+                  aria-label="Stop reading"
+                  className="text-destructive"
+                >
+                  <VolumeXIcon strokeWidth={1.75} className="size-icon" />
+                </TooltipIconButton>
+              </ActionBarPrimitive.StopSpeaking>
+            </MessagePrimitive.If>
+          </>
+        )}
         <ActionBarMorePrimitive.Root>
           <ActionBarMorePrimitive.Trigger asChild={true}>
             <TooltipIconButton

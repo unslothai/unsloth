@@ -16,6 +16,7 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   Message01Icon,
+  Mic02Icon,
   PaintBrush02Icon,
   Settings02Icon,
   UserIcon,
@@ -35,6 +36,7 @@ import { ConnectionsTab } from "./tabs/connections-tab";
 import { GeneralTab } from "./tabs/general-tab";
 import { ProfileTab } from "./tabs/profile-tab";
 import { ResourcesTab } from "./tabs/resources-tab";
+import { VoiceTab } from "./tabs/voice-tab";
 import { FloatingMonitor } from "@/components/floating-monitor";
 
 interface TabDef {
@@ -74,6 +76,12 @@ const TABS: TabDef[] = [
     labelKey: "settings.tabs.connections",
     icon: CloudIcon,
   },
+  {
+    id: "voice",
+    labelKey: "settings.tabs.voice",
+    icon: Mic02Icon,
+    badgeKey: "common.new",
+  },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
 
@@ -89,6 +97,8 @@ function renderTab(tab: SettingsTab) {
       return <ResourcesTab />;
     case "chat":
       return <ChatTab />;
+    case "voice":
+      return <VoiceTab />;
     case "connections":
       return <ConnectionsTab />;
     case "api-keys":
@@ -112,6 +122,7 @@ export function SettingsDialog() {
     appearance: null,
     resources: null,
     chat: null,
+    voice: null,
     connections: null,
     "api-keys": null,
     about: null,

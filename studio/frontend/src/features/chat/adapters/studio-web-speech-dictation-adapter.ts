@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  applyDictationDictionary,
+  recordRecentDictation,
+  resolveDictationLanguage,
+  useVoiceSettingsStore,
+} from "@/features/settings/stores/voice-settings-store";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 
@@ -46,7 +52,7 @@ const describeSpeechError = (error: string, message?: string): string => {
 };
 
 export class StudioWebSpeechDictationAdapter implements DictationAdapter {
-  private readonly language: string;
+  private readonly language: string | undefined;
   private readonly continuous: boolean;
   private readonly interimResults: boolean;
 
@@ -57,7 +63,8 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       interimResults?: boolean;
     } = {},
   ) {
-    this.language = options.language ?? navigator.language ?? "en-US";
+    // Resolved from Voice settings at listen() time unless overridden.
+    this.language = options.language;
     this.continuous = options.continuous ?? true;
     this.interimResults = options.interimResults ?? true;
   }
@@ -78,7 +85,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
     }
 
     const recognition = new SpeechRecognitionAPI();
-    recognition.lang = this.language;
+    recognition.lang = this.language ?? resolveDictationLanguage();
     recognition.continuous = this.continuous;
     recognition.interimResults = this.interimResults;
 
@@ -147,6 +154,9 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         for (const callback of speechEndCallbacks) {
           callback({ transcript: finalTranscript });
         }
+        if (reason !== "cancelled") {
+          recordRecentDictation(finalTranscript);
+        }
         finalTranscript = "";
       }
       resolveEnded?.();
@@ -167,9 +177,10 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         if (!result) continue;
         const transcript = result[0]?.transcript ?? "";
         if (result.isFinal) {
-          finalTranscript += transcript;
+          const corrected = applyDictationDictionary(transcript);
+          finalTranscript += corrected;
           for (const callback of speechCallbacks) {
-            callback({ transcript, isFinal: true });
+            callback({ transcript: corrected, isFinal: true });
           }
         } else {
           for (const callback of speechCallbacks) {
@@ -197,9 +208,33 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
 
     void (async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true },
-        });
+        const { micDeviceId } = useVoiceSettingsStore.getState();
+        const baseAudio: MediaTrackConstraints = {
+          echoCancellation: true,
+          noiseSuppression: true,
+        };
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio:
+              micDeviceId && micDeviceId !== "default"
+                ? { ...baseAudio, deviceId: { exact: micDeviceId } }
+                : baseAudio,
+          });
+        } catch (error) {
+          // Saved mic may be unplugged; fall back to the default device.
+          if (
+            micDeviceId !== "default" &&
+            error instanceof DOMException &&
+            (error.name === "OverconstrainedError" ||
+              error.name === "NotFoundError")
+          ) {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: baseAudio,
+            });
+          } else {
+            throw error;
+          }
+        }
         if (ended) {
           stopStream(stream);
           stream = null;

@@ -97,6 +97,7 @@ export const ptBR = {
       connections: "Conexões",
       apiKeys: "API",
       about: "Sobre",
+      voice: "Voz",
     },
     general: {
       title: "Geral",

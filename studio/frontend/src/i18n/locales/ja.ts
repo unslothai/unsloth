@@ -97,6 +97,7 @@ export const ja = {
       connections: "接続",
       apiKeys: "API",
       about: "情報",
+      voice: "音声",
     },
     general: {
       title: "一般",

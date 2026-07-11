@@ -22,6 +22,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import {
+  applyDictationDictionary,
+  recordRecentDictation,
+  resolveDictationLanguage,
+} from "@/features/settings/stores/voice-settings-store";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { isMultimodalResponse } from "./types/api";
@@ -225,13 +230,19 @@ function useDictation(
     const recognition = new SpeechRecognitionAPI() as SpeechRecognition;
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = "en-US";
+    recognition.lang = resolveDictationLanguage();
+    let sessionTranscript = "";
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       const last = event.resultIndex;
       const result = event.results[last];
       if (!result?.isFinal) return;
-      const transcript = result[0]?.transcript?.trim();
+      const transcript = applyDictationDictionary(
+        result[0]?.transcript?.trim() ?? "",
+      );
       if (transcript) {
+        sessionTranscript = sessionTranscript
+          ? `${sessionTranscript} ${transcript}`
+          : transcript;
         setText((prev) => (prev ? `${prev} ${transcript}` : transcript));
       }
     };
@@ -239,6 +250,10 @@ function useDictation(
       setIsDictating(false);
     };
     recognition.onend = () => {
+      if (sessionTranscript) {
+        recordRecentDictation(sessionTranscript);
+        sessionTranscript = "";
+      }
       setIsDictating(false);
     };
     recognition.start();

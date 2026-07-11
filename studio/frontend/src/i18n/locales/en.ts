@@ -95,9 +95,14 @@ export const en = {
       appearance: "Appearance",
       resources: "System",
       chat: "Chat",
+      voice: "Voice",
       connections: "Connections",
       apiKeys: "API",
       about: "About",
+    },
+    voice: {
+      title: "Voice",
+      description: "Microphone, dictation, and read-aloud",
     },
     general: {
       title: "General",
@@ -110,7 +115,7 @@ export const en = {
       showToken: "Show token",
       tokenSaved: "Token saved",
       password: "Password",
-      passwordDescription: "Change the password for this Studio account.",
+      passwordDescription: "Change the password for this Unsloth account.",
       passwordDialog: {
         trigger: "Change password",
         title: "Change password",
@@ -279,7 +284,7 @@ export const en = {
     },
     resources: {
       title: "System",
-      description: "Monitor this Studio server's hardware and storage.",
+      description: "Monitor this Unsloth server's hardware and storage.",
       liveUpdates: "Live updates",
       floatingWindow: "Floating window",
       disableOverlay: "Disable overlay",
