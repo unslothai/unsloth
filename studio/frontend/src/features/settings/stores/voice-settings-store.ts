@@ -14,6 +14,7 @@ export interface RecentDictation {
 
 const MAX_RECENT_DICTATIONS = 20;
 const MAX_DICTIONARY_ENTRIES = 100;
+const MAX_DICTIONARY_ENTRY_LENGTH = 120;
 
 export interface VoiceSettingsState {
   /** Input device for dictation. "default" = system default microphone. */
@@ -67,7 +68,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       dictionary: [],
       addDictionaryEntry: (value) =>
         set((state) => {
-          const trimmed = value.trim();
+          const trimmed = value.trim().slice(0, MAX_DICTIONARY_ENTRY_LENGTH);
           if (!trimmed) return state;
           if (state.dictionary.length >= MAX_DICTIONARY_ENTRIES) return state;
           if (
@@ -81,7 +82,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         }),
       updateDictionaryEntry: (index, value) =>
         set((state) => {
-          const trimmed = value.trim();
+          const trimmed = value.trim().slice(0, MAX_DICTIONARY_ENTRY_LENGTH);
           const dictionary = [...state.dictionary];
           if (index < 0 || index >= dictionary.length) return state;
           if (trimmed) {
@@ -132,10 +133,13 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         const saved = persisted as Partial<VoiceSettingsState> | undefined;
         return {
           ...current,
-          micDeviceId: saved?.micDeviceId ?? "default",
-          dictationLanguage: saved?.dictationLanguage ?? "auto",
+          micDeviceId: asString(saved?.micDeviceId, "default"),
+          dictationLanguage: asString(saved?.dictationLanguage, "auto"),
           dictionary: Array.isArray(saved?.dictionary)
-            ? saved.dictionary.filter((v): v is string => typeof v === "string")
+            ? saved.dictionary
+                .filter((v): v is string => typeof v === "string" && !!v.trim())
+                .map((v) => v.trim().slice(0, MAX_DICTIONARY_ENTRY_LENGTH))
+                .slice(0, MAX_DICTIONARY_ENTRIES)
             : [],
           recentDictations: Array.isArray(saved?.recentDictations)
             ? saved.recentDictations.filter(
@@ -143,9 +147,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
                   typeof v?.text === "string" && typeof v?.at === "number",
               )
             : [],
-          ttsEnabled: saved?.ttsEnabled ?? true,
+          ttsEnabled:
+            typeof saved?.ttsEnabled === "boolean" ? saved.ttsEnabled : true,
           ttsEngine: saved?.ttsEngine === "studio" ? "studio" : "system",
-          ttsVoiceURI: saved?.ttsVoiceURI ?? "default",
+          ttsVoiceURI: asString(saved?.ttsVoiceURI, "default"),
           ttsRate: clampNumber(saved?.ttsRate, 0.5, 2, 1),
           ttsPitch: clampNumber(saved?.ttsPitch, 0, 2, 1),
           ttsVolume: clampNumber(saved?.ttsVolume, 0, 1, 1),
@@ -154,6 +159,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
     },
   ),
 );
+
+function asString(value: unknown, fallback: string): string {
+  return typeof value === "string" && value ? value : fallback;
+}
 
 function clampNumber(
   value: unknown,
@@ -199,7 +208,8 @@ export function applyDictationDictionary(
         `(?<![\\p{L}\\p{N}])${pattern}(?![\\p{L}\\p{N}])`,
         "giu",
       );
-      result = result.replace(regex, trimmed);
+      // Callback form: a plain string would expand $-patterns ($&, $$).
+      result = result.replace(regex, () => trimmed);
     } catch {
       // Skip entries that produce an invalid pattern.
     }

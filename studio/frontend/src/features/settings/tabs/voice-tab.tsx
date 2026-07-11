@@ -147,12 +147,27 @@ function DictationTest() {
     const { micDeviceId } = useVoiceSettingsStore.getState();
     let audioTrack: MediaStreamTrack | undefined;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio:
-          micDeviceId && micDeviceId !== "default"
-            ? { deviceId: { exact: micDeviceId } }
-            : true,
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio:
+            micDeviceId && micDeviceId !== "default"
+              ? { deviceId: { exact: micDeviceId } }
+              : true,
+        });
+      } catch (error) {
+        // Saved mic may be unplugged; fall back to the default device.
+        if (
+          micDeviceId !== "default" &&
+          error instanceof DOMException &&
+          (error.name === "OverconstrainedError" ||
+            error.name === "NotFoundError")
+        ) {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } else {
+          throw error;
+        }
+      }
       streamRef.current = stream;
       audioTrack = stream.getAudioTracks()[0];
     } catch {
