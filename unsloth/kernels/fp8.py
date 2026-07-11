@@ -694,12 +694,11 @@ if FbgemmFp8Linear is not None:
 if FP8Linear is not None:
     FP8Linear.forward = module_forward_patch(fp8_block_quant_linear, "weight_scale_inv")
 
-# FP8GroupedLinear.forward uses a grouped matmul kernel with no autograd formula,
-# so training backward fails. In training mode run a custom autograd Function that
-# dequantizes the frozen fp8 weight for a differentiable grouped bmm but saves only
-# the fp8 weight + scale (no bf16 copy retained per layer) and unwraps TP shards;
-# eval keeps the fused kernel. Gate on self.training, not is_grad_enabled, so the
-# gradient-checkpointing no-grad forward and its recompute run the same math.
+# FP8GroupedLinear's fused grouped matmul has no autograd formula, so training
+# backward fails. In training, use a custom autograd Function: dequant the frozen
+# fp8 weight for a differentiable bmm, saving only the fp8 weight + scale and
+# unwrapping TP shards; eval keeps the fused kernel. Gate on self.training (not
+# is_grad_enabled) so the grad-checkpoint no-grad forward and its recompute match.
 if FP8GroupedLinear is not None:
     _fp8_grouped_forward_orig = FP8GroupedLinear.forward
 

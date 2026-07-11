@@ -438,8 +438,8 @@ DISABLE_SDPA_MODEL_NAMES = [
     "gpt_oss",
 ]
 _FLASH_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4")
-# deepseek_v4 ships sdpa/flash-incompatible custom attention; force eager and also
-# exclude it above so an explicit sdpa/flash request cannot re-enable the crash.
+# deepseek_v4's custom attention is sdpa/flash-incompatible; force eager, and
+# excluded above so an explicit sdpa/flash request cannot re-enable the crash.
 _EAGER_ONLY_PREFIXES = ("gemma3n", "deepseek_v4")
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
