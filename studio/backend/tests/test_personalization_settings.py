@@ -26,6 +26,7 @@ def test_defaults_fill_missing_fields():
     assert p.appearance.palette == "standard"
     assert p.profile.avatarShape == "circle"
     assert p.profile.displayName == ""
+    assert p.profile.showGreetingSloth is True
 
 
 def test_unknown_keys_are_ignored():
@@ -239,6 +240,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
             "nickname": "M",
             "avatarDataUrl": "/Sloth%20emojis/large%20sloth%20yay.png",
             "avatarShape": "rounded",
+            "showGreetingSloth": False,
         },
         "appearance": {
             "theme": "dark",

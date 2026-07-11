@@ -10,6 +10,7 @@ export type PersonalizationProfile = {
   nickname: string;
   avatarDataUrl: string | null;
   avatarShape: "circle" | "rounded";
+  showGreetingSloth: boolean;
 };
 
 export type PersonalizationAppearance = {

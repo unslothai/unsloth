@@ -169,6 +169,8 @@ export const zhCN = {
       avatarShape: "头像形状",
       avatarShapeCircle: "圆形",
       avatarShapeRounded: "圆角矩形",
+      greetingSloth: "问候语中显示树懒",
+      greetingSlothDescription: "在新对话的欢迎消息旁显示树懒。",
       chooseSloth: "或选择一只树懒",
       nameSaved: "个人资料名称已保存",
       namePersistErrorTitle: "无法持久保存个人资料名称",

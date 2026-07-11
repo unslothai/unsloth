@@ -34,7 +34,14 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.resetPreferences.sectionTitle",
     "settings.general.resetPreferences.label",
   ],
-  profile: ["settings.profile.title", "settings.profile.description"],
+  profile: [
+    "settings.profile.title",
+    "settings.profile.description",
+    "settings.profile.displayName",
+    "settings.profile.nickname",
+    "settings.profile.avatarShape",
+    "settings.profile.greetingSloth",
+  ],
   appearance: [
     "settings.appearance.theme.label",
     "settings.appearance.palette.label",

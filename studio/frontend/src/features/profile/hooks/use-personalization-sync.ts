@@ -38,6 +38,7 @@ type ProfileSnapshot = {
   nickname: string;
   avatarDataUrl: string | null;
   avatarShape: AvatarShape;
+  showGreetingSloth: boolean;
 };
 
 type PersonalizationWrite = Parameters<typeof savePersonalization>[0];
@@ -65,7 +66,8 @@ function sameProfile(a: ProfileSnapshot, b: ProfileSnapshot): boolean {
     a.displayName === b.displayName &&
     a.nickname === b.nickname &&
     a.avatarDataUrl === b.avatarDataUrl &&
-    a.avatarShape === b.avatarShape
+    a.avatarShape === b.avatarShape &&
+    a.showGreetingSloth === b.showGreetingSloth
   );
 }
 
@@ -112,6 +114,7 @@ function profileSnapshot(): ProfileSnapshot {
     nickname: s.nickname,
     avatarDataUrl: s.avatarDataUrl,
     avatarShape: s.avatarShape,
+    showGreetingSloth: s.showGreetingSloth,
   };
 }
 
@@ -145,6 +148,7 @@ function hasLocalSettings(
       profile.nickname ||
       profile.avatarDataUrl ||
       profile.avatarShape !== "circle" ||
+      !profile.showGreetingSloth ||
       theme !== "system" ||
       palette !== "standard" ||
       !isDefaultCustomization(customization) ||
@@ -157,6 +161,7 @@ export function usePersonalizationSync(enabled: boolean): void {
   const nickname = useUserProfileStore((s) => s.nickname);
   const avatarDataUrl = useUserProfileStore((s) => s.avatarDataUrl);
   const avatarShape = useUserProfileStore((s) => s.avatarShape);
+  const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const { theme } = useTheme();
   const { palette } = usePalette();
   const customization = useAppearanceCustomStore((s) => s.customization);
@@ -216,6 +221,7 @@ export function usePersonalizationSync(enabled: boolean): void {
             avatarDataUrl: remote.profile.avatarDataUrl ?? null,
             avatarShape:
               remote.profile.avatarShape === "rounded" ? "rounded" : "circle",
+            showGreetingSloth: remote.profile.showGreetingSloth !== false,
           };
           const nextTheme = remote.appearance.theme;
           const nextPalette = isPalette(remote.appearance.palette)
@@ -301,7 +307,7 @@ export function usePersonalizationSync(enabled: boolean): void {
   useEffect(() => {
     if (!enabled || hydratedGeneration !== authGenerationRef.current) return;
     const current = payload(
-      { displayName, nickname, avatarDataUrl, avatarShape },
+      { displayName, nickname, avatarDataUrl, avatarShape, showGreetingSloth },
       theme,
       palette,
       customization,
@@ -325,6 +331,7 @@ export function usePersonalizationSync(enabled: boolean): void {
     nickname,
     avatarDataUrl,
     avatarShape,
+    showGreetingSloth,
     theme,
     palette,
     customization,

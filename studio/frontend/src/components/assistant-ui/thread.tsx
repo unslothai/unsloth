@@ -1317,6 +1317,7 @@ const ThreadWelcome: FC<{
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
+  const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
 
   useEffect(() => {
@@ -1333,10 +1334,12 @@ const ThreadWelcome: FC<{
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="flex flex-row items-center justify-center gap-[15px]">
-            <MascotImg
-              src={currentEmojiSrc}
-              className="size-[44px] -translate-y-[2px]"
-            />
+            {showGreetingSloth && (
+              <MascotImg
+                src={currentEmojiSrc}
+                className="size-[44px] -translate-y-[2px]"
+              />
+            )}
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
               {incognito ? "Temporary chat" : welcome.text}
             </h1>

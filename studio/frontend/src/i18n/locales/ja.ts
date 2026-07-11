@@ -199,6 +199,8 @@ export const ja = {
       avatarShape: "プロフィール写真の形状",
       avatarShapeCircle: "円形",
       avatarShapeRounded: "角丸",
+      greetingSloth: "挨拶にナマケモノを表示",
+      greetingSlothDescription: "新しいチャットのウェルカムメッセージの横にナマケモノを表示します。",
       chooseSloth: "またはナマケモノを選択",
       nameSaved: "プロフィール名を保存しました",
       namePersistErrorTitle: "プロフィール名を永続化できませんでした",

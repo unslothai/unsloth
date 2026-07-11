@@ -5,6 +5,7 @@ import { publicAssetUrl } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { getAuthToken } from "@/features/auth";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
@@ -63,6 +64,10 @@ export function ProfilePersonalizationPanel() {
   const setAvatarDataUrl = useUserProfileStore((s) => s.setAvatarDataUrl);
   const avatarShape = useUserProfileStore((s) => s.avatarShape);
   const setAvatarShape = useUserProfileStore((s) => s.setAvatarShape);
+  const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  const setShowGreetingSloth = useUserProfileStore(
+    (s) => s.setShowGreetingSloth,
+  );
 
   const [imageError, setImageError] = useState<string | null>(null);
   const [draftName, setDraftName] = useState(displayName);
@@ -266,6 +271,28 @@ export function ProfilePersonalizationPanel() {
             </button>
           ))}
         </div>
+      </div>
+
+      <div
+        data-settings-label={t("settings.profile.greetingSloth")}
+        className="flex w-full max-w-[560px] items-center justify-between gap-4"
+      >
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <Label
+            htmlFor="profile-greeting-sloth"
+            className="text-xs font-medium text-muted-foreground"
+          >
+            {t("settings.profile.greetingSloth")}
+          </Label>
+          <p className="text-xs text-muted-foreground/75">
+            {t("settings.profile.greetingSlothDescription")}
+          </p>
+        </div>
+        <Switch
+          id="profile-greeting-sloth"
+          checked={showGreetingSloth}
+          onCheckedChange={setShowGreetingSloth}
+        />
       </div>
 
       <div className="flex w-full max-w-[560px] flex-col gap-2">

@@ -552,6 +552,7 @@ class PersonalizationProfile(BaseModel):
     nickname: str = Field("", max_length = 200)
     avatarDataUrl: Optional[str] = Field(None, max_length = MAX_AVATAR_DATA_URL_BYTES)
     avatarShape: Literal["circle", "rounded"] = "circle"
+    showGreetingSloth: bool = True
 
     @field_validator("avatarDataUrl")
     @classmethod
