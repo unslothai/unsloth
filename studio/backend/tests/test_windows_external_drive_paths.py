@@ -27,11 +27,7 @@ def _extract_routes_function(name: str, ns_extra: Optional[dict] = None) -> dict
     """Exec a single top-level function out of routes/models.py without importing
     the module (which pulls in FastAPI and the rest of the backend)."""
     tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
-    fn = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == name
-    )
+    fn = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
     module = ast.Module(body = [fn], type_ignores = [])
     ast.fix_missing_locations(module)
     ns = {"os": os, "Path": Path, "Optional": Optional}
@@ -165,9 +161,9 @@ def test_is_path_inside_allowlist_allows_descendants_of_drive_root(monkeypatch):
     # host's own os.sep so the doubled-separator bug is exercised natively.
     monkeypatch.setattr(os.path, "realpath", lambda p: str(p))
     sep = os.sep
-    root = f"X{sep}"          # drive-root analog: a root that ends in the separator
+    root = f"X{sep}"  # drive-root analog: a root that ends in the separator
     child = f"X{sep}models"
 
-    assert ns["_is_path_inside_allowlist"](root, [root]) is True     # the root itself
-    assert ns["_is_path_inside_allowlist"](child, [root]) is True    # a descendant
+    assert ns["_is_path_inside_allowlist"](root, [root]) is True  # the root itself
+    assert ns["_is_path_inside_allowlist"](child, [root]) is True  # a descendant
     assert ns["_is_path_inside_allowlist"](f"Y{sep}models", [root]) is False  # unrelated
