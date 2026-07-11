@@ -102,9 +102,7 @@ def linux_run_media_mount_roots(
     return roots
 
 
-def windows_drive_roots(
-    drive_letters: Iterable[str] = string.ascii_uppercase,
-) -> list[Path]:
+def windows_drive_roots(drive_letters: Iterable[str] = string.ascii_uppercase) -> list[Path]:
     """Readable logical drive roots (``C:\\``, ``D:\\`` ...) for the folder browser.
 
     The Windows analog of :func:`linux_run_media_mount_roots`. Without it the
