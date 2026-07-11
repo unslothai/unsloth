@@ -88,6 +88,8 @@ export const zhCN = {
       title: "设置",
       description: "管理你的 Unsloth Studio 偏好设置。",
       closeAriaLabel: "关闭设置",
+      searchPlaceholder: "搜索设置…",
+      searchNoResults: "未找到设置。",
     },
     tabs: {
       general: "通用",
@@ -230,6 +232,14 @@ export const zhCN = {
           label: "界面字体",
           description: "界面使用的字体。",
         },
+        headingFont: {
+          label: "标题字体",
+          description: "标题使用的字体。",
+        },
+        chatFont: {
+          label: "聊天字体",
+          description: "聊天消息使用的字体。",
+        },
         codeFont: {
           label: "代码字体",
           description: "代码和差异视图使用的字体。",
@@ -271,10 +281,6 @@ export const zhCN = {
         pointerCursors: {
           label: "使用指针光标",
           description: "悬停在可交互元素上时将光标变为指针。",
-        },
-        translucentSidebar: {
-          label: "半透明侧边栏",
-          description: "让内容透过侧边栏显示。",
         },
       },
       layout: {

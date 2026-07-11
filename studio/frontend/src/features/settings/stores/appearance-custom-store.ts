@@ -27,6 +27,8 @@ export const MAX_IMPORTED_FONT_DATA_URL_LENGTH = 2_200_000;
 export type AppearanceCustomization = {
   colors: { light: CustomModeColors; dark: CustomModeColors };
   uiFont: string | null;
+  headingFont: string | null;
+  chatFont: string | null;
   codeFont: string | null;
   importedFonts: ImportedFont[];
   /** Root font size in px (rem base). null = browser default (16). */
@@ -39,7 +41,6 @@ export type AppearanceCustomization = {
   reduceMotion: ReduceMotionSetting;
   /** true = the app default (antialiased). */
   fontSmoothing: boolean;
-  translucentSidebar: boolean;
 };
 
 const EMPTY_MODE_COLORS: CustomModeColors = {
@@ -51,6 +52,8 @@ const EMPTY_MODE_COLORS: CustomModeColors = {
 export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   colors: { light: { ...EMPTY_MODE_COLORS }, dark: { ...EMPTY_MODE_COLORS } },
   uiFont: null,
+  headingFont: null,
+  chatFont: null,
   codeFont: null,
   importedFonts: [],
   uiFontSize: null,
@@ -59,7 +62,6 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   pointerCursors: false,
   reduceMotion: "system",
   fontSmoothing: true,
-  translucentSidebar: false,
 };
 
 export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 16 } as const;
@@ -152,6 +154,8 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
       dark: sanitizeModeColors(source.colors?.dark),
     },
     uiFont: sanitizeFont(source.uiFont),
+    headingFont: sanitizeFont(source.headingFont),
+    chatFont: sanitizeFont(source.chatFont),
     codeFont: sanitizeFont(source.codeFont),
     importedFonts: sanitizeImportedFonts(source.importedFonts),
     uiFontSize: sanitizeSize(source.uiFontSize, UI_FONT_SIZE_RANGE),
@@ -163,7 +167,6 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
         ? source.reduceMotion
         : "system",
     fontSmoothing: source.fontSmoothing !== false,
-    translucentSidebar: source.translucentSidebar === true,
   };
 }
 
@@ -230,6 +233,8 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
               importedFonts: c.importedFonts.filter((f) => f.name !== name),
               // Fall back to the default font wherever the removed one was in use.
               uiFont: c.uiFont === name ? null : c.uiFont,
+              headingFont: c.headingFont === name ? null : c.headingFont,
+              chatFont: c.chatFont === name ? null : c.chatFont,
               codeFont: c.codeFont === name ? null : c.codeFont,
             }),
           };
@@ -264,6 +269,8 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
 
 const DEFAULT_SANS_STACK =
   '"Inter Variable", ui-sans-serif, sans-serif, system-ui';
+const DEFAULT_HEADING_STACK =
+  '"Hellix", "Space Grotesk Variable", var(--font-sans)';
 const DEFAULT_MONO_STACK = "JetBrains Mono, monospace";
 
 /** WCAG-ish relative luminance from a #rrggbb hex. */
@@ -315,16 +322,11 @@ function syncImportedFonts(fonts: ImportedFont[]): void {
 }
 
 /**
- * The custom "Accent" recolors the accent family (toggles, badges, focus
- * rings, chart-1). Palette-defined button colors (--primary)
- * are deliberately left alone, so Classic's neutral buttons stay neutral.
+ * The custom "Accent" recolors the accent family (toggles, badges, chart-1).
+ * Focus/selection rings and button colors (--primary) are deliberately left
+ * alone: highlight borders stay neutral and Classic's buttons stay neutral.
  */
-const ACCENT_VARS = [
-  "--control-accent",
-  "--ring",
-  "--sidebar-ring",
-  "--chart-1",
-] as const;
+const ACCENT_VARS = ["--control-accent", "--chart-1"] as const;
 const ACCENT_FG_VARS = ["--control-accent-foreground"] as const;
 
 /**
@@ -364,9 +366,21 @@ export function applyCustomizationToDocument(
     c.uiFont ? `"${c.uiFont}", ${DEFAULT_SANS_STACK}` : null,
   );
   setVar(
+    "--font-heading",
+    c.headingFont ? `"${c.headingFont}", ${DEFAULT_HEADING_STACK}` : null,
+  );
+  setVar(
     "--font-mono",
     c.codeFont ? `"${c.codeFont}", ${DEFAULT_MONO_STACK}` : null,
   );
+
+  if (c.chatFont) {
+    el.setAttribute("data-chat-font", "");
+    setVar("--custom-chat-font", `"${c.chatFont}", ${DEFAULT_SANS_STACK}`);
+  } else {
+    el.removeAttribute("data-chat-font");
+    setVar("--custom-chat-font", null);
+  }
 
   if (c.uiFontSize !== null && c.uiFontSize !== UI_FONT_SIZE_RANGE.default) {
     style.fontSize = `${c.uiFontSize}px`;
@@ -401,5 +415,4 @@ export function applyCustomizationToDocument(
   el.classList.toggle("pointer-cursors", c.pointerCursors);
   el.classList.toggle("force-reduced-motion", c.reduceMotion === "on");
   el.classList.toggle("no-font-smoothing", !c.fontSmoothing);
-  el.classList.toggle("translucent-sidebar", c.translucentSidebar);
 }

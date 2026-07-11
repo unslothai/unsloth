@@ -6,15 +6,16 @@ import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT } from "@/i18n";
 import {
   ActiveColorControl,
+  ChatFontRow,
   CodeFontRow,
   CodeFontSizeRow,
   ContrastSliderRow,
   FontSmoothingSwitch,
+  HeadingFontRow,
   ImportFontControls,
   PointerCursorsSwitch,
   ReduceMotionSegmented,
   ResetCustomizationButton,
-  TranslucentSidebarSwitch,
   UiFontRow,
   UiFontSizeRow,
 } from "../components/appearance-custom-controls";
@@ -88,6 +89,18 @@ export function AppearanceTab() {
           <UiFontRow />
         </SettingsRow>
         <SettingsRow
+          label={t("settings.appearance.custom.headingFont.label")}
+          description={t("settings.appearance.custom.headingFont.description")}
+        >
+          <HeadingFontRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.chatFont.label")}
+          description={t("settings.appearance.custom.chatFont.description")}
+        >
+          <ChatFontRow />
+        </SettingsRow>
+        <SettingsRow
           label={t("settings.appearance.custom.codeFont.label")}
           description={t("settings.appearance.custom.codeFont.description")}
         >
@@ -98,14 +111,6 @@ export function AppearanceTab() {
           description={t("settings.appearance.custom.importFont.description")}
         >
           <ImportFontControls />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.translucentSidebar.label")}
-          description={t(
-            "settings.appearance.custom.translucentSidebar.description",
-          )}
-        >
-          <TranslucentSidebarSwitch />
         </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.contrast.label")}

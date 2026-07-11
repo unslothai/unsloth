@@ -602,6 +602,8 @@ class PersonalizationCustomization(BaseModel):
 
     colors: PersonalizationCustomColorModes = Field(default_factory = PersonalizationCustomColorModes)
     uiFont: Optional[str] = Field(None, max_length = 200)
+    headingFont: Optional[str] = Field(None, max_length = 200)
+    chatFont: Optional[str] = Field(None, max_length = 200)
     codeFont: Optional[str] = Field(None, max_length = 200)
     importedFonts: list[PersonalizationImportedFont] = Field(
         default_factory = list, max_length = MAX_IMPORTED_FONTS
@@ -612,7 +614,6 @@ class PersonalizationCustomization(BaseModel):
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
     fontSmoothing: bool = True
-    translucentSidebar: bool = False
 
 
 class PersonalizationAppearance(BaseModel):

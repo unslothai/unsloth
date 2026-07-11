@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { FloatingMonitor } from "@/components/floating-monitor";
 import {
   Dialog,
   DialogContent,
@@ -17,12 +18,14 @@ import {
   HelpCircleIcon,
   Message01Icon,
   PaintBrush02Icon,
+  Search01Icon,
   Settings02Icon,
   UserIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { SETTINGS_SEARCH_INDEX } from "./settings-search";
 import {
   type SettingsTab,
   useSettingsDialogStore,
@@ -35,7 +38,6 @@ import { ConnectionsTab } from "./tabs/connections-tab";
 import { GeneralTab } from "./tabs/general-tab";
 import { ProfileTab } from "./tabs/profile-tab";
 import { ResourcesTab } from "./tabs/resources-tab";
-import { FloatingMonitor } from "@/components/floating-monitor";
 
 interface TabDef {
   id: SettingsTab;
@@ -106,6 +108,34 @@ export function SettingsDialog() {
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
   const opener = useSettingsDialogStore((s) => s.opener);
   const reduced = useReducedMotion();
+  const [query, setQuery] = useState("");
+
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return null;
+    return TABS.map((tab) => {
+      const tabLabel = t(tab.labelKey);
+      const entries = SETTINGS_SEARCH_INDEX[tab.id]
+        .map((key) => t(key))
+        .filter((label) => label.toLowerCase().includes(q));
+      const deduped = [...new Set(entries)];
+      return {
+        tab,
+        tabLabel,
+        entries: deduped,
+        tabMatches: tabLabel.toLowerCase().includes(q),
+      };
+    }).filter((r) => r.tabMatches || r.entries.length > 0);
+  }, [query, t]);
+
+  const openResult = (tab: SettingsTab) => {
+    setActiveTab(tab);
+    setQuery("");
+  };
+
+  useEffect(() => {
+    if (!open) setQuery("");
+  }, [open]);
   const tabButtonRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     general: null,
     profile: null,
@@ -161,7 +191,78 @@ export function SettingsDialog() {
               <h2 className="pl-3 pr-2.5 pt-3.5 pb-3.5 text-[19px] font-semibold text-foreground max-sm:hidden">
                 {t("settings.dialog.title")}
               </h2>
-              <nav className="flex flex-col gap-0.5 max-sm:flex-row max-sm:overflow-x-auto">
+              <div className="relative mb-2 max-sm:hidden">
+                <HugeiconsIcon
+                  icon={Search01Icon}
+                  strokeWidth={2}
+                  className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+                />
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape" && query) {
+                      e.stopPropagation();
+                      setQuery("");
+                    }
+                  }}
+                  placeholder={t("settings.dialog.searchPlaceholder")}
+                  aria-label={t("settings.dialog.searchPlaceholder")}
+                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-9 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:border-white/10 dark:bg-white/[0.06]"
+                />
+                {query && (
+                  <button
+                    type="button"
+                    onClick={() => setQuery("")}
+                    aria-label={t("settings.dialog.closeAriaLabel")}
+                    className="absolute top-1/2 right-2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
+                  </button>
+                )}
+              </div>
+              {results ? (
+                <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pb-1 max-sm:hidden">
+                  {results.length === 0 ? (
+                    <p className="px-3 py-2 text-sm text-muted-foreground">
+                      {t("settings.dialog.searchNoResults")}
+                    </p>
+                  ) : (
+                    results.map(({ tab, tabLabel, entries }) => (
+                      <div key={tab.id} className="flex flex-col">
+                        <button
+                          type="button"
+                          onClick={() => openResult(tab.id)}
+                          className="flex h-[30px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-[13.5px] font-medium text-muted-foreground transition-colors hover:bg-[#ececec] hover:text-black dark:hover:bg-[#3a3d43] dark:hover:text-white"
+                        >
+                          <HugeiconsIcon
+                            icon={tab.icon}
+                            strokeWidth={1.75}
+                            className="size-icon shrink-0"
+                          />
+                          <span className="min-w-0 truncate">{tabLabel}</span>
+                        </button>
+                        {entries.map((entry) => (
+                          <button
+                            key={entry}
+                            type="button"
+                            onClick={() => openResult(tab.id)}
+                            className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-[14px] text-foreground transition-colors hover:bg-[#ececec] hover:text-black dark:hover:bg-[#3a3d43] dark:hover:text-white"
+                          >
+                            <span className="min-w-0 truncate">{entry}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ))
+                  )}
+                </div>
+              ) : null}
+              <nav
+                className={cn(
+                  "flex flex-col gap-0.5 max-sm:flex-row max-sm:overflow-x-auto",
+                  results !== null && "max-sm:flex hidden",
+                )}
+              >
                 {TABS.map((tab) => {
                   const active = activeTab === tab.id;
                   return (
@@ -189,11 +290,11 @@ export function SettingsDialog() {
                             reduced
                               ? { duration: 0 }
                               : {
-                                type: "spring",
-                                stiffness: 500,
-                                damping: 35,
-                                mass: 0.5,
-                              }
+                                  type: "spring",
+                                  stiffness: 500,
+                                  damping: 35,
+                                  mass: 0.5,
+                                }
                           }
                         />
                       )}

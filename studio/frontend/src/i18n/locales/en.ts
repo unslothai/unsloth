@@ -88,6 +88,8 @@ export const en = {
       title: "Settings",
       description: "Manage your Unsloth preferences.",
       closeAriaLabel: "Close settings",
+      searchPlaceholder: "Search settings…",
+      searchNoResults: "No settings found.",
     },
     tabs: {
       general: "General",
@@ -301,6 +303,14 @@ export const en = {
           label: "UI font",
           description: "Font used across the interface.",
         },
+        headingFont: {
+          label: "Heading font",
+          description: "Font used for titles and headings.",
+        },
+        chatFont: {
+          label: "Chat font",
+          description: "Font used for chat messages.",
+        },
         codeFont: {
           label: "Code font",
           description: "Font used for code and diffs.",
@@ -343,10 +353,6 @@ export const en = {
           label: "Use pointer cursors",
           description:
             "Change the cursor to a pointer when hovering over interactive elements.",
-        },
-        translucentSidebar: {
-          label: "Translucent sidebar",
-          description: "Let content show through the sidebar.",
         },
       },
       language: {

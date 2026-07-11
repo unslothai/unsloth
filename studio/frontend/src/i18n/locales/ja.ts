@@ -88,6 +88,8 @@ export const ja = {
       title: "設定",
       description: "Unsloth の環境設定を管理します。",
       closeAriaLabel: "設定を閉じる",
+      searchPlaceholder: "設定を検索…",
+      searchNoResults: "設定が見つかりません。",
     },
     tabs: {
       general: "一般",
@@ -254,6 +256,14 @@ export const ja = {
           label: "UI フォント",
           description: "インターフェイスで使用するフォント。",
         },
+        headingFont: {
+          label: "見出しフォント",
+          description: "タイトルや見出しに使用するフォント。",
+        },
+        chatFont: {
+          label: "チャットフォント",
+          description: "チャットメッセージに使用するフォント。",
+        },
         codeFont: {
           label: "コードフォント",
           description: "コードと差分で使用するフォント。",
@@ -296,10 +306,6 @@ export const ja = {
           label: "ポインターカーソルを使用",
           description:
             "操作可能な要素にカーソルを合わせたときにポインターに変更します。",
-        },
-        translucentSidebar: {
-          label: "半透明サイドバー",
-          description: "サイドバー越しにコンテンツを透かします。",
         },
       },
       language: {

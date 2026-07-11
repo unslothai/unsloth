@@ -101,14 +101,10 @@ export function ActiveColorControl({
           {t("settings.appearance.custom.reset")}
         </Button>
       )}
-      <span className="font-mono text-xs text-muted-foreground uppercase">
-        {value}
-      </span>
       <ColorPickerSwatch
         value={value}
         onChange={(hex) => setColor(resolved, colorKey, hex)}
         label={label}
-        highlighted={override !== null}
       />
     </div>
   );
@@ -286,7 +282,7 @@ function FontSelect({
   );
 
   return (
-    <Popover open={open} onOpenChange={handleOpenChange}>
+    <Popover open={open} onOpenChange={handleOpenChange} modal={true}>
       <PopoverTrigger asChild={true}>
         <button
           type="button"
@@ -306,13 +302,13 @@ function FontSelect({
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="w-64 gap-0 rounded-xl p-1 font-heading corner-squircle"
+        className="w-64 gap-0 rounded-lg p-1 font-heading"
       >
         <Command className="rounded-none bg-transparent p-0">
           <CommandInput
             placeholder={t("settings.appearance.custom.fontSearch")}
           />
-          <CommandList className="max-h-64 pt-1">
+          <CommandList className="max-h-64 pt-1.5">
             <CommandEmpty>
               {t("settings.appearance.custom.fontNoResults")}
             </CommandEmpty>
@@ -366,6 +362,34 @@ export function UiFontRow() {
       value={uiFont}
       onCommit={(next) => patch({ uiFont: next })}
       ariaLabel={t("settings.appearance.custom.uiFont.label")}
+    />
+  );
+}
+
+export function HeadingFontRow() {
+  const t = useT();
+  const headingFont = useAppearanceCustomStore(
+    (s) => s.customization.headingFont,
+  );
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  return (
+    <FontSelect
+      value={headingFont}
+      onCommit={(next) => patch({ headingFont: next })}
+      ariaLabel={t("settings.appearance.custom.headingFont.label")}
+    />
+  );
+}
+
+export function ChatFontRow() {
+  const t = useT();
+  const chatFont = useAppearanceCustomStore((s) => s.customization.chatFont);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  return (
+    <FontSelect
+      value={chatFont}
+      onCommit={(next) => patch({ chatFont: next })}
+      ariaLabel={t("settings.appearance.custom.chatFont.label")}
     />
   );
 }
@@ -649,19 +673,6 @@ export function PointerCursorsSwitch() {
     <Switch
       checked={pointerCursors}
       onCheckedChange={(checked) => patch({ pointerCursors: checked })}
-    />
-  );
-}
-
-export function TranslucentSidebarSwitch() {
-  const translucentSidebar = useAppearanceCustomStore(
-    (s) => s.customization.translucentSidebar,
-  );
-  const patch = useAppearanceCustomStore((s) => s.patch);
-  return (
-    <Switch
-      checked={translucentSidebar}
-      onCheckedChange={(checked) => patch({ translucentSidebar: checked })}
     />
   );
 }

@@ -52,8 +52,9 @@ def test_customization_defaults():
     assert c.reduceMotion == "system"
     assert c.fontSmoothing is True
     assert c.pointerCursors is False
-    assert c.translucentSidebar is False
     assert c.colors.light.accent is None
+    assert c.headingFont is None
+    assert c.chatFont is None
     assert c.uiFontSize is None
 
 
@@ -214,6 +215,8 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     "dark": {"accent": None, "background": "#111111", "foreground": None},
                 },
                 "uiFont": "SF Pro Text",
+                "headingFont": "Avenir Next",
+                "chatFont": "Georgia",
                 "codeFont": None,
                 "importedFonts": [
                     {"name": "SF Pro Text", "dataUrl": "data:font/woff2;base64,AAAA"}
@@ -224,7 +227,6 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                 "pointerCursors": True,
                 "reduceMotion": "off",
                 "fontSmoothing": True,
-                "translucentSidebar": True,
             },
         },
     }

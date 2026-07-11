@@ -54,6 +54,13 @@ function hsvToHex({ h, s, v }: Hsv): string {
 
 const HEX_PATTERN = /^#?([0-9a-fA-F]{6})$/;
 
+function isLightColor(hex: string): boolean {
+  const r = Number.parseInt(hex.slice(1, 3), 16);
+  const g = Number.parseInt(hex.slice(3, 5), 16);
+  const b = Number.parseInt(hex.slice(5, 7), 16);
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.62;
+}
+
 /* ------------------------------- Component ------------------------------- */
 
 type EyeDropperResult = { sRGBHex: string };
@@ -71,12 +78,10 @@ export function ColorPickerSwatch({
   value,
   onChange,
   label,
-  highlighted,
 }: {
   value: string;
   onChange: (hex: string) => void;
   label: string;
-  highlighted?: boolean;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -142,21 +147,32 @@ export function ColorPickerSwatch({
   };
 
   const hueColor = hsvToHex({ h: hsv.h, s: 1, v: 1 });
+  const light = isLightColor(value);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={setOpen} modal={true}>
       <PopoverTrigger asChild>
         <button
           type="button"
           aria-label={label}
           className={cn(
-            "h-7 w-10 cursor-pointer rounded-md border transition-shadow",
-            highlighted ? "border-ring" : "border-border",
+            "flex h-9 min-w-32 cursor-pointer items-center gap-2 rounded-full border px-3 font-mono text-xs uppercase transition-colors",
+            light
+              ? "border-black/10 text-black/80"
+              : "border-white/15 text-white",
           )}
           style={{ backgroundColor: value }}
-        />
+        >
+          <span
+            className={cn(
+              "size-4 shrink-0 rounded-full border",
+              light ? "border-black/20" : "border-white/40",
+            )}
+          />
+          {value.toUpperCase()}
+        </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-60 rounded-xl p-3">
+      <PopoverContent align="end" className="w-60 rounded-lg p-3">
         <div className="flex flex-col gap-3">
           <div
             ref={areaRef}

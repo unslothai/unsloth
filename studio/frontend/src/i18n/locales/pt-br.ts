@@ -87,6 +87,8 @@ export const ptBR = {
       title: "Configurações",
       description: "Gerencie suas preferências do Unsloth.",
       closeAriaLabel: "Fechar configurações",
+      searchPlaceholder: "Pesquisar configurações…",
+      searchNoResults: "Nenhuma configuração encontrada.",
     },
     tabs: {
       general: "Geral",
@@ -253,6 +255,14 @@ export const ptBR = {
           label: "Fonte da interface",
           description: "Fonte usada na interface.",
         },
+        headingFont: {
+          label: "Fonte de títulos",
+          description: "Fonte usada em títulos e cabeçalhos.",
+        },
+        chatFont: {
+          label: "Fonte do chat",
+          description: "Fonte usada nas mensagens do chat.",
+        },
         codeFont: {
           label: "Fonte de código",
           description: "Fonte usada em código e diffs.",
@@ -296,10 +306,6 @@ export const ptBR = {
           label: "Usar cursor de ponteiro",
           description:
             "Muda o cursor para ponteiro ao passar sobre elementos interativos.",
-        },
-        translucentSidebar: {
-          label: "Barra lateral translúcida",
-          description: "Deixa o conteúdo transparecer pela barra lateral.",
         },
       },
       language: {
