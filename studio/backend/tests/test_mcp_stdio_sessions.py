@@ -443,6 +443,10 @@ def test_execute_tool_mcp_scope_is_per_thread(tmp_path, monkeypatch):
     tools_mod.execute_tool("mcp__s1__t", {}, session_id = "sess-only")
     tools_mod.execute_tool("mcp__s1__t", {}, thread_id = "thread-a")
     assert scopes == ["project-p1:thread-a", "project-p1:thread-b", "sess-only", "thread-a"]
+    # IDs containing ":" must not collapse distinct conversations into one scope.
+    tools_mod.execute_tool("mcp__s1__t", {}, session_id = "a:b", thread_id = "c")
+    tools_mod.execute_tool("mcp__s1__t", {}, session_id = "a", thread_id = "b:c")
+    assert scopes[-2] != scopes[-1]
 
 
 def test_execute_tool_config_check_tracks_row(tmp_path, monkeypatch):

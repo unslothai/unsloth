@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.parse
 import urllib.request
 
 from core.inference.mcp_client import (
@@ -1006,10 +1007,12 @@ def execute_tool(
         if is_stdio(server["url"]) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{server_id}' is disabled on this host"
         # session_id (the sandbox id) is shared by all threads in a project;
-        # fold in thread_id so stdio sessions stay per-conversation.
-        mcp_scope = session_id
-        if thread_id:
-            mcp_scope = f"{session_id}:{thread_id}" if session_id else thread_id
+        # fold in thread_id so stdio sessions stay per-conversation. Quote the
+        # parts so IDs containing ":" can't collide into one scope.
+        mcp_scope = (
+            ":".join(urllib.parse.quote(p, safe = "") for p in (session_id, thread_id) if p)
+            or None
+        )
         headers = parse_server_headers(server)
         url = server["url"]
 
