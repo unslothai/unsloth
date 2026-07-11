@@ -5753,3 +5753,100 @@ class TestRound58Bypasses:
     )
     def test_round58_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound59Bypasses:
+    # A constant-key namespace-dict lookup (globals()['f'] / locals()['f'] / vars()['f']) reads a
+    # name from the caller namespace without a Name node, so the exec/eval outward-reference model
+    # must treat that key as a free reference -- exec("globals()['f']('touch /tmp/p')") reaches the
+    # caller's f = os.system.
+    @pytest.mark.parametrize(
+        "ns",
+        ["globals", "locals", "vars"],
+    )
+    def test_exec_namespace_dict_alias(self, ns):
+        _blocked(
+            "import os\nf = os.system\nexec(\"%s()['f']('touch /tmp/p')\")" % ns,
+            expect_phrase = "caller alias 'f'",
+        )
+
+    def test_eval_namespace_dict_alias(self):
+        _blocked(
+            "import os\nf = os.system\neval(\"globals()['f']('touch /tmp/p')\")",
+            expect_phrase = "caller alias 'f'",
+        )
+
+    # Bare-host network APIs: http.client.HTTP(S)Connection(host) and socket name-resolution
+    # helpers take a HOST, not a URL, so the literal first arg (or host= keyword) is checked
+    # directly against the metadata denylist / allowlist instead of being parsed as a scheme URL.
+    @pytest.mark.parametrize(
+        "code",
+        [
+            'import http.client\nhttp.client.HTTPConnection("169.254.169.254")',
+            'import http.client\nhttp.client.HTTPSConnection("169.254.169.254", 443)',
+            'import http.client\nhttp.client.HTTPConnection(host="169.254.169.254")',
+        ],
+    )
+    def test_bare_host_metadata_blocked(self, code):
+        _blocked(code, expect_phrase = "cloud-metadata host")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            'import socket\nsocket.getaddrinfo("untrusted.example", 80)',
+            'import socket\nsocket.gethostbyname("untrusted.example")',
+            'import http.client\nhttp.client.HTTPConnection("untrusted.example")',
+        ],
+    )
+    def test_bare_host_untrusted_blocked(self, code):
+        _blocked(code, expect_phrase = "not in sandbox allowlist")
+
+    # Client-instance request calls: the chained fq is only the method name, so match by the
+    # receiver being a client-ctor Call (requests.Session().get) or a same-name single-assignment
+    # alias (s = requests.Session(); s.get). .request(method, url) carries the URL at arg1.
+    @pytest.mark.parametrize(
+        "code",
+        [
+            'import requests\nrequests.Session().get("http://169.254.169.254/latest")',
+            'import httpx\nhttpx.Client().get("http://169.254.169.254/latest")',
+            'import httpx\nhttpx.AsyncClient().get("http://169.254.169.254/latest")',
+            'import urllib.request\nurllib.request.build_opener().open("http://169.254.169.254/")',
+            'import requests\ns = requests.Session()\ns.get("http://169.254.169.254/x")',
+            'import httpx\nhttpx.Client().request("GET", "http://169.254.169.254/x")',
+        ],
+    )
+    def test_client_instance_network_blocked(self, code):
+        _blocked(code, expect_phrase = "cloud-metadata host")
+
+    # shuf -o / uniq output-operand writers escape the workdir in an unguarded child, so they are
+    # blocked like sort -o (full-block, since the realpath backstop cannot see the child).
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "shuf -e a b -o /tmp/p",  # shuf --output
+            "shuf --output=/tmp/p f",
+            "uniq /dev/null /tmp/p",  # second (output) operand
+            "uniq data.txt /tmp/out",
+        ],
+    )
+    def test_shuf_uniq_output_writers(self, cmd):
+        _blocked(_sh(cmd), expect_phrase = "blocked command")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Benign round-59 forms stay allowed.
+            'import requests\nrequests.get("https://huggingface.co/x")',
+            'import requests\nrequests.Session().get("https://huggingface.co/x")',
+            'import http.client\nhttp.client.HTTPConnection("huggingface.co")',
+            'import socket\nsocket.getaddrinfo("huggingface.co", 443)',
+            'd = {}\nd.get("http://169.254.169.254")',  # dict.get is not a network call
+            'f = open("local.txt")\nf.read()',  # file .open/.read, not a client
+            "exec('a = 1 + 2')",  # benign exec payload, no caller alias
+            _sh("shuf -e a b c"),  # shuf with no output file
+            _sh("uniq data.txt"),  # uniq with a single (input) operand
+            _sh("uniq -f 3 data.txt"),  # uniq skip-fields count is not an output operand
+        ],
+    )
+    def test_round59_benign_allowed(self, code):
+        _ok(code)

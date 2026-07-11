@@ -2430,3 +2430,34 @@ def test_sandboxed_future_import_own_line_benign_allowed():
     )
     assert "WROTE_OK" in out
     assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_module_docstring_preserved():
+    # A leading string literal is the module docstring only while it is the FIRST statement, so the
+    # guard prelude must be spliced AFTER it (not prepended) -- otherwise __doc__ becomes None.
+    out = _python_exec(
+        '"""studio doc marker"""\nprint(__doc__)',
+        None,
+        30,
+        "backstop-docstring",
+        disable_sandbox = False,
+    )
+    assert "studio doc marker" in out
+    assert "sandbox:" not in out
+
+
+@_POSIX_ONLY
+def test_sandboxed_docstring_same_line_write_denied(tmp_path):
+    # A `"""doc"""; open(<outside>, 'w')` puts a real write on the SAME line as the docstring; the
+    # guard prelude must still be installed BEFORE that write while keeping the docstring first.
+    target = tmp_path / "docstring_sameline_escape.txt"
+    out = _python_exec(
+        f'"""doc"""; open({str(target)!r}, "w").write("x"); print("DONE")',
+        None,
+        30,
+        "backstop-docstring-sameline",
+        disable_sandbox = False,
+    )
+    assert "sandbox:" in out or "PermissionError" in out
+    assert not target.exists()

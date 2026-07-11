@@ -2537,6 +2537,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             "ssed",
             "perl",
             "sort",
+            "shuf",
             "find",
             "dd",
             "tee",
@@ -2597,6 +2598,12 @@ def _find_blocked_commands(command: str) -> set[str]:
                 if al.startswith("--output") or (_short and "o" in al[1:]):
                     blocked.add("mutating:sort")
                     break
+            elif _base == "shuf":
+                # shuf -o FILE / --output=FILE writes its shuffled output to FILE in an unguarded
+                # child, escaping the workdir just like sort -o.
+                if al.startswith("--output") or (_short and "o" in al[1:]):
+                    blocked.add("mutating:shuf")
+                    break
             elif _base == "find":
                 # -delete removes; -fprint/-fprintf/-fprint0 and -fls write their listing to a
                 # named FILE (find . -fls /tmp/escape truncates/creates it in an unguarded child).
@@ -2617,6 +2624,31 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # $HISTFILE, which the caller can point outside the workdir. -c / -d / -p / -s
                 # do not touch a file, so only w / a / r / n are blocked.
                 blocked.add("mutating:history")
+                break
+
+    # uniq [OPTION]... [INPUT [OUTPUT]] writes to its SECOND positional operand (uniq in out /
+    # uniq /dev/null /tmp/p) in an unguarded child -- a native writer no redirect token exposes,
+    # like sort -o. Block when a second bare operand is present; a single INPUT (or none) reads
+    # to stdout and stays allowed. -f / -s / -w take a separated numeric value, so skip it.
+    for i in _cmd_word_idx:
+        if _token_basename(tokens[i]) != "uniq":
+            continue
+        _uniq_ops = 0
+        _skip_val = False
+        for k in range(i + 1, len(tokens)):
+            a = tokens[k]
+            if a in _SHELL_SEPARATORS or a in _SHELL_KEYWORDS_AS_SEP:
+                break
+            if _skip_val:
+                _skip_val = False
+                continue
+            if a.startswith("-") and a != "-":
+                if a in ("-f", "-s", "-w", "--skip-fields", "--skip-chars", "--check-chars"):
+                    _skip_val = True  # separated numeric value belongs to the flag, not an operand
+                continue
+            _uniq_ops += 1
+            if _uniq_ops == 2:  # the OUTPUT operand
+                blocked.add("mutating:uniq")
                 break
 
     return blocked
@@ -6813,32 +6845,48 @@ def _payload_outward_load_names(src, mode):
         return set()
     # eval: a single expression with no bindings -- every loaded name resolves outward.
     if isinstance(inner, ast.Expression):
-        return {
+        names = {
             _n.id
             for _n in ast.walk(inner)
             if isinstance(_n, ast.Name) and isinstance(_n.ctx, ast.Load)
         }
-    names, module_bound = _module_toplevel_free_loads(inner)
-    try:
-        import symtable as _symtable
-        _stack = list(_symtable.symtable(src, "<payload>", "exec").get_children())
-        while _stack:
-            _s = _stack.pop()
-            for _sym in _s.get_symbols():
-                # A nested-scope reference that is free / global resolves to the module (caller)
-                # scope UNLESS the payload binds it at module top level (then the payload controls
-                # it, and any payload-local sink is caught by the inner scan).
-                if (
-                    _sym.is_referenced()
-                    and (_sym.is_free() or _sym.is_global())
-                    and _sym.get_name() not in module_bound
-                ):
-                    names.add(_sym.get_name())
-            _stack.extend(_s.get_children())
-    except Exception:  # pragma: no cover - defensive: fail closed by flagging every load
-        for _n in ast.walk(inner):
-            if isinstance(_n, ast.Name) and isinstance(_n.ctx, ast.Load):
-                names.add(_n.id)
+    else:
+        names, module_bound = _module_toplevel_free_loads(inner)
+        try:
+            import symtable as _symtable
+            _stack = list(_symtable.symtable(src, "<payload>", "exec").get_children())
+            while _stack:
+                _s = _stack.pop()
+                for _sym in _s.get_symbols():
+                    # A nested-scope reference that is free / global resolves to the module (caller)
+                    # scope UNLESS the payload binds it at module top level (then the payload
+                    # controls it, and any payload-local sink is caught by the inner scan).
+                    if (
+                        _sym.is_referenced()
+                        and (_sym.is_free() or _sym.is_global())
+                        and _sym.get_name() not in module_bound
+                    ):
+                        names.add(_sym.get_name())
+                _stack.extend(_s.get_children())
+        except Exception:  # pragma: no cover - defensive: fail closed by flagging every load
+            for _n in ast.walk(inner):
+                if isinstance(_n, ast.Name) and isinstance(_n.ctx, ast.Load):
+                    names.add(_n.id)
+    # A constant-key namespace-dict lookup (globals()['f'] / locals()['f'] / vars()['f']) reads a
+    # name from the caller's namespace WITHOUT a Name node, so its key is an outward reference too:
+    # exec("globals()['f']('rm -rf /')") reaches the caller's f = os.system. Add the literal keys.
+    for _n in ast.walk(inner):
+        if (
+            isinstance(_n, ast.Subscript)
+            and isinstance(_n.value, ast.Call)
+            and isinstance(_n.value.func, ast.Name)
+            and _n.value.func.id in ("globals", "locals", "vars")
+            and not _n.value.args
+            and not _n.value.keywords
+        ):
+            _key = _n.slice
+            if isinstance(_key, ast.Constant) and isinstance(_key.value, str):
+                names.add(_key.value)
     return names
 
 
@@ -10003,6 +10051,8 @@ def _check_signal_escape_patterns(
         "requests.Session",
         "http.client.HTTPConnection",
         "http.client.HTTPSConnection",
+        "socket.gethostbyname",
+        "socket.gethostbyname_ex",
         "httpx.get",
         "httpx.post",
         "httpx.put",
@@ -10440,6 +10490,90 @@ def _check_signal_escape_patterns(
     # is extracted the same as a positional one.
     _NET_URL_KWARGS = ("url",)
     _NET_ADDR_KWARGS = ("address", "sock_addr")
+    # APIs whose FIRST positional (or host= keyword) argument is a bare HOST string rather than a
+    # URL: http.client.HTTP(S)Connection(host[, port]) and the socket name-resolution helpers. For
+    # these the literal arg is checked directly as a host (there is no scheme to parse out first).
+    _NET_HOST_APIS = frozenset(
+        {
+            "http.client.HTTPConnection",
+            "http.client.HTTPSConnection",
+            "socket.getaddrinfo",
+            "socket.gethostbyname",
+            "socket.gethostbyname_ex",
+        }
+    )
+    _NET_HOST_KWARGS = ("host",)
+    # Network-client constructors whose INSTANCES expose request methods. A call chained directly
+    # off such a constructor -- requests.Session().get(url), httpx.Client().get(url),
+    # urllib.request.build_opener().open(url) -- has a short fq (just the method name), so it is
+    # matched by its receiver constructor instead of the module-rooted fq prefix.
+    _NET_CLIENT_CTORS = frozenset(
+        {
+            "requests.Session",
+            "requests.sessions.Session",
+            "httpx.Client",
+            "httpx.AsyncClient",
+            "aiohttp.ClientSession",
+            "urllib.request.build_opener",
+            "urllib3.PoolManager",
+            "urllib3.HTTPConnectionPool",
+            "urllib3.HTTPSConnectionPool",
+            "urllib3.connectionpool.HTTPConnectionPool",
+            "urllib3.connectionpool.HTTPSConnectionPool",
+        }
+    )
+    # Instance request methods. `.request(method, url)` carries the URL at arg1 (see below); the
+    # others take it at arg0. `.get`/`.open` etc. on a non-client receiver (dict.get, file.open)
+    # are excluded because the receiver must be a client-ctor Call or a tracked client alias.
+    _NET_CLIENT_METHODS = frozenset(
+        {
+            "get",
+            "post",
+            "put",
+            "delete",
+            "head",
+            "patch",
+            "options",
+            "request",
+            "open",
+        }
+    )
+    _NET_CLIENT_URL_AT_ARG1 = frozenset({"request"})
+
+    def _net_call_fq(_call):
+        # The alias-resolved fully-qualified name of a Call's callee (import requests as r ->
+        # r.Session() folds to requests.Session), or "" if it is not an attribute/name call.
+        if not isinstance(_call, ast.Call):
+            return ""
+        _parts: list[str] = []
+        _cur = _call.func
+        while isinstance(_cur, ast.Attribute):
+            _parts.insert(0, _cur.attr)
+            _cur = _cur.value
+        if isinstance(_cur, ast.Name):
+            _parts.insert(0, _cur.id)
+        if _parts and _parts[0] in _net_aliases:
+            _parts = _net_aliases[_parts[0]].split(".") + _parts[1:]
+        return ".".join(_parts) if _parts else ""
+
+    # Variables bound by a same-name single assignment to a network-client constructor, so a
+    # method call on the stored instance (s = requests.Session(); s.get(url)) is matched like the
+    # chained form. A name also assigned to any non-client value is excluded, so an unrelated
+    # .get/.open on a reused name is not mis-flagged.
+    _net_client_aliases: set[str] = set()
+    _net_client_disqualified: set[str] = set()
+    for _asn in ast.walk(tree):
+        if (
+            isinstance(_asn, ast.Assign)
+            and len(_asn.targets) == 1
+            and isinstance(_asn.targets[0], ast.Name)
+        ):
+            _nm = _asn.targets[0].id
+            if _net_call_fq(_asn.value) in _NET_CLIENT_CTORS:
+                _net_client_aliases.add(_nm)
+            else:
+                _net_client_disqualified.add(_nm)
+    _net_client_aliases -= _net_client_disqualified
 
     def _net_fold_str(_n):
         # Fold a network target node to a concrete string: a module-level constant (via _const_env)
@@ -10478,6 +10612,83 @@ def _check_signal_escape_patterns(
             return None
         _m = re.match(r"^\w+://([^/?#]+)[/?#]", _pre)
         return _m.group(1) if _m else None
+
+    def _net_check_target(
+        _node,
+        _a0,
+        is_host_api = False,
+    ):
+        # Resolve a network call's target argument to a concrete host and record a block if it is
+        # a cloud-metadata host, an unresolved (opaque) target, or a host outside the allowlist.
+        # ``is_host_api`` marks callees whose literal arg is a bare host (HTTPConnection('h'),
+        # getaddrinfo('h', 80)) rather than a URL, so no scheme is parsed out.
+        _host = None
+        _url = None
+        _opaque = False
+        if _a0 is not None:
+            if isinstance(_a0, ast.Tuple) and _a0.elts:
+                _e0 = _a0.elts[0]
+                if isinstance(_e0, ast.Constant) and isinstance(_e0.value, str):
+                    _host = _e0.value
+                else:
+                    _folded = _net_fold_str(_e0)
+                    if _folded is not None:
+                        _host = _folded
+                    else:
+                        _opaque = True
+            elif isinstance(_a0, ast.Constant) and isinstance(_a0.value, str):
+                if is_host_api:
+                    _host = _a0.value
+                else:
+                    _url = _a0.value
+            else:
+                _folded = _net_fold_str(_a0)
+                if _folded is not None:
+                    if is_host_api:
+                        _host = _folded
+                    else:
+                        _url = _folded
+                else:
+                    _pref = _net_literal_host_prefix(_a0)
+                    if _pref is not None:
+                        _host = _pref
+                    else:
+                        _opaque = True
+        if _url and _host is None:
+            _m = re.match(r"^\w+://([^/?#]+)", _url)
+            if _m:
+                _host = _m.group(1)
+        if _opaque:
+            network_calls.append(
+                {
+                    "type": "untrusted_host_blocked",
+                    "line": getattr(_node, "lineno", -1),
+                    "description": (
+                        "Blocked: non-literal network target cannot be checked "
+                        "against the sandbox allowlist"
+                    ),
+                }
+            )
+        elif _host:
+            if _is_metadata_host(_host):
+                network_calls.append(
+                    {
+                        "type": "metadata_host_blocked",
+                        "line": getattr(_node, "lineno", -1),
+                        "description": "Blocked: cloud-metadata host",
+                    }
+                )
+            elif not _is_trusted_host(_host):
+                network_calls.append(
+                    {
+                        "type": "untrusted_host_blocked",
+                        "line": getattr(_node, "lineno", -1),
+                        "description": (
+                            "Blocked: host not in sandbox allowlist; "
+                            "use an allowed informational source"
+                        ),
+                    }
+                )
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def visit_Call(self, node):
@@ -10579,86 +10790,41 @@ def _check_signal_escape_patterns(
                         }
                     )
 
-                # 2) Extract the host (URL string or (host, port) tuple). The host may be
-                # a positional first arg OR a keyword (requests.get(url=...),
-                # urlopen(url=...), create_connection(address=(host, port))). A non-literal
-                # arg is first folded to a concrete string (u = 'http://x'; get(u)), then
-                # reduced to its leading literal host prefix (f'https://hf.co/{path}', a
-                # 'https://hf.co/' + p concat) when a / ? # terminates the host inside the
-                # literal so a dynamic tail cannot extend it. A target that stays fully
-                # opaque fails closed: there is no runtime network filter, so an unresolved
-                # host (urlopen(user_input)) cannot be proven to be on the allowlist.
-                host_arg = None
-                url_arg = None
-                host_opaque = False
+                # 2) Extract the host (URL string, bare host, or (host, port) tuple) and check
+                # it. The target may be a positional first arg OR a keyword (requests.get(url=...),
+                # urlopen(url=...), create_connection(address=(host, port)), HTTPConnection(
+                # host=...)). Bare-host callees (HTTPConnection, getaddrinfo) treat the literal
+                # arg as a host directly; everything else parses a scheme://host URL. A target
+                # that stays fully opaque fails closed. See _net_check_target.
                 a0 = node.args[0] if node.args else None
                 if a0 is None:
                     for _kw in node.keywords or []:
-                        if _kw.arg in _NET_URL_KWARGS:
+                        if _kw.arg in _NET_URL_KWARGS or _kw.arg in _NET_ADDR_KWARGS:
                             a0 = _kw.value
                             break
-                        if _kw.arg in _NET_ADDR_KWARGS:
+                        if fq in _NET_HOST_APIS and _kw.arg in _NET_HOST_KWARGS:
                             a0 = _kw.value
                             break
-                if a0 is not None:
-                    if isinstance(a0, ast.Tuple) and a0.elts:
-                        e0 = a0.elts[0]
-                        if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                            host_arg = e0.value
-                        else:
-                            _folded = _net_fold_str(e0)
-                            if _folded is not None:
-                                host_arg = _folded
-                            else:
-                                host_opaque = True
-                    elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        url_arg = a0.value
-                    else:
-                        _folded = _net_fold_str(a0)
-                        if _folded is not None:
-                            url_arg = _folded
-                        else:
-                            _pref = _net_literal_host_prefix(a0)
-                            if _pref is not None:
-                                host_arg = _pref
-                            else:
-                                host_opaque = True
-                if url_arg and host_arg is None:
-                    m = re.match(r"^\w+://([^/?#]+)", url_arg)
-                    if m:
-                        host_arg = m.group(1)
+                _net_check_target(node, a0, is_host_api = (fq in _NET_HOST_APIS))
 
-                if host_opaque:
-                    network_calls.append(
-                        {
-                            "type": "untrusted_host_blocked",
-                            "line": getattr(node, "lineno", -1),
-                            "description": (
-                                "Blocked: non-literal network target cannot be checked "
-                                "against the sandbox allowlist"
-                            ),
-                        }
-                    )
-                elif host_arg:
-                    if _is_metadata_host(host_arg):
-                        network_calls.append(
-                            {
-                                "type": "metadata_host_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": "Blocked: cloud-metadata host",
-                            }
-                        )
-                    elif not _is_trusted_host(host_arg):
-                        network_calls.append(
-                            {
-                                "type": "untrusted_host_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": (
-                                    "Blocked: host not in sandbox allowlist; "
-                                    "use an allowed informational source"
-                                ),
-                            }
-                        )
+            # Client-instance request call: requests.Session().get(url), httpx.Client().get(url),
+            # build_opener().open(url), or s.get(url) where s was bound to a client constructor.
+            # The chained fq is just the method name, so match by the receiver being a client-ctor
+            # Call or a tracked client alias. .get/.open on a plain dict/file receiver is excluded.
+            if isinstance(node.func, ast.Attribute) and node.func.attr in _NET_CLIENT_METHODS:
+                _recv = node.func.value
+                _is_client = (
+                    isinstance(_recv, ast.Call) and _net_call_fq(_recv) in _NET_CLIENT_CTORS
+                ) or (isinstance(_recv, ast.Name) and _recv.id in _net_client_aliases)
+                if _is_client:
+                    _idx = 1 if node.func.attr in _NET_CLIENT_URL_AT_ARG1 else 0
+                    _ca0 = node.args[_idx] if len(node.args) > _idx else None
+                    if _ca0 is None:
+                        for _kw in node.keywords or []:
+                            if _kw.arg in _NET_URL_KWARGS:
+                                _ca0 = _kw.value
+                                break
+                    _net_check_target(node, _ca0, is_host_api = False)
 
             is_open_call = (
                 (isinstance(node.func, ast.Name) and node.func.id == "open")
@@ -12811,7 +12977,9 @@ def _inject_sandbox_guard(code: str, prelude: str) -> str:
 
     ``from __future__`` imports must be the first statement of a module (only a
     docstring and comments may precede them), so blindly prepending the guard line
-    turns any user program that opens with a future import into a SyntaxError. Parse
+    turns any user program that opens with a future import into a SyntaxError. A
+    leading string literal is likewise the module docstring only while it is the FIRST
+    statement, so prepending the guard ahead of it would make ``__doc__`` None. Parse
     the code, keep a leading module docstring and any ``from __future__`` imports on
     top, and insert the (inert compile-time) guard immediately after them -- it still
     runs before the first real user statement, so the sandbox is established before
@@ -12833,16 +13001,16 @@ def _inject_sandbox_guard(code: str, prelude: str) -> str:
     ):
         idx = 1
         split = body[0].end_lineno or 0
-    has_future = False
     while (
         idx < len(body)
         and isinstance(body[idx], ast.ImportFrom)
         and body[idx].module == "__future__"
     ):
-        has_future = True
         split = body[idx].end_lineno or split
         idx += 1
-    if not has_future or split <= 0:
+    # Splice after the head only when there is something that MUST stay first (a leading
+    # docstring and/or future imports); otherwise a plain prepend is correct and cheaper.
+    if idx == 0 or split <= 0:
         return prelude + code
     # Split at the last head statement's exact END COLUMN, not the whole physical line: a
     # `from __future__ import annotations; open('/tmp/x','w')` puts a real statement on the SAME
