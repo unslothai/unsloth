@@ -2101,7 +2101,8 @@ def test_step_cache_all_or_none_rolls_back_second_expert_failure(monkeypatch):
     monkeypatch.setattr(
         video,
         "_disengage_step_cache",
-        lambda transformer, *, reason, logger = None: disengaged.append((transformer, reason)) or True,
+        lambda transformer, *, reason, logger = None: disengaged.append((transformer, reason))
+        or True,
     )
     calls: list = []
 
@@ -2128,7 +2129,8 @@ def test_step_cache_all_or_none_rolls_back_first_expert_failure(monkeypatch):
         lambda transformer, *, reason, logger = None: disengaged.append(transformer) or True,
     )
     mode, reason = video._step_cache_all_or_none(
-        pipe, fam,
+        pipe,
+        fam,
         lambda view, expert_name: "magcache" if expert_name == "transformer_2" else None,
         logger = None,
     )

@@ -368,7 +368,6 @@ def quantize_text_encoders(
             # offload's Module.to() hard-crashes on). Fail the load for that; a clean
             # miss (nothing swapped, e.g. layerwise fp8) stays best-effort dense.
             from .diffusion_transformer_quant import raise_if_partially_quantized
-
             raise_if_partially_quantized(encoder, what = f"text_encoder_quant {mode}:{attr}", exc = exc)
             _warn(logger, f"{mode}:{attr}", exc)
     return mode if cast else None

@@ -779,7 +779,11 @@ def test_quantize_transformer_partial_failure_raises(monkeypatch):
     monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
     tqz = types.ModuleType("torchao.quantization")
 
-    def _convert_one_then_boom(module, config, filter_fn = None):
+    def _convert_one_then_boom(
+        module,
+        config,
+        filter_fn = None,
+    ):
         module._swapped = True  # the in-place swap of the first submodule
         raise RuntimeError("OOM mid-conversion")
 
@@ -798,7 +802,11 @@ def test_quantize_transformer_clean_failure_still_falls_back_dense(monkeypatch):
     monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
     tqz = types.ModuleType("torchao.quantization")
 
-    def _boom(module, config, filter_fn = None):
+    def _boom(
+        module,
+        config,
+        filter_fn = None,
+    ):
         raise RuntimeError("failed before any swap")
 
     tqz.quantize_ = _boom

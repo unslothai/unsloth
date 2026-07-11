@@ -473,11 +473,7 @@ def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
 
 
 def _step_cache_all_or_none(
-    pipe: Any,
-    fam: VideoFamily,
-    engage_fn: Any,
-    *,
-    logger: Any,
+    pipe: Any, fam: VideoFamily, engage_fn: Any, *, logger: Any
 ) -> tuple[Optional[str], Optional[str]]:
     """Run ``engage_fn(view, expert_name)`` (apply_step_cache or the auto toggle) over
     every expert and enforce ALL-OR-NONE, mirroring the transactional quant loop: on a
@@ -1514,6 +1510,7 @@ class VideoBackend:
             cache_request = (
                 auto_cache_mode(fam.name) if default_cache_steps >= FBCACHE_MIN_STEPS else None
             )
+
         # Each expert view passes the pipe attribute it exposes as ``transformer`` (the
         # expert-view iteration contract): a dual-expert MoE's second view passes
         # expert="transformer_2" so MagCache resolves THAT expert's calibrated curve --

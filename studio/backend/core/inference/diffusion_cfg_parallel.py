@@ -459,7 +459,6 @@ def _device_identity(idx: int) -> Optional[tuple]:
     props cannot be queried (a stubbed/old torch): identity is then treated as
     unknown and the check stays best-effort rather than blocking the engage."""
     import torch
-
     try:
         return (
             str(torch.cuda.get_device_name(idx)),
