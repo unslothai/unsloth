@@ -24,7 +24,8 @@ Lifecycle (driven by the caller, around ``_compile_repeated_blocks``):
                           exists. Must run BEFORE the first compiled forward.
   2. (compile + one warmup forward happen as usual; on a hit they reuse the cache.)
   3. ``save(...)``     -> ``save_cache_artifacts`` to the bundle + manifest, AFTER the
-                          warmup forward, when in distributor/save mode.
+                          warmup forward. On by default (first-run warm; a bundle hit
+                          skips the rewrite), disable with the SAVE env knob.
   4. ``restore(...)``  -> put ``TORCHINDUCTOR_CACHE_DIR`` back on unload.
 
 Everything is env-gated and best-effort; torch is imported lazily.
@@ -42,11 +43,18 @@ from typing import Any, Optional
 
 # ----------------------------------------------------------------------------- env knobs
 # UNSLOTH_DIFFUSION_COMPILE_CACHE: auto (default) | 0 | 1
-#   auto -> load a matching bundle if present (no automatic save).
-#   1    -> load AND save (distributor / first-run warm).
+#   auto -> load a matching bundle if present AND save one after the first compiled
+#           generation (first-run warm: every later session/restart skips the inductor
+#           codegen + Triton compile + autotune part of the warmup). Measured on
+#           Qwen-Image (B200, deferred 3rd-generation engage, FBCache armed): the
+#           compile hitch drops 29.1 -> 22.2 s with bit-identical output; the bundle is
+#           7.9 MB and the one-time save costs ~0.5 s. The residual warmup is dynamo
+#           tracing + guards, which the Mega-cache deliberately does not capture.
+#   1    -> same as auto, and also re-saves on a bundle hit (distributor refresh).
 #   0    -> disabled (plain local compile, no cache dir override).
 # UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR: root dir for bundles (default under the workspace).
-# UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE: 1 -> force-enable save even in "auto".
+# UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE: 0 -> disable the auto save (load-only);
+#   1 -> keep saving (explicit; same as the auto default).
 _ENV_MODE = "UNSLOTH_DIFFUSION_COMPILE_CACHE"
 _ENV_DIR = "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR"
 _ENV_SAVE = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE"
@@ -73,8 +81,10 @@ def _save_enabled(mode: str) -> bool:
         return False
     if mode == "on":
         return True
-    # auto: save only if explicitly opted in.
-    return (os.environ.get(_ENV_SAVE) or "").strip().lower() in ("1", "on", "true", "yes")
+    # auto: save by default (first-run warm -- without a saved bundle no user ever gets
+    # a warm restart, since only distributors ran with mode "on"). The SAVE env stays as
+    # an explicit override: "0" turns the auto save off (load-only), "1" keeps it on.
+    return (os.environ.get(_ENV_SAVE) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
 def cache_root() -> Path:
@@ -165,7 +175,14 @@ def cache_key(env_fp: dict[str, Any], model_fp: dict[str, Any]) -> str:
 # ----------------------------------------------------------------------------- lifecycle
 @dataclasses.dataclass
 class CacheContext:
-    """Carries the per-load cache state between ``begin`` and ``save``/``restore``."""
+    """Carries the per-load cache state between ``begin`` and ``save``/``restore``.
+
+    ``shapes`` tracks the (width, height, batch) tuples whose STATIC-compile artifacts
+    the bundle covers (persisted in the manifest). A dynamic-shape compile never needs
+    it; a static compile (the max tier's regional compile, the U-Net whole-module
+    compile) produces NEW artifacts per shape, so the caller registers each generation's
+    shape and clears ``saved`` when it sees a new one -- the next ``save`` then rewrites
+    the bundle with the enriched artifact set."""
 
     key: str
     dir: Path
@@ -178,6 +195,7 @@ class CacheContext:
     saved: bool = False
     prev_inductor_dir: Optional[str] = None
     prev_inductor_dir_set: bool = False
+    shapes: set = dataclasses.field(default_factory = set)
 
 
 def begin(
@@ -245,9 +263,34 @@ def begin(
     # Try an exact-match load. A miss/mismatch is normal and non-fatal.
     if ctx.bundle.exists() and ctx.manifest_path.exists():
         ctx.hit = _try_load(ctx, logger)
+        if ctx.hit and mode != "on":
+            # The artifacts on disk are exactly the ones just loaded, so there is
+            # nothing to save (the write costs ~0.5 s on the first generation for no
+            # change). A NEW static-compile shape later clears ``saved`` via
+            # register_shape; explicit mode "on" (distributor refresh) keeps saving.
+            ctx.saved = True
     else:
         _info(logger, f"compile-cache: no bundle for key {key} (will compile locally)")
     return ctx
+
+
+def register_shape(ctx: Optional[CacheContext], shape: Any, *, static: bool) -> None:
+    """Record a generation's (width, height, batch) against the bundle coverage.
+
+    Only meaningful for a STATIC compile (``static=True``): each new shape triggers its
+    own compile, so the bundle written earlier this session (or loaded from disk) lacks
+    those artifacts -- clear ``saved`` so the caller's next ``save`` rewrites the bundle
+    with the enriched artifact set. Dynamic compiles reuse one artifact across shapes,
+    so they never dirty the context. Never raises."""
+    if ctx is None or not static:
+        return
+    try:
+        key = tuple(shape)
+        if key not in ctx.shapes:
+            ctx.shapes.add(key)
+            ctx.saved = False
+    except Exception:  # noqa: BLE001 — bookkeeping only
+        pass
 
 
 def _try_load(ctx: CacheContext, logger: Any) -> bool:
@@ -281,6 +324,12 @@ def _try_load(ctx: CacheContext, logger: Any) -> bool:
         if info is None:
             _warn(logger, "compile-cache: load_cache_artifacts returned None (no hit)")
             return False
+        # The static-compile shapes this bundle covers (see register_shape); a
+        # generation at a shape already here does not dirty the context.
+        try:
+            ctx.shapes = {tuple(s) for s in manifest.get("shapes", [])}
+        except Exception:  # noqa: BLE001 — coverage bookkeeping only
+            ctx.shapes = set()
         _info(logger, f"compile-cache: loaded bundle for key {ctx.key}")
         return True
     except Exception as exc:  # noqa: BLE001
@@ -291,7 +340,11 @@ def _try_load(ctx: CacheContext, logger: Any) -> bool:
 def save(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
     """Persist the compiled artifacts to the bundle + manifest, AFTER a warmup forward.
 
-    No-op unless save is enabled (mode ``on`` or ``UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE``).
+    No-op unless save is enabled (the ``auto``/``on`` default; disable with
+    ``UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE=0``) and the context is dirty: a load that
+    HIT a bundle starts clean (``begin`` marks it saved -- rewriting the just-loaded
+    artifacts costs ~0.5 s for no change), and a NEW static-compile shape re-dirties it
+    via ``register_shape`` so the bundle grows to cover every shape the session used.
     Returns True if a bundle was written.
     """
     if ctx is None or not _save_enabled(ctx.mode) or ctx.saved:
@@ -318,6 +371,9 @@ def save(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
             "sha256": hashlib.sha256(data).hexdigest(),
             "env": ctx.env_fp,
             "model": ctx.model_fp,
+            # Static-compile shape coverage (register_shape); informational for a
+            # dynamic compile (empty or the shapes generated, either way unused).
+            "shapes": sorted(list(s) for s in ctx.shapes),
         }
         ctx.manifest_path.write_text(json.dumps(manifest, indent = 2, sort_keys = True, default = str))
         ctx.saved = True

@@ -68,6 +68,8 @@ def _stub_torch(monkeypatch):
         cuda = types.SimpleNamespace(matmul = types.SimpleNamespace(allow_tf32 = False)),
         cudnn = types.SimpleNamespace(allow_tf32 = False, benchmark = False),
     )
+    # The VAE-decode compile wraps a bound method; identity wrap is enough for tests.
+    torch.compile = lambda fn, **kwargs: fn
     monkeypatch.setitem(sys.modules, "torch", torch)
     return torch
 
@@ -225,6 +227,7 @@ def test_speed_off_applies_nothing(monkeypatch):
         "fused_qkv": False,
         "compiled": False,
         "compiled_dequant": False,
+        "compiled_vae_decode": False,
         "fp16_accum": False,
     }
     assert pipe.vae.mem_format is None and pipe.compiled is False
@@ -357,6 +360,125 @@ def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):
     # max opts into autotuned kernels (static shapes); CUDA-graph modes are avoided.
     assert pipe.compile_kwargs["mode"] == "max-autotune-no-cudagraphs"
     assert pipe.compile_kwargs["dynamic"] is False
+
+
+# ── U-Net whole-module compile fallback (SDXL) ─────────────────────────────────
+
+
+class UNet2DConditionModel:
+    """Fake with the diffusers class NAME the fallback keys on: no
+    compile_repeated_blocks (U-Nets ship no _repeated_blocks), but Module.compile."""
+
+    def __init__(self):
+        self.compile_kwargs = None
+
+    def compile(self, **kwargs):
+        self.compile_kwargs = kwargs
+
+
+class _SomeOtherUNet(UNet2DConditionModel):
+    pass
+
+
+class _UNetPipe:
+    def __init__(self, unet = None):
+        self.mem_format = None
+        self.fused = False
+        self.vae = types.SimpleNamespace(to = self._vae_to, decode = lambda z: z)
+        self.unet = UNet2DConditionModel() if unet is None else unet
+
+    def _vae_to(self, *, memory_format):
+        self.mem_format = memory_format
+
+    def fuse_qkv_projections(self):
+        self.fused = True
+
+
+def test_unet_whole_compile_default_tier(monkeypatch):
+    # SDXL's UNet has no _repeated_blocks, so `default` falls back to a whole-module
+    # STATIC compile (measured 1.61x at LPIPS 0.034 on SDXL): fullgraph on, dynamic OFF.
+    # The U-Net recipe also fuses QKV (36.3 vs 39.3 ms/step) and compiles the VAE decode
+    # (4.98 -> 4.25 s over 4 images) on the same tier.
+    _stub_torch(monkeypatch)
+    pipe = _UNetPipe()
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True
+    assert pipe.unet.compile_kwargs == {"fullgraph": True, "dynamic": False}
+    assert applied["fused_qkv"] is True and pipe.fused is True
+    assert applied["compiled_vae_decode"] is True
+
+
+def test_dit_default_tier_keeps_fuse_and_vae_decode_off(monkeypatch):
+    # The DiT default tier is unchanged: fused QKV measured exactly neutral there
+    # (Qwen-Image 6.53 vs 6.52 s) so it stays max-only, and the VAE decode is a few
+    # percent of a DiT generation so it stays eager.
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True, with_fuse = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True
+    assert applied["fused_qkv"] is False and pipe.fused is False
+    assert applied["compiled_vae_decode"] is False
+
+
+def test_unet_whole_compile_offload_drops_fullgraph(monkeypatch):
+    # Offload hooks graph-break exactly as on the regional path.
+    _stub_torch(monkeypatch)
+    pipe = _UNetPipe()
+    applied = apply_speed_optims(
+        pipe,
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+        offload_active = True,
+    )
+    assert applied["compiled"] is True
+    assert pipe.unet.compile_kwargs == {"fullgraph": False, "dynamic": False}
+
+
+def test_unet_whole_compile_max_tier_mode(monkeypatch):
+    _stub_torch(monkeypatch)
+    pipe = _UNetPipe()
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled"] is True
+    assert pipe.unet.compile_kwargs == {
+        "fullgraph": True,
+        "dynamic": False,
+        "mode": "max-autotune-no-cudagraphs",
+    }
+
+
+def test_unet_whole_compile_gated_by_class_name(monkeypatch):
+    # An unlisted U-Net class (unmeasured architecture) stays eager rather than paying
+    # an unvalidated whole-module compile.
+    _stub_torch(monkeypatch)
+    pipe = _UNetPipe(unet = _SomeOtherUNet())
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is False
+    assert pipe.unet.compile_kwargs is None
+
+
+def test_unet_whole_compile_failure_degrades_to_eager(monkeypatch):
+    _stub_torch(monkeypatch)
+
+    class _Boom(UNet2DConditionModel):
+        def compile(self, **kwargs):
+            raise RuntimeError("no dynamo on this build")
+
+    _Boom.__name__ = "UNet2DConditionModel"
+    pipe = _UNetPipe(unet = _Boom())
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is False  # best-effort: load proceeds eager
 
 
 def test_speed_max_tf32_only_on_cuda(monkeypatch):

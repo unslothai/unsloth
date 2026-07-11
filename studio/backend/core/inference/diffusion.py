@@ -67,6 +67,7 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     compile_eligible,
+    compiled_shapes_are_static,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
@@ -1670,7 +1671,10 @@ class DiffusionBackend:
                     ):
                         compile_ctx = compile_cache.begin(
                             family = fam.name,
-                            transformer = getattr(pipe, "transformer", None),
+                            # U-Net families (SDXL) carry the denoiser as pipe.unet; the
+                            # fingerprint needs the module actually compiled.
+                            transformer = getattr(pipe, "transformer", None)
+                            or getattr(pipe, "unet", None),
                             dtype = getattr(target, "dtype", None),
                             quant = transformer_quant_engaged,
                             attention_backend = attention_engaged,
@@ -1757,7 +1761,14 @@ class DiffusionBackend:
                             "transformer_quant": (
                                 transformer_quant,
                                 transformer_quant_engaged or "off",
-                                "not engaged (GGUF transformer loaded)"
+                                # The None reason must match the load kind: only a GGUF
+                                # load has a GGUF transformer; a dense pipeline /
+                                # single-file load simply keeps its dense weights.
+                                (
+                                    "not engaged (GGUF transformer loaded)"
+                                    if kind == "gguf"
+                                    else "dense transformer kept unquantized"
+                                )
                                 if transformer_quant_engaged is None
                                 else "re-planned resident for the quantised artifact"
                                 if quant_plan is not None
@@ -2384,7 +2395,9 @@ class DiffusionBackend:
         if compile_eligible(target, is_gguf = gguf_transformer, family = state.family):
             compile_ctx = compile_cache.begin(
                 family = state.family.name,
-                transformer = getattr(state.pipe, "transformer", None),
+                # U-Net families (SDXL) carry the denoiser as pipe.unet.
+                transformer = getattr(state.pipe, "transformer", None)
+                or getattr(state.pipe, "unet", None),
                 dtype = getattr(target, "dtype", None),
                 quant = state.transformer_quant,
                 attention_backend = attention_engaged,
@@ -2871,9 +2884,20 @@ class DiffusionBackend:
                 if cancel.is_set():
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 # The first compiled generation just paid the compile cost; persist the
-                # warm torch.compile cache bundle when saving is enabled (distributor /
-                # first-run warm). Idempotent + best-effort -- never fails a generation.
+                # warm torch.compile cache bundle when saving is enabled (the auto
+                # default / distributor mode). A STATIC compile (max tier, U-Net
+                # whole-module) produces new artifacts per (width, height, batch), so
+                # register this generation's shape first: a shape the bundle does not
+                # cover re-dirties the context and the save below rewrites the bundle
+                # with the enriched set. Idempotent + best-effort -- never fails a
+                # generation.
                 try:
+                    compile_cache.register_shape(
+                        state.compile_cache_ctx,
+                        (int(width), int(height), int(batch_size)),
+                        static = "compiled" in (state.speed_optims or ())
+                        and compiled_shapes_are_static(state.pipe, state.speed_mode),
+                    )
                     compile_cache.save(state.compile_cache_ctx, logger = logger)
                 except Exception:  # noqa: BLE001 — cache persistence is best-effort
                     pass

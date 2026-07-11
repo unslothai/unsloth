@@ -21,7 +21,9 @@ near-lossless speedups in the order the diffusers guides recommend
             one-time compile (~7.5-10.4s) and ZERO extra VRAM, resolution-invariant
             (the dequant inputs are fixed-shape weights). For a dense (non-GGUF) model
             there is no dequant, so ``default`` falls back to regional torch.compile of
-            the denoiser's repeated block (the only compile lever a dense model has).
+            the denoiser's repeated block; a U-Net denoiser (SDXL) has no repeated-block
+            list, so it gets a whole-module STATIC compile instead (1.61x at LPIPS 0.034
+            on SDXL, see ``_UNET_WHOLE_COMPILE``).
   max     - the FULL torch.compile: regional max-autotune compile of the denoiser's
             repeated block (which fuses the GGUF dequant AND the matmul/norm/elementwise
             in one graph -- ~3.2x on the GGUF Z-Image transformer, PSNR ~36 dB vs eager,
@@ -209,6 +211,7 @@ def apply_speed_optims(
         "fused_qkv": False,
         "compiled": False,
         "compiled_dequant": False,
+        "compiled_vae_decode": False,
     }
     mode = normalize_speed_mode(speed_mode)
     # TF32 and cudnn.benchmark are the process-global flags this may flip (TF32 on max,
@@ -258,6 +261,12 @@ def apply_speed_optims(
         if is_gguf and on_cuda and family_allows_compile:
             applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
         elif compile_eligible(target, is_gguf = is_gguf, family = family):
+            # A U-Net denoiser (SDXL) fuses QKV BEFORE its whole-module compile:
+            # measured 36.3 vs 39.3 ms/step on SDXL under the compile (LPIPS unchanged
+            # at 0.033). DiTs measured exactly neutral under the regional compile
+            # (Qwen-Image 6.53 vs 6.52 s), so they keep the fuse on the max tier only.
+            if _denoiser_unet(pipe) is not None:
+                applied["fused_qkv"] = _fuse_qkv(pipe, logger)
             applied["compiled"] = _compile_repeated_blocks(
                 pipe,
                 logger,
@@ -273,6 +282,13 @@ def apply_speed_optims(
             cache_active = cache_active,
             offload_active = offload_active,
         )
+
+    # A compiled U-Net family also compiles the VAE decode: at SDXL's fast step rate the
+    # decode is a real share of each image (measured 4.98 -> 4.25 s over 4 images, LPIPS
+    # unchanged). DiT families skip it (the decode is a few % of their generation).
+    # dynamic=True keeps it resolution-robust; fullgraph=False tolerates offload hooks.
+    if applied["compiled"] and _denoiser_unet(pipe) is not None:
+        applied["compiled_vae_decode"] = _compile_vae_decode(pipe, logger)
 
     if mode == SPEED_MAX:
         # Near-lossless: TF32 matmul (CUDA only) trades a few mantissa bits for speed.
@@ -294,6 +310,40 @@ def _vae_channels_last(pipe: Any, logger: Any) -> bool:
     except Exception as exc:  # noqa: BLE001 — optimisation only
         _warn(logger, "channels_last", exc)
         return False
+
+
+# U-Net denoisers ship no ``_repeated_blocks`` (their block mix is heterogeneous), so the
+# regional compile below cannot reach them; these classes instead get a WHOLE-module
+# ``torch.compile`` with STATIC shapes, the one flavor measured worth its warmup. On SDXL
+# (B200, 30 steps / 7.0 / 1024px, 4 prompts; scripts/image_speedmem_bench.py levers +
+# probe): static whole-UNet compile runs 26.9 ms/step vs the 45.9 ms/step bit-exact
+# reference -- **1.61x end to end (6.16 -> 3.83 s) at LPIPS 0.034** -- while dynamic=True
+# compiles 5x slower (366 s vs 73 s cold) for less win (39.3 ms/step), and a regional
+# BasicTransformerBlock compile only reaches 45.0 ms/step (the ResNet convs stay eager).
+# Static shapes mean a recompile per new (height, width, batch); the Mega-cache bundle
+# (diffusion_compile_cache) carries each compiled shape across restarts.
+_UNET_WHOLE_COMPILE: frozenset[str] = frozenset({"UNet2DConditionModel"})
+
+
+def _denoiser_unet(pipe: Any) -> Any:
+    """The pipe's U-Net denoiser when its class is on the whole-compile list, else None."""
+    unet = getattr(pipe, "unet", None)
+    if unet is not None and type(unet).__name__ in _UNET_WHOLE_COMPILE:
+        return unet
+    return None
+
+
+def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
+    """Whether this load's compiled denoiser artifacts are per-(width, height, batch).
+
+    The ``max`` tier compiles the regional blocks with dynamic=False, and the U-Net
+    whole-module compile is always static; the ``default`` DiT tier compiles
+    dynamic=True (one artifact across shapes). The compile-cache layer keys on this to
+    re-save its bundle when a session generates at a shape it has not covered yet."""
+    mode = normalize_speed_mode(speed_mode)
+    if mode == SPEED_MAX:
+        return True
+    return mode == SPEED_DEFAULT and _denoiser_unet(pipe) is not None
 
 
 def _denoiser_dits(pipe: Any) -> list:
@@ -321,7 +371,8 @@ def _compile_repeated_blocks(
     dits = [
         t for t in _denoiser_dits(pipe) if callable(getattr(t, "compile_repeated_blocks", None))
     ]
-    if not dits:
+    unet = _denoiser_unet(pipe) if not dits else None
+    if not dits and unet is None:
         return False
     # default: mode="default" + dynamic=True -- fast cold start, robust to resolution
     # changes (no recompile). max: mode="max-autotune-no-cudagraphs" + dynamic=False --
@@ -374,6 +425,23 @@ def _compile_repeated_blocks(
     except Exception as exc:  # noqa: BLE001 — optimisation only
         _warn(logger, "compile_repeated_blocks", exc)
         return False
+    if unet is not None:
+        # Whole-module static compile for the U-Net classes above. fullgraph mirrors the
+        # regional decision (an active cache or offload hook graph-breaks, though U-Net
+        # pipelines have no CacheMixin so in practice only offload lowers it); dynamic is
+        # ALWAYS False -- the measured recipe -- so each new (height, width, batch) pays
+        # its own compile, carried across restarts by the Mega-cache bundle.
+        # ``Module.compile`` keeps the module identity (in-place ``_compiled_call_impl``),
+        # so unload/status/LoRA gating see the same object the eager path had.
+        unet_kwargs: dict[str, Any] = {"fullgraph": kwargs["fullgraph"], "dynamic": False}
+        if max_autotune:
+            unet_kwargs["mode"] = "max-autotune-no-cudagraphs"
+        try:
+            unet.compile(**unet_kwargs)
+            return True
+        except Exception as exc:  # noqa: BLE001 — optimisation only
+            _warn(logger, "unet whole-module compile", exc)
+            return False
     # Compile every denoiser DiT (a dual-DiT family such as Ideogram runs both each step); a
     # per-DiT failure degrades that one to eager without dropping the others.
     engaged = False
@@ -398,6 +466,23 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 — optimisation only
             _warn(logger, "cache-hook inner compile", exc)
     return engaged
+
+
+def _compile_vae_decode(pipe: Any, logger: Any) -> bool:
+    """torch.compile the VAE ``decode`` bound method in place (U-Net families only; the
+    caller gates). Instance-level assignment: the pipe owns it, unload drops it with the
+    pipe, and the module object itself is untouched."""
+    vae = getattr(pipe, "vae", None)
+    decode = getattr(vae, "decode", None) if vae is not None else None
+    if not callable(decode):
+        return False
+    try:
+        import torch
+        vae.decode = torch.compile(decode, fullgraph = False, dynamic = True)
+        return True
+    except Exception as exc:  # noqa: BLE001 — optimisation only
+        _warn(logger, "vae decode compile", exc)
+        return False
 
 
 def _enable_cudnn_benchmark(logger: Any) -> bool:
