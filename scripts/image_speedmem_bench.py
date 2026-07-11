@@ -12,6 +12,13 @@ fixed prompt set at a fixed seed, and reports total latency, median per-step ms,
 resident GB, and mean LPIPS(AlexNet) vs the bit-exact reference config (speed off,
 native attention, uncached, dense) rendered at the same seed/settings.
 
+Every generation starts from a clean step cache, exactly like the production backend:
+diffusers keys FBCache residuals on the long-lived transformer and never resets them, so
+without the per-generation reset the measured prompts would compare their first-block
+residual against the PREVIOUS prompt's final one -- a state production never runs.
+FBCache rows produced before this reset existed may overstate both the speedup and the
+quality cost.
+
 Lever isolation knobs (for before/after measurement of shipped fixes):
   --no-epc         force torch._inductor.config.emulate_precision_casts back off after
                    the speed layer enables it (the pre-fix compile numerics).
@@ -242,6 +249,24 @@ def _apply_levers(
     return engaged
 
 
+def _reset_step_cache(pipe) -> None:
+    """Clear stale FBCache residuals before a generation, mirroring the production
+    backend's ``_reset_step_cache`` (diffusion.py): diffusers keys the residuals on the
+    long-lived denoiser and never resets them itself, and the transformer-level entry
+    point in diffusers 0.39 is ``_reset_stateful_cache`` (``reset_stateful_hooks`` lives
+    only on the HookRegistry, so the getattr fallback is a silent no-op). Best-effort:
+    an uncached denoiser (or SDXL's unet, which has no FBCache path) is a no-op."""
+    denoiser = getattr(pipe, "transformer", None) or getattr(pipe, "unet", None)
+    reset = getattr(denoiser, "_reset_stateful_cache", None) or getattr(
+        denoiser, "reset_stateful_hooks", None
+    )
+    if callable(reset):
+        try:
+            reset()
+        except Exception:
+            pass
+
+
 def _generate(
     pipe,
     fam_obj,
@@ -288,6 +313,9 @@ def _generate(
         if "callback_on_step_end" in call_params:
             kwargs["callback_on_step_end"] = _cb
         last.clear()
+        # Production resets the step cache before every generation; without this the
+        # first step compares against the PREVIOUS prompt's final residual.
+        _reset_step_cache(pipe)
         _sync()
         t0 = time.perf_counter()
         with torch.inference_mode():
