@@ -63,13 +63,9 @@ def test_customization_invalid_values_rejected():
             {"appearance": {"customization": {"colors": {"light": {"accent": "red"}}}}}
         )
     with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate(
-            {"appearance": {"customization": {"uiFontSize": 99}}}
-        )
+        PersonalizationPayload.model_validate({"appearance": {"customization": {"uiFontSize": 99}}})
     with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate(
-            {"appearance": {"customization": {"contrast": 500}}}
-        )
+        PersonalizationPayload.model_validate({"appearance": {"customization": {"contrast": 500}}})
     with pytest.raises(ValidationError):
         PersonalizationPayload.model_validate(
             {"appearance": {"customization": {"reduceMotion": "sometimes"}}}
@@ -81,9 +77,7 @@ def test_customization_imported_fonts_validated():
         {
             "appearance": {
                 "customization": {
-                    "importedFonts": [
-                        {"name": "My Font", "dataUrl": "data:font/woff2;base64,AAAA"}
-                    ]
+                    "importedFonts": [{"name": "My Font", "dataUrl": "data:font/woff2;base64,AAAA"}]
                 }
             }
         }
