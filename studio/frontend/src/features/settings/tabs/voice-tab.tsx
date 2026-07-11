@@ -426,24 +426,6 @@ export function VoiceTab() {
         </SettingsRow>
 
         <SettingsRow
-          label="Speech recognition (STT) engine"
-          description="Browser speech service. Local models coming soon"
-        >
-          <Select value="browser" onValueChange={() => undefined}>
-            <SelectTrigger
-              aria-label="Speech recognition engine"
-              className="w-56"
-              size="sm"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="browser">Browser speech engine</SelectItem>
-            </SelectContent>
-          </Select>
-        </SettingsRow>
-
-        <SettingsRow
           label="Dictation language"
           description="Language to recognize"
         >
@@ -624,7 +606,7 @@ export function VoiceTab() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="system">System voices</SelectItem>
-                  <SelectItem value="studio">Unsloth TTS model</SelectItem>
+                  <SelectItem value="studio">Load TTS model</SelectItem>
                 </SelectContent>
               </Select>
             </SettingsRow>
