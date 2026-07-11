@@ -50,6 +50,15 @@ def _clear_pending():
         ("pip install requests", True),
         ("echo `whoami`", True),  # substitution fails closed
         ("python -c 'print(1)'", True),  # arbitrary code
+        ("find . -exec rm {} ;", True),  # find can execute
+        ("find . -delete", True),  # find can delete
+        ("sort -o out.txt in.txt", True),  # -o writes a file
+        ("sort --output=out in", True),
+        ("sort in.txt", False),  # plain sort stays read only
+        ("tree -o out.txt", True),  # -o writes a file
+        ("xxd -r dump.hex out.bin", True),  # -r can write
+        ("awk '{print}' file", True),  # awk can system()/write
+        ("grep -o x file", False),  # grep -o is stdout only
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -67,6 +76,10 @@ def test_terminal_classifier(command, unsafe):
         ("import os; os.remove('x')", True),
         ("import requests", True),  # network module
         ("exec('print(1)')", True),
+        ("from os import remove\nremove('x')", True),  # from-import binding
+        ("from os import remove as rm\nrm('x')", True),
+        ("from os import *", True),  # star import hides anything
+        ("import os\nprint(os.getcwd())", False),  # read-only os use
     ],
 )
 def test_python_classifier(code, unsafe):

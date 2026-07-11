@@ -357,9 +357,28 @@ _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
         "nproc",
         "sw_vers",
         "jq",
-        "awk",
     }
 )
+# Flags that turn an otherwise read-only command into a writer or executor
+# (sort -o FILE, tree -o FILE, xxd -r IN OUT, find -exec/-delete/...).
+_AUTO_UNSAFE_COMMAND_FLAGS = {
+    "sort": frozenset({"-o", "--output"}),
+    "tree": frozenset({"-o"}),
+    "xxd": frozenset({"-r"}),
+    "find": frozenset(
+        {
+            "-exec",
+            "-execdir",
+            "-ok",
+            "-okdir",
+            "-delete",
+            "-fprint",
+            "-fprint0",
+            "-fprintf",
+            "-fls",
+        }
+    ),
+}
 # Benign wrappers: they count as safe AND forward command position to their
 # target (which is then checked itself). sudo/su/chroot/etc. are deliberately
 # absent, so they classify as unsafe.
@@ -476,12 +495,19 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         return True
     expect_command = True
     prefix_pending = False
+    current_command = ""
     for token in tokens:
         if token in _SHELL_SEPARATORS or token in _SHELL_KEYWORDS_AS_SEP:
             expect_command = True
             prefix_pending = False
+            current_command = ""
             continue
         if token.startswith("-"):
+            # A write/exec flag on an otherwise read-only command asks
+            # (sort -o, tree -o, xxd -r, find -exec/-delete/...).
+            flag = token.split("=", 1)[0]
+            if flag in _AUTO_UNSAFE_COMMAND_FLAGS.get(current_command, ()):
+                return True
             if not prefix_pending:
                 expect_command = False
             continue
@@ -500,6 +526,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
             continue
         if base not in _AUTO_SAFE_TERMINAL_COMMANDS:
             return True
+        current_command = base
         expect_command = False
         prefix_pending = False
     return False
@@ -525,6 +552,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         elif isinstance(node, ast.ImportFrom):
             if node.module and node.module.split(".")[0] in _AUTO_UNSAFE_PY_MODULES:
                 return True
+            # from-imports can bind mutating callables to bare names
+            # (from os import remove [as rm]); star imports hide anything.
+            for alias in node.names:
+                if alias.name == "*" or alias.name in _AUTO_UNSAFE_PY_ATTRS:
+                    return True
         elif isinstance(node, ast.Call):
             func = node.func
             if isinstance(func, ast.Name):
