@@ -5233,3 +5233,88 @@ class TestRound53Bypasses:
     )
     def test_round53_benign_allowed(self, code):
         _ok(code)
+
+
+class TestRound54Bypasses:
+    """Fifty-fourth-round Codex findings: exec/eval caller-alias order + explicit-namespace
+    resolution, and non-literal / non-assignment environment mutations."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A caller alias CALLED before a later rebind store in the payload still hits the
+            # caller's sink (module scope, order-sensitive).
+            "import os\nf = os.system\nexec(\"f('touch /tmp/pwn'); f = None\")",
+            "import os\ng = os.system\nexec(\"g('rm -rf /tmp/x')\\ng = 1\")",
+        ],
+    )
+    def test_exec_caller_alias_before_rebind_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # exec/eval with an explicit namespace mapping a free name to a sink.
+            "import os\nexec(\"f('touch /tmp/p')\", {'f': os.system})",
+            "import os\neval(\"f('id')\", {'f': os.system})",
+        ],
+    )
+    def test_exec_explicit_namespace_alias_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # subprocess env PATH via a const var, a concatenation, or a POSIX bytes value.
+            "import subprocess\nP='.:/usr/bin'\nsubprocess.run(['evil'], env={'PATH': P})",
+            "import subprocess\nsubprocess.run(['evil'], env={'PATH': b'.:/usr/bin'})",
+            "import subprocess\nsubprocess.run(['evil'], env={'PATH': '.:' + '/usr/bin'})",
+        ],
+    )
+    def test_subprocess_env_path_nonliteral_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # Non-assignment environment mutations: augmented PATH, del / pop / clear / unsetenv of
+            # the git hook-suppression var.
+            "import os, subprocess\nos.environ['PATH'] += ':.'\nsubprocess.run(['evil'])",
+            "import os, subprocess\ndel os.environ['GIT_CONFIG_COUNT']\nsubprocess.run(['git','status'])",
+            "import os, subprocess\nos.environ.pop('GIT_CONFIG_COUNT')\nsubprocess.run(['git','status'])",
+            "import os, subprocess\nos.environ.clear()\nsubprocess.run(['git','status'])",
+            "import os, subprocess\nos.unsetenv('GIT_CONFIG_COUNT')\nsubprocess.run(['git','status'])",
+        ],
+    )
+    def test_nonassignment_env_mutation_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # An opaque / non-literal env mapping for a git child cannot prove the GIT_CONFIG_COUNT
+            # hook suppression is present, so fail closed.
+            "import subprocess\nd = {}\nsubprocess.run(['git','commit'], env={**d})",
+            "import subprocess\ndef f():\n    return {}\nsubprocess.run(['git','status'], env=f())",
+        ],
+    )
+    def test_git_opaque_env_blocked(self, code):
+        assert _check_code_safety(code) is not None, code
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # A payload that only binds f, an exec with a benign literal namespace, an absolute
+            # PATH via const var, a benign augmented / pop env var, and a non-git opaque env all
+            # stay allowed.
+            'exec("f = 1\\nprint(f)")',
+            'exec("x = 1 + 2\\nprint(x)", {})',
+            "import subprocess\nP='/usr/bin:/bin'\nsubprocess.run(['ls'], env={'PATH': P})",
+            "import os, subprocess\nos.environ['MYVAR'] += ':x'\nsubprocess.run(['ls'])",
+            "import os, subprocess\nos.environ.pop('MYVAR', None)\nsubprocess.run(['ls'])",
+            "import subprocess\nd = {}\nsubprocess.run(['ls'], env={**d})",
+            "import subprocess\nsubprocess.run(['git','status'])",
+        ],
+    )
+    def test_round54_benign_allowed(self, code):
+        _ok(code)

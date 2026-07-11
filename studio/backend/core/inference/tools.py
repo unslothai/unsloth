@@ -6457,6 +6457,123 @@ def _resolve_static_shell_sink(node, os_aliases, subprocess_aliases, from_aliase
     return None
 
 
+_PY_NESTED_SCOPE_NODES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ClassDef,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+
+
+def _module_stmt_names(node, loads, stores):
+    """Append Name loads / stores GOVERNED by the current (module) scope from ``node`` WITHOUT
+    descending into nested function / class / lambda / comprehension scopes (which have their own
+    scope). A def / class / import binds its name in the current scope; its body is skipped."""
+    for _child in ast.iter_child_nodes(node):
+        if isinstance(_child, ast.Name):
+            if isinstance(_child.ctx, ast.Load):
+                loads.append(_child.id)
+            elif isinstance(_child.ctx, (ast.Store, ast.Del)):
+                stores.append(_child.id)
+        elif isinstance(_child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            stores.append(_child.name)  # binds its name; the body is a nested scope (skipped)
+        elif isinstance(
+            _child, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp, ast.Lambda)
+        ):
+            pass  # nested scope: contributes no binding to the current scope
+        elif isinstance(_child, (ast.Import, ast.ImportFrom)):
+            for _al in _child.names:
+                stores.append((_al.asname or _al.name).split(".")[0])
+        else:
+            _module_stmt_names(_child, loads, stores)
+
+
+def _module_toplevel_free_loads(module_node):
+    """(early_loads, all_bound) for a payload Module top level: ``early_loads`` are names Loaded at
+    module top level BEFORE that name's first top-level binding, in SOURCE order (these resolve to
+    the enclosing global scope at runtime -- ``f('x'); f = None`` still calls the caller's ``f``),
+    and ``all_bound`` is every name bound at module top level."""
+    early: set = set()
+    bound: set = set()
+    for _stmt in module_node.body:
+        _loads: list = []
+        _stores: list = []
+        _module_stmt_names(_stmt, _loads, _stores)
+        for _nm in _loads:
+            if _nm not in bound:
+                early.add(_nm)
+        bound.update(_stores)
+    return early, bound
+
+
+def _payload_outward_load_names(src, mode):
+    """Names in an exec/eval payload whose Load can resolve to the ENCLOSING (caller / provided-
+    namespace / global) scope rather than a payload-local binding. exec/eval run at module scope,
+    so this is ORDER-sensitive: a top-level Load before the name's first top-level binding resolves
+    outward, as does a free (non-local) Load inside any nested function/class scope -- that can run
+    after a later top-level rebind. A name bound at module top level is treated as payload-local for
+    nested references (its own binding shadows the caller), and a payload-local sink is caught by
+    the inner recursive scan instead. Returns a set of names."""
+    try:
+        inner = ast.parse(src, mode = "eval" if mode == "eval" else "exec")
+    except Exception:
+        return set()
+    # eval: a single expression with no bindings -- every loaded name resolves outward.
+    if isinstance(inner, ast.Expression):
+        return {
+            _n.id
+            for _n in ast.walk(inner)
+            if isinstance(_n, ast.Name) and isinstance(_n.ctx, ast.Load)
+        }
+    names, module_bound = _module_toplevel_free_loads(inner)
+    try:
+        import symtable as _symtable
+        _stack = list(_symtable.symtable(src, "<payload>", "exec").get_children())
+        while _stack:
+            _s = _stack.pop()
+            for _sym in _s.get_symbols():
+                # A nested-scope reference that is free / global resolves to the module (caller)
+                # scope UNLESS the payload binds it at module top level (then the payload controls
+                # it, and any payload-local sink is caught by the inner scan).
+                if (
+                    _sym.is_referenced()
+                    and (_sym.is_free() or _sym.is_global())
+                    and _sym.get_name() not in module_bound
+                ):
+                    names.add(_sym.get_name())
+            _stack.extend(_s.get_children())
+    except Exception:  # pragma: no cover - defensive: fail closed by flagging every load
+        for _n in ast.walk(inner):
+            if isinstance(_n, ast.Name) and isinstance(_n.ctx, ast.Load):
+                names.add(_n.id)
+    return names
+
+
+def _payload_calls_nonbuiltin_free_name(src, mode, free):
+    """True when the payload calls (``f(...)``) a FREE name that is not a Python builtin -- the
+    sink-execution vector when an OPAQUE exec/eval namespace could map that name to a hidden sink."""
+    try:
+        inner = ast.parse(src, mode = "eval" if mode == "eval" else "exec")
+    except Exception:
+        return True  # fail closed
+    import builtins as _bpy
+
+    _bi_names = set(dir(_bpy))
+    for _n in ast.walk(inner):
+        if (
+            isinstance(_n, ast.Call)
+            and isinstance(_n.func, ast.Name)
+            and _n.func.id in free
+            and _n.func.id not in _bi_names
+        ):
+            return True
+    return False
+
+
 def _check_signal_escape_patterns(
     code: str,
     _depth: int = 0,
@@ -6535,29 +6652,61 @@ def _check_signal_escape_patterns(
         """A FREE name in an exec/eval payload that resolves, in the CALLER's scope at ``node``, to
         a shell / exec-builtin / deserialize / import alias -- exec/eval run in the caller
         namespace, so ``f`` in ``exec('f(...)')`` is the caller's ``f = os.system``. Returns the
-        offending name or None. Builtins / undefined names never resolve, so ``exec('print(1)')``
-        and ``exec('x = 1')`` stay allowed."""
-        try:
-            inner = ast.parse(src, mode = "eval" if mode == "eval" else "exec")
-        except Exception:
-            return None
-        bound: set[str] = set()
-        loaded: set[str] = set()
-        for n in ast.walk(inner):
-            if isinstance(n, ast.Name):
-                if isinstance(n.ctx, (ast.Store, ast.Del)):
-                    bound.add(n.id)
-                elif isinstance(n.ctx, ast.Load):
-                    loaded.add(n.id)
-            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                bound.add(n.name)
-            elif isinstance(n, (ast.Import, ast.ImportFrom)):
-                for _al in n.names:
-                    bound.add((_al.asname or _al.name).split(".")[0])
-        for nm in loaded - bound:
+        offending name or None. The outward-name analysis is ORDER-aware (``f('x'); f = None`` still
+        calls the caller's ``f`` before the rebind) and scope-aware (a free load inside a nested
+        function resolves outward too). Builtins / undefined names never resolve, so
+        ``exec('print(1)')`` and ``exec('x = 1')`` stay allowed."""
+        for nm in _payload_outward_load_names(src, mode):
             for _kind in ("shell", "execb", "deser", "impf"):
                 if _scope_idx.resolve(nm, node, _kind):
                     return nm
+        return None
+
+    def _namespace_value_is_sink(_v):
+        """True when an exec/eval namespace VALUE node ({'f': os.system}) resolves to a shell /
+        exec-builtin / deserialize / import sink."""
+        if isinstance(_v, ast.Name):
+            if _v.id in _DYNAMIC_EXEC_BUILTINS or _v.id == "__import__":
+                return True
+            for _kind in ("shell", "execb", "deser", "impf"):
+                if _scope_idx.resolve(_v.id, _v, _kind):
+                    return True
+            return False
+        _fq = _fq_attr_name(_v)
+        if _fq in _SHELL_SINK_FUNCS or _fq in _CODE_DESERIALIZE_SINKS:
+            return True
+        _last = _fq.rsplit(".", 1)[-1] if _fq else ""
+        return _last in _DYNAMIC_EXEC_BUILTINS or _last == "__import__"
+
+    def _exec_namespace_alias_hit(node, src, mode):
+        """exec/eval with an EXPLICIT globals/locals namespace resolves the payload's free names
+        from that mapping, not the caller scope. Inspect a literal-dict namespace precisely (a free
+        name mapped to a sink blocks) and fail closed on an OPAQUE namespace when a non-builtin free
+        name is CALLED (it could map to a hidden sink). Returns the offending key / marker or None."""
+        _ns_nodes = []
+        for _i in (1, 2):  # exec(obj, globals, locals) / eval(expr, globals, locals)
+            if len(node.args) > _i:
+                _ns_nodes.append(node.args[_i])
+        for _kw in node.keywords:
+            if _kw.arg in ("globals", "locals"):
+                _ns_nodes.append(_kw.value)
+        if not _ns_nodes:
+            return None
+        _free = _payload_outward_load_names(src, mode)
+        if not _free:
+            return None
+        for _ns in _ns_nodes:
+            if isinstance(_ns, ast.Dict):
+                for _k, _v in zip(_ns.keys, _ns.values):
+                    _ks = _extract_string_from_node(_k) if _k is not None else None
+                    if _ks is not None and _ks in _free and _namespace_value_is_sink(_v):
+                        return _ks
+                    if _k is None and not isinstance(_v, ast.Dict):
+                        # a **opaque splat could carry a sink alias for a called free name
+                        if _payload_calls_nonbuiltin_free_name(src, mode, _free):
+                            return "<opaque-namespace>"
+            elif _payload_calls_nonbuiltin_free_name(src, mode, _free):
+                return "<opaque-namespace>"
         return None
 
     def _analyze_exec_call(node, func_id):
@@ -6600,6 +6749,22 @@ def _check_signal_escape_patterns(
                                 "description": (
                                     f"{func_id}() payload references caller alias {_alias!r} "
                                     "bound to a shell / exec / deserialize sink"
+                                ),
+                            }
+                        )
+                        return
+                    # exec("f(...)", {'f': os.system}) resolves the payload's free names from the
+                    # EXPLICIT namespace, not the caller scope; inspect a literal-dict namespace for
+                    # a sink alias and fail closed on an opaque one.
+                    _ns_hit = _exec_namespace_alias_hit(node, src, mode)
+                    if _ns_hit is not None:
+                        dynamic_exec.append(
+                            {
+                                "type": "dynamic_exec",
+                                "line": getattr(node, "lineno", -1),
+                                "description": (
+                                    f"{func_id}() payload free name resolves to a shell / exec / "
+                                    f"deserialize sink in the supplied namespace ({_ns_hit})"
                                 ),
                             }
                         )
@@ -6794,8 +6959,10 @@ def _check_signal_escape_patterns(
         return None
 
     def _extract_env_scalar(node):
-        """A str constant, or a bytes constant decoded to str (os.environb byte keys / values are
-        the same inherited environment as os.environ), else None."""
+        """A str constant, a const-folded string (a const-var / concatenation via the module const
+        env, ``P='.:/usr/bin'; ... P``), or a bytes constant / folded bytes decoded to str
+        (os.environb byte keys / values and ``env={'PATH': b'.:'}`` are the same inherited
+        environment), else None."""
         if isinstance(node, ast.Constant):
             if isinstance(node.value, str):
                 return node.value
@@ -6804,6 +6971,14 @@ def _check_signal_escape_patterns(
                     return bytes(node.value).decode("utf-8", "surrogateescape")
                 except Exception:
                     return None
+        _f = _const_fold(node, _const_env)
+        if isinstance(_f, str):
+            return _f
+        if isinstance(_f, (bytes, bytearray)):
+            try:
+                return bytes(_f).decode("utf-8", "surrogateescape")
+            except Exception:
+                return None
         return None
 
     def _env_mapping_pairs(node):
@@ -7790,6 +7965,14 @@ def _check_signal_escape_patterns(
                 return None
             return None
 
+        def _env_removal_escape(self, key):
+            # A short reason when REMOVING inherited env var ``key`` (del / pop / unsetenv) is a
+            # child-escape prelude, else None: dropping a GIT_CONFIG* var re-enables the
+            # sandbox-suppressed git hooks (core.hooksPath) in a later unguarded git child.
+            if isinstance(key, str) and key.startswith("GIT_CONFIG"):
+                return "removes the sandbox git hook suppression"
+            return None
+
         def visit_Assign(self, node):
             # e = os.environ (or os.environb) binds a NEW name to the same inherited-env mapping, so
             # a later e['BASH_ENV'] = ... escape reads as a plain-name subscript. Record the alias
@@ -7858,6 +8041,43 @@ def _check_signal_escape_patterns(
                 )
             self.generic_visit(node)
 
+        def visit_AugAssign(self, node):
+            # os.environ['PATH'] += ':.' (or BASH_ENV / GIT_CONFIG*) mutates the inherited env in
+            # place; model the result as (old value + appended) and run the same policy as a plain
+            # assignment, so a relative / cwd PATH entry appended to $PATH is caught while a dynamic
+            # ABSOLUTE extension (+= ':/usr/local/bin') stays allowed.
+            _envkey = self._environ_subscript_key(node.target)
+            if _envkey is not None:
+                _synth = ast.BinOp(left = node.target, op = node.op, right = node.value)
+                _reason = self._env_mutation_escape(_envkey, _synth)
+                if _reason is not None:
+                    shell_escapes.append(
+                        {
+                            "type": "shell_escape",
+                            "line": getattr(node, "lineno", -1),
+                            "description": f"os.environ[{_envkey!r}] augmented mutation: {_reason}",
+                        }
+                    )
+            self.generic_visit(node)
+
+        def visit_Delete(self, node):
+            # del os.environ['GIT_CONFIG_COUNT'] removes an inherited env var without an assignment;
+            # dropping a GIT_CONFIG* var re-enables the sandbox-suppressed git hooks in a later
+            # unguarded git child.
+            for _t in node.targets:
+                _envkey = self._environ_subscript_key(_t)
+                if _envkey is not None:
+                    _reason = self._env_removal_escape(_envkey)
+                    if _reason is not None:
+                        shell_escapes.append(
+                            {
+                                "type": "shell_escape",
+                                "line": getattr(node, "lineno", -1),
+                                "description": f"del os.environ[{_envkey!r}]: {_reason}",
+                            }
+                        )
+            self.generic_visit(node)
+
         def visit_Call(self, node):
             # operator.methodcaller('system', 'rm -rf /')(os) applies a deferred method to a
             # module receiver; rewrite it to the direct os.system('rm -rf /') call and analyze
@@ -7906,6 +8126,51 @@ def _check_signal_escape_patterns(
                                     ),
                                 }
                             )
+            # os.environ.pop('GIT_CONFIG_COUNT') / .clear() / .popitem() REMOVE an inherited env var
+            # without an assignment or del; dropping a GIT_CONFIG* var (or clearing the whole env)
+            # re-enables the sandbox-suppressed git hooks in a later unguarded git child.
+            if isinstance(_mf, ast.Attribute) and self._is_environ_receiver(_mf.value):
+                if _mf.attr in ("clear", "popitem"):
+                    shell_escapes.append(
+                        {
+                            "type": "shell_escape",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                f"os.environ.{_mf.attr}() drops inherited env "
+                                "(incl. the git hook suppression)"
+                            ),
+                        }
+                    )
+                elif _mf.attr == "pop" and node.args:
+                    _rk = _extract_env_scalar(node.args[0])
+                    _rreason = self._env_removal_escape(_rk)
+                    if _rreason is not None:
+                        shell_escapes.append(
+                            {
+                                "type": "shell_escape",
+                                "line": getattr(node, "lineno", -1),
+                                "description": f"os.environ.pop({_rk!r}): {_rreason}",
+                            }
+                        )
+            # os.unsetenv('GIT_CONFIG_COUNT') is the C-level twin of os.putenv that removes an
+            # inherited var, dropping the git hook suppression the same way as del os.environ[...].
+            if (
+                isinstance(_mf, ast.Attribute)
+                and _mf.attr == "unsetenv"
+                and isinstance(_mf.value, ast.Name)
+                and _mf.value.id in self.os_aliases
+                and node.args
+            ):
+                _xk = _extract_env_scalar(node.args[0])
+                _xreason = self._env_removal_escape(_xk)
+                if _xreason is not None:
+                    shell_escapes.append(
+                        {
+                            "type": "shell_escape",
+                            "line": getattr(node, "lineno", -1),
+                            "description": f"os.unsetenv({_xk!r}): {_xreason}",
+                        }
+                    )
             # os.putenv(key, value) sets an inherited env var through the C-level setter (NOT via
             # os.environ), so the subscript / update checks miss it; a later child still inherits it
             # (os.putenv('BASH_ENV', 'evil.sh') then subprocess.run(['bash','-c',...])). Run the
@@ -8150,16 +8415,22 @@ def _check_signal_escape_patterns(
                         # key marks the mapping opaque (fail closed for a shell child).
                         _epairs, _opaque_key = _env_mapping_pairs(_env_node)
                         for _ekey, _ev in _epairs:
-                            _evstr = _extract_string_from_node(_ev)
+                            # Const-fold / decode the value so a const-var, a concatenation, or a
+                            # POSIX bytes value (env={'PATH': P}, {'PATH': '.:' + x}, {'PATH':
+                            # b'.:'}) is analyzed, not just an inline str constant.
+                            _evstr = _extract_env_scalar(_ev)
                             if _ekey in ("BASH_ENV", "ENV") and _evstr != "":
                                 blocked_in_args = blocked_in_args | {"shell-startup-env:" + _ekey}
-                            elif (
-                                _ekey == "PATH"
-                                and isinstance(_evstr, str)
-                                and _path_value_is_unsafe(_evstr)
-                            ):
+                            elif _ekey == "PATH":
                                 # env={'PATH': '.'} lets a bare argv[0] resolve to a workdir exec.
-                                blocked_in_args = blocked_in_args | {"unsafe-path-assign"}
+                                # A folded literal is checked directly; a non-literal value that
+                                # provably contributes a relative / cwd entry ('.:' + $PATH) fails
+                                # closed, while a dynamic ABSOLUTE extension stays allowed.
+                                if isinstance(_evstr, str):
+                                    if _path_value_is_unsafe(_evstr):
+                                        blocked_in_args = blocked_in_args | {"unsafe-path-assign"}
+                                elif _dynamic_path_value_unsafe(_ev, _const_env):
+                                    blocked_in_args = blocked_in_args | {"unsafe-path-assign"}
                             elif (
                                 _ekey in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
                                 and _is_git_child
@@ -8178,19 +8449,22 @@ def _check_signal_escape_patterns(
                         if _opaque_key and _is_shell_child:
                             blocked_in_args = blocked_in_args | {"shell-startup-env:opaque"}
                         # A git child whose replaced env drops the sandbox's GIT_CONFIG_COUNT hook
-                        # suppression (env={} / dict(PATH=...) / any mapping without it and without
-                        # an opaque ** that could carry it) re-enables a planted .git/hooks/* in the
-                        # unguarded child. Applies to the literal-dict AND dict(...) forms.
-                        if (
-                            _is_git_child
-                            and not _opaque_key
-                            and not any(_k == "GIT_CONFIG_COUNT" for _k, _ in _epairs)
+                        # suppression (env={} / dict(PATH=...) / any mapping without a literal
+                        # GIT_CONFIG_COUNT) re-enables a planted .git/hooks/* in the unguarded
+                        # child. An OPAQUE mapping (env={**d}) cannot PROVE the suppression is
+                        # present, so fail closed too.
+                        if _is_git_child and (
+                            _opaque_key or not any(_k == "GIT_CONFIG_COUNT" for _k, _ in _epairs)
                         ):
                             blocked_in_args = blocked_in_args | {"git-config-env-override"}
-                    elif _is_shell_child:
-                        # A non-literal env mapping (env=e, a comprehension) for a shell child
-                        # cannot be proven free of BASH_ENV / ENV, so fail closed.
-                        blocked_in_args = blocked_in_args | {"shell-startup-env:non-literal"}
+                    elif _is_shell_child or _is_git_child:
+                        # A non-literal env mapping (env=e, env=f(), a comprehension) cannot be
+                        # proven free of BASH_ENV / ENV (shell child) nor proven to carry the
+                        # GIT_CONFIG_COUNT hook suppression (git child), so fail closed.
+                        if _is_shell_child:
+                            blocked_in_args = blocked_in_args | {"shell-startup-env:non-literal"}
+                        if _is_git_child:
+                            blocked_in_args = blocked_in_args | {"git-config-env-override"}
 
                 # os.execl(path, a0, a1, ...) / os.execv(path, [a0, ...]) / os.spawnl(mode,
                 # path, a0, ...) / os.posix_spawn(path, argv, env) spread the child's argv across
