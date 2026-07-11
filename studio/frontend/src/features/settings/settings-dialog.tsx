@@ -128,10 +128,38 @@ export function SettingsDialog() {
     }).filter((r) => r.tabMatches || r.entries.length > 0);
   }, [query, t]);
 
-  const openResult = (tab: SettingsTab) => {
+  const [pendingScroll, setPendingScroll] = useState<string | null>(null);
+  const mainScrollRef = useRef<HTMLDivElement | null>(null);
+
+  const openResult = (tab: SettingsTab, entry?: string) => {
     setActiveTab(tab);
     setQuery("");
+    setPendingScroll(entry ?? null);
   };
+
+  // Scroll to the row/section a search result points at once the tab has
+  // rendered, and flash it so the eye lands on the right place.
+  useEffect(() => {
+    if (!pendingScroll) return;
+    const timer = window.setTimeout(() => {
+      const root = mainScrollRef.current;
+      if (root) {
+        const target = [
+          ...root.querySelectorAll<HTMLElement>("[data-settings-label]"),
+        ].find((el) => el.dataset.settingsLabel === pendingScroll);
+        if (target) {
+          target.scrollIntoView({ behavior: "smooth", block: "center" });
+          target.classList.add("settings-search-hit");
+          window.setTimeout(
+            () => target.classList.remove("settings-search-hit"),
+            1600,
+          );
+        }
+      }
+      setPendingScroll(null);
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [pendingScroll]);
 
   useEffect(() => {
     if (!open) setQuery("");
@@ -171,9 +199,9 @@ export function SettingsDialog() {
             }
           }}
           className={cn(
-            // Cap at 820px but shrink to the viewport so it doesn't clip on
-            // iPad-portrait widths (640-820px) where fixed `w-[820px]` overflows.
-            "settings-surface !max-w-[min(820px,calc(100vw-2rem))] h-[560px] w-[min(820px,calc(100vw-2rem))] p-0 overflow-hidden",
+            // Cap at 880px but shrink to the viewport so it doesn't clip on
+            // iPad-portrait widths where a fixed width overflows.
+            "settings-surface !max-w-[min(880px,calc(100vw-2rem))] h-[560px] w-[min(880px,calc(100vw-2rem))] p-0 overflow-hidden",
             // Soft shadow, no outline ring. Pin --radius to the light value so
             // corner rounding matches in dark mode.
             "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
@@ -187,15 +215,15 @@ export function SettingsDialog() {
             {t("settings.dialog.description")}
           </DialogDescription>
           <div className="flex h-full min-h-0 max-sm:flex-col">
-            <aside className="font-heading flex w-[216px] shrink-0 flex-col border-r border-sidebar-border bg-muted/20 p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
+            <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-muted/20 p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
               <h2 className="pl-3 pr-2.5 pt-3.5 pb-3.5 text-[19px] font-semibold text-foreground max-sm:hidden">
                 {t("settings.dialog.title")}
               </h2>
-              <div className="relative mb-2 max-sm:hidden">
+              <div className="relative mx-3 mt-1 mb-3 max-sm:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
-                  className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+                  className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
                 />
                 <input
                   value={query}
@@ -208,7 +236,7 @@ export function SettingsDialog() {
                   }}
                   placeholder={t("settings.dialog.searchPlaceholder")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
-                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-9 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:border-white/10 dark:bg-white/[0.06]"
+                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:border-white/10 dark:bg-white/[0.06]"
                 />
                 {query && (
                   <button
@@ -246,7 +274,7 @@ export function SettingsDialog() {
                           <button
                             key={entry}
                             type="button"
-                            onClick={() => openResult(tab.id)}
+                            onClick={() => openResult(tab.id, entry)}
                             className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-[14px] text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                           >
                             <span className="min-w-0 truncate">{entry}</span>
@@ -326,7 +354,10 @@ export function SettingsDialog() {
               >
                 <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
               </button>
-              <div className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]">
+              <div
+                ref={mainScrollRef}
+                className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
+              >
                 {renderTab(activeTab)}
               </div>
             </main>

@@ -606,6 +606,21 @@ html[data-chat-font] .aui-root {
 	font-family: var(--custom-chat-font);
 }
 
+/* Settings search: brief highlight on the row a result jumped to. */
+.settings-search-hit {
+	animation: settings-search-hit 1.6s ease-out;
+	border-radius: 12px;
+}
+@keyframes settings-search-hit {
+	0%,
+	35% {
+		background-color: var(--accent);
+	}
+	100% {
+		background-color: transparent;
+	}
+}
+
 @theme inline {
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
