@@ -891,6 +891,72 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
   }, [dismissLoadToast, refreshStatus]);
 
+  // Stops the generation poll and its visibilitychange catch-up listener.
+  const stopGenPoll = useCallback(() => {
+    if (genPollTimer.current) clearInterval(genPollTimer.current);
+    genPollTimer.current = null;
+    if (genVisibilityListener.current) {
+      document.removeEventListener("visibilitychange", genVisibilityListener.current);
+      genVisibilityListener.current = null;
+    }
+  }, []);
+
+  // Poll the backend's per-step progress so the bar tracks the live denoising steps
+  // and the encode phase, and drive completion off the terminal phase: "completed"
+  // carries the saved gallery record, "failed" the client-safe error. A named poll
+  // body (guarded against overlap) also serves the visibilitychange listener: a
+  // background tab's throttled interval catches up the moment the tab is visible.
+  // Shared by handleGenerate and the mount-time resume of a job already in flight.
+  const startGenPoll = useCallback(() => {
+    stopGenPoll();
+    let pollInFlight = false;
+    const pollGenerateOnce = async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
+      try {
+        const p = await getVideoGenerateProgress();
+        if (p.phase === "completed" || p.phase === "failed") {
+          stopGenPoll();
+          if (!isMounted.current) return;
+          setBusy(null);
+          setGenStep(null);
+          if (p.phase === "completed" && p.video) {
+            // Prepend the new clip (newest first) and load its blob.
+            const clip = p.video;
+            setVideos((prev) => [clip, ...prev.filter((v) => v.id !== clip.id)]);
+            setSelectedId(clip.id);
+            void ensureSrc(clip);
+          } else if (p.phase === "failed") {
+            const msg = p.error || "Video generation failed";
+            // The user's own Cancel surfaces as the backend's cancelled sentinel; not an error.
+            if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
+          }
+          return;
+        }
+        setGenStep((prev) => {
+          if (!p.active) return null;
+          if (
+            prev &&
+            prev.step === p.step &&
+            prev.phase === p.phase &&
+            prev.eta_seconds === p.eta_seconds
+          )
+            return prev;
+          return p;
+        });
+      } catch {
+        // transient; keep polling
+      } finally {
+        pollInFlight = false;
+      }
+    };
+    genVisibilityListener.current = () => {
+      if (document.visibilityState === "visible") void pollGenerateOnce();
+    };
+    document.addEventListener("visibilitychange", genVisibilityListener.current);
+    genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
+  }, [ensureSrc, stopGenPoll]);
+
   useEffect(() => {
     void (async () => {
       await refreshStatus();
@@ -909,17 +975,34 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      // A generation also runs on a backend daemon thread, so a reload while a clip
+      // denoises must re-enter the same poll loop (progress label + completion handling)
+      // instead of an idle page that never shows the finished clip until a manual refresh.
+      try {
+        const g = await getVideoGenerateProgress();
+        if (g.active) {
+          setBusy("generating");
+          setGenStep(g.phase === "queued" ? null : g);
+          startGenPoll();
+        } else if (g.phase === "completed" && g.video) {
+          // The job finished while no page was mounted. The terminal record persists on
+          // the backend until the next job, and the mount gallery fetch usually already
+          // contains the clip; merging here (deduped) covers the race where the job
+          // completed after that fetch was issued.
+          const clip = g.video;
+          setVideos((prev) => (prev.some((v) => v.id === clip.id) ? prev : [clip, ...prev]));
+          void ensureSrc(clip);
+        }
+      } catch {
+        // Resume is best-effort; a failed probe just leaves the idle view.
+      }
     })();
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
-      if (genPollTimer.current) clearInterval(genPollTimer.current);
-      if (genVisibilityListener.current) {
-        document.removeEventListener("visibilitychange", genVisibilityListener.current);
-        genVisibilityListener.current = null;
-      }
+      stopGenPoll();
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress]);
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc]);
 
   const handleLoad = useCallback(
     // Resolves true when the background load STARTED (callers may revert optimistic picker
@@ -1166,67 +1249,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       setGenStep(null);
       return;
     }
-    // Poll the backend's per-step progress so the bar tracks the live denoising steps
-    // and the encode phase, and drive completion off the terminal phase: "completed"
-    // carries the saved gallery record, "failed" the client-safe error. A named poll
-    // body (guarded against overlap) also serves the visibilitychange listener: a
-    // background tab's throttled interval catches up the moment the tab is visible.
-    let pollInFlight = false;
-    const stopGenPoll = () => {
-      if (genPollTimer.current) clearInterval(genPollTimer.current);
-      genPollTimer.current = null;
-      if (genVisibilityListener.current) {
-        document.removeEventListener("visibilitychange", genVisibilityListener.current);
-        genVisibilityListener.current = null;
-      }
-    };
-    const pollGenerateOnce = async () => {
-      if (pollInFlight) return;
-      pollInFlight = true;
-      try {
-        const p = await getVideoGenerateProgress();
-        if (p.phase === "completed" || p.phase === "failed") {
-          stopGenPoll();
-          if (!isMounted.current) return;
-          setBusy(null);
-          setGenStep(null);
-          if (p.phase === "completed" && p.video) {
-            // Prepend the new clip (newest first) and load its blob.
-            const clip = p.video;
-            setVideos((prev) => [clip, ...prev.filter((v) => v.id !== clip.id)]);
-            setSelectedId(clip.id);
-            void ensureSrc(clip);
-          } else if (p.phase === "failed") {
-            const msg = p.error || "Video generation failed";
-            // The user's own Cancel surfaces as the backend's cancelled sentinel; not an error.
-            if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
-          }
-          return;
-        }
-        setGenStep((prev) => {
-          if (!p.active) return null;
-          if (
-            prev &&
-            prev.step === p.step &&
-            prev.phase === p.phase &&
-            prev.eta_seconds === p.eta_seconds
-          )
-            return prev;
-          return p;
-        });
-      } catch {
-        // transient; keep polling
-      } finally {
-        pollInFlight = false;
-      }
-    };
-    if (genVisibilityListener.current)
-      document.removeEventListener("visibilitychange", genVisibilityListener.current);
-    genVisibilityListener.current = () => {
-      if (document.visibilityState === "visible") void pollGenerateOnce();
-    };
-    document.addEventListener("visibilitychange", genVisibilityListener.current);
-    genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
+    // Track the live progress + terminal outcome via the shared poll loop (also used by
+    // the mount-time resume of a job that survived a reload).
+    startGenPoll();
   }, [
     prompt,
     negativePrompt,
@@ -1237,7 +1262,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     numFrames,
     fps,
     steps,
-    ensureSrc,
+    startGenPoll,
   ]);
 
   // The Advanced (load-time) tuning controls, rendered in the right-docked panel below.
