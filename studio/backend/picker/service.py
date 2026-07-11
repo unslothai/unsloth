@@ -41,6 +41,7 @@ _VALID_REPO_ID = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 def _is_valid_repo_id(repo_id: str) -> bool:
     return bool(_VALID_REPO_ID.fullmatch(repo_id))
 
+
 _TOKENIZER_CONFIG_PATHS = ("tokenizer_config.json", "LLM/tokenizer_config.json")
 _JINJA_TEMPLATE_PATHS = ("chat_template.jinja", "LLM/chat_template.jinja")
 _PROCESSOR_TEMPLATE_PATHS = ("chat_template.json", "LLM/chat_template.json")

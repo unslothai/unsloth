@@ -97,23 +97,23 @@ def test_chat_template_from_tokenizer_config_falls_back_to_first_entry():
 
 
 def test_chat_template_from_tokenizer_dir_prefers_jinja_file(tmp_path):
-    (tmp_path / "chat_template.jinja").write_text("FROM_JINJA", encoding="utf-8")
+    (tmp_path / "chat_template.jinja").write_text("FROM_JINJA", encoding = "utf-8")
     (tmp_path / "tokenizer_config.json").write_text(
-        json.dumps({"chat_template": "FROM_CONFIG"}), encoding="utf-8"
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
     )
     assert _chat_template_from_tokenizer_dir(tmp_path) == "FROM_JINJA"
 
 
 def test_chat_template_from_tokenizer_dir_reads_tokenizer_config(tmp_path):
     (tmp_path / "tokenizer_config.json").write_text(
-        json.dumps({"chat_template": "FROM_CONFIG"}), encoding="utf-8"
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
     )
     assert _chat_template_from_tokenizer_dir(tmp_path) == "FROM_CONFIG"
 
 
 def test_chat_template_from_dir_without_variant_prefers_tokenizer(tmp_path):
     (tmp_path / "tokenizer_config.json").write_text(
-        json.dumps({"chat_template": "FROM_CONFIG"}), encoding="utf-8"
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
     )
     assert _chat_template_from_dir(tmp_path) == "FROM_CONFIG"
 

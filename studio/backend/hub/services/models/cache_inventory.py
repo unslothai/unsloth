@@ -146,9 +146,7 @@ def _repo_gguf_last_modified(repo_info) -> float:
 
 def _repo_has_mmproj(repo_info) -> bool:
     return any(
-        _is_mmproj_filename(f.file_name)
-        for revision in repo_info.revisions
-        for f in revision.files
+        _is_mmproj_filename(f.file_name) for revision in repo_info.revisions for f in revision.files
     )
 
 
@@ -328,10 +326,7 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     has_checkpoint = False
 
     def _record_blob(
-        target: dict[str, tuple[int, float]],
-        file_obj,
-        rev_id: str,
-        file_name: str,
+        target: dict[str, tuple[int, float]], file_obj, rev_id: str, file_name: str
     ) -> None:
         blob_path = getattr(file_obj, "blob_path", None)
         size = int(file_obj.size_on_disk or 0)
