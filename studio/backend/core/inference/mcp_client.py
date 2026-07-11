@@ -12,6 +12,7 @@ import shlex
 import sys
 import threading
 import time
+import uuid
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -357,7 +358,15 @@ class _StdioSession:
 _stdio_sessions: dict[tuple, _StdioSession] = {}
 # Per-key locks so a slow connect/close never blocks unrelated servers; the
 # global lock only guards the dicts.
-_stdio_key_locks: dict[tuple, threading.Lock] = {}
+class _StdioKeyLock:
+    """A per-key lock that can be removed once nobody references it."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.users = 0  # guarded by _stdio_sessions_lock
+
+
+_stdio_key_locks: dict[tuple, _StdioKeyLock] = {}
 _stdio_sessions_lock = threading.Lock()
 _stdio_reaper_started = False
 
@@ -375,6 +384,25 @@ def _checkout_stdio_session(key: tuple) -> Optional[_StdioSession]:
     return None
 
 
+def _borrow_stdio_key_lock(key: tuple) -> _StdioKeyLock:
+    """Return a stable per-key lock while a caller waits for/connects it."""
+    key_lock = _stdio_key_locks.setdefault(key, _StdioKeyLock())
+    key_lock.users += 1
+    return key_lock
+
+
+def _discard_stdio_key_lock(key: tuple) -> None:
+    key_lock = _stdio_key_locks.get(key)
+    if key_lock is not None and key_lock.users == 0 and key not in _stdio_sessions:
+        _stdio_key_locks.pop(key, None)
+
+
+def _return_stdio_key_lock(key: tuple, key_lock: _StdioKeyLock) -> None:
+    with _stdio_sessions_lock:
+        key_lock.users -= 1
+        _discard_stdio_key_lock(key)
+
+
 def _get_stdio_session(
     url: str, headers: Optional[dict], scope: Optional[str], timeout, cancel_event
 ) -> _StdioSession:
@@ -384,33 +412,36 @@ def _get_stdio_session(
         session = _checkout_stdio_session(key)
         if session is not None:
             return session
-        key_lock = _stdio_key_locks.setdefault(key, threading.Lock())
-    with key_lock:
-        stale = None
-        with _stdio_sessions_lock:
-            session = _checkout_stdio_session(key)
-            if session is not None:
-                return session
-            if key in _stdio_sessions:
-                stale = _stdio_sessions.pop(key)
-        if stale is not None:
-            stale.close()
-        session = _StdioSession(url, headers)
-        try:
-            session.connect(timeout, cancel_event)
-        except Exception:
-            session.close()
-            raise
-        with _stdio_sessions_lock:
-            session.in_flight = 1
-            _stdio_sessions[key] = session
-            if not _stdio_reaper_started:
-                _stdio_reaper_started = True
-                threading.Thread(
-                    target = _stdio_session_reaper, name = "mcp-stdio-reaper", daemon = True
-                ).start()
-                atexit.register(close_stdio_sessions)
-        return session
+        key_lock = _borrow_stdio_key_lock(key)
+    try:
+        with key_lock.lock:
+            stale = None
+            with _stdio_sessions_lock:
+                session = _checkout_stdio_session(key)
+                if session is not None:
+                    return session
+                if key in _stdio_sessions:
+                    stale = _stdio_sessions.pop(key)
+            if stale is not None:
+                stale.close()
+            session = _StdioSession(url, headers)
+            try:
+                session.connect(timeout, cancel_event)
+            except Exception:
+                session.close()
+                raise
+            with _stdio_sessions_lock:
+                session.in_flight = 1
+                _stdio_sessions[key] = session
+                if not _stdio_reaper_started:
+                    _stdio_reaper_started = True
+                    threading.Thread(
+                        target = _stdio_session_reaper, name = "mcp-stdio-reaper", daemon = True
+                    ).start()
+                    atexit.register(close_stdio_sessions)
+            return session
+    finally:
+        _return_stdio_key_lock(key, key_lock)
 
 
 def _release_stdio_session(session: _StdioSession) -> None:
@@ -423,6 +454,7 @@ def _drop_stdio_session(key: tuple, session: _StdioSession) -> None:
     with _stdio_sessions_lock:
         if _stdio_sessions.get(key) is session:
             _stdio_sessions.pop(key)
+        _discard_stdio_key_lock(key)
     session.close()
 
 
@@ -431,8 +463,8 @@ def close_stdio_sessions(url: Optional[str] = None) -> None:
     with _stdio_sessions_lock:
         keys = [k for k in _stdio_sessions if url is None or k[0] == url]
         sessions = [_stdio_sessions.pop(k) for k in keys]
-        if url is None:
-            _stdio_key_locks.clear()
+        for key in keys:
+            _discard_stdio_key_lock(key)
     for session in sessions:
         session.close()
 
@@ -446,6 +478,8 @@ def _reap_idle_stdio_sessions(now: Optional[float] = None) -> None:
             if session.in_flight == 0 and now - session.last_used >= _STDIO_SESSION_IDLE_TTL
         ]
         sessions = [_stdio_sessions.pop(key) for key in expired]
+        for key in expired:
+            _discard_stdio_key_lock(key)
     for session in sessions:
         logger.info("Closing idle stdio MCP session: %s", session.url)
         session.close()
@@ -581,16 +615,28 @@ def _call_stdio_tool(
 ) -> Any:
     if cancel_event is not None and cancel_event.is_set():
         raise _MCPCancelled
+    # Callers without a Studio session id must retain the former one-shot
+    # behavior: no browser/cookie/tool state can leak into another request.
+    # Use an ephemeral key (and close it below) rather than the shared empty
+    # scope that the persistent-session cache used previously.
+    ephemeral = not scope
+    if ephemeral:
+        scope = f"request-{uuid.uuid4().hex}"
     key = _session_key(url, headers, scope)
     for fresh in (False, True):
         session = _get_stdio_session(url, headers, scope, timeout, cancel_event)
+        discard_session = ephemeral
         try:
             coro = _race_tool_call(session.client.call_tool(name, args), timeout, cancel_event)
             return session.run(coro, timeout)
         except (_MCPCancelled, asyncio.TimeoutError):
+            # _race_tool_call cancels the pending call but cancellation is
+            # cooperative. Never return this client to the cache while the
+            # timed-out/cancelled operation might still run on its transport.
+            discard_session = True
             raise
         except _SessionWedged:
-            _drop_stdio_session(key, session)
+            discard_session = True
             raise asyncio.TimeoutError
         except Exception:
             # A dead subprocess surfaces as a transport error; retry once on a
@@ -600,6 +646,8 @@ def _call_stdio_tool(
             _drop_stdio_session(key, session)
         finally:
             _release_stdio_session(session)
+            if discard_session:
+                _drop_stdio_session(key, session)
     raise RuntimeError("unreachable")
 
 
@@ -614,7 +662,8 @@ def call_tool_sync(
     scope: Optional[str] = None,
 ) -> str:
     """Synchronously call an MCP tool. stdio servers reuse a persistent session
-    keyed by (command, env, scope); HTTP servers stay one-shot per call.
+    keyed by (command, env, scope) only when ``scope`` is provided; calls
+    without one stay one-shot. HTTP servers always stay one-shot.
     ``cancel_event`` (threading.Event) cancels the in-flight call when set."""
 
     async def _one_shot() -> Any:
