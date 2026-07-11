@@ -273,6 +273,7 @@ export const ar = {
         title: "اللغة",
         label: "لغة العرض",
         description: "اللغة التي يستخدمها Unsloth.",
+        autoDetect: "اكتشاف تلقائي",
       },
       layout: {
         title: "التخطيط",

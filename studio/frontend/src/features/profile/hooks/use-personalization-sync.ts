@@ -9,12 +9,12 @@ import {
   type Theme,
 } from "@/features/settings";
 import {
-  DEFAULT_LOCALE,
-  getLocale,
-  isSupportedLocale,
+  DEFAULT_LOCALE_PREFERENCE,
+  getLocalePreference,
+  isLocalePreference,
   setLocale,
-  useLocale,
-  type Locale,
+  useLocalePreference,
+  type LocalePreference,
 } from "@/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -110,7 +110,7 @@ function profileSnapshot(): ProfileSnapshot {
 function payload(
   profile: ProfileSnapshot,
   theme: Theme,
-  language: Locale | null,
+  language: LocalePreference | null,
 ): PersonalizationWrite {
   return {
     version: 1,
@@ -126,7 +126,7 @@ function serialized(data: PersonalizationWrite): string {
 function hasLocalSettings(
   profile: ProfileSnapshot,
   theme: Theme,
-  language: Locale,
+  language: LocalePreference,
 ): boolean {
   return Boolean(
     profile.displayName ||
@@ -134,7 +134,7 @@ function hasLocalSettings(
       profile.avatarDataUrl ||
       profile.avatarShape !== "circle" ||
       theme !== "system" ||
-      language !== DEFAULT_LOCALE,
+      language !== DEFAULT_LOCALE_PREFERENCE,
   );
 }
 
@@ -144,7 +144,7 @@ export function usePersonalizationSync(enabled: boolean): void {
   const avatarDataUrl = useUserProfileStore((s) => s.avatarDataUrl);
   const avatarShape = useUserProfileStore((s) => s.avatarShape);
   const { theme } = useTheme();
-  const language = useLocale();
+  const language = useLocalePreference();
   const [hydratedGeneration, setHydratedGeneration] = useState(0);
   const authGenerationRef = useRef(0);
   const latestThemeRef = useRef(theme);
@@ -191,7 +191,7 @@ export function usePersonalizationSync(enabled: boolean): void {
             avatarShape: remote.profile.avatarShape === "rounded" ? "rounded" : "circle",
           };
           const nextTheme = remote.appearance.theme;
-          const nextLanguage = isSupportedLocale(remote.appearance.language)
+          const nextLanguage = isLocalePreference(remote.appearance.language)
             ? remote.appearance.language
             : latestLanguageRef.current;
           useUserProfileStore.setState(nextProfile);
@@ -207,7 +207,7 @@ export function usePersonalizationSync(enabled: boolean): void {
             useUserProfileStore.setState(nextProfile);
           }
           const nextTheme = latestThemeRef.current;
-          const nextLanguage = getLocale();
+          const nextLanguage = getLocalePreference();
           const nextPayload = payload(nextProfile, nextTheme, nextLanguage);
           const nextSerialized = serialized(nextPayload);
           if (hasLocalSettings(nextProfile, nextTheme, nextLanguage)) {

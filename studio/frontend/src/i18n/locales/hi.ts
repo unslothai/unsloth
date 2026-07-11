@@ -272,6 +272,7 @@ export const hi = {
         title: "भाषा",
         label: "प्रदर्शन भाषा",
         description: "Unsloth द्वारा उपयोग की जाने वाली भाषा।",
+        autoDetect: "स्वतः पहचान",
       },
       layout: {
         title: "लेआउट",

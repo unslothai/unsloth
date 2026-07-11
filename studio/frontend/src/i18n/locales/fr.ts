@@ -279,6 +279,7 @@ export const fr = {
         title: "Langue",
         label: "Langue d'affichage",
         description: "La langue utilisée par Unsloth.",
+        autoDetect: "Détection automatique",
       },
       layout: {
         title: "Disposition",

@@ -283,6 +283,7 @@ export const de = {
         title: "Sprache",
         label: "Anzeigesprache",
         description: "Die von Unsloth verwendete Sprache.",
+        autoDetect: "Automatisch erkennen",
       },
       layout: {
         title: "Layout",

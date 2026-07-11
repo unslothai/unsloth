@@ -259,6 +259,7 @@ export const zhCN = {
         title: "语言",
         label: "显示语言",
         description: "选择 Unsloth 使用的语言。",
+        autoDetect: "自动检测",
       },
       theme: {
         title: "主题",

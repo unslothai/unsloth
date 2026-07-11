@@ -272,6 +272,7 @@ export const ru = {
         title: "Язык",
         label: "Язык интерфейса",
         description: "Язык, используемый Unsloth.",
+        autoDetect: "Автоопределение",
       },
       layout: {
         title: "Макет",

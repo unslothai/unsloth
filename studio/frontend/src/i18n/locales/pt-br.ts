@@ -274,6 +274,7 @@ export const ptBR = {
         title: "Idioma",
         label: "Idioma de exibição",
         description: "O idioma utilizado pelo Unsloth.",
+        autoDetect: "Detecção automática",
       },
       layout: {
         title: "Layout",

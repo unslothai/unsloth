@@ -251,6 +251,7 @@ export const ja = {
         title: "言語",
         label: "表示言語",
         description: "Unsloth で使用される言語。",
+        autoDetect: "自動検出",
       },
       layout: {
         title: "レイアウト",

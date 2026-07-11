@@ -282,6 +282,7 @@ export const es = {
         title: "Idioma",
         label: "Idioma de la interfaz",
         description: "El idioma que usa Unsloth.",
+        autoDetect: "Detección automática",
       },
       layout: {
         title: "Diseño",
