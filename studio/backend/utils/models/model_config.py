@@ -906,10 +906,9 @@ def _is_vision_model_uncached(
     )
     if raw is not None:
         if raw is False and not local_files_only:
-            # A latest-only architecture is invisible to the raw heuristics
-            # (built from older transformers); when the model routes to the
-            # pinned latest tier, trust the AutoConfig probe under that
-            # sidecar instead of the heuristic False.
+            # Latest-only architectures are invisible to the raw heuristics (built from
+            # older transformers); when routing to the latest tier, trust that sidecar's
+            # AutoConfig probe over the heuristic False.
             try:
                 from utils.transformers_version import get_transformers_tier
                 if get_transformers_tier(model_name, hf_token, probe = False) == "latest":

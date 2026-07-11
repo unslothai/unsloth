@@ -4641,16 +4641,13 @@ async def validate_model(
                 _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
             )
         # Brand-new architecture check: does a newer transformers ship this model_type?
-        # Cheap for every currently supported model (static overlay lookup, no network);
-        # only a model_type unknown to ALL installed overlays consults the cached PyPI /
-        # GitHub-main snapshot. Best-effort: never fails validation (returns None on any
-        # error, offline, or when UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS is set).
+        # Static overlay lookup for known models (no network); only an unknown model_type
+        # hits the cached PyPI/main snapshot. Best-effort: never fails validation.
         transformers_upgrade: Optional[TransformersUpgradeInfo] = None
         if not is_gguf:
             from utils.transformers_latest import check_upgrade_for_model
 
-            # Cover the [adapter, base] set: a LoRA adapter's base model is what
-            # the worker actually activates transformers for.
+            # Cover [adapter, base]: the worker activates transformers for the base model.
             for _target in security_targets:
                 _upgrade = await asyncio.to_thread(
                     check_upgrade_for_model, _target, request.hf_token
@@ -4743,8 +4740,8 @@ async def validate_model(
         )
 
 
-# On studio_router: a consented server-side install is a Studio admin action,
-# so it must not be reachable through the OpenAI-compatible /v1 mount.
+# studio_router only: a consented server-side install is an admin action, not reachable
+# through the OpenAI-compatible /v1 mount.
 @studio_router.post(
     "/install-latest-transformers", response_model = InstallLatestTransformersResponse
 )

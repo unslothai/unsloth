@@ -235,15 +235,14 @@ _VENV_T5_DIR = _VENV_T5_550_DIR
 # reuses the workspace torch (torch-agnostic).
 _VENV_LLMCOMPRESSOR_DIR = str(_studio_root() / ".venv_llmcompressor")
 
-# User-consented "latest transformers" sidecar for brand-new architectures that no
-# pre-provisioned overlay ships. Unlike the fixed-version sidecars above it is created only
-# after the user confirms the install popup (see utils/transformers_latest.py); the exact
-# pinned version is recorded in a marker file inside the dir so restarts revalidate it.
+# User-consented "latest transformers" sidecar for brand-new architectures no
+# pre-provisioned overlay ships. Unlike the fixed sidecars it is created only after the user
+# confirms the install popup (see utils/transformers_latest.py); the pinned version lives in
+# a marker file so restarts revalidate it.
 _VENV_T5_LATEST_DIR = str(_studio_root() / ".venv_t5_latest")
 _LATEST_PIN_MARKER = ".unsloth_pinned_transformers"
 
-# Tier precedence: higher rank wins in _higher_tier. "latest" (the user-consented
-# newest-release sidecar) outranks every fixed tier.
+# Tier precedence: higher rank wins in _higher_tier. "latest" outranks every fixed tier.
 _TIER_RANK = {"default": 0, "530": 1, "550": 2, "510": 3, "latest": 4}
 
 
@@ -921,8 +920,7 @@ def _latest_tier_disabled() -> bool:
 def _overlay_transformers_dir(tier: str) -> str | None:
     """transformers source dir for a tier, located without importing it."""
     if tier != "default":
-        # latest participates only with a valid pin (activation refuses unpinned,
-        # so mapping from a partial/manual dir would route to a dead tier) and
+        # latest participates only with a valid pin (activation refuses unpinned) and
         # while the kill switch is off.
         if tier == "latest" and (_latest_tier_disabled() or latest_venv_pinned_version() is None):
             return None
@@ -1766,9 +1764,8 @@ def _ensure_venv_t5_exists() -> bool:
 
 # --- User-consented "latest transformers" sidecar (.venv_t5_latest) --------------------------
 # Provisioned only via ensure_latest_transformers_venv() after the user confirms the upgrade
-# popup (see utils/transformers_latest.py). The exact pip version is pinned in a marker file
-# inside the dir, so restarts revalidate the same version and routing picks the tier up
-# automatically (it is just a --target dir like the other sidecars).
+# popup (see utils/transformers_latest.py). The pip version is pinned in a marker file, so
+# restarts revalidate it and routing picks the tier up automatically (just a --target dir).
 
 # PEP 440-ish release strings only (guards the pip install spec against injection).
 _LATEST_VERSION_RE = r"[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?"
@@ -1859,8 +1856,8 @@ def _stage_and_swap_latest_venv(version: str, packages: tuple[str, ...]) -> bool
         shutil.rmtree(staging, ignore_errors = True)
         return False
     shutil.rmtree(retired, ignore_errors = True)
-    # The overlay's CONFIG_MAPPING_NAMES may have changed (fresh install/upgrade): drop the
-    # cached key set so the next routing decision re-reads the new mapping.
+    # CONFIG_MAPPING_NAMES may have changed (fresh install/upgrade): drop the cached key
+    # set so the next routing decision re-reads it.
     _config_mapping_cache.pop("latest", None)
     logger.info("Provisioned .venv_t5_latest with transformers %s", version)
     return True
@@ -1887,9 +1884,8 @@ def _ensure_venv_t5_latest_exists() -> bool:
             version,
         )
         return False
-    # Repair through the same stage-and-swap as the consented install: the
-    # incomplete-but-pinned live dir survives a failed repair, so the pin is
-    # never lost and a later attempt can still repair it.
+    # Repair via the same stage-and-swap as the consented install: the incomplete-but-pinned
+    # live dir survives a failed repair, so the pin is never lost.
     return _stage_and_swap_latest_venv(version, packages)
 
 
