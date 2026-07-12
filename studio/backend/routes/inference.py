@@ -6359,8 +6359,8 @@ async def openai_chat_completions(
         # the provider branch and the validator intentionally leaves
         # confirm_tool_calls unset there, so only an explicit confirm_tool_calls=True
         # should force the local-confirm rejection for those arms.
-        _studio_local_tool_loop = (
-            _explicit_studio_tool_loop_requested(payload) or bool(payload.enabled_tools)
+        _studio_local_tool_loop = _explicit_studio_tool_loop_requested(payload) or bool(
+            payload.enabled_tools
         )
         _client_tool_passthrough = (
             bool(payload.tools)
@@ -11295,9 +11295,7 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
 # executing; mirrors the unconditional-safe names in is_potentially_unsafe_tool_call).
 # Any other selected tool (terminal, python) can require the gate this channel
 # has no way to present, so an omitted permission_mode ("ask") only asks then.
-_ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
-    {"web_search", "search_knowledge_base", "render_html"}
-)
+_ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base", "render_html"})
 
 
 def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
