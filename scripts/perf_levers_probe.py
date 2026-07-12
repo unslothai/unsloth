@@ -36,9 +36,9 @@ def _lpips(ref, arr):
         import lpips
         import torch
 
-        # Keep the metric model on CPU: caching it on CUDA leaves it resident across
-        # variants, and each run resets peak-memory stats, so its VRAM would be charged
-        # to (and reduce headroom for) every later variant's measurement.
+        # Keep the metric model on CPU: caching it on CUDA leaves it resident across variants, and
+        # each run resets peak-memory stats, so its VRAM would be charged to (and reduce headroom
+        # for) every later variant's measurement.
         if _LP["fn"] is None:
             _LP["fn"] = lpips.LPIPS(net = "alex", verbose = False).eval()
 
@@ -150,9 +150,9 @@ def run(
             return None
     else:
         # set_attention_backend pins diffusers' PROCESS-WIDE active backend, and a fresh
-        # transformer's processors (backend None) inherit it. Force native for the no-attn
-        # variants so they aren't silently measured under a prior variant's kernel (e.g.
-        # fbcache running with a leftover sage backend).
+        # transformer's processors (backend None) inherit it. Force native for the no-attn variants
+        # so they aren't measured under a prior variant's kernel (e.g. fbcache with a leftover sage
+        # backend).
         try:
             pipe.transformer.set_attention_backend("native")
         except Exception as exc:  # noqa: BLE001 — best-effort isolation

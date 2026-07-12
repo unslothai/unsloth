@@ -121,11 +121,11 @@ class _FakeTransformer:
         return object()
 
 
-# ── Wan2.2 fakes: a per-DiT trackable transformer so the dual-DiT optimisation
-# tests can assert speed / cache / attention engaged on BOTH experts, plus two
-# pipeline fakes -- single-DiT (TI2V-5B) and dual-DiT MoE (A14B). The MoE __call__
-# carries guidance_scale_2 so the cfg2 signature-gate actually exercises; the
-# single-DiT __call__ omits it so the gate proves it is NOT threaded there.
+# ── Wan2.2 fakes: a per-DiT trackable transformer so the dual-DiT optimisation tests can assert
+# speed / cache / attention engaged on BOTH experts, plus two pipeline fakes -- single-DiT
+# (TI2V-5B) and dual-DiT MoE (A14B). The MoE __call__ carries guidance_scale_2 so the cfg2
+# signature-gate exercises; the single-DiT __call__ omits it so the gate proves it is NOT
+# threaded there.
 
 
 class _FakeWanDiT:
@@ -291,11 +291,10 @@ class _FakeWanPipelineSingle:
         return _FakeWanPipeMoE() if moe else _FakeWanPipeSingle()
 
 
-# ── HunyuanVideo-1.5 fakes: the __call__ signature has NO guidance kwarg and NO
-# callback_on_step_end (matching pipeline_hunyuan_video1_5.py in diffusers 0.39),
-# a guider object carries the CFG scale, and the denoise loop drives
-# scheduler.step -- so the guider write and the scheduler-wrap progress/cancel
-# paths actually exercise.
+# ── HunyuanVideo-1.5 fakes: __call__ has NO guidance kwarg and NO callback_on_step_end
+# (matching pipeline_hunyuan_video1_5.py in diffusers 0.39), a guider object carries the CFG
+# scale, and the denoise loop drives scheduler.step -- so the guider write and the scheduler-wrap
+# progress/cancel paths exercise.
 
 
 class _FakeHV15Scheduler:
@@ -477,8 +476,8 @@ def test_validate_gates_base_repo_and_local_paths(tmp_path):
 def test_validate_rejects_kind_extension_mismatch(tmp_path):
     backend = VideoBackend()
     # model_kind single_file with a .gguf file, or gguf with a non-.gguf file, must be rejected
-    # BEFORE the GPU handoff (mirrors the image loader), instead of failing in the wrong
-    # single-file loader after the route evicted the resident model.
+    # BEFORE the GPU handoff (mirrors the image loader), not fail in the wrong single-file loader
+    # after the route evicted the resident model.
     with pytest.raises(ValueError, match = "needs model_kind 'gguf'"):
         backend.validate_load_request(
             "unsloth/LTX-2.3-GGUF",
@@ -506,9 +505,9 @@ def test_validate_rejects_local_file_suffix_kind_mismatch(tmp_path):
     backend = VideoBackend()
     # A local FILE is handed straight to the gguf/single_file loader: _resolve_checkpoint_path
     # returns the file itself, IGNORING gguf_filename, so the file's OWN suffix must match the
-    # kind. A .gguf file picked as single_file (or a .safetensors file picked as gguf) slips
-    # past the gguf_filename suffix checks, so it must be rejected HERE, before the route evicts
-    # the resident GPU owner and then fails deep in from_single_file / the GGUF reader.
+    # kind. A .gguf picked as single_file (or a .safetensors picked as gguf) slips past the
+    # gguf_filename suffix checks, so reject it HERE, before the route evicts the resident GPU
+    # owner and fails deep in from_single_file / the GGUF reader.
     gguf_file = tmp_path / "ltx.gguf"
     gguf_file.write_bytes(b"weights")
     safetensors_file = tmp_path / "ltx.safetensors"
@@ -551,8 +550,8 @@ def test_validate_rejects_local_file_suffix_kind_mismatch(tmp_path):
 def test_validate_rejects_windows_shaped_missing_checkpoint(tmp_path):
     backend = VideoBackend()
     # A missing Windows-shaped local pick (backslash path, or a C:/ drive path) must fail HERE,
-    # not be treated as a Hub repo and only fail after the route evicts the resident GPU owner.
-    # Mirrors the image loader's is_absolute()/backslash path-shaped check.
+    # not be treated as a Hub repo and fail after the route evicts the resident GPU owner. Mirrors
+    # the image loader's is_absolute()/backslash path-shaped check.
     with pytest.raises(ValueError, match = "does not exist"):
         backend.validate_load_request(
             "C:\\models\\ltx.gguf",
@@ -587,9 +586,9 @@ def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
 def test_validate_rejects_local_file_picked_as_pipeline(tmp_path):
     backend = VideoBackend()
     # A local FILE (a bare .safetensors) sent as a pipeline is not a diffusers directory, so
-    # from_pretrained would only fail deep in the background load AFTER the route evicts the
-    # resident GPU model. The preflight must reject it HERE -- the check gates on .exists()
-    # (not .is_dir()), mirroring the image loader, so it catches files as well as directories.
+    # from_pretrained fails deep in the background load AFTER the route evicts the resident model.
+    # The preflight rejects it HERE -- gating on .exists() (not .is_dir()), mirroring the image
+    # loader, so it catches files as well as directories.
     f = tmp_path / "ltx-2.safetensors"
     f.write_bytes(b"x")
     with pytest.raises(ValueError, match = "model_index.json"):
@@ -599,9 +598,9 @@ def test_validate_rejects_local_file_picked_as_pipeline(tmp_path):
 def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
     backend = VideoBackend()
     # A local base_repo dir that is NOT a diffusers pipeline (no model_index.json) passes the
-    # any-existing-path trust check, but the base loads via from_pretrained (needs model_index),
-    # so reject it HERE before the route hands the GPU to VIDEO -- the pipeline-kind shape check
-    # covers only repo_id, and an explicit base_repo is only meaningful for a gguf/single_file load.
+    # any-existing-path trust check, but the base loads via from_pretrained (needs model_index), so
+    # reject it HERE before the route hands the GPU to VIDEO -- the pipeline-kind shape check covers
+    # only repo_id, and an explicit base_repo is only meaningful for a gguf/single_file load.
     bad_base = tmp_path / "bare-base"
     bad_base.mkdir()
     with pytest.raises(ValueError, match = "model_index.json"):
@@ -706,9 +705,9 @@ def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
 
 
 def test_loading_repo_ids_guards_in_flight_delete():
-    # During a background load status()["loaded"] is still False, but the target repo (+ its
-    # companion base) is being downloaded, so the delete-cached guard needs loading_repo_ids to
-    # refuse deletion and avoid yanking blobs from under the in-flight download/assembly.
+    # During a background load status()["loaded"] is still False, but the target repo (+ companion
+    # base) is downloading, so the delete-cached guard needs loading_repo_ids to refuse deletion
+    # and avoid yanking blobs from under the in-flight download/assembly.
     from core.inference.video import _VideoLoadingState
 
     backend = VideoBackend()
@@ -759,10 +758,10 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
 
 def test_load_holds_generate_lock_across_placement(fake_runtime, tmp_path, monkeypatch):
     # The video load must hold _generate_lock across GPU placement (apply_memory_plan) so an
-    # unload / arbiter eviction -- which barriers on _generate_lock before freeing -- cannot hand
+    # unload / arbiter eviction -- which barriers on _generate_lock before freeing -- can't hand
     # the GPU to another backend while a multi-GB pipeline is still being moved onto it (mirrors
-    # the image backend, which places + commits under this lock). Verify unload() blocks until
-    # placement releases the lock, and the superseded load then aborts without committing.
+    # the image backend). Verify unload() blocks until placement releases the lock, and the
+    # superseded load then aborts without committing.
     import threading
 
     from core.inference import video as video_mod
@@ -814,11 +813,10 @@ def test_load_holds_generate_lock_across_placement(fake_runtime, tmp_path, monke
 
 
 def test_load_records_engaged_speed_optims(fake_runtime, tmp_path, monkeypatch):
-    # Regression: the load tail once re-ran the already-filtered speed_optims
-    # tuple through ``.items()`` as if it were still the raw applied dict, so
-    # every real-GPU load (where at least channels_last engages) crashed with
-    # 'tuple' object has no attribute 'items'. Fake runtime forces every optim
-    # False, so this only reproduces when one is made to engage.
+    # Regression: the load tail once re-ran the already-filtered speed_optims tuple through
+    # ``.items()`` as if it were still the raw applied dict, so every real-GPU load (where at least
+    # channels_last engages) crashed with 'tuple' object has no attribute 'items'. Fake runtime
+    # forces every optim False, so this only reproduces when one is made to engage.
     from core.inference import video as video_mod
 
     monkeypatch.setattr(
@@ -849,12 +847,11 @@ def test_generate_defaults_from_variant(fake_runtime, tmp_path):
 
 
 def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
-    # FBCache residuals live on the long-lived DiT(s) and survive a generation, so
-    # the next clip at a new resolution would crash on stale state. generate must
-    # reset them when a cache is engaged (diffusers 0.39 exposes
-    # _reset_stateful_cache on the transformer; reset_stateful_hooks only exists on
-    # the HookRegistry) and must not touch an uncached load. transformer_2 (the Wan
-    # dual expert) resets too when present.
+    # FBCache residuals live on the long-lived DiT(s) and survive a generation, so the next clip
+    # at a new resolution would crash on stale state. generate must reset them when a cache is
+    # engaged (diffusers 0.39 exposes _reset_stateful_cache on the transformer; reset_stateful_hooks
+    # only on the HookRegistry) and must not touch an uncached load. transformer_2 (the Wan dual
+    # expert) resets too when present.
     import dataclasses
 
     (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
@@ -882,10 +879,9 @@ def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
 
 
 def test_is_ltx23_checkpoint_gguf(monkeypatch, tmp_path):
-    # diffusers maps every LTX-2 single file to the 2.0 config; a 2.3 checkpoint
-    # (9-row modulation tables in the header) must be detected so the loader
-    # routes to the full 2.3 assembly. A 2.0 header must not, and an unreadable
-    # header must fall back to the stock path (False), never raise.
+    # diffusers maps every LTX-2 single file to the 2.0 config; a 2.3 checkpoint (9-row modulation
+    # tables in the header) must be detected so the loader routes to the full 2.3 assembly. A 2.0
+    # header must not, and an unreadable header falls back to the stock path (False), never raise.
     from core.inference.video_ltx2 import is_ltx23_checkpoint
 
     def _reader_for(shapes):
@@ -986,9 +982,8 @@ def test_ltx23_split_and_variant(tmp_path):
 
 
 def test_ltx23_scaled_fp8_refused(monkeypatch, tmp_path):
-    # The Lightricks fp8 files carry .weight_scale/.input_scale companions; a
-    # plain dtype cast would silently corrupt them, so the loader must refuse
-    # with a pointer to the supported GGUF path.
+    # The Lightricks fp8 files carry .weight_scale/.input_scale companions; a plain dtype cast
+    # would corrupt them, so the loader must refuse with a pointer to the supported GGUF path.
     from core.inference import video_ltx2
 
     # Stub the module tree so this also runs under the CI sim, which blocks the
@@ -1068,16 +1063,16 @@ def test_hv15_cancel_unwinds_scheduler_loop(fake_runtime):
     assert pipe.scheduler.calls == 1
     # The wrapper must restore scheduler.step even on the exception path.
     assert pipe.scheduler.step.__func__ is _FakeHV15Scheduler.step
-    # The exception unwound pipe.__call__ before its own end-of-call cleanup, so
-    # generate() must have freed the offload hooks itself (VRAM would otherwise
-    # stay onloaded until the next request).
+    # The exception unwound pipe.__call__ before its own end-of-call cleanup, so generate() must
+    # have freed the offload hooks itself (VRAM would otherwise stay onloaded until the next
+    # request).
     assert pipe.hooks_freed == 1
 
 
 def test_cancel_during_export_discards_clip(fake_runtime, monkeypatch):
-    # A cancel that lands during the (blocking, uncancellable) export/mux must still discard
-    # the clip: cancel_generate() already reported success for it, so generate() must raise
-    # the cancelled sentinel rather than return the clip to be persisted to the gallery.
+    # A cancel landing during the (blocking, uncancellable) export/mux must still discard the
+    # clip: cancel_generate() already reported success, so generate() must raise the cancelled
+    # sentinel rather than return the clip to be persisted to the gallery.
     backend = VideoBackend()
     backend.load_pipeline(
         "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
@@ -1116,9 +1111,9 @@ def test_load_wan_ti2v_5b_pipeline(fake_runtime):
 
 
 def test_video_dense_speed_defaults_to_compile_profile(fake_runtime):
-    # A clip denoise amortises the one-time compile within a single run, so an
-    # UNSET speed on a dense (pipeline) load resolves to `default` -- never `max`,
-    # never `off`. Explicit "off" is still honored verbatim.
+    # A clip denoise amortises the one-time compile within a single run, so an UNSET speed on a
+    # dense (pipeline) load resolves to `default` -- never `max`, never `off`. Explicit "off" is
+    # still honored verbatim.
     backend = VideoBackend()
     status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     assert status["speed_mode"] == "default"
@@ -1133,9 +1128,9 @@ def test_video_dense_speed_defaults_to_compile_profile(fake_runtime):
 
 def test_video_speed_off_suppresses_auto_dtype_quant(fake_runtime, monkeypatch):
     # An explicit Speed="off" (bit-exact) pipeline load with Precision left at auto must NOT
-    # promote the unset precision to auto-quant: doing so would engage torchao quantization (and
-    # then force the speed back to default), silently breaking the bit-exact request. Mirrors the
-    # image backend. On a dense-capable GPU (stubbed) quantize_transformer must not run.
+    # promote the unset precision to auto-quant: that would engage torchao quantization (and force
+    # speed back to default), breaking the bit-exact request. Mirrors the image backend. On a
+    # dense-capable GPU (stubbed) quantize_transformer must not run.
     import core.inference.video as video_mod
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
@@ -1161,9 +1156,9 @@ def test_video_speed_off_suppresses_auto_dtype_quant(fake_runtime, monkeypatch):
 
 
 def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
-    # Unset step cache is AUTO, decided from the model's default schedule: Wan's
-    # 50-step default engages FBCache at load; the LTX distilled 8-step default
-    # keeps it off. Both are re-checked per generation (toggle test below).
+    # Unset step cache is AUTO, decided from the model's default schedule: Wan's 50-step default
+    # engages FBCache at load; the LTX distilled 8-step default keeps it off. Both are re-checked
+    # per generation (toggle test below).
     backend = VideoBackend()
     status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     assert status["transformer_cache"] == "fbcache"
@@ -1183,9 +1178,8 @@ def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
 
 
 def test_video_step_cache_auto_toggles_on_actual_steps(fake_runtime):
-    # The AUTO decision follows the ACTUAL step count of each generation: a
-    # few-step request drops the load-time cache, a many-step request restores
-    # it. An explicit "off" never toggles.
+    # The AUTO decision follows the ACTUAL step count of each generation: a few-step request drops
+    # the load-time cache, a many-step request restores it. An explicit "off" never toggles.
     backend = VideoBackend()
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     assert backend.status()["transformer_cache"] == "fbcache"
@@ -1227,9 +1221,9 @@ def test_wan_ti2v_defaults_applied(fake_runtime):
 
 
 def test_wan_ti2v_does_not_thread_cfg2(fake_runtime):
-    # The single-DiT TI2V pipeline has no guidance_scale_2 in its signature, so a
-    # request value must NOT be threaded (WanPipeline raises on it when boundary_ratio
-    # is None), even if the caller passes guidance_2.
+    # The single-DiT TI2V pipeline has no guidance_scale_2 in its signature, so a request value
+    # must NOT be threaded (WanPipeline raises on it when boundary_ratio is None), even if the
+    # caller passes guidance_2.
     backend = VideoBackend()
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     backend.generate(prompt = "a sloth", guidance_2 = 3.5)
@@ -1278,9 +1272,9 @@ def test_wan_a14b_step_cache_applies_to_both_dits(fake_runtime):
 
 
 def test_wan_a14b_attention_applies_to_both_dits(fake_runtime, monkeypatch):
-    # An explicit attention backend must be set on both experts. The fake runtime is a
-    # CPU target, where the NVIDIA gate correctly drops explicit kernels; pin the gate
-    # open so the explicit-set path itself is what this test exercises.
+    # An explicit attention backend must be set on both experts. The fake runtime is a CPU target,
+    # where the NVIDIA gate drops explicit kernels; pin the gate open so the explicit-set path is
+    # what this test exercises.
     from core.inference import diffusion_attention as attn_mod
 
     monkeypatch.setattr(attn_mod, "_is_cuda_nvidia", lambda target: True)
@@ -1311,10 +1305,9 @@ def test_wan_ti2v_single_dit_only_touches_one(fake_runtime):
 
 
 def test_wan_a14b_dense_quant_applies_to_both_dits(fake_runtime, monkeypatch):
-    # transformer_quant on a pipeline load quantises the dense DiT(s). On CPU the real
-    # dense path is unsupported, so stub the two quant seams to record which pipe view
-    # each helper saw: BOTH experts must be quantised (via the _SecondDiTView proxy),
-    # and status must report the engaged scheme.
+    # transformer_quant on a pipeline load quantises the dense DiT(s). On CPU the real dense path
+    # is unsupported, so stub the two quant seams to record which pipe view each helper saw: BOTH
+    # experts must be quantised (via the _SecondDiTView proxy), and status must report the scheme.
     import core.inference.video as video_mod
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
@@ -1348,10 +1341,10 @@ def test_wan_a14b_dense_quant_applies_to_both_dits(fake_runtime, monkeypatch):
 
 
 def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
-    # Offload hooks move modules with Module.to(), which torchao quantized tensors
-    # reject (observed as a hard crash on the A14B gate run). When the memory plan
-    # resolves to any offload policy, quant must be SKIPPED, not attempted: the
-    # load succeeds dense and the resolved record explains why.
+    # Offload hooks move modules with Module.to(), which torchao quantized tensors reject
+    # (observed as a hard crash on the A14B gate run). When the memory plan resolves to any offload
+    # policy, quant must be SKIPPED, not attempted: the load succeeds dense and the record explains
+    # why.
     import core.inference.video as video_mod
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
@@ -1369,9 +1362,9 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
         return "int8"
 
     monkeypatch.setattr(video_mod, "quantize_transformer", _fake_quant)
-    # The CPU fake target never plans an offload, so force one at the plan seam
-    # (frozen dataclass -> dataclasses.replace) and stub the apply step, which
-    # would otherwise call offload hooks the fake pipe does not have.
+    # The CPU fake target never plans an offload, so force one at the plan seam (frozen dataclass
+    # -> dataclasses.replace) and stub the apply step, which would else call offload hooks the fake
+    # pipe lacks.
     import dataclasses
 
     real_plan = video_mod.plan_diffusion_memory
@@ -1399,9 +1392,9 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
 
 
 def test_wan_a14b_partial_quant_fails_the_load(fake_runtime, monkeypatch):
-    # If the first expert quantises but the second does not, the pipe is left at
-    # mismatched precision with no way back (in-place mutation), so the load must
-    # fail cleanly rather than run mixed with quant reported off.
+    # If the first expert quantises but the second doesn't, the pipe is left at mismatched
+    # precision with no way back (in-place mutation), so the load must fail cleanly rather than run
+    # mixed with quant reported off.
     import core.inference.video as video_mod
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
@@ -1472,9 +1465,9 @@ def test_wan_validate_trusted_repos(fake_runtime):
 
 
 def test_wan_a14b_refuses_single_file_loads(fake_runtime):
-    # A single gguf/safetensors checkpoint carries only one of the A14B's two experts;
-    # the pipeline would pull the other dense bf16 from the base repo outside the
-    # memory plan, so validate refuses it up front (before any download).
+    # A single gguf/safetensors checkpoint carries only one of the A14B's two experts; the
+    # pipeline would pull the other dense bf16 from the base repo outside the memory plan, so
+    # validate refuses it up front (before any download).
     backend = VideoBackend()
     with pytest.raises(ValueError, match = "dual-expert"):
         backend.validate_load_request(
@@ -1490,9 +1483,9 @@ def test_wan_a14b_refuses_single_file_loads(fake_runtime):
 
 
 def test_second_dit_view_write_through():
-    # Attribute writes on the proxy must land on the real pipe (a helper's side
-    # effect would otherwise vanish with the temporary view); a ``transformer``
-    # write mirrors the read property onto the second expert.
+    # Attribute writes on the proxy must land on the real pipe (a helper's side effect would else
+    # vanish with the temporary view); a ``transformer`` write mirrors the read property onto the
+    # second expert.
     from core.inference.video import _SecondDiTView
 
     pipe = types.SimpleNamespace(transformer = "t1", transformer_2 = "t2", flag = None)
@@ -1649,9 +1642,9 @@ def test_predownload_base_honors_cancel_between_files(monkeypatch):
 
 
 def test_detect_load_family_arch_fallback_for_local_gguf(tmp_path, monkeypatch):
-    # A local GGUF is admitted to the Video picker by its general.architecture, but its path
-    # name may carry no whole-segment family token (a renamed "model.gguf"). The loader must
-    # resolve the same family the picker offered by reading the arch, not only the name.
+    # A local GGUF is admitted to the Video picker by its general.architecture, but its path name
+    # may carry no whole-segment family token (a renamed "model.gguf"). The loader must resolve the
+    # same family the picker offered by reading the arch, not only the name.
     from core.inference import video as vid
     from core.inference.video_families import detect_video_family
 

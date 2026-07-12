@@ -159,13 +159,11 @@ def clip_metrics(
     """All frame metrics for one candidate clip vs the reference clip."""
     import numpy as np
 
-    # The gate holds the requested shape (num_frames) fixed for reference and
-    # candidate alike, so both clips must decode to the same frame count. A
-    # shorter candidate is a truncated/corrupt render, not a valid one; comparing
-    # only the shared prefix would let good early frames mask the missing tail, so
-    # the mismatch is recorded and gated as FAIL (see verdict()) rather than
-    # silently dropped. No off-by-one is tolerated: nothing in the encode/decode
-    # path justifies one.
+    # The gate holds the requested shape (num_frames) fixed for reference and candidate, so both
+    # clips must decode to the same frame count. A shorter candidate is a truncated/corrupt render;
+    # comparing only the shared prefix would let good early frames mask the missing tail, so the
+    # mismatch is recorded and gated as FAIL (see verdict()) rather than dropped. No off-by-one is
+    # tolerated.
     ref_count, cand_count = len(ref_frames), len(cand_frames)
     frame_count_mismatch = ref_count != cand_count
     n = min(ref_count, cand_count)
