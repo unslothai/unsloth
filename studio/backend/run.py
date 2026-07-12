@@ -1160,8 +1160,7 @@ def run_server(
     # silent), so print a flushed heads-up (piped stdout is block-buffered).
     if not silent:
         print(
-            "Loading Unsloth Studio, please wait... "
-            "(this can take a few minutes)",
+            "Loading Unsloth Studio, please wait... (this can take a few minutes)",
             flush = True,
         )
         print("  - loading PyTorch, Unsloth and Transformers...", flush = True)
