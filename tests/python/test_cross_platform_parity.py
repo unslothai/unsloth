@@ -475,17 +475,15 @@ class TestPinnedRocmLeafDigitParity:
     def test_install_ps1_pinned_reroute_requires_rocm_digit(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         # The pinned gfx*/rocm reroute must require a digit after rocm.
-        assert re.search(
-            r"\$_pinLeaf -like 'gfx\*' -or \$_pinLeaf -match '\^rocm\\d'", text
-        ), (
+        assert re.search(r"\$_pinLeaf -like 'gfx\*' -or \$_pinLeaf -match '\^rocm\\d'", text), (
             "install.ps1 pinned-index reroute must use -match '^rocm\\d' (not a bare "
             "-like 'rocm*'), so rocm-current / rocm-rel-* fall through to the verbatim "
             "install instead of the ROCm --default-index path"
         )
         # The broad glob must be gone from that reroute.
-        assert "-like 'rocm*'" not in text, (
-            "install.ps1 must not route a pinned index on a bare -like 'rocm*' glob"
-        )
+        assert (
+            "-like 'rocm*'" not in text
+        ), "install.ps1 must not route a pinned index on a bare -like 'rocm*' glob"
 
     def test_install_sh_repairable_requires_rocm_digit(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")

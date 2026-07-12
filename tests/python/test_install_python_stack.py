@@ -166,9 +166,15 @@ class TestPinnedIndexClearsUvEnv:
 
     def test_pinned_index_url_strips_uv_index_vars(self):
         cmd = [
-            "uv", "pip", "install", "--force-reinstall",
-            "torch", "torchvision", "torchaudio",
-            "--index-url", "https://download.pytorch.org/whl/cu128",
+            "uv",
+            "pip",
+            "install",
+            "--force-reinstall",
+            "torch",
+            "torchvision",
+            "torchaudio",
+            "--index-url",
+            "https://download.pytorch.org/whl/cu128",
         ]
         with mock.patch.dict(
             os.environ,
