@@ -588,9 +588,17 @@ MAX_FONT_DATA_URL_LENGTH = 2_200_000
 # always fits the browser's localStorage quota.
 MAX_TOTAL_FONT_DATA_URL_LENGTH = 4_400_000
 
-# Characters that could terminate a CSS declaration or smuggle extra CSS if a
-# stored name ever reached a stylesheet; matches the frontend sanitizer.
-_FONT_NAME_FORBIDDEN = set(";{}()<>\"'")
+# Characters that could terminate a CSS declaration, escape the quoted
+# font-family value (backslash), or smuggle extra fallbacks/comments (comma,
+# slash) if a stored name ever reached a stylesheet. The server is the
+# authoritative gate; the frontend strips the same set before use.
+_FONT_NAME_FORBIDDEN = set(";{}()<>\"'\\/,`")
+
+
+def _check_font_name(value: str) -> str:
+    if any(c in _FONT_NAME_FORBIDDEN or ord(c) < 0x20 for c in value):
+        raise ValueError("Font name contains invalid characters.")
+    return value
 # Matches FONT_DATA_URL_PATTERN in the frontend appearance-custom-store.
 _FONT_DATA_URL_PATTERN = re.compile(
     r"^data:(?:font/(?:woff2?|ttf|otf|sfnt)"
@@ -607,9 +615,7 @@ class PersonalizationImportedFont(BaseModel):
     @field_validator("name")
     @classmethod
     def _validate_font_name(cls, value: str) -> str:
-        if any(c in _FONT_NAME_FORBIDDEN for c in value):
-            raise ValueError("Font name contains invalid characters.")
-        return value
+        return _check_font_name(value)
 
     @field_validator("dataUrl")
     @classmethod
@@ -687,6 +693,12 @@ class PersonalizationCustomization(BaseModel):
         if sum(len(f.dataUrl) for f in value) > MAX_TOTAL_FONT_DATA_URL_LENGTH:
             raise ValueError("Imported fonts exceed the total size limit.")
         return value
+
+    @field_validator("uiFont", "headingFont", "chatFont", "codeFont")
+    @classmethod
+    def _validate_selected_fonts(cls, value: Optional[str]) -> Optional[str]:
+        # Selected font names reach CSS the same way imported names do.
+        return value if value is None else _check_font_name(value)
 
     uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
     codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)

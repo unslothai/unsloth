@@ -142,27 +142,36 @@ export function SettingsDialog() {
   };
 
   // Scroll to the row/section a search result points at once the tab has
-  // rendered, and flash it so the eye lands on the right place.
+  // rendered, and flash it so the eye lands on the right place. The tab panel
+  // renders deferred, so retry across frames until the row exists instead of
+  // racing a single fixed delay (which silently missed under render lag).
   useEffect(() => {
     if (!pendingScroll) return;
-    const timer = window.setTimeout(() => {
+    let frame = 0;
+    let tries = 0;
+    const attempt = () => {
       const root = mainScrollRef.current;
-      if (root) {
-        const target = [
-          ...root.querySelectorAll<HTMLElement>("[data-settings-label]"),
-        ].find((el) => el.dataset.settingsLabel === pendingScroll);
-        if (target) {
-          target.scrollIntoView({ behavior: "smooth", block: "center" });
-          target.classList.add("settings-search-hit");
-          window.setTimeout(
-            () => target.classList.remove("settings-search-hit"),
-            1600,
-          );
-        }
+      const target = root
+        ? [
+            ...root.querySelectorAll<HTMLElement>("[data-settings-label]"),
+          ].find((el) => el.dataset.settingsLabel === pendingScroll)
+        : undefined;
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.add("settings-search-hit");
+        window.setTimeout(
+          () => target.classList.remove("settings-search-hit"),
+          1600,
+        );
+        setPendingScroll(null);
+      } else if (tries++ < 30) {
+        frame = window.requestAnimationFrame(attempt);
+      } else {
+        setPendingScroll(null);
       }
-      setPendingScroll(null);
-    }, 60);
-    return () => window.clearTimeout(timer);
+    };
+    frame = window.requestAnimationFrame(attempt);
+    return () => window.cancelAnimationFrame(frame);
   }, [pendingScroll]);
 
   useEffect(() => {

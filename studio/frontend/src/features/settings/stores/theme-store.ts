@@ -40,6 +40,13 @@ function readStoredPalette(): Palette {
   return isPalette(stored) ? stored : "standard";
 }
 
+// In-memory source of truth so a selected value survives even when
+// localStorage is blocked (private browsing). Without it the snapshots would
+// re-read empty storage and revert React state to the default while the DOM
+// already changed.
+let currentTheme: Theme = readStoredTheme();
+let currentPalette: Palette = readStoredPalette();
+
 function systemPrefersDark(): boolean {
   if (typeof window === "undefined") return false;
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -78,34 +85,41 @@ function subscribe(cb: () => void) {
     return () => listeners.delete(cb);
   }
   const mq = window.matchMedia("(prefers-color-scheme: dark)");
-  const syncTheme = () => {
-    applyToDocument(resolveTheme(readStoredTheme()));
-    applyPaletteToDocument(readStoredPalette());
+  // OS scheme flip: only the resolved value changes; keep the in-memory choice
+  // (re-reading storage here would clobber it when storage is blocked).
+  const onSchemeChange = () => {
+    applyToDocument(resolveTheme(currentTheme));
     cb();
   };
-  // Apply on mount so this store is the single source of truth for the DOM
-  // class after the index.html bootstrap script painted the first frame.
-  applyToDocument(resolveTheme(readStoredTheme()));
-  applyPaletteToDocument(readStoredPalette());
+  // Another tab wrote storage (only fires when storage is available): adopt it.
   const onStorage = (e: StorageEvent) => {
     if (
       e.key === STORAGE_KEY ||
       e.key === PALETTE_STORAGE_KEY ||
       e.key === null
-    )
-      syncTheme();
+    ) {
+      currentTheme = readStoredTheme();
+      currentPalette = readStoredPalette();
+      applyToDocument(resolveTheme(currentTheme));
+      applyPaletteToDocument(currentPalette);
+      cb();
+    }
   };
-  mq.addEventListener("change", syncTheme);
+  // Apply on mount so this store is the single source of truth for the DOM
+  // class after the index.html bootstrap script painted the first frame.
+  applyToDocument(resolveTheme(currentTheme));
+  applyPaletteToDocument(currentPalette);
+  mq.addEventListener("change", onSchemeChange);
   window.addEventListener("storage", onStorage);
   return () => {
     listeners.delete(cb);
-    mq.removeEventListener("change", syncTheme);
+    mq.removeEventListener("change", onSchemeChange);
     window.removeEventListener("storage", onStorage);
   };
 }
 
 function getSnapshot(): Theme {
-  return readStoredTheme();
+  return currentTheme;
 }
 
 function getServerSnapshot(): Theme {
@@ -116,7 +130,7 @@ function getServerSnapshot(): Theme {
 // changes when the OS scheme flips, so consumers keyed on `resolved`
 // (customization applier, mode-scoped settings) would not re-render.
 function getResolvedSnapshot(): ResolvedTheme {
-  return resolveTheme(readStoredTheme());
+  return resolveTheme(currentTheme);
 }
 
 function getResolvedServerSnapshot(): ResolvedTheme {
@@ -130,6 +144,7 @@ function getResolvedServerSnapshot(): ResolvedTheme {
  */
 export function setTheme(next: Theme): void {
   if (typeof window === "undefined") return;
+  currentTheme = next;
   // Persist "system" explicitly so a reload keeps following the OS.
   try {
     window.localStorage.setItem(STORAGE_KEY, next);
@@ -155,7 +170,7 @@ export function useTheme(): {
 }
 
 function getPaletteSnapshot(): Palette {
-  return readStoredPalette();
+  return currentPalette;
 }
 
 function getPaletteServerSnapshot(): Palette {
@@ -169,6 +184,7 @@ function getPaletteServerSnapshot(): Palette {
  */
 export function setPalette(next: Palette): void {
   if (typeof window === "undefined") return;
+  currentPalette = next;
   try {
     window.localStorage.setItem(PALETTE_STORAGE_KEY, next);
   } catch {

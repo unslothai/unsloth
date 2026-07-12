@@ -188,11 +188,27 @@ def _imported(fonts):
 
 
 def test_imported_font_name_rejects_css_characters():
-    for bad in ['Ev"il', "Ev;il", "Ev{il", "Ev<il", "Ev'il"]:
+    # Includes backslash (escapes the quoted family), comma/slash (extra
+    # fallbacks / comment start), and a control character.
+    for bad in ['Ev"il', "Ev;il", "Ev{il", "Ev<il", "Ev'il", "Ev\\il", "Ev,il", "Ev/il", "Ev\til"]:
         with pytest.raises(ValidationError):
             PersonalizationPayload.model_validate(
                 _imported([{"name": bad, "dataUrl": "data:font/woff2;base64,AAAA"}])
             )
+
+
+def test_selected_font_names_validated():
+    for field in ("uiFont", "headingFont", "chatFont", "codeFont"):
+        for bad in ["Ev\\il", "Ev,il", "Ev/il", "Ev;il", "Ev\nil"]:
+            with pytest.raises(ValidationError):
+                PersonalizationPayload.model_validate(
+                    {"appearance": {"customization": {field: bad}}}
+                )
+    # A normal family name (spaces + digits) is still accepted.
+    p = PersonalizationPayload.model_validate(
+        {"appearance": {"customization": {"uiFont": "Source Serif 4"}}}
+    )
+    assert p.appearance.customization.uiFont == "Source Serif 4"
 
 
 def test_imported_font_data_url_must_be_base64():
