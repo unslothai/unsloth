@@ -866,7 +866,9 @@ def _folded_path(node, literals = None) -> "str | None":
     literals = literals or {}
     if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
         # bytes paths are valid too (open(b'/etc/passwd')); decode for the scan.
-        return node.value.decode("latin-1", "ignore") if isinstance(node.value, bytes) else node.value
+        return (
+            node.value.decode("latin-1", "ignore") if isinstance(node.value, bytes) else node.value
+        )
     if isinstance(node, ast.Name):
         return literals.get(node.id)
     if isinstance(node, ast.JoinedStr):
