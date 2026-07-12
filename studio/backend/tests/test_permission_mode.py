@@ -60,6 +60,14 @@ def _clear_pending():
         ("sort --output=out in", True),
         ("sort --compress-program=sh big.txt", True),  # runs an external program
         ("sort in.txt", False),  # plain sort stays read only
+        ("rg --pre sh needle f.sh", True),  # rg preprocessor runs a command
+        ("rg --pre=/tmp/x needle .", True),
+        ("rg --hostname-bin /tmp/x foo .", True),
+        ("rg --pre-glob '*.txt' needle .", False),  # glob filter stays read only
+        ("rg needle .", False),  # plain rg stays read only
+        ("/tmp/cat secrets", True),  # path-qualified command is an arbitrary binary
+        ("./ls -la", True),
+        ("env /tmp/cat x", True),  # path-qualified target after a wrapper
         ("tree -o out.txt", True),  # -o writes a file
         ("xxd -r dump.hex out.bin", True),  # -r can write
         ("awk '{print}' file", True),  # awk can system()/write
@@ -326,3 +334,27 @@ def test_bypass_permissions_folds_to_full_on_request_models():
         )
         assert req.permission_mode == "full"
         assert req.bypass_permissions is True
+
+
+def test_ask_auto_self_enable_confirm_on_chat_request():
+    # A direct /chat/completions caller that requests ask/auto but omits the
+    # legacy confirm flag must still hit the confirmation gate.
+    for mode in ("ask", "auto"):
+        req = ChatCompletionRequest(
+            messages = [{"role": "user", "content": "hi"}],
+            permission_mode = mode,
+        )
+        assert req.confirm_tool_calls is True
+    # A contradictory confirm=False is overridden by the explicit mode.
+    req = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hi"}],
+        permission_mode = "ask",
+        confirm_tool_calls = False,
+    )
+    assert req.confirm_tool_calls is True
+    # Legacy callers with no permission_mode keep their confirm flag untouched.
+    req = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hi"}],
+        confirm_tool_calls = False,
+    )
+    assert req.confirm_tool_calls is False

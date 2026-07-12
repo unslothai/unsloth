@@ -781,7 +781,8 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = (
             "[x-unsloth] Permission level for local tool calls. 'ask' pauses every "
-            "call for approval (requires confirm_tool_calls). 'auto' ('Approve for "
+            "call for approval; 'ask'/'auto' enable the confirmation gate on their "
+            "own (needs a streaming request to deliver prompts). 'auto' ('Approve for "
             "me') only pauses calls detected as potentially unsafe (state-mutating "
             "terminal/python/MCP calls); read-only calls run immediately, and the "
             "sandbox stays on. 'full' is equivalent to bypass_permissions=true (no "
@@ -1060,6 +1061,10 @@ class ChatCompletionRequest(BaseModel):
         elif self.permission_mode == "off":
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
+        elif self.permission_mode in ("ask", "auto"):
+            # These modes gate on their own; a direct API caller that omits the
+            # legacy confirm flag must still hit the confirmation gate.
+            self.confirm_tool_calls = True
         return self
 
 

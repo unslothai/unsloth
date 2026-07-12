@@ -365,6 +365,8 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
     "sort": frozenset({"-o", "--output", "--compress-program"}),
     "tree": frozenset({"-o"}),
     "xxd": frozenset({"-r"}),
+    # rg runs an arbitrary program per file with --pre/--hostname-bin.
+    "rg": frozenset({"--pre", "--hostname-bin"}),
     "find": frozenset(
         {
             "-exec",
@@ -621,7 +623,12 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
             continue
         if prefix_pending and token.lstrip("-").isdigit():
             continue
-        base = os.path.basename(token.strip(";&|()`{}")).lower()
+        raw = token.strip(";&|()`{}")
+        # A path-qualified command (./ls, /tmp/cat) is an arbitrary executable,
+        # not the trusted system utility its basename matches; ask first.
+        if "/" in raw or "\\" in raw:
+            return True
+        base = os.path.basename(raw).lower()
         stem, ext = os.path.splitext(base)
         if ext in {".exe", ".com", ".bat", ".cmd"}:
             base = stem
