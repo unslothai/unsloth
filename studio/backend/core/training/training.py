@@ -1072,12 +1072,21 @@ class TrainingBackend:
         while sidecar_swap_in_progress() and time.time() < _swap_wait_deadline:
             time.sleep(1)
         if sidecar_swap_in_progress():
+            # Raising here would land in the pump's broad finalization catch and
+            # strand the run in a training state with no worker: finalize it as a
+            # failure explicitly instead.
             self._spawn_in_progress = False
-            from utils.transformers_version import SidecarSwapInProgress
-            raise SidecarSwapInProgress(
+            msg = (
                 "A transformers installation is replacing the latest sidecar; "
                 "cannot respawn the training worker."
             )
+            logger.error(msg)
+            with self._lock:
+                self._progress.is_training = False
+                self._progress.error = msg
+            self._ensure_db_run_created()
+            self._finalize_run_in_db(status = "error", error_message = msg)
+            return
 
         try:
             with native_path_secret_removed_for_child_start():

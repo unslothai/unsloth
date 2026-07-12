@@ -94,7 +94,14 @@ export const useTransformersUpgradeDialogStore =
       }
       if (pendingResolver === requestResolver) {
         if (result.success) {
-          set({ installRan: true, serverUnloadedChat: Boolean(result.model_unloaded) });
+          // OR with the latched value: a retry after a failed-after-unload
+          // attempt reports model_unloaded=false (the model is already gone),
+          // which must not erase the earlier unload signal.
+          set({
+            installRan: true,
+            serverUnloadedChat:
+              get().serverUnloadedChat || Boolean(result.model_unloaded),
+          });
           get().resolve(true);
           return;
         }
