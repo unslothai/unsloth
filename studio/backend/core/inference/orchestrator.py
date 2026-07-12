@@ -210,6 +210,12 @@ class InferenceOrchestrator:
         if self._cancel_event is not None:
             self._cancel_event.set()
 
+    def is_worker_alive(self) -> bool:
+        """True while the inference subprocess is running, even with no model
+        active (a failed load can leave a live worker holding sidecar modules)."""
+        proc = self._proc
+        return proc is not None and proc.is_alive()
+
     def _shutdown_subprocess(self, timeout: float = 10.0) -> None:
         """Gracefully shut down the inference subprocess."""
         self._stop_dispatcher()  # before killing subprocess

@@ -2692,17 +2692,26 @@ class TestLatestTierForces16Bit:
         gated = body.split("inference_lifecycle_gate():", 1)[1]
         assert "unload_model(active)" in gated
         assert "cleanup_memory()" in gated
-        assert "install_latest_transformers, request.version, _unload_before_swap" in gated
+        # Export teardown precedes the chat unload so its failure aborts while
+        # the user's model is still loaded.
+        assert gated.index("cleanup_memory()") < gated.index("unload_model(active)")
+        assert "install_latest_transformers(" in gated and "_unload_before_swap" in gated
         # The reservation must be taken BEFORE the (awaitable) gate wait, or a
         # training/export start could slip in while this request queues on the gate.
         assert body.index("try_begin_sidecar_swap()") < body.index(
             "inference_lifecycle_gate():"
         ), "the swap reservation must be raised before waiting on the lifecycle gate"
         # A failed teardown must abort the swap (raise), not fall through to it.
-        assert gated.count("raise RuntimeError") >= 2, (
-            "unload_model and cleanup_memory failures must raise so the staged "
-            "install never swaps under a live worker"
+        assert gated.count("raise RuntimeError") >= 3, (
+            "export, chat-unload, and idle-worker teardown failures must raise so "
+            "the staged install never swaps under a live worker"
         )
+        # The installer thread owns (and releases) the reservation, shielded from
+        # request cancellation, so a cancelled POST cannot unlock a live swap.
+        assert "asyncio.shield" in gated and "end_sidecar_swap()" in gated
+        # In-flight generation streams predate the gate; the route must refuse
+        # rather than kill their responses via the before_swap unload.
+        assert "other_inference_request_count" in body
 
     def test_start_routes_refuse_during_install(self):
         # A worker spawned mid-swap could activate a half-replaced sidecar.

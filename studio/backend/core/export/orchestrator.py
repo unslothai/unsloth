@@ -132,6 +132,11 @@ class ExportOrchestrator:
         """True while an export / load / cleanup command is running."""
         return self._export_active
 
+    def is_worker_alive(self) -> bool:
+        """True while the persistent export subprocess is running (op or idle)."""
+        proc = self._proc
+        return proc is not None and proc.is_alive()
+
     def was_cancelled(self) -> bool:
         """True if the in-flight (or most recent) run was cancelled by the user."""
         return self._cancel_requested

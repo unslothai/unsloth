@@ -4803,6 +4803,9 @@ async def install_latest_transformers_route(
             status_code = 409,
             detail = "A transformers installation is already in progress.",
         )
+    # Until the installer thread takes over, this coroutine owns the reservation
+    # and must release it on any early exit (the 409 refusals below).
+    owns_reservation = True
     try:
         from core.export import get_export_backend
         from core.training import get_training_backend
@@ -4823,15 +4826,34 @@ async def install_latest_transformers_route(
                     "installing a new transformers version."
                 ),
             )
+        # In-flight generation streams passed the middleware long ago, so the
+        # lifecycle gate below cannot protect them; the swap's unload would kill
+        # their responses mid-stream. Mirror the model auto-switch busy check.
+        # This admin route is not middleware-counted, and pending requests are
+        # still blocked in the middleware, so neither is subtracted here.
+        from core.inference.llama_keepwarm import (
+            inference_lifecycle_gate,
+            note_model_unloaded,
+            other_inference_request_count,
+        )
+
+        if other_inference_request_count(
+            current_request_counted = False, include_pending = False
+        ) > 0:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "Another inference request is in progress. Wait for it to "
+                    "finish before installing a new transformers version."
+                ),
+            )
 
         # Hold the same lifecycle gate /load holds for its whole load, so no HF worker
         # can start (or be mid-load with active_model_name unset) while the sidecar is
-        # swapped. The chat model is unloaded via before_swap, i.e. only once the staged
-        # install succeeded and the swap is certain: a failed pip/compat check must not
-        # leave the user with their working model gone and only an error dialog. GGUF
-        # stays loaded: llama-server never imports transformers.
-        from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
-
+        # swapped. Teardown happens via before_swap, i.e. only once the staged install
+        # succeeded and the swap is certain: a failed pip/compat check must not leave
+        # the user with their working model gone and only an error dialog. GGUF stays
+        # loaded: llama-server never imports transformers.
         async with inference_lifecycle_gate():
             backend = get_inference_backend()
             export_backend = get_export_backend()
@@ -4841,6 +4863,17 @@ async def install_latest_transformers_route(
                 # failure here raises so the previous sidecar stays untouched:
                 # a worker that did not tear down cleanly may still lazy-import
                 # from the directory the swap would replace.
+                #
+                # Export teardown runs FIRST so its failure aborts while the chat
+                # model is still loaded. cleanup_memory shuts the subprocess down
+                # even when the cleanup command itself fails, so judge by worker
+                # liveness, not by its return value.
+                export_backend.cleanup_memory()
+                export_alive = getattr(export_backend, "is_worker_alive", None)
+                if callable(export_alive) and export_alive():
+                    raise RuntimeError(
+                        "Export worker still alive before the transformers swap"
+                    )
                 active = getattr(backend, "active_model_name", None)
                 if active:
                     if not backend.unload_model(active):
@@ -4853,19 +4886,35 @@ async def install_latest_transformers_route(
                         active,
                         request.version,
                     )
-                # An idle export worker persists between ops with the old sidecar
-                # imported; cleanup_memory serializes with ops and shuts it down
-                # (fast no-op when no worker is alive).
-                if not export_backend.cleanup_memory():
-                    raise RuntimeError(
-                        "Could not shut down the export worker before the transformers swap"
-                    )
+                # A failed load can leave a live worker with no active model that
+                # still holds sidecar modules (and blocks the rename on Windows).
+                worker_alive = getattr(backend, "is_worker_alive", None)
+                if callable(worker_alive) and worker_alive():
+                    backend._shutdown_subprocess()
+                    if worker_alive():
+                        raise RuntimeError(
+                            "Inference worker still alive before the transformers swap"
+                        )
 
-            result = await asyncio.to_thread(
-                install_latest_transformers, request.version, _unload_before_swap, True
-            )
+            def _run_install() -> dict:
+                # Owns the reservation from here: releasing in the thread (not the
+                # route) keeps the lock held if the request is cancelled or times
+                # out while the minute-long install is still staging/renaming.
+                try:
+                    return install_latest_transformers(
+                        request.version, _unload_before_swap, True
+                    )
+                finally:
+                    end_sidecar_swap()
+
+            install_task = asyncio.ensure_future(asyncio.to_thread(_run_install))
+            owns_reservation = False
+            # shield: a cancelled request stops waiting, but the installer keeps
+            # running to completion instead of being torn down mid-swap.
+            result = await asyncio.shield(install_task)
     finally:
-        end_sidecar_swap()
+        if owns_reservation:
+            end_sidecar_swap()
     if not result["success"]:
         raise HTTPException(status_code = 400, detail = result["message"])
     return InstallLatestTransformersResponse(**result)
