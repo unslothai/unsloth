@@ -105,13 +105,13 @@ def test_pathlib_mkdir_parents_remaps_convention_path(monkeypatch, tmp_path):
         mod._notified = True
         # Bare convention path maps onto the CWD itself, which already exists:
         # exist_ok=True must be honoured against the mapped location, not raise.
-        pathlib.Path("/mnt/data").mkdir(parents=True, exist_ok=True)
+        pathlib.Path("/mnt/data").mkdir(parents = True, exist_ok = True)
         # A nested convention path is created inside the CWD, parents and all.
-        pathlib.Path("/mnt/data/plots/run1").mkdir(parents=True, exist_ok=True)
+        pathlib.Path("/mnt/data/plots/run1").mkdir(parents = True, exist_ok = True)
         assert os.path.isdir(os.path.join(cwd, "plots", "run1"))
         # Re-running the same setup is idempotent: exist_ok is evaluated on the
         # mapped path (which now exists), not the never-present /mnt/data.
-        pathlib.Path("/mnt/data/plots/run1").mkdir(parents=True, exist_ok=True)
+        pathlib.Path("/mnt/data/plots/run1").mkdir(parents = True, exist_ok = True)
 
         # Passthrough: real paths are created verbatim through both patches,
         # never remapped into the CWD.
