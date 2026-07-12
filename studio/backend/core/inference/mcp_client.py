@@ -361,7 +361,11 @@ def call_tool_sync(
 
     async def _call() -> Any:
         async with _client(url, headers, use_oauth) as client:
-            return await client.call_tool(name, args)
+            # raise_on_error=False so an is_error result (which may still carry
+            # image content) is returned to _flatten_result instead of FastMCP
+            # raising ToolError, which would drop the images. Transport/connection
+            # failures still raise and are handled by the caller's except below.
+            return await client.call_tool(name, args, raise_on_error = False)
 
     async def _watch_cancel() -> None:
         # 50 ms cadence keeps cancellation responsive without busy-looping;

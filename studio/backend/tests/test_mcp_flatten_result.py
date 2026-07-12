@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -12,10 +13,12 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+from core.inference import mcp_client
 from core.inference.mcp_client import (
     MAX_IMAGE_PAYLOAD_CHARS,
     MCP_IMAGES_SENTINEL,
     _flatten_result,
+    call_tool_sync,
 )
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 
@@ -114,3 +117,28 @@ def test_non_image_binary_block_still_ignored():
 def test_structured_content_fallback_still_used():
     flat = _flatten_result(_result(structured = {"ok": True}))
     assert flat == "{'ok': True}"
+
+
+def test_call_tool_sync_passes_raise_on_error_false_and_keeps_error_images(monkeypatch):
+    # Guards the real call path: FastMCP client.call_tool raises ToolError by
+    # default on an is_error result, which would bypass _flatten_result and drop
+    # the images. call_tool_sync must pass raise_on_error=False so the error
+    # result (with image content) reaches _flatten_result.
+    seen = {}
+
+    class _FakeClient:
+        async def call_tool(self, name, args, raise_on_error = True):
+            seen["raise_on_error"] = raise_on_error
+            return _result(_text("boom"), _image(), is_error = True)
+
+    @contextlib.asynccontextmanager
+    async def _fake_client(url, headers, use_oauth):
+        yield _FakeClient()
+
+    monkeypatch.setattr(mcp_client, "_client", _fake_client)
+    out = call_tool_sync("http://x", None, "take_screenshot", {})
+
+    assert seen["raise_on_error"] is False
+    assert out.startswith("Error: boom")
+    assert MCP_IMAGES_SENTINEL in out
+    assert is_tool_error(out)
