@@ -8975,6 +8975,7 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
+        from core.inference.tool_stream_exec import stream_tool_execution
         from core.inference.tools import build_rag_autoinject, execute_tool
 
         if not self.is_loaded:
@@ -9977,14 +9978,27 @@ class LlamaCppBackend:
                     ):
                         result = RAG_SEARCH_CAP_NUDGE
                     else:
-                        result = execute_tool(
-                            decision.tool_name,
-                            decision.arguments,
-                            cancel_event = cancel_event,
-                            timeout = _effective_timeout,
-                            session_id = session_id,
-                            rag_scope = rag_scope,
-                            disable_sandbox = bypass_permissions,
+                        # Execute in a worker thread so live stdout chunks and
+                        # heartbeats stream while the tool blocks (the SSE route
+                        # turns heartbeats into keepalives; proxies would drop an
+                        # idle connection). The returned result is byte-identical
+                        # to a direct call.
+                        def _invoke_tool(_output_callback, _decision = decision):
+                            return execute_tool(
+                                _decision.tool_name,
+                                _decision.arguments,
+                                cancel_event = cancel_event,
+                                timeout = _effective_timeout,
+                                session_id = session_id,
+                                rag_scope = rag_scope,
+                                disable_sandbox = bypass_permissions,
+                                output_callback = _output_callback,
+                            )
+
+                        result = yield from stream_tool_execution(
+                            _invoke_tool,
+                            tool_name = decision.tool_name,
+                            tool_call_id = decision.tool_call_id,
                         )
                         if decision.tool_name == "search_knowledge_base":
                             _kb_search_count += 1

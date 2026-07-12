@@ -1083,6 +1083,13 @@ _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
+# Local tool-loop streams: emit an SSE keepalive comment whenever the backend
+# generator produces nothing for this long (long prompt prefill between tool
+# iterations emits no tokens). Tool execution itself is covered by the
+# 10-second heartbeat events from core.inference.tool_stream_exec; this is the
+# second layer that keeps proxies (Cloudflare tunnels cap idle streams at
+# ~100 s) from dropping the connection during any other silent segment.
+_LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
 
 
 def _openai_llama_admission_capacity(request: Optional[Request], llama_backend = None) -> int:
@@ -7007,12 +7014,40 @@ async def openai_chat_completions(
                             asyncio.to_thread(next, gen, _tool_sentinel)
                         )
                         try:
-                            event = await asyncio.shield(next_task)
+                            # Wait with a stall timeout: when the backend
+                            # generator stays silent (e.g. long prompt prefill
+                            # between tool iterations), emit an SSE keepalive
+                            # comment so proxies don't drop the idle stream.
+                            # asyncio.wait never cancels next_task, matching the
+                            # shield semantics the finally-drain relies on.
+                            while True:
+                                done_tasks, _ = await asyncio.wait(
+                                    {next_task},
+                                    timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                                )
+                                if done_tasks:
+                                    break
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            event = next_task.result()
                         finally:
                             if next_task.done():
                                 next_task = None
                         if event is _tool_sentinel:
                             break
+
+                        if event["type"] == "heartbeat":
+                            # Emitted by the tool-execution wrapper while a
+                            # server-side tool blocks; keeps the SSE stream
+                            # alive through proxy idle timeouts.
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            continue
+
+                        if event["type"] == "tool_output":
+                            # Incremental stdout/stderr from a running tool;
+                            # forwarded verbatim for live UI output. The final
+                            # tool result still arrives in tool_end.
+                            yield f"data: {json.dumps(event)}\n\n"
+                            continue
 
                         if event["type"] == "status":
                             # Empty status marks an iteration boundary in the
@@ -8273,9 +8308,33 @@ async def openai_chat_completions(
                         api_monitor.finish(monitor_id, "cancelled")
                         return
 
-                    event = await asyncio.to_thread(next, gen, _sf_tool_sentinel)
+                    # Stall keepalive (see the GGUF tool stream): silent
+                    # backend segments must not leave the SSE stream idle
+                    # past proxy timeouts.
+                    _sf_next_task = asyncio.create_task(
+                        asyncio.to_thread(next, gen, _sf_tool_sentinel)
+                    )
+                    while True:
+                        _sf_done, _ = await asyncio.wait(
+                            {_sf_next_task},
+                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                        )
+                        if _sf_done:
+                            break
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    event = _sf_next_task.result()
                     if event is _sf_tool_sentinel:
                         break
+
+                    if event["type"] == "heartbeat":
+                        # Tool-execution wrapper heartbeat -> SSE keepalive.
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
+
+                    if event["type"] == "tool_output":
+                        # Live stdout/stderr chunk from a running tool.
+                        yield f"data: {json.dumps(event)}\n\n"
+                        continue
 
                     if event["type"] == "status":
                         if not event["text"]:
@@ -11874,7 +11933,18 @@ async def _anthropic_tool_stream(
                 if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
                     return
-                event = await asyncio.to_thread(next, gen, _sentinel)
+                # Stall keepalive (see the GGUF tool stream): silent backend
+                # segments must not leave the SSE stream idle past proxy timeouts.
+                _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                while True:
+                    _done_tasks, _ = await asyncio.wait(
+                        {_next_task},
+                        timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                    )
+                    if _done_tasks:
+                        break
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                event = _next_task.result()
                 if event is _sentinel:
                     break
                 etype = event.get("type")
@@ -11883,6 +11953,17 @@ async def _anthropic_tool_stream(
                     # dropped — skip every event until (and including) its tool_end.
                     if etype == "tool_end":
                         drop_until_tool_end = False
+                    continue
+                if etype == "heartbeat":
+                    # Tool-execution wrapper heartbeat: keep the SSE stream
+                    # alive through proxy idle timeouts (comment lines are
+                    # ignored by SSE parsers).
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
+                if etype == "tool_output":
+                    # Live tool stdout is a Studio-UI concept with no
+                    # Anthropic Messages equivalent; the full result follows
+                    # in the tool_end -> tool_result block.
                     continue
                 if etype == "metadata":
                     _fr = event.get("finish_reason")

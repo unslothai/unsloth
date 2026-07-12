@@ -1,0 +1,325 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Main-content extraction and boilerplate stripping for the web fetch tool.
+
+The HTML fixtures below snapshot the relevant fragments of a real GitHub repo
+page (github.com/unslothai/unsloth, fetched 2026-07): the ``hidden``
+client-side error placeholders ("Uh oh! There was an error while loading."),
+the skip-link / nav / footer furniture, and the README rendered inside
+``<article class="markdown-body">``. No network access is required.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+from core.inference._html_to_md import html_to_markdown
+from core.inference.tools import (
+    _fetch_page_text,
+    _github_repo_readme_api_url,
+    _looks_like_html,
+)
+
+
+# ── Fixtures: snapshot of GitHub repo page fragments ─────────────
+
+# GitHub ships its client-side error placeholders in the HTML behind the
+# `hidden` attribute; JavaScript reveals them on a failed fetch. A text
+# converter must not surface them.
+_GITHUB_HIDDEN_ERROR_BLOCK = """
+<div data-show-on-forbidden-error hidden>
+  <div class="Box">
+    <div class="blankslate-container">
+      <h3 class="blankslate-heading">Uh oh!</h3>
+      <p class="blankslate-description">
+        <p class="color-fg-muted my-2 mb-2 ws-normal">There was an error while loading.
+        <a class="Link--inTextBlock" href="" aria-label="Please reload this page">Please reload this page</a>.</p>
+      </p>
+    </div>
+  </div>
+</div>
+"""
+
+_GITHUB_PAGE = f"""<!DOCTYPE html>
+<html lang="en">
+<head><title>unslothai/unsloth</title></head>
+<body>
+<a class="px-2 py-4" href="#start-of-content">Skip to content</a>
+<header class="Header-old">
+  <div class="AppHeader-globalBar">
+    <a href="/login">Sign in</a>
+    <a href="/signup">Sign up</a>
+  </div>
+</header>
+<div class="js-notification-shelf"></div>
+<div hidden>
+  You signed in with another tab or window. Reload to refresh your session.
+  You signed out in another tab or window. Reload to refresh your session.
+  You switched accounts on another tab or window. Reload to refresh your session.
+  Dismiss alert
+</div>
+<template>{{{{ message }}}}</template>
+{_GITHUB_HIDDEN_ERROR_BLOCK}
+<main id="js-repo-pjax-container">
+  {_GITHUB_HIDDEN_ERROR_BLOCK}
+  <div id="repository-container-header">
+    <a href="/unslothai">unslothai</a> / <a href="/unslothai/unsloth">unsloth</a>
+    <a href="/login?return_to=%2Funslothai%2Funsloth">Notifications</a>
+    You must be signed in to change notification settings
+  </div>
+  <div class="repository-content">
+    <table aria-labelledby="folders-and-files">
+      <tr><th>Name</th><th>Last commit message</th></tr>
+      <tr><td><a href="/unslothai/unsloth/tree/main/unsloth">unsloth</a></td><td></td></tr>
+    </table>
+    <article class="markdown-body entry-content container-lg" itemprop="text">
+      <h1>Unsloth Studio</h1>
+      <p>Unsloth Studio lets you run and train models locally. Fine-tune and
+      run LLMs on Windows, Linux and macOS with a single install command,
+      then export to GGUF, Ollama, vLLM or Hugging Face when you are done.</p>
+      <h2>Install</h2>
+      <pre>curl -fsSL https://unsloth.ai/install.sh | sh</pre>
+      <p>See the <a href="https://unsloth.ai/docs">documentation</a> for
+      quickstarts, notebooks, and fine-tuning guides for every major model
+      family including Llama, Gemma, Qwen and DeepSeek.</p>
+    </article>
+  </div>
+  <div class="Layout-sidebar">
+    <h2>Languages</h2>
+    <ul>
+      <li><a href="/unslothai/unsloth/search?l=javascript">JavaScript 89.3%</a></li>
+      <li><a href="/unslothai/unsloth/search?l=python">Python 9.7%</a></li>
+    </ul>
+  </div>
+</main>
+<footer>
+  <a href="https://docs.github.com">Docs</a>
+  <a href="https://github.com/contact">Contact</a>
+</footer>
+<div aria-live="polite" aria-hidden="true">You can't perform that action at this time.</div>
+</body>
+</html>
+"""
+
+
+# ── html_to_markdown: hidden elements ────────────────────────────
+
+
+def test_hidden_attribute_subtree_is_dropped():
+    html = '<body><p>visible</p><div hidden><p>secret error text</p></div><p>after</p></body>'
+    out = html_to_markdown(html)
+    assert "visible" in out
+    assert "after" in out
+    assert "secret error text" not in out
+
+
+def test_aria_hidden_true_subtree_is_dropped():
+    html = '<body><p>keep</p><span aria-hidden="true">decoration</span></body>'
+    out = html_to_markdown(html)
+    assert "keep" in out
+    assert "decoration" not in out
+
+
+def test_aria_hidden_false_subtree_is_kept():
+    html = '<body><span aria-hidden="false">still here</span></body>'
+    assert "still here" in html_to_markdown(html)
+
+
+def test_hidden_recovers_from_omitted_close_tags():
+    # <p hidden> is never closed; the parent </div> must still end the hidden
+    # region so the rest of the page is not swallowed.
+    html = "<body><div><p hidden>gone</div><p>kept</p></body>"
+    out = html_to_markdown(html)
+    assert "gone" not in out
+    assert "kept" in out
+
+
+def test_nested_hidden_regions():
+    html = '<body><div hidden><div hidden>inner</div>outer</div><p>ok</p></body>'
+    out = html_to_markdown(html)
+    assert "inner" not in out
+    assert "outer" not in out
+    assert "ok" in out
+
+
+# ── html_to_markdown: main-content scoping ───────────────────────
+
+
+def test_github_page_main_content_keeps_readme_only():
+    out = html_to_markdown(_GITHUB_PAGE, main_content = True)
+    # README content survives.
+    assert "Unsloth Studio" in out
+    assert "install.sh" in out
+    assert "documentation" in out
+    # Client-side error placeholders and page furniture are gone.
+    assert "Uh oh!" not in out
+    assert "There was an error while loading" not in out
+    assert "Please reload this page" not in out
+    assert "You can't perform that action at this time" not in out
+    assert "Skip to content" not in out
+    assert "Sign in" not in out
+    assert "Reload to refresh your session" not in out
+    assert "JavaScript 89.3%" not in out
+    assert "Languages" not in out
+    assert "Last commit message" not in out
+
+
+def test_main_scope_used_when_no_article():
+    html = """
+    <body>
+      <header><a href="/login">Sign in</a></header>
+      <main><h1>Doc title</h1><p>%s</p></main>
+      <footer>footer junk</footer>
+    </body>
+    """ % ("Body text. " * 40)
+    out = html_to_markdown(html, main_content = True)
+    assert "Doc title" in out
+    assert "Body text." in out
+    assert "Sign in" not in out
+    assert "footer junk" not in out
+
+
+def test_main_content_falls_back_to_full_document():
+    # No article/main and a tiny body: the unscoped conversion is returned.
+    html = "<body><h1>Tiny</h1><p>Just a short page.</p></body>"
+    out = html_to_markdown(html, main_content = True)
+    assert "Tiny" in out
+    assert "Just a short page." in out
+
+
+def test_tiny_article_stub_does_not_hijack_scope():
+    # An <article> with negligible text must not swallow the real content.
+    body_text = "Real content paragraph. " * 30
+    html = f"<body><article>ad</article><main><p>{body_text}</p></main></body>"
+    out = html_to_markdown(html, main_content = True)
+    assert "Real content paragraph." in out
+
+
+def test_default_conversion_unscoped_and_unstripped():
+    # Without main_content the whole document converts (backwards compatible),
+    # boilerplate phrases included; only hidden subtrees are dropped.
+    html = (
+        "<body><p>Skip to content</p><div hidden>gone</div>"
+        "<main><p>hello</p></main></body>"
+    )
+    out = html_to_markdown(html)
+    assert "Skip to content" in out
+    assert "hello" in out
+    assert "gone" not in out
+
+
+def test_boilerplate_not_stripped_inside_code_fences():
+    html = (
+        "<body><article><p>%s</p>"
+        "<pre>assert 'There was an error while loading' in page</pre>"
+        "</article></body>" % ("Prose. " * 40)
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "There was an error while loading" in out
+
+
+# ── GitHub README rewrite ────────────────────────────────────────
+
+
+def test_github_repo_url_maps_to_readme_api():
+    assert (
+        _github_repo_readme_api_url("https://github.com/unslothai/unsloth")
+        == "https://api.github.com/repos/unslothai/unsloth/readme"
+    )
+    assert (
+        _github_repo_readme_api_url("https://github.com/unslothai/unsloth/")
+        == "https://api.github.com/repos/unslothai/unsloth/readme"
+    )
+    assert (
+        _github_repo_readme_api_url("http://www.github.com/owner/repo.git")
+        == "https://api.github.com/repos/owner/repo/readme"
+    )
+
+
+def test_github_non_repo_urls_are_not_rewritten():
+    for url in (
+        "https://github.com/unslothai/unsloth/tree/main/studio",
+        "https://github.com/unslothai/unsloth/issues/123",
+        "https://github.com/topics/llm",
+        "https://github.com/orgs/unslothai/repositories",
+        "https://github.com/login/oauth",
+        "https://github.com/unslothai",
+        "https://example.com/owner/repo",
+        "https://raw.githubusercontent.com/owner/repo/main/README.md",
+    ):
+        assert _github_repo_readme_api_url(url) is None, url
+
+
+def test_fetch_page_text_prefers_github_readme(monkeypatch):
+    calls = []
+
+    def fake_fetch(url, timeout = 30, extra_headers = None):
+        calls.append((url, extra_headers))
+        assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
+        return None, "# Unsloth\n\nFine-tune LLMs faster.", "text/plain"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://github.com/unslothai/unsloth")
+    assert "Fine-tune LLMs faster." in out
+    assert "README of https://github.com/unslothai/unsloth" in out
+    assert len(calls) == 1
+    assert calls[0][1]["Accept"] == "application/vnd.github.raw+json"
+
+
+def test_fetch_page_text_falls_back_to_html_when_readme_api_fails(monkeypatch):
+    def fake_fetch(url, timeout = 30, extra_headers = None):
+        if url.startswith("https://api.github.com/"):
+            return "Failed to fetch URL: HTTP 403 rate limited", "", ""
+        return None, _GITHUB_PAGE, "text/html"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://github.com/unslothai/unsloth")
+    # Fallback converts the HTML page with the main-content heuristic.
+    assert "Unsloth Studio" in out
+    assert "Uh oh!" not in out
+    assert "There was an error while loading" not in out
+
+
+def test_fetch_page_text_non_html_returned_raw(monkeypatch):
+    raw = "line one\n    indented code\nline three"
+
+    def fake_fetch(url, timeout = 30, extra_headers = None):
+        return None, raw, "text/plain"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://raw.githubusercontent.com/o/r/main/file.txt")
+    # Whitespace preserved: the HTML renderer would have collapsed it.
+    assert "    indented code" in out
+
+
+def test_fetch_page_text_html_conversion(monkeypatch):
+    def fake_fetch(url, timeout = 30, extra_headers = None):
+        return None, _GITHUB_PAGE, "text/html"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://github.com/unslothai/unsloth/tree/main")
+    assert "Unsloth Studio" in out
+    assert "Uh oh!" not in out
+
+
+def test_fetch_page_text_propagates_fetch_errors(monkeypatch):
+    def fake_fetch(url, timeout = 30, extra_headers = None):
+        return "Failed to fetch URL: HTTP 404 Not Found", "", ""
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    assert _fetch_page_text("https://example.com/missing") == (
+        "Failed to fetch URL: HTTP 404 Not Found"
+    )
+
+
+def test_looks_like_html():
+    assert _looks_like_html("<!DOCTYPE html><html></html>")
+    assert _looks_like_html("\n  <HTML lang='en'>")
+    assert not _looks_like_html("# Markdown README\n\n<h1>embedded html later</h1>")
+    assert not _looks_like_html("plain text")

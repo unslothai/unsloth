@@ -29,6 +29,23 @@ import type {
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 
+/**
+ * Thrown when the chat SSE stream ends without a terminal signal
+ * (`data: [DONE]` or a finish_reason chunk): the connection was dropped
+ * mid-generation (e.g. a proxy idle timeout or network blip), not completed.
+ * The adapter surfaces this as an explicit interrupted state instead of
+ * silently ending the turn.
+ */
+export class StreamInterruptedError extends Error {
+  constructor() {
+    super(
+      "Response interrupted: the connection dropped before the model finished. " +
+        "Use Retry to regenerate.",
+    );
+    this.name = "StreamInterruptedError";
+  }
+}
+
 export function notifyChatHistoryUpdated(): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
@@ -851,12 +868,19 @@ export async function* streamChatCompletions(
   const decoder = new TextDecoder();
   let buffer = "";
   let completed = false;
+  // Terminal signal tracking: a stream that hits EOF without `[DONE]` or a
+  // finish_reason chunk was cut mid-generation (proxy idle drop, network
+  // blip) and must surface as interrupted, not as a silent success.
+  let sawTerminalSignal = false;
 
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
         completed = true;
+        if (!sawTerminalSignal) {
+          throw new StreamInterruptedError();
+        }
         break;
       }
 
@@ -877,6 +901,7 @@ export async function* streamChatCompletions(
         const dataText = dataLines.join("\n");
         if (dataText === "[DONE]") {
           completed = true;
+          sawTerminalSignal = true;
           return;
         }
 
@@ -903,10 +928,13 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        // Tool start/end events carry full input/output for the tool outputs panel
+        // Tool start/end events carry full input/output for the tool outputs
+        // panel; tool_output streams incremental stdout while a tool runs.
         if (
           "type" in parsed &&
-          (parsed.type === "tool_start" || parsed.type === "tool_end")
+          (parsed.type === "tool_start" ||
+            parsed.type === "tool_end" ||
+            parsed.type === "tool_output")
         ) {
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
@@ -924,6 +952,16 @@ export async function* streamChatCompletions(
           } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
+        }
+        // A finish_reason chunk is a valid terminal signal for providers
+        // that close the stream without an explicit [DONE] sentinel.
+        const finishReason = (
+          parsed as {
+            choices?: Array<{ finish_reason?: string | null }>;
+          }
+        ).choices?.[0]?.finish_reason;
+        if (finishReason) {
+          sawTerminalSignal = true;
         }
         yield parsed as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);

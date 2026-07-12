@@ -15,6 +15,7 @@ import {
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { ToolLiveOutput } from "./tool-live-output";
 
 const MAX_DISPLAY = 10_000;
 const COPY_RESET_MS = 2000;
@@ -65,6 +66,7 @@ function CopyBtn({ text }: { text: string }) {
 }
 
 const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
+  toolCallId,
   args,
   result,
   status,
@@ -79,7 +81,9 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         : "";
 
   return (
-    <ToolFallbackRoot>
+    // Mounted mid-run (tool_start) the card opens so live output is visible;
+    // mounted from history (not running) it stays collapsed as before.
+    <ToolFallbackRoot defaultOpen={isRunning}>
       <ToolFallbackTrigger
         toolName={command ? `$ ${command.slice(0, 60)}` : "Terminal"}
         status={status}
@@ -88,10 +92,14 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackContent>
         <div className="border-l-2 border-muted-foreground/20 pl-2">
           {isRunning ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Spinner className="size-3.5" />
-              <span>Running&hellip;</span>
-            </div>
+            <>
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Spinner className="size-3.5" />
+                <span>Running&hellip;</span>
+              </div>
+              {/* Live stdout streamed via tool_output SSE events. */}
+              <ToolLiveOutput toolCallId={toolCallId} />
+            </>
           ) : output ? (
             <div>
               <div className="flex items-center justify-between">

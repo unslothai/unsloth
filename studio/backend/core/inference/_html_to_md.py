@@ -7,6 +7,12 @@ Minimal HTML-to-Markdown converter using only the standard library.
 Replaces the external ``html2text`` (GPL-3.0) dependency with a ~250-line
 ``html.parser.HTMLParser`` subclass. Covers headings, links, bold/italic,
 lists, tables, blockquotes, code blocks, and entity decoding.
+
+``main_content=True`` additionally applies a readability-style heuristic:
+conversion is scoped to the page's ``<article>`` (else ``<main>``) subtree
+when one exists and carries substantial text, and known boilerplate
+fragments (skip-links, client-side error placeholders, session banners,
+cookie prompts) are stripped from the result.
 """
 
 from __future__ import annotations
@@ -27,8 +33,49 @@ _SKIP_TAGS = frozenset(
         "math",
         "nav",
         "footer",
+        # Never-rendered / non-content elements. Browsers do not display
+        # <template> children or <dialog> without .show(), and form widgets
+        # carry UI chrome ("Cancel", "Submit feedback"), not page content.
+        "template",
+        "dialog",
+        "button",
+        "select",
+        "datalist",
+        "aside",
     }
 )
+
+# Void elements never produce an end tag, so they must not join the
+# open-element stack used to bound hidden subtrees.
+_VOID_TAGS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+
+
+def _is_hidden_element(attr_dict: dict) -> bool:
+    """True when the element is not rendered by a browser: the ``hidden``
+    attribute or ``aria-hidden="true"``. Client-side placeholders (e.g.
+    GitHub's ``<div data-show-on-forbidden-error hidden>`` "Uh oh! There was
+    an error while loading." blocks) ship in the HTML but are only shown by
+    JavaScript on error, so they must not reach the Markdown output."""
+    if "hidden" in attr_dict and attr_dict.get("hidden") != "false":
+        return True
+    return (attr_dict.get("aria-hidden") or "").strip().lower() == "true"
 _BLOCK_TAGS = frozenset(
     {
         "p",
@@ -51,12 +98,28 @@ _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
 
 class _MarkdownRenderer(HTMLParser):
-    """HTMLParser subclass that emits Markdown tokens into a list."""
+    """HTMLParser subclass that emits Markdown tokens into a list.
 
-    def __init__(self):
+    ``scope_tags`` restricts emission to the subtree(s) of the given tags
+    (e.g. ``{"article"}``): outside them every handler is a no-op, which is
+    how the readability-style main-content pass drops page furniture.
+    """
+
+    def __init__(self, scope_tags: frozenset[str] | None = None):
         super().__init__(convert_charrefs = False)
         self._out: list[str] = []
         self._skip_depth: int = 0
+
+        # Main-content scoping: emit only while inside a scope tag.
+        self._scope_tags = scope_tags
+        self._scope_depth: int = 0
+
+        # Hidden-subtree tracking (`hidden` / aria-hidden="true"): a stack of
+        # currently-open non-void tags plus the stack indices where a hidden
+        # element started. End tags pop to the matching open tag, so an
+        # omitted </p>/<li> close cannot leave the renderer stuck hidden.
+        self._open_tags: list[str] = []
+        self._hidden_marks: list[int] = []
 
         # Link state
         self._link_href: str | None = None
@@ -150,6 +213,40 @@ class _MarkdownRenderer(HTMLParser):
     # ------------------------------------------------------------------
     # Tag handlers
     # ------------------------------------------------------------------
+    # Structural bookkeeping shared by every start tag (skip/hidden/scope).
+    def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
+        """Track open/hidden/scope state; return True when the tag's content
+        should be rendered (False = suppressed)."""
+        if tag not in _VOID_TAGS:
+            self._open_tags.append(tag)
+            if _is_hidden_element(attr_dict):
+                self._hidden_marks.append(len(self._open_tags) - 1)
+        if self._scope_tags is not None and tag in self._scope_tags:
+            self._scope_depth += 1
+        if self._hidden_marks:
+            return False
+        if self._scope_tags is not None and self._scope_depth == 0:
+            return False
+        return True
+
+    def _exit_tag(self, tag: str) -> bool:
+        """Pop to the matching open tag; return True when the end tag should
+        be rendered (False = it closed inside a hidden / out-of-scope region)."""
+        suppressed = bool(self._hidden_marks) or (
+            self._scope_tags is not None and self._scope_depth == 0
+        )
+        if tag not in _VOID_TAGS:
+            # Pop to the innermost matching open tag (recovers omitted closes).
+            for i in range(len(self._open_tags) - 1, -1, -1):
+                if self._open_tags[i] == tag:
+                    del self._open_tags[i:]
+                    while self._hidden_marks and self._hidden_marks[-1] >= i:
+                        self._hidden_marks.pop()
+                    break
+        if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
+            self._scope_depth -= 1
+        return not suppressed
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
 
@@ -160,6 +257,8 @@ class _MarkdownRenderer(HTMLParser):
             return
 
         attr_dict = dict(attrs)
+        if not self._enter_tag(tag, attr_dict):
+            return
 
         if tag in _HEADING_TAGS:
             level = int(tag[1])
@@ -250,6 +349,9 @@ class _MarkdownRenderer(HTMLParser):
         if self._skip_depth:
             return
 
+        if not self._exit_tag(tag):
+            return
+
         if tag in _HEADING_TAGS:
             self._emit("\n\n")
 
@@ -308,8 +410,13 @@ class _MarkdownRenderer(HTMLParser):
     # ------------------------------------------------------------------
     # Text / entity handlers
     # ------------------------------------------------------------------
+    def _text_suppressed(self) -> bool:
+        if self._skip_depth or self._hidden_marks:
+            return True
+        return self._scope_tags is not None and self._scope_depth == 0
+
     def handle_data(self, data: str) -> None:
-        if self._skip_depth:
+        if self._text_suppressed():
             return
         if self._in_pre:
             self._pre_parts.append(data)
@@ -326,12 +433,12 @@ class _MarkdownRenderer(HTMLParser):
         self._emit(text)
 
     def handle_entityref(self, name: str) -> None:
-        if self._skip_depth:
+        if self._text_suppressed():
             return
         self._emit(html.unescape(f"&{name};"))
 
     def handle_charref(self, name: str) -> None:
-        if self._skip_depth:
+        if self._text_suppressed():
             return
         self._emit(html.unescape(f"&#{name};"))
 
@@ -399,17 +506,87 @@ def _cleanup(text: str) -> str:
     return "\n".join(out).strip()
 
 
-# Public API
-def html_to_markdown(source_html: str) -> str:
-    """Convert HTML to Markdown (headings, links, emphasis, lists, tables, blockquotes, code, entities).
+# Known boilerplate fragments stripped from main-content conversions. Matched
+# per line, and only against short lines (a long paragraph that merely
+# mentions one of these phrases is kept). Deterministic substring list, no
+# scoring. Sources: GitHub page furniture / client-side error placeholders,
+# skip-links, cookie banners.
+_BOILERPLATE_FRAGMENTS = (
+    "skip to content",
+    "skip to main content",
+    "there was an error while loading",
+    "please reload this page",
+    "you can't perform that action at this time",
+    "you signed in with another tab or window",
+    "you signed out in another tab or window",
+    "you switched accounts on another tab or window",
+    "reload to refresh your session",
+    "you must be signed in to change notification settings",
+    "uh oh!",
+    "{{ message }}",
+    "this website uses cookies",
+    "we use cookies",
+    "accept all cookies",
+    "manage cookie preferences",
+)
+# Only lines shorter than this are eligible for boilerplate dropping; real
+# content sentences quoting one of the fragments run longer.
+_BOILERPLATE_MAX_LINE_CHARS = 300
 
-    ``<script>``, ``<style>``, and ``<head>`` are stripped entirely.
-    """
-    # Normalize line endings before parsing.
-    source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
-    renderer = _MarkdownRenderer()
+
+def _strip_boilerplate_lines(text: str) -> str:
+    """Drop short lines that consist of known page-furniture fragments.
+
+    Fenced code blocks are preserved verbatim: boilerplate never renders
+    inside ``<pre>``, while READMEs legitimately quote error strings."""
+    out: list[str] = []
+    in_fence = False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if not in_fence and len(line) <= _BOILERPLATE_MAX_LINE_CHARS:
+            lowered = line.lower()
+            if any(fragment in lowered for fragment in _BOILERPLATE_FRAGMENTS):
+                continue
+        out.append(line)
+    # Collapse blank runs the dropped lines may have left behind.
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+
+
+def _render(source_html: str, scope_tags: frozenset[str] | None) -> str:
+    renderer = _MarkdownRenderer(scope_tags = scope_tags)
     renderer.feed(source_html)
     renderer.close()
     renderer.flush_pending()
     raw = "".join(renderer._out)
     return _cleanup(raw)
+
+
+# A scoped conversion below this size is judged not to be the page's main
+# content (e.g. an empty <article> stub) and the next candidate is tried.
+_MIN_MAIN_CONTENT_CHARS = 200
+
+
+# Public API
+def html_to_markdown(source_html: str, *, main_content: bool = False) -> str:
+    """Convert HTML to Markdown (headings, links, emphasis, lists, tables, blockquotes, code, entities).
+
+    ``<script>``, ``<style>``, and ``<head>`` are stripped entirely, as are
+    subtrees hidden from rendering (``hidden`` / ``aria-hidden="true"``).
+
+    ``main_content=True`` applies a readability-style heuristic for page
+    fetches: prefer the ``<article>`` subtree (GitHub renders READMEs there),
+    then ``<main>``, falling back to the whole document, and strip known
+    boilerplate fragments from the result.
+    """
+    # Normalize line endings before parsing.
+    source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
+    if main_content:
+        for scope in (frozenset({"article"}), frozenset({"main"})):
+            text = _strip_boilerplate_lines(_render(source_html, scope))
+            if len(text) >= _MIN_MAIN_CONTENT_CHARS:
+                return text
+        return _strip_boilerplate_lines(_render(source_html, None))
+    return _render(source_html, None)

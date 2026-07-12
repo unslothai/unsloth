@@ -15,6 +15,7 @@ parses tool calls from the cumulative text and dispatches via
 """
 
 import bisect
+import inspect
 import re
 import threading
 from typing import Callable, Generator, Optional
@@ -60,6 +61,7 @@ from core.inference.tool_loop_controller import (
     status_for_tool,
     tool_event_provenance,
 )
+from core.inference.tool_stream_exec import stream_tool_execution
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
@@ -400,6 +402,22 @@ def _coerce_arguments(
 
 def _tool_event_provenance(**flags: object) -> dict[str, object]:
     return tool_event_provenance(**flags)
+
+
+def _accepts_output_callback(func: Callable[..., str]) -> bool:
+    """Whether an injectable ``execute_tool`` supports ``output_callback``.
+
+    The loop's ``execute_tool`` is a parameter (tests inject fakes), so the
+    live-output kwarg is only forwarded when the callable declares it (or
+    takes ``**kwargs``)."""
+    try:
+        sig = inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+    params = sig.parameters
+    if "output_callback" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 def _call_single_turn(single_turn, conversation: list, active_tools: list[dict]):
@@ -1109,15 +1127,27 @@ def run_safetensors_tool_loop(
             ):
                 result = RAG_SEARCH_CAP_NUDGE
             else:
-                try:
-                    result = execute_tool(
-                        decision.tool_name,
-                        decision.arguments,
+                # Execute in a worker thread so live stdout chunks and heartbeats
+                # stream while the tool blocks (the SSE route turns heartbeats
+                # into keepalives). ``execute_tool`` is injectable; only pass
+                # output_callback when the callable accepts it.
+                def _invoke_tool(_output_callback, _decision = decision):
+                    kwargs = dict(
                         cancel_event = cancel_event,
                         timeout = eff_timeout,
                         session_id = session_id,
                         rag_scope = rag_scope,
                         disable_sandbox = bypass_permissions,
+                    )
+                    if _accepts_output_callback(execute_tool):
+                        kwargs["output_callback"] = _output_callback
+                    return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
+
+                try:
+                    result = yield from stream_tool_execution(
+                        _invoke_tool,
+                        tool_name = decision.tool_name,
+                        tool_call_id = decision.tool_call_id,
                     )
                 except Exception as exc:
                     logger.exception("Tool %s raised: %s", decision.tool_name, exc)

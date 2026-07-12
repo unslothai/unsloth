@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.request
 
 from core.inference.mcp_client import (
@@ -973,6 +974,7 @@ def execute_tool(
     session_id: str | None = None,
     rag_scope: dict | None = None,
     disable_sandbox: bool = False,
+    output_callback = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -983,6 +985,10 @@ def execute_tool(
     ``disable_sandbox``: Bypass Permissions; run python/terminal without the
     safety checks, blocklist, or resource caps (secrets still stripped). Only
     affects local code tools; web_search / MCP are unchanged.
+    ``output_callback``: optional ``callable(str)`` invoked with incremental
+    stdout/stderr chunks while python/terminal executions run (UI live
+    output). Purely observational: the returned result string is identical
+    with or without it. Tools without incremental output ignore it.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
@@ -1024,6 +1030,7 @@ def execute_tool(
             effective_timeout,
             session_id,
             disable_sandbox = disable_sandbox,
+            output_callback = output_callback,
         )
     if name == "terminal":
         return _bash_exec(
@@ -1032,6 +1039,7 @@ def execute_tool(
             effective_timeout,
             session_id,
             disable_sandbox = disable_sandbox,
+            output_callback = output_callback,
         )
     return f"Unknown tool: {name}"
 
@@ -1451,28 +1459,93 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
     return True, "", first_ip
 
 
-def _fetch_page_text(
-    url: str,
-    max_chars: int = _MAX_PAGE_CHARS,
-    timeout: int = 30,
-) -> str:
-    """Fetch a URL and return plain text content (HTML tags stripped).
+# First path segments on github.com that are site pages, not repo owners.
+_GITHUB_NON_OWNER_SEGMENTS = frozenset(
+    {
+        "about",
+        "apps",
+        "codespaces",
+        "collections",
+        "contact",
+        "customer-stories",
+        "dashboard",
+        "discussions",
+        "enterprise",
+        "explore",
+        "features",
+        "issues",
+        "join",
+        "login",
+        "marketplace",
+        "new",
+        "notifications",
+        "organizations",
+        "orgs",
+        "pricing",
+        "pulls",
+        "search",
+        "security",
+        "settings",
+        "signup",
+        "site",
+        "sponsors",
+        "team",
+        "topics",
+        "trending",
+    }
+)
+_GITHUB_NAME_RE = re.compile(r"\A[A-Za-z0-9_.\-]{1,100}\Z")
 
-    Blocks private/loopback/link-local targets (SSRF protection) and caps
-    the download size to avoid unbounded memory usage.
+
+def _github_repo_readme_api_url(url: str) -> str | None:
+    """README API URL for a ``github.com/{owner}/{repo}`` page, else None.
+
+    A repo root page rendered as HTML is mostly UI chrome (nav, file table,
+    stats); the ``/readme`` API returns the raw README markdown unauthenticated,
+    which is what the model actually wants to read.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in ("github.com", "www.github.com"):
+        return None
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) != 2:
+        return None
+    owner, repo = parts
+    if owner.lower() in _GITHUB_NON_OWNER_SEGMENTS:
+        return None
+    if repo.endswith(".git"):
+        repo = repo[: -len(".git")]
+    if not (_GITHUB_NAME_RE.match(owner) and _GITHUB_NAME_RE.match(repo)):
+        return None
+    return f"https://api.github.com/repos/{owner}/{repo}/readme"
+
+
+def _fetch_url_raw(
+    url: str,
+    timeout: int = 30,
+    extra_headers: dict | None = None,
+) -> tuple[str | None, str, str]:
+    """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
+
+    ``error`` is a user-facing message string when the fetch failed (the
+    existing "Blocked:" / "Failed to fetch URL:" wording), else ``None``.
+    Blocks private/loopback/link-local targets and caps the download size.
     """
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        return f"Blocked: only http/https URLs are allowed (got {parsed.scheme!r})."
+        return f"Blocked: only http/https URLs are allowed (got {parsed.scheme!r}).", "", ""
     if not parsed.hostname:
-        return "Blocked: URL is missing a hostname."
+        return "Blocked: URL is missing a hostname.", "", ""
 
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     ok, reason, pinned_ip = _validate_and_resolve_host(parsed.hostname, port)
     if not ok:
-        return reason
+        return reason, "", ""
 
     try:
         from urllib.error import HTTPError as _HTTPError
@@ -1497,57 +1570,108 @@ def _fetch_page_text(
                 _SNIHTTPSHandler(current_host),
             )
 
-            req = urllib.request.Request(
-                pinned_url,
-                headers = {
-                    "User-Agent": ua,
-                    "Host": current_host,
-                },
-            )
+            headers = {
+                "User-Agent": ua,
+                "Host": current_host,
+            }
+            if extra_headers:
+                headers.update(extra_headers)
+            req = urllib.request.Request(pinned_url, headers = headers)
             try:
                 resp = opener.open(req, timeout = timeout)
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
-                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
                 location = e.headers.get("Location")
                 if not location:
-                    return "Failed to fetch URL: redirect missing Location header."
+                    return "Failed to fetch URL: redirect missing Location header.", "", ""
                 current_url = urljoin(current_url, location)
                 rp = urlparse(current_url)
                 if rp.scheme not in ("http", "https") or not rp.hostname:
-                    return "Blocked: redirect target is not a valid http/https URL."
+                    return "Blocked: redirect target is not a valid http/https URL.", "", ""
                 rp_port = rp.port or (443 if rp.scheme == "https" else 80)
                 ok2, reason2, pinned_ip = _validate_and_resolve_host(
                     rp.hostname,
                     rp_port,
                 )
                 if not ok2:
-                    return reason2
+                    return reason2, "", ""
                 current_host = rp.hostname
                 continue
             # Success: read capped body.
             raw_bytes = resp.read(max_bytes)
             break
         else:
-            return "Failed to fetch URL: too many redirects."
+            return "Failed to fetch URL: too many redirects.", "", ""
 
         charset = resp.headers.get_content_charset() or "utf-8"
-        raw_html = raw_bytes.decode(charset, errors = "replace")
+        content_type = (resp.headers.get_content_type() or "").lower()
+        return None, raw_bytes.decode(charset, errors = "replace"), content_type
     except _HTTPError as e:
-        return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+        return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
     except Exception as e:
-        return f"Failed to fetch URL: {e}"
+        return f"Failed to fetch URL: {e}", "", ""
+
+
+def _looks_like_html(body: str) -> bool:
+    probe = body.lstrip()[:256].lower()
+    return "<!doctype html" in probe or "<html" in probe
+
+
+def _truncate_page_text(text: str, max_chars: int) -> str:
+    if not text:
+        return "(page returned no readable text)"
+    if len(text) > max_chars:
+        return text[:max_chars] + f"\n\n... (truncated, {len(text)} chars total)"
+    return text
+
+
+def _fetch_page_text(
+    url: str,
+    max_chars: int = _MAX_PAGE_CHARS,
+    timeout: int = 30,
+) -> str:
+    """Fetch a URL and return readable text content.
+
+    HTML responses are converted to Markdown with a main-content heuristic
+    (``<article>``/``<main>`` scoping, hidden-element and boilerplate
+    stripping); non-HTML text responses are returned as-is. GitHub repo root
+    pages are rewritten to the README API so the model reads the README
+    instead of the repo page's UI chrome. Blocks private/loopback/link-local
+    targets (SSRF protection) and caps the download size.
+    """
+    readme_api_url = _github_repo_readme_api_url(url)
+    if readme_api_url:
+        err, body, _ctype = _fetch_url_raw(
+            readme_api_url,
+            timeout = timeout,
+            extra_headers = {
+                "Accept": "application/vnd.github.raw+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        # The README API is unauthenticated and rate-limited; on any failure
+        # (404, 403 rate limit, network) fall back to the HTML page fetch.
+        if err is None and body.strip() and not _looks_like_html(body):
+            return _truncate_page_text(
+                f"README of {url} (fetched via the GitHub README API):\n\n" + body,
+                max_chars,
+            )
+
+    err, body, content_type = _fetch_url_raw(url, timeout = timeout)
+    if err is not None:
+        return err
+
+    is_html = "html" in content_type or (not content_type and _looks_like_html(body))
+    if not is_html:
+        # Plain text / markdown / JSON (e.g. raw.githubusercontent.com):
+        # converting through the HTML renderer would collapse its whitespace.
+        return _truncate_page_text(body.strip(), max_chars)
 
     # Convert HTML to Markdown with the builtin converter (no external deps).
     from ._html_to_md import html_to_markdown
 
-    text = html_to_markdown(raw_html)
-
-    if not text:
-        return "(page returned no readable text)"
-    if len(text) > max_chars:
-        text = text[:max_chars] + f"\n\n... (truncated, {len(text)} chars total)"
-    return text
+    return _truncate_page_text(html_to_markdown(body, main_content = True), max_chars)
 
 
 def _web_search(
@@ -2607,17 +2731,69 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
     return text
 
 
+def _drain_process_output(proc, timeout, output_callback) -> tuple[str, bool]:
+    """``proc.communicate(timeout=...)`` equivalent that also streams each
+    stdout line to ``output_callback`` as it is produced.
+
+    Returns ``(output, timed_out)``. The joined output is identical to what
+    ``communicate`` would return: the same TextIOWrapper decodes the stream,
+    so encoding, error replacement, and newline translation all match. On
+    timeout the process tree is killed (mirroring the non-streaming path).
+    """
+    chunks: list[str] = []
+
+    def _reader() -> None:
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                chunks.append(line)
+                if output_callback is not None:
+                    try:
+                        output_callback(line)
+                    except Exception:  # noqa: BLE001 - observer must never kill the tool
+                        logger.debug("tool output_callback raised", exc_info = True)
+        except (ValueError, OSError):
+            pass  # pipe closed during kill
+
+    reader = threading.Thread(target = _reader, daemon = True)
+    reader.start()
+    started_at = time.monotonic()
+    timed_out = False
+    try:
+        proc.wait(timeout = timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill_process_tree(proc)
+        try:
+            proc.wait(timeout = 5)
+        except subprocess.TimeoutExpired:
+            pass
+    # A grandchild that inherited stdout can hold the pipe open past the main
+    # process's exit; wait out the remaining budget like communicate() would,
+    # then kill the process group so the reader sees EOF.
+    if not timed_out and timeout is not None:
+        remaining = max(0.0, timeout - (time.monotonic() - started_at))
+        reader.join(timeout = remaining)
+        if reader.is_alive():
+            timed_out = True
+            _kill_process_tree(proc)
+    reader.join(timeout = 5)
+    return "".join(chunks), timed_out
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
     disable_sandbox: bool = False,
+    output_callback = None,
 ) -> str:
     """Execute Python code in a subprocess sandbox.
 
     disable_sandbox (Bypass Permissions): skip the safety analysis and rlimit
     pre-exec, and use the host env minus secrets.
+    output_callback: optional callable(str) streamed each stdout line as it is
+    produced; the returned result is unchanged.
     """
     if not code or not code.strip():
         return "No code provided."
@@ -2676,6 +2852,13 @@ def _python_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
+        # Line-buffer the child's stdout when streaming so the UI sees each
+        # line as it prints instead of the pipe's 8 KB buffer flushes.
+        if output_callback is not None:
+            safe_env = dict(safe_env)
+            safe_env.setdefault("PYTHONUNBUFFERED", "1")
+            popen_kwargs["env"] = safe_env
+
         proc = subprocess.Popen([sys.executable, tmp_path], **popen_kwargs)
 
         # Spawn cancel watcher if we have a cancel event
@@ -2685,15 +2868,20 @@ def _python_exec(
             )
             watcher.start()
 
-        try:
-            output, _ = proc.communicate(timeout = timeout)
-        except subprocess.TimeoutExpired:
-            _kill_process_tree(proc)
+        if output_callback is not None:
+            output, timed_out = _drain_process_output(proc, timeout, output_callback)
+            if timed_out:
+                return _truncate(f"Execution timed out after {timeout} seconds.")
+        else:
             try:
-                proc.communicate(timeout = 5)
+                output, _ = proc.communicate(timeout = timeout)
             except subprocess.TimeoutExpired:
-                pass
-            return _truncate(f"Execution timed out after {timeout} seconds.")
+                _kill_process_tree(proc)
+                try:
+                    proc.communicate(timeout = 5)
+                except subprocess.TimeoutExpired:
+                    pass
+                return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled."
@@ -2740,11 +2928,14 @@ def _bash_exec(
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
     disable_sandbox: bool = False,
+    output_callback = None,
 ) -> str:
     """Execute a bash command in a subprocess sandbox.
 
     disable_sandbox (Bypass Permissions): skip the command blocklist and rlimit
     pre-exec, and use the host env minus secrets.
+    output_callback: optional callable(str) streamed each stdout line as it is
+    produced; the returned result is unchanged.
     """
     if not command or not command.strip():
         return "No command provided."
@@ -2785,15 +2976,20 @@ def _bash_exec(
             )
             watcher.start()
 
-        try:
-            output, _ = proc.communicate(timeout = timeout)
-        except subprocess.TimeoutExpired:
-            _kill_process_tree(proc)
+        if output_callback is not None:
+            output, timed_out = _drain_process_output(proc, timeout, output_callback)
+            if timed_out:
+                return _truncate(f"Execution timed out after {timeout} seconds.")
+        else:
             try:
-                proc.communicate(timeout = 5)
+                output, _ = proc.communicate(timeout = timeout)
             except subprocess.TimeoutExpired:
-                pass
-            return _truncate(f"Execution timed out after {timeout} seconds.")
+                _kill_process_tree(proc)
+                try:
+                    proc.communicate(timeout = 5)
+                except subprocess.TimeoutExpired:
+                    pass
+                return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled."

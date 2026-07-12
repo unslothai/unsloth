@@ -235,13 +235,27 @@ const ToolGroupImpl: FC<
   const messageRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
-  // Keep the group open once a confirmation forced it open, so answering an
-  // allow/deny doesn't snap it shut between sequential tool calls. It reverts
-  // to the default collapsed state once the turn finishes.
+  // Live tool output must be visible while it streams: force the group open
+  // when any of its calls is receiving tool_output events.
+  const toolLiveOutput = useChatRuntimeStore((s) => s.toolLiveOutput);
+  const hasLiveOutput = useAuiState(({ message }) =>
+    message.parts
+      .slice(startIndex, endIndex + 1)
+      .some(
+        (part) =>
+          part.type === "tool-call" &&
+          Object.prototype.hasOwnProperty.call(toolLiveOutput, part.toolCallId),
+      ),
+  );
+  // Keep the group open once a confirmation (or live output) forced it open,
+  // so answering an allow/deny doesn't snap it shut between sequential tool
+  // calls. It reverts to the default collapsed state once the turn finishes.
   const forcedOpenRef = useRef(false);
-  if (hasPendingConfirmation) forcedOpenRef.current = true;
+  if (hasPendingConfirmation || hasLiveOutput) forcedOpenRef.current = true;
   const forceOpen =
-    hasPendingConfirmation || (forcedOpenRef.current && messageRunning);
+    hasPendingConfirmation ||
+    (hasLiveOutput && messageRunning) ||
+    (forcedOpenRef.current && messageRunning);
 
   // Render single tool calls and canvases directly so cards never hide in a
   // collapsed group.

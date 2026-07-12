@@ -85,6 +85,7 @@ import {
   listGgufVariants,
   loadModel,
   streamChatCompletions,
+  StreamInterruptedError,
   validateModel,
 } from "./chat-api";
 import {
@@ -3116,6 +3117,29 @@ export function createOpenAIStreamAdapter(
                   anthropicRefusalSeen = true;
                   continue;
                 }
+                if (toolEvent.type === "tool_output") {
+                  // Incremental stdout from a running server-side tool: append
+                  // to the transient live-output store keyed by the part id so
+                  // the tool card renders it while the spinner runs. The final
+                  // result still arrives via tool_end.
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const liveId =
+                    (backendToolCallId
+                      ? toolConfirmationIdsByBackendId.get(backendToolCallId)
+                      : undefined) ||
+                    backendToolCallId ||
+                    toolCallParts[toolCallParts.length - 1]?.toolCallId ||
+                    "";
+                  const liveText =
+                    typeof toolEvent.text === "string" ? toolEvent.text : "";
+                  if (liveId && liveText) {
+                    useChatRuntimeStore
+                      .getState()
+                      .appendToolLiveOutput(liveId, liveText);
+                  }
+                  continue;
+                }
                 closeReasoningContent();
                 const toolProvenance = parseToolProvenance(
                   toolEvent.provenance,
@@ -3189,6 +3213,8 @@ export function createOpenAIStreamAdapter(
                     toolConfirmationIdsByBackendId.delete(backendToolCallId);
                   }
                   useChatRuntimeStore.getState().clearToolConfirmation(id);
+                  // The final result replaces the transient live output.
+                  useChatRuntimeStore.getState().clearToolLiveOutput(id);
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -3730,7 +3756,18 @@ export function createOpenAIStreamAdapter(
         );
         if (!abortSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (isContextLimitError(msg)) {
+          if (err instanceof StreamInterruptedError) {
+            // The connection dropped mid-turn (proxy idle timeout, network
+            // blip): make the interruption explicit instead of letting the
+            // turn end silently. The rethrow below also marks the message
+            // with an inline error + Retry.
+            toast.error("Response interrupted", {
+              description:
+                "The connection dropped before the model finished. " +
+                "The partial answer is kept. Use Retry to regenerate.",
+              duration: 8000,
+            });
+          } else if (isContextLimitError(msg)) {
             // llama-server runs with --no-context-shift, returning a hard
             // error instead of silently dropping old KV-cache turns. Point
             // the user at the control that raises the ceiling.
@@ -3756,6 +3793,9 @@ export function createOpenAIStreamAdapter(
         }
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
+        // Live tool output is transient; the persisted tool result (or the
+        // interrupted state) is the record.
+        useChatRuntimeStore.getState().clearToolLiveOutput();
         // Drop the transient denoising canvas so the finished bubble shows only
         // the committed markdown answer (cancellation/error included).
         runtime.setActiveDiffusionCanvas(null);
