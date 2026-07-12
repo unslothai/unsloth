@@ -16,7 +16,11 @@ if str(_BACKEND) not in sys.path:
 import utils.personalization_settings as pers  # noqa: E402
 from auth.authentication import get_current_subject  # noqa: E402
 from routes import settings as settings_routes  # noqa: E402
-from routes.settings import PersonalizationPayload  # noqa: E402
+from routes.settings import (  # noqa: E402
+    MAX_SIDEBAR_MENU_INPUT_ITEMS,
+    PersonalizationPayload,
+    SIDEBAR_MENU_ITEM_DEFAULTS,
+)
 
 
 def test_defaults_fill_missing_fields():
@@ -117,6 +121,30 @@ def test_customization_sidebar_menu_normalized():
     ]
 
 
+def _sidebar(items):
+    return {"appearance": {"customization": {"sidebarMenu": items}}}
+
+
+def test_customization_sidebar_menu_dedupes_oversized_payload():
+    # A stale/duplicated payload carries more items than there are distinct ids.
+    # It must reach the dedupe validator and normalize to exactly one entry per
+    # id, not be rejected by the length cap before dedupe runs.
+    ids = list(SIDEBAR_MENU_ITEM_DEFAULTS)
+    doubled = [{"id": i} for i in ids] + [{"id": i} for i in ids]
+    assert len(doubled) > len(SIDEBAR_MENU_ITEM_DEFAULTS)
+    p = PersonalizationPayload.model_validate(_sidebar(doubled))
+    result = [i.id for i in p.appearance.customization.sidebarMenu]
+    assert result == ids
+    assert len(result) == len(SIDEBAR_MENU_ITEM_DEFAULTS)
+
+
+def test_customization_sidebar_menu_rejects_pathological_length():
+    # The generous input cap still refuses an absurdly long list outright.
+    huge = [{"id": "api"} for _ in range(MAX_SIDEBAR_MENU_INPUT_ITEMS + 1)]
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(_sidebar(huge))
+
+
 def test_customization_imported_fonts_validated():
     ok = PersonalizationPayload.model_validate(
         {
@@ -176,6 +204,25 @@ def test_imported_font_data_url_must_be_base64():
         PersonalizationPayload.model_validate(
             _imported([{"name": "F", "dataUrl": "data:application/json;base64,AAAA"}])
         )
+
+
+def test_imported_font_data_url_rejects_newline():
+    # re's ``$`` also matches just before a trailing newline, so a data URL
+    # ending in "\n" (or with an embedded newline) must be rejected the same way
+    # the frontend JS pattern rejects it; otherwise the backend accepts a value
+    # the client would never have produced.
+    for bad in [
+        "data:font/woff2;base64,AAAA\n",
+        "data:font/woff2;base64,AAAA\nBBBB",
+        "\ndata:font/woff2;base64,AAAA",
+    ]:
+        with pytest.raises(ValidationError):
+            PersonalizationPayload.model_validate(_imported([{"name": "F", "dataUrl": bad}]))
+    # The same URL without the newline is still accepted.
+    ok = PersonalizationPayload.model_validate(
+        _imported([{"name": "F", "dataUrl": "data:font/woff2;base64,AAAA"}])
+    )
+    assert ok.appearance.customization.importedFonts[0].dataUrl == "data:font/woff2;base64,AAAA"
 
 
 def test_imported_fonts_total_size_capped():

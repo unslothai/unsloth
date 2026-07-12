@@ -614,7 +614,10 @@ class PersonalizationImportedFont(BaseModel):
     @field_validator("dataUrl")
     @classmethod
     def _validate_font_data_url(cls, value: str) -> str:
-        if not _FONT_DATA_URL_PATTERN.match(value):
+        # fullmatch, not match: re's ``$`` also matches just before a trailing
+        # newline, so ``match`` would accept "data:font/woff2;base64,AAAA\n",
+        # which the frontend's JS pattern (``$`` = end of string) rejects.
+        if not _FONT_DATA_URL_PATTERN.fullmatch(value):
             raise ValueError("dataUrl must be a base64 font data URL.")
         return value
 
@@ -631,6 +634,14 @@ SIDEBAR_MENU_ITEM_DEFAULTS = {
     "chat": False,
     "connections": False,
 }
+
+# The sidebarMenu validator below dedupes ids and re-fills any missing ones, so
+# the stored list is always exactly one entry per id. Cap the *incoming* list at
+# a generous multiple rather than len(defaults): a stale or duplicated payload
+# (more items than distinct ids) must reach the validator so it can normalize,
+# instead of being rejected by the length constraint before dedupe runs. A
+# pathologically long list is still refused.
+MAX_SIDEBAR_MENU_INPUT_ITEMS = 4 * len(SIDEBAR_MENU_ITEM_DEFAULTS)
 
 
 class PersonalizationSidebarMenuItem(BaseModel):
@@ -686,7 +697,7 @@ class PersonalizationCustomization(BaseModel):
     edgeFades: bool = True
     sidebarMenu: list[PersonalizationSidebarMenuItem] = Field(
         default_factory = _default_sidebar_menu,
-        max_length = len(SIDEBAR_MENU_ITEM_DEFAULTS),
+        max_length = MAX_SIDEBAR_MENU_INPUT_ITEMS,
     )
 
     @field_validator("sidebarMenu")
