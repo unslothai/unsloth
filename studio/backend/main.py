@@ -159,6 +159,15 @@ if sys.platform == "win32":
                 _bnb_rocm_ver_final,
             )
 
+    # Setting BNB_ROCM_VERSION makes bitsandbytes log a benign override notice on
+    # import; drop only that record so real errors and mismatch warnings show.
+    if os.environ.get("BNB_ROCM_VERSION"):
+        import logging as _logging
+
+        _logging.getLogger("bitsandbytes.cextension").addFilter(
+            lambda _r: "environment variable detected" not in _r.getMessage()
+        )
+
 # ── WSL AMD Strix Halo (gfx1151): enable ROCDXG before any torch import ──────
 # In WSL the AMD GPU is reached via the ROCDXG bridge (librocdxg.so over
 # /dev/dxg), which HSA loads only when HSA_ENABLE_DXG_DETECTION=1 is set BEFORE
