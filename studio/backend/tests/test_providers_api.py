@@ -262,6 +262,16 @@ class TestRegistry:
         missing = EXPECTED_PROVIDER_TYPES - returned_types
         assert not missing, f"Missing provider types: {missing}"
 
+    def test_minimax_registry_metadata(self, auth_headers: dict[str, str]):
+        """MiniMax exposes the current defaults and supported capabilities."""
+        resp = requests.get(_url("/api/providers/registry"), headers = auth_headers, timeout = 10)
+        assert resp.status_code == 200
+        entry = next(p for p in resp.json() if p["provider_type"] == "minimax")
+        assert entry["base_url"] == "https://api.minimax.io/v1"
+        assert entry["default_models"][:2] == ["MiniMax-M3", "MiniMax-M2.7"]
+        assert entry["supports_vision"] is True
+        assert entry["supports_tool_calling"] is True
+
     def test_registry_entries_have_required_fields(self, auth_headers: dict[str, str]):
         """Each registry entry has provider_type, display_name, base_url, default_models."""
         resp = requests.get(_url("/api/providers/registry"), headers = auth_headers, timeout = 10)
@@ -477,7 +487,7 @@ _VISION_PARAMS = [
         ),
     )
     for ptype, (_, model) in _PROVIDER_CONFIGS.items()
-    if ptype in {"openai", "mistral", "gemini", "anthropic", "openrouter"}
+    if ptype in {"openai", "mistral", "gemini", "anthropic", "openrouter", "minimax"}
 ]
 
 

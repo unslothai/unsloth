@@ -202,13 +202,19 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "base_url": "https://api.minimax.io/v1",
         "default_models": [
             "MiniMax-M3",
+            "MiniMax-M2.7",
         ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        "notes": "OpenAI-compatible API. API key from platform.minimax.io. MiniMax-M3 has a 1M-token context window and image input.",
+        "notes": (
+            "OpenAI-compatible API. API key from platform.minimax.io. "
+            "MiniMax-M3 has a 1M-token context window with image and video input; "
+            "MiniMax-M2.7 has a 204.8K-token context window with text input. "
+            "China mainland: override base URL to https://api.minimaxi.com/v1"
+        ),
     },
     "huggingface": {
         "display_name": "Hugging Face",
