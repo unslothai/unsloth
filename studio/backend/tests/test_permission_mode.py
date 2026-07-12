@@ -684,9 +684,7 @@ def test_permission_mode_confirm_derivation():
 
     # An explicit confirm flag always wins (True gates, False opts out).
     assert _permission_mode_confirm(req(confirm_tool_calls = True, stream = False)) is True
-    assert (
-        _permission_mode_confirm(req(confirm_tool_calls = False, permission_mode = "ask")) is False
-    )
+    assert _permission_mode_confirm(req(confirm_tool_calls = False, permission_mode = "ask")) is False
     # Explicit ask/auto always engage the gate (a non-streaming one is rejected
     # by the guard that reads this).
     assert _permission_mode_confirm(req(permission_mode = "ask", stream = False)) is True
