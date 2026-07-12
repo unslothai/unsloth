@@ -2698,14 +2698,14 @@ class TestLatestTierForces16Bit:
         # A worker spawned mid-swap could activate a half-replaced sidecar.
         training = self._read("routes/training.py")
         start = training.split("async def start_training", 1)[1].split("\nasync def ", 1)[0]
-        assert "is_install_in_progress" in start, (
-            "training /start must refuse while a transformers install is in progress"
-        )
+        assert (
+            "is_install_in_progress" in start
+        ), "training /start must refuse while a transformers install is in progress"
         export = self._read("routes/export.py")
         helper = export.split("def _ensure_export_supported", 1)[1].split("\ndef ", 1)[0]
-        assert "is_install_in_progress" in helper, (
-            "mutating export routes must refuse while a transformers install is in progress"
-        )
+        assert (
+            "is_install_in_progress" in helper
+        ), "mutating export routes must refuse while a transformers install is in progress"
 
 
 class TestStageAndSwapBeforeSwap:

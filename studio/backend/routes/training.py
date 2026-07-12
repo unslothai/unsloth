@@ -149,13 +149,11 @@ async def start_training(
         # A consented latest-transformers install stage-and-swaps .venv_t5_latest;
         # a worker spawned mid-swap could activate a half-replaced sidecar.
         from utils.transformers_latest import is_install_in_progress
+
         if is_install_in_progress():
             raise HTTPException(
                 status_code = 409,
-                detail = (
-                    "A transformers installation is in progress. "
-                    "Retry when it completes."
-                ),
+                detail = ("A transformers installation is in progress. Retry when it completes."),
             )
 
         backend = get_training_backend()

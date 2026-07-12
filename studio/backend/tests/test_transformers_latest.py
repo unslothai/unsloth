@@ -647,7 +647,11 @@ class TestInstallLatestTransformers:
         monkeypatch.setattr(tl, "compat_plan", lambda v: ((), []))
         recorded = {}
 
-        def _fake_ensure(version, extra_packages = (), before_swap = None):
+        def _fake_ensure(
+            version,
+            extra_packages = (),
+            before_swap = None,
+        ):
             recorded["args"] = (version, extra_packages)
             return True
 
@@ -683,7 +687,9 @@ class TestInstallLatestTransformers:
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
         monkeypatch.setattr(tl, "compat_plan", lambda v: ((), []))
         monkeypatch.setattr(
-            tl, "ensure_latest_transformers_venv", lambda v, extra_packages = (), before_swap = None: False
+            tl,
+            "ensure_latest_transformers_venv",
+            lambda v, extra_packages = (), before_swap = None: False,
         )
         result = install_latest_transformers("5.13.0")
         assert result["success"] is False and "failed" in result["message"]
@@ -704,7 +710,11 @@ class TestInstallLatestTransformers:
         monkeypatch.setattr(tl, "compat_plan", lambda v: (("tokenizers==0.23.0",), []))
         recorded = {}
 
-        def _fake_ensure(version, extra_packages = (), before_swap = None):
+        def _fake_ensure(
+            version,
+            extra_packages = (),
+            before_swap = None,
+        ):
             recorded["extras"] = extra_packages
             return True
 
@@ -903,7 +913,9 @@ def test_install_success_invalidates_capability_caches(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
     monkeypatch.setattr(tl, "compat_plan", lambda v: ((), []))
-    monkeypatch.setattr(tl, "ensure_latest_transformers_venv", lambda v, extra_packages = (), before_swap = None: True)
+    monkeypatch.setattr(
+        tl, "ensure_latest_transformers_venv", lambda v, extra_packages = (), before_swap = None: True
+    )
     monkeypatch.setattr(tl, "latest_venv_pinned_version", lambda: "5.13.0")
 
     tv._probe_tier_cache["stale/model"] = "default"
