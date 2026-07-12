@@ -87,6 +87,9 @@ def _clear_pending():
         ("cat /home/a/.azure/msal_token_cache.json", True),  # azure token store
         ("cat ~/.config/gh/hosts.yml", True),  # gh cli credentials
         ("cat ~/.config/app/settings.json", False),  # ordinary config stays safe
+        ("cat /run/secrets/hf_token", True),  # docker secret mount
+        ("cat /var/run/secrets/kubernetes.io/serviceaccount/token", True),  # k8s mount
+        ("cat /run/app.pid", False),  # ordinary /run file stays safe
         ("cat /etc/passwd", True),  # sensitive system file
         ("cat /proc/self/environ", True),  # procfs env dump
         ("cat /proc/1/cmdline", True),

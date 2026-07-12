@@ -562,6 +562,8 @@ _SENSITIVE_PATH_RE = re.compile(
     r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
     r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
     r"|credentials|/etc/(?:passwd|shadow|sudoers)"
+    # Docker/Kubernetes secret mounts hold injected credentials.
+    r"|/(?:var/)?run/secrets(?:[/\\]|$)"
     # procfs leaks a (possibly parent) process env/args/memory to a read.
     r"|/proc/[^/\s'\"]+/(?:environ|cmdline|mem|maps)\b"
     # A .pem/.key file (basename before the extension), not a bare ".key"
@@ -573,7 +575,7 @@ _PARENT_TRAVERSAL_RE = re.compile(r"(?:^|[\s/\\'\"=:])\.\.(?:[/\\]|$|[\s'\"])")
 # A sensitive directory: a dynamic segment under it (open(f"/etc/{name}")) is
 # not provably safe, so fail closed when a folded path has a dynamic piece here.
 _SENSITIVE_DIR_RE = re.compile(
-    r"/etc/|(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube)[/\\]"
+    r"/etc/|/(?:var/)?run/secrets[/\\]|(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube)[/\\]"
     r"|(?:^|[/\\])\.config/(?:gcloud|gh)[/\\]",
     re.IGNORECASE,
 )
