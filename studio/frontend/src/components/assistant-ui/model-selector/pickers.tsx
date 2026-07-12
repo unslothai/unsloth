@@ -357,12 +357,10 @@ function formatBytes(bytes: number): string {
   // Guard non-positive / non-finite sizes (0, missing -> NaN, Infinity) so we
   // never render "NaN undefined" or a negative unit index.
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  // Decimal (base-1000) units to match what Hugging Face reports for a repo's
-  // file sizes -- e.g. 217 GB, not the 201.8 GiB a base-1024 divide would show.
-  // (GPU-fit math below stays base-1024 since VRAM is binary.)
-  // Divide iteratively rather than via Math.log, which has float error at exact
-  // powers of 1000 (log(1e12)/log(1000) = 3.9999... would mislabel 1 TB as
-  // "1000 GB"); the loop also can't run off the end of units.
+  // Decimal (base-1000) units to match HF's reported file sizes -- e.g. 217 GB, not the
+  // 201.8 GiB a base-1024 divide shows. (GPU-fit math below stays base-1024 since VRAM is
+  // binary.) Divide iteratively, not via Math.log, which has float error at exact powers of
+  // 1000 (log(1e12)/log(1000) = 3.9999... would mislabel 1 TB as "1000 GB").
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   let value = bytes;
@@ -762,11 +760,10 @@ function GgufVariantExpander({
 
   const handleVariantClick = useCallback(
     (quant: string, filename: string, downloaded?: boolean, sizeBytes?: number) => {
-      // Only seed the staged context for picks whose weights are already on
-      // disk. The staging effect short-circuits on a known contextLength
-      // (pendingHasContext) before starting the download, so attaching it to an
-      // undownloaded quant from a partially cached repo would skip the download
-      // entirely (and, with Load on selection, never load).
+      // Only seed the staged context for picks whose weights are already on disk. The staging
+      // effect short-circuits on a known contextLength (pendingHasContext) before downloading,
+      // so attaching it to an undownloaded quant from a partially cached repo would skip the
+      // download (and, with Load on selection, never load).
       const isAvailable = isLocalPath || downloaded === true;
       onSelect(repoId, {
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
@@ -1228,10 +1225,10 @@ export const IMAGE_GEN_TASKS = [
 // Video page reuses this as its picker's `task` filter, so it lives here.
 export const VIDEO_GEN_TASKS = ["text-to-video"] as const;
 
-// Diffusion GGUF archs the Images backend can't assemble yet (SD/SDXL/PixArt/Wan/
-// ...). The backend tags them with this task so the chat picker hides them -- they
-// die with "unknown model architecture" in llama.cpp -- while the Images picker,
-// which filters on IMAGE_GEN_TASKS, also leaves them out (they'd 400 on load).
+// Diffusion GGUF archs the Images backend can't assemble yet (SD/SDXL/PixArt/Wan/...). The
+// backend tags them with this task so the chat picker hides them (they die with "unknown model
+// architecture" in llama.cpp), and the Images picker (filters on IMAGE_GEN_TASKS) also leaves
+// them out (they'd 400 on load).
 const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
 
 // Tasks that must never appear as a loadable chat model: the Images- and Video-handled
@@ -1243,22 +1240,20 @@ const NON_CHAT_TASKS: readonly string[] = [
   UNSUPPORTED_DIFFUSION_TASK,
 ];
 
-// Editing/inpaint checkpoints are tagged image-to-image but need an input image,
-// which the text-to-image backend rejects (mirrors its _EDIT_KEYWORDS). Hidden by
-// id so they don't show in the Images picker only to 400 on load. Keeping the
-// image-to-image task itself is required: some supported models (FLUX.2-klein)
-// carry that tag too. "layered" hides Qwen-Image-Layered, which needs a dedicated
-// pipeline (additional_t_cond) the standard text-to-image path can't drive.
+// Editing/inpaint checkpoints are tagged image-to-image but need an input image the
+// text-to-image backend rejects (mirrors its _EDIT_KEYWORDS). Hidden by id so they don't show
+// in the Images picker only to 400 on load. Keeping the image-to-image task itself is required:
+// some supported models (FLUX.2-klein) carry it too. "layered" hides Qwen-Image-Layered, which
+// needs a dedicated pipeline (additional_t_cond) the standard path can't drive.
 const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint", "layered"] as const;
 // Editing families the backend now SUPPORTS (their own Edit workflow) -- must not be
 // hidden even though their id contains an edit keyword. Mirrors the backend's
 // qwen-image-edit family in diffusion_families.py.
 const SUPPORTED_EDIT_KEYWORDS = ["qwen-image-edit", "kontext"] as const;
-// Match a keyword as a whole path/name segment (bounded by a separator or a string
-// edge), not a raw substring, so "edit" does not hide ".../edited/..." or an
-// "*-edition" repo and "kontext" does not hide ".../kontextual/...". These keywords
-// are literals of [a-z-], so no regex escaping is needed. Mirrors _token_in_needle in
-// diffusion_families.py.
+// Match a keyword as a whole path/name segment (bounded by a separator or string edge), not a
+// raw substring, so "edit" doesn't hide ".../edited/..." or an "*-edition" repo and "kontext"
+// doesn't hide ".../kontextual/...". These keywords are [a-z-] literals, so no regex escaping.
+// Mirrors _token_in_needle in diffusion_families.py.
 function idHasSegment(id: string, keyword: string): boolean {
   return new RegExp(`(?:^|[-_./\\\\])${keyword}(?:$|[-_./\\\\])`).test(id);
 }
@@ -1269,10 +1264,9 @@ function isImageEditModel(repoId: string | null | undefined): boolean {
   return IMAGE_EDIT_KEYWORDS.some((kw) => idHasSegment(id, kw));
 }
 
-// Gate an on-device model by the picker's task scope. With a filter (the Images
-// page) keep only matching, non-editing tasks; with no filter (chat) drop
-// image-generation models so a downloaded diffusion GGUF doesn't show up as a
-// loadable chat model.
+// Gate an on-device model by the picker's task scope. With a filter (Images page) keep only
+// matching, non-editing tasks; with no filter (chat) drop image-generation models so a
+// downloaded diffusion GGUF doesn't show up as a loadable chat model.
 function passesTaskGate(
   repoTask: string | null | undefined,
   repoId: string | null | undefined,
@@ -1583,10 +1577,9 @@ export function HubModelPicker({
     enabled: online && section === "recommended",
   });
 
-  // Lowercased repo ids confirmed GGUF by the store or HF search.
-  // Absence means "no hint" -> hasGgufSuffix is the fallback (don't
-  // conflate unknown with known-not-GGUF). Lowercased so store and HF
-  // IDs differing only by casing match the same hint.
+  // Lowercased repo ids confirmed GGUF by the store or HF search. Absence means "no hint" ->
+  // hasGgufSuffix is the fallback (don't conflate unknown with known-not-GGUF). Lowercased so
+  // store and HF ids differing only by casing match the same hint.
   const modelGgufIds = useMemo(() => {
     const ids = new Set<string>();
     for (const model of models) {
@@ -1903,10 +1896,9 @@ export function HubModelPicker({
       .then(setRecommendedFolders)
       .catch(() => {});
 
-    // Always refetch cached GGUF/model lists. The module-level caches render
-    // instantly with stale data (no spinner flash), but newly downloaded
-    // repos need a fresh backend hit. cachedReady=alreadyCached initially,
-    // so the background refresh is invisible when we already had data.
+    // Always refetch cached GGUF/model lists. The module-level caches render instantly with
+    // stale data (no spinner flash), but newly downloaded repos need a fresh backend hit.
+    // cachedReady=alreadyCached initially, so the background refresh is invisible when we had data.
     let done = 0;
     const check = () => {
       if (++done >= 2) setCachedReady(true);
@@ -1943,11 +1935,10 @@ export function HubModelPicker({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
 
-  // Drop models Studio can't run for chat (diffusion / image / video / etc.)
-  // using the Hub's classifier on the tags the listing already carries. When the
-  // picker is scoped to a task (e.g. the Images page asks for text-to-image),
-  // models matching that task are exactly what we want — keep them even though
-  // the chat classifier marks image tasks "unsupported".
+  // Drop models Studio can't run for chat (diffusion / image / video / etc.) using the Hub's
+  // classifier on the tags the listing carries. When the picker is task-scoped (e.g. Images asks
+  // for text-to-image), models matching that task are what we want -- keep them even though the
+  // chat classifier marks image tasks "unsupported".
   const isChatSupported = useCallback(
     (r: HfModelResult) => {
       // Image tab (task set): only task-matching, non-editing results. Anything
@@ -2041,12 +2032,11 @@ export function HubModelPicker({
     catalog,
   ]);
 
-  // Curated non-GGUF (safetensors) models for the Images picker. The HF listing +
-  // Recommended gate only surface GGUF on a GPU host (isRecommendableFormat), so a
-  // bnb-4bit / fp8 safetensors model would never appear there. These curated entries
-  // (the non-GGUF ModelOptions passed in) are shown explicitly above the GGUF rows so
-  // the user can pick a full diffusers pipeline. Only the Images picker (task set)
-  // curates them; already-downloaded ones show under Downloaded instead.
+  // Curated non-GGUF (safetensors) models for the Images picker. The HF listing + Recommended
+  // gate only surface GGUF on a GPU host (isRecommendableFormat), so a bnb-4bit / fp8 safetensors
+  // model would never appear. These curated entries (the non-GGUF ModelOptions passed in) are
+  // shown above the GGUF rows so the user can pick a full diffusers pipeline. Only the Images
+  // picker (task set) curates them; already-downloaded ones show under Downloaded instead.
   const curatedSafetensorsRows = useMemo(() => {
     if (!task) return [];
     // Always list the curated safetensors (bnb-4bit / fp8) diffusion models. They
@@ -2074,23 +2064,21 @@ export function HubModelPicker({
     [downloadedSet],
   );
   const deviceBudget = useMemo(
-    // Largest single device, NOT the multi-GPU sum: the diffusion/video
-    // backends place the whole pipeline on one device (pipe.to / cpu-offload,
-    // never device_map), so summed VRAM would pass groups no single card can
-    // hold (e.g. a 114 GB group "fits" a 4x24 GB host) and a bare group click
-    // would OOM -- the exact load the fit toggle exists to prevent.
+    // Largest single device, NOT the multi-GPU sum: the diffusion/video backends place the whole
+    // pipeline on one device (pipe.to / cpu-offload, never device_map), so summed VRAM would pass
+    // groups no single card can hold (e.g. a 114 GB group "fits" a 4x24 GB host) and a bare group
+    // click would OOM -- the load the fit toggle exists to prevent.
     () => ({
       gpuGb: gpu.available ? gpu.maxDeviceMemoryGb : 0,
       systemRamGb: gpu.systemRamAvailableGb || 0,
     }),
     [gpu],
   );
-  // Variant expanders and format lists follow the same single-device budget as
-  // deviceBudget when this picker is task-scoped (Images/Video): the diffusion
-  // and video loaders place the whole pipeline on one device, so sorting and
-  // recommending quants against the summed multi-GPU total would mark variants
-  // as fitting that OOM at load. Chat pickers keep the summed total, where
-  // llama.cpp can split layers across devices.
+  // Variant expanders and format lists follow the same single-device budget as deviceBudget when
+  // task-scoped (Images/Video): the diffusion and video loaders place the whole pipeline on one
+  // device, so sorting/recommending quants against the summed multi-GPU total would mark variants
+  // as fitting that OOM at load. Chat pickers keep the summed total, where llama.cpp splits
+  // layers across devices.
   const expanderGpuGb = gpu.available
     ? task
       ? gpu.maxDeviceMemoryGb
@@ -2098,12 +2086,11 @@ export function HubModelPicker({
     : undefined;
   const routedArtifactFor = useCallback(
     (group: CatalogGroup): ModelArtifact => {
-      // Honor the format filter when routing a bare group click. A group is only
-      // visible under a GGUF/Safetensors/MLX filter because at least one of its
-      // artifacts matches (catalogGroupMatchesFormat), so restrict the routing
-      // candidates to those same artifacts before the ladder picks. Otherwise a
-      // GGUF-filtered group could route to a large BF16/FP8 download the filter
-      // never surfaced (pickDefaultArtifact prefers a fitting non-GGUF).
+      // Honor the format filter when routing a bare group click. A group is visible under a
+      // GGUF/Safetensors/MLX filter only because at least one artifact matches
+      // (catalogGroupMatchesFormat), so restrict the routing candidates to those artifacts before
+      // the ladder picks. Otherwise a GGUF-filtered group could route to a large BF16/FP8 download
+      // the filter never surfaced (pickDefaultArtifact prefers a fitting non-GGUF).
       const scoped =
         formatFilter === "all"
           ? group
@@ -2131,11 +2118,10 @@ export function HubModelPicker({
         });
         return;
       }
-      // GGUF route: resolve the quant list, then load the ladder's pick. A
-      // failed fetch falls back to opening the format list instead -- toggle the
-      // caller's CONTEXT-SCOPED expandKey (not the context-free canonicalId), so the
-      // chevron (which toggles expandKey) can still collapse it and the same group in
-      // another list is not expanded too.
+      // GGUF route: resolve the quant list, then load the ladder's pick. A failed fetch falls back
+      // to opening the format list -- toggle the caller's CONTEXT-SCOPED expandKey (not the
+      // context-free canonicalId), so the chevron can still collapse it and the same group in another
+      // list isn't expanded too.
       setRoutingGroupId(group.canonicalId);
       try {
         const res = normalizeGgufVariantsResponse(
@@ -2269,10 +2255,10 @@ export function HubModelPicker({
       ),
     [cachedGguf, downloadedSort, loadTimes, task],
   );
-  // Cached non-GGUF repos. In chat, passesTaskGate drops diffusers image repos. In the
-  // Images picker (task set) it keeps them, but limit to repos this backend can actually
-  // load as diffusion: unsloth-hosted ones. Base repos (Qwen/Qwen-Image, FLUX bases) are
-  // cached as dependencies and fail the diffusion trust gate, so listing them would dead-end.
+  // Cached non-GGUF repos. In chat, passesTaskGate drops diffusers image repos. In the Images
+  // picker (task set) it keeps them, but limit to repos this backend can load as diffusion:
+  // unsloth-hosted ones. Base repos (Qwen/Qwen-Image, FLUX bases) are cached as dependencies and
+  // fail the trust gate, so listing them would dead-end.
   const sortedCachedModels = useMemo(
     () =>
       sortCachedRepos(
@@ -2282,14 +2268,13 @@ export function HubModelPicker({
             // errors or triggers a silent multi-GB re-fetch on click (mirrors downloadedSet).
             !c.partial &&
             passesTaskGate(c.task, c.repo_id, task) &&
-            // Diffusion pickers: unsloth repos plus any repo the backend can actually LOAD.
-            // Gate on a curated ARTIFACT (artifactForRepoId, what loadSpecFor resolves), not a
-            // group-key match: a base / uncurated-quant sibling (Qwen/Qwen-Image-2512) matches
-            // the group by key but has no loadable artifact and dead-ends at the trust gate.
-            // An unsloth repo must also be a full pipeline (not single_file): the selection
-            // fall-through loads uncataloged rows as kind "pipeline", and from_pretrained on
-            // a single-file checkpoint repo (no model_index.json) fails after the handoff.
-            // Curated single-file artifacts stay: loadSpecFor carries their filename.
+            // Diffusion pickers: unsloth repos plus any repo the backend can LOAD. Gate on a curated
+            // ARTIFACT (artifactForRepoId, what loadSpecFor resolves), not a group-key match: a base /
+            // uncurated-quant sibling (Qwen/Qwen-Image-2512) matches the group by key but has no loadable
+            // artifact and dead-ends at the trust gate. An unsloth repo must also be a full pipeline (not
+            // single_file): the selection fall-through loads uncataloged rows as "pipeline", and
+            // from_pretrained on a single-file checkpoint repo (no model_index.json) fails after the
+            // handoff. Curated single-file artifacts stay: loadSpecFor carries their filename.
             (!task ||
               (isUnslothRepoId(c.repo_id) && !c.single_file) ||
               (catalog ? artifactForRepoId(c.repo_id, catalog) !== null : false)),
@@ -2324,11 +2309,10 @@ export function HubModelPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery, task],
   );
-  // Local ./models entries. Chat-only Studio runs GGUF (any host) and MLX (Mac
-  // only), so raw checkpoints there are hidden (mirrors the cached non-GGUF
-  // rule). An MLX build a Mac user dropped in ./models stays selectable. A
-  // task-scoped picker (Images) is exempt: the image backend loads local
-  // diffusers/safetensors pipelines even on chat-only (no-GPU, native) hosts.
+  // Local ./models entries. Chat-only Studio runs GGUF (any host) and MLX (Mac only), so raw
+  // checkpoints there are hidden (mirrors the cached non-GGUF rule). An MLX build dropped in
+  // ./models stays selectable. A task-scoped picker (Images) is exempt: the image backend loads
+  // local diffusers/safetensors pipelines even on chat-only (no-GPU, native) hosts.
   const sortedLocalDir = useMemo(
     () =>
       sortLocalModels(
@@ -2582,12 +2566,11 @@ export function HubModelPicker({
   const hubOptionKeys = useMemo(() => {
     const keys: string[] = [];
 
-    // Roving keys for an On Device cached section, mirroring renderCachedRows'
-    // render order exactly so arrow/Home/End nav matches the visual order.
-    // Without a catalog the rows are flat; with one, catalog members collapse
-    // under a canonical group row (whose key must lead), and the per-repo child
-    // rows only render (and only join the roving list) while the group is
-    // expanded. Ungrouped GGUF rows then ungrouped model rows follow.
+    // Roving keys for an On Device cached section, mirroring renderCachedRows' render order so
+    // arrow/Home/End nav matches the visual order. Without a catalog the rows are flat; with one,
+    // catalog members collapse under a canonical group row (whose key must lead), and the per-repo
+    // child rows render (and join the roving list) only while the group is expanded. Ungrouped GGUF
+    // then ungrouped model rows follow.
     const groupedCachedKeys = (
       ggufRows: { repo_id: string }[],
       modelRows: { repo_id: string }[],
@@ -2721,12 +2704,10 @@ export function HubModelPicker({
     }
 
     if (section === "recommended") {
-      // Curated rows render ABOVE the recommended rows (and call getOptionProps),
-      // so their keys must lead here or they fall back to the duplicate
-      // ...-option-missing id and drop out of arrow-key navigation. With a
-      // catalog (Images / Video) those are the canonical catalog-group rows,
-      // gated by the same format filter as the render; without one they are the
-      // flat curated safetensors rows.
+      // Curated rows render ABOVE the recommended rows (and call getOptionProps), so their keys must
+      // lead here or they fall back to the duplicate ...-option-missing id and drop out of arrow-key
+      // nav. With a catalog (Images / Video) those are the canonical catalog-group rows, gated by the
+      // same format filter as the render; without one they are the flat curated safetensors rows.
       if (catalog) {
         keys.push(
           ...recommendedCatalogGroups.map((g) =>
@@ -2935,11 +2916,10 @@ export function HubModelPicker({
     // non-empty Fine-tuned section.
     fineTunedRows.length === 0;
 
-  // Sort dropdown shown inline to the right of the section toggle. Options
-  // depend on the tab and stay visible while searching so results can be
-  // sorted. Fixed width matching the Search Hub button so it and the format
-  // dropdown always line up; text-xs matches that button too. The trigger label
-  // clips (no ellipsis) when long; the open menu expands to show it in full.
+  // Sort dropdown inline to the right of the section toggle. Options depend on the tab and stay
+  // visible while searching so results can be sorted. Fixed width matching the Search Hub button
+  // so it and the format dropdown line up; text-xs matches too. The trigger label clips (no
+  // ellipsis) when long; the open menu expands to show it in full.
   const sortTriggerClassName =
     "w-[110px] shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu like the Projects activity Select: less left/top padding and
@@ -3308,13 +3288,12 @@ export function HubModelPicker({
                     selected={selected}
                     optionProps={hubModelList.getOptionProps(optionKey, selected)}
                     onClick={() => {
-                      // routeGroupClick picks the best CURATED artifact; when one is on
-                      // disk pickDefaultArtifact returns it, so keep that path. But this
-                      // group can appear in On Device solely because a cached member
-                      // matched by key/alias (a sibling prequant that is not a curated
-                      // artifact). In that case the routed artifact is NOT downloaded, so
-                      // load an actual on-disk member instead of downloading a different
-                      // artifact -- the On Device row must "load the best on-disk artifact".
+                      // routeGroupClick picks the best CURATED artifact; when one is on disk
+                      // pickDefaultArtifact returns it, so keep that path. But this group can appear in On
+                      // Device solely because a cached member matched by key/alias (a sibling prequant that is
+                      // not a curated artifact). Then the routed artifact is NOT downloaded, so load an actual
+                      // on-disk member instead of downloading a different one -- the On Device row must "load
+                      // the best on-disk artifact".
                       if (!isRepoDownloaded(routedArtifactFor(group).repoId)) {
                         const cachedModel = rows.models[0];
                         if (cachedModel) {

@@ -4,10 +4,9 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-// One Advanced control's resolved value + provenance, for the "Auto: X" badges. Same
-// shape the diffusion status uses. `value` is the engaged value (a scheme/mode string,
-// null when off, or a boolean); `source` is "auto" (this backend decided) or "explicit"
-// (the caller set it); `reason` is the short why shown as a tooltip.
+// One Advanced control's resolved value + provenance, for the "Auto: X" badges. Same shape the
+// diffusion status uses. `value` is the engaged value (scheme/mode string, null when off, or a
+// boolean); `source` is "auto" or "explicit"; `reason` is the tooltip why.
 export interface VideoResolvedControl {
   value: string | boolean | null;
   source: "auto" | "explicit";

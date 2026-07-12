@@ -376,9 +376,9 @@ assert.equal(
 );
 
 // ── official BF16 artifacts (added so groups are not unsloth-quant-only) ────────
-// Qwen-Image-2512 BF16 (54 GB) does not fit a 24/48 GB budget (bnb-4bit/fp8 win
-// there, asserted above) but on an 80 GB datacenter GPU (budget 56) the official
-// BF16 is the highest-quality artifact that fits and wins.
+// Qwen-Image-2512 BF16 (54 GB) doesn't fit a 24/48 GB budget (bnb-4bit/fp8 win there, asserted
+// above) but on an 80 GB datacenter GPU (budget 56) the official BF16 is the highest-quality
+// artifact that fits and wins.
 assert.equal(
   pickDefaultArtifact(qwenGroup, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
     .format,

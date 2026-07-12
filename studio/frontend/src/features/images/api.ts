@@ -4,10 +4,9 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-// One Advanced control's resolved value + provenance, for the "Auto: X" badges. `value`
-// is the engaged value (a scheme/mode string, null when off, or a boolean for cpu_offload);
-// `source` is "auto" (this backend decided) or "explicit" (the caller set it); `reason` is
-// the short why shown as a tooltip.
+// One Advanced control's resolved value + provenance, for the "Auto: X" badges. `value` is the
+// engaged value (scheme/mode string, null when off, or a boolean for cpu_offload); `source` is
+// "auto" (this backend decided) or "explicit" (the caller set it); `reason` is the tooltip why.
 export interface DiffusionResolvedControl {
   value: string | boolean | null;
   source: "auto" | "explicit";
@@ -35,9 +34,8 @@ export interface DiffusionStatus {
   // state). Diffusers only, for families with a ControlNet pipeline; false otherwise.
   supports_controlnet?: boolean;
   // Per-Advanced-control provenance, keyed by control name (speed_mode, transformer_quant,
-  // attention_backend, memory_mode, transformer_cache, cpu_offload). Present only when a
-  // model is loaded on a backend that records it; the "Auto: X" badges read it. Absent on
-  // older backends.
+  // attention_backend, memory_mode, transformer_cache, cpu_offload). Present only when a model is
+  // loaded on a backend that records it (the "Auto: X" badges read it); absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
 }
 
@@ -520,9 +518,9 @@ export async function uploadDiffusionDataset(
 }
 
 // ── Dataset labeling + example imports (GET/PUT/DELETE .../dataset/{name}/...) ──
-// One image in a training dataset folder, with its resolved caption. `caption_source`
-// records where the caption came from ("metadata" beats a per-image "sidecar"; "none"
-// when uncaptioned) so the labeling grid can highlight images that still need one.
+// One image in a training dataset folder, with its resolved caption. `caption_source` records
+// where it came from ("metadata" beats a per-image "sidecar"; "none" when uncaptioned) so the
+// labeling grid can highlight images that still need one.
 export interface DiffusionDatasetImageRecord {
   filename: string;
   caption: string | null;

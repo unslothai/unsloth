@@ -4,11 +4,10 @@
 import { type ReactElement, useMemo } from "react";
 
 import type { TrainingSeriesPoint } from "@/features/training";
-// The loss + grad-norm cards are pure presentational (props only), so reuse them directly.
-// We do NOT reuse ChartsSection/ChartsContent: those also render an LR and an Eval Loss
-// card, which add little for diffusion LoRA training (the LR curve is the deterministic
-// schedule the user just picked; eval is not configured). This is a diffusion-only
-// two-card layout: Training Loss + Grad Norm (the actual training health signal).
+// The loss + grad-norm cards are pure presentational (props only), so reuse them directly. We
+// do NOT reuse ChartsSection/ChartsContent: those also render LR and Eval Loss cards, which add
+// little for diffusion LoRA (LR is the deterministic schedule just picked; eval isn't
+// configured). This is a diffusion-only two-card layout: Training Loss + Grad Norm.
 // eslint-disable-next-line no-restricted-imports
 import { GradNormChartCard } from "@/features/studio/sections/charts/grad-norm-chart-card";
 // eslint-disable-next-line no-restricted-imports

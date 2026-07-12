@@ -785,9 +785,8 @@ export async function browseFolders(
   if (path !== undefined && path !== null) params.set("path", path);
   if (showHidden) params.set("show_hidden", "true");
   const qs = params.toString();
-  // Forward the AbortSignal through authFetch -> fetch so a cancelled
-  // FolderBrowser navigation actually cancels the in-flight request
-  // server-side, instead of just dropping the response while the backend
+  // Forward the AbortSignal through authFetch -> fetch so a cancelled FolderBrowser navigation
+  // cancels the in-flight request server-side, instead of dropping the response while the backend
   // keeps walking large directory trees.
   const response = await authFetch(
     `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
@@ -948,10 +947,9 @@ export async function* streamChatCompletions(
       }
     }
   } finally {
-    // Only abort on an early/abnormal exit. After a natural [DONE] (or server
-    // EOF) the request is logically complete and the backend finalizes its
-    // api-monitor entry right after the sentinel; cancelling here can be seen as
-    // a disconnect and mark a successful request as cancelled.
+    // Only abort on an early/abnormal exit. After a natural [DONE] (or server EOF) the request is
+    // logically complete and the backend finalizes its api-monitor entry right after the sentinel;
+    // cancelling here can look like a disconnect and mark a successful request as cancelled.
     if (!completed) {
       try {
         await reader.cancel();
