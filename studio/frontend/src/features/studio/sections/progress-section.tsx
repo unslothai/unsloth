@@ -725,7 +725,7 @@ function GpuStat({
   const clamped = Math.max(0, Math.min(pct, max ?? 100));
   let barColor = "bg-red-500";
   if (clamped < 60) {
-    barColor = "bg-emerald-500";
+    barColor = "bg-control-accent";
   } else if (clamped < 95) {
     barColor = "bg-amber-500";
   }

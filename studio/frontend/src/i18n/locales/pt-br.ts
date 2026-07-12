@@ -111,7 +111,7 @@ export const ptBR = {
       hideToken: "Ocultar token",
       showToken: "Mostrar token",
       password: "Senha",
-      passwordDescription: "Altere a senha desta conta do Studio.",
+      passwordDescription: "Altere a senha desta conta do Unsloth.",
       passwordDialog: {
         trigger: "Alterar senha",
         title: "Alterar senha",
@@ -225,7 +225,7 @@ export const ptBR = {
       },
       palette: {
         label: "Paleta de cores",
-        description: "Cores usadas no Studio, nos modos claro e escuro.",
+        description: "Cores usadas no Unsloth, nos modos claro e escuro.",
         standard: "Padrão",
         classic: "Clássico",
         minimal: "Minimalista",
@@ -247,6 +247,7 @@ export const ptBR = {
         fontBundledGroup: "Integradas",
         fontImportedGroup: "Importadas",
         fontDeviceGroup: "Neste dispositivo",
+        fontFolderGroup: "Da pasta",
         fontDeviceLoading: "Procurando fontes do dispositivo…",
         fontSearch: "Buscar fontes…",
         fontNoResults: "Nenhuma fonte encontrada.",
@@ -272,10 +273,10 @@ export const ptBR = {
           description: "Fonte usada em código e diffs.",
         },
         importFont: {
-          label: "Importar fonte",
-          description:
-            "Adicione um arquivo de fonte do seu dispositivo (máx. 1,5 MB).",
-          button: "Importar fonte…",
+          upload: "Enviar",
+          scanFolder: "Selecionar pasta",
+          alreadyAvailable: "Esta fonte já está disponível, então a cópia existente será usada.",
+          folderNoFonts: "Nenhum arquivo de fonte encontrado nessa pasta.",
           remove: "Remover",
           errorInvalidType:
             "Tipo de arquivo não suportado. Use .woff2, .woff, .ttf ou .otf.",
@@ -286,7 +287,7 @@ export const ptBR = {
         },
         uiFontSize: {
           label: "Tamanho da fonte da interface",
-          description: "Ajuste o tamanho base da interface do Studio.",
+          description: "Ajuste o tamanho base da interface do Unsloth.",
         },
         codeFontSize: {
           label: "Tamanho da fonte de código",
@@ -338,7 +339,7 @@ export const ptBR = {
     },
     resources: {
       title: "Sistema",
-      description: "Monitore o hardware e o armazenamento deste servidor Studio.",
+      description: "Monitore o hardware e o armazenamento deste servidor Unsloth.",
       liveUpdates: "Atualizações ao vivo",
       floatingWindow: "Janela flutuante",
       disableOverlay: "Desativar sobreposição",

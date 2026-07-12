@@ -110,7 +110,7 @@ export const zhCN = {
       showToken: "显示 token",
       tokenSaved: "Token 已保存",
       password: "密码",
-      passwordDescription: "更改此 Studio 账号的密码。",
+      passwordDescription: "更改此 Unsloth 账号的密码。",
       passwordDialog: {
         trigger: "更改密码",
         title: "更改密码",
@@ -203,7 +203,7 @@ export const zhCN = {
       },
       palette: {
         label: "调色板",
-        description: "Studio 全局使用的配色，支持浅色和深色模式。",
+        description: "Unsloth 全局使用的配色，支持浅色和深色模式。",
         standard: "标准",
         classic: "经典",
         minimal: "极简",
@@ -224,6 +224,7 @@ export const zhCN = {
         fontBundledGroup: "内置",
         fontImportedGroup: "已导入",
         fontDeviceGroup: "此设备",
+        fontFolderGroup: "来自文件夹",
         fontDeviceLoading: "正在查找设备字体…",
         fontSearch: "搜索字体…",
         fontNoResults: "未找到字体。",
@@ -249,9 +250,10 @@ export const zhCN = {
           description: "代码和差异视图使用的字体。",
         },
         importFont: {
-          label: "导入字体",
-          description: "从设备添加字体文件（最大 1.5 MB）。",
-          button: "导入字体…",
+          upload: "上传",
+          scanFolder: "选择文件夹",
+          alreadyAvailable: "该字体已可用，将使用现有字体。",
+          folderNoFonts: "在该文件夹中未找到字体文件。",
           remove: "移除",
           errorInvalidType:
             "不支持的文件类型。请使用 .woff2、.woff、.ttf 或 .otf。",
@@ -262,7 +264,7 @@ export const zhCN = {
         },
         uiFontSize: {
           label: "界面字号",
-          description: "调整 Studio 界面的基准字号。",
+          description: "调整 Unsloth 界面的基准字号。",
         },
         codeFontSize: {
           label: "代码字号",

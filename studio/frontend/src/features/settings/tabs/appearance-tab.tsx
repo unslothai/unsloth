@@ -13,7 +13,6 @@ import {
   EdgeFadesSwitch,
   FontSmoothingSwitch,
   HeadingFontRow,
-  ImportFontControls,
   PointerCursorsSwitch,
   ReduceMotionSegmented,
   ResetCustomizationButton,
@@ -107,12 +106,6 @@ export function AppearanceTab() {
           description={t("settings.appearance.custom.codeFont.description")}
         >
           <CodeFontRow />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.importFont.label")}
-          description={t("settings.appearance.custom.importFont.description")}
-        >
-          <ImportFontControls />
         </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.contrast.label")}

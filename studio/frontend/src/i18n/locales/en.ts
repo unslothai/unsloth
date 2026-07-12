@@ -112,7 +112,7 @@ export const en = {
       showToken: "Show token",
       tokenSaved: "Token saved",
       password: "Password",
-      passwordDescription: "Change the password for this Studio account.",
+      passwordDescription: "Change the password for this Unsloth account.",
       passwordDialog: {
         trigger: "Change password",
         title: "Change password",
@@ -273,7 +273,7 @@ export const en = {
       },
       palette: {
         label: "Color palette",
-        description: "Colors used across Studio, in light and dark mode.",
+        description: "Colors used across Unsloth, in light and dark mode.",
         standard: "Standard",
         classic: "Classic",
         minimal: "Minimal",
@@ -295,6 +295,7 @@ export const en = {
         fontBundledGroup: "Built-in",
         fontImportedGroup: "Imported",
         fontDeviceGroup: "On this device",
+        fontFolderGroup: "From folder",
         fontDeviceLoading: "Looking for device fonts…",
         fontSearch: "Search fonts…",
         fontNoResults: "No fonts found.",
@@ -320,9 +321,11 @@ export const en = {
           description: "Font used for code and diffs.",
         },
         importFont: {
-          label: "Import font",
-          description: "Add a font file from your device (max 1.5 MB).",
-          button: "Import font…",
+          upload: "Upload",
+          scanFolder: "Select folder",
+          alreadyAvailable:
+            "This font is already available, so the existing copy is used.",
+          folderNoFonts: "No font files found in that folder.",
           remove: "Remove",
           errorInvalidType:
             "Unsupported file type. Use .woff2, .woff, .ttf, or .otf.",
@@ -333,7 +336,7 @@ export const en = {
         },
         uiFontSize: {
           label: "UI font size",
-          description: "Adjust the base size used for the Studio UI.",
+          description: "Adjust the base size used for the Unsloth UI.",
         },
         codeFontSize: {
           label: "Code font size",
@@ -386,7 +389,7 @@ export const en = {
     },
     resources: {
       title: "System",
-      description: "Monitor this Studio server's hardware and storage.",
+      description: "Monitor this Unsloth server's hardware and storage.",
       liveUpdates: "Live updates",
       floatingWindow: "Floating window",
       disableOverlay: "Disable overlay",

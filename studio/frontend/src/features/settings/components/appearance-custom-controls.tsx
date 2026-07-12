@@ -22,10 +22,19 @@ import { type TranslationKey, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import {
+  Cancel01Icon,
+  Folder01Icon,
+  Upload01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   CODE_FONT_SIZE_RANGE,
   type CustomModeColors,
@@ -260,6 +269,9 @@ function FontSelect({
   const importedFonts = useAppearanceCustomStore(
     (s) => s.customization.importedFonts,
   );
+  const removeImportedFont = useAppearanceCustomStore(
+    (s) => s.removeImportedFont,
+  );
 
   const handleOpenChange = (next: boolean) => {
     setOpen(next);
@@ -274,6 +286,10 @@ function FontSelect({
     onCommit(next);
     setOpen(false);
   };
+
+  const folderFonts = useFolderFonts();
+  const { inputs: uploadInputs, requestUpload, requestFolder, importFile } =
+    useFontImport((name) => select(name));
 
   const knownNames = new Set<string>([
     ...BUNDLED_FONTS,
@@ -341,7 +357,48 @@ function FontSelect({
                 className="p-0"
                 heading={t("settings.appearance.custom.fontImportedGroup")}
               >
-                {importedFonts.map((font) => renderItem(font.name))}
+                {importedFonts.map((font) => (
+                  <CommandItem
+                    key={font.name}
+                    value={font.name}
+                    onSelect={() => select(font.name)}
+                    data-checked={value === font.name}
+                    className="cursor-pointer rounded-[11px]"
+                  >
+                    <span className="min-w-0 truncate">{font.name}</span>
+                    <button
+                      type="button"
+                      aria-label={`${t("settings.appearance.custom.importFont.remove")}: ${font.name}`}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeImportedFont(font.name);
+                      }}
+                      className="ml-auto rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
+                    </button>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            )}
+            {folderFonts.some((f) => !knownNames.has(f.name)) && (
+              <CommandGroup
+                className="p-0"
+                heading={t("settings.appearance.custom.fontFolderGroup")}
+              >
+                {folderFonts
+                  .filter((f) => !knownNames.has(f.name))
+                  .map(({ name, file }) => (
+                    <CommandItem
+                      key={`folder-${name}`}
+                      value={name}
+                      onSelect={() => importFile(file)}
+                      className="cursor-pointer rounded-[11px]"
+                    >
+                      <span className="min-w-0 truncate">{name}</span>
+                    </CommandItem>
+                  ))}
               </CommandGroup>
             )}
             <CommandGroup
@@ -358,6 +415,31 @@ function FontSelect({
             </CommandGroup>
           </CommandList>
         </Command>
+        <div className="mt-1 flex gap-1 border-t border-border/60 pt-1">
+          <button
+            type="button"
+            onClick={requestUpload}
+            className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-[11px] px-2 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
+          >
+            <HugeiconsIcon
+              icon={Upload01Icon}
+              className="size-4 shrink-0 text-muted-foreground"
+            />
+            {t("settings.appearance.custom.importFont.upload")}
+          </button>
+          <button
+            type="button"
+            onClick={requestFolder}
+            className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-[11px] px-2 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
+          >
+            <HugeiconsIcon
+              icon={Folder01Icon}
+              className="size-4 shrink-0 text-muted-foreground"
+            />
+            {t("settings.appearance.custom.importFont.scanFolder")}
+          </button>
+        </div>
+        {uploadInputs}
       </PopoverContent>
     </Popover>
   );
@@ -432,14 +514,74 @@ const FONT_MIME_BY_EXTENSION: Record<string, string> = {
 
 const MAX_FONT_FILE_BYTES = Math.floor(1.5 * 1024 * 1024);
 
+// Trailing style words stripped when matching a file name to a family the
+// user already has ("Roboto-Bold.ttf" should match an installed "Roboto").
+const FONT_STYLE_SUFFIXES = new Set([
+  "regular",
+  "bold",
+  "italic",
+  "light",
+  "medium",
+  "thin",
+  "black",
+  "semibold",
+  "extrabold",
+  "extralight",
+  "heavy",
+  "book",
+  "oblique",
+  "normal",
+  "variable",
+  "vf",
+]);
+
+function fontBaseName(fileName: string): string {
+  return fileName
+    .replace(/\.[^.]+$/, "")
+    .replace(/[;{}()<>"']/g, "")
+    .replace(/[_-]+/g, " ")
+    .trim();
+}
+
+function familyCandidates(base: string): string[] {
+  const candidates = [base];
+  let words = base.split(/\s+/);
+  while (
+    words.length > 1 &&
+    FONT_STYLE_SUFFIXES.has(words[words.length - 1].toLowerCase())
+  ) {
+    words = words.slice(0, -1);
+    candidates.push(words.join(" "));
+  }
+  return candidates;
+}
+
+/* ----------------------------- Folder fonts ----------------------------- */
+
+// Font files found by a folder scan this session, shared by every dropdown.
+// File handles cannot be persisted from a plain directory input, so the list
+// lives for the session; picking one imports it through the normal path.
+type FolderFont = { name: string; file: File };
+let folderFontsCache: FolderFont[] = [];
+const folderFontsListeners = new Set<() => void>();
+
+function setFolderFonts(next: FolderFont[]) {
+  folderFontsCache = next;
+  for (const listener of folderFontsListeners) listener();
+}
+
+function useFolderFonts(): FolderFont[] {
+  return useSyncExternalStore(
+    (onChange) => {
+      folderFontsListeners.add(onChange);
+      return () => folderFontsListeners.delete(onChange);
+    },
+    () => folderFontsCache,
+  );
+}
+
 function fontNameFromFile(fileName: string, taken: Set<string>): string {
-  const base =
-    fileName
-      .replace(/\.[^.]+$/, "")
-      .replace(/[;{}()<>"']/g, "")
-      .replace(/[_-]+/g, " ")
-      .trim()
-      .slice(0, 60) || "Imported font";
+  const base = fontBaseName(fileName).slice(0, 60) || "Imported font";
   let candidate = base;
   let suffix = 2;
   while (taken.has(candidate)) {
@@ -449,19 +591,46 @@ function fontNameFromFile(fileName: string, taken: Set<string>): string {
   return candidate;
 }
 
-export function ImportFontControls() {
+/**
+ * File-import plumbing for the font dropdowns: hidden inputs, validation,
+ * and persistence. Successful uploads call onImported with the font name
+ * so the dropdown can select it for its slot right away. Fonts the user
+ * already has (bundled, imported, or installed on the device) are selected
+ * directly instead of embedding a duplicate copy.
+ */
+function useFontImport(onImported: (name: string) => void) {
   const t = useT();
   const importedFonts = useAppearanceCustomStore(
     (s) => s.customization.importedFonts,
   );
   const addImportedFont = useAppearanceCustomStore((s) => s.addImportedFont);
-  const removeImportedFont = useAppearanceCustomStore(
-    (s) => s.removeImportedFont,
-  );
   const inputRef = useRef<HTMLInputElement>(null);
-  const atLimit = importedFonts.length >= MAX_IMPORTED_FONTS;
+  const folderRef = useRef<HTMLInputElement>(null);
+
+  // Match the file name against fonts that already exist somewhere.
+  const findExisting = (fileName: string): string | null => {
+    for (const candidate of familyCandidates(fontBaseName(fileName))) {
+      const lower = candidate.toLowerCase();
+      const imported = importedFonts.find((f) => f.name.toLowerCase() === lower);
+      if (imported) return imported.name;
+      const bundled = BUNDLED_FONTS.find((f) => f.toLowerCase() === lower);
+      if (bundled) return bundled;
+      if (detectFontsByMeasurement([candidate]).length > 0) return candidate;
+    }
+    return null;
+  };
 
   const importFile = (file: File) => {
+    const existing = findExisting(file.name);
+    if (existing) {
+      toast.info(t("settings.appearance.custom.importFont.alreadyAvailable"));
+      onImported(existing);
+      return;
+    }
+    if (importedFonts.length >= MAX_IMPORTED_FONTS) {
+      toast.error(t("settings.appearance.custom.importFont.errorLimit"));
+      return;
+    }
     const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
     const mime = FONT_MIME_BY_EXTENSION[extension];
     if (!mime) {
@@ -511,6 +680,7 @@ export function ImportFontControls() {
         .load()
         .then(() => {
           addImportedFont({ name, dataUrl });
+          onImported(name);
         })
         .catch(() => {
           toast.error(t("settings.appearance.custom.importFont.errorFailed"));
@@ -519,8 +689,31 @@ export function ImportFontControls() {
     reader.readAsDataURL(file);
   };
 
-  return (
-    <div className="flex flex-col items-end gap-2">
+  const scanFolder = (files: FileList) => {
+    const found: FolderFont[] = [];
+    const seen = new Set<string>();
+    for (const file of Array.from(files)) {
+      const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+      if (!FONT_MIME_BY_EXTENSION[extension]) continue;
+      const name = fontBaseName(file.name).slice(0, 60);
+      if (!name || seen.has(name.toLowerCase())) continue;
+      seen.add(name.toLowerCase());
+      found.push({ name, file });
+      if (found.length >= 200) break;
+    }
+    if (found.length === 0) {
+      toast.info(t("settings.appearance.custom.importFont.folderNoFonts"));
+      return;
+    }
+    found.sort((a, b) => a.name.localeCompare(b.name));
+    setFolderFonts(found);
+  };
+
+  const requestUpload = () => inputRef.current?.click();
+  const requestFolder = () => folderRef.current?.click();
+
+  const inputs = (
+    <>
       <input
         ref={inputRef}
         type="file"
@@ -532,43 +725,21 @@ export function ImportFontControls() {
           e.target.value = "";
         }}
       />
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={() => {
-          if (atLimit) {
-            toast.error(t("settings.appearance.custom.importFont.errorLimit"));
-            return;
-          }
-          inputRef.current?.click();
+      <input
+        ref={folderRef}
+        type="file"
+        className="hidden"
+        // Non-standard but universal directory picker attributes.
+        {...({ webkitdirectory: "", directory: "" } as object)}
+        onChange={(e) => {
+          if (e.target.files) scanFolder(e.target.files);
+          e.target.value = "";
         }}
-      >
-        {t("settings.appearance.custom.importFont.button")}
-      </Button>
-      {importedFonts.length > 0 && (
-        <div className="flex max-w-72 flex-wrap justify-end gap-1.5">
-          {importedFonts.map((font) => (
-            <span
-              key={font.name}
-              className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-1 text-xs text-foreground"
-              style={{ fontFamily: `"${font.name}"` }}
-            >
-              {font.name}
-              <button
-                type="button"
-                onClick={() => removeImportedFont(font.name)}
-                aria-label={`${t("settings.appearance.custom.importFont.remove")}: ${font.name}`}
-                className="text-muted-foreground transition-colors hover:text-foreground"
-              >
-                <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
+      />
+    </>
   );
+
+  return { inputs, requestUpload, requestFolder, importFile };
 }
 
 function FontSizeInput({

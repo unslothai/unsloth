@@ -110,7 +110,7 @@ export const ja = {
       showToken: "トークンを表示",
       tokenSaved: "トークンを保存しました",
       password: "パスワード",
-      passwordDescription: "この Studio アカウントのパスワードを変更します。",
+      passwordDescription: "この Unsloth アカウントのパスワードを変更します。",
       passwordDialog: {
         trigger: "パスワード変更",
         title: "パスワード変更",
@@ -226,7 +226,7 @@ export const ja = {
       },
       palette: {
         label: "カラーパレット",
-        description: "Studio 全体で使用される配色。ライト・ダーク両対応。",
+        description: "Unsloth 全体で使用される配色。ライト・ダーク両対応。",
         standard: "スタンダード",
         classic: "クラシック",
         minimal: "ミニマル",
@@ -248,6 +248,7 @@ export const ja = {
         fontBundledGroup: "内蔵",
         fontImportedGroup: "インポート済み",
         fontDeviceGroup: "このデバイス",
+        fontFolderGroup: "フォルダから",
         fontDeviceLoading: "デバイスのフォントを検索中…",
         fontSearch: "フォントを検索…",
         fontNoResults: "フォントが見つかりません。",
@@ -273,9 +274,10 @@ export const ja = {
           description: "コードと差分で使用するフォント。",
         },
         importFont: {
-          label: "フォントをインポート",
-          description: "デバイスからフォントファイルを追加（最大 1.5 MB）。",
-          button: "フォントをインポート…",
+          upload: "アップロード",
+          scanFolder: "フォルダを選択",
+          alreadyAvailable: "このフォントは既に利用可能なため、既存のものを使用します。",
+          folderNoFonts: "そのフォルダにフォントファイルが見つかりませんでした。",
           remove: "削除",
           errorInvalidType:
             "サポートされていないファイル形式です。.woff2、.woff、.ttf、.otf を使用してください。",
@@ -286,7 +288,7 @@ export const ja = {
         },
         uiFontSize: {
           label: "UI フォントサイズ",
-          description: "Studio UI の基本サイズを調整します。",
+          description: "Unsloth UI の基本サイズを調整します。",
         },
         codeFontSize: {
           label: "コードフォントサイズ",
