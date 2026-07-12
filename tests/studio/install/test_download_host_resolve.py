@@ -4,6 +4,7 @@ path and the GitHub API enumeration; all I/O monkeypatched."""
 import importlib.util
 import json
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -151,17 +152,28 @@ def _sha_payload(*, manifest_sha256 = None):
     }
 
 
-def _stub_downloads(monkeypatch, sha_payload, manifest_bytes):
+def _stub_downloads(
+    monkeypatch,
+    sha_payload,
+    manifest_bytes,
+    *,
+    latest_tag = RELEASE_TAG,
+):
     def _no_api(*_a, **_k):
         raise AssertionError("GitHub API was used")
 
     monkeypatch.setattr(ILP, "github_release", _no_api)
     monkeypatch.setattr(ILP, "fetch_json", _no_api)
+    # The authoritative latest tag comes from the /releases/latest redirect
+    # (github.com, no api.github.com); stub it so no real request is made.
+    monkeypatch.setattr(ILP, "_download_host_latest_release_tag", lambda _repo: latest_tag)
 
     def _download_bytes(url, *_a, **_k):
         if SHA256_ASSET in url:
             return json.dumps(sha_payload).encode("utf-8")
         if MANIFEST_ASSET in url:
+            if isinstance(manifest_bytes, Exception):
+                raise manifest_bytes
             return manifest_bytes
         raise AssertionError(f"unexpected download: {url}")
 
@@ -186,3 +198,87 @@ def test_resolved_release_rejects_manifest_checksum_mismatch(monkeypatch):
     _stub_downloads(monkeypatch, _sha_payload(manifest_sha256 = "b" * 64), _manifest_bytes())
     with pytest.raises(PrebuiltFallback, match = "manifest checksum"):
         ILP._download_host_resolved_release(FORK_REPO)
+
+
+def test_resolved_release_rejects_release_tag_mismatch(monkeypatch):
+    # The checksum asset self-reports RELEASE_TAG, but the authoritative
+    # /releases/latest redirect resolves a different tag: the fast path must not
+    # pin to the stale self-reported tag (it raises, so the router falls back).
+    _stub_downloads(monkeypatch, _sha_payload(), _manifest_bytes(), latest_tag = "b9999-mix-other")
+    with pytest.raises(RuntimeError, match = "did not match pinned release tag"):
+        ILP._download_host_resolved_release(FORK_REPO)
+
+
+def test_resolved_release_manifest_404_falls_back(monkeypatch):
+    # An in-progress release can serve the checksum asset before the manifest; a
+    # manifest 404 returns None so the router falls back to the API.
+    not_found = urllib.error.HTTPError(
+        f"https://github.com/{FORK_REPO}/releases/download/{RELEASE_TAG}/{MANIFEST_ASSET}",
+        404,
+        "Not Found",
+        {},  # type: ignore[arg-type]
+        None,
+    )
+    _stub_downloads(monkeypatch, _sha_payload(), not_found)
+    assert ILP._download_host_resolved_release(FORK_REPO) is None
+
+
+# --- _download_host_latest_release_tag (redirect resolution) -------------------
+
+
+class _FakeResponse:
+    def __init__(self, url):
+        self._url = url
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+    def geturl(self):
+        return self._url
+
+
+class _FakeOpener:
+    def __init__(
+        self,
+        *,
+        url = None,
+        exc = None,
+    ):
+        self._url = url
+        self._exc = exc
+
+    def open(
+        self,
+        _request,
+        timeout = None,
+    ):
+        if self._exc is not None:
+            raise self._exc
+        return _FakeResponse(self._url)
+
+
+def test_latest_release_tag_parses_redirect(monkeypatch):
+    final = f"https://github.com/{FORK_REPO}/releases/tag/{RELEASE_TAG}"
+    monkeypatch.setattr(ILP, "_URL_OPENER", _FakeOpener(url = final))
+    assert ILP._download_host_latest_release_tag(FORK_REPO) == RELEASE_TAG
+
+
+def test_latest_release_tag_none_on_404(monkeypatch):
+    not_found = urllib.error.HTTPError(
+        f"https://github.com/{FORK_REPO}/releases/latest",
+        404,
+        "Not Found",
+        {},
+        None,  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(ILP, "_URL_OPENER", _FakeOpener(exc = not_found))
+    assert ILP._download_host_latest_release_tag(FORK_REPO) is None
+
+
+def test_latest_release_tag_none_when_not_a_tag_url(monkeypatch):
+    # No /releases/tag/ segment (e.g. redirected somewhere unexpected) -> None.
+    monkeypatch.setattr(ILP, "_URL_OPENER", _FakeOpener(url = f"https://github.com/{FORK_REPO}"))
+    assert ILP._download_host_latest_release_tag(FORK_REPO) is None

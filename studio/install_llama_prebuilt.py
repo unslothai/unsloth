@@ -2406,13 +2406,33 @@ def _release_asset_download_url(repo: str, tag: str, asset_name: str) -> str:
     )
 
 
-def _release_latest_asset_download_url(repo: str, asset_name: str) -> str:
-    """Same CDN, resolving to GitHub's latest non-prerelease release (no tag, no
-    API call)."""
-    return (
-        f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/latest/download/"
-        f"{urllib.parse.quote(asset_name, safe = '')}"
+def _download_host_latest_release_tag(repo: str) -> str | None:
+    """Concrete tag GitHub serves as /releases/latest, read from the redirect
+    target (github.com, still no api.github.com rate limit). This is the
+    authoritative latest tag the fast path pins every URL to, instead of trusting
+    the checksum asset's own release_tag field. GitHub resolves /releases/latest
+    by created_at/make_latest, which can lag the published_at newest the freshness
+    detection uses -- see docs/llama-cpp-prebuilt-resolution.md. Returns None when
+    the repo has no such release (404) so the caller falls back to the API."""
+    url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/latest"
+    request = urllib.request.Request(
+        url,
+        method = "HEAD",
+        headers = {"User-Agent": "unsloth-studio-llama-prebuilt"},
     )
+    try:
+        with _URL_OPENER.open(request, timeout = 30) as response:
+            final_url = response.geturl()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    marker = "/releases/tag/"
+    index = final_url.find(marker)
+    if index == -1:
+        return None
+    tag = urllib.parse.unquote(final_url[index + len(marker) :]).strip("/")
+    return tag or None
 
 
 def _fetch_download_host_json(url: str) -> Any:
@@ -2428,8 +2448,16 @@ def _fetch_download_host_json(url: str) -> Any:
 def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | None:
     """Resolve the latest fork release from the download host with zero
     api.github.com calls, reusing the API path's parsing and validation. Returns
-    None (caller falls back to the API) when the release lacks the JSON assets."""
-    sha_url = _release_latest_asset_download_url(repo, DEFAULT_PUBLISHED_SHA256_ASSET)
+    None (caller falls back to the API) when the release lacks the JSON assets.
+
+    The latest tag comes from GitHub's /releases/latest redirect, so it is
+    authoritative rather than self-reported by the checksum asset; the asset's own
+    release_tag is then cross-checked against it (a stale/mis-tagged asset falls
+    back to the API)."""
+    release_tag = _download_host_latest_release_tag(repo)
+    if not release_tag:
+        return None
+    sha_url = _release_asset_download_url(repo, release_tag, DEFAULT_PUBLISHED_SHA256_ASSET)
     try:
         sha_payload = _fetch_download_host_json(sha_url)
     except urllib.error.HTTPError as exc:
@@ -2438,9 +2466,8 @@ def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | Non
         raise
     if not isinstance(sha_payload, dict):
         return None
-    release_tag = sha_payload.get("release_tag")
-    if not isinstance(release_tag, str) or not release_tag:
-        return None
+    # Cross-check the asset's self-reported release_tag against the authoritative
+    # redirect tag: parse_approved_release_checksums raises on a mismatch.
     checksums = parse_approved_release_checksums(repo, release_tag, sha_payload)
     # Synthesize the API release payload with tag-pinned CDN URLs for every named
     # asset; parse_published_release_bundle then reads the manifest, still no API.
@@ -2460,7 +2487,15 @@ def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | Non
             for name in sorted(asset_names)
         ],
     }
-    bundle = parse_published_release_bundle(repo, synthetic_release)
+    try:
+        bundle = parse_published_release_bundle(repo, synthetic_release)
+    except urllib.error.HTTPError as exc:
+        # An in-progress release can publish the checksum asset before the
+        # manifest; treat a missing manifest like the sha256 404 above and fall
+        # back to the API rather than surfacing a noisy warning.
+        if exc.code == 404:
+            return None
+        raise
     if bundle is None:
         return None
     # The manifest may name a binary under its fork tag while the checksum JSON

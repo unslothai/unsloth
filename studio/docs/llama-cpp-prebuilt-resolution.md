@@ -14,25 +14,28 @@ For the fork repo (`unslothai/llama.cpp`) with an unpinned or `latest` request,
 resolution happens against the release-assets CDN, which is not subject to the
 API rate limit:
 
-1. `GET https://github.com/unslothai/llama.cpp/releases/latest/download/llama-prebuilt-sha256.json`
-   (302-redirects to `release-assets.githubusercontent.com`). Gives the
-   `release_tag` and every artifact's `sha256` plus source provenance.
-2. Using that `release_tag`, fetch the coverage manifest at the tag-pinned URL
-   `.../releases/download/<release_tag>/llama-prebuilt-manifest.json` (which
-   asset serves which GPU/arch).
-3. Each asset and the source archive is downloaded by name via
-   `.../releases/download/<release_tag>/<asset>` (same CDN) and
+1. `HEAD https://github.com/unslothai/llama.cpp/releases/latest` -> `302 Location:
+   .../releases/tag/<release_tag>`. The redirect target is the authoritative
+   latest tag (github.com, still no `api.github.com`), so the fast path pins every
+   subsequent URL to it rather than trusting a self-reported field.
+2. `GET .../releases/download/<release_tag>/llama-prebuilt-sha256.json` (302 to
+   `release-assets.githubusercontent.com`). Gives every artifact's `sha256` plus
+   source provenance; its own `release_tag` field is cross-checked against the
+   redirect tag and a mismatch falls back to the API.
+3. Fetch the coverage manifest at the tag-pinned URL
+   `.../releases/download/<release_tag>/llama-prebuilt-manifest.json` (which asset
+   serves which GPU/arch), then download each asset and the source archive by name
+   via `.../releases/download/<release_tag>/<asset>` (same CDN) and
    `codeload.github.com`. No API call.
 
 Net result for a normal install: zero `api.github.com` calls. The fast path
 reuses the same parsers and verification as the API path
 (`parse_approved_release_checksums`, `parse_published_release_bundle`,
 `_validate_checksums_against_bundle`), so every downloaded binary is still
-checked against the approved `sha256` asset. It differs in one respect: the API
-path also cross-checks the checksum asset's `release_tag` against the live
-release tag, whereas the fast path reads that tag from the same payload and
-instead leans on the tag-pinned manifest fetch (a 404 or manifest-hash mismatch
-falls back to the API) and the downstream per-binary `sha256` check. It is an
+checked against the approved `sha256` asset. Like the API path it also
+cross-checks the checksum asset's `release_tag`, here against the authoritative
+`/releases/latest` redirect target rather than the API's release object; a 404, a
+tag mismatch, or a manifest-hash mismatch all fall back to the API. It is an
 optimization, not a weaker trust path.
 
 ### Code
@@ -60,6 +63,32 @@ only the latest and returns:
   keeps the full API enumeration and its multi-release walk-back, which exists to
   skip a run of prebuilts built for a newer macOS than the host.
 
+### `/releases/latest` ordering vs `published_at` (a known, mitigated divergence)
+
+GitHub resolves `/releases/latest` by the release target's `created_at` (commit
+date) plus the `make_latest` flag, NOT by `published_at`. The freshness/update
+detection (`studio/backend/utils/llama_cpp_freshness.py`) instead resolves the
+newest release by `published_at`, because `/releases/latest` was observed to lag
+for out-of-order "mix" builds (unslothai/unsloth#6219, #6234, #6338). So on a
+release stream where the two orderings diverge, this fast path can install the
+`/releases/latest` target while detection considers a different build newest.
+
+This is inherent to a zero-`api.github.com` design: `published_at` ordering only
+exists in the API response, so it cannot be reproduced from the CDN. It is
+accepted here because:
+
+- Today the two agree: `/releases/latest` for `unslothai/llama.cpp` is the same
+  build `published_at` selects (GitHub's semver tiebreak picks the highest build,
+  which is also the newest published).
+- The freshness banner is guarded by `is_behind()`'s base-build comparison, so a
+  divergence cannot surface as the downgrade / sticky "update available" banner
+  that #6219 fixed.
+- Resolving the tag from the redirect (above) pins the install to exactly the
+  build GitHub designates Latest, verified against the checksum asset's own tag.
+
+Set `UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE=1` to force the `published_at`
+API path if a future release stream ever makes the divergence matter.
+
 ### Escape hatch
 
 ```
@@ -75,8 +104,10 @@ invariants CI must keep, all already true today, are:
 
 1. Every release uploads both `llama-prebuilt-manifest.json` and
    `llama-prebuilt-sha256.json` as release assets.
-2. The newest usable release is the one GitHub marks Latest (not `draft`, not
-   `prerelease`); `releases/latest/download/` resolves to it.
+2. The build GitHub marks Latest (not `draft`, not `prerelease`) is a usable
+   release; `releases/latest` resolves to it. Ideally it is also the newest by
+   `published_at` so the fast path and the freshness detection agree -- see the
+   ordering-divergence note above for what happens when they do not.
 3. Asset filenames match what the manifest and checksum JSON name (they are
    downloaded by name via `releases/download/<tag>/<asset>`).
 
