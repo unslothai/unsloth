@@ -143,6 +143,12 @@ def _clear_pending():
         ("cat </e??/passwd", True),  # redirection prefix hides the glob
         ("cat <../../notes", True),  # redirection with no space escapes workdir
         ("cat notes.txt", False),  # ordinary read stays safe
+        ("p=/; grep -R TOKEN $p", True),  # recursive root hidden in an assignment
+        ("p=/home; grep -R TOKEN $p", True),
+        ("p=src; grep -R TOKEN $p", False),  # relative assigned root stays safe
+        ("cat /etc/pass{w..w}d", True),  # sequence brace builds /etc/passwd
+        ("cat /etc/pass{v..x}d", True),  # sequence brace range spans passwd
+        ("cat file{1..3}.txt", False),  # benign sequence brace stays safe
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -243,6 +249,11 @@ def test_terminal_classifier(command, unsafe):
         ("import builtins\nx = builtins.exec\nx('a=1')", True),  # attr-aliased exec
         ("from builtins import __import__ as imp\nimp('os')", True),  # aliased __import__
         ("from mymod import evaluate as e\ne(1)", False),  # unrelated alias stays safe
+        ("base = '/etc'\nopen(base + '/passwd').read()", True),  # literal-var path
+        ("d = '/etc'\nopen(f'{d}/passwd').read()", True),  # literal var in f-string
+        ("base = 'data'\nopen(base + '/x.txt').read()", False),  # benign literal var
+        ("import numpy as np\nnp.array([1]).tofile('out.bin')", True),  # numpy tofile
+        ("arr.tolist()", False),  # non-persisting numpy call stays safe
     ],
 )
 def test_python_classifier(code, unsafe):

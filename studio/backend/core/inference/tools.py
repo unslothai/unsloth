@@ -563,6 +563,7 @@ _AUTO_UNSAFE_PY_WRITE_METHODS = frozenset(
         "savez",
         "savez_compressed",
         "savetxt",
+        "tofile",
         "dump",
         "to_csv",
         "to_parquet",
@@ -652,9 +653,12 @@ _SENSITIVE_GLOB_DIRS = (
 # A leading shell redirection (<, >, 2>, >>) hides the path from a plain glob
 # scan (cat </e??/passwd); strip it before matching.
 _REDIR_PREFIX_RE = re.compile(r"^\d*[<>]+")
-# Bash brace expansion (cat /etc/pass{w,}d -> /etc/passwd /etc/passd) runs after
-# this classifier; expand a comma brace group to scan each result.
-_BRACE_GROUP_RE = re.compile(r"\{([^{}]*,[^{}]*)\}")
+# Bash brace expansion (cat /etc/pass{w,}d -> /etc/passwd /etc/passd, and the
+# sequence form cat /etc/pass{w..w}d -> /etc/passwd) runs after this classifier;
+# expand comma groups and .. sequences to scan each result.
+_BRACE_COMMA_RE = re.compile(r"^\{([^{}]*,[^{}]*)\}$")
+_BRACE_SEQ_RE = re.compile(r"^\{([^{}]+)\.\.([^{}]+)(?:\.\.(-?\d+))?\}$")
+_BRACE_ANY_RE = re.compile(r"\{[^{}]*,[^{}]*\}|\{[^{}]+\.\.[^{}]+(?:\.\.-?\d+)?\}")
 # Parameter expansion with a default/alternate operator (${x:-passwd},
 # ${x:+passwd}, ${x=passwd}) can synthesize a path after approval; the operand
 # is substituted so the resulting path is scanned.
@@ -722,21 +726,50 @@ def _expand_param_defaults(command: str) -> str:
     return _SHELL_PARAM_OP_RE.sub(lambda m: m.group(1), command)
 
 
+def _brace_range(lo: str, hi: str, step: "str | None") -> "list[str]":
+    """Expand a bash sequence brace endpoint pair ({1..3}, {a..c}, {w..w})."""
+    try:
+        istep = abs(int(step)) if step else 1
+        istep = istep or 1
+        if re.fullmatch(r"-?\d+", lo) and re.fullmatch(r"-?\d+", hi):
+            a, b = int(lo), int(hi)
+            rng = range(a, b + 1, istep) if a <= b else range(a, b - 1, -istep)
+            return [str(x) for x in rng][:64]
+        if len(lo) == 1 and len(hi) == 1 and lo.isalpha() and hi.isalpha():
+            a, b = ord(lo), ord(hi)
+            rng = range(a, b + 1, istep) if a <= b else range(a, b - 1, -istep)
+            return [chr(x) for x in rng][:64]
+    except (ValueError, TypeError):
+        pass
+    return []
+
+
+def _brace_options(text: str) -> "list[str]":
+    """Options a single brace group expands to (comma list or .. sequence)."""
+    m = _BRACE_COMMA_RE.match(text)
+    if m:
+        return m.group(1).split(",")
+    m = _BRACE_SEQ_RE.match(text)
+    if m:
+        return _brace_range(m.group(1), m.group(2), m.group(3)) or [text]
+    return [text]
+
+
 def _expand_braces(command: str) -> str:
     """Best-effort bash brace expansion (cat /etc/pass{w,}d -> cat /etc/passwd
-    /etc/passd) so a sensitive path split across a comma brace group is scanned.
-    Bounded to avoid blowup. Fail-open: only adds detections."""
+    /etc/passd, cat /etc/pass{w..w}d -> cat /etc/passwd) so a sensitive path
+    split across a brace group is scanned. Bounded. Fail-open: only detects."""
     results = [command]
     for _ in range(6):
-        if not any(_BRACE_GROUP_RE.search(s) for s in results):
+        if not any(_BRACE_ANY_RE.search(s) for s in results):
             break
         expanded = []
         for s in results:
-            m = _BRACE_GROUP_RE.search(s)
+            m = _BRACE_ANY_RE.search(s)
             if not m:
                 expanded.append(s)
                 continue
-            for opt in m.group(1).split(","):
+            for opt in _brace_options(m.group(0)):
                 expanded.append(s[: m.start()] + opt + s[m.end() :])
         results = expanded[:64]
     return " ".join(results)
@@ -794,22 +827,31 @@ def _attr_open_writes(node) -> bool:
     return False  # no args: read
 
 
-def _folded_path(node) -> "str | None":
+def _folded_path(node, literals=None) -> "str | None":
     """Best-effort value of a path built from string literals, so a sensitive
     path assembled from pieces (os.path.join('/etc', 'passwd'), '/etc'+'/passwd',
     Path('/etc') / 'passwd', f'/proc/{pid}/environ', f'/etc/{name}') is still
     visible to the scan. A dynamic piece becomes NUL, a non-slash placeholder,
-    so a dynamic segment under a sensitive dir (/etc/NUL) is still detectable."""
+    so a dynamic segment under a sensitive dir (/etc/NUL) is still detectable.
+    ``literals`` maps names bound to string literals (base = '/etc') so a path
+    split through a variable (base + '/passwd') resolves too."""
+    literals = literals or {}
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
+    if isinstance(node, ast.Name):
+        return literals.get(node.id)
     if isinstance(node, ast.JoinedStr):
         return "".join(
-            v.value if isinstance(v, ast.Constant) and isinstance(v.value, str) else "\x00"
+            v.value
+            if isinstance(v, ast.Constant) and isinstance(v.value, str)
+            else (_folded_path(v.value, literals) or "\x00")
+            if isinstance(v, ast.FormattedValue)
+            else "\x00"
             for v in node.values
         )
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Div)):
-        left = _folded_path(node.left)
-        right = _folded_path(node.right)
+        left = _folded_path(node.left, literals)
+        right = _folded_path(node.right, literals)
         left = "\x00" if left is None else left
         right = "\x00" if right is None else right
         # Path('/etc') / 'passwd' joins with a separator; '+' concatenates.
@@ -821,33 +863,33 @@ def _folded_path(node) -> "str | None":
             # str.join has the separator as the receiver and the pieces in one
             # iterable arg ("".join(['/etc', '/passwd']) -> /etc/passwd); tell it
             # apart from os.path.join(*pieces), whose receiver is not a literal.
-            sep = _folded_path(func.value)
+            sep = _folded_path(func.value, literals)
             if (
                 sep is not None
                 and len(node.args) == 1
                 and isinstance(node.args[0], (ast.List, ast.Tuple))
             ):
-                pieces = [(_folded_path(e) or "\x00") for e in node.args[0].elts]
+                pieces = [(_folded_path(e, literals) or "\x00") for e in node.args[0].elts]
                 return sep.join(pieces)
-            parts = [(_folded_path(a) or "\x00") for a in node.args]
+            parts = [(_folded_path(a, literals) or "\x00") for a in node.args]
             return "/".join(parts)
         # A bare/qualified pathlib constructor (Path(...) or pathlib.Path(...)).
         if (isinstance(func, ast.Attribute) and func.attr in ctors) or (
             isinstance(func, ast.Name) and func.id in ctors
         ):
-            parts = [(_folded_path(a) or "\x00") for a in node.args]
+            parts = [(_folded_path(a, literals) or "\x00") for a in node.args]
             return "/".join(parts)
         # '/etc/{}'.format('passwd') -> /etc/passwd (literal template + args); a
         # dynamic arg becomes NUL so /etc/{}.format(name) stays detectable.
         if isinstance(func, ast.Attribute) and func.attr == "format":
-            template = _folded_path(func.value)
+            template = _folded_path(func.value, literals)
             if template is not None and "{" in template:
                 parts = []
                 for a in node.args:
                     if isinstance(a, ast.Constant):
                         parts.append(str(a.value))
                     else:
-                        folded = _folded_path(a)
+                        folded = _folded_path(a, literals)
                         parts.append("\x00" if folded is None else folded)
                 try:
                     return template.format(*parts)
@@ -901,6 +943,19 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         tokens = list(lexer)
     except ValueError:
         return True
+    # A root can also hide behind an assignment (p=/; grep -R TOKEN $p); re-lex
+    # the assignment-expanded command so the find/fd and recursive-search scans
+    # below see the resolved token too.
+    expanded_command = _expand_shell_assignments(command)
+    if expanded_command != command:
+        try:
+            elexer = shlex.shlex(expanded_command, posix = True, punctuation_chars = ";&|()")
+            elexer.whitespace_split = True
+            scan_tokens = list(elexer)
+        except ValueError:
+            return True
+    else:
+        scan_tokens = tokens
     # find/fd expressions group with (...) which resets command context, so a
     # trailing -delete/-exec could slip past. When find/fd is used anywhere,
     # scan every token for its mutating actions (find -exec/-delete/..., fd
@@ -909,12 +964,12 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         if any(t.split("=", 1)[0] in _AUTO_UNSAFE_FIND_LIKE_FLAGS for t in tokens):
             return True
     # A recursive search rooted outside the sandbox reads host files (grep -R
-    # TOKEN /home, rg TOKEN /, grep -R TOKEN ~root); ask. Bash expands ~/~user
-    # to a home dir after this decision, so a tilde root is a sandbox escape too.
-    # A path-qualified command token starts with "/" as well, but that already
-    # asks below.
+    # TOKEN /home, rg TOKEN /, grep -R TOKEN ~root, p=/; grep -R TOKEN $p); ask.
+    # Bash expands ~/~user to a home dir after this decision, so a tilde root is
+    # a sandbox escape too. A path-qualified command token starts with "/" as
+    # well, but that already asks below.
     if any(os.path.basename(t.strip(";&|()`{}")).lower() in _AUTO_RECURSIVE_SEARCH for t in tokens):
-        if any(t.startswith("/") or t.startswith("~") for t in tokens):
+        if any(t.startswith("/") or t.startswith("~") for t in scan_tokens):
             return True
     expect_command = True
     prefix_pending = False
@@ -1002,6 +1057,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # (from builtins import eval as e; e = builtins.exec), so a call or
     # reference through the alias fails closed too.
     code_exec_aliases = {"exec", "eval", "__import__", "breakpoint"}
+    # Names bound to a string literal (base = '/etc'), so a sensitive path
+    # split through a variable (base + '/passwd') folds and is caught.
+    literal_str_vars: "dict[str, str]" = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -1045,6 +1103,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 and value.func.id == "getattr"
             ):
                 dynamic_aliases.update(targets)
+            elif isinstance(value, ast.Constant) and isinstance(value.value, str):
+                # base = '/etc' -> resolve base in a later folded path.
+                for t in targets:
+                    literal_str_vars[t] = value.value
             elif isinstance(value, (ast.Tuple, ast.List)):
                 # Destructuring: f, _ = (open, print) -> track f.
                 for target in assign_targets:
@@ -1097,13 +1159,14 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     return True
             elif isinstance(node, (ast.BinOp, ast.JoinedStr)):
                 # A sensitive path concatenated from literals ('/etc'+'/passwd'),
-                # a pathlib / chain, an f-string (f'/proc/{pid}/environ'), or a
-                # dynamic segment under a sensitive dir (f'/etc/{name}').
-                if _folded_is_sensitive(_folded_path(node)):
+                # a pathlib / chain, an f-string (f'/proc/{pid}/environ'), a
+                # dynamic segment under a sensitive dir (f'/etc/{name}'), or one
+                # split through a literal variable (base = '/etc'; base+'/passwd').
+                if _folded_is_sensitive(_folded_path(node, literal_str_vars)):
                     return True
             elif isinstance(node, ast.Call):
                 # A sensitive path composed via os.path.join('/etc', name).
-                if _folded_is_sensitive(_folded_path(node)):
+                if _folded_is_sensitive(_folded_path(node, literal_str_vars)):
                     return True
                 func = node.func
                 if isinstance(func, (ast.Call, ast.Subscript)):
