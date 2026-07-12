@@ -67,6 +67,7 @@ import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { confirmTransformersUpgradeIfNeeded } from "@/features/transformers-upgrade";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
   parseExternalModelId,
@@ -955,6 +956,19 @@ export function SharedComposer({
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
         });
+        // Upgrade dialog first (mirrors the primary load path): the load cannot
+        // proceed at all until the consented sidecar install completes.
+        if (validation.requires_transformers_upgrade) {
+          const upgraded = await confirmTransformersUpgradeIfNeeded({
+            modelName: sel.id,
+            upgrade: validation.transformers_upgrade,
+          });
+          if (!upgraded) {
+            throw new Error(
+              `${modelDisplayName(sel.id)} needs a newer transformers release to load.`,
+            );
+          }
+        }
         if (
           validation.requires_trust_remote_code ||
           validation.requires_security_review

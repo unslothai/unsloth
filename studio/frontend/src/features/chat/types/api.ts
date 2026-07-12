@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -78,6 +80,11 @@ export interface ValidateModelResponse {
   requires_security_review?: boolean;
   /** Native context length from the local GGUF header; null until downloaded. */
   context_length?: number | null;
+  /** The model's architecture is unknown to every installed transformers but a
+   *  newer release ships it; the UI pauses the load on the upgrade dialog. */
+  requires_transformers_upgrade?: boolean;
+  /** Details for the upgrade dialog; set only when requires_transformers_upgrade. */
+  transformers_upgrade?: TransformersUpgradeInfo | null;
 }
 
 export interface GgufVariantDetail {

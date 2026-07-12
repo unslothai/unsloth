@@ -4,6 +4,7 @@
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { confirmTransformersUpgradeIfNeeded } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import {
   notifyNative,
@@ -243,6 +244,10 @@ function toLoraSummary(lora: {
 
 function getTrustRemoteCodeRequiredMessage(modelName: string): string {
   return `${modelName} was not loaded because its custom code was not approved. Load it again to review the code and approve it.`;
+}
+
+function getTransformersUpgradeRequiredMessage(modelName: string): string {
+  return `${modelName} was not loaded because it needs a newer transformers release that was not installed. Load it again to install it.`;
 }
 
 export function useChatModelRuntime() {
@@ -594,6 +599,19 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
             });
+            // A brand-new architecture needs the latest transformers before anything
+            // else can proceed, so its consent dialog runs first: on Accept it installs
+            // the sidecar and this load continues; the security dialogs follow.
+            if (validation.requires_transformers_upgrade) {
+              const upgraded = await confirmTransformersUpgradeIfNeeded({
+                modelName: modelId,
+                upgrade: validation.transformers_upgrade,
+              });
+              if (!upgraded) {
+                throw new Error(getTransformersUpgradeRequiredMessage(displayName));
+              }
+            }
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
             // Open the consent dialog when the model needs custom-code consent or has a
             // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the
             // worker requires a matching fingerprint that only the dialog produces.

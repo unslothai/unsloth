@@ -1425,6 +1425,12 @@ async function autoLoadSmallestModel(): Promise<{
       blockedByTrustRemoteCode = true;
       return false;
     }
+    // Same rule for a brand-new architecture: never install packages from a
+    // background load. An explicit load raises the transformers-upgrade dialog.
+    if (validation.requires_transformers_upgrade) {
+      hadNonTrustFailure = true;
+      return false;
+    }
     return true;
   }
 
