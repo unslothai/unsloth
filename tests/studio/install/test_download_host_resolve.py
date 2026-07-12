@@ -10,9 +10,7 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
-SPEC = importlib.util.spec_from_file_location(
-    "studio_install_llama_prebuilt_dlhost", MODULE_PATH
-)
+SPEC = importlib.util.spec_from_file_location("studio_install_llama_prebuilt_dlhost", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 ILP = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = ILP

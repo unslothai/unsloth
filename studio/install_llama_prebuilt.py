@@ -2455,9 +2455,7 @@ def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | Non
         "assets": [
             {
                 "name": name,
-                "browser_download_url": _release_asset_download_url(
-                    repo, release_tag, name
-                ),
+                "browser_download_url": _release_asset_download_url(repo, release_tag, name),
             }
             for name in sorted(asset_names)
         ],
