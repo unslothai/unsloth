@@ -2557,17 +2557,13 @@ class TestLatestTierActiveFor:
 
     def test_true_when_tier_latest(self, monkeypatch):
         import utils.transformers_version as tv
-
         monkeypatch.setattr(tv, "get_transformers_tier", lambda *a, **k: "latest")
         assert tv.latest_tier_active_for("Zyphra/ZAYA1-8B") is True
 
     def test_false_for_fixed_tiers(self, monkeypatch):
         import utils.transformers_version as tv
-
         for tier in ("default", "530", "550", "510"):
-            monkeypatch.setattr(
-                tv, "get_transformers_tier", lambda *a, _t = tier, **k: _t
-            )
+            monkeypatch.setattr(tv, "get_transformers_tier", lambda *a, _t = tier, **k: _t)
             assert tv.latest_tier_active_for("some/model") is False
 
     def test_never_raises(self, monkeypatch):

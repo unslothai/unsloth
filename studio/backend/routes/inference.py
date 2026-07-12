@@ -4045,10 +4045,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         # worker command the same way. Off-loop: tier resolution can read configs.
         if effective_load_in_4bit and not config.is_gguf:
             from utils.transformers_version import latest_tier_active_for
-
-            if await asyncio.to_thread(
-                latest_tier_active_for, config.identifier, request.hf_token
-            ):
+            if await asyncio.to_thread(latest_tier_active_for, config.identifier, request.hf_token):
                 effective_load_in_4bit = False
                 logger.info(
                     f"Latest-transformers sidecar active for '{model_log_label}' - "

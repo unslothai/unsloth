@@ -298,7 +298,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # generation fails), so correctness wins until support lands in a fixed tier.
         if load_in_4bit:
             from utils.transformers_version import latest_tier_active_for
-
             if latest_tier_active_for(config["model_name"], hf_token):
                 load_in_4bit = False
                 logger.info(
