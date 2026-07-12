@@ -296,7 +296,6 @@ def _has_non_gguf_weights(path: Path) -> bool:
 
 def _dir_has_loadable_weights(path: Path) -> bool:
     from hub.services.models.common import _is_main_gguf_filename
-
     try:
         if path.is_file():
             if path.suffix.lower() == ".gguf":
@@ -310,7 +309,10 @@ def _dir_has_loadable_weights(path: Path) -> bool:
 
 
 def _scan_models_dir(
-    models_dir: Path, *, limit: int | None = None, entry_limit: int | None = None
+    models_dir: Path,
+    *,
+    limit: int | None = None,
+    entry_limit: int | None = None,
 ) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
@@ -846,9 +848,7 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
             _generic = [
                 m
                 for m in (
-                    _scan_models_dir(
-                        folder_path, limit = _MAX_MODELS_PER_FOLDER, entry_limit = 2000
-                    )
+                    _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER, entry_limit = 2000)
                     + _scan_hf_cache(folder_path)
                     + _scan_lmstudio_dir(folder_path)
                 )

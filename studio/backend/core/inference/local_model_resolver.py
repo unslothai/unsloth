@@ -200,17 +200,20 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
                         scan_result_within_folder,
                     )
                     from routes.models import _dir_has_loadable_weights
+
                     seen = {
-                        (m.path, getattr(m, "model_format", None), getattr(m, "format_variant", None))
+                        (
+                            m.path,
+                            getattr(m, "model_format", None),
+                            getattr(m, "format_variant", None),
+                        )
                         for m in found
                     }
                     recursive_budget = max(0, 200 - (len(found) - before))
                     for subdir in iter_recursive_scan_dirs(fp):
                         if recursive_budget <= 0:
                             break
-                        for m in _scan_models_dir(
-                            subdir, limit = recursive_budget, entry_limit = 2000
-                        ):
+                        for m in _scan_models_dir(subdir, limit = recursive_budget, entry_limit = 2000):
                             key = (
                                 m.path,
                                 getattr(m, "model_format", None),
