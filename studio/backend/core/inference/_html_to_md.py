@@ -290,6 +290,12 @@ class _MarkdownRenderer(HTMLParser):
             self._open_tags.append(tag)
             if _is_hidden_element(attr_dict):
                 self._hidden_marks.append(len(self._open_tags) - 1)
+        elif _is_hidden_element(attr_dict):
+            # Void elements (<hr>, <br>, ...) never join the open-element
+            # stack, so they can't carry a hidden mark that a later close
+            # would pop. Suppress them inline instead, so a hidden
+            # <hr>/<br> emits nothing.
+            return False
         if self._scope_tags is not None and tag in self._scope_tags:
             self._scope_depth += 1
         if self._hidden_marks:

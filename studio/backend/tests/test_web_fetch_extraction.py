@@ -191,6 +191,32 @@ def test_hr_implicitly_closes_hidden_paragraph():
     assert "kept text" in out
 
 
+def test_hidden_void_element_is_suppressed():
+    # A hidden void element (<hr>/<br>) never joins the open-element stack,
+    # so it must be suppressed inline rather than emitting its markup.
+    html = '<body><p>before</p><hr aria-hidden="true"><p>after</p></body>'
+    out = html_to_markdown(html)
+    assert "before" in out
+    assert "after" in out
+    assert "---" not in out
+
+
+def test_hidden_void_br_emits_no_break():
+    html = "<body><p>one<br hidden>two</p></body>"
+    out = html_to_markdown(html)
+    assert "one" in out
+    assert "two" in out
+    # The hidden <br> must not inject a newline between the two runs.
+    assert "one\ntwo" not in out
+
+
+def test_visible_void_hr_still_renders():
+    # Guard: the suppression must not affect non-hidden void elements.
+    html = "<body><p>a</p><hr><p>b</p></body>"
+    out = html_to_markdown(html)
+    assert "---" in out
+
+
 # ── html_to_markdown: main-content scoping ───────────────────────
 
 
