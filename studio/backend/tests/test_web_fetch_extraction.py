@@ -22,6 +22,7 @@ if _BACKEND_DIR not in sys.path:
 from core.inference._html_to_md import html_to_markdown
 from core.inference.tools import (
     _fetch_page_text,
+    _fetch_url_raw,
     _github_repo_readme_api_url,
     _looks_like_html,
 )
@@ -340,3 +341,83 @@ def test_looks_like_html():
     assert _looks_like_html("\n  <HTML lang='en'>")
     assert not _looks_like_html("# Markdown README\n\n<h1>embedded html later</h1>")
     assert not _looks_like_html("plain text")
+
+
+def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
+    # email.message.Message.get_content_type() falls back to the RFC 2045
+    # "text/plain" default when the header is absent; _fetch_url_raw must
+    # report "" instead so the HTML sniffing fallback can fire.
+    import email
+    import urllib.request
+
+    class _FakeResp:
+        headers = email.message_from_string("")
+
+        def read(self, n = -1):
+            return b"<html><body>hello</body></html>"
+
+    class _FakeOpener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            return _FakeResp()
+
+    monkeypatch.setattr(
+        "core.inference.tools._validate_and_resolve_host",
+        lambda host, port: (True, "", "203.0.113.7"),
+    )
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
+    err, body, content_type = _fetch_url_raw("https://example.com/")
+    assert err is None
+    assert "hello" in body
+    assert content_type == ""
+
+
+def test_fetch_page_text_missing_content_type_html_sniffed(monkeypatch):
+    # A header-less server returning an HTML body must still be converted.
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+    ):
+        return None, _GITHUB_PAGE, ""
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://example.com/no-content-type")
+    assert "Unsloth Studio" in out
+    assert "<html" not in out
+    assert "Uh oh!" not in out
+
+
+def test_fetch_page_text_missing_content_type_plain_text_raw(monkeypatch):
+    # A header-less server returning plain text stays raw (whitespace kept).
+    raw = "line one\n    indented code\nline three"
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+    ):
+        return None, raw, ""
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://example.com/no-content-type.txt")
+    assert "    indented code" in out
+
+
+def test_fetch_page_text_mislabeled_text_plain_html_converted(monkeypatch):
+    # An explicit text/plain header on an HTML body is sniffed and converted,
+    # matching the pre-extraction behavior of always converting HTML pages.
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+    ):
+        return None, _GITHUB_PAGE, "text/plain"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://example.com/mislabeled")
+    assert "Unsloth Studio" in out
+    assert "<html" not in out

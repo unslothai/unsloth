@@ -220,6 +220,19 @@ def test_bash_exec_result_identical_with_streaming():
     assert "".join(chunks) == "one\ntwo\n"
 
 
+def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
+    # A background grandchild inherits stdout, keeps the pipe open past the
+    # main shell's exit, and writes ~7s later, beyond the bounded 5s drain a
+    # short-circuiting join would allow. With timeout=None the drain must wait
+    # for EOF like communicate(timeout=None), so the late output is included.
+    command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
+    chunks: list[str] = []
+    result = _bash_exec(command, timeout = None, output_callback = chunks.append)
+    assert "parent-done" in result
+    assert "late-grandchild-output" in result
+    assert "late-grandchild-output" in "".join(chunks)
+
+
 # ── GGUF loop regression: model-visible messages unchanged ───────
 
 

@@ -1605,7 +1605,13 @@ def _fetch_url_raw(
             return "Failed to fetch URL: too many redirects.", "", ""
 
         charset = resp.headers.get_content_charset() or "utf-8"
-        content_type = (resp.headers.get_content_type() or "").lower()
+        # get_content_type() defaults to "text/plain" when the header is
+        # absent (RFC 2045); report "" instead so callers can tell a missing
+        # header apart from a server that really declared text/plain.
+        if resp.headers.get("Content-Type") is None:
+            content_type = ""
+        else:
+            content_type = (resp.headers.get_content_type() or "").lower()
         return None, raw_bytes.decode(charset, errors = "replace"), content_type
     except _HTTPError as e:
         return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
@@ -1662,7 +1668,10 @@ def _fetch_page_text(
     if err is not None:
         return err
 
-    is_html = "html" in content_type or (not content_type and _looks_like_html(body))
+    # Trust a declared HTML type, and otherwise sniff the body: servers with a
+    # missing or wrong Content-Type (e.g. text/plain on an HTML page) still get
+    # converted, matching the pre-extraction behavior of always converting.
+    is_html = "html" in content_type or _looks_like_html(body)
     if not is_html:
         # Plain text / markdown / JSON (e.g. raw.githubusercontent.com):
         # converting through the HTML renderer would collapse its whitespace.
@@ -2731,7 +2740,12 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
     return text
 
 
-def _drain_process_output(proc, timeout, output_callback) -> tuple[str, bool]:
+def _drain_process_output(
+    proc,
+    timeout,
+    output_callback,
+    cancel_event = None,
+) -> tuple[str, bool]:
     """``proc.communicate(timeout=...)`` equivalent that also streams each
     stdout line to ``output_callback`` as it is produced.
 
@@ -2739,6 +2753,8 @@ def _drain_process_output(proc, timeout, output_callback) -> tuple[str, bool]:
     ``communicate`` would return: the same TextIOWrapper decodes the stream,
     so encoding, error replacement, and newline translation all match. On
     timeout the process tree is killed (mirroring the non-streaming path).
+    With ``timeout=None`` the drain waits for EOF like ``communicate`` would,
+    stopping early only when ``cancel_event`` is set.
     """
     chunks: list[str] = []
 
@@ -2768,14 +2784,26 @@ def _drain_process_output(proc, timeout, output_callback) -> tuple[str, bool]:
         except subprocess.TimeoutExpired:
             pass
     # A grandchild that inherited stdout can hold the pipe open past the main
-    # process's exit; wait out the remaining budget like communicate() would,
-    # then kill the process group so the reader sees EOF.
-    if not timed_out and timeout is not None:
-        remaining = max(0.0, timeout - (time.monotonic() - started_at))
-        reader.join(timeout = remaining)
-        if reader.is_alive():
-            timed_out = True
-            _kill_process_tree(proc)
+    # process's exit.
+    if not timed_out:
+        if timeout is not None:
+            # Wait out the remaining budget like communicate() would, then
+            # kill the process group so the reader sees EOF.
+            remaining = max(0.0, timeout - (time.monotonic() - started_at))
+            reader.join(timeout = remaining)
+            if reader.is_alive():
+                timed_out = True
+                _kill_process_tree(proc)
+        else:
+            # Unlimited timeout: communicate(timeout=None) waits for EOF, so
+            # drain until the pipe closes, however long a lingering grandchild
+            # holds it open. Stop early only on cancellation, killing the
+            # process group so the reader sees EOF.
+            while reader.is_alive():
+                if cancel_event is not None and cancel_event.is_set():
+                    _kill_process_tree(proc)
+                    break
+                reader.join(timeout = 0.5)
     reader.join(timeout = 5)
     return "".join(chunks), timed_out
 
@@ -2852,13 +2880,13 @@ def _python_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        # Line-buffer the child's stdout when streaming so the UI sees each
-        # line as it prints instead of the pipe's 8 KB buffer flushes.
-        if output_callback is not None:
-            safe_env = dict(safe_env)
-            safe_env.setdefault("PYTHONUNBUFFERED", "1")
-            popen_kwargs["env"] = safe_env
-
+        # The child invocation is byte-identical with and without streaming:
+        # injecting PYTHONUNBUFFERED (or -u, or stdbuf) to line-buffer stdout
+        # would be model-visible (os.environ / sys.flags would differ from the
+        # non-streaming path). CPython block-buffers stdout when piped, so live
+        # streaming granularity depends on the child flushing: unflushed output
+        # arrives in ~8 KB chunks or at exit, and the final result is unchanged
+        # either way; SSE heartbeats keep the connection alive in the meantime.
         proc = subprocess.Popen([sys.executable, tmp_path], **popen_kwargs)
 
         # Spawn cancel watcher if we have a cancel event
@@ -2869,7 +2897,7 @@ def _python_exec(
             watcher.start()
 
         if output_callback is not None:
-            output, timed_out = _drain_process_output(proc, timeout, output_callback)
+            output, timed_out = _drain_process_output(proc, timeout, output_callback, cancel_event)
             if timed_out:
                 return _truncate(f"Execution timed out after {timeout} seconds.")
         else:
@@ -2977,7 +3005,7 @@ def _bash_exec(
             watcher.start()
 
         if output_callback is not None:
-            output, timed_out = _drain_process_output(proc, timeout, output_callback)
+            output, timed_out = _drain_process_output(proc, timeout, output_callback, cancel_event)
             if timed_out:
                 return _truncate(f"Execution timed out after {timeout} seconds.")
         else:
