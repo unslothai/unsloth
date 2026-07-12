@@ -772,12 +772,29 @@ def get_personalization_settings(
     return response
 
 
+def _merge_personalization(base: dict, overlay: dict) -> dict:
+    # Recursively overlay only the request's set fields onto the stored record,
+    # so a stale client that omits newer keys (palette, customization) does not
+    # materialize their defaults and defeat the *Saved legacy detection.
+    merged = dict(base)
+    for key, value in overlay.items():
+        existing = merged.get(key)
+        if isinstance(value, dict) and isinstance(existing, dict):
+            merged[key] = _merge_personalization(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 @router.put("/personalization", response_model = PersonalizationPayload)
 def update_personalization_settings(
     payload: PersonalizationPayload, current_subject: str = Depends(get_current_subject)
 ) -> PersonalizationPayload:
     try:
-        set_personalization(payload.model_dump())
+        # exclude_unset so absent fields are not persisted as defaults; merge so
+        # fields the request omits keep whatever the record already stored.
+        incoming = payload.model_dump(exclude_unset = True)
+        set_personalization(_merge_personalization(get_personalization(), incoming))
     except ValueError as exc:
         raise log_and_http_error(
             exc,

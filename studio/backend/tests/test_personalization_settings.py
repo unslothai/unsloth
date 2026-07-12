@@ -418,3 +418,36 @@ def test_personalization_get_flags_legacy_fields(monkeypatch):
     assert body["customizationSaved"] is False
     assert body["paletteSaved"] is False
     assert body["greetingSlothSaved"] is False
+
+
+def test_personalization_put_preserves_absent_fields(monkeypatch):
+    # A stale client that omits palette/customization must not materialize them,
+    # so the record stays legacy and GET keeps reporting those fields unsaved.
+    store: dict = {}
+    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
+
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(settings_routes.router, prefix = "/api/settings")
+    client = TestClient(app)
+
+    put = client.put(
+        "/api/settings/personalization",
+        json = {
+            "version": 1,
+            "profile": {"displayName": "Mike"},
+            "appearance": {"theme": "dark", "language": "en"},
+        },
+    )
+    assert put.status_code == 200
+
+    stored_appearance = store[pers.PERSONALIZATION_SETTING_KEY]["appearance"]
+    assert "palette" not in stored_appearance
+    assert "customization" not in stored_appearance
+
+    body = client.get("/api/settings/personalization").json()
+    assert body["saved"] is True
+    assert body["paletteSaved"] is False
+    assert body["customizationSaved"] is False
+    assert body["greetingSlothSaved"] is False
