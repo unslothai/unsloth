@@ -192,6 +192,20 @@ def _clear_pending():
         ("uniq -f 2 in out", True),  # numeric flag value skipped, two file positionals
         ("uniq input.txt", False),  # single positional reads to stdout, stays safe
         ("sort a.txt | uniq -c", False),  # piped uniq with no output file stays safe
+        ("hostname new-name", True),  # a positional sets the hostname
+        ("hostname -F /etc/hn", True),  # -F/--file sets the hostname from a file
+        ("hostname", False),  # bare hostname reads
+        ("hostname -f", False),  # -f prints the FQDN, stays read-only
+        ("hostname -I", False),  # -I prints IPs, stays read-only
+        ("date -s tomorrow", True),  # -s sets the system clock
+        ("date --set='2020-01-01'", True),  # --set sets the clock
+        ("date 010100002020", True),  # a bare positional is the clock-setting form
+        ("date", False),  # bare date reads
+        ("date +%Y-%m-%d", False),  # a +FORMAT display token stays read-only
+        ("date -u +%s", False),  # -u display flag with a +FORMAT stays safe
+        ("date -d tomorrow", False),  # -d STRING only displays the given date
+        ("date -d yesterday +%Y", False),  # -d value skipped, +FORMAT display stays safe
+        ("date -r file.txt", False),  # -r FILE displays a file's mtime, read-only
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -358,6 +372,32 @@ def test_terminal_classifier(command, unsafe):
             "from pathlib import Path\nPath('data').joinpath('x.txt').read_text()",
             False,
         ),  # relative joinpath stays safe
+        (
+            "from pathlib import Path\nPath('/etc/anything').with_name('passwd').read_text()",
+            True,
+        ),  # with_name rewrites the final segment to a secret
+        (
+            "from pathlib import Path\nPath('/etc/x').with_stem('passwd').read_text()",
+            True,
+        ),  # with_stem rewrites the stem to a secret
+        (
+            "from pathlib import Path\nPath('/etc/passwd.bak').with_suffix('').read_text()",
+            True,
+        ),  # with_suffix drops the suffix onto a secret
+        (
+            "from pathlib import Path\nPath('/tmp/a').with_name('b.txt').read_text()",
+            False,
+        ),  # benign with_name in the sandbox stays safe
+        (
+            "from pathlib import Path\nPath('report.txt').with_suffix('.md').read_text()",
+            False,
+        ),  # benign with_suffix stays safe
+        ("base, leaf = ('/etc', 'passwd')\nopen(base + '/' + leaf).read()", True),
+        # destructured string literals fold into the sensitive path
+        ("d, f = ('/etc', 'passwd')\nopen('/'.join([d, f])).read()", True),
+        # destructured literals reused through str.join
+        ("base, leaf = ('/tmp', 'x')\nopen(base + '/' + leaf).read()", False),
+        # benign destructured literals stay safe
         ("open(b'/etc/passwd').read()", True),  # bytes path literal
         ("open(b'data.txt').read()", False),  # benign bytes literal stays safe
         (

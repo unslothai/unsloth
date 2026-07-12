@@ -432,7 +432,21 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
     # --base-directory/--search-path move the search root outside the workdir
     # without any positional "/" token (fdfind --help).
     "fd": frozenset({"-x", "--exec", "-X", "--exec-batch", "--base-directory", "--search-path"}),
+    # date -s/--set STRING writes the system clock (date --help); the display
+    # forms (+FORMAT, -d/-u/-R/-r) stay read-only.
+    "date": frozenset({"-s", "--set"}),
+    # hostname -F/--file FILE and -b/--boot set the hostname from a file/config;
+    # the display flags (-f/-d/-i/-I/-s/-A) only read (hostname --help).
+    "hostname": frozenset({"-F", "--file", "-b", "--boot"}),
 }
+# Commands whose read-only allowlisting only holds without a mutating positional
+# argument: `hostname NAME` sets the hostname and `date MMDDhhmm...` sets the
+# clock. Any positional (for date, one that is not a `+FORMAT` display token or
+# the value of a display flag below) means a state change, so it asks.
+_AUTO_ARG_SENSITIVE_COMMANDS = frozenset({"hostname", "date"})
+# date display flags that take a following value token (-d STRING, -r FILE, -f
+# FILE); their value is not a clock-setting positional, so it is skipped.
+_DATE_DISPLAY_VALUE_FLAGS = frozenset({"-d", "--date", "-r", "--reference", "-f", "--file"})
 # Commands that write their second positional argument (uniq [INPUT [OUTPUT]]):
 # a lone `uniq file` (or `... | uniq`) reads to stdout and stays safe, but a
 # second file positional creates/overwrites it, so it asks like `sort -o`.
@@ -955,6 +969,10 @@ _PATH_CTORS = (
 _PATH_PASSTHROUGH_ATTRS = frozenset(
     {"abspath", "normpath", "realpath", "expanduser", "expandvars", "resolve", "absolute"}
 )
+# pathlib methods that rewrite only the final path component, so the sensitive
+# target is never spelled out as a literal (Path('/etc/x').with_name('passwd')
+# -> /etc/passwd). Folded below so the rewritten path is still scanned.
+_PATH_NAME_REWRITES = frozenset({"with_name", "with_stem", "with_suffix"})
 
 
 def _folded_path(
@@ -1041,6 +1059,30 @@ def _folded_path(
                 base = fold(func.value)
                 pattern = fold(node.args[0]) if node.args else "\x00"
                 return (base if base is not None else "\x00") + "/" + (pattern or "\x00")
+            if isinstance(func, ast.Attribute) and func.attr in _PATH_NAME_REWRITES:
+                # Path('/etc/x').with_name('passwd') -> /etc/passwd; with_stem /
+                # with_suffix rewrite only the final component. Fold to the
+                # rewritten path so a sensitive target that no literal spells out
+                # is still caught. An unresolved receiver stays None (untracked,
+                # like a bare variable), and a dynamic arg becomes the NUL marker.
+                base = fold(func.value)
+                if base is None:
+                    return None
+                arg = fold(node.args[0]) if node.args else None
+                arg = "\x00" if arg is None else arg
+                idx = base.rfind("/")
+                head = base[: idx + 1] if idx >= 0 else ""
+                name = base[idx + 1 :] if idx >= 0 else base
+                dot = name.rfind(".")
+                stem = name[:dot] if dot > 0 else name
+                suffix = name[dot:] if dot > 0 else ""
+                if func.attr == "with_name":
+                    name = arg
+                elif func.attr == "with_stem":
+                    name = arg + suffix
+                else:  # with_suffix
+                    name = stem + arg
+                return head + name
             if isinstance(func, ast.Attribute) and func.attr in _PATH_PASSTHROUGH_ATTRS:
                 # Deterministic normalizers keep the same path: os.path.abspath(
                 # '/etc') -> /etc, Path('/etc').resolve() -> /etc. When called with
@@ -1175,6 +1217,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     prefix_pending = False
     current_command = ""
     positional_args = 0
+    pending_flag_value = False
     for token in tokens:
         # Runs of punctuation (";;", ";&") lex as one token; any token made
         # purely of separator characters still separates commands.
@@ -1187,6 +1230,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
             prefix_pending = False
             current_command = ""
             positional_args = 0
+            pending_flag_value = False
             continue
         if token.startswith("-"):
             # A write/exec flag on an otherwise read-only command asks
@@ -1204,19 +1248,34 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
                     return True
                 if is_long_abbrev and uf.startswith("--") and uf.startswith(flag_head):
                     return True
+            # A date display flag that takes a following value (-d STRING, -r
+            # FILE) so its value is not mistaken for a clock-setting positional.
+            pending_flag_value = (
+                current_command == "date"
+                and "=" not in token
+                and flag_head in _DATE_DISPLAY_VALUE_FLAGS
+            )
             if not prefix_pending:
                 expect_command = False
             continue
         if not expect_command:
+            raw_pos = token.strip(";&|()`{}")
             # uniq [INPUT [OUTPUT]] writes its second file positional; count file
             # positionals (skipping numeric flag values like `-f 2`) and ask on
             # the second one.
             if current_command in _AUTO_SECOND_POSITIONAL_WRITES:
-                raw_pos = token.strip(";&|()`{}")
                 if raw_pos and not raw_pos.lstrip("+-").isdigit():
                     positional_args += 1
                     if positional_args >= 2:
                         return True
+            # hostname NAME sets the hostname; date <timestamp> sets the clock. A
+            # positional past a display flag's value therefore mutates state and
+            # asks (date's +FORMAT display token stays read-only).
+            elif current_command in _AUTO_ARG_SENSITIVE_COMMANDS:
+                if pending_flag_value:
+                    pending_flag_value = False
+                elif raw_pos and not (current_command == "date" and raw_pos.startswith("+")):
+                    return True
             continue
         if _ASSIGNMENT_RE.match(token):
             # Benign NAME=value prefixes are skipped, but ones that change
@@ -1240,6 +1299,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
             # Track the wrapper so its own flags (env --chdir) are checked;
             # the real command overwrites this when it is reached.
             current_command = base
+            pending_flag_value = False
             continue
         if base not in _AUTO_SAFE_TERMINAL_COMMANDS:
             return True
@@ -1247,6 +1307,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         expect_command = False
         prefix_pending = False
         positional_args = 0
+        pending_flag_value = False
     return False
 
 
@@ -1438,18 +1499,43 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     for t in targets:
                         literal_str_vars[t] = "\x02" if t in multi_assigned_names else folded
             elif isinstance(value, (ast.Tuple, ast.List)):
-                # Destructuring: f, _ = (open, print) -> track f.
+                # Destructuring binds each element like a single assignment, so an
+                # aliased callable (f, _ = (open, print)) AND a string / path
+                # literal (base, leaf = ('/etc', 'passwd')) both propagate; without
+                # the latter a path folded from base/leaf would miss the sensitive
+                # target and auto-approve.
                 for target in assign_targets:
                     if isinstance(target, (ast.Tuple, ast.List)) and len(target.elts) == len(
                         value.elts
                     ):
                         for tgt_el, val_el in zip(target.elts, value.elts):
-                            if (
-                                isinstance(val_el, ast.Name)
-                                and val_el.id in open_aliases
-                                and isinstance(tgt_el, ast.Name)
+                            if not isinstance(tgt_el, ast.Name):
+                                continue
+                            tid = tgt_el.id
+                            if isinstance(val_el, ast.Name) and val_el.id in open_aliases:
+                                open_aliases.add(tid)
+                            elif isinstance(val_el, ast.Name) and val_el.id in getattr_aliases:
+                                getattr_aliases.add(tid)
+                            elif isinstance(val_el, ast.Name) and val_el.id in partial_aliases:
+                                partial_aliases.add(tid)
+                            elif isinstance(val_el, ast.Constant) and isinstance(
+                                val_el.value, str
                             ):
-                                open_aliases.add(tgt_el.id)
+                                literal_str_vars[tid] = (
+                                    "\x02" if tid in multi_assigned_names else val_el.value
+                                )
+                            elif isinstance(val_el, (ast.Call, ast.BinOp, ast.Name, ast.JoinedStr)):
+                                folded = _folded_path(
+                                    val_el, literal_str_vars, path_ctor_aliases, pathjoin_aliases
+                                )
+                                if (
+                                    folded is not None
+                                    and "\x00" not in folded
+                                    and "\x02" not in folded
+                                ):
+                                    literal_str_vars[tid] = (
+                                        "\x02" if tid in multi_assigned_names else folded
+                                    )
     try:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
