@@ -114,7 +114,9 @@ def _clear_pending():
         ("cat /proc/self/'environ'", True),
         ('p="/proc/$PPID"; cat $p/environ', True),  # quoted+nested var procfs
         ("LESSOPEN='|touch x; cat %s' less f.txt", True),  # less input preprocessor
-        ("less file.txt", False),  # plain less stays safe
+        ("less file.txt", True),  # less pager escapes (+cmd, !shell, -o) so it asks
+        ("less '+!touch pwned' notes.txt", True),  # less +command runs a shell command
+        ("more file.txt", True),  # more shares the !shell pager escape
         ("cat /proc/cpuinfo", False),  # non-sensitive procfs read stays safe
         ("cat /e??/passwd", True),  # glob expands to /etc/passwd
         ("cat /e[t]c/passwd", True),  # bracket class hides etc
@@ -256,6 +258,15 @@ def test_terminal_classifier(command, unsafe):
             True,
         ),  # sqlite3 db write
         ("import sqlite3\nsqlite3.connect('data.db')", True),  # sqlite3 connect creates the file
+        ("import posix as p\np.open('out', 64)", True),  # posix.open via module alias
+        ("import os as o\nprint(o.getcwd())", False),  # read-only os-alias use stays safe
+        ("model.save_pretrained('out')", True),  # transformers/peft persistence helper
+        (
+            "from safetensors.torch import save_file\nsave_file(sd, 'o.safetensors')",
+            True,
+        ),  # bare imported save_file writer
+        ("st.save_file(sd, 'o.safetensors')", True),  # safetensors save_file method
+        ("print(model.state_dict())", False),  # non-persisting call stays safe
         ("cfg = d['k']\nprint(cfg)", False),  # subscript result not called stays safe
         ("open('/etc/{}'.format('passwd')).read()", True),  # str.format sensitive path
         ("open('/etc/{}'.format(name)).read()", True),  # format dynamic /etc segment
@@ -383,6 +394,23 @@ def test_mcp_classifier(tool, unsafe):
 )
 def test_mcp_sensitive_arguments(args, unsafe):
     name = f"{MCP_TOOL_PREFIX}fs__read_file"
+    assert is_potentially_unsafe_tool_call(name, args) is unsafe
+
+
+@pytest.mark.parametrize(
+    ("args", "unsafe"),
+    [
+        ({"query": "DELETE FROM runs"}, True),  # read-named tool, mutating query
+        ({"sql": "DROP TABLE users"}, True),
+        ({"query": "UPDATE t SET x=1"}, True),
+        ({"query": "INSERT INTO t VALUES (1)"}, True),
+        ({"query": "SELECT * FROM runs"}, False),  # read query stays safe
+        ({"query": "how to delete old files"}, False),  # NL text with 'delete' stays safe
+        ({"query": "find the created_at column"}, False),  # 'created' substring stays safe
+    ],
+)
+def test_mcp_mutating_arguments(args, unsafe):
+    name = f"{MCP_TOOL_PREFIX}db__query_database"
     assert is_potentially_unsafe_tool_call(name, args) is unsafe
 
 

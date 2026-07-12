@@ -6855,9 +6855,19 @@ async def openai_chat_completions(
                 use_tools = False
 
         if use_tools:
+            # permission_mode ask/auto require the confirm gate for Studio's own
+            # tool loop. The request validator self-enables confirm only for
+            # request-level tool signals (enable_tools/enabled_tools/mcp_enabled);
+            # when a CLI policy (--enable-tools) forces the loop on without those,
+            # derive confirm here so the mode still gates the call (and a
+            # non-stream ask/auto request is rejected below rather than running
+            # unprompted). off/full never prompt, so they are excluded.
+            _effective_confirm = bool(payload.confirm_tool_calls) or (
+                payload.permission_mode in ("ask", "auto")
+            )
             # Bypass Permissions suppresses confirm, so the stream requirement
             # (the gate needs streaming to prompt) no longer applies.
-            if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
+            if _effective_confirm and not payload.bypass_permissions and not payload.stream:
                 raise _reject(
                     400,
                     openai_error_body(
@@ -6933,7 +6943,7 @@ async def openai_chat_completions(
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
                     # Bypass Permissions takes precedence over the confirm gate:
                     # never prompt while bypassing.
-                    confirm_tool_calls = bool(payload.confirm_tool_calls)
+                    confirm_tool_calls = _effective_confirm
                     and not bool(payload.bypass_permissions),
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
@@ -8150,9 +8160,16 @@ async def openai_chat_completions(
             _sf_use_tools = False
 
     if _sf_use_tools:
+        # permission_mode ask/auto require the confirm gate for Studio's own tool
+        # loop; when a CLI policy (--enable-tools) forces the loop on without a
+        # request-level tool signal, derive confirm here so the mode still gates
+        # the call (matching the GGUF path). off/full never prompt.
+        _sf_effective_confirm = bool(payload.confirm_tool_calls) or (
+            payload.permission_mode in ("ask", "auto")
+        )
         # Bypass Permissions suppresses confirm, so the stream requirement
         # (the gate needs streaming to prompt) no longer applies.
-        if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
+        if _sf_effective_confirm and not payload.bypass_permissions and not payload.stream:
             raise _reject(
                 400,
                 openai_error_body(
@@ -8229,7 +8246,7 @@ async def openai_chat_completions(
                 rag_scope = payload.rag_scope,
                 # Bypass Permissions takes precedence over the confirm gate:
                 # never prompt while bypassing.
-                confirm_tool_calls = bool(payload.confirm_tool_calls)
+                confirm_tool_calls = _sf_effective_confirm
                 and not bool(payload.bypass_permissions),
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = payload.permission_mode,

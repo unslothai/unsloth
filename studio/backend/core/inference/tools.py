@@ -327,8 +327,9 @@ _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
         "cat",
         "head",
         "tail",
-        "less",
-        "more",
+        # less/more are intentionally absent: their pager escapes (+cmd, !shell,
+        # -o/--log-file, LESSOPEN) can run a command or write a file, which the
+        # command-name allowlist cannot see, so they always ask.
         "grep",
         "egrep",
         "fgrep",
@@ -581,6 +582,14 @@ _AUTO_UNSAFE_PY_WRITE_METHODS = frozenset(
         "imsave",
         "write_image",
         "write_html",
+        # ML persistence helpers (transformers/peft/safetensors/keras) that
+        # export adapters or weights to disk without an open()/writer attribute.
+        "save_pretrained",
+        "save_file",
+        "save_model",
+        "save_weights",
+        "save_lora",
+        "save_checkpoint",
     }
 )
 _PY_WRITE_MODE_RE = re.compile(r"[wax+]")
@@ -1202,11 +1211,16 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     path_ctor_aliases = set(_PATH_CTORS)
     pathjoin_aliases: "set[str]" = set()
     writer_aliases: "set[str]" = set()
+    # Module names bound to os/posix (import os as o), so o.open(...) is still
+    # recognized as the low-level create/write that os.open is.
+    os_aliases = {"os", "posix"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "builtins":
                     builtins_aliases.add(alias.asname or "builtins")
+                elif alias.name in ("os", "posix"):
+                    os_aliases.add(alias.asname or alias.name)
         elif isinstance(node, ast.ImportFrom):
             if node.module == "builtins":
                 for alias in node.names:
@@ -1357,11 +1371,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # they mutate the workdir in auto mode.
                     if func.attr in _AUTO_UNSAFE_PY_WRITE_METHODS:
                         return True
-                    # os.open() always creates/writes a file descriptor.
+                    # os.open() always creates/writes a file descriptor
+                    # (tracked through import aliases: import os as o; o.open()).
                     if (
                         func.attr == "open"
                         and isinstance(func.value, ast.Name)
-                        and func.value.id == "os"
+                        and func.value.id in os_aliases
                     ):
                         return True
                     if func.attr == "open" and _attr_open_writes(node):
@@ -1390,6 +1405,34 @@ def _mcp_arguments_reference_sensitive(arguments) -> bool:
     return walk(arguments)
 
 
+# A read-named MCP tool (query_database, run_query) can still carry a mutating
+# SQL statement; match DML/DDL as whole statements (DELETE FROM, DROP TABLE) so
+# a natural-language query that merely contains the word "delete" stays safe.
+_MCP_ARG_MUTATION_RE = re.compile(
+    r"\b(?:delete\s+from|drop\s+(?:table|database|schema|index|view)|"
+    r"truncate\s+(?:table\s+)?\w|update\s+\w+\s+set|insert\s+into|replace\s+into|"
+    r"alter\s+(?:table|database|schema)|create\s+(?:table|database|schema|index|view)|"
+    r"grant\s+\w|revoke\s+\w|merge\s+into)\b",
+    re.IGNORECASE,
+)
+
+
+def _mcp_arguments_mutate(arguments) -> bool:
+    """True if an MCP call's arguments carry a mutating command, so a read-named
+    but write-capable tool (query_database {"query": "DELETE FROM runs"}) asks."""
+
+    def walk(value) -> bool:
+        if isinstance(value, str):
+            return bool(_MCP_ARG_MUTATION_RE.search(value))
+        if isinstance(value, dict):
+            return any(walk(v) for v in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(walk(v) for v in value)
+        return False
+
+    return walk(arguments)
+
+
 def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     """Whether a tool call must still pause for approval in auto mode.
 
@@ -1408,6 +1451,10 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         # A read-named fs tool pointed at a credential path is still a
         # sensitive read (mcp__fs__read_file {"path": "/etc/passwd"}).
         if _mcp_arguments_reference_sensitive(arguments):
+            return True
+        # A read-named tool carrying a mutating query (query_database
+        # {"query": "DELETE FROM runs"}) still mutates external state.
+        if _mcp_arguments_mutate(arguments):
             return True
         return not _AUTO_SAFE_MCP_TOOL_RE.match(tool_name)
     if name == "terminal":
