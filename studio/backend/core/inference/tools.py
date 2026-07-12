@@ -484,9 +484,7 @@ _PARENT_TRAVERSAL_RE = re.compile(r"(?:^|[\s/\\'\"=:])\.\.(?:[/\\]|$|[\s'\"])")
 def _references_sensitive_path(text: str) -> bool:
     """True if a command or string literal reads a credential path or escapes
     the sandbox workdir via parent traversal."""
-    return bool(
-        _PARENT_TRAVERSAL_RE.search(text) or _SENSITIVE_PATH_RE.search(text)
-    )
+    return bool(_PARENT_TRAVERSAL_RE.search(text) or _SENSITIVE_PATH_RE.search(text))
 
 
 def _mode_arg_writes(mode_node) -> bool:
@@ -548,10 +546,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     # find/fd expressions group with (...) which resets command context, so a
     # trailing -delete/-exec could slip past. When find/fd is used anywhere,
     # scan every token for its mutating actions.
-    if any(
-        os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd")
-        for t in tokens
-    ):
+    if any(os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in tokens):
         find_flags = _AUTO_UNSAFE_COMMAND_FLAGS["find"]
         if any(t.split("=", 1)[0] in find_flags for t in tokens):
             return True
@@ -638,9 +633,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     return True
             elif isinstance(node, ast.Constant):
                 # Credential paths / parent traversal in a string literal.
-                if isinstance(node.value, str) and _references_sensitive_path(
-                    node.value
-                ):
+                if isinstance(node.value, str) and _references_sensitive_path(node.value):
                     return True
             elif isinstance(node, ast.Call):
                 func = node.func
