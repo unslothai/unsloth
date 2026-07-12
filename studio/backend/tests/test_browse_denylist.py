@@ -197,12 +197,19 @@ def test_resolve_browse_target_blocks_etc_via_root():
     assert exc.value.status_code == 403
 
 
-def test_resolve_browse_target_blocks_stale_denied_root():
+def test_resolve_browse_target_blocks_stale_denied_root(tmp_path, monkeypatch):
     # A stale scan-folder row pointing straight at a denied dir is refused by
-    # the browse-time denylist even though it is its own allowlist root.
+    # the browse-time denylist even though it is its own allowlist root. Uses a
+    # tmp-based denied prefix (+ Linux compare) so the assertion is OS-agnostic:
+    # on macOS a literal /etc resolves to /private/etc and tmp lives under the
+    # already-denied /private/var, which would mask the specific message.
+    denied = (tmp_path / "sysfake").resolve()
+    denied.mkdir()
+    monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(studio_db, "_denied_path_prefixes", lambda: [str(denied)])
     resolve = _extract_resolver()
     with pytest.raises(_HTTPException) as exc:
-        resolve("/etc", [Path("/etc")])
+        resolve(str(denied), [denied])
     assert exc.value.status_code == 403
     assert "System directories" in exc.value.detail
 
@@ -212,7 +219,11 @@ def test_resolve_browse_target_allows_root_itself():
     assert resolve("/", [Path("/")]) == Path("/")
 
 
-def test_resolve_browse_target_allows_legit_nested_dir(tmp_path):
+def test_resolve_browse_target_allows_legit_nested_dir(tmp_path, monkeypatch):
+    # Force the Linux denylist so the macOS temp location (under the
+    # legitimately-denied /private/var) doesn't reject the tmp fixture; the
+    # point here is that a normal nested dir is not over-blocked.
+    monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
     resolve = _extract_resolver()
     base = tmp_path / "allowed"
     sub = base / "models" / "gguf"

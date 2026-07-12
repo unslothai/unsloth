@@ -259,10 +259,11 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
     fake_studio_db = SimpleNamespace(
         list_scan_folders = lambda: [],
         contains_sensitive_path_component = studio_db.contains_sensitive_path_component,
-        # Real helper: the media root lives under tmp_path (not literal /run),
-        # so it is correctly not-denied and the .ssh 403 still comes from the
-        # credential/sensitive check below.
-        is_denied_system_path = studio_db.is_denied_system_path,
+        # The media root is a legitimate mount (not a system dir), so it is not
+        # denied; the .ssh 403 below comes from the credential/sensitive check.
+        # A False stub keeps this OS-independent (on macOS tmp_path lives under
+        # the legitimately-denied /private/var).
+        is_denied_system_path = lambda _p: False,
     )
     monkeypatch.setitem(sys.modules, "utils.paths", fake_paths)
     monkeypatch.setitem(sys.modules, "utils.paths.external_media", fake_external_media)
