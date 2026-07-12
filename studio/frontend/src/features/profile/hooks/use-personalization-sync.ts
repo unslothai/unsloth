@@ -25,6 +25,11 @@ import type { AvatarShape } from "../stores/user-profile-store";
 
 const PUSH_DEBOUNCE_MS = 800;
 
+// Version 2 payloads store the language preference ("auto" or a pinned
+// locale). Version 1 always serialized the resolved locale, so its "en" is
+// usually the old default rather than an explicit pick.
+const PERSONALIZATION_VERSION = 2;
+
 type ProfileSnapshot = {
   displayName: string;
   nickname: string;
@@ -113,7 +118,7 @@ function payload(
   language: LocalePreference | null,
 ): PersonalizationWrite {
   return {
-    version: 1,
+    version: PERSONALIZATION_VERSION,
     profile: normalizeProfile(profile),
     appearance: { theme, language },
   };
@@ -121,6 +126,19 @@ function payload(
 
 function serialized(data: PersonalizationWrite): string {
   return JSON.stringify(data);
+}
+
+// Version 1 clients wrote language on every save, so a legacy "en" usually
+// means the user never picked a language. Map it to auto; explicit picks of
+// other locales (the old default was English) are kept. Version 2 payloads
+// are trusted verbatim, so a deliberate English pick stays pinned.
+export function remoteLanguagePreference(
+  version: unknown,
+  language: unknown,
+): unknown {
+  const isLegacy = typeof version !== "number" || version < 2;
+  if (isLegacy && language === "en") return DEFAULT_LOCALE_PREFERENCE;
+  return language;
 }
 
 function hasLocalSettings(
@@ -191,8 +209,12 @@ export function usePersonalizationSync(enabled: boolean): void {
             avatarShape: remote.profile.avatarShape === "rounded" ? "rounded" : "circle",
           };
           const nextTheme = remote.appearance.theme;
-          const nextLanguage = isLocalePreference(remote.appearance.language)
-            ? remote.appearance.language
+          const remoteLanguage = remoteLanguagePreference(
+            remote.version,
+            remote.appearance.language,
+          );
+          const nextLanguage = isLocalePreference(remoteLanguage)
+            ? remoteLanguage
             : latestLanguageRef.current;
           useUserProfileStore.setState(nextProfile);
           if (nextTheme !== latestThemeRef.current) setTheme(nextTheme);
