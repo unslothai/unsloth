@@ -133,6 +133,8 @@ function DictationTest() {
   const [interim, setInterim] = useState("");
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // Guards the getUserMedia await so a mic opened after unmount is released.
+  const disposedRef = useRef(false);
   // Mirrors the transcript state so onend can record it without stale closures.
   const transcriptRef = useRef("");
 
@@ -161,14 +163,15 @@ function DictationTest() {
     }
   }, [finalize]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    disposedRef.current = false;
+    return () => {
+      disposedRef.current = true;
       recognitionRef.current?.abort();
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
-    },
-    [],
-  );
+    };
+  }, []);
 
   // Set before the getUserMedia await so a double click or a slow
   // permission prompt cannot start a second recognizer over the first.
@@ -202,6 +205,11 @@ function DictationTest() {
         } else {
           throw error;
         }
+      }
+      if (disposedRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        startingRef.current = false;
+        return;
       }
       streamRef.current = stream;
       audioTrack = stream.getAudioTracks()[0];

@@ -208,6 +208,8 @@ function useDictation(
 
   const streamRef = useRef<MediaStream | null>(null);
   const startingRef = useRef(false);
+  // Guards the getUserMedia await so a mic opened after unmount is released.
+  const disposedRef = useRef(false);
 
   const releaseStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -256,10 +258,19 @@ function useDictation(
         streamRef.current = stream;
         audioTrack = stream.getAudioTracks()[0];
       } catch {
-        // Permission or device failure: recognition can still run on the
-        // browser default microphone.
-        audioTrack = undefined;
+        // Permission/security failure: stop instead of silently recording
+        // from a different default device, matching the main chat adapter.
+        startingRef.current = false;
+        releaseStream();
+        setIsDictating(false);
+        return;
       }
+    }
+
+    if (disposedRef.current) {
+      releaseStream();
+      startingRef.current = false;
+      return;
     }
 
     const recognition = new SpeechRecognitionAPI() as SpeechRecognition;
@@ -326,7 +337,9 @@ function useDictation(
   }, [releaseStream]);
 
   useEffect(() => {
+    disposedRef.current = false;
     return () => {
+      disposedRef.current = true;
       if (recognitionRef.current) {
         recognitionRef.current.abort();
       }
