@@ -64,11 +64,16 @@ _EXCLUDED_SUFFIXES = (
     ".ttf",
 )
 # Paths whose 2xx access line carries no signal, so suppress it entirely; non-2xx
-# (errors) still log. Download/load polls fire ~2x/s but their progress is already
-# reported by the hub_download_progress / inference_load_progress events, and chat
-# thread/project CRUD is covered by the generation, tool-call, and stats events.
+# (errors) still log. The hub, model, and dataset download polls plus inference
+# load-progress fire ~2x/s for the whole download or load; progress surfaces via
+# the hub_download_progress / inference_load_progress events and the UI, not these
+# poll lines. Chat thread/project CRUD is covered by the generation, tool-call,
+# and stats events.
 _QUIET_SUCCESS_PATHS = {
     "/api/inference/load-progress",
+    "/api/models/download-progress",
+    "/api/models/gguf-download-progress",
+    "/api/datasets/download-progress",
     "/api/hub/download-status",
     "/api/hub/download-progress",
     "/api/hub/gguf-download-progress",
