@@ -1289,16 +1289,28 @@ class TestEnsureRocmTorchMarker:
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
-    def test_verbatim_custom_url_no_marker_is_noop(self, mock_pip):
-        """No marker + a custom-URL pin -> _ensure_verbatim_torch_index does NOTHING
-        (an old venv must not be blindly force-reinstalled from an unverified URL)."""
+    def test_verbatim_custom_url_no_marker_reinstalls_once(self, mock_pip):
+        """NO marker + an explicit custom-URL pin -> _ensure_verbatim_torch_index
+        applies the pin VERBATIM on this first update (the user asked for this index;
+        the version-tag heuristics cannot judge an unknown leaf, so the pin would
+        otherwise be silently ignored on a pre-marker venv). It writes the marker so
+        the next update is a no-op. The function is reachable only when the override
+        is set, so an out-of-band torch install (no override) is never touched."""
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/current"}
         with patch.object(stack_mod, "NO_TORCH", False):
             with patch.object(stack_mod, "IS_MACOS", False):
                 with patch.dict(stack_mod.os.environ, env, clear = False):
                     stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
                     stack_mod._ensure_verbatim_torch_index()
-        mock_pip.assert_not_called()
+                    assert mock_pip.call_count == 1
+                    call = str(mock_pip.call_args_list[0])
+                    assert "https://mirror.local/current" in call
+                    assert "torch" in call
+                    # Marker now recorded -> a second call with the pin still set is
+                    # idempotent (marker == pin -> no reinstall loop).
+                    assert "current" in self._marker_path.read_text()
+                    stack_mod._ensure_verbatim_torch_index()
+                    assert mock_pip.call_count == 1
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
