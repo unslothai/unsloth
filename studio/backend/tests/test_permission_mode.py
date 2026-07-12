@@ -149,6 +149,13 @@ def _clear_pending():
         ("cat /etc/pass{w..w}d", True),  # sequence brace builds /etc/passwd
         ("cat /etc/pass{v..x}d", True),  # sequence brace range spans passwd
         ("cat file{1..3}.txt", False),  # benign sequence brace stays safe
+        ("p=passwd; cat /etc/${p:0:6}", True),  # substring expansion builds path
+        ("p=hello; cat notes/${p:0:3}", False),  # benign substring stays safe
+        ("cat $'/etc/pass\\x77d'", True),  # ANSI-C escape hides /etc/passwd
+        ("cat $'notes.txt'", False),  # benign ANSI-C quote stays safe
+        ("cat /home/*/.az?re/msal_token_cache.json", True),  # azure token glob
+        ("cat /home/*/.config/g?/hosts.yml", True),  # gh config glob
+        ("cat /home/*/projects/readme", False),  # benign home glob stays safe
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -254,6 +261,27 @@ def test_terminal_classifier(command, unsafe):
         ("base = 'data'\nopen(base + '/x.txt').read()", False),  # benign literal var
         ("import numpy as np\nnp.array([1]).tofile('out.bin')", True),  # numpy tofile
         ("arr.tolist()", False),  # non-persisting numpy call stays safe
+        (
+            "from pathlib import Path\np = Path('/etc')\n(p / 'passwd').read_text()",
+            True,
+        ),  # pathlib path alias reused
+        (
+            "from pathlib import Path\np = Path('data')\n(p / 'x.txt').read_text()",
+            False,
+        ),  # relative path alias stays safe
+        ("open('%s/%s' % ('/etc', 'passwd')).read()", True),  # percent-format path
+        ("open('/etc/%s' % name).read()", True),  # percent-format dynamic segment
+        ("open('%s/%s' % ('data', 'x.txt')).read()", False),  # benign percent-format
+        (
+            "from pathlib import Path\nPath('/etc').joinpath('passwd').read_text()",
+            True,
+        ),  # pathlib joinpath
+        (
+            "from pathlib import Path\nPath('data').joinpath('x.txt').read_text()",
+            False,
+        ),  # relative joinpath stays safe
+        ("open(b'/etc/passwd').read()", True),  # bytes path literal
+        ("open(b'data.txt').read()", False),  # benign bytes literal stays safe
     ],
 )
 def test_python_classifier(code, unsafe):

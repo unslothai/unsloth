@@ -614,8 +614,14 @@ _SENSITIVE_DIR_RE = re.compile(
 # Collapse /./ and repeated slashes so /etc/./passwd and /etc//passwd, which
 # the OS resolves to /etc/passwd, still match the sensitive-path regex.
 _REDUNDANT_SLASH_RE = re.compile(r"/\.?(?=/)")
-_SHELL_VAR_RE = re.compile(r"\$\{(\w+)\}|\$(\w+)")
+# $name, ${name}, and operator/substring forms (${name:-x}, ${name:0:6}) all
+# reference `name`; substituting the assigned value catches paths hidden behind
+# a substring expansion (p=passwd; cat /etc/${p:0:6}).
+_SHELL_VAR_RE = re.compile(r"\$\{(\w+)(?::[^{}]*)?\}|\$(\w+)")
 _SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]+)")
+# Bash ANSI-C quoting ($'\x77' -> 'w') is expanded after this classifier, so
+# decode $'...' bodies before the sensitive-path scan.
+_ANSI_C_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
 # Shell quotes only delimit; bash concatenates the pieces (cat /proc/x/enviro''n
 # reads .../environ), so strip them before the sensitive-path scan.
 _SHELL_QUOTE_RE = re.compile(r"['\"]")
@@ -643,12 +649,20 @@ _SENSITIVE_GLOB_DIRS = (
     "/var/run/secrets",
     "/root/.ssh",
     "/root/.aws",
+    "/root/.azure",
     "/root/.gnupg",
     "/root/.docker",
     "/root/.kube",
+    "/root/.config/gcloud",
+    "/root/.config/gh",
     "/home/u/.ssh",
     "/home/u/.aws",
+    "/home/u/.azure",
     "/home/u/.gnupg",
+    "/home/u/.docker",
+    "/home/u/.kube",
+    "/home/u/.config/gcloud",
+    "/home/u/.config/gh",
 )
 # A leading shell redirection (<, >, 2>, >>) hides the path from a plain glob
 # scan (cat </e??/passwd); strip it before matching.
@@ -724,6 +738,20 @@ def _expand_param_defaults(command: str) -> str:
     (cat /etc/pass${x:-wd} -> cat /etc/passwd), which bash applies after this
     classifier. Fail-open: only adds detections."""
     return _SHELL_PARAM_OP_RE.sub(lambda m: m.group(1), command)
+
+
+def _decode_ansi_c(command: str) -> str:
+    """Decode bash ANSI-C quoted words (cat $'/etc/pass\\x77d' -> cat /etc/passwd)
+    so an escape-obfuscated path is visible to the scan. Fail-open: only adds
+    detections."""
+
+    def dec(m):
+        try:
+            return bytes(m.group(1), "utf-8").decode("unicode_escape")
+        except (UnicodeDecodeError, ValueError):
+            return m.group(0)
+
+    return _ANSI_C_RE.sub(dec, command)
 
 
 def _brace_range(lo: str, hi: str, step: "str | None") -> "list[str]":
@@ -836,8 +864,9 @@ def _folded_path(node, literals = None) -> "str | None":
     ``literals`` maps names bound to string literals (base = '/etc') so a path
     split through a variable (base + '/passwd') resolves too."""
     literals = literals or {}
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
+    if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+        # bytes paths are valid too (open(b'/etc/passwd')); decode for the scan.
+        return node.value.decode("latin-1", "ignore") if isinstance(node.value, bytes) else node.value
     if isinstance(node, ast.Name):
         return literals.get(node.id)
     if isinstance(node, ast.JoinedStr):
@@ -856,9 +885,31 @@ def _folded_path(node, literals = None) -> "str | None":
         right = "\x00" if right is None else right
         # Path('/etc') / 'passwd' joins with a separator; '+' concatenates.
         return left + "/" + right if isinstance(node.op, ast.Div) else left + right
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        # Old-style formatting: '%s/%s' % ('/etc', 'passwd') -> /etc/passwd.
+        template = _folded_path(node.left, literals)
+        if template is not None and "%" in template:
+            rhs = node.right
+            if isinstance(rhs, ast.Tuple):
+                args = tuple((_folded_path(e, literals) or "\x00") for e in rhs.elts)
+            else:
+                single = _folded_path(rhs, literals)
+                args = (single if single is not None else "\x00",)
+            try:
+                return template % args
+            except (TypeError, ValueError, KeyError):
+                return None
+        return None
     if isinstance(node, ast.Call):
         func = node.func
         ctors = ("Path", "PurePath", "PurePosixPath")
+        if isinstance(func, ast.Attribute) and func.attr == "joinpath":
+            # Path('/etc').joinpath('passwd') -> the receiver and args are all
+            # pieces joined with a separator.
+            base = _folded_path(func.value, literals)
+            parts = [base if base is not None else "\x00"]
+            parts += [(_folded_path(a, literals) or "\x00") for a in node.args]
+            return "/".join(parts)
         if isinstance(func, ast.Attribute) and func.attr == "join":
             # str.join has the separator as the receiver and the pieces in one
             # iterable arg ("".join(['/etc', '/passwd']) -> /etc/passwd); tell it
@@ -921,11 +972,13 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     # escapes and expand NAME=value prefixes first so `cat /proc/$PPID/enviro''n`,
     # `cat /et\c/passwd`, and `p="/proc/$PPID"; cat $p/environ` are caught too.
     stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
-    # Bash applies brace and parameter expansion after this classifier, so a path
-    # split across a brace group (/etc/pass{w,}d) or a default parameter
-    # (${x:-wd}) is invisible to the raw scan; expand both before scanning.
+    # Bash applies brace, parameter, and ANSI-C ($'\x77') expansion after this
+    # classifier, so a path split across a brace group (/etc/pass{w,}d), a
+    # default/substring parameter (${x:-wd}, ${p:0:6}), or an escape ($'...') is
+    # invisible to the raw scan; expand them before scanning. ANSI-C is decoded
+    # from the raw command, before backslash stripping removes its escapes.
     candidates = []
-    for c in (command, stripped):
+    for c in (command, stripped, _decode_ansi_c(command)):
         c_param = _expand_param_defaults(c)
         candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
     if (
@@ -1107,6 +1160,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # base = '/etc' -> resolve base in a later folded path.
                 for t in targets:
                     literal_str_vars[t] = value.value
+            elif isinstance(value, (ast.Call, ast.BinOp, ast.Name, ast.JoinedStr)):
+                # p = Path('/etc'); q = p; r = os.path.join('/etc','x'): record a
+                # fully-literal folded path so a later reuse (p / 'passwd') folds.
+                folded = _folded_path(value, literal_str_vars)
+                if folded is not None and "\x00" not in folded:
+                    for t in targets:
+                        literal_str_vars[t] = folded
             elif isinstance(value, (ast.Tuple, ast.List)):
                 # Destructuring: f, _ = (open, print) -> track f.
                 for target in assign_targets:
@@ -1154,8 +1214,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 if node.id in code_exec_aliases:
                     return True
             elif isinstance(node, ast.Constant):
-                # Credential paths / parent traversal in a string literal.
-                if isinstance(node.value, str) and _references_sensitive_path(node.value):
+                # Credential paths / parent traversal in a string or bytes
+                # literal (open('/etc/passwd') and open(b'/etc/passwd')).
+                val = node.value
+                if isinstance(val, bytes):
+                    val = val.decode("latin-1", "ignore")
+                if isinstance(val, str) and _references_sensitive_path(val):
                     return True
             elif isinstance(node, (ast.BinOp, ast.JoinedStr)):
                 # A sensitive path concatenated from literals ('/etc'+'/passwd'),
