@@ -591,8 +591,6 @@ export function ChatTab() {
 
         <SettingsRow
           destructive={true}
-          // divide-y already draws the row separator; drop the extra border.
-          className="border-t-0 mt-0 pt-3"
           label={t("settings.chat.clearAllChats")}
           description={
             count === null
