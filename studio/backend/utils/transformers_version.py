@@ -1894,6 +1894,8 @@ def _venv_t5_latest_packages(version: str, extra_packages: tuple[str, ...] = ())
 # checks; the in-process flag marks ownership (only the owner unlinks the file).
 _sidecar_swap_lock = threading.Lock()
 _sidecar_swap_active = False
+_sidecar_swap_token: str | None = None
+_sidecar_swap_kind: str | None = None
 # An install is minutes; a lock this old is a crashed owner, not a live swap.
 _SWAP_LOCK_STALE_SECS = 2 * 60 * 60
 
@@ -1913,13 +1915,27 @@ class SidecarSwapInProgress(RuntimeError):
     """A worker start lost the race to a .venv_t5_latest install/repair; retryable."""
 
 
-def try_begin_sidecar_swap() -> bool:
+def _read_swap_lock(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding = "utf-8"))
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return {}
+    except Exception:
+        return {}
+
+
+def try_begin_sidecar_swap(kind: str = "install") -> bool:
     """Reserve the sidecar swap window; False when one is already reserved
-    (in this process or, via the lock file, in any worker subprocess)."""
-    global _sidecar_swap_active
+    (in this process or, via the lock file, in any worker subprocess).
+    *kind* is "install" (consented route) or "repair" (lazy venv repair)."""
+    global _sidecar_swap_active, _sidecar_swap_token, _sidecar_swap_kind
     with _sidecar_swap_lock:
         if _sidecar_swap_active:
             return False
+        token = f"{os.getpid()}-{time.time_ns()}"
         path = _swap_lock_path()
         try:
             path.parent.mkdir(parents = True, exist_ok = True)
@@ -1943,37 +1959,61 @@ def try_begin_sidecar_swap() -> bool:
         if fd is not None:
             try:
                 with os.fdopen(fd, "w") as f:
-                    f.write(json.dumps({"pid": os.getpid(), "at": time.time()}))
+                    f.write(
+                        json.dumps(
+                            {"pid": os.getpid(), "at": time.time(), "token": token, "kind": kind}
+                        )
+                    )
             except OSError:
                 pass
         _sidecar_swap_active = True
+        _sidecar_swap_token = token
+        _sidecar_swap_kind = kind
         return True
 
 
 def end_sidecar_swap() -> None:
     """Release the reservation taken by :func:`try_begin_sidecar_swap`."""
-    global _sidecar_swap_active
+    global _sidecar_swap_active, _sidecar_swap_token, _sidecar_swap_kind
     with _sidecar_swap_lock:
         if _sidecar_swap_active:
-            # Only the owner removes the file; a foreign process's live lock stays.
-            try:
-                _swap_lock_path().unlink()
-            except OSError:
-                pass
+            # Only the file WE wrote is removed: if this reservation was declared
+            # stale and superseded, unlinking blindly would drop the new owner's
+            # live lock and unguard its in-flight swap.
+            path = _swap_lock_path()
+            data = _read_swap_lock(path)
+            if data is not None and data.get("token", _sidecar_swap_token) == _sidecar_swap_token:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
         _sidecar_swap_active = False
+        _sidecar_swap_token = None
+        _sidecar_swap_kind = None
 
 
 def sidecar_swap_in_progress() -> bool:
     """True while a .venv_t5_latest install or repair holds the reservation,
     in this process or any other Studio process (lock file)."""
+    return sidecar_swap_kind() is not None
+
+
+def sidecar_swap_kind() -> str | None:
+    """The active reservation's kind ("install" / "repair"), or None when idle.
+    Lets guards that rely on the install route's own abort-on-active-worker
+    checks keep refusing for repairs, which have no such checks."""
     with _sidecar_swap_lock:
         if _sidecar_swap_active:
-            return True
+            return _sidecar_swap_kind or "install"
     path = _swap_lock_path()
     try:
-        return path.is_file() and not _swap_lock_is_stale(path)
+        if not path.is_file() or _swap_lock_is_stale(path):
+            return None
     except OSError:
-        return False
+        return None
+    data = _read_swap_lock(path) or {}
+    kind = data.get("kind")
+    return kind if kind in ("install", "repair") else "install"
 
 
 def _stage_and_swap_latest_venv(
@@ -2045,7 +2085,7 @@ def _ensure_venv_t5_latest_exists() -> bool:
         return False
     # Same stage-and-swap as the install, under the same reservation so training/export starts
     # (which check sidecar_swap_in_progress) wait out a lazy repair; a failed repair keeps the pin.
-    if not try_begin_sidecar_swap():
+    if not try_begin_sidecar_swap(kind = "repair"):
         logger.warning(
             "Cannot repair .venv_t5_latest: another sidecar install or repair is in progress."
         )

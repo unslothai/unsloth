@@ -975,8 +975,10 @@ export function SharedComposer({
           // swap then fails); if a later gate cancels or the load fails, the UI
           // must stop pointing at that unloaded model.
           if (
-            currentStore.params.checkpoint
-            && useTransformersUpgradeDialogStore.getState().serverUnloadedChat
+            useTransformersUpgradeDialogStore
+              .getState()
+              .consumeServerUnloadedChat()
+            && currentStore.params.checkpoint
           ) {
             upgradeUnloadedActive = true;
           }

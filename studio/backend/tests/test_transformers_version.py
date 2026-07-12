@@ -2740,7 +2740,7 @@ class TestLatestTierForces16Bit:
         export = self._read("core/export/orchestrator.py")
         spawn = export.split("def _spawn_subprocess", 1)[1].split("\n    def ", 1)[0]
         assert (
-            "sidecar_swap_in_progress()" in spawn
+            "sidecar_swap_kind()" in spawn
         ), "the export subprocess spawn must recheck the sidecar swap reservation"
         # Training marks the spawn active BEFORE its recheck, so either side sees the other:
         # is_training_active covers the window between proc.start() and the _proc assignment.
@@ -2756,9 +2756,10 @@ class TestLatestTierForces16Bit:
         # The training handshake precedes the VRAM-freeing before_spawn hook, so
         # losing the race never tears down chat/export for a run that won't spawn.
         assert training.index("self._spawn_in_progress = True") < training.index("before_spawn()")
-        # The spawn-time export check is op-aware: inside an active op the install
-        # is the side that aborts, so a transient reservation must not kill the op.
-        assert "sidecar_swap_in_progress() and not self._export_active" in spawn
+        # The spawn-time export check is op-aware for installs (the install side
+        # aborts on is_export_active) but always refuses for repairs, which have
+        # no such abort and can be rebuilding the sidecar right now.
+        assert '_swap_kind == "repair" or (_swap_kind is not None and not self._export_active)' in spawn
 
 
 class TestSidecarSwapReservation:

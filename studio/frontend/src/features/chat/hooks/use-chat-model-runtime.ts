@@ -614,8 +614,10 @@ export function useChatModelRuntime() {
               // the swap then fails), so any exit after this point must roll back.
               // False for the custom-code fallback, which resolves without installing.
               if (
-                currentCheckpoint
-                && useTransformersUpgradeDialogStore.getState().serverUnloadedChat
+                useTransformersUpgradeDialogStore
+                  .getState()
+                  .consumeServerUnloadedChat()
+                && currentCheckpoint
               ) {
                 previousWasUnloaded = true;
               }

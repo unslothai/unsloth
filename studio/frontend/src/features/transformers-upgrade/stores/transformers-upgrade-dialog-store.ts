@@ -26,6 +26,10 @@ interface TransformersUpgradeDialogStore {
    *  including a swap that failed AFTER the unload: callers must then treat
    *  their previous model as gone and roll back on any later cancel. */
   serverUnloadedChat: boolean;
+  /** Read-and-clear serverUnloadedChat: each waiter consumes the signal once,
+   *  so a superseding consent can neither erase it before the old waiter reads
+   *  it nor leak it into an unrelated later load. */
+  consumeServerUnloadedChat: () => boolean;
   /** Open the dialog for a paused load; resolves true on install success or custom-code fallback. */
   requestConsent: (
     modelName: string,
@@ -59,9 +63,13 @@ export const useTransformersUpgradeDialogStore =
           errorMessage: null,
           trustRemoteCodeFallback: Boolean(options?.trustRemoteCodeFallback),
           installRan: false,
-          serverUnloadedChat: false,
         });
       }),
+    consumeServerUnloadedChat: () => {
+      const value = get().serverUnloadedChat;
+      if (value) set({ serverUnloadedChat: false });
+      return value;
+    },
     install: async () => {
       const { upgrade, phase } = get();
       const version = upgrade?.pypi_version;

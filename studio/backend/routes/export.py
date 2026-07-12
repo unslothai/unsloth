@@ -323,6 +323,11 @@ async def export_merged_model(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting merged model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -362,6 +367,11 @@ async def export_base_model(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting base model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -403,6 +413,11 @@ async def export_gguf(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting GGUF model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -443,6 +458,11 @@ async def export_lora_adapter(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting LoRA adapter: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,

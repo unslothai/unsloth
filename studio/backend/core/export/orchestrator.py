@@ -214,7 +214,13 @@ class ExportOrchestrator:
         # is_export_active() and abort; raising would kill this export for an install that never proceeds.
         from utils.transformers_version import sidecar_swap_in_progress
 
-        if sidecar_swap_in_progress() and not self._export_active:
+        from utils.transformers_version import sidecar_swap_kind
+
+        _swap_kind = sidecar_swap_kind()
+        # Inside an active op an INSTALL reservation is about to abort on the
+        # is_export_active check, but a lazy REPAIR has no such check and can be
+        # rebuilding the sidecar right now, so it must always refuse the spawn.
+        if _swap_kind == "repair" or (_swap_kind is not None and not self._export_active):
             from utils.transformers_version import SidecarSwapInProgress
             raise SidecarSwapInProgress(
                 "A transformers installation is replacing the latest sidecar; "
@@ -431,11 +437,13 @@ class ExportOrchestrator:
                 from utils.transformers_version import sidecar_swap_in_progress
 
                 if sidecar_swap_in_progress():
+                    from utils.transformers_version import SidecarSwapInProgress
+
                     op_message = (
                         "A transformers installation is replacing the latest "
                         "sidecar; retry when it completes."
                     )
-                    return False, op_message
+                    raise SidecarSwapInProgress(op_message)
                 # Always kill any existing subprocess and spawn fresh.
                 if self._ensure_subprocess_alive():
                     self._shutdown_subprocess()
@@ -593,11 +601,13 @@ class ExportOrchestrator:
                 from utils.transformers_version import sidecar_swap_in_progress
 
                 if sidecar_swap_in_progress():
+                    from utils.transformers_version import SidecarSwapInProgress
+
                     op_message = (
                         "A transformers installation is replacing the latest "
                         "sidecar; retry when it completes."
                     )
-                    return False, op_message, None
+                    raise SidecarSwapInProgress(op_message)
                 cmd = {"type": "export", "export_type": export_type, **params}
                 try:
                     self._send_cmd(cmd)
