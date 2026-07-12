@@ -896,8 +896,10 @@ def _folded_path(node, literals = None) -> "str | None":
         # per-session workdir without a literal '..'; mark it so a read folds
         # to unsafe (\x02 is a non-slash escape sentinel).
         return "\x02"
-    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) and (
-        node.value.attr == "parents"
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Attribute)
+        and (node.value.attr == "parents")
     ):
         return "\x02"  # Path(...).parents[1]
     if isinstance(node, ast.JoinedStr):
