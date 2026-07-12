@@ -129,6 +129,18 @@ def _clear_pending():
         ("grep -r foo src/", False),  # sandbox-relative search stays safe
         ("rg TOKEN .", False),
         ("cat logs/app.log", False),  # ordinary relative read
+        ("cat /r?n/secrets/hf_token", True),  # glob into a secret mount
+        ("cat /var/r?n/secrets/db", True),
+        ("cat /root/.s??/id_rsa", True),  # glob into a credential dir
+        ("ls /home/*/projects", False),  # benign glob not into a cred dir
+        ("grep -R TOKEN ~root", True),  # tilde-user recursive root escapes
+        ("grep -R TOKEN ~/logs", True),  # tilde-home recursive root escapes
+        ("cat /etc/pass{w,}d", True),  # brace expansion builds /etc/passwd
+        ("cat report{1,2}.txt", False),  # benign brace stays safe
+        ("cat /etc/pass${x:-wd}", True),  # default param expansion builds path
+        ("cat /etc/pass${x:=wd}", True),
+        ("echo ${x:-hello}", False),  # benign default param stays safe
+        ("cat </e??/passwd", True),  # redirection prefix hides the glob
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -212,6 +224,16 @@ def test_terminal_classifier(command, unsafe):
         ("import dbm\ndbm.open('cache', 'c')", True),  # dbm create flag writes
         ("import dbm\ndbm.open('cache')", True),  # dbm import itself signals writes
         ("cfg = d['k']\nprint(cfg)", False),  # subscript result not called stays safe
+        ("open('/etc/{}'.format('passwd')).read()", True),  # str.format sensitive path
+        ("open('/etc/{}'.format(name)).read()", True),  # format dynamic /etc segment
+        ("print('/tmp/{}'.format('a'))", False),  # format under /tmp stays safe
+        ("import numpy\nnumpy.save('x.npy', a)", True),  # numpy writer method
+        ("plt.savefig('f.png')", True),  # matplotlib writer method
+        ("df.to_csv('out.csv')", True),  # pandas writer method
+        ("img.save('o.png')", True),  # PIL writer method
+        ("import json\njson.dump(obj, f)", True),  # serialization writer
+        ("df.to_string()", False),  # non-persisting render stays safe
+        ("model.forward(x)", False),  # ordinary method call stays safe
     ],
 )
 def test_python_classifier(code, unsafe):

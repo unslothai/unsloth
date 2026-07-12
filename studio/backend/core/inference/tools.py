@@ -553,6 +553,32 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "run_module",
     }
 )
+# Writer methods that persist to disk without going through open() (numpy.save,
+# Image.save, plt.savefig, DataFrame.to_csv, json.dump). Gated as method calls
+# only, so a bare attribute reference is not mistaken for a write.
+_AUTO_UNSAFE_PY_WRITE_METHODS = frozenset(
+    {
+        "save",
+        "savefig",
+        "savez",
+        "savez_compressed",
+        "savetxt",
+        "dump",
+        "to_csv",
+        "to_parquet",
+        "to_pickle",
+        "to_json",
+        "to_feather",
+        "to_hdf",
+        "to_excel",
+        "to_stata",
+        "to_sql",
+        "imwrite",
+        "imsave",
+        "write_image",
+        "write_html",
+    }
+)
 _PY_WRITE_MODE_RE = re.compile(r"[wax+]")
 # A file-mode literal ("w", "rb", "a+"): letters/flags only, no path chars.
 # Used to tell a Path.open("w") mode from a ZipFile.open("name.txt") filename.
@@ -606,6 +632,31 @@ _SENSITIVE_GLOB_TARGETS = (
     "/home/u/.netrc",
     "/home/u/.git-credentials",
 )
+# Directories whose every file is a credential/secret; a glob resolving into one
+# (cat /r?n/secrets/hf_token, cat /root/.s??/id_rsa) reads a secret even though
+# the exact filename is never enumerated, so a globbed token here asks.
+_SENSITIVE_GLOB_DIRS = (
+    "/run/secrets",
+    "/var/run/secrets",
+    "/root/.ssh",
+    "/root/.aws",
+    "/root/.gnupg",
+    "/root/.docker",
+    "/root/.kube",
+    "/home/u/.ssh",
+    "/home/u/.aws",
+    "/home/u/.gnupg",
+)
+# A leading shell redirection (<, >, 2>, >>) hides the path from a plain glob
+# scan (cat </e??/passwd); strip it before matching.
+_REDIR_PREFIX_RE = re.compile(r"^\d*[<>]+")
+# Bash brace expansion (cat /etc/pass{w,}d -> /etc/passwd /etc/passd) runs after
+# this classifier; expand a comma brace group to scan each result.
+_BRACE_GROUP_RE = re.compile(r"\{([^{}]*,[^{}]*)\}")
+# Parameter expansion with a default/alternate operator (${x:-passwd},
+# ${x:+passwd}, ${x=passwd}) can synthesize a path after approval; the operand
+# is substituted so the resulting path is scanned.
+_SHELL_PARAM_OP_RE = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+]([^{}]*)\}")
 
 
 def _references_sensitive_path(text: str) -> bool:
@@ -621,13 +672,32 @@ def _references_sensitive_path(text: str) -> bool:
     )
 
 
+def _pattern_matches_dir(pattern: str, target: str) -> bool:
+    """Segment-wise fnmatch so a glob segment does not cross a '/' boundary
+    (`/home/*` must not match `/home/u/.ssh`)."""
+    p = pattern.split("/")
+    t = target.split("/")
+    if len(p) != len(t):
+        return False
+    return all(fnmatch.fnmatch(tseg, pseg) for pseg, tseg in zip(p, t))
+
+
 def _glob_hits_sensitive(command: str) -> bool:
-    """True if a ? / * / [..] glob token could expand to a sensitive file, so
-    `cat /e??/passwd` asks even though the raw text has no literal /etc/passwd."""
+    """True if a ? / * / [..] glob token could expand to a sensitive file or a
+    file under a secret/credential directory, so `cat /e??/passwd` and
+    `cat /r?n/secrets/hf_token` ask even without a literal sensitive path."""
     for token in command.replace(";", " ").replace("|", " ").split():
-        token = _SHELL_QUOTE_RE.sub("", token)
-        if any(c in token for c in "?*[") and any(
-            fnmatch.fnmatch(target, token) for target in _SENSITIVE_GLOB_TARGETS
+        token = _REDIR_PREFIX_RE.sub("", _SHELL_QUOTE_RE.sub("", token))
+        if not any(c in token for c in "?*["):
+            continue
+        if any(fnmatch.fnmatch(target, token) for target in _SENSITIVE_GLOB_TARGETS):
+            return True
+        # A globbed directory that resolves into a secret/credential dir makes
+        # every file below it sensitive (cat /r?n/secrets/hf_token).
+        head = token.rsplit("/", 1)[0] if "/" in token else token
+        if any(
+            _pattern_matches_dir(token, d) or _pattern_matches_dir(head, d)
+            for d in _SENSITIVE_GLOB_DIRS
         ):
             return True
     return False
@@ -641,6 +711,33 @@ def _expand_shell_assignments(command: str) -> str:
     if not env:
         return command
     return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command)
+
+
+def _expand_param_defaults(command: str) -> str:
+    """Substitute the operand of a default/alternate parameter expansion
+    (cat /etc/pass${x:-wd} -> cat /etc/passwd), which bash applies after this
+    classifier. Fail-open: only adds detections."""
+    return _SHELL_PARAM_OP_RE.sub(lambda m: m.group(1), command)
+
+
+def _expand_braces(command: str) -> str:
+    """Best-effort bash brace expansion (cat /etc/pass{w,}d -> cat /etc/passwd
+    /etc/passd) so a sensitive path split across a comma brace group is scanned.
+    Bounded to avoid blowup. Fail-open: only adds detections."""
+    results = [command]
+    for _ in range(6):
+        if not any(_BRACE_GROUP_RE.search(s) for s in results):
+            break
+        expanded = []
+        for s in results:
+            m = _BRACE_GROUP_RE.search(s)
+            if not m:
+                expanded.append(s)
+                continue
+            for opt in m.group(1).split(","):
+                expanded.append(s[: m.start()] + opt + s[m.end() :])
+        results = expanded[:64]
+    return " ".join(results)
 
 
 def _mode_arg_writes(mode_node) -> bool:
@@ -725,6 +822,22 @@ def _folded_path(node) -> "str | None":
         ):
             parts = [(_folded_path(a) or "\x00") for a in node.args]
             return "/".join(parts)
+        # '/etc/{}'.format('passwd') -> /etc/passwd (literal template + args); a
+        # dynamic arg becomes NUL so /etc/{}.format(name) stays detectable.
+        if isinstance(func, ast.Attribute) and func.attr == "format":
+            template = _folded_path(func.value)
+            if template is not None and "{" in template:
+                parts = []
+                for a in node.args:
+                    if isinstance(a, ast.Constant):
+                        parts.append(str(a.value))
+                    else:
+                        folded = _folded_path(a)
+                        parts.append("\x00" if folded is None else folded)
+                try:
+                    return template.format(*parts)
+                except (IndexError, KeyError, ValueError):
+                    return None
     return None
 
 
@@ -751,14 +864,17 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     # escapes and expand NAME=value prefixes first so `cat /proc/$PPID/enviro''n`,
     # `cat /et\c/passwd`, and `p="/proc/$PPID"; cat $p/environ` are caught too.
     stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
-    if _glob_hits_sensitive(command) or any(
-        _references_sensitive_path(c)
-        for c in (
-            command,
-            stripped,
-            _expand_shell_assignments(command),
-            _expand_shell_assignments(stripped),
-        )
+    # Bash applies brace and parameter expansion after this classifier, so a path
+    # split across a brace group (/etc/pass{w,}d) or a default parameter
+    # (${x:-wd}) is invisible to the raw scan; expand both before scanning.
+    candidates = []
+    for c in (command, stripped):
+        c_param = _expand_param_defaults(c)
+        candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
+    if (
+        _glob_hits_sensitive(command)
+        or _glob_hits_sensitive(_expand_param_defaults(command))
+        or any(_references_sensitive_path(c) for c in candidates)
     ):
         return True
     # Newlines (and CR) separate commands in a shell but read as plain
@@ -777,11 +893,13 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     if any(os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in tokens):
         if any(t.split("=", 1)[0] in _AUTO_UNSAFE_FIND_LIKE_FLAGS for t in tokens):
             return True
-    # A recursive search rooted at an absolute path reads host files outside the
-    # sandbox tree (grep -R TOKEN /home, rg TOKEN /); ask. A path-qualified
-    # command token starts with "/" too, but that already asks below.
+    # A recursive search rooted outside the sandbox reads host files (grep -R
+    # TOKEN /home, rg TOKEN /, grep -R TOKEN ~root); ask. Bash expands ~/~user
+    # to a home dir after this decision, so a tilde root is a sandbox escape too.
+    # A path-qualified command token starts with "/" as well, but that already
+    # asks below.
     if any(os.path.basename(t.strip(";&|()`{}")).lower() in _AUTO_RECURSIVE_SEARCH for t in tokens):
-        if any(t.startswith("/") for t in tokens):
+        if any(t.startswith("/") or t.startswith("~") for t in tokens):
             return True
     expect_command = True
     prefix_pending = False
@@ -968,6 +1086,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     if func.id in open_aliases and _builtin_open_writes(node):
                         return True
                 elif isinstance(func, ast.Attribute):
+                    # Writer methods persist to disk without open() (np.save,
+                    # img.save, plt.savefig, df.to_csv, json.dump); ask before
+                    # they mutate the workdir in auto mode.
+                    if func.attr in _AUTO_UNSAFE_PY_WRITE_METHODS:
+                        return True
                     # os.open() always creates/writes a file descriptor.
                     if (
                         func.attr == "open"
