@@ -3,31 +3,24 @@
 
 """Opt-in low-precision casting of the diffusion pipeline's text encoder(s).
 
-The transformer arrives quantised in the GGUF, but the companion text encoder loads
-dense (bf16) from the base repo and is often the largest resident component (a Qwen3
-/ T5-XXL / Mistral encoder runs to many GB). This shrinks it in place, with four
-backends:
+The transformer arrives quantised in the GGUF, but the companion text encoder loads dense
+(bf16) and is often the largest resident component (Qwen3 / T5-XXL / Mistral run to many GB).
+This shrinks it in place, with four backends:
 
-  fp8         - diffusers layerwise casting: 8-bit (e4m3) storage, upcast per layer to
-                the compute dtype. ~2x smaller. Works on any fp8-capable CUDA card (cc >= 8.9).
-  fp8_dynamic - torchao dynamic fp8 COMPUTE (per-row): keeps the matmul in fp8 on the
-                fp8 tensor cores (torch._scaled_mm) instead of upcasting each forward.
-                ~2x smaller plus a tensor-core speedup; needs fp8-GEMM silicon (cc >= 8.9).
-  int8        - torchao dynamic int8 COMPUTE (per-token act + per-channel weight ->
-                torch._int_mm), with per-layer keep-bf16 selection. int8 degrades on large
-                encoders unless the most quant-sensitive decoder blocks stay bf16, so it is
-                applied only for families with a measured keep-bf16 schedule (else it falls
-                back to fp8). ~2x smaller; needs int8 tensor cores (cc >= 8.0).
-  nvfp4       - torchao NVFP4 weight-only: 4-bit float with two-level microscaling, run on
-                Blackwell's (sm_100+) FP4 tensor cores. ~4x smaller and the lowest-VRAM
-                option, but a steeper quality cost than fp8.
+  fp8         - diffusers layerwise casting: 8-bit (e4m3) storage, upcast per layer. ~2x
+                smaller. Any fp8-capable CUDA card (cc >= 8.9).
+  fp8_dynamic - torchao dynamic fp8 COMPUTE (per-row): keeps the matmul in fp8 on the tensor
+                cores (torch._scaled_mm) instead of upcasting. ~2x smaller + speedup; cc >= 8.9.
+  int8        - torchao dynamic int8 COMPUTE (per-token act + per-channel weight, _int_mm),
+                with per-layer keep-bf16 selection. Degrades on large encoders unless the
+                sensitive decoder blocks stay bf16, so applied only for families with a
+                measured schedule (else falls back to fp8). ~2x smaller; cc >= 8.0.
+  nvfp4       - torchao NVFP4 weight-only: 4-bit float, two-level microscaling, Blackwell
+                sm_100+ FP4 cores. ~4x smaller (lowest VRAM) but a steeper quality cost.
 
-All keep normalisations / embeddings full precision and are a memory-vs-quality tradeoff,
-not free, so all are off by default. They pair especially well with streamed (group)
-offload, where the text encoder stays resident -- this is where the companion footprint
-dominates. Quantify the quality cost per model with the quality harness
-(scripts/diffusion_quality.py). torch / diffusers / torchao are imported lazily so the
-module stays importable in a no-torch runtime.
+All keep norms / embeddings full precision, are a memory-vs-quality tradeoff (off by default),
+and pair well with streamed (group) offload where the text encoder stays resident. Quantify
+the quality cost with scripts/diffusion_quality.py. torch / diffusers / torchao imported lazily.
 """
 
 from __future__ import annotations
@@ -43,14 +36,13 @@ TE_QUANT_MODES = (TE_QUANT_FP8, TE_QUANT_NVFP4, TE_QUANT_INT8, TE_QUANT_FP8_DYNA
 # Pipeline attributes that hold a text encoder, in order.
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
-# int8 (torch._int_mm) degrades on large text encoders unless the most quant-sensitive decoder
-# blocks stay bf16. Per-family (skip_first, skip_last) decoder blocks to keep dense, from measured
-# hidden-state fidelity (mean per-token cosine vs the bf16 reference, at the layer each pipeline
-# consumes): keeping the first blocks stops early-layer error seeding, keeping the last blocks
-# protects the read layer. Families absent here have no int8 schedule that clears the bar, so an
-# int8 request for them falls back to fp8.
-#   qwen-image (Qwen2.5-VL-7B): first+last 6 -> ~0.997 cosine (both ends needed; outlier-bound).
-#   flux.2-dev (Mistral-Small-24B): first 3 -> ~0.98 cosine (pure early-layer seeding).
+# int8 degrades on large text encoders unless the quant-sensitive decoder blocks stay bf16.
+# Per-family (skip_first, skip_last) blocks to keep dense, from measured hidden-state fidelity
+# (per-token cosine vs bf16 at the consumed layer): keeping first blocks stops early-layer error
+# seeding, last blocks protect the read layer. Families absent have no schedule clearing the bar,
+# so int8 falls back to fp8.
+#   qwen-image (Qwen2.5-VL-7B): first+last 6 -> ~0.997 cosine (both ends; outlier-bound).
+#   flux.2-dev (Mistral-Small-24B): first 3 -> ~0.98 cosine (early-layer seeding).
 _TE_INT8_SKIP: dict[str, tuple[int, int]] = {
     "qwen-image": (6, 6),
     "qwen-image-edit": (6, 6),
@@ -75,9 +67,9 @@ def normalize_te_quant(value: Optional[str]) -> Optional[str]:
 
 
 def te_quant_supported(target: Any, mode: str) -> bool:
-    """Whether ``mode`` is usable for ``target``: a CUDA device with a bf16 compute dtype, plus
-    the tensor-core class each backend needs -- fp8 dtype (fp8 layerwise), fp8 GEMM sm_89+
-    (fp8_dynamic), int8 tensor cores sm_80+ (int8), or Blackwell sm_100+ (nvfp4)."""
+    """Whether ``mode`` is usable for ``target``: a CUDA bf16 device plus the tensor-core class
+    each backend needs -- fp8 dtype (fp8), fp8 GEMM sm_89+ (fp8_dynamic), int8 sm_80+ (int8),
+    Blackwell sm_100+ (nvfp4)."""
     if getattr(target, "device", None) != "cuda":
         return False
     try:
@@ -88,14 +80,12 @@ def te_quant_supported(target: Any, mode: str) -> bool:
         if mode == TE_QUANT_FP8:
             return hasattr(torch, "float8_e4m3fn")
         if mode == TE_QUANT_FP8_DYNAMIC:
-            # Compute fp8 (torch._scaled_mm) needs fp8-GEMM silicon: Ada sm_89+ / Hopper / Blackwell.
+            # fp8 GEMM needs Ada sm_89+ / Hopper / Blackwell.
             return hasattr(torch, "float8_e4m3fn") and torch.cuda.get_device_capability() >= (8, 9)
         if mode == TE_QUANT_INT8:
-            # int8 tensor cores (torch._int_mm) need Ampere sm_80+.
-            return torch.cuda.get_device_capability()[0] >= 8
+            return torch.cuda.get_device_capability()[0] >= 8  # int8 cores: Ampere sm_80+
         if mode == TE_QUANT_NVFP4:
-            # NVFP4 tensor cores need Blackwell (compute capability major >= 10).
-            return torch.cuda.get_device_capability()[0] >= 10
+            return torch.cuda.get_device_capability()[0] >= 10  # NVFP4 cores: Blackwell sm_100+
     except Exception:
         return False
     return False
@@ -110,12 +100,11 @@ def quantize_text_encoders(
     offload_active: bool = False,
     logger: Any = None,
 ) -> Optional[str]:
-    """Quantise each present text encoder in place with ``mode`` (fp8 / fp8_dynamic / int8 / nvfp4).
-    Returns the mode actually applied, or None when disabled, unsupported, or no encoder was cast.
-    ``int8`` needs a per-family keep-bf16 schedule (``_TE_INT8_SKIP``); a family without one falls
-    back to ``fp8``. When ``offload_active`` the torchao modes are skipped (their tensor subclasses
-    reject the ``Module.to()`` an offload hook uses); layerwise ``fp8`` still engages. Best-effort:
-    any failure leaves the encoder dense."""
+    """Quantise each present text encoder in place with ``mode``. Returns the mode applied, or
+    None when disabled, unsupported, or nothing was cast. ``int8`` needs a per-family schedule
+    (``_TE_INT8_SKIP``); without one it falls back to ``fp8``. Under ``offload_active`` the torchao
+    modes are skipped (their subclasses reject ``Module.to()``); layerwise ``fp8`` still engages.
+    Best-effort: any failure leaves the encoder dense."""
     mode = normalize_te_quant(mode)
     if mode is None:
         return None
@@ -125,10 +114,8 @@ def quantize_text_encoders(
         if skip is None:
             _note(logger, f"int8 has no keep-bf16 schedule for family '{family}'; using fp8")
             mode = TE_QUANT_FP8
-    # The torchao modes (int8 with a schedule, fp8_dynamic, nvfp4) produce tensor subclasses that
-    # reject Module.to(); an offload placement moves the encoder that way and hard-crashes -- the
-    # DiT path skips torchao quant under offload for exactly this reason. Layerwise fp8 is not
-    # torchao and streams fine, so it still engages. Skip the torchao modes under offload.
+    # torchao modes produce subclasses that reject Module.to(), which an offload placement uses
+    # (the DiT path skips torchao under offload for the same reason). Layerwise fp8 streams fine.
     if offload_active and mode in (TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVFP4):
         _note(
             logger,
@@ -163,19 +150,16 @@ def quantize_text_encoders(
 
 
 def _te_exclude_tokens(encoder: Any) -> tuple[str, ...]:
-    """fqn tokens whose Linears stay bf16 in a torchao text-encoder quant: the VLM vision tower
-    and the unused lm_head (not used for prompt encoding), plus the encoder's own fp32-kept
-    modules (T5 ``wo``, which the gated feed-forward reads the dtype of and which explodes in
-    low precision)."""
+    """fqn tokens whose Linears stay bf16 in a torchao TE quant: the VLM vision tower, the unused
+    lm_head, and the encoder's own fp32-kept modules (T5 ``wo``, which explodes in low precision)."""
     tokens = ["visual", "vision_tower", "lm_head"]
     tokens += [str(m).lower() for m in (getattr(encoder, "_keep_in_fp32_modules", None) or ())]
     return tuple(dict.fromkeys(tokens))
 
 
 def _keep_bf16_block_fqns(encoder: Any, skip_first: int, skip_last: int) -> set[str]:
-    """FQNs of the decoder blocks to keep bf16: the first ``skip_first`` and last ``skip_last`` of
-    each top-level ``nn.ModuleList`` stack (a T5 ``encoder.block`` / a decoder ``...layers``).
-    Structural, so it needs no per-architecture table."""
+    """FQNs of decoder blocks to keep bf16: the first ``skip_first`` and last ``skip_last`` of
+    each top-level ``nn.ModuleList`` stack. Structural, so no per-architecture table."""
     import torch
 
     keep: set[str] = set()
@@ -191,9 +175,8 @@ def _keep_bf16_block_fqns(encoder: Any, skip_first: int, skip_last: int) -> set[
 
 
 def _cast_int8_selective(encoder: Any, target: Any, skip_first: int, skip_last: int) -> None:
-    # torchao dynamic int8 (per-token act + per-channel weight -> torch._int_mm) on the FLOP-heavy
-    # Linears, but keeping the first/last decoder blocks (and the vision tower / lm_head / T5 wo)
-    # in bf16. Reuses the committed transformer-quant factory so the config never drifts.
+    # torchao dynamic int8 on the FLOP-heavy Linears, keeping the first/last decoder blocks (and
+    # vision tower / lm_head / T5 wo) bf16. Reuses the transformer-quant factory so config never drifts.
     from torchao.quantization import quantize_
     from .diffusion_transformer_quant import (
         TQ_INT8,
@@ -218,14 +201,11 @@ def _cast_int8_selective(encoder: Any, target: Any, skip_first: int, skip_last: 
 
 
 def _weight_has_zero_output_row(module: Any) -> bool:
-    """True when a Linear's weight contains an all-zero OUTPUT row. torchao's per-row
-    fp8 scheme derives a per-output-channel scale from that row's amax, so a dead row
-    yields scale 0 -> 0/0 = NaN through the whole forward. Real checkpoints ship such
-    rows: SDXL's text_encoder_2 (OpenCLIP ViT-bigG) has one in
-    ``text_model.encoder.layers.2.self_attn.out_proj`` -- measured on B200: every
-    fp8_dynamic SDXL render came out black (NaN embeddings) until this Linear is left
-    dense. Cheap (one amax per Linear, once per load); False on any error so the
-    caster's own failure handling stays in charge."""
+    """True when a Linear's weight has an all-zero OUTPUT row. torchao per-row fp8 derives a
+    per-channel scale from that row's amax, so a dead row gives scale 0 -> 0/0 = NaN through the
+    forward. Real checkpoints ship such rows: SDXL's text_encoder_2 (OpenCLIP ViT-bigG) has one in
+    ``text_model.encoder.layers.2.self_attn.out_proj`` -- B200: every fp8_dynamic SDXL render came
+    out black until this Linear is left dense. Cheap (one amax per Linear); False on any error."""
     try:
         weight = getattr(module, "weight", None)
         if weight is None or weight.ndim != 2:
@@ -236,10 +216,9 @@ def _weight_has_zero_output_row(module: Any) -> bool:
 
 
 def _cast_fp8_dynamic(encoder: Any, target: Any) -> None:
-    # torchao dynamic fp8 COMPUTE, per-row (per-token activation + per-output-channel weight ->
-    # torch._scaled_mm on the fp8 tensor cores). Unlike the layerwise `fp8` backend this keeps the
-    # matmul in fp8 instead of upcasting each forward. fp8 is robust across encoder sizes, so no
-    # per-layer keep-bf16 is needed; only the vision tower / lm_head / T5 wo are excluded.
+    # torchao dynamic fp8 COMPUTE, per-row (torch._scaled_mm on the fp8 cores). Unlike layerwise
+    # `fp8` this keeps the matmul in fp8 instead of upcasting. Robust across encoder sizes, so no
+    # per-layer keep-bf16; only the vision tower / lm_head / T5 wo are excluded.
     from torchao.quantization import quantize_
     from .diffusion_transformer_quant import (
         TQ_FP8,
@@ -248,14 +227,13 @@ def _cast_fp8_dynamic(encoder: Any, target: Any) -> None:
         make_filter_fn,
     )
 
-    # require_bf16: scaled_mm asserts a bf16 weight, so skip any stray non-bf16 Linear the encoder
-    # keeps (belt-and-suspenders over the named T5 wo exclusion) rather than aborting the pass.
+    # require_bf16: scaled_mm asserts a bf16 weight, so skip any stray non-bf16 Linear rather than
+    # aborting the pass (belt-and-suspenders over the named T5 wo exclusion).
     base = make_filter_fn(
         DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True
     )
 
-    # A Linear with an all-zero output row NaNs under per-row scaling (scale 0 -> 0/0);
-    # keep exactly those Linears dense so one dead row cannot black out every render.
+    # An all-zero output row NaNs under per-row scaling (scale 0 -> 0/0); keep those dense.
     def filter_fn(module: Any, fqn: str = "") -> bool:
         return base(module, fqn) and not _weight_has_zero_output_row(module)
 
@@ -268,23 +246,20 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
     from diffusers.hooks import apply_layerwise_casting
     from diffusers.hooks.layerwise_casting import DEFAULT_SKIP_MODULES_PATTERN
 
-    # diffusers' layerwise casting stores each supported leaf module's weights in fp8 and
-    # upcasts them per forward. Two things on a transformers text encoder can push an fp8
-    # weight or activation into an op that can't handle it, and both crash only at
-    # generation (the load-time guard can't see them), so skip the offending modules:
+    # Layerwise casting stores each leaf's weights in fp8 and upcasts per forward. Two things on a
+    # transformers encoder push an fp8 weight/activation into an op that can't handle it, both
+    # crashing only at generation, so skip the offending modules:
     skip = tuple(DEFAULT_SKIP_MODULES_PATTERN)
 
-    # (1) dtype-sensitive modules the encoder itself flags. T5 keeps "wo" in fp32: its
-    # gated feed-forward reads self.wo.weight.dtype and casts the activations to match
-    # BEFORE calling wo (transformers#20287), racing the forward-time upcast hook so
-    # F.linear sees an fp8 input against a bf16 weight. Names are literal substrings.
+    # (1) dtype-sensitive modules the encoder flags. T5 keeps "wo" in fp32: its gated FF reads
+    # self.wo.weight.dtype and casts activations to match BEFORE calling wo (transformers#20287),
+    # racing the upcast hook so F.linear sees fp8 input vs bf16 weight. Literal substrings.
     skip += tuple(re.escape(m) for m in (getattr(encoder, "_keep_in_fp32_modules", None) or ()))
 
-    # (2) an output projection tied to the input embedding. A CausalLM encoder (FLUX.2's
-    # Qwen3) ties lm_head.weight to embed_tokens.weight; lm_head is an nn.Linear so it
-    # gets cast to fp8 and, sharing one tensor, drags the embedding to fp8 with it. The
-    # embedding then emits fp8 activations that crash the first RMSNorm. Skip the tied
-    # projection so the shared tensor stays dense (lm_head is unused for prompt encoding).
+    # (2) an output projection tied to the input embedding. A CausalLM encoder (FLUX.2's Qwen3)
+    # ties lm_head.weight to embed_tokens.weight; casting lm_head (an nn.Linear) to fp8 drags the
+    # shared embedding down, which then emits fp8 activations that crash the first RMSNorm. Skip
+    # the tied projection so the shared tensor stays dense (lm_head is unused for prompt encoding).
     get_out, get_in = (
         getattr(encoder, "get_output_embeddings", None),
         getattr(encoder, "get_input_embeddings", None),
@@ -301,22 +276,18 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         storage_dtype = torch.float8_e4m3fn,
         compute_dtype = target.dtype,
         skip_modules_pattern = skip,
-        # Keep token-embedding tables (T5 "shared", Qwen "embed_tokens", etc.) full
-        # precision: the diffusers default pattern only skips vision pos/patch
-        # embeds, not nn.Embedding lookups, and fp8'ing those quantizes every prompt
-        # token straight to the coarse fp8 grid, hurting prompt fidelity.
+        # Keep token-embedding tables full precision: the diffusers default only skips vision
+        # pos/patch embeds, and fp8'ing nn.Embedding quantizes every prompt token to the coarse
+        # fp8 grid, hurting fidelity.
         skip_modules_classes = (torch.nn.Embedding,),
     )
 
 
 def _cast_nvfp4(encoder: Any, target: Any) -> None:
-    # Weight-only NVFP4: linear weights become 4-bit (packed) NVFP4 tensors and run
-    # on Blackwell FP4 tensor cores; norms / embeddings (not nn.Linear) are untouched.
-    # Exclude the VLM vision tower / lm_head / T5 wo and the sub-512 projections, exactly like
-    # the int8 / fp8 torchao TE modes -- 4-bit-ing a VLM encoder's image tower (qwen-image /
-    # qwen-image-edit's Qwen2.5-VL) degrades the image/edit conditioning the sibling schemes
-    # deliberately protect, and require_bf16 skips any non-bf16 Linear the encoder keeps so the
-    # NVFP4 (scaled_mm-family) cast engages on the bf16 linears instead of aborting the pass.
+    # Weight-only NVFP4: linear weights become 4-bit NVFP4 on Blackwell FP4 cores; norms /
+    # embeddings untouched. Exclude the VLM vision tower / lm_head / T5 wo and sub-512 projections
+    # like the int8/fp8 TE modes (4-bit-ing a VLM image tower degrades the edit conditioning);
+    # require_bf16 skips non-bf16 Linears so the cast engages instead of aborting.
     from torchao.quantization import quantize_
     from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
     from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES, make_filter_fn

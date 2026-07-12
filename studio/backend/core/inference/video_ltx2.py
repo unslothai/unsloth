@@ -3,34 +3,22 @@
 
 """LTX-2.3 pipeline assembly for diffusers 0.39.
 
-diffusers 0.39 ships every LTX-2.3 model class (the transformer's
-``cross_attn_mod``/``gated_attn`` flags, the per-modality ``LTX2TextConnectors``,
-the deeper 2.3 video VAE decoder, and ``LTX2VocoderWithBWE``) but its single-file
-loader maps every LTX-2 checkpoint to the 2.0 config, so 2.3 checkpoints fail a
-shape check at load. On top of that, the community transformer-only GGUFs carry
-the DiT and the embedding connectors but NOT the text projections, VAEs, or
-vocoder, which 2.3 moved out of the transformer.
+diffusers 0.39 ships every LTX-2.3 model class but its single-file loader maps every LTX-2
+checkpoint to the 2.0 config, so 2.3 checkpoints fail a shape check at load. The community
+transformer-only GGUFs also carry the DiT + connectors but NOT the text projections, VAEs, or
+vocoder that 2.3 moved out of the transformer. This assembles the full 2.3 pipeline:
 
-This module assembles the full 2.3 pipeline:
+- transformer: from the checkpoint via ``from_single_file`` with the 2.3 config overrides and the
+  ``prompt_adaln_single`` keys pre-renamed (the library converter doesn't know them).
+- connectors: from the checkpoint's connector keys plus the ``text_embedding_projection`` tensors,
+  fetched from the companion file in ``unsloth/LTX-2.3-GGUF`` when not bundled.
+- video/audio VAE, vocoder: from the checkpoint when bundled, else the companion files.
+- scheduler, text encoder (Gemma3), tokenizer: from the LTX-2.0 base repo, which 2.3 shares.
 
-- transformer: from the GGUF/single-file checkpoint via ``from_single_file`` with
-  the 2.3 config overrides (the loader merges signature-matching kwargs into the
-  fetched 2.0 config) and the ``prompt_adaln_single`` keys pre-renamed, since the
-  library converter does not know them.
-- connectors: from the same checkpoint's ``*_embeddings_connector`` keys plus the
-  4 ``text_embedding_projection`` tensors, fetched from the companion file in
-  ``unsloth/LTX-2.3-GGUF`` when the checkpoint does not bundle them.
-- video VAE, audio VAE, vocoder: from the checkpoint when bundled (the official
-  Lightricks single files), else from the companion files in the same repo.
-- scheduler, text encoder (Gemma3), tokenizer: from the LTX-2.0 base repo, which
-  2.3 shares.
-
-Every config and key-rename table below mirrors diffusers' own
-``scripts/convert_ltx2_to_diffusers.py`` (the authoritative 2.3 mapping, which
-the library loader has not absorbed yet). The pipeline is assembled through the
-constructor rather than ``from_pretrained`` because the vocoder class differs
-from the base repo's pin (``LTX2VocoderWithBWE`` vs ``LTX2Vocoder``) and the
-component type gate would reject it.
+Every config and rename table mirrors diffusers' ``scripts/convert_ltx2_to_diffusers.py`` (the
+authoritative 2.3 mapping the loader hasn't absorbed). Assembled through the constructor, not
+``from_pretrained``, because the vocoder class differs from the base pin (``LTX2VocoderWithBWE`` vs
+``LTX2Vocoder``) and the type gate would reject it.
 """
 
 from __future__ import annotations
@@ -42,9 +30,8 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# The companion files (text projections, VAEs incl. vocoder) live next to the
-# quants in unsloth's GGUF repo; they are the official Lightricks weights split
-# out of the combined checkpoint. Keyed by checkpoint variant.
+# Companion files (text projections, VAEs incl. vocoder) next to the quants in unsloth's GGUF repo:
+# the official Lightricks weights split out of the combined checkpoint. Keyed by variant.
 LTX23_EXTRAS_REPO = "unsloth/LTX-2.3-GGUF"
 _EXTRAS_TEXT_PROJ = "text_encoders/ltx-2.3-22b-{variant}_embeddings_connectors.safetensors"
 _EXTRAS_VIDEO_VAE = "vae/ltx-2.3-22b-{variant}_video_vae.safetensors"
@@ -52,8 +39,7 @@ _EXTRAS_AUDIO_VAE = "vae/ltx-2.3-22b-{variant}_audio_vae.safetensors"
 
 # ── configs + rename tables, verbatim from scripts/convert_ltx2_to_diffusers.py ──
 
-# from_single_file config overrides on top of the base repo's 2.0 transformer
-# config (version == "2.3" in get_ltx2_transformer_config).
+# from_single_file config overrides on top of the base 2.0 transformer config.
 LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES: dict[str, Any] = {
     "gated_attn": True,
     "cross_attn_mod": True,
@@ -63,8 +49,7 @@ LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES: dict[str, Any] = {
     "perturbed_attn": True,
 }
 
-# Keys the library's 2.0-era converter does not know; renamed before handing the
-# state dict to from_single_file. Ordered so the audio prefix matches first.
+# Keys the 2.0-era converter doesn't know; renamed before from_single_file. Audio prefix first.
 _TRANSFORMER_PRERENAME = (
     ("audio_prompt_adaln_single.", "audio_prompt_adaln."),
     ("prompt_adaln_single.", "prompt_adaln."),
@@ -261,11 +246,8 @@ _DIT_PREFIX = "model.diffusion_model."
 
 
 def read_checkpoint_header(checkpoint_path: Path | str) -> dict[str, tuple[int, ...]]:
-    """Tensor name -> shape from the checkpoint HEADER only (no weight data).
-
-    GGUF shapes come back in GGML (reversed) order; callers must not assume a
-    dimension position and should membership-test instead.
-    """
+    """Tensor name -> shape from the checkpoint HEADER only (no weight data). GGUF shapes come back
+    in GGML (reversed) order, so callers should membership-test, not assume a dimension position."""
     names_shapes: dict[str, tuple[int, ...]] = {}
     path = str(checkpoint_path)
     if path.lower().endswith(".gguf"):
@@ -281,12 +263,9 @@ def read_checkpoint_header(checkpoint_path: Path | str) -> dict[str, tuple[int, 
 
 
 def is_ltx23_checkpoint(checkpoint_path: Path | str) -> bool:
-    """True when the checkpoint carries the 9-row LTX-2.3 modulation tables.
-
-    2.0 checkpoints have 6-row per-block scale/shift tables; 2.3 widens them to
-    9 (the cross-attn adaln rows). An unreadable header returns False so the
-    caller falls back to the stock 2.0 load path and surfaces its own error.
-    """
+    """True when the checkpoint carries the 9-row LTX-2.3 modulation tables (2.0 has 6-row
+    per-block scale/shift tables; 2.3 widens them to 9). An unreadable header returns False so the
+    caller falls back to the stock 2.0 path."""
     try:
         header = read_checkpoint_header(checkpoint_path)
     except Exception as exc:  # noqa: BLE001
@@ -312,12 +291,8 @@ def _apply_rename(state: dict[str, Any], rename: dict[str, str]) -> dict[str, An
 
 
 def _to_plain_dtype(state: dict[str, Any], torch_dtype: Any) -> dict[str, Any]:
-    """Materialise every tensor as a plain torch tensor in torch_dtype.
-
-    GGUF-sourced tensors arrive as GGUFParameter (block-quantized); the small
-    non-DiT components run dense, so dequantize them here. Their fidelity is
-    whatever the GGUF holds -- identical numbers to what native GGUF runners use.
-    """
+    """Materialise every tensor as a plain torch tensor in torch_dtype. GGUF tensors arrive as
+    block-quantized GGUFParameter; the small non-DiT components run dense, so dequantize here."""
     import torch
 
     try:
@@ -334,13 +309,9 @@ def _to_plain_dtype(state: dict[str, Any], torch_dtype: Any) -> dict[str, Any]:
 
 
 def _split_checkpoint(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Partition a combined LTX checkpoint into per-component state dicts.
-
-    Handles both layouts: the official combined single file (``vae.*``,
-    ``audio_vae.*``, ``vocoder.*``, ``model.diffusion_model.*`` plus top-level
-    ``text_embedding_projection.*``) and transformer-only GGUFs (bare DiT +
-    connector keys, nothing else).
-    """
+    """Partition a combined LTX checkpoint into per-component state dicts. Handles both layouts: the
+    official combined single file (``vae.*`` / ``audio_vae.*`` / ``vocoder.*`` / DiT + projections)
+    and transformer-only GGUFs (bare DiT + connector keys)."""
     groups: dict[str, dict[str, Any]] = {
         "dit": {},
         "connectors": {},
@@ -373,11 +344,8 @@ def _load_extras_file(filename: str, hf_token: Optional[str]) -> dict[str, Any]:
 
 
 def checkpoint_variant(checkpoint_path: Path | str) -> str:
-    """Which companion-weight set a checkpoint pairs with ("dev"/"distilled").
-
-    The distilled-1.1 refresh only retrained the DiT, so it shares the distilled
-    companions.
-    """
+    """Which companion-weight set a checkpoint pairs with ("dev"/"distilled"). The distilled-1.1
+    refresh only retrained the DiT, so it shares the distilled companions."""
     return "dev" if "dev" in Path(checkpoint_path).name.lower() else "distilled"
 
 
@@ -414,9 +382,8 @@ def load_ltx23_transformer(
     import diffusers
     from diffusers import LTX2VideoTransformer3DModel
 
-    # Pre-rename the 2.3-only keys the library converter does not know, then let
-    # from_single_file do the rest: it merges the config overrides below into the
-    # base repo's 2.0 transformer config and runs the stock 2.0 key conversion.
+    # Pre-rename the 2.3-only keys the converter doesn't know, then from_single_file merges the
+    # config overrides into the base 2.0 config and runs the stock key conversion.
     for old, new in _TRANSFORMER_PRERENAME:
         for key in [k for k in dit_state if k.startswith(old)]:
             dit_state[new + key[len(old) :]] = dit_state.pop(key)
@@ -437,8 +404,8 @@ def load_ltx23_connectors(
 ) -> Any:
     from diffusers.pipelines.ltx2.connectors import LTX2TextConnectors
 
-    # Transformer-only checkpoints carry the connector stacks but not the huge
-    # per-modality text projections; fetch those from the companion file.
+    # Transformer-only checkpoints carry the connector stacks but not the per-modality text
+    # projections; fetch those from the companion file.
     if not any(k.startswith("text_embedding_projection") for k in connector_state):
         connector_state = dict(connector_state)
         connector_state.update(
@@ -495,8 +462,8 @@ def load_ltx23_audio_vae_and_vocoder(
         _AUDIO_VAE_RENAME,
         torch_dtype,
     )
-    # The 2.3 vocoder is a composite (base vocoder + bandwidth-extension stack +
-    # mel STFT buffers); keys line up module-for-module after the renames.
+    # The 2.3 vocoder is a composite (base + bandwidth-extension stack + mel STFT buffers); keys
+    # line up module-for-module after the renames.
     vocoder_state = _apply_rename(_to_plain_dtype(vocoder_state, torch_dtype), _VOCODER_RENAME)
     for key in [k for k in vocoder_state if ".ups." in k]:
         vocoder_state[key.replace(".ups.", ".upsamplers.")] = vocoder_state.pop(key)
@@ -519,12 +486,9 @@ def load_ltx23_pipeline(
     is_gguf: bool,
     hf_token: Optional[str] = None,
 ) -> Any:
-    """Full LTX-2.3 pipeline from a single-file/GGUF checkpoint.
-
-    Assembled per-component (constructor, not from_pretrained) because the base
-    repo's model_index pins LTX2Vocoder while 2.3 needs LTX2VocoderWithBWE, and
-    the from_pretrained component type gate rejects the substitution.
-    """
+    """Full LTX-2.3 pipeline from a single-file/GGUF checkpoint. Assembled per-component
+    (constructor, not from_pretrained) because the base model_index pins LTX2Vocoder while 2.3
+    needs LTX2VocoderWithBWE, which the type gate would reject."""
     import transformers
     from diffusers import LTX2Pipeline
     from diffusers.loaders.single_file_utils import load_single_file_checkpoint
@@ -540,10 +504,9 @@ def load_ltx23_pipeline(
     groups = _split_checkpoint(state)
     del state
 
-    # The Lightricks fp8 single files store SCALED float8 weights (per-tensor
-    # .weight_scale/.input_scale companions). Casting those without applying the
-    # scales silently corrupts every quantized layer, so refuse loudly. GGUF
-    # Q8_0 offers comparable fidelity at similar size through the supported path.
+    # The Lightricks fp8 single files store SCALED float8 weights (.weight_scale/.input_scale
+    # companions). Casting without the scales corrupts every quantized layer, so refuse loudly;
+    # use the GGUF quants (Q8_0 for highest fidelity) instead.
     if any(k.endswith((".weight_scale", ".input_scale")) for k in groups["dit"]):
         raise ValueError(
             "This LTX checkpoint stores scaled fp8 weights, which this loader does "
@@ -573,8 +536,8 @@ def load_ltx23_pipeline(
         hf_token = hf_token,
     )
 
-    # Shared 2.0/2.3 components from the base repo, resolved through model_index
-    # so class renames upstream break loudly here rather than silently drifting.
+    # Shared 2.0/2.3 components from the base repo, via model_index so upstream class renames break
+    # loudly here rather than drift silently.
     index = LTX2Pipeline.load_config(base_repo, token = hf_token)
 
     def _sub(name: str, **extra: Any) -> Any:

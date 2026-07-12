@@ -3,25 +3,19 @@
 
 """Hardware-aware auto-policy for the diffusion loader: a pure decision layer.
 
-The loader historically resolved each Advanced control on its own, and -- critically --
-planned memory from the GGUF file size BEFORE the dense transformer-quant fast path was
-considered. That ordering hid the fast path exactly where it matters: on a card where the
-GGUF-size plan picks offload, a dense int8/fp8 transformer (roughly half the bf16 bytes)
-would often still fit fully resident and beat the offloaded GGUF on every axis.
+The loader historically planned memory from the GGUF file size BEFORE considering the dense
+transformer-quant fast path, which hid the fast path where it matters: where the GGUF-size plan
+picks offload, a dense int8/fp8 transformer (~half the bf16 bytes) often fits resident and beats
+the offloaded GGUF. This module supplies the pieces to fix that:
 
-This module supplies the two pieces the loader needs to fix that, without moving any of
-the existing per-control executors:
+  * a per-family bf16 component-size table (transformer / text encoders / VAE) with per-scheme
+    scaling, so a candidate's footprint is estimated BEFORE anything is downloaded; and
+  * ``resolve_dense_quant_candidate``, which turns a request + device into a concrete estimate the
+    loader re-plans memory against.
 
-  * a per-family bf16 component-size table (transformer / text encoders / VAE) with
-    per-scheme scaling, so the candidate artifact's footprint can be estimated BEFORE
-    anything is downloaded or materialised; and
-  * ``resolve_dense_quant_candidate``, which turns a request + device into a concrete
-    (scheme, steady, transient) estimate the loader re-plans memory against.
-
-It also builds the ``resolved`` record surfaced through status: for every Advanced
-control, the engaged value plus whether it came from the user (explicit) or the policy
-(auto), with a short reason. Pure by design: no torch import at module import time, so
-the decision logic unit-tests on CPU-only hosts.
+It also builds the ``resolved`` record for status: per Advanced control, the engaged value plus
+its provenance (explicit / auto) and a short reason. Pure: no torch import at module import, so the
+decision logic unit-tests on CPU-only hosts.
 """
 
 from __future__ import annotations
@@ -33,10 +27,9 @@ from typing import Any, Optional
 
 _MIB_PER_GB = 1000.0**3 / (1024.0 * 1024.0)  # component sizes below are decimal GB
 
-# Steady-state size of a torchao-quantised transformer relative to its bf16 weights:
-# int8 / fp8 store one byte per param plus per-row scales (~0.52x) with a little slack
-# for non-quantised modules (norms, embeddings, proj_out stay bf16); nvfp4 packs two
-# params per byte plus block scales. Measured on the live int8/fp8 loads this session.
+# Steady size of a torchao-quantised transformer relative to bf16: int8/fp8 store one byte per
+# param plus per-row scales (~0.52x, plus slack for bf16 norms/embeddings/proj_out); nvfp4 packs
+# two params per byte plus block scales. Measured on live int8/fp8 loads.
 _QUANT_STEADY_FACTOR: dict[str, float] = {
     "int8": 0.55,
     "fp8": 0.55,
@@ -44,12 +37,10 @@ _QUANT_STEADY_FACTOR: dict[str, float] = {
     "nvfp4": 0.33,
 }
 
-# bf16-RESIDENT component sizes in decimal GB: (transformer, text encoders, VAE).
-# These are what the components occupy on device after the loader's dtype cast, NOT the
-# repo download size (Z-Image ships its transformer in fp32: 24.6 GB of shards that load
-# as 12.3 GB bf16). Sourced from the HF sibling metadata of each family's base repo with
-# precision duplicates removed, cross-checked against the training-side dense_bf16_gb
-# table and the measured loads in this repo's GPU verification runs.
+# bf16-RESIDENT component sizes in decimal GB: (transformer, text encoders, VAE). What the
+# components occupy on device after the dtype cast, NOT the download size (Z-Image ships fp32:
+# 24.6 GB of shards -> 12.3 GB bf16). From each base repo's HF sibling metadata, cross-checked
+# against the training-side dense_bf16_gb table and measured loads.
 _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "flux.1": (23.8, 9.8, 0.2),
     "flux.1-kontext": (23.8, 9.8, 0.2),
@@ -59,17 +50,14 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "qwen-image-edit": (40.9, 16.6, 0.3),
     "z-image": (12.3, 8.0, 0.2),
     "krea-2": (26.3, 8.9, 0.5),
-    # Two ~9.3B DiTs (the conditional transformer PLUS the separate
-    # unconditional_transformer driving Ideogram's dual-branch CFG), both resident
-    # for every generation, and a Qwen3-VL text encoder. The vendor repo stores the DiTs
-    # AND the text encoder as raw float8 (9.29 GB per DiT, 8.8 GB encoder); these are the
-    # bf16-resident sizes after the loader's dtype cast, per this table's contract, so the
-    # encoder doubles to ~16.3 GB just like each DiT (37.2 = 2 x 18.6).
+    # Two ~9.3B DiTs (conditional + unconditional_transformer for Ideogram's dual-branch CFG),
+    # both resident, plus a Qwen3-VL encoder. The vendor stores them as raw float8; these are the
+    # bf16-resident sizes after the dtype cast, so each doubles (37.2 = 2 x 18.6, encoder 16.3).
     "ideogram-4": (37.2, 16.3, 0.2),
 }
 
-# Base-repo overrides for families whose picker offers multiple sizes under one family
-# entry (the table above carries the family default base).
+# Base-repo overrides for families offering multiple sizes under one entry (the table carries the
+# family default).
 _BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
     "black-forest-labs/FLUX.2-klein-9B": (18.2, 16.4, 0.2),
 }
@@ -78,8 +66,8 @@ _BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
 def family_bf16_components_gb(
     fam: Any, base_repo: Optional[str] = None
 ) -> Optional[tuple[float, float, float]]:
-    """(transformer, text encoders, VAE) bf16-resident sizes in GB, or None when the
-    family is not in the table (callers must then fall back to file-size estimates)."""
+    """(transformer, text encoders, VAE) bf16-resident sizes in GB, or None when the family isn't
+    in the table (callers fall back to file-size estimates)."""
     if base_repo:
         override = _BASE_REPO_BF16_GB.get(base_repo)
         if override is not None:
@@ -92,10 +80,9 @@ def family_bf16_components_gb(
 class DenseQuantEstimate:
     """Footprint estimate for one dense transformer-quant candidate.
 
-    ``transient_transformer_mib`` is the build peak: the dense bf16 transformer when
-    quantising on the fly, or the quantised size itself when a pre-quantized checkpoint
-    is available (it loads via the meta device, so dense bf16 never lands on the GPU).
-    ``steady_transformer_mib`` is what stays resident for generation."""
+    ``transient_transformer_mib`` is the build peak (dense bf16 when quantising on the fly, or the
+    quantised size when a prequant checkpoint loads via meta). ``steady_transformer_mib`` is what
+    stays resident for generation."""
 
     scheme: str
     steady_transformer_mib: int
@@ -169,10 +156,8 @@ def resolve_dense_quant_candidate(
 ) -> Optional[DenseQuantEstimate]:
     """The dense-quant candidate the loader should re-plan memory against, or None.
 
-    None means "no basis to re-plan": the request is off, the device cannot run the
-    dense path, no scheme resolves, or the family has no size entry. The loader then
-    keeps today's behaviour (fast path only when the GGUF-size plan is already
-    resident), so unlisted families see no change."""
+    None means "no basis to re-plan" (request off, device can't run dense, no scheme resolves, or
+    no size entry); the loader keeps today's behaviour, so unlisted families see no change."""
     from .diffusion_transformer_quant import (
         dense_transformer_supported,
         normalize_transformer_quant,
@@ -190,11 +175,9 @@ def resolve_dense_quant_candidate(
     try:
         from .diffusion_prequant import usable_prequant_source
 
-        # usable_ (not resolve_): a request-supplied local path override counts only when
-        # the loader will accept it (allowlisted AND present); otherwise
-        # load_prequantized_transformer refuses it and rebuilds dense after the resident
-        # pipe is unloaded -- the evict-then-OOM this small-plan prefetch exists to avoid.
-        # Hosted-repo sources keep the existing signal.
+        # usable_ (not resolve_): a local path override counts only when the loader will accept it
+        # (allowlisted AND present), else load_prequantized_transformer refuses it and rebuilds
+        # dense after the resident pipe is unloaded (the evict-then-OOM this prefetch avoids).
         src = usable_prequant_source(fam, scheme, path_override = prequant_path)
         prequant_available = src is not None
     except Exception:  # noqa: BLE001 -- prequant probing must never sink the candidate
@@ -213,12 +196,9 @@ def resolve_dense_quant_candidate(
             prequant_available,
         )
     if estimate is not None:
-        # The dense path may DOWNLOAD the artifact (the multi-GB bf16 base
-        # transformer, or the prequant checkpoint) into the HF cache; with Dtype
-        # defaulting to auto this must never wedge a nearly-full disk. An
-        # already-cached model re-download is a no-op, so the gate can only
-        # false-positive on a disk that is already critically full -- where
-        # falling back to the GGUF build is the right call anyway.
+        # The dense path may DOWNLOAD the artifact into the HF cache; this must never wedge a
+        # nearly-full disk. An already-cached re-download is a no-op, so the gate only
+        # false-positives on an already-critically-full disk, where the GGUF fallback is right anyway.
         needed_mib = (
             estimate.steady_transformer_mib
             if estimate.prequant
@@ -244,10 +224,8 @@ def build_resolved_record(
 ) -> dict[str, dict[str, Any]]:
     """The per-control ``resolved`` record for status: engaged value + provenance.
 
-    ``controls`` maps a control name to ``(explicit, engaged, reason)`` where
-    ``explicit`` is the raw request value (None / "" / "auto" meaning the caller left
-    the decision to the backend) and ``engaged`` is what actually applied. The record
-    is what the frontend renders as an "Auto: X" badge next to each Advanced row."""
+    ``controls`` maps a control name to ``(explicit, engaged, reason)``, where ``explicit`` is the
+    raw request (None / "" / "auto" = left to the backend). Rendered as an "Auto: X" badge."""
     record: dict[str, dict[str, Any]] = {}
     for name, (explicit, engaged, reason) in controls.items():
         left_to_backend = explicit is None or (

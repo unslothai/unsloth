@@ -3,17 +3,11 @@
 
 """Pure, torch-free per-family footprint summary for the inference info endpoint.
 
-The Advanced Dtype selector offers int8/fp8/nvfp4/mxfp8 dense transformer-quant
-schemes. This module turns the auto-policy's per-family bf16 component table plus
-its per-scheme steady factors into a static "what would this cost resident" summary
-the frontend can show BEFORE anything is loaded, so a user can size the tradeoff.
-
-Estimates here are the STEADY resident footprint (transformer * factor + companions),
-not the transient build peak -- the same quantity ``estimate_dense_quant`` reports as
-``steady_total`` -- so the numbers match what stays on the card during generation.
-
-Pure by design: only imports the auto-policy tables (themselves torch-free), does no
-GPU probing, so it unit-tests on CPU-only hosts.
+Turns the auto-policy's per-family bf16 component table plus its per-scheme steady factors into a
+static "what would this cost resident" summary the frontend shows BEFORE loading, so a user can
+size the int8/fp8/nvfp4/mxfp8 tradeoff. Estimates are the STEADY resident footprint (transformer *
+factor + companions), matching ``estimate_dense_quant``'s ``steady_total``. Pure: torch-free, no
+GPU probing, unit-tests on CPU-only hosts.
 """
 
 from __future__ import annotations
@@ -30,10 +24,9 @@ def _round1(value: float) -> float:
 def family_inference_infos() -> list[dict[str, Any]]:
     """Per-family bf16 component sizes + estimated resident footprint per quant scheme.
 
-    One dict per family in the auto-policy bf16 table (registry order), each carrying the
-    bf16-resident component sizes and the estimated resident GB under bf16 and each dense
-    quant scheme. bf16's estimate is the un-quantised transformer + companions; each
-    scheme scales the transformer by its steady factor and adds the same companions.
+    One dict per family (registry order): the bf16-resident component sizes and estimated resident
+    GB under bf16 and each scheme (bf16 = transformer + companions; each scheme scales the
+    transformer by its steady factor and adds the same companions).
     """
     infos: list[dict[str, Any]] = []
     for name, (transformer_gb, text_encoders_gb, vae_gb) in _FAMILY_BF16_GB.items():

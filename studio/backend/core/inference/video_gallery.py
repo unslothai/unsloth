@@ -3,14 +3,9 @@
 
 """Disk-backed persistence for generated videos.
 
-Each video is an MP4 under ``studio_root()/videos``. Unlike a PNG, an MP4 has no
-portable text-chunk we can embed the generation recipe into, so every video is
-stored as a pair: ``{id}.mp4`` holds the encoded bytes and ``{id}.json`` holds
-the full recipe as a UTF-8 JSON sidecar (the source of truth the gallery reads
-back). The pair travels together on disk; a lone file is not a valid record.
-
-The gallery is intentionally dumb storage: the route owns the metadata schema
-and passes a plain dict; this module only writes/reads/sorts files.
+Each video is a pair under ``studio_root()/videos``: ``{id}.mp4`` holds the bytes, ``{id}.json``
+holds the recipe (an MP4 has no portable text-chunk like a PNG). The pair travels together; a lone
+file is not a valid record. Dumb storage: the route owns the schema; this only reads/writes/sorts.
 """
 
 from __future__ import annotations
@@ -27,8 +22,7 @@ from utils.paths import ensure_dir, studio_root
 
 logger = get_logger(__name__)
 
-# Video ids are file stems; restrict to filename-safe chars so a crafted id
-# can't escape the gallery directory.
+# Video ids are file stems; restrict to safe chars so a crafted id can't escape the directory.
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
@@ -41,8 +35,7 @@ def save(mp4_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
     video_id = uuid.uuid4().hex
     directory = gallery_dir()
     (directory / f"{video_id}.mp4").write_bytes(mp4_bytes)
-    # Write the sidecar via a tmp file + os.replace so a reader never sees a
-    # half-written recipe (an incomplete json would make the pair unlistable).
+    # Write the sidecar via tmp + os.replace so a reader never sees a half-written recipe.
     sidecar = directory / f"{video_id}.json"
     tmp = directory / f"{video_id}.json.tmp"
     tmp.write_text(json.dumps(meta), encoding = "utf-8")
@@ -72,11 +65,9 @@ def video_path(video_id: str) -> Optional[Path]:
 
 
 def transcode(video_id: str, fmt: str) -> Optional[bytes]:
-    """Re-encode a stored MP4 for the Download menu: "webm" (VP9, web embeds)
-    or "gif" (shareable preview). Returns the encoded bytes, or None when the
-    id doesn't resolve. Raises RuntimeError when the codec/deps are missing so
-    the route can 501 with a clear message. MP4 downloads never come through
-    here -- the /file route streams the original bytes."""
+    """Re-encode a stored MP4 for the Download menu: "webm" (VP9) or "gif". Returns the bytes, or
+    None when the id doesn't resolve. Raises RuntimeError on missing codec/deps (route 501s). MP4
+    downloads stream the original via /file, not here."""
     path = video_path(video_id)
     if path is None:
         return None
@@ -106,9 +97,8 @@ def _transcode_webm(path: Path) -> bytes:
             out_v.width = in_v.codec_context.width
             out_v.height = in_v.codec_context.height
             out_v.pix_fmt = "yuv420p"
-            # Realtime-oriented settings: VP9's default "good" profile encodes a
-            # few frames per second; cpu-used 8 + row-mt is many times faster at
-            # a small quality cost, right for a download button.
+            # Realtime settings: VP9's default "good" profile is slow; cpu-used 8 + row-mt is much
+            # faster at a small quality cost, right for a download button.
             out_v.options = {"deadline": "realtime", "cpu-used": "8", "row-mt": "1"}
             for frame in src.decode(in_v):
                 for packet in out_v.encode(frame.reformat(format = "yuv420p")):
@@ -119,8 +109,8 @@ def _transcode_webm(path: Path) -> bytes:
         raise
     except Exception as exc:  # noqa: BLE001 -- surface as "encoder unavailable"
         raise RuntimeError(f"WebM export failed (libvpx-vp9 unavailable?): {exc}") from exc
-    # Audio is intentionally dropped: Opus muxing needs a 48 kHz resample chain
-    # and most exported clips are silent; the original MP4 keeps the audio.
+    # Audio dropped: Opus muxing needs a 48 kHz resample chain and most clips are silent (the
+    # original MP4 keeps the audio).
     return buf.getvalue()
 
 
@@ -139,8 +129,7 @@ def _transcode_gif(path: Path) -> bytes:
                 raise RuntimeError("GIF export failed: the clip has no video stream.")
             in_v = src.streams.video[0]
             rate = float(in_v.average_rate or 24)
-            # Full-rate GIFs are enormous and stutter in chat apps; ~12 fps is
-            # the sweet spot, achieved by skipping source frames.
+            # Full-rate GIFs are huge and stutter; ~12 fps (skipping source frames) is the sweet spot.
             step = max(1, round(rate / 12))
             for i, frame in enumerate(src.decode(in_v)):
                 if i % step:
@@ -191,24 +180,20 @@ def _mtime(path: Path) -> float:
 def list_videos(limit: Optional[int] = None, offset: int = 0) -> list[dict[str, Any]]:
     """A newest-first window of videos for infinite scroll.
 
-    Ordered by MP4 mtime (a cheap stat, ~= generation order) so a months-old
-    gallery isn't opened in full just to sort it; only the window's sidecars are
-    read. limit=None returns everything from ``offset`` on. A file without its
-    pair (an MP4 with no readable json sidecar, or a sidecar with no MP4) is not
-    a valid record and is skipped."""
+    Ordered by MP4 mtime (a cheap stat ~= generation order); only the window's sidecars are read.
+    limit=None returns everything from ``offset`` on. A file without its pair is skipped."""
     try:
         paths = list(gallery_dir().glob("*.mp4"))
     except OSError:
         return []
     paths.sort(key = _mtime, reverse = True)
-    # Page over READABLE records, not raw files: filtering an orphan MP4 out of an
-    # already-sliced window would drop valid videos that sort after it and make the
-    # route's has_more wrong. Read only as far as needed to fill the requested window.
+    # Page over READABLE records, not raw files: filtering an orphan MP4 out of an already-sliced
+    # window would drop valid videos and make has_more wrong. Read only as far as needed.
     want = None if limit is None else offset + limit
     records = []
     for path in paths:
         meta = _read_meta(_sidecar_path(path.stem))
-        if meta is None:  # no readable sidecar (orphan mp4) — skip
+        if meta is None:  # orphan mp4 (no readable sidecar)
             continue
         records.append(_record(path.stem, meta))
         if want is not None and len(records) >= want:
@@ -221,19 +206,15 @@ def delete(video_id: str) -> bool:
     path = video_path(video_id)
     if path is None:
         return False
-    # Delete the MP4 payload FIRST. list_videos globs *.mp4 but requires a readable sidecar, so
-    # a video whose sidecar is gone is skipped as an orphan. If the sidecar were dropped first and
-    # the mp4 unlink then failed (a Windows lock from a concurrent stream/transcode, or a
-    # permission change), the still-present mp4 would vanish from the gallery with no way to retry
-    # the delete. Ordering mp4-first means the worst case is an orphaned sidecar, which
-    # list_videos ignores.
+    # Delete the MP4 FIRST: if the sidecar were dropped first and the mp4 unlink then failed (lock /
+    # permission), the still-present mp4 would vanish from the gallery with no retry. mp4-first means
+    # the worst case is an orphaned sidecar, which list_videos ignores.
     try:
         path.unlink()
     except OSError as exc:
         logger.warning("video_gallery.delete_failed: %s", exc)
         return False
-    # Best-effort on the sidecar: a leftover json without its mp4 is skipped by list_videos
-    # anyway, so a failed sidecar unlink must not fail the delete.
+    # Best-effort sidecar unlink: a leftover json is skipped by list_videos anyway.
     try:
         _sidecar_path(video_id).unlink()
     except OSError:
@@ -249,8 +230,7 @@ def clear() -> int:
     except OSError:
         return 0
     for path in paths:
-        # Delete the mp4 first; if it can't be unlinked, leave the sidecar so the video stays
-        # listable (an orphaned mp4 would vanish from the gallery). An orphaned json is harmless.
+        # mp4 first; if it can't be unlinked, leave the sidecar so the video stays listable.
         try:
             path.unlink()
         except OSError:

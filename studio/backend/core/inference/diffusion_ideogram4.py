@@ -3,60 +3,28 @@
 
 """Ideogram 4 pipeline assembly for a transformers-4.x runtime.
 
-The ideogram-ai repos ship the same transformers-5.x style Qwen text stack as the
-krea repos, which breaks ``Ideogram4Pipeline.from_pretrained`` twice on the 4.x
-line:
+The ideogram-ai repos ship the transformers-5.x Qwen text stack (like the krea repos), breaking
+``Ideogram4Pipeline.from_pretrained`` on 4.x twice: (1) ``text_encoder/config.json`` keeps rope
+under ``rope_parameters`` (5.x), which 4.x Qwen3-VL crashes on -- fixed by the shared krea remap
+shim; (2) ``model_index.json`` pins the SLOW ``Qwen2Tokenizer`` but the repo ships only
+``tokenizer.json``, so neither the slow class (can't construct) nor the fast class (type-gate
+rejected) loads. So the pipeline is assembled per-component (no from_pretrained type gate).
 
-- ``text_encoder/config.json`` keeps rope settings under ``rope_parameters`` (the
-  5.x name); 4.x's Qwen3-VL rotary embedding reads ``config.rope_scaling`` and
-  crashes on None. Fixed by ``diffusion_krea2.load_krea2_text_encoder`` (the shared
-  remap shim).
-- ``model_index.json`` pins the SLOW ``Qwen2Tokenizer`` while the repo ships only
-  ``tokenizer.json`` (no vocab.json/merges.txt), so the slow class cannot even
-  construct -- and diffusers' passed-component type gate rejects the fast class
-  against the slow pin, so the fast tokenizer cannot be handed to from_pretrained
-  either.
+The two DiTs need one more fix on the ``-fp8`` base repo, whose shards store the vendor's float8
+layout diffusers can't read: attention is FUSED as ``attention.qkv.weight`` [3*hidden, hidden]
+(Q/K/V stacked) + ``attention.o.weight``, vs diffusers' SPLIT ``to_q``/``to_k``/``to_v`` +
+``to_out.0`` (from_pretrained maps neither -> random weights on meta); and each ``*.weight`` is
+float8_e4m3 with a per-channel ``*.weight_scale`` (real weight = ``fp8.float() * scale[:, None]``)
+that diffusers drops. So ``load_ideogram4_transformer`` reads the shards, dequantizes, splits qkv
+and renames o -> to_out.0, then loads into a config-constructed model (verified vs the split
+``-nf4`` repo: cosine ~0.997, quant noise apart). The already-split ``-nf4`` repos carry a
+``quantization_config`` and use the stock path, so the conversion is gated on the ``*.weight_scale``
+marker. VAE via ``AutoencoderKLFlux2``, scheduler ``FlowMatchEulerDiscreteScheduler``.
 
-So the pipeline is assembled per-component (the constructor registers modules
-without from_pretrained's type gate), mirroring ``diffusion_krea2``.
-
-The two DiTs need one more fix on the ``-fp8`` base repo. Its transformer shards
-store the vendor's OWN float8 layout, which diffusers 0.39.0 cannot read:
-
-- attention is stored FUSED as ``attention.qkv.weight`` (shape ``[3*hidden, hidden]``,
-  the Q/K/V rows stacked in that order) plus ``attention.o.weight``, whereas the
-  diffusers ``Ideogram4Transformer2DModel`` has SPLIT ``to_q`` / ``to_k`` / ``to_v``
-  and ``to_out.0`` projections. from_pretrained can map neither name, so it leaves
-  every attention projection randomly initialized (garbage images) AND on the meta
-  device (a later ``pipe.to(device)`` then dies with "Cannot copy out of meta tensor").
-- each quantized ``*.weight`` is float8_e4m3 with a companion per-output-channel
-  ``*.weight_scale`` (float32); the real weight is ``fp8.float() * weight_scale[:, None]``.
-  diffusers 0.39.0 has no float8 dequant path here, so it drops the scales entirely
-  and loads the raw fp8 values (range +-448) as if they were the weights.
-
-diffusers ``main`` still ships neither the fused->split rename nor the float8 dequant
-(the attention module is split-only and there is no ideogram single-file converter),
-so ``load_ideogram4_transformer`` does the conversion here: it reads the shards,
-dequantizes every scaled weight, splits the fused ``qkv`` into ``to_q``/``to_k``/``to_v``
-and renames ``o`` -> ``to_out.0``, then loads the result into a config-constructed model
-(verified against the byte-identical ``-nf4`` repo, whose transformer is ALREADY exported
-in the diffusers split layout: the dequantized fp8 projections match its bnb-4bit weights
-to cosine ~0.997, i.e. only quant noise apart). The already-split ``-nf4`` repos carry a
-``quantization_config`` and load through the stock diffusers path, so the conversion is
-gated on the fp8 marker (a ``*.weight_scale`` key) and is a no-op for them.
-
-The VAE loads through ``AutoencoderKLFlux2`` and the scheduler is stock
-``FlowMatchEulerDiscreteScheduler``.
-
-One last 4.x incompatibility is in the diffusers pipeline itself, not the repo:
-``Ideogram4Pipeline._get_text_encoder_hidden_states`` calls transformers'
-``create_causal_mask(inputs_embeds = ...)`` with no ``cache_position``, but on the
-4.x line (and even transformers 5.0) the parameter is spelled ``input_embeds`` and
-``cache_position`` is required. ``_patch_create_causal_mask`` installs a signature-aware
-wrapper over the name the pipeline module imported, which renames the kwarg and derives
-``cache_position`` when the installed function needs one. It is self-disabling: on a
-transformers whose ``create_causal_mask`` already accepts the pipeline's exact kwargs the
-wrapper forwards them unchanged.
+One last incompat is in the diffusers pipeline: it calls ``create_causal_mask(inputs_embeds=...)``
+with no ``cache_position``, but 4.x/5.0 spell it ``input_embeds`` and require ``cache_position``.
+``_patch_create_causal_mask`` installs a signature-aware wrapper that renames the kwarg and derives
+``cache_position``; self-disabling where the installed function already accepts the exact kwargs.
 """
 
 from __future__ import annotations
@@ -89,12 +57,11 @@ def _patch_create_causal_mask() -> None:
     params = inspect.signature(original).parameters
 
     def create_causal_mask_compat(*args, **kwargs):
-        # The pipeline always calls this by keyword. Rename inputs_embeds -> input_embeds
-        # when the installed function uses the (older/5.x) spelling.
+        # The pipeline calls this by keyword. Rename inputs_embeds -> input_embeds for the 5.x spelling.
         if "inputs_embeds" in kwargs and "inputs_embeds" not in params and "input_embeds" in params:
             kwargs["input_embeds"] = kwargs.pop("inputs_embeds")
-        # Supply a cache_position when the function requires one and the caller omitted it:
-        # past_key_values is None here, so positions run 0..seq_len-1 over the text region.
+        # Supply cache_position when required and omitted: past_key_values is None, so positions
+        # run 0..seq_len-1.
         if "cache_position" in params and "cache_position" not in kwargs:
             embeds = kwargs.get("input_embeds", kwargs.get("inputs_embeds"))
             if embeds is not None:
@@ -105,10 +72,9 @@ def _patch_create_causal_mask() -> None:
     _CAUSAL_MASK_PATCHED = True
 
 
-# The fp8 attention is stored as a single fused ``qkv`` matrix with the Q, K and V
-# rows stacked in that order; each block is ``hidden_size`` rows tall. hidden_size =
-# attention_head_dim * num_attention_heads, read from the transformer config so a
-# future config change cannot silently mis-split the matrix.
+# The fp8 attention is a fused ``qkv`` matrix (Q/K/V stacked, each ``hidden_size`` rows).
+# hidden_size = attention_head_dim * num_attention_heads, read from config so a future change
+# can't mis-split it.
 _QKV_SPLIT = ("to_q", "to_k", "to_v")
 
 
@@ -157,20 +123,16 @@ def _read_transformer_config(repo_id: str, subfolder: str, token: Optional[str])
 def _convert_fp8_state_dict(raw: dict, hidden_size: int, dtype) -> dict:
     """Dequantize + rename the vendor fp8 shards into the diffusers split layout.
 
-    A ``*.weight`` with a companion ``*.weight_scale`` is float8 stored per-output-channel:
-    the real weight is ``fp8.float() * weight_scale[:, None]``. The fused ``attention.qkv``
-    is split into ``to_q``/``to_k``/``to_v`` (``hidden_size`` rows each, Q/K/V order) and
-    ``attention.o`` is renamed ``to_out.0``. Everything else (norms, biases, embeddings) is
-    stored dense and passes through cast to ``dtype``.
+    A ``*.weight`` with a companion ``*.weight_scale`` is float8 per-channel (real weight =
+    ``fp8.float() * weight_scale[:, None]``). Fused ``attention.qkv`` -> ``to_q``/``to_k``/``to_v``
+    (Q/K/V order), ``attention.o`` -> ``to_out.0``. Dense tensors pass through cast to ``dtype``.
     """
     import torch
 
     def dequantize(name: str):
         weight = raw[name].to(torch.float32)
         scale = raw[name + "_scale"].to(torch.float32)
-        # Per-output-channel scale, broadcast over the remaining dims. Every scaled
-        # tensor in the shipped repos is 2D; the rank-aware view keeps a future
-        # non-2D quantized tensor correct instead of silently mis-broadcasting.
+        # Per-channel scale, rank-aware broadcast (correct for a future non-2D quantized tensor).
         return (weight * scale.view(-1, *([1] * (weight.ndim - 1)))).to(dtype)
 
     converted: dict = {}
@@ -178,14 +140,13 @@ def _convert_fp8_state_dict(raw: dict, hidden_size: int, dtype) -> dict:
         if key.endswith("_scale"):
             continue
         if key + "_scale" not in raw:
-            # Dense (non-fp8) tensor: norms, biases, embeddings -- load as-is.
+            # Dense tensor (norms/biases/embeddings): load as-is.
             converted[key] = value.to(dtype)
             continue
         if key.endswith("attention.qkv.weight"):
             fused = dequantize(key)  # [3 * hidden_size, hidden_size]
             if fused.shape[0] != 3 * hidden_size:
-                # Equal-thirds is only correct for full multi-head attention; a GQA
-                # export (fewer K/V rows) must fail loudly, not split into garbage.
+                # Equal-thirds only holds for full multi-head attention; a GQA export must fail loudly.
                 raise RuntimeError(
                     f"fused qkv at {key} has {fused.shape[0]} rows, expected "
                     f"{3 * hidden_size}; cannot split into equal Q/K/V blocks"
@@ -263,14 +224,10 @@ def load_ideogram4_text_encoder(
 ):
     """The Qwen3-VL text encoder for ``repo_id``.
 
-    The ``-fp8`` repo stores this encoder in the SAME float8-plus-per-channel-scale
-    layout as its DiTs, and its keys already match the transformers Qwen3-VL module
-    (only the DiTs used the fused ``qkv``; Qwen3-VL's own attention is already split
-    and its visual tower's fused ``qkv`` matches transformers), so it needs no rename
-    -- only the float8 dequant diffusers/transformers skip. So the fp8 encoder is
-    dequantized and loaded into a config-constructed model; the ``-nf4`` (bnb-4bit)
-    and any dense repo fall through to the shared krea shim (which also applies the
-    rope_parameters remap).
+    The ``-fp8`` repo stores it in the same float8-plus-per-channel-scale layout as its DiTs, but
+    its keys already match transformers Qwen3-VL (no fused qkv rename needed), so only the float8
+    dequant is required. The ``-nf4`` and dense repos fall through to the shared krea shim (which
+    also applies the rope_parameters remap).
     """
     token = hf_token or None
     if not _text_encoder_is_fp8(repo_id, token):
@@ -301,17 +258,15 @@ def load_ideogram4_text_encoder(
         if key + "_scale" in raw:
             weight = value.to(torch.float32)
             scale = raw[key + "_scale"].to(torch.float32)
-            # Rank-aware broadcast, matching _convert_fp8_state_dict.
+            # Rank-aware broadcast (matches _convert_fp8_state_dict).
             state_dict[key] = (weight * scale.view(-1, *([1] * (weight.ndim - 1)))).to(dtype)
         else:
             state_dict[key] = value.to(dtype)
 
-    # Construct normally (so __init__ computes the non-persistent rotary inv_freq
-    # buffers the checkpoint omits) then copy the dequantized weights in with
-    # assign=False. Build at the target dtype (mirrors the DiT loader below): this ~8B-param
-    # Qwen3-VL scaffold is ~2x at the process fp32 default (~33 GB vs ~16 GB) and loads FIRST
-    # on host RAM, so the fp32 transient can OOM a 64 GB host. rotary inv_freq is computed in
-    # explicit fp32 in __init__, so a bf16 default leaves it correct.
+    # Construct normally (so __init__ computes the non-persistent rotary inv_freq the checkpoint
+    # omits) then copy the dequantized weights in. Build at the target dtype: this ~8B Qwen3-VL
+    # scaffold is ~2x at the fp32 default (~33 vs ~16 GB) and loads FIRST, so fp32 can OOM a 64 GB
+    # host. inv_freq is computed in explicit fp32, so a bf16 default leaves it correct.
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:
@@ -329,15 +284,12 @@ def load_ideogram4_text_encoder(
 
 
 def ideogram4_repo_is_fp8(repo_id: str, hf_token: Optional[str] = None) -> bool:
-    """True when ``repo_id``'s transformer ships the vendor fp8 layout (a ``*.weight_scale``
-    shard key).
+    """True when ``repo_id``'s transformer ships the vendor fp8 layout (a ``*.weight_scale`` key).
 
-    Those weights dequantize to a WIDER resident dtype, so the on-disk bytes undershoot
-    the bf16 footprint -- memory planning uses this to reserve the real size for a LOCAL
-    mirror of the fp8 base (whose path cannot string-match ``base_repo``; the bnb-4bit
-    ``-nf4`` mirrors carry no ``_scale`` marker and correctly stay compressed). Reads shard
-    HEADERS only (metadata, not tensor bodies). Any failure (no transformer shards, no
-    reader) resolves to False so the caller falls back to the file-size estimate.
+    Those weights dequantize to a WIDER resident dtype, so on-disk bytes undershoot the bf16
+    footprint; memory planning uses this to reserve the real size for a LOCAL fp8 mirror (whose
+    path can't string-match ``base_repo``; ``-nf4`` mirrors have no marker and stay compressed).
+    Reads shard HEADERS only. Any failure resolves to False (caller uses the file-size estimate).
     """
     try:
         shard_paths = _transformer_shard_paths(repo_id, "transformer", hf_token or None)
@@ -359,11 +311,9 @@ def load_ideogram4_transformer(
 ):
     """An ``Ideogram4Transformer2DModel`` for ``repo_id/subfolder`` (still on CPU).
 
-    Reads the transformer config, and if the shards carry the vendor fp8 layout
-    (a ``*.weight_scale`` key), dequantizes + renames them into the diffusers split
-    layout and loads that into a config-constructed model. When the shards are already
-    in the diffusers layout (the ``-nf4`` repos, which carry a ``quantization_config``),
-    delegates to the stock ``from_pretrained`` so bnb re-applies the 4-bit weights.
+    If the shards carry the vendor fp8 layout, dequantizes + renames into the diffusers split
+    layout and loads into a config-constructed model. Already-split ``-nf4`` repos (with a
+    ``quantization_config``) delegate to stock ``from_pretrained`` so bnb re-applies the 4-bit weights.
     """
     import diffusers
     import safetensors
@@ -373,11 +323,9 @@ def load_ideogram4_transformer(
     config = _read_transformer_config(repo_id, subfolder, token)
     shard_paths = _transformer_shard_paths(repo_id, subfolder, token)
 
-    # Detect the fp8 layout from the shard HEADERS (safe_open.keys() reads metadata only,
-    # not the multi-GB tensor bodies). All shards are checked so a multi-shard export
-    # whose first shard happens to hold only dense tensors still routes to the dequant
-    # path. Only the fp8 path then materializes the tensors; the -nf4 path goes straight
-    # to from_pretrained without a wasteful full-shard read.
+    # Detect fp8 from shard HEADERS (keys() reads metadata only). All shards checked so a
+    # dense-first multi-shard export still routes to the dequant path. Only the fp8 path
+    # materializes tensors; -nf4 goes straight to from_pretrained.
     is_fp8 = False
     for path in shard_paths:
         with safetensors.safe_open(path, "pt") as handle:
@@ -385,8 +333,8 @@ def load_ideogram4_transformer(
                 is_fp8 = True
                 break
     if not is_fp8:
-        # Already the diffusers split layout (the quantized -nf4 exports). Let
-        # from_pretrained re-apply the embedded quantization_config unchanged.
+        # Already the diffusers split layout (-nf4): let from_pretrained re-apply its
+        # quantization_config.
         model_kwargs: dict[str, Any] = {"subfolder": subfolder, "torch_dtype": dtype}
         if token:
             model_kwargs["token"] = token
@@ -400,13 +348,10 @@ def load_ideogram4_transformer(
 
     config.pop("quantization_config", None)
     hidden_size = int(config["attention_head_dim"]) * int(config["num_attention_heads"])
-    # from_config materializes the full ~9B-param module before the dequantized weights
-    # are copied in. At the process default (fp32) that scaffold is ~2x the bf16 model
-    # (~37 GB vs ~18 GB) on host RAM, and the second (unconditional) DiT builds while the
-    # first DiT and the text encoder are already resident, so the fp32 transient can OOM
-    # smaller hosts. Build at the target dtype instead; the only __init__ state absent from
-    # the checkpoint is rotary_emb.inv_freq (computed in explicit fp32), so a bf16 default
-    # leaves it correct while halving each DiT's transient peak.
+    # from_config materializes the full ~9B module before the weights copy in. At fp32 that's ~2x
+    # the bf16 model (~37 vs ~18 GB), and the second DiT builds while the first + encoder are
+    # resident, so fp32 can OOM smaller hosts. Build at the target dtype; only rotary_emb.inv_freq
+    # is absent from the checkpoint (computed in explicit fp32), so a bf16 default leaves it correct.
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:
@@ -415,10 +360,8 @@ def load_ideogram4_transformer(
         torch.set_default_dtype(default_dtype)
     state_dict = _convert_fp8_state_dict(raw, hidden_size, dtype)
     missing, unexpected = model.load_state_dict(state_dict, strict = False)
-    # rotary_emb.inv_freq is a non-persistent buffer built in __init__, so it is
-    # (correctly) absent from the checkpoint and the only expected "missing" key; a
-    # real gap (an unmapped weight) or any leftover checkpoint key must fail loudly
-    # rather than ship a partly random model.
+    # rotary_emb.inv_freq is the only expected "missing" key (built in __init__); a real gap or
+    # leftover key must fail loudly rather than ship a partly random model.
     real_missing = [k for k in missing if not k.endswith("rotary_emb.inv_freq")]
     if real_missing or unexpected:
         raise RuntimeError(
@@ -437,8 +380,7 @@ def load_ideogram4_pipeline(
     """Assemble Ideogram4Pipeline from ``repo_id`` per-component (see module doc)."""
     import diffusers
 
-    # The pipeline's text-encoder call uses a transformers-5.x create_causal_mask
-    # signature; adapt it to the installed one before any generate runs.
+    # The pipeline's text-encoder call uses a 5.x create_causal_mask signature; adapt it first.
     _patch_create_causal_mask()
 
     token = hf_token or None
@@ -449,8 +391,8 @@ def load_ideogram4_pipeline(
     text_encoder = load_ideogram4_text_encoder(repo_id, dtype, hf_token = token)
     tokenizer = load_krea2_tokenizer(repo_id, hf_token = token)
     transformer = load_ideogram4_transformer(repo_id, "transformer", dtype, hf_token = token)
-    # The second DiT drives the unconditional branch of Ideogram's dual-branch CFG;
-    # it is the same class and size as the conditional one and always required.
+    # The second DiT drives the unconditional branch of Ideogram's dual-branch CFG (same class/size,
+    # always required).
     unconditional_transformer = load_ideogram4_transformer(
         repo_id, "unconditional_transformer", dtype, hf_token = token
     )

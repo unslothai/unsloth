@@ -3,27 +3,22 @@
 
 """Select the diffusion transformer's attention backend.
 
-diffusers exposes a unified ``transformer.set_attention_backend(name)`` dispatcher that
-swaps the scaled-dot-product-attention kernel, validating hardware/package requirements at
-set time and otherwise leaving the default (``native`` = ``F.scaled_dot_product_attention``).
-Attention is memory-bandwidth bound, so a better kernel is a real end-to-end win that is
-orthogonal to the linear-weight quantisation (it speeds the QK/PV matmuls torchao never
-touches) and composes with torch.compile.
+diffusers' ``transformer.set_attention_backend(name)`` dispatcher swaps the SDPA kernel,
+validating hardware/package at set time (default ``native`` = ``F.scaled_dot_product_attention``).
+Attention is bandwidth-bound, so a better kernel is a real win orthogonal to weight quantisation
+(it speeds the QK/PV matmuls torchao never touches) and composes with torch.compile.
 
-  auto  - the best *exact* (non-quantized) backend for the device. On NVIDIA CUDA that is
-          cuDNN's fused attention (``_native_cudnn``), measured ~1.18x end-to-end on a B200
-          with LPIPS ~0.004 vs the default (below the compile/quant noise floor). On
-          AMD/Intel/Apple/CPU it stays ``native`` (the dispatcher already routes those).
-          ``auto`` only upgrades when a speed profile is active, so ``speed_mode=off`` stays
-          bit-identical.
+  auto  - the best *exact* backend for the device. On NVIDIA CUDA that is cuDNN fused attention
+          (``_native_cudnn``), ~1.18x end-to-end on B200, LPIPS ~0.004 (below the noise floor).
+          Elsewhere stays ``native``. Only upgrades when a speed profile is active, so
+          ``speed_mode=off`` stays bit-identical.
   native - force the default SDPA (bit-identical reference).
   cudnn  - cuDNN fused attention (exact; NVIDIA).
   flash / flash3 / flash4 - FlashAttention 2 / 3 (Hopper) / 4 (SM100); exact, kernel-gated.
-  sage   - SageAttention (INT8 QK); quantized, a small quality cost, consumer-friendly.
+  sage   - SageAttention (INT8 QK); quantized, small quality cost, consumer-friendly.
   xformers / aiter - memory-efficient (NVIDIA) / AITER (AMD ROCm).
 
-Best-effort: an unavailable backend (missing kernel / wrong arch) is caught and the load
-falls back to the diffusers default rather than failing. torch/diffusers imported lazily.
+Best-effort: an unavailable backend falls back to the diffusers default. torch/diffusers lazy.
 """
 
 from __future__ import annotations
@@ -50,9 +45,8 @@ ATTN_ALIASES = (ATTN_AUTO,) + tuple(dict.fromkeys(_ALIASES))
 
 
 def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
-    """Lower/strip a requested attention backend; None / "" / "auto" -> "auto".
-
-    Raises ValueError for an unsupported alias so a bad request is rejected cheaply."""
+    """Lower/strip a requested backend; None / "" / "auto" -> "auto". Raises ValueError for an
+    unsupported alias so a bad request is rejected cheaply."""
     if value is None:
         return ATTN_AUTO
     normalized = str(value).strip().lower()
@@ -65,13 +59,10 @@ def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
-# Backends diffusers validates only by *package* at set time (``_check_attention_backend_
-# requirements`` checks the ``kernels`` install, not the GPU), but whose kernels need a
-# specific CUDA arch at run time -- so an explicit request on the wrong card loads/sets fine
-# and then crashes mid-generation. Gate them up front by a (min, max-exclusive) compute
-# capability range. FlashAttention 3 is a Hopper-SM90 rewrite with no Blackwell kernel, so it
-# needs an upper bound: an explicit flash3 on a B200 (SM100) must drop to native instead of
-# setting fine then crashing at generation. FlashAttention 4 is Blackwell+ (no upper bound).
+# Backends diffusers validates only by package at set time but whose kernels need a specific
+# CUDA arch at run time (so an explicit request on the wrong card sets fine then crashes
+# mid-generation). Gate by a (min, max-exclusive) capability range: FA3 is Hopper-SM90 only
+# (upper bound, so flash3 on a B200 drops to native), FA4 is Blackwell+ (no upper bound).
 _ARCH_CAPABILITY: dict[str, tuple[tuple[int, int], Optional[tuple[int, int]]]] = {
     "_flash_3_hub": ((9, 0), (10, 0)),  # FlashAttention 3 -> Hopper (SM90) only
     "flash_4_hub": ((10, 0), None),  # FlashAttention 4 -> Blackwell (SM100)+
@@ -90,11 +81,8 @@ def _cuda_capability() -> Optional[tuple[int, int]]:
 
 
 def _backend_arch_supported(backend: str) -> bool:
-    """False only when ``backend`` needs a CUDA arch outside this device's supported range.
-
-    Unknown capability (no CUDA / detection failure) returns True so we never block on a
-    guess -- diffusers' own set-time check still guards the package, and a genuine run-time
-    failure falls back to native."""
+    """False only when ``backend`` needs a CUDA arch outside this device's range. Unknown
+    capability returns True (never block on a guess; the run-time failure falls back to native)."""
     bounds = _ARCH_CAPABILITY.get(backend)
     if bounds is None:
         return True
@@ -121,34 +109,27 @@ def select_attention_backend(
 ) -> Optional[str]:
     """The dispatcher backend name to apply, or None to leave the diffusers default.
 
-    An explicit alias is honored verbatim (apply falls back if its kernel is unavailable).
-    ``auto`` upgrades to cuDNN on NVIDIA CUDA only when a speed profile is active (so
-    ``off`` stays bit-identical); everywhere else it returns None (native default)."""
+    An explicit alias is honored (apply falls back if its kernel is unavailable). ``auto``
+    upgrades to cuDNN on NVIDIA CUDA only when a speed profile is active (so ``off`` stays
+    bit-identical); elsewhere returns None (native)."""
     alias = normalize_attention_backend(requested)
     if alias != ATTN_AUTO:
         backend = _ALIASES[alias]
         if backend == "native":
             return None
-        # AITER is the AMD ROCm kernel, not an NVIDIA one: honor it on a ROCm (AMD) CUDA
-        # target and drop it everywhere else (diffusers' own set-time check rejects it off
-        # ROCm anyway). Without this special-case the NVIDIA-only guard below would silently
-        # drop the one explicit backend that only ever works on ROCm.
+        # AITER is the AMD ROCm kernel: honor it on a ROCm CUDA target, drop it elsewhere (else
+        # the NVIDIA-only guard below would drop the one backend that only works on ROCm).
         if backend == "aiter":
             if getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target):
                 return backend
             return None
-        # Every explicit kernel here (cuDNN / flash* / sage) is CUDA+NVIDIA-only; on
-        # ROCm / MPS / CPU diffusers accepts the name at set time and the first
-        # generation crashes, so drop to the native default up front.
+        # cuDNN / flash* / sage are CUDA+NVIDIA-only; elsewhere the first generation crashes.
         if not _is_cuda_nvidia(target):
             return None
-        # An arch-gated kernel (flash3/flash4) on a card that can't run it would set fine
-        # then crash mid-generation, so drop it to the native default up front.
+        # An arch-gated kernel (flash3/flash4) on a card that can't run it sets fine then crashes.
         if not _backend_arch_supported(backend):
             return None
-        # cuDNN fused SDPA needs Ampere+ (SM80); diffusers accepts it on pre-SM80 cards
-        # (T4/V100) then fails at the first generation, so apply the same gate to an
-        # explicit cuDNN request as the auto path already does.
+        # cuDNN fused SDPA needs Ampere+ (SM80); gate an explicit request like the auto path.
         if backend == "_native_cudnn" and not _cudnn_attention_supported():
             return None
         return backend
@@ -159,51 +140,40 @@ def select_attention_backend(
 
 
 def _cudnn_attention_supported() -> bool:
-    """cuDNN fused SDPA needs Ampere+ (SM80). On pre-SM80 NVIDIA cards (T4 SM75 /
-    V100 SM70) diffusers accepts ``_native_cudnn`` at set time but the kernel fails at
-    the first generation, so gate the auto-cuDNN upgrade on capability. Unknown
-    capability allows it (diffusers' set-time check + the run-time fallback still guard)."""
+    """cuDNN fused SDPA needs Ampere+ (SM80); on pre-SM80 cards (T4/V100) diffusers accepts it
+    then fails at generation, so gate the upgrade on capability. Unknown capability allows it."""
     have = _cuda_capability()
     return have is None or have >= (8, 0)
 
 
-# Optional-kernel backends the loader may install on demand: dispatcher name ->
-# (probe module, pip package). Only wheels are ever installed (--only-binary=:all:):
-# a source build of flash-attn or sageattention takes tens of minutes and needs a
-# CUDA toolchain, which a Studio host cannot be assumed to have -- no wheel for this
-# python/torch/cuda combo means the request falls back to the native default exactly
-# as an uninstallable kernel does today. cuDNN/native need nothing (ship with torch).
+# Optional-kernel backends installable on demand: dispatcher name -> (probe module, pip
+# package). Wheels only (--only-binary=:all:): a source build needs a CUDA toolchain a Studio
+# host may lack; no wheel means a native fallback. cuDNN/native ship with torch.
 _INSTALLABLE_BACKENDS: dict[str, tuple[str, str]] = {
     "sage": ("sageattention", "sageattention"),
     "flash": ("flash_attn", "flash-attn"),
-    "_flash_3_hub": ("kernels", "kernels"),  # FA3/FA4 stream from the HF kernels hub
+    "_flash_3_hub": ("kernels", "kernels"),  # FA3/FA4 from the HF kernels hub
     "flash_4_hub": ("kernels", "kernels"),
     "xformers": ("xformers", "xformers"),
 }
 
-# Gate for the on-demand install, mirroring UNSLOTH_DIFFUSION_SD_CPP_INSTALL:
+# On-demand install gate (mirrors UNSLOTH_DIFFUSION_SD_CPP_INSTALL):
 #   auto (default) / 1 - install the missing package when a gated backend is requested
 #   0                  - never install; a missing kernel falls back to native
 _ATTENTION_INSTALL_ENV = "UNSLOTH_DIFFUSION_ATTENTION_INSTALL"
 
-# Packages a pip install has already been attempted for in THIS process (success or
-# failure). The loader pre-installs the kernel OUTSIDE its locks and then re-resolves the
-# same backend under _generate_lock, where apply_attention_backend would otherwise call
-# pip a SECOND time -- for a package with no matching wheel / an offline host that repeat
-# runs the full (up to 600s) install while holding the load lock, blocking unload/cancel/
-# new loads for exactly the failure the pre-install was added to keep off the lock. Record
-# each attempt so a retry is a no-op and set_attention_backend falls back to native at once.
+# Packages a pip install was already attempted for in THIS process (success or failure). The
+# loader pre-installs outside its locks, then re-resolves under _generate_lock where apply would
+# otherwise call pip a SECOND time -- a no-wheel/offline host would re-run the full 600s install
+# holding the load lock, blocking unload/cancel. A recorded attempt makes the retry a no-op.
 _INSTALL_ATTEMPTED: set[str] = set()
 
 
 def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> None:
     """Best-effort wheel-only install of the package ``backend`` needs, when allowed.
 
-    Called after arch gating (select_attention_backend already dropped kernels this
-    card cannot run), so an install attempt is only made for a backend that could
-    actually work here. Failure is logged and swallowed: the subsequent
-    set_attention_backend raises on the still-missing package and the load falls
-    back to the native default, same as before this hook existed."""
+    Called after arch gating, so only for a backend that could work here. Failure is swallowed:
+    the subsequent set_attention_backend raises on the missing package and falls back to native."""
     import importlib.util
     import os
 
@@ -219,11 +189,8 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
             return
     except Exception:  # noqa: BLE001 — a broken install probes as missing; try the install
         pass
-    # Only ever attempt each package's install once per process. The loader pre-installs
-    # this backend outside its locks; if that failed (no wheel / offline) the module is
-    # still missing here, so without this guard the in-lock apply path would re-run the
-    # whole install under _generate_lock and block unload/cancel. A recorded attempt makes
-    # the retry a no-op -> set_attention_backend raises on the missing package -> native.
+    # Attempt each install once per process (see _INSTALL_ATTEMPTED): else the in-lock apply path
+    # re-runs the whole install under _generate_lock and blocks unload/cancel.
     if package in _INSTALL_ATTEMPTED:
         return
     _INSTALL_ATTEMPTED.add(package)
@@ -236,12 +203,9 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
         )
     try:
         subprocess.run(
-            # --no-deps: install ONLY this best-effort kernel wheel, never its declared
-            # dependencies. xformers/flash-attn pin an exact torch (e.g. torch==2.x), so
-            # normal resolution would upgrade/replace the running torch/triton and leave
-            # later loads on a different, possibly CUDA-mismatched dependency stack. Without
-            # its deps an ABI-incompatible kernel simply fails to import -> native fallback,
-            # which is the same best-effort outcome as an uninstallable wheel.
+            # --no-deps: install ONLY this kernel wheel. xformers/flash-attn pin an exact torch,
+            # so normal resolution would replace the running torch/triton. Without deps an
+            # ABI-incompatible kernel just fails to import -> native fallback.
             [
                 sys.executable,
                 "-m",
@@ -256,17 +220,13 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
             timeout = 600,
             check = True,
         )
-        # The wheel just landed in site-packages, but the import system caches each
-        # directory's listing; the very next find_spec / import in this same process can
-        # still miss the freshly installed package when the install lands within the
-        # directory mtime's resolution -- silently falling back to native on the first
-        # use. Invalidate the finder caches so set_attention_backend picks it up now.
+        # The import system caches directory listings, so the next find_spec can miss the wheel
+        # just installed (mtime resolution). Invalidate the finder caches so it's picked up now.
         importlib.invalidate_caches()
     except Exception as exc:  # noqa: BLE001 — no wheel / no network -> native fallback
         if logger is not None:
-            # A failed pip install raises CalledProcessError whose str() shows only the
-            # exit code and command; the real reason (no matching wheel, resolver error)
-            # is in exc.stderr. Surface it so a fallback to native is diagnosable.
+            # CalledProcessError.str() shows only the exit code; the real reason is in stderr.
+            # Surface it so the native fallback is diagnosable.
             stderr = getattr(exc, "stderr", None)
             if stderr:
                 if isinstance(stderr, bytes):
@@ -285,10 +245,9 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
 
 
 def _attention_dits(pipe: Any) -> list:
-    """Every DiT the denoise loop runs each step: the primary ``transformer`` plus a second
-    expert some families carry (Ideogram's ``unconditional_transformer`` for its dual-branch
-    CFG, an MoE ``transformer_2``). The attention backend must be set on ALL of them, else the
-    second DiT keeps the native default while status reports the requested kernel as engaged."""
+    """Every DiT the denoise loop runs: the primary ``transformer`` plus a second expert some
+    families carry (Ideogram's ``unconditional_transformer``, an MoE ``transformer_2``). The
+    backend must be set on ALL of them, else the second DiT keeps the native default."""
     dits: list = []
     for attr in ("transformer", "transformer_2", "unconditional_transformer"):
         m = getattr(pipe, attr, None)
@@ -303,18 +262,15 @@ def apply_attention_backend(
     *,
     logger: Any = None,
 ) -> Optional[str]:
-    """Set ``backend`` on EVERY denoiser DiT (``pipe.transformer`` plus a second expert such as
-    Ideogram's ``unconditional_transformer``) via the diffusers dispatcher.
+    """Set ``backend`` on EVERY denoiser DiT via the diffusers dispatcher.
 
-    Returns the backend actually engaged, or None when left at the native default (either
-    because ``backend`` was None or because the requested kernel was unavailable -> graceful
-    fallback, never a load failure).
+    Returns the backend engaged, or None when left at native (``backend`` was None or the kernel
+    was unavailable -> graceful fallback, never a load failure).
 
-    diffusers keeps a *process-wide* active attention backend that ``set_attention_backend``
-    also updates, and a fresh transformer's processors follow it (their ``_attention_backend``
-    defaults to None). So a load that wants native must restore it explicitly: otherwise it
-    silently inherits a backend an earlier load pinned (e.g. cuDNN under a speed profile),
-    breaking the bit-identical/``off`` guarantee. Best-effort throughout."""
+    diffusers keeps a process-wide active backend that ``set_attention_backend`` also updates, and
+    a fresh transformer's processors follow it (default None). So a load wanting native must
+    restore it explicitly, else it inherits a backend an earlier load pinned (e.g. cuDNN under a
+    speed profile), breaking the ``off`` guarantee. Best-effort."""
     setters = [
         s
         for s in (getattr(t, "set_attention_backend", None) for t in _attention_dits(pipe))
@@ -332,17 +288,15 @@ def apply_attention_backend(
             except Exception as exc:  # noqa: BLE001 — unavailable kernel -> restore native below
                 _warn(logger, backend, exc)
         if engaged:
-            # set_attention_backend also pins the backend in diffusers' process-wide registry.
-            # Each DiT's own processors now keep it locally (their _attention_backend is now
-            # explicit), so reset the global default back to native ONCE -- otherwise a later
-            # component whose processors are unconfigured (backend None) inherits this kernel.
+            # set_attention_backend also pins the backend process-wide. Each DiT's processors now
+            # keep it locally, so reset the global to native ONCE, else a later unconfigured
+            # component inherits this kernel.
             _reset_global_backend_to_native(logger)
             if logger is not None:
                 logger.info("diffusion.attention: backend=%s", backend)
             return backend
-    # No backend requested, or every set failed: pin the native default so a stale process-wide
-    # backend from a previous load can't leak into this one. Fresh DiTs follow the process-wide
-    # backend, so one reset via any DiT's setter covers them all.
+    # No backend requested, or every set failed: pin native so a stale process-wide backend can't
+    # leak in. Fresh DiTs follow the global, so one reset via any setter covers them all.
     _restore_native_backend(setters[0], logger)
     return None
 
@@ -352,9 +306,8 @@ def _active_attention_backend() -> Optional[str]:
     try:
         from diffusers.models.attention_dispatch import _AttentionBackendRegistry
 
-        # get_active_backend() returns a (AttentionBackendName, fn) tuple (or None), so
-        # take element 0 and read its .value (e.g. "native"); reading .value off the
-        # tuple itself would yield a junk string that never compares equal to a name.
+        # get_active_backend() returns (AttentionBackendName, fn) or None; take element 0 and
+        # read its .value ("native"), not off the tuple (which never compares equal to a name).
         active = _AttentionBackendRegistry.get_active_backend()
         if active is None:
             return None
@@ -365,11 +318,9 @@ def _active_attention_backend() -> Optional[str]:
 
 
 def _reset_global_backend_to_native(logger: Any) -> None:
-    """Reset diffusers' process-wide active attention backend to native after a
-    successful per-transformer set, so a later component whose processors are
-    unconfigured (backend None) does not inherit this transformer's kernel. The
-    transformer's own processors keep the backend just set. Best-effort and silent:
-    if the diffusers internals move, the prior (leaking) behavior is unchanged."""
+    """Reset the process-wide active backend to native after a successful per-transformer set, so
+    a later unconfigured component doesn't inherit this kernel (the DiT's own processors keep it).
+    Best-effort: if the diffusers internals move, the prior (leaking) behavior is unchanged."""
     if _active_attention_backend() == ATTN_NATIVE:
         return
     try:

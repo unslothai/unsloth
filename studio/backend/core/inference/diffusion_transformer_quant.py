@@ -3,26 +3,22 @@
 
 """Opt-in low-precision quantisation of the diffusion DiT transformer.
 
-The default path loads the transformer as a single-file GGUF, which stores weights
-4-bit but DEQUANTISES to bf16 on every matmul -- so it runs at bf16 tensor-core rate
-and never touches the int8 / fp8 / fp4 tensor cores. It is a memory win that costs
-speed. This module is the opt-in alternative: load the DENSE bf16 transformer from the
-base repo and torchao-quantise it with a DYNAMIC-ACTIVATION scheme so the matmul runs
-on the low-precision tensor cores. Measured on a B200 (Z-Image-Turbo, 1024px / 8 steps)
-vs the GGUF+compile default (0.802s, LPIPS 0.083 vs dense bf16): fp8 dynamic 0.585s
-(1.37x), int8 dynamic 0.603s (1.33x), both at LOWER LPIPS than GGUF -- faster AND a hair
-more accurate, at the cost of a higher-memory dense load. So it is strictly opt-in; the
-loader keeps GGUF as the low-memory default and the fallback.
+The default GGUF path stores weights 4-bit but DEQUANTISES to bf16 on every matmul, so it
+runs at bf16 tensor-core rate: a memory win that costs speed. This module is the opt-in
+alternative: load the DENSE bf16 transformer and torchao-quantise it with a
+DYNAMIC-ACTIVATION scheme so the matmul runs on low-precision tensor cores. Measured on B200
+(Z-Image-Turbo, 1024px/8 steps) vs GGUF+compile (0.802s, LPIPS 0.083): fp8 0.585s (1.37x),
+int8 0.603s (1.33x), both at LOWER LPIPS than GGUF -- faster and slightly more accurate, at
+a higher-memory dense load. Strictly opt-in; GGUF stays the low-memory default and fallback.
 
 Scheme by architecture (``auto`` picks the best supported, best first):
   nvfp4 / mxfp8 - Blackwell sm_100+ FP4 / MX tensor cores (biggest win; prototype).
   fp8           - Ada / Hopper / Blackwell (sm_89+) fp8 tensor cores.
   int8          - Ampere+ (sm_80+) int8 tensor cores -- the broadest-hardware lever.
 
-Every scheme needs ``torch.compile`` to realise the speedup (dynamic quant is ~30x
-slower eager); the loader already compiles the repeated block AFTER this runs. torch /
-torchao are imported lazily so the module stays importable in a no-torch runtime, and
-every probe is best-effort: an unsupported scheme yields None and the caller loads GGUF.
+Every scheme needs ``torch.compile`` for the speedup (dynamic quant is ~30x slower eager);
+the loader compiles the repeated block after this. torch / torchao imported lazily; every
+probe is best-effort: an unsupported scheme yields None and the caller loads GGUF.
 """
 
 from __future__ import annotations
@@ -37,101 +33,77 @@ TQ_AUTO = "auto"
 TQ_SCHEMES = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)
 TQ_MODES = (TQ_AUTO,) + TQ_SCHEMES
 
-# Schemes whose torchao path asserts a bf16 weight, so their quantise filter must skip
-# non-bf16 Linears (see make_filter_fn's require_bf16) rather than aborting the whole pass on a
-# stray fp32 Linear (e.g. T5's fp32 `wo`). Verified on torchao 0.17 / B200: fp8 per-row asserts
-# "PerRow quantization only works for bfloat16 precision input weight" and mxfp8 asserts
-# "Only supporting bf16 out dtype", but NVFP4's high-precision conversion quantises an fp32
-# weight fine (forward included) -- so nvfp4 is deliberately NOT gated here, keeping those fp32
-# projections quantised instead of leaving them dense. int8 (torch._int_mm) also quantises
-# fp32/fp16 weights fine, so it is not gated either.
+# Schemes whose torchao path asserts a bf16 weight, so their filter must skip non-bf16
+# Linears (make_filter_fn's require_bf16) rather than aborting the whole pass on a stray fp32
+# Linear (e.g. T5's `wo`). Verified on torchao 0.17 / B200: fp8 per-row and mxfp8 assert bf16;
+# nvfp4 and int8 quantise fp32/fp16 fine, so they are not gated (keeps those projections quant).
 _REQUIRE_BF16_SCHEMES = (TQ_FP8, TQ_MXFP8)
 
-# The fp8 weight/activation granularity the runtime config uses (see _make_quant_config):
-# per-ROW is REQUIRED for correctness on outlier-heavy DiTs. Stamped into a pre-quantized
-# fp8 checkpoint's metadata at build time and required by the loader, so a stale checkpoint
-# baked with the old per-TENSOR layout is rejected and rebuilt rather than reproducing noise.
+# fp8 granularity the runtime uses: per-ROW is REQUIRED for correctness on outlier-heavy DiTs.
+# Stamped into a pre-quant checkpoint's metadata and required by the loader, so a stale
+# per-TENSOR checkpoint is rejected and rebuilt rather than reproducing noise.
 FP8_GRANULARITY = "per_row"
 
-# Skip linears whose in/out features are below this. A small share of the FLOPs, so leaving
-# them bf16 costs ~nothing and keeps quality a touch higher.
+# Skip linears below this feature size: a small FLOP share, so leaving them bf16 costs ~nothing.
 DEFAULT_MIN_LINEAR_FEATURES = 512
 
-# int8-ONLY name exclusions. The int8 dynamic path uses torch._int_mm, which requires the
-# activation row count M > 16. A DiT's AdaLN *modulation* projections and its timestep /
-# guidance / pooled-text *conditioning embedders* are computed once from the [batch, dim]
-# conditioning vector (M = batch = 1), not per token -- so they crash _int_mm even though
-# their feature dims are large (e.g. Flux's norm1.linear 3072->18432, Qwen's img_mod.1, Flux.2's
-# *_modulation.linear). min_features does NOT catch them (they are big), so int8 also skips any
-# Linear whose fqn matches one of these tokens. They are a negligible share of the FLOPs (run at
-# M=1, once per block), so int8 keeps the full speedup on the attention/FFN layers (M = seq).
-# fp8 / nvfp4 / mxfp8 use scaled_mm (no M>16 limit) and quantise these layers fine, so the
-# exclusion is int8-only. Sequence embedders (context_embedder / x_embedder / txt_in, M = seq)
-# are deliberately NOT excluded.
+# int8-ONLY name exclusions. int8 uses torch._int_mm, which needs activation rows M > 16. A
+# DiT's AdaLN modulation projections and timestep / guidance / pooled-text conditioning
+# embedders run once from the [batch, dim] vector (M = batch = 1), not per token, so they crash
+# _int_mm despite large feature dims (Flux norm1.linear 3072->18432, Qwen img_mod.1, Flux.2
+# *_modulation.linear); min_features misses them (they are big), so int8 also skips any Linear
+# whose fqn matches a token here. Negligible FLOPs (M=1, once per block), so int8 keeps the full
+# speedup on attention/FFN (M = seq). fp8/nvfp4/mxfp8 use scaled_mm (no M limit) and quantise
+# these fine, so the exclusion is int8-only. Sequence embedders (M = seq) are NOT excluded.
 _INT8_EXCLUDE_NAME_TOKENS = (
-    "norm",  # AdaLN modulation .linear (norm1 / norm1_context / norm / norm_out)
+    "norm",  # AdaLN modulation .linear
     "_mod",  # Qwen img_mod / txt_mod
     "modulation",  # Flux.2 double/single_stream_modulation
     "timestep_embed",
     "guidance_embed",
-    "time_text_embed",  # Flux/Qwen time_text_embed.* (pooled-text + timestep); NOT context_embedder
+    "time_text_embed",  # Flux/Qwen (pooled-text + timestep); NOT context_embedder
     "pooled",
-    # Krea 2's Krea2TimestepEmbedding ("time_embed.linear_2", 6144->6144 at M = batch);
-    # its other M=1 projection ("time_mod_proj") is already caught by "_mod", and
-    # img_in / final_layer.linear / text_fusion.projector fall under min_features.
+    # Krea 2's time_embed.linear_2 (6144->6144, M = batch); its time_mod_proj is caught by
+    # "_mod", and img_in / final_layer.linear / text_fusion.projector fall under min_features.
     "time_embed",
 )
 
 
 def exclude_tokens_for_scheme(scheme: str) -> tuple[str, ...]:
-    """Name tokens to exclude from quantisation for ``scheme``. int8 (torch._int_mm, M>16)
-    skips the M=1 modulation / conditioning-embedder projections (see _INT8_EXCLUDE_NAME_TOKENS);
-    every other scheme uses scaled_mm (no M limit) and excludes nothing. Shared by the runtime
-    quantise path and the offline prequant-checkpoint builder so the two never drift -- an int8
-    checkpoint built offline must skip exactly the layers the runtime path skips, or it bakes the
-    M=1 projections as int8 and crashes at the first denoise step on Flux / Qwen."""
+    """Name tokens excluded from quantisation for ``scheme``. int8 skips the M=1 modulation /
+    conditioning-embedder projections; other schemes (scaled_mm) exclude nothing. Shared by the
+    runtime path and the offline prequant builder so they never drift (else an int8 checkpoint
+    bakes the M=1 projections and crashes at the first denoise on Flux / Qwen)."""
     return _INT8_EXCLUDE_NAME_TOKENS if scheme == TQ_INT8 else ()
 
 
-# Per-architecture preference order for ``auto`` -- best (fastest, in-bar) first, with
-# the lower-precision schemes listed as fallbacks for that arch tier. On Blackwell, fp8
-# leads: measured on a B200, plain fp8 dynamic is both faster AND more accurate than the
-# alternatives for the DiT's shapes. mxfp8's block scaling adds overhead without a speed
-# win, so it sits below fp8. nvfp4 is intentionally below fp8 too: the FP4 tensor-core
-# GEMM is real once torch>=2.11 + torchao's CUTLASS FP4 kernel is present (verified: a
-# 16384^3 GEMM hits ~3826 TFLOPS, 1.37x fp8), but it only beats fp8 on very large GEMMs.
-# At the DiT's actual shapes (hidden ~3072, MLP ~12288, M~4096) it is *slower* than fp8
-# (0.81x end-to-end on Z-Image 1024px) AND notably less accurate (LPIPS 0.166 vs fp8's
-# 0.044), because FP4's per-forward quant overhead is not amortised and the format is
-# coarser. So nvfp4 is kept as an explicit opt-in, never the auto pick for diffusion.
+# Per-arch preference for ``auto`` -- best first, lower-precision schemes as fallbacks. On
+# Blackwell fp8 leads: measured on B200, plain fp8 dynamic is faster AND more accurate than the
+# alternatives at the DiT's shapes. mxfp8's block scaling adds overhead with no speed win.
+# nvfp4 is also below fp8: the FP4 GEMM is real with torch>=2.11 + torchao's CUTLASS kernel
+# (16384^3 GEMM ~3826 TFLOPS, 1.37x fp8) but only beats fp8 on very large GEMMs; at the DiT's
+# shapes (hidden ~3072, MLP ~12288, M~4096) it is slower (0.81x on Z-Image 1024px) and less
+# accurate (LPIPS 0.166 vs fp8 0.044), so it stays an explicit opt-in, never the auto pick.
 #
-# This order is the DATA-CENTER preference. On a consumer / workstation GPU it is reordered
-# to put int8 first (see ``_prefer_consumer_scheme``): consumer cards halve fp8/fp16 FP32-
-# accumulate throughput, while int8 runs full-rate (int32 accumulate is not nerfed), so int8
-# is as fast or faster than fp8 on every consumer NVIDIA / AMD / Intel part.
+# DATA-CENTER order. On a consumer / workstation GPU int8 moves first (_prefer_consumer_scheme):
+# consumer cards halve fp8/fp16 FP32-accumulate, while int8 (int32 accumulate) runs full-rate.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     ((10, 0), (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+
     ((8, 9), (TQ_FP8, TQ_INT8)),  # Ada sm_89 / Hopper sm_90
     ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
 )
 
-# Families whose activation ranges break specific dense-quant schemes at the MODEL
-# level. The kernel smoke probe below cannot see this (it only proves the GEMM runs);
-# these were measured with the 28-pair prequant accuracy gate on a B200
-# (scripts/prequant_accuracy_gate.py) and reproduced with on-the-fly quantisation:
-#   qwen-image + fp8   -> every frame black (mean luma 0.0000, SSIM 0.016 vs bf16). The
-#                         same per-row fp8 that matches bf16 on Z-Image / FLUX: Qwen's
-#                         activation outliers exceed even per-row fp8's dynamic range.
-#   qwen-image + mxfp8 -> real semantic damage at 1024px (CLIP delta mean 0.0146, worst
-#                         cases 0.064 / 0.102 -- 2x the per-case bound).
+# Families whose activation ranges break specific schemes at the MODEL level (the smoke probe
+# only proves the GEMM runs). Measured with the 28-pair prequant accuracy gate on B200:
+#   qwen-image + fp8   -> every frame black (luma 0.0000, SSIM 0.016): Qwen's outliers exceed
+#                         even per-row fp8's range (the same fp8 matches bf16 on Z-Image/FLUX).
+#   qwen-image + mxfp8 -> semantic damage at 1024px (CLIP delta mean 0.0146, worst 0.064/0.102).
 #   qwen-image + nvfp4 -> LPIPS mean 0.51 vs bf16: unusable.
-# int8 dynamic (per-token) is excellent on Qwen (LPIPS mean 0.069 / SSIM 0.958), so the
-# auto ladder falls through to it. The deny also applies to an EXPLICIT request: a
-# scheme that renders black frames has no legitimate use, and returning None gives the
-# caller the same fallback contract as an unsupported scheme (GGUF build).
+# int8 dynamic is excellent on Qwen (LPIPS 0.069 / SSIM 0.958), so auto falls through to it. The
+# deny also applies to an EXPLICIT request (returning None gives the same GGUF fallback).
 _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
-    "qwen-image-edit": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),  # same DiT + activations
+    "qwen-image-edit": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),  # same DiT
 }
 
 
@@ -142,9 +114,8 @@ def _family_denied(family, scheme: str) -> bool:
 # Cache of (scheme, device) -> bool so the quantise+matmul smoke test runs once.
 _SMOKE_CACHE: dict[tuple[str, str], bool] = {}
 
-# Data-center GPU model tokens (un-nerfed FP32 accumulate). Matched as whole tokens of
-# torch.cuda.get_device_name(), so the workstation "A4000" is not mistaken for the
-# data-center "A40". Anything not here -- GeForce, workstation RTX, or an unknown name --
+# Data-center GPU tokens (un-nerfed FP32 accumulate). Matched as whole tokens of
+# get_device_name() so workstation "A4000" isn't mistaken for data-center "A40". Anything else
 # is treated as consumer-class (FP32-accumulate halved). See developer.nvidia.com/cuda/gpus.
 _DATACENTER_GPU_TOKENS = frozenset(
     {
@@ -179,22 +150,17 @@ _DATACENTER_GPU_TOKENS = frozenset(
 )
 
 
-# Professional parts the rest of the backend treats as datacenter-class (see llama_cpp.py
-# _DATACENTER_GPU_RE, which applies the same FP32-accum tuning to them). Matched as phrases
-# because the marker spans tokens ("RTX PRO 6000", "RTX 6000 ADA"), so they must not be
-# misread as consumer (which would put int8 ahead of fp8 and pick fast accumulate).
+# Professional parts the backend treats as datacenter-class (llama_cpp.py _DATACENTER_GPU_RE).
+# Matched as phrases since the marker spans tokens, so they aren't misread as consumer.
 _PROFESSIONAL_GPU_MARKERS = ("RTX PRO 6000", "RTX 6000 ADA")
 
 
 def _is_consumer_gpu(device: Any = None) -> bool:
-    """Whether the active GPU is consumer-class (GDDR), where fp8 FP32 accumulate is
-    throughput-halved so fast (FP16) accumulate is a ~2x win. Data-center HBM parts and
-    professional parts (recognised by name) are not nerfed and return False, so they keep
-    the higher-precision default accumulate and fp8 first. Heuristic on the device name: a
-    GeForce / TITAN name is always consumer; a recognised data-center token or professional
-    marker is not; anything else (unknown) defaults to consumer -- the safe choice, since
-    fast accumulate is free on data-center and a win on consumer. Best-effort: True on any
-    probe failure."""
+    """Whether the active GPU is consumer-class (GDDR), where fp8 FP32 accumulate is halved so
+    fast (FP16) accumulate is a ~2x win. Data-center HBM and professional parts are not nerfed
+    (return False -> precise accumulate, fp8 first). Heuristic on the device name: GeForce /
+    TITAN -> consumer; a data-center token or professional marker -> not; anything else defaults
+    to consumer (fast accumulate is free on data-center, a win on consumer). True on any failure."""
     try:
         import re
 
@@ -227,9 +193,8 @@ def normalize_transformer_quant(value: Optional[str]) -> Optional[str]:
 
 
 def dense_transformer_supported(target: Any) -> bool:
-    """Whether the dense-source quant path is usable for ``target``: a CUDA device with
-    a bf16 compute dtype (the only configuration any torchao dynamic scheme accelerates).
-    A cheap pre-check the loader runs before loading the (large) dense transformer."""
+    """Whether the dense-source quant path is usable for ``target``: a CUDA device with bf16
+    dtype (the only config any torchao dynamic scheme accelerates). Cheap loader pre-check."""
     if getattr(target, "device", None) != "cuda":
         return False
     try:
@@ -246,13 +211,11 @@ def select_transformer_quant_scheme(
 ) -> Optional[str]:
     """The concrete scheme to apply, or None to fall back to GGUF.
 
-    ``auto`` walks the per-arch ladder and returns the first scheme that passes a real
-    quantise+matmul smoke test, so on a box where the Blackwell fp4 / mx kernels are
-    unavailable it lands on fp8 / int8 with no error. An explicit scheme is honored only
-    if supported (else None -> GGUF), never silently swapped for a different one.
-    ``family`` additionally applies the measured model-level deny list
-    (``_FAMILY_SCHEME_DENY``): schemes that produce black frames or out-of-bar drift on
-    that family are skipped by ``auto`` and refused when explicit."""
+    ``auto`` walks the per-arch ladder and returns the first scheme passing a real
+    quantise+matmul smoke test, so an unavailable Blackwell fp4/mx kernel lands on fp8/int8
+    with no error. An explicit scheme is honored only if supported (else None), never swapped.
+    ``family`` applies the measured deny list (``_FAMILY_SCHEME_DENY``): schemes that produce
+    black frames / out-of-bar drift are skipped by ``auto`` and refused when explicit."""
     requested = normalize_transformer_quant(requested)
     if requested is None or not dense_transformer_supported(target):
         return None
@@ -276,11 +239,9 @@ def select_transformer_quant_scheme(
 
 
 def _prefer_consumer_scheme(schemes: tuple[str, ...], device: Any) -> tuple[str, ...]:
-    """Reorder an arch tier's schemes for the GPU class. On a consumer / workstation card
-    move int8 to the front: consumer parts halve fp8/fp16 FP32-accumulate throughput, while
-    int8 runs at full rate (int32 accumulate is not nerfed), so int8 is as fast or faster
-    than fp8 on every consumer NVIDIA / AMD / Intel GPU (and the only path on pre-Ada
-    consumer without fp8 tensor cores). Data-center HBM parts keep fp8 first."""
+    """Reorder an arch tier's schemes for the GPU class. On consumer / workstation cards move
+    int8 first: they halve fp8/fp16 FP32-accumulate while int8 runs full-rate, so int8 is as
+    fast or faster (and the only path on pre-Ada consumer). Data-center parts keep fp8 first."""
     if TQ_INT8 in schemes and schemes[0] != TQ_INT8 and _is_consumer_gpu(device):
         return (TQ_INT8,) + tuple(s for s in schemes if s != TQ_INT8)
     return schemes
@@ -309,10 +270,9 @@ def _scheme_supported(scheme: str, device: str) -> bool:
 
 
 def _smoke_probe(scheme: str, device: str) -> bool:
-    """True iff a tiny Linear quantised with ``scheme`` runs one M=32 forward without
-    error. Cached per (scheme, device). This is what makes ``auto`` robust to a torch /
-    torchao build where a prototype (nvfp4 / mxfp8) kernel is unavailable: it fails here
-    and the ladder moves on, rather than crashing at the first real denoise step."""
+    """True iff a tiny Linear quantised with ``scheme`` runs one M=32 forward. Cached per
+    (scheme, device). Makes ``auto`` robust to a build lacking a prototype kernel: it fails
+    here and the ladder moves on, rather than crashing at the first real denoise step."""
     key = (scheme, device)
     if key in _SMOKE_CACHE:
         return _SMOKE_CACHE[key]
@@ -341,8 +301,7 @@ def _resolve_fast_accum(fast_accum: Optional[bool]) -> bool:
 
 
 def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
-    """The torchao dynamic-activation config for ``scheme`` (lazy import; prototype
-    import for the Blackwell fp4 / mx schemes is inside the branch that needs it).
+    """The torchao dynamic-activation config for ``scheme`` (lazy imports per branch).
 
     ``fast_accum`` applies to fp8 only: None auto-detects by GPU class, True/False force it."""
     from torchao.quantization import (
@@ -353,20 +312,17 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     if scheme == TQ_INT8:
         return Int8DynamicActivationInt8WeightConfig()
     if scheme == TQ_FP8:
-        # Per-ROW granularity (per-token activation scale + per-output-channel weight scale)
-        # is REQUIRED for correctness, not just quality. torchao's default fp8 granularity is
-        # per-TENSOR: one scale for the whole activation tensor. A DiT with extreme activation
-        # outliers breaks under that -- z-image's MLP activations peak near 6.6e4, and a single
-        # such outlier forces a tensor-wide scale that pushes every normal value (~1-30) below
-        # the fp8 resolution, so they quantise to ~0 and the denoise collapses to pure noise
-        # (measured on B200: per-tensor fp8 = noise, per-row fp8 = matches bf16). Per-row
-        # confines each outlier to its own token/channel. This is also why int8 dynamic was
-        # always fine here: it is per-token by default. The per-row scaled_mm is probed by
-        # _smoke_probe, so an arch/build without it falls through the ladder to int8.
+        # Per-ROW granularity (per-token activation + per-channel weight scale) is REQUIRED for
+        # correctness. torchao defaults to per-TENSOR (one scale): a DiT with extreme outliers
+        # breaks -- Z-Image MLP activations peak near 6.6e4, so one outlier forces a tensor-wide
+        # scale that pushes normal values (~1-30) below fp8 resolution to ~0 and the denoise
+        # collapses to noise (B200: per-tensor = noise, per-row = matches bf16). Per-row confines
+        # each outlier to its token/channel (also why int8, per-token by default, was always
+        # fine). _smoke_probe checks per-row scaled_mm, so a build without it falls to int8.
         #
-        # fast accumulate (fp8 only) is chosen by GPU class unless forced: consumer / workstation
-        # cards (GDDR) run the fp8 tensor cores ~2x faster with FP16 (fast) accumulate than FP32
-        # (e.g. ~838 vs ~419 TFLOPS on RTX 50xx); data-center HBM parts keep precise accumulate.
+        # fast accumulate (fp8 only) is chosen by GPU class unless forced: consumer cards run fp8
+        # ~2x faster with FP16 accumulate than FP32 (~838 vs ~419 TFLOPS on RTX 50xx); data-center
+        # keeps precise accumulate.
         from torchao.quantization import PerRow
         try:
             from torchao.float8 import Float8MMConfig
@@ -379,10 +335,9 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
 
-        # Select the CUTLASS FP4 path, not the default Triton kernel: torchao defaults
-        # use_triton_kernel=True, which needs MSLK installed. On a Blackwell box with the
-        # CUTLASS FP4 extension but no MSLK, the default would make the smoke probe fail
-        # and silently fall back to GGUF instead of using the FP4 tensor cores.
+        # Select the CUTLASS FP4 path, not the default Triton kernel (use_triton_kernel=True
+        # needs MSLK): on a Blackwell box with CUTLASS FP4 but no MSLK, the default fails the
+        # smoke probe and falls back to GGUF instead of using the FP4 tensor cores.
         try:
             return NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False)
         except TypeError:  # older torchao without the knob
@@ -407,17 +362,13 @@ def make_filter_fn(
     *,
     require_bf16: bool = False,
 ):
-    """A torchao ``quantize_`` filter keeping only the FLOP-heavy linears: nn.Linear with both
-    in/out features >= ``min_features`` AND whose fully-qualified name contains none of
-    ``exclude_name_tokens`` (used by int8 to skip the M=1 modulation / conditioning-embedder
-    projections that crash ``torch._int_mm``). Hides the (module, fqn) callback arity.
+    """A torchao ``quantize_`` filter keeping only FLOP-heavy linears: nn.Linear with in/out
+    features >= ``min_features`` AND whose fqn contains no ``exclude_name_tokens`` (int8 uses
+    these to skip the M=1 projections that crash ``torch._int_mm``). Hides the callback arity.
 
-    ``require_bf16`` additionally skips any Linear whose weight is not bfloat16. The scaled_mm
-    schemes (fp8 / mxfp8 / nvfp4) assert a bf16 input weight, so a single non-bf16 Linear -- e.g.
-    the fp32 layers Wan / Hunyuan video DiTs keep for numerical stability -- otherwise raises inside
-    ``quantize_`` and aborts the ENTIRE pass, leaving the module silently dense. Gating those layers
-    out lets the scheme engage on the bf16 linears and skip the fp32 ones. int8 (torch._int_mm)
-    tolerates non-bf16 weights, so it leaves this off and keeps quantising them."""
+    ``require_bf16`` also skips any non-bf16 Linear: fp8/mxfp8/nvfp4 assert a bf16 input weight,
+    so one non-bf16 Linear (e.g. the fp32 layers Wan/Hunyuan DiTs keep) otherwise raises and
+    aborts the ENTIRE pass, leaving the module dense. int8 tolerates non-bf16, so leaves this off."""
 
     def filter_fn(module: Any, fqn: str = "") -> bool:
         try:
@@ -456,13 +407,12 @@ def quantize_transformer(
     fast_accum: Optional[bool] = None,
     logger: Any = None,
 ) -> Optional[str]:
-    """Quantise ``pipe.transformer``'s FLOP-heavy linears in place with the arch-chosen
-    dynamic scheme. Returns the scheme actually engaged, or None when disabled /
-    unsupported / failed -- the caller then loads GGUF instead. Best-effort: it never
-    raises for an ordinary unsupported environment (a failure leaves the module dense).
+    """Quantise ``pipe.transformer``'s FLOP-heavy linears in place with the arch-chosen scheme.
+    Returns the scheme engaged, or None when disabled / unsupported / failed (caller loads
+    GGUF). Best-effort: never raises for an unsupported environment (failure leaves it dense).
 
-    ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None
-    auto-detects (fast on consumer, precise on data-center), True/False force it."""
+    ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None auto-detects,
+    True/False force it."""
     scheme = select_transformer_quant_scheme(target, mode, family = family)
     if scheme is None:
         return None
@@ -472,11 +422,9 @@ def quantize_transformer(
     try:
         from torchao.quantization import quantize_
 
-        # int8 (torch._int_mm, M>16) additionally skips the M=1 modulation / conditioning-embedder
-        # projections; fp8 / fp4 / mx (scaled_mm) have no such limit and quantise everything -- but
-        # fp8 and mxfp8 assert a bf16 weight, so on a mixed-precision DiT (Wan / Hunyuan keep some
-        # fp32 linears) they must skip the non-bf16 ones or the whole pass raises and no-ops. nvfp4
-        # quantises fp32 weights fine, so it is not gated (see _REQUIRE_BF16_SCHEMES).
+        # int8 skips the M=1 projections; scaled_mm schemes have no M limit but fp8/mxfp8 assert
+        # a bf16 weight, so on a mixed-precision DiT (Wan/Hunyuan) they must skip non-bf16 ones or
+        # the pass raises. nvfp4 quantises fp32 fine, so it is not gated (see _REQUIRE_BF16_SCHEMES).
         exclude = exclude_tokens_for_scheme(scheme)
         quantize_(
             transformer,
@@ -487,8 +435,7 @@ def quantize_transformer(
                 require_bf16 = scheme in _REQUIRE_BF16_SCHEMES,
             ),
         )
-        # Runtime-only marker (torchao tensors are not safetensors-serializable; this
-        # backend is inference-only, so this is purely diagnostic).
+        # Runtime-only diagnostic marker.
         try:
             transformer._unsloth_runtime_quant = scheme
         except Exception:  # noqa: BLE001 — marker is best-effort

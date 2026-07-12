@@ -3,21 +3,12 @@
 
 """Pure command builder for the ``sd-cli`` (stable-diffusion.cpp) native engine.
 
-No torch / diffusers / subprocess here: everything is a pure function of its
-arguments so the whole argv construction can be unit-tested without a GPU, the
-binary, or any model files. The engine (``sd_cpp_engine.py``) calls
-``build_sd_cpp_command`` and runs the result.
-
-stable-diffusion.cpp consumes the *same* split GGUF assets Studio already
-curates for the diffusers path: a transformer (``--diffusion-model``), a VAE
-(``--vae``), and one or more text encoders, wired to the family-specific flag
-(Z-Image's Qwen3 -> ``--llm``, Qwen-Image's Qwen2-VL -> ``--qwen2vl``,
-FLUX.1's CLIP-L + T5 -> ``--clip_l`` / ``--t5xxl``). The memory policy the
-diffusers planner picks (``none`` / ``group`` / ``model`` / ``sequential``)
-maps to sd.cpp's own offload flags here, so one user-facing knob drives both
-engines.
-
-Ref (flag names): stable-diffusion.cpp ``examples/cli`` and ``docs/z_image.md``.
+No torch / diffusers / subprocess: a pure function of its arguments, so argv construction
+unit-tests without a GPU, binary, or model files. sd.cpp consumes the SAME split GGUF assets as
+the diffusers path -- a transformer (``--diffusion-model``), a VAE (``--vae``), and text encoders
+wired to the family flag (Z-Image Qwen3 -> ``--llm``, Qwen-Image Qwen2-VL -> ``--qwen2vl``, FLUX.1
+-> ``--clip_l`` / ``--t5xxl``). The diffusers memory policy maps to sd.cpp's offload flags here, so
+one knob drives both engines. Ref: sd.cpp ``examples/cli`` and ``docs/z_image.md``.
 """
 
 from __future__ import annotations
@@ -32,11 +23,8 @@ from core.inference.diffusion_memory import (
     OFFLOAD_SEQUENTIAL,
 )
 
-# Per-family text-encoder wiring: ordered (sd-cli flag, human label) pairs in the
-# order the text encoders are supplied. Z-Image uses a single Qwen3 LLM; FLUX.1
-# pairs CLIP-L with a T5; Qwen-Image uses Qwen2-VL; FLUX.2-klein uses a Qwen3 LLM.
-# Keyed by ``DiffusionFamily.name`` so the engine stays data-driven and the
-# family registry (diffusion_families.py) need not import sd.cpp specifics.
+# Per-family text-encoder flags, in supply order. Keyed by ``DiffusionFamily.name`` so the engine
+# stays data-driven and the family registry need not import sd.cpp specifics.
 _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "z-image": ("--llm",),
     "flux.2-klein": ("--llm",),
@@ -51,20 +39,15 @@ def text_encoder_flags_for_family(family_name: str) -> tuple[str, ...]:
     return _TE_FLAGS_BY_FAMILY.get(family_name, ())
 
 
-# sd-cli's image-generation mode. Current stable-diffusion.cpp uses ``img_gen``
-# (the older spelling was ``txt2img``); img2img is the same mode with --init-img,
-# so this one token covers both text- and image-conditioned generation.
+# sd-cli's image-gen mode (``img_gen``; older ``txt2img``). img2img is the same mode with
+# --init-img, so this one token covers both text- and image-conditioned generation.
 DEFAULT_MODE = "img_gen"
 
 
 @dataclass(frozen = True)
 class SdCppModelFiles:
-    """Resolved on-disk paths for one diffusion checkpoint's components.
-
-    ``diffusion_model`` (the transformer) is required; the rest are optional so a
-    single-file checkpoint that bundles the VAE / encoders still builds a valid
-    command. Any field left None is simply omitted from the argv.
-    """
+    """Resolved on-disk paths for one checkpoint's components. ``diffusion_model`` is required; the
+    rest are optional (a bundled single-file checkpoint still builds). None fields are omitted."""
 
     diffusion_model: str
     vae: Optional[str] = None
@@ -79,18 +62,15 @@ class SdCppModelFiles:
 class SdCppGenParams:
     """Generation parameters, mapped 1:1 onto sd-cli's sampling flags.
 
-    The image-conditioning fields cover the img_gen variants: ``init_img`` +
-    ``strength`` make it img2img, adding ``mask`` makes it inpaint, and
-    ``ref_images`` drives FLUX Kontext / Qwen-Image-Edit style editing. ``lora_dir``
-    points sd-cli at a LoRA directory; the LoRAs themselves are selected with
-    ``<lora:name:weight>`` tags inside ``prompt`` (sd.cpp's own syntax).
+    Image-conditioning fields cover the img_gen variants: ``init_img`` + ``strength`` = img2img,
+    + ``mask`` = inpaint, ``ref_images`` = FLUX Kontext / Qwen-Image-Edit editing. ``lora_dir`` is
+    the LoRA directory; individual LoRAs are ``<lora:name:weight>`` tags in ``prompt``.
     """
 
     prompt: str
     negative_prompt: Optional[str] = None
-    # None = "unset": an image-conditioned run (img2img/inpaint/edit) then lets
-    # sd.cpp derive the size from the input image instead of forcing a resize; a
-    # plain txt2img run with unset dims falls back to 1024x1024 (see the builder).
+    # None = unset: an image-conditioned run lets sd.cpp derive the size from the input; a plain
+    # txt2img run with unset dims falls back to 1024x1024 (see the builder).
     width: Optional[int] = None
     height: Optional[int] = None
     steps: Optional[int] = None
@@ -119,14 +99,10 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
-# Native (sd.cpp) speed profiles, the engine-side analogue of diffusion_speed's
-# modes. off: nothing (default). default: --diffusion-fa (flash attention;
-# near-lossless attention speed/memory win) + --diffusion-conv-direct. Direct conv
-# is numerically exact (no quality tradeoff) and, on the CPU tier this engine
-# actually serves (Studio routes to sd.cpp only on no-GPU hosts), the A/B on the
-# master-741-484baa4 linux build measured z-image Q8_0 sampling 56.1s -> 51.3s
-# (~9%) with decode and peak RSS unchanged, so it belongs in the default profile
-# rather than opt-in. max keeps it too (the profiles stay a superset chain).
+# Native (sd.cpp) speed profiles (engine-side analogue of diffusion_speed). off: nothing. default:
+# --diffusion-fa (flash attention) + --diffusion-conv-direct (numerically exact). On the CPU tier
+# this serves, direct conv measured z-image Q8_0 sampling 56.1 -> 51.3s (~9%) with decode/RSS
+# unchanged, so it's in the default profile. max keeps it (profiles are a superset chain).
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -134,12 +110,8 @@ NATIVE_SPEED_MODES = (NATIVE_SPEED_OFF, NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX)
 
 
 def native_speed_flags(speed_mode: Optional[str]) -> list[str]:
-    """sd-cli speed flags for a native speed mode (empty for off / None).
-
-    These are separate from the offload flags: ``--diffusion-fa`` is a speed/memory
-    win in its own right, not tied to whether weights are offloaded. De-duplicated
-    against offload flags at the call site (offload already adds ``--diffusion-fa``).
-    """
+    """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
+    ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
@@ -154,14 +126,10 @@ def offload_flags(
     vae_tiling: bool = False,
     diffusion_fa: bool = False,
 ) -> list[str]:
-    """Translate a diffusers memory *policy* into sd-cli offload flags.
+    """Translate a diffusers memory policy into sd-cli offload flags.
 
-    - ``none``: weights stay resident, no offload flags.
-    - ``group`` (balanced): stream the model through VRAM (``--offload-to-cpu``);
-      flash attention shrinks the activation peak.
-    - ``model`` / ``sequential`` (low-VRAM): offload everything, also push the
-      CLIP/VAE to CPU and tile the VAE so the decode fits a tiny budget.
-
+    ``none``: resident, no flags. ``group``: stream the model (``--offload-to-cpu``) + flash
+    attention. ``model`` / ``sequential``: offload everything, also CLIP/VAE to CPU + VAE tiling.
     ``vae_tiling`` / ``diffusion_fa`` force those flags on regardless of policy.
     """
     flags: list[str] = []
@@ -201,20 +169,16 @@ def build_sd_cpp_command(
 ) -> list[str]:
     """Build the full ``sd-cli`` argv for one text-to-image generation.
 
-    Required model/IO flags come first (so a failure points at the obvious
-    place), then sampling params (only those that are set), then offload flags,
-    then any caller ``extra_args`` last so sd.cpp's last-wins parser lets a power
-    user override anything Studio set.
+    Required model/IO flags first, then set sampling params, then offload flags, then caller
+    ``extra_args`` last (sd.cpp's parser is last-wins, so a power user can override anything).
     """
     if not files.diffusion_model:
         raise ValueError("diffusion_model path is required")
-    # ``(prompt or "")`` so a None prompt is rejected here rather than slipping past
-    # ``str(None)`` == "None" (truthy) and landing in argv as a literal "None".
+    # ``(prompt or "")`` so a None prompt is rejected here, not passed as literal "None".
     if not (params.prompt or "").strip():
         raise ValueError("prompt is required")
-    # sd-cli inpaint needs the source image too: a --mask with no --init-img is an
-    # invalid invocation (sd-cli has nothing to inpaint into), so reject it here with a
-    # clear error instead of emitting a command that fails deep in sd-cli.
+    # sd-cli inpaint needs the source image: a --mask with no --init-img is invalid, so reject it
+    # here rather than fail deep in sd-cli.
     if params.mask and not params.init_img:
         raise ValueError("init_img is required when mask is set (inpaint needs a source image)")
 
@@ -233,7 +197,7 @@ def build_sd_cpp_command(
     cmd += ["--prompt", params.prompt]
     if params.negative_prompt:
         cmd += ["--negative-prompt", params.negative_prompt]
-    # img2img / inpaint / edit conditioning (img_gen mode with an input image).
+    # img2img / inpaint / edit conditioning.
     if params.init_img:
         cmd += ["--init-img", params.init_img]
     if params.strength is not None:
@@ -247,11 +211,8 @@ def build_sd_cpp_command(
         cmd += ["--lora-model-dir", params.lora_dir]
     if params.lora_apply_mode:
         cmd += ["--lora-apply-mode", params.lora_apply_mode]
-    # Emit explicit dims when given. For an image-conditioned run (img2img /
-    # inpaint / edit) that leaves them unset, omit the flags so sd.cpp derives the
-    # size from the input image (set_width_and_height_if_unset) rather than forcing
-    # a 1024x1024 resize/crop of the source. A plain txt2img run with unset dims
-    # keeps the prior 1024 default.
+    # Emit explicit dims when given. An image-conditioned run that leaves them unset omits the
+    # flags so sd.cpp derives the size from the input; a plain txt2img keeps the 1024 default.
     if params.width is not None or params.height is not None:
         w = int(params.width) if params.width is not None else 1024
         h = int(params.height) if params.height is not None else 1024
@@ -269,9 +230,8 @@ def build_sd_cpp_command(
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
     if params.batch_count and params.batch_count != 1:
-        # sd-cli names the extra batch images itself (output_2.png, ...) and the runner
-        # collects only the literal --output path, so a CLI batch would silently drop
-        # every image after the first. Batches go through the sdcpp server API instead.
+        # sd-cli names extra batch images itself (output_2.png, ...) but the runner collects only
+        # --output, so a CLI batch drops all but the first. Batches use the sdcpp server API.
         raise ValueError(
             "sd-cli runs are single-image; use the sdcpp server API for batch generation."
         )
@@ -296,19 +256,14 @@ def build_sd_cpp_upscale_command(
     verbose: bool = False,
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
-    """Build the ``sd-cli --mode upscale`` argv (ESRGAN super-resolution).
-
-    Upscale is a distinct run mode: it takes an input image and an ESRGAN model,
-    no prompt or text encoders. ``repeats`` runs the upscaler N times (each pass
-    is a fixed scale factor for the model).
-    """
+    """Build the ``sd-cli --mode upscale`` argv (ESRGAN). A distinct run mode: input image + ESRGAN
+    model, no prompt or text encoders. ``repeats`` runs the upscaler N times (each a fixed scale)."""
     if not params.input_image:
         raise ValueError("input_image is required for upscale")
     if not params.upscale_model:
         raise ValueError("upscale_model is required for upscale")
-    # A truthiness guard below would silently swallow repeats=0 and fall back to
-    # sd-cli's default of one pass, turning an explicit no-op into a real upscale.
-    # Reject it (and negatives) so the caller's intent isn't quietly changed.
+    # Reject repeats < 1 explicitly: a truthiness guard would swallow repeats=0 into sd-cli's
+    # one-pass default, quietly changing the caller's intent.
     if params.repeats < 1:
         raise ValueError("repeats must be >= 1 for upscale")
     cmd: list[str] = [
@@ -348,20 +303,12 @@ def build_sd_cpp_server_command(
 ) -> list[str]:
     """Build the ``sd-server`` argv: model + hardware/server flags only.
 
-    ``sd-server`` (stable-diffusion.cpp ``examples/server``) loads the model once at
-    spawn from the SAME flags ``sd-cli`` takes (``--diffusion-model`` / ``--vae`` /
-    the text encoders / ``--vae-format`` / offload + speed), and adds ``--listen-ip``
-    / ``--listen-port``. Per-generation parameters (prompt, size, steps, seed, cfg,
-    sampler, batch) are NOT here -- they go in each ``/sdcpp/v1/img_gen`` request, so
-    one resident process serves many generations without reloading the weights.
-
-    ``offload`` / ``native_speed`` map to the exact same sd.cpp flags as the one-shot
-    engine (``--offload-to-cpu`` / ``--diffusion-fa`` / ...), verified to be accepted
-    by ``sd-server --help``. ``scratch_dir`` (if given) is pointed at by the LoRA /
-    hires-upscaler / embeddings directory flags: sd-server's img_gen handler recursively
-    iterates those dirs, and an unset / missing dir makes it fail the request, so we give
-    it a real (empty) directory. ``extra_args`` is appended last so a power user can
-    override anything (sd.cpp's parser is last-wins).
+    sd-server loads the model once at spawn from the SAME flags as sd-cli, plus ``--listen-ip`` /
+    ``--listen-port``. Per-generation params go in each ``/sdcpp/v1/img_gen`` request, so one
+    resident process serves many generations without reloading. ``offload`` / ``native_speed`` map
+    to the same sd.cpp flags. ``scratch_dir`` is pointed at by the LoRA / upscaler / embeddings dir
+    flags (sd-server iterates those and fails on a missing dir, so give it a real empty one).
+    ``extra_args`` last (last-wins).
     """
     if not files.diffusion_model:
         raise ValueError("diffusion_model path is required")
@@ -395,7 +342,7 @@ def build_sd_cpp_server_command(
     offload = list(offload or [])
     if offload:
         cmd += offload
-    # De-dup speed flags against offload (offload may already include --diffusion-fa).
+    # De-dup speed flags against offload (may already include --diffusion-fa).
     cmd += [f for f in native_speed_flags(native_speed) if f not in offload]
     if verbose:
         cmd += ["-v"]
@@ -422,12 +369,9 @@ def build_img_gen_request(
 ) -> dict:
     """Build the ``POST /sdcpp/v1/img_gen`` JSON body for one text-to-image request.
 
-    The native ``sdcpp`` API takes the whole batch in one request (``batch_count``),
-    so a batch reuses the resident model with no reload. Sampling lives under
-    ``sample_params``; guidance is split exactly like the one-shot engine's
-    ``_map_guidance``: a FLUX distilled value goes to ``guidance.distilled_guidance``,
-    a real classifier-free scale goes to ``guidance.txt_cfg``. Only set keys are
-    emitted so the server applies its own defaults for the rest.
+    The API takes the whole batch in one request, reusing the resident model. Sampling lives under
+    ``sample_params``; guidance is split like the one-shot engine (a FLUX distilled value ->
+    ``guidance.distilled_guidance``, a real CFG scale -> ``guidance.txt_cfg``). Only set keys are emitted.
     """
     if not str(prompt).strip():
         raise ValueError("prompt is required")
@@ -460,16 +404,14 @@ def build_img_gen_request(
         req["seed"] = int(seed)
     if sample_params:
         req["sample_params"] = sample_params
-    # Structured LoRA list: the sdcpp API resolves each ``path`` against the server's
-    # scanned ``--lora-model-dir`` (prompt-embedded ``<lora:>`` tags are intentionally
-    # unsupported server-side), so LoRAs must be staged there and named here.
+    # Structured LoRA list: the API resolves each ``path`` against the server's ``--lora-model-dir``
+    # (prompt-embedded ``<lora:>`` tags are unsupported server-side), so LoRAs are staged and named here.
     if lora:
         req["lora"] = lora
     return req
 
 
 def _fmt_float(value: float) -> str:
-    """Compact float -> str: drop a trailing ``.0`` so ``1.0`` -> ``1`` (sd-cli
-    accepts both, but the tidy form keeps logged commands readable)."""
+    """Compact float -> str: drop a trailing ``.0`` (``1.0`` -> ``1``) to keep logged commands tidy."""
     f = float(value)
     return str(int(f)) if f.is_integer() else repr(f)

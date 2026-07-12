@@ -22,27 +22,23 @@ logger = get_logger(__name__)
 
 _lock = threading.Lock()
 _inflight = 0
-# Requests blocked on the unload gate but not yet counted in _inflight: the idle
-# loop must not unload while one is waiting (it would unload out from under it).
+# Requests blocked on the unload gate but not yet in _inflight: the idle loop must not unload
+# while one is waiting (it would unload out from under it).
 _pending = 0
 _last_active = time.monotonic()
-# The (id, quant) idle-unload last freed, so an alias/unknown request that would
-# otherwise 503 against an empty backend can reload it (set on unload, cleared on
-# reload). Storing the quant means the reload restores the exact freed variant.
+# The (id, quant) idle-unload last freed, so an alias/unknown request that would 503 against an
+# empty backend can reload the exact freed variant (set on unload, cleared on reload).
 _last_unloaded_model = None
-# Guards inflight bumps against the idle-check-then-unload race, and blocks new
-# inference from starting mid-swap. Process-wide, not per-loop: the backend slot is
-# shared across every event loop in the process, so a per-loop gate would let a
-# request on loop B start inference while a swap on loop A tears the model down.
+# Guards inflight bumps against the idle-check-then-unload race and blocks new inference mid-swap.
+# Process-wide, not per-loop: the backend slot is shared across every loop, so a per-loop gate
+# would let a request on loop B start while a swap on loop A tears the model down.
 _lifecycle_lock = threading.Lock()
 
 
 @contextlib.asynccontextmanager
 async def _unload_gate():
-    # Acquire off the loop: non-blocking first (the common uncontended case), else
-    # poll a non-blocking acquire off a short sleep. Polling keeps the wait off this
-    # loop AND cancellation-safe -- a cancel lands during the sleep, when the gate is
-    # not held, so it never leaks (mirrors the auto-switch swap gate).
+    # Acquire off the loop: non-blocking first, else poll off a short sleep. Polling keeps the wait
+    # off the loop AND cancellation-safe (a cancel lands during the sleep, gate not held).
     while not _lifecycle_lock.acquire(blocking = False):
         await asyncio.sleep(0.02)
     try:
@@ -56,20 +52,18 @@ _INFERENCE_SUFFIXES = (
     "/chat/completions",
     "/completions",
     "/messages",
-    "/messages/count_tokens",  # counts via the loaded tokenizer; protect like /messages
+    "/messages/count_tokens",  # uses the loaded tokenizer; protect like /messages
     "/embeddings",
     "/responses",
     "/generate/stream",  # Studio's own streaming route on the same llama-server
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
-    # Image generation holds a multi-GB diffusion pipeline for the whole request.
-    # Tracking it here lets other_inference_request_count() see an in-flight generation, so an
-    # API-key training start is refused (409) before its unload cancels the generation. endswith
-    # so the GET *-progress and */cancel variants are not matched.
+    # Image generation holds a multi-GB pipeline for the whole request; tracking it lets
+    # other_inference_request_count() see an in-flight generation so an API-key training start is
+    # refused (409) before its unload cancels it. endswith avoids matching *-progress / */cancel.
     "/images/generate",  # /api/inference/images/generate
     "/images/generations",  # /v1/images/generations (+ /api/inference/images/generations)
-    # Video generation runs as a background job (the POST returns at once), so this entry only
-    # covers the brief accept request; the training-start guards additionally probe the video
-    # backend's generate-progress for an in-flight background clip.
+    # Video runs as a background job (the POST returns at once), so this only covers the brief
+    # accept; the training-start guards additionally probe generate-progress for an in-flight clip.
     "/video/generate",  # /api/inference/video/generate
 )
 
@@ -77,8 +71,7 @@ _INFERENCE_SUFFIXES = (
 def _is_inference_path(path: str) -> bool:
     if path.startswith(_INFERENCE_PREFIXES) and path.endswith(_INFERENCE_SUFFIXES):
         return True
-    # Public checkpoint preview (/p/{run}/v1/chat/completions) delegates to the
-    # chat handler and streams from the same backend, so protect it from idle unload.
+    # Public checkpoint preview (/p/{run}/v1/chat/completions) streams from the same backend.
     return path.startswith("/p/") and path.endswith("/v1/chat/completions")
 
 
@@ -95,9 +88,8 @@ def _note_unpending() -> None:
 
 
 def _note_start() -> None:
-    # Do not stamp _last_active here: while _inflight > 0 the model is already
-    # protected (see _is_idle), and stamping on start lets an external-provider
-    # request that is later untracked still reset the local idle timer.
+    # Do not stamp _last_active here: while _inflight > 0 the model is already protected, and
+    # stamping on start would let a later-untracked external request reset the idle timer.
     global _inflight, _pending
     with _lock:
         _pending = max(0, _pending - 1)
@@ -112,8 +104,8 @@ def _note_end() -> None:
 
 
 def _note_untracked_end() -> None:
-    # Drop a request that never used the local GGUF without stamping local
-    # activity, so periodic external-provider traffic can't keep the model warm.
+    # Drop a request that never used the local GGUF without stamping activity, so periodic
+    # external-provider traffic can't keep the model warm.
     global _inflight
     with _lock:
         _inflight = max(0, _inflight - 1)
@@ -136,11 +128,9 @@ def other_inference_request_count(
 ) -> int:
     """Tracked inference requests other than the current route call.
 
-    The middleware counts OpenAI-compatible requests before route code runs, so
-    the caller is excluded by default. Idle-unload counts pending waiters too (a
-    swap holding the gate would unload out from under them). The swap guard passes
-    include_pending=False: a pending request is blocked in the middleware and has
-    not started inference, so it can't be the request a swap would interrupt.
+    The middleware counts before route code runs, so the caller is excluded by default.
+    Idle-unload counts pending waiters too. The swap guard passes include_pending=False: a pending
+    request is blocked in the middleware and hasn't started inference, so a swap can't interrupt it.
     """
     with _lock:
         active = _inflight
@@ -149,16 +139,14 @@ def other_inference_request_count(
         return max(0, active) + (_pending if include_pending else 0)
 
 
-# Set on the ASGI scope by a route that proved this request won't touch
-# llama.cpp (e.g. it proxied to an external provider), so the keep-warm count
-# excludes it and the middleware skips its own end-decrement.
+# Set on the ASGI scope by a route that proved this request won't touch llama.cpp, so the
+# keep-warm count excludes it and the middleware skips its end-decrement.
 _UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_untracked"
 
 
 def untrack_current_request(scope) -> None:
-    """Drop this request from the in-flight count once the route knows it won't
-    use the local GGUF, so unrelated external-provider traffic can't trip the
-    swap busy guard. Idempotent; the middleware then skips its end-decrement."""
+    """Drop this request from the in-flight count once the route knows it won't use the local GGUF,
+    so external-provider traffic can't trip the swap busy guard. Idempotent."""
     if not isinstance(scope, dict) or scope.get(_UNTRACKED_SCOPE_KEY):
         return
     scope[_UNTRACKED_SCOPE_KEY] = True
@@ -166,23 +154,22 @@ def untrack_current_request(scope) -> None:
 
 
 def inference_lifecycle_gate():
-    """The gate a model swap holds so new inference can't start mid-load. Process-
-    wide, so a swap on one loop blocks inference starting on any other loop."""
+    """The gate a model swap holds so new inference can't start mid-load. Process-wide, so a swap
+    on one loop blocks inference on any other loop."""
     return _unload_gate()
 
 
 def note_model_loaded() -> None:
-    """Record a successful GGUF load: stamp activity and drop any reload stash so
-    a manual load clears it synchronously, not only on the next idle poll."""
+    """Record a successful GGUF load: stamp activity and drop any reload stash (a manual load
+    clears it synchronously, not only on the next idle poll)."""
     _note_activity()
     _set_last_unloaded(None)
 
 
 def note_model_unloaded() -> None:
-    """Record a deliberate (user/API) unload: drop any idle reload stash so the next
-    request can't resurrect the just-unloaded model. The idle loop unloads via the
-    backend directly and then stashes the freed model for an alias reload; an
-    explicit unload instead means "stay unloaded", so it must not stamp activity."""
+    """Record a deliberate (user/API) unload: drop the idle reload stash so the next request can't
+    resurrect the just-unloaded model. Unlike the idle loop it means "stay unloaded", so it must
+    not stamp activity."""
     _set_last_unloaded(None)
 
 
@@ -204,8 +191,7 @@ class LlamaKeepWarmMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        # Inference endpoints are all POST; skipping non-POST avoids counting CORS
-        # preflight (OPTIONS). ``or ""`` guards an explicit None path.
+        # Inference endpoints are all POST; skipping non-POST avoids counting CORS preflight.
         if (
             scope.get("type") != "http"
             or scope.get("method") != "POST"
@@ -213,12 +199,9 @@ class LlamaKeepWarmMiddleware:
         ):
             await self.app(scope, receive, send)
             return
-        # Always track in-flight on inference paths, even when the feature is off,
-        # so a stream that starts before idle-unload is enabled can't be unloaded
-        # mid-response if the operator turns it on during that stream. Counting is
-        # cheap and invisible to clients (the response is proxied unchanged).
-        # Mark pending before the gate so the idle loop (which holds the gate while
-        # unloading) can't free the model while this request is waiting to start.
+        # Always track in-flight, even when the feature is off, so a stream started before
+        # idle-unload is enabled can't be unloaded mid-response if the operator turns it on.
+        # Mark pending before the gate so the idle loop can't free the model while this waits.
         _note_pending()
         started = False
         try:
@@ -238,11 +221,9 @@ class LlamaKeepWarmMiddleware:
             ended["done"] = True
             if scope.get(_UNTRACKED_SCOPE_KEY):
                 return
-            # This middleware runs before FastAPI auth, so a 401/403 reaches here
-            # without ever touching llama.cpp. Decrement the in-flight count (to
-            # balance _note_start) but do NOT stamp activity, or repeated
-            # unauthenticated probes on an exposed server would keep the model warm
-            # and never let idle-unload free VRAM.
+            # This runs before FastAPI auth, so a 401/403 reaches here without touching llama.cpp.
+            # Decrement (to balance _note_start) but do NOT stamp activity, else repeated
+            # unauthenticated probes would keep the model warm forever.
             if status["code"] in (401, 403):
                 _note_untracked_end()
             else:
@@ -267,9 +248,8 @@ class LlamaKeepWarmMiddleware:
 def _loaded_identity(backend):
     if not backend.is_loaded or not backend.model_identifier:
         return None
-    # Third slot is the advertised id (repo id) an auto-switch load sets on the
-    # backend; it's the override key, so an idle stash keyed by the concrete load
-    # path doesn't drop the user's saved launch flags on the alias reload.
+    # Third slot is the advertised id (repo id) an auto-switch load sets; it's the override key, so
+    # an idle stash keyed by the concrete load path keeps the user's saved launch flags on reload.
     advertised = getattr(backend, "_openai_advertised_id", None) or backend.model_identifier
     return (backend.model_identifier, getattr(backend, "hf_variant", None), advertised)
 
@@ -288,8 +268,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             from routes.inference import get_llama_cpp_backend
 
             backend = get_llama_cpp_backend()
-            # Track by (id, variant): a (re)loaded model -- including the same repo
-            # at a different quant -- counts as activity so it survives one TTL
+            # Track by (id, variant): a (re)loaded model counts as activity so it survives one TTL
             # before its first request (loads bypass the activity middleware).
             current = _loaded_identity(backend)
             if current != seen_model:
