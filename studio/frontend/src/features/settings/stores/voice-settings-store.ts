@@ -82,8 +82,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           }
           return { dictionary: [...state.dictionary, trimmed] };
         }),
-      // Keeps the raw value (including spaces and empties) so the input can
-      // be edited freely; commitDictionaryEntry finalizes on blur.
+      // Keep the raw value so the input edits freely; commitDictionaryEntry finalizes on blur.
       updateDictionaryEntry: (index, value) =>
         set((state) => {
           const dictionary = [...state.dictionary];

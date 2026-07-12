@@ -18,8 +18,7 @@ export function findTtsVoice(
     .find((voice) => voice.voiceURI === voiceURI);
 }
 
-// macOS novelty and legacy Eloquence voices that sound robotic and flood
-// the picker. Matched against the lowercased name before any "(".
+// macOS novelty and legacy Eloquence voices that sound robotic and flood the picker.
 const LOW_QUALITY_VOICE_NAMES = new Set([
   "albert",
   "bad news",
@@ -190,8 +189,7 @@ function speakWithStudioModel(
   let audio: HTMLAudioElement | null = null;
   let cancelled = false;
 
-  // Release the element and its multi-MB WAV data URL as soon as playback
-  // ends; the utterance object may stay referenced for a while.
+  // Release the element and its multi-MB WAV data URL as soon as playback ends.
   const cleanup = () => {
     if (audio) {
       audio.pause();

@@ -2116,7 +2116,6 @@ function useImeComposerInputHandlers({
   };
 }
 
-// Phosphor microphone. Inlined to avoid a new icon dependency.
 // HugeIcons arrow-down-01 (stroke-standard): straight-line chevron.
 const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
