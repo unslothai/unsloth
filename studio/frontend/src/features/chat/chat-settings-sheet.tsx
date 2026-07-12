@@ -2023,7 +2023,6 @@ function NudgeToolCallsToggle() {
 }
 
 function ConfirmToolCallsToggle() {
-  const confirmToolCalls = useChatRuntimeStore((s) => s.confirmToolCalls);
   const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
@@ -2049,7 +2048,7 @@ function ConfirmToolCallsToggle() {
       </div>
       <Switch
         className="panel-switch"
-        checked={confirmToolCalls && permissionMode !== "full"}
+        checked={permissionMode === "ask"}
         onCheckedChange={setConfirmToolCalls}
         disabled={permissionMode === "full"}
       />

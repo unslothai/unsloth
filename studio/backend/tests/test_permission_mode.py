@@ -52,6 +52,9 @@ def _clear_pending():
         ("python -c 'print(1)'", True),  # arbitrary code
         ("find . -exec rm {} ;", True),  # find can execute
         ("find . -delete", True),  # find can delete
+        ("fd -x rm", True),  # fd runs a command per result
+        ("fd --exec-batch rm", True),
+        ("fd -e py pattern", False),  # plain fd search stays read only
         ("sort -o out.txt in.txt", True),  # -o writes a file
         ("sort --output=out in", True),
         ("sort in.txt", False),  # plain sort stays read only
@@ -98,6 +101,9 @@ def test_terminal_classifier(command, unsafe):
         ("import zipfile\nprint(zipfile.ZipFile('a').open('n.txt'))", False),
         ("print(open('../../.ssh/id_rsa').read())", True),  # traversal read
         ("print(open('creds.env').read())", True),  # credential file
+        ("import os\nos.open('data.txt', os.O_CREAT)", True),  # os.open writes fd
+        ("import tempfile\ntempfile.mkstemp()", True),  # tempfile side effects
+        ("getattr(os, 'remove')('x')", True),  # dynamic call target
     ],
 )
 def test_python_classifier(code, unsafe):
@@ -123,6 +129,9 @@ def test_unknown_tools_fail_closed():
         ("send_email", True),
         ("create_issue", True),
         ("delete_row", True),
+        ("get_or_create_issue", True),  # mutating verb overrides read prefix
+        ("read_and_delete_file", True),
+        ("find_and_update_row", True),
     ],
 )
 def test_mcp_classifier(tool, unsafe):

@@ -378,7 +378,12 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
             "-fls",
         }
     ),
+    # fd runs a command per result with -x/--exec and -X/--exec-batch.
+    "fd": frozenset({"-x", "--exec", "-X", "--exec-batch"}),
 }
+# find/fd expressions group with (...) which resets command context, so scan
+# every token for these once find/fd is seen anywhere in the command.
+_AUTO_UNSAFE_FIND_LIKE_FLAGS = _AUTO_UNSAFE_COMMAND_FLAGS["find"] | _AUTO_UNSAFE_COMMAND_FLAGS["fd"]
 # Benign wrappers: they count as safe AND forward command position to their
 # target (which is then checked itself). sudo/su/chroot/etc. are deliberately
 # absent, so they classify as unsafe.
@@ -390,6 +395,16 @@ _AUTO_SAFE_WRAPPERS = frozenset(
 _AUTO_SAFE_MCP_TOOL_RE = re.compile(
     r"^(get|list|search|read|fetch|query|find|describe|show|view|lookup|"
     r"retrieve|count|status|info|help|check)(?:[_\-].*)?$",
+    re.IGNORECASE,
+)
+# A mutating verb anywhere in the name overrides a read-only prefix, so a
+# compound name like get_or_create_issue or read_and_delete_file still asks.
+_AUTO_UNSAFE_MCP_VERB_RE = re.compile(
+    r"(?:^|[_\-])(?:create|update|delete|remove|write|set|add|send|post|put|"
+    r"patch|insert|drop|kill|exec|execute|run|deploy|publish|move|rename|edit|"
+    r"modify|upload|replace|revoke|grant|approve|merge|close|cancel|pay|"
+    r"transfer|buy|sell|reset|clear|purge|destroy|terminate|revert|rollback|"
+    r"trigger|enable|disable|install|uninstall|restart|stop|start)(?:[_\-]|$)",
     re.IGNORECASE,
 )
 
@@ -413,6 +428,7 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "smtplib",
         "telnetlib",
         "paramiko",
+        "tempfile",
     }
 )
 # Attribute calls that mutate the filesystem / spawn processes (os.remove,
@@ -545,10 +561,10 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         return True
     # find/fd expressions group with (...) which resets command context, so a
     # trailing -delete/-exec could slip past. When find/fd is used anywhere,
-    # scan every token for its mutating actions.
+    # scan every token for its mutating actions (find -exec/-delete/..., fd
+    # -x/--exec-batch).
     if any(os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in tokens):
-        find_flags = _AUTO_UNSAFE_COMMAND_FLAGS["find"]
-        if any(t.split("=", 1)[0] in find_flags for t in tokens):
+        if any(t.split("=", 1)[0] in _AUTO_UNSAFE_FIND_LIKE_FLAGS for t in tokens):
             return True
     expect_command = True
     prefix_pending = False
@@ -637,10 +653,19 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     return True
             elif isinstance(node, ast.Call):
                 func = node.func
+                if isinstance(func, ast.Call):
+                    return True  # calling a call result is a dynamic target
                 if isinstance(func, ast.Name):
                     if func.id == "open" and _builtin_open_writes(node):
                         return True
                 elif isinstance(func, ast.Attribute):
+                    # os.open() always creates/writes a file descriptor.
+                    if (
+                        func.attr == "open"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id == "os"
+                    ):
+                        return True
                     if func.attr == "open" and _attr_open_writes(node):
                         return True
     except Exception:
@@ -659,6 +684,10 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         return False
     if name.startswith(MCP_TOOL_PREFIX):
         tool_name = name.split("__", 2)[-1]
+        # A mutating verb anywhere (get_or_create_issue, read_and_delete)
+        # overrides a read-only prefix.
+        if _AUTO_UNSAFE_MCP_VERB_RE.search(tool_name):
+            return True
         return not _AUTO_SAFE_MCP_TOOL_RE.match(tool_name)
     if name == "terminal":
         return _terminal_is_potentially_unsafe(str(arguments.get("command", "")))
