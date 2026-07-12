@@ -423,6 +423,19 @@ class ExportOrchestrator:
             self._export_active = True
             op_success, op_message = False, ""
             try:
+                # Handshake with the sidecar install route: _export_active is set
+                # above, so either this recheck sees a reservation and refuses
+                # BEFORE tearing down the old worker (keeping the loaded
+                # checkpoint), or the install route sees is_export_active() and
+                # 409s. The spawn-time recheck stays as a last resort.
+                from utils.transformers_version import sidecar_swap_in_progress
+
+                if sidecar_swap_in_progress():
+                    op_message = (
+                        "A transformers installation is replacing the latest "
+                        "sidecar; retry when it completes."
+                    )
+                    return False, op_message
                 # Always kill any existing subprocess and spawn fresh.
                 if self._ensure_subprocess_alive():
                     self._shutdown_subprocess()

@@ -2743,6 +2743,20 @@ class TestLatestTierForces16Bit:
         assert (
             "sidecar_swap_in_progress()" in spawn
         ), "the export subprocess spawn must recheck the sidecar swap reservation"
+        # Training marks the spawn active BEFORE its recheck, so either side of
+        # the interleaving sees the other: the install route's is_training_active
+        # covers the window between proc.start() and the _proc assignment.
+        assert training.index("self._spawn_in_progress = True") < training.index(
+            "if sidecar_swap_in_progress():"
+        )
+        active = training.split("def is_training_active", 1)[1].split("\n    def ", 1)[0]
+        assert "_spawn_in_progress" in active
+        # Export load-checkpoint refuses BEFORE tearing down the old worker, so a
+        # lost race against an install keeps the loaded checkpoint (no bare 500).
+        loadck = export.split("def load_checkpoint", 1)[1].split("\n    def ", 1)[0]
+        assert loadck.index("sidecar_swap_in_progress()") < loadck.index(
+            "_shutdown_subprocess()"
+        )
 
 
 class TestSidecarSwapReservation:

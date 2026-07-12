@@ -867,11 +867,15 @@ class TrainingBackend:
 
         from .worker import run_training_process
 
-        # Recheck right before the spawn: the route-level guard is one-shot and
-        # validation between it and this point can outlast an install's start.
+        # Handshake with the sidecar install route: mark the spawn in progress
+        # BEFORE rechecking the reservation, so any interleaving is safe. Either
+        # this recheck sees the install and aborts, or the install route's
+        # is_training_active() sees this flag (or the recorded proc) and refuses.
         from utils.transformers_version import sidecar_swap_in_progress
 
+        self._spawn_in_progress = True
         if sidecar_swap_in_progress():
+            self._spawn_in_progress = False
             raise RuntimeError(
                 "A transformers installation is replacing the latest sidecar; "
                 "retry when it completes."
@@ -898,6 +902,7 @@ class TrainingBackend:
                 adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
         except Exception:
             logger.error("Failed to start training subprocess", exc_info = True)
+            self._spawn_in_progress = False
             return False
 
         logger.info("Training subprocess started (pid=%s)", proc.pid)
@@ -945,6 +950,7 @@ class TrainingBackend:
             self._proc = proc
             self._pump_thread = new_pump
             new_pump.start()
+            self._spawn_in_progress = False
 
         return True
 
@@ -1048,11 +1054,15 @@ class TrainingBackend:
 
         from .worker import run_training_process
 
-        # Recheck right before the spawn: the route-level guard is one-shot and
-        # validation between it and this point can outlast an install's start.
+        # Handshake with the sidecar install route: mark the spawn in progress
+        # BEFORE rechecking the reservation, so any interleaving is safe. Either
+        # this recheck sees the install and aborts, or the install route's
+        # is_training_active() sees this flag (or the recorded proc) and refuses.
         from utils.transformers_version import sidecar_swap_in_progress
 
+        self._spawn_in_progress = True
         if sidecar_swap_in_progress():
+            self._spawn_in_progress = False
             raise RuntimeError(
                 "A transformers installation is replacing the latest sidecar; "
                 "retry when it completes."
@@ -1078,6 +1088,7 @@ class TrainingBackend:
                 adopt_pid(new_proc.pid)  # bind to parent lifetime (Windows job / sweep)
         except Exception:
             logger.error("Failed to respawn training subprocess", exc_info = True)
+            self._spawn_in_progress = False
             with self._lock:
                 # No replacement pump will run; clear the flag so a later run can't
                 # inherit a stale _pump_running=True and spawn a duplicate.
@@ -1098,6 +1109,7 @@ class TrainingBackend:
             self._event_queue = event_queue
             self._stop_queue = stop_queue
             self._proc = new_proc
+            self._spawn_in_progress = False
             self._pump_thread = new_pump
             # Start under the lock so _ensure_pump_alive can never observe the
             # new pump as a not-yet-started (dead) thread and spawn a duplicate.
@@ -1134,6 +1146,10 @@ class TrainingBackend:
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
+        # A spawn that has passed its sidecar-swap recheck counts as active even
+        # before _proc is recorded, so an install cannot slip in mid-spawn.
+        if getattr(self, "_spawn_in_progress", False):
+            return True
         # Self-heal a crashed pump first: a dead pump must never leave the worker
         # training invisibly behind a frozen UI. Cheap enough for per-second polls.
         self._ensure_pump_alive()
