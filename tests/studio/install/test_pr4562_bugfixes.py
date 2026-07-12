@@ -658,15 +658,21 @@ class TestSourceCodePatterns:
         assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
 
-    def test_setup_sh_routes_to_fork_only_on_usable_gpu(self):
-        """Linux routing gates NVIDIA on GPU usability, not nvidia-smi presence, so
-        CPU-only/hidden-GPU hosts get the ggml CPU prebuilt. Guards the old presence-only loop."""
+    def test_setup_sh_routes_every_host_to_fork(self):
+        """CPU-only Linux (the last ggml-org artifact consumer) now routes to the
+        fork like every other host, so the release-repo decision is unconditional.
+        Guards against a silent reintroduction of a ggml-org CPU routing branch.
+        GPU usability detection (used for PyTorch / source decisions) must stay."""
         content = SETUP_SH.read_text()
+        assert '_HELPER_RELEASE_REPO="unslothai/llama.cpp"' in content
+        assert '_HELPER_RELEASE_REPO="ggml-org/llama.cpp"' not in content
+        # Usability gating (not routing) still distinguishes a hidden GPU.
         assert '[ "$_setup_nvidia_usable" = true ]' in content
         assert "CUDA_VISIBLE_DEVICES" in content
-        # nvidia-smi must NOT be back in the bare presence loop.
-        assert "for _GPU_TOOL in nvidia-smi" not in content
-        assert "for _GPU_TOOL in rocminfo amd-smi hipconfig hipinfo" in content
+        # The GPU-tooling probe (PR #4562) stays: ROCm detection goes through
+        # command -v, not a bare presence loop that mishandled a hidden nvidia-smi.
+        assert "command -v rocminfo" in content
+        assert "command -v amd-smi" in content
 
     def test_setup_sh_reports_installed_prebuilt_release(self):
         """Shell wrapper should report the installed prebuilt release from metadata."""
@@ -728,13 +734,16 @@ class TestSourceCodePatterns:
         assert all(
             "-allow-unsupported-compiler" not in line for line in cmake_args_lines
         ), "flag must not be pushed into the $CmakeArgs array"
-        # Must be scoped to the CUDA branch, not set for CPU-only builds.
+        # Must be scoped to the CUDA-on branch, not set for CPU-only builds. The
+        # branch also has an early GGML_CUDA=OFF (undetectable-arch CPU fallback,
+        # #5854), so anchor on GGML_CUDA=ON and the final (no-GPU) GGML_CUDA=OFF.
         flag_idx = content.index("-allow-unsupported-compiler")
         cuda_guard_idx = content.index("if ($HasNvidiaSmi -and $NvccPath)")
-        cuda_disable_idx = content.index("'-DGGML_CUDA=OFF'")
-        assert cuda_guard_idx < flag_idx < cuda_disable_idx, (
-            "NVCC_PREPEND_FLAGS must be set inside the CUDA-on branch, "
-            "before the GGML_CUDA=OFF (CPU) branch"
+        cuda_on_idx = content.index("'-DGGML_CUDA=ON'")
+        cpu_else_idx = content.rindex("'-DGGML_CUDA=OFF'")
+        assert cuda_guard_idx < cuda_on_idx < flag_idx < cpu_else_idx, (
+            "NVCC_PREPEND_FLAGS must be set inside the CUDA-on branch, after "
+            "-DGGML_CUDA=ON and before the final CPU GGML_CUDA=OFF branch"
         )
 
     def test_macos_arm64_cpu_fallback_args_exclude_rpath(self):

@@ -12,6 +12,10 @@ import {
 import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
+import {
+  MessageResponseDetailsSheet,
+  MessageResponseModelBadge,
+} from "@/components/assistant-ui/message-response-details-sheet";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
@@ -123,6 +127,7 @@ import {
   FileDatabaseIcon,
   Folder01Icon,
   FolderAddIcon,
+  HelpCircleIcon,
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
@@ -968,7 +973,9 @@ export const Thread: FC<{
             scrollToBottomOnThreadSwitch={false}
             className={cn(
               "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
-              hideComposer ? "pt-4" : "pt-[48px]",
+              hideComposer
+                ? "pt-4"
+                : "pt-[calc(var(--studio-content-top-inset,0px)+48px)]",
             )}
           >
             {!hideWelcome && (
@@ -1210,7 +1217,7 @@ const ThreadComposerDock: FC<{
       <div
         aria-hidden={true}
         className={cn(
-          "absolute inset-x-0 bottom-0 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-transparent",
+          "absolute inset-x-0 bottom-0 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-[rgb(from_var(--background)_r_g_b/0)]",
           queueVisible
             ? "h-32 backdrop-blur-[1px] [mask-image:linear-gradient(to_top,black_0%,black_58%,transparent_100%)]"
             : "top-[10px]",
@@ -3043,6 +3050,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           type="button"
           aria-label="Tools and attachments"
           className="unsloth-composer-plus"
+          data-tour="chat-plus-menu"
         >
           <PlusIcon className="size-[22px] stroke-[1.75px]" />
         </button>
@@ -3552,17 +3560,20 @@ const DiffusionCanvas: FC = () => {
 
 /**
  * AssistantMessage handles the display and inline-editing of AI responses.
- * 
- * It utilizes a "Tagged Text" system (<THINK> and <TOOL> tags) to allow users 
- * to edit structured reasoning and tool outputs within a plain-text textarea 
+ *
+ * It utilizes a "Tagged Text" system (<THINK> and <TOOL> tags) to allow users
+ * to edit structured reasoning and tool outputs within a plain-text textarea
  * while preserving the underlying data schema and tool-call metadata.
  */
 const AssistantMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
+  const hasReasoningParts = useAuiState(({ message }) =>
+    message.parts.some((part) => part.type === "reasoning"),
+  );
   const incognito = useChatRuntimeStore((s) => s.incognito);
-  
+
   // Use global store for editing state to ensure a single source of truth
   const editingId = useChatRuntimeStore((s) => s.editingMessageId);
   const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
@@ -3585,9 +3596,9 @@ const AssistantMessage: FC = () => {
 
   const handleSave = async () => {
     const finalText = textareaRef.current?.value || "";
-    
+
     // Prioritize the specific thread item ID, then fallback to the global active thread ID
-    const remoteId = aui.threadListItem().getState().remoteId 
+    const remoteId = aui.threadListItem().getState().remoteId
                   || useChatRuntimeStore.getState().activeThreadId;
 
     if (!remoteId || remoteId === "" || remoteId === "/") {
@@ -3598,9 +3609,9 @@ const AssistantMessage: FC = () => {
 
     try {
       await updateThreadMessage({
-        thread: { 
-          export: () => aui.thread().export(), 
-          import: (data) => aui.thread().import(data) 
+        thread: {
+          export: () => aui.thread().export(),
+          import: (data) => aui.thread().import(data)
         },
         messageId,
         remoteId,
@@ -3617,20 +3628,20 @@ const AssistantMessage: FC = () => {
 
   return (
     <MessagePrimitive.Root
-      className="aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
+      className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
-            <textarea 
+            <textarea
               ref={textareaRef}
               defaultValue={extractTaggedText(messageContent)}
-              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-2 focus:ring-primary outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70vh]" 
+              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-2 focus:ring-primary outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70vh]"
               autoFocus
-              onInput={adjustHeight} 
+              onInput={adjustHeight}
               onKeyDown={(e) => {
-                e.stopPropagation(); 
+                e.stopPropagation();
                 if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                   handleSave();
                 }
@@ -3646,13 +3657,18 @@ const AssistantMessage: FC = () => {
           </div>
         ) : (
           <>
+            {!hasReasoningParts ? (
+              <div className="pointer-events-none relative h-0 min-w-0">
+                <MessageResponseModelBadge className="absolute -top-6 left-0 max-w-[min(22rem,100%)]" />
+              </div>
+            ) : null}
             <GeneratingIndicator />
             <CancelledIndicator />
             <DiffusionCanvas />
-            
-            {/* 
-                We use the standard MessagePrimitive.Parts. This ensures that 
-                edited messages maintain the same professional styling, 
+
+            {/*
+                We use the standard MessagePrimitive.Parts. This ensures that
+                edited messages maintain the same professional styling,
                 Markdown rendering, and tool-call components as original responses.
             */}
             <MessagePrimitive.Parts
@@ -3890,58 +3906,76 @@ const EditAssistantMessageButton: FC = () => {
 
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   return (
-    <ActionBarPrimitive.Root
-      hideWhenRunning={true}
-      className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
-    >
-      <CopyButton />
-      <EditAssistantMessageButton />
-      <ActionBarPrimitive.Reload asChild={true}>
-        <TooltipIconButton tooltip="Refresh">
-          <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Reload>
-      <ForkCountBadge />
-      <DeleteMessageButton />
-      <ActionBarMorePrimitive.Root>
-        <ActionBarMorePrimitive.Trigger asChild={true}>
-          <TooltipIconButton
-            tooltip="More"
-            className="data-[state=open]:bg-accent"
-          >
-            <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+    <>
+      <ActionBarPrimitive.Root
+        hideWhenRunning={true}
+        className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
+      >
+        <CopyButton />
+        <EditAssistantMessageButton />
+        <ActionBarPrimitive.Reload asChild={true}>
+          <TooltipIconButton tooltip="Refresh">
+            <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
           </TooltipIconButton>
-        </ActionBarMorePrimitive.Trigger>
-        <ActionBarMorePrimitive.Content
-          side="bottom"
-          align="start"
-          onCloseAutoFocus={(e) => e.preventDefault()}
-          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[9px] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
-        >
-          <ActionBarMorePrimitive.Item
-            disabled={forkDisabled}
-            onSelect={() => void forkMessage()}
-            className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+        </ActionBarPrimitive.Reload>
+        <ForkCountBadge />
+        <DeleteMessageButton />
+        <ActionBarMorePrimitive.Root>
+          <ActionBarMorePrimitive.Trigger asChild={true}>
+            <TooltipIconButton
+              tooltip="More"
+              className="data-[state=open]:bg-accent"
+            >
+              <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+            </TooltipIconButton>
+          </ActionBarMorePrimitive.Trigger>
+          <ActionBarMorePrimitive.Content
+            side="bottom"
+            align="start"
+            onCloseAutoFocus={(e) => e.preventDefault()}
+            className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[9px] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
           >
-            <GitBranchIcon strokeWidth={1.75} className="size-icon" />
-            Fork in new chat
-          </ActionBarMorePrimitive.Item>
-          <ActionBarPrimitive.ExportMarkdown asChild={true}>
-            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+            <ActionBarMorePrimitive.Item
+              disabled={forkDisabled}
+              onSelect={() => void forkMessage()}
+              className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+            >
+              <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+              Fork in new chat
+            </ActionBarMorePrimitive.Item>
+            <ActionBarPrimitive.ExportMarkdown asChild={true}>
+              <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+                <HugeiconsIcon
+                  icon={Download01Icon}
+                  strokeWidth={1.75}
+                  className="size-icon"
+                />
+                Export as markdown
+              </ActionBarMorePrimitive.Item>
+            </ActionBarPrimitive.ExportMarkdown>
+            <ActionBarMorePrimitive.Item
+              onSelect={() => setDetailsOpen(true)}
+              className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+            >
               <HugeiconsIcon
-                icon={Download01Icon}
+                icon={HelpCircleIcon}
                 strokeWidth={1.75}
                 className="size-icon"
               />
-              Export as Markdown
+              See response details
             </ActionBarMorePrimitive.Item>
-          </ActionBarPrimitive.ExportMarkdown>
-        </ActionBarMorePrimitive.Content>
-      </ActionBarMorePrimitive.Root>
-      <MessageTiming side="top" className="h-8 px-2" />
-    </ActionBarPrimitive.Root>
+          </ActionBarMorePrimitive.Content>
+        </ActionBarMorePrimitive.Root>
+        <MessageTiming side="top" className="h-8 px-2" />
+      </ActionBarPrimitive.Root>
+      <MessageResponseDetailsSheet
+        open={detailsOpen}
+        onOpenChange={setDetailsOpen}
+      />
+    </>
   );
 };
 

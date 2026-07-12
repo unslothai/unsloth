@@ -50,6 +50,7 @@ export function SummaryStep() {
   const {
     modelType,
     selectedModel,
+    projectName,
     trainingMethod,
     datasetSource,
     datasetFormat,
@@ -68,6 +69,7 @@ export function SummaryStep() {
       ({
         modelType,
         selectedModel,
+        projectName,
         trainingMethod,
         datasetSource,
         datasetFormat,
@@ -84,6 +86,7 @@ export function SummaryStep() {
       }) => ({
         modelType,
         selectedModel,
+        projectName,
         trainingMethod,
         datasetSource,
         datasetFormat,
@@ -122,7 +125,7 @@ export function SummaryStep() {
               <span className="text-xs text-muted-foreground">GPU</span>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium">{hw.gpuName ?? "---"}</span>
-                <Badge variant="secondary">{hw.vramTotalGb != null ? `${hw.vramTotalGb} GB` : "---"}</Badge>
+                <Badge variant="secondary">{hw.vramTotalGb != null ? `${hw.vramTotalGb} GiB` : "---"}</Badge>
               </div>
             </div>
           </div>
@@ -152,6 +155,7 @@ export function SummaryStep() {
           <Separator className="my-2" />
           <div className="space-y-1 text-sm">
             <Row label="Type" value={modelType} capitalize />
+            <Row label="Project" value={projectName || "--"} />
             <Row label="Method" value={trainingMethodLabel} />
           </div>
         </CardContent>

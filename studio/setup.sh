@@ -74,6 +74,62 @@ verbose_substep() {
     return 0
 }
 
+# ── Corporate-mirror / proxy escape hatch for the frontend npm/bun install (#6491) ──
+# studio/frontend/.npmrc pins registry=https://registry.npmjs.org/ as a supply-chain
+# lock. A project-level pin overrides a corporate user's ~/.npmrc proxy, so the install
+# hits npmjs.org directly and a firewall returns 403. UNSLOTH_NPM_REGISTRY is a
+# deliberate opt-in: when set we thread it as `--registry <url>` into every npm/bun
+# install. `--registry` is the highest-precedence override for BOTH tools and leaves
+# min-release-age / save-exact in force. Empty array (the default) expands to nothing
+# under `set -u`, so normal installs are unchanged.
+_NPM_REGISTRY_ARGS=()
+if [ -n "${UNSLOTH_NPM_REGISTRY:-}" ]; then
+    _NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
+fi
+# Failure-path capture log consumed by _suggest_npm_registry. Set to a temp file
+# around the npm/bun installs; "" elsewhere so unrelated run_quiet calls don't capture.
+_CAPTURE_LOG=""
+
+# Print actionable guidance when a frontend/OXC npm/bun install fails and the registry
+# lock is the likely cause (corporate firewall/proxy). No-op once the user has opted in
+# via UNSLOTH_NPM_REGISTRY. We never switch registries automatically -- we only guide.
+# $1 = path to a captured install log (may be empty/missing).
+_suggest_npm_registry() {
+    [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && return 0
+    local _log="${1:-}"
+    # If we captured output and it does NOT look like a registry/network problem, stay
+    # quiet -- the raw error already shown is more useful than a misleading hint.
+    if [ -n "$_log" ] && [ -s "$_log" ] \
+        && ! grep -Eqi '40[13]|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ConnectionRefused|failed to resolve|registry\.npmjs\.org|getaddrinfo|tunneling socket|network|proxy|self.?signed|unable to (get|verify)' "$_log"; then
+        return 0
+    fi
+    # Best-effort: surface a mirror the user already configured (env or ~/.npmrc).
+    # Read npm config from / (a dir with no project .npmrc) so the frontend's pinned
+    # registry= does not mask the user's ~/.npmrc / global mirror -- the caller is
+    # still inside studio/frontend when this runs.
+    local _mirror="${NPM_CONFIG_REGISTRY:-${npm_config_registry:-}}"
+    if [ -z "$_mirror" ] && command -v npm >/dev/null 2>&1; then
+        _mirror="$( (cd / 2>/dev/null && npm config get registry) 2>/dev/null || true )"
+    fi
+    case "$_mirror" in
+        ""|undefined|null|https://registry.npmjs.org|https://registry.npmjs.org/) _mirror="" ;;
+    esac
+    printf '\n' >&2
+    step "frontend" "registry.npmjs.org looks blocked (corporate firewall/proxy?)" "$C_WARN" >&2
+    if [ -n "$_mirror" ]; then
+        substep "Studio pins the public npm registry; your mirror is being ignored." >&2
+        substep "Detected a registry in your npm config:" >&2
+        substep "  $_mirror" >&2
+        substep "Re-run pointing Studio at it:" >&2
+        substep "  UNSLOTH_NPM_REGISTRY=$_mirror ./install.sh --local" >&2
+    else
+        substep "If you use a private mirror/proxy, point Studio at it and re-run:" >&2
+        substep "  UNSLOTH_NPM_REGISTRY=https://your-mirror.example/api/npm/ ./install.sh --local" >&2
+    fi
+    substep "(min-release-age and save-exact stay enforced.)" >&2
+    return 0
+}
+
 run_maybe_quiet() {
     if _is_verbose; then
         "$@"
@@ -113,6 +169,7 @@ _run_quiet() {
         local exit_code=$?
         step "error" "$label failed (exit code $exit_code)" "$C_ERR" >&2
         cat "$tmplog" >&2
+        if [ -n "${_CAPTURE_LOG:-}" ]; then cat "$tmplog" >> "$_CAPTURE_LOG" 2>/dev/null || true; fi
         rm -f "$tmplog"
 
         if [ "$on_fail" = "exit" ]; then
@@ -153,6 +210,31 @@ _nvcc_meets_llama_minimum() {
         echo "ok"
     fi
     echo "$_raw"
+}
+
+# Echo a ';'-separated CUDA arch list (e.g. "86;120"). Override ($2,
+# UNSLOTH_LLAMA_CUDA_ARCHS) wins verbatim; else parse+dedupe compute_cap text
+# ($1). Empty means "no arch detected", so the caller builds CPU instead of a
+# PTX-only binary that fails on an old driver (#5854).
+_resolve_cuda_archs() {
+    local _raw_caps=$1
+    local _arch_override=$2
+    if [ -n "$_arch_override" ]; then
+        printf '%s' "$_arch_override"
+        return 0
+    fi
+    local _archs="" _cap _arch
+    while IFS= read -r _cap; do
+        _cap=$(printf '%s' "$_cap" | tr -d '[:space:]')
+        if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+            _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+            case ";$_archs;" in
+                *";$_arch;"*) ;;
+                *) _archs="${_archs:+$_archs;}$_arch" ;;
+            esac
+        fi
+    done <<< "$_raw_caps"
+    printf '%s' "$_archs"
 }
 
 # Run a GPU probe under a 10s timeout when `timeout` is available so a wedged
@@ -622,7 +704,7 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     substep "installing bun..."
     # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
     # postinstall fetches its binary; without it the install is a broken stub.
-    if run_maybe_quiet npm install -g bun --allow-scripts=bun && command -v bun &>/dev/null; then
+    if run_maybe_quiet npm install -g bun --allow-scripts=bun "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" && command -v bun &>/dev/null; then
         substep "bun installed ($(bun --version))"
     else
         substep "bun install skipped (npm will be used instead)"
@@ -665,7 +747,7 @@ trap _restore_gitignores EXIT
 _try_bun_install() {
     local _log _exit_code=0
     _log=$(mktemp)
-    bun install >"$_log" 2>&1 || _exit_code=$?
+    bun install "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" >"$_log" 2>&1 || _exit_code=$?
 
     # bun may create .exe shims on Windows (Git Bash / MSYS2) instead of plain scripts
     if [ "$_exit_code" -eq 0 ] \
@@ -682,11 +764,15 @@ _try_bun_install() {
         echo "   bun install exited 0 but critical binaries are missing:"
     fi
     sed 's/^/   | /' "$_log" >&2
+    if [ -n "${_CAPTURE_LOG:-}" ]; then cat "$_log" >> "$_CAPTURE_LOG" 2>/dev/null || true; fi
     rm -f "$_log"
     rm -rf node_modules
     return 1
 }
 
+# Capture install output (bun + npm fallback) so we can detect a registry block.
+_FRONTEND_INSTALL_LOG=$(mktemp)
+_CAPTURE_LOG="$_FRONTEND_INSTALL_LOG"
 _bun_install_ok=false
 if command -v bun &>/dev/null; then
     substep "using bun for package install (faster)"
@@ -703,12 +789,19 @@ if command -v bun &>/dev/null; then
     fi
 fi
 if [ "$_bun_install_ok" = false ]; then
-    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error
-    _npm_install_rc=$?
+    # `|| _npm_install_rc=$?` keeps this off `set -e`'s exit path (run_quiet_no_exit
+    # returns non-zero on failure) so the hint branch is reachable; it also captures
+    # the exact exit code. Mirrors the `|| BUILD_OK=false` idiom used below.
+    _npm_install_rc=0
+    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
     if [ "$_npm_install_rc" -ne 0 ]; then
+        _suggest_npm_registry "$_FRONTEND_INSTALL_LOG"
+        rm -f "$_FRONTEND_INSTALL_LOG"
         exit "$_npm_install_rc"
     fi
 fi
+_CAPTURE_LOG=""
+rm -f "$_FRONTEND_INSTALL_LOG"
 run_quiet "npm run build" npm run build
 
 _restore_gitignores
@@ -734,11 +827,19 @@ fi  # end frontend build check
 # Node, so do not run npm install against an unsuitable/absent system Node.
 if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
     cd "$_OXC_DIR"
-    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error
-    _oxc_install_rc=$?
+    _OXC_INSTALL_LOG=$(mktemp)
+    _CAPTURE_LOG="$_OXC_INSTALL_LOG"
+    # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
+    # below is reachable; it also captures the exact exit code.
+    _oxc_install_rc=0
+    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
+    _CAPTURE_LOG=""
     if [ "$_oxc_install_rc" -ne 0 ]; then
+        _suggest_npm_registry "$_OXC_INSTALL_LOG"
+        rm -f "$_OXC_INSTALL_LOG"
         exit "$_oxc_install_rc"
     fi
+    rm -f "$_OXC_INSTALL_LOG"
     cd "$SCRIPT_DIR"
 elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
     # No npm on PATH: skip rather than abort; the backend Node resolver degrades
@@ -846,6 +947,23 @@ print(version(sys.argv[1]))
     if [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
         step "python" "$_PKG_NAME $INSTALLED_VER is up to date"
         _SKIP_PYTHON_DEPS=true
+        # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
+        # $_PKG_NAME itself is current; the fast path above would otherwise
+        # never reach install_python_stack's anyio repair (#6797).
+        if "$VENV_DIR/bin/python" -c "
+import re, sys
+from importlib.metadata import version, PackageNotFoundError
+try:
+    parts = version('anyio').split('.')
+    major = int(parts[0])
+    minor = int(re.sub(r'[^0-9].*', '', parts[1])) if len(parts) > 1 else 0
+except (PackageNotFoundError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if (major, minor) >= (4, 14) else 1)
+" 2>/dev/null; then
+            substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then
@@ -1062,63 +1180,19 @@ _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
 
-# Pick the release repo install_llama_prebuilt.py plans against.
-# The fork ships CUDA (Linux x64/arm64, Windows), ROCm (Linux/Windows) and
-# macOS bundles. Only the plain CPU/Vulkan bundles still come from ggml-org, so
-# CPU-only Linux (x86_64 and arm64) routes there; GPU Linux, Windows and macOS
-# use unslothai.
-_LINUX_HAS_GPU=false
-# Route to the fork only for a usable GPU. NVIDIA counts only when a device is
-# actually enumerated and not hidden via CUDA_VISIBLE_DEVICES=""/-1
-# (_setup_nvidia_usable, from _setup_has_usable_nvidia_gpu above) -- mirroring
-# install_llama_prebuilt.py's has_usable_nvidia. Mere nvidia-smi presence
-# (CPU-only CUDA-toolkit containers, broken drivers) or a hidden GPU therefore
-# takes the ggml-org CPU prebuilt instead of a slow source build. AMD is
-# deliberately left on tooling presence, not usability: an unusable NVIDIA host
-# has a good CPU prebuilt to fall back to, whereas tightening AMD would regress
-# ROCm hosts exposing only hipconfig/hipinfo into an unnecessary CPU build.
-if [ "$_setup_nvidia_usable" = true ]; then
-    _LINUX_HAS_GPU=true
-else
-    for _GPU_TOOL in rocminfo amd-smi hipconfig hipinfo; do
-        if command -v "$_GPU_TOOL" >/dev/null 2>&1; then
-            _LINUX_HAS_GPU=true
-            break
-        fi
-    done
-fi
+# Pick the release repo install_llama_prebuilt.py plans against. Every host this
+# installer supports now pulls its llama.cpp prebuilt from the unslothai fork: it
+# ships the CUDA (Linux x64/arm64, Windows), ROCm (Linux/Windows) and macOS
+# bundles, plus the CPU bundles for Linux/Windows on both x86_64 and arm64.
+# ggml-org artifacts are no longer used by default.
+_HELPER_RELEASE_REPO="unslothai/llama.cpp"
 # UNSLOTH_ROCM_GFX_ARCH may be set on a host where no probe fired, so the override
 # nested in the AMD-detected branch above never ran and _setup_gfx is still empty.
-# Honour it here so the routing guard below and the --rocm-gfx forwarding both see
-# it (install_llama_prebuilt.py reads the same env var as the --rocm-gfx default).
-if [ "$_setup_nvidia_usable" != true ] && [ -z "${_setup_gfx:-}" ] && [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+# Honour it here so the --rocm-gfx forwarding below still sees it
+# (install_llama_prebuilt.py reads the same env var as the --rocm-gfx default).
+if [ "${_setup_nvidia_usable:-}" != true ] && [ -z "${_setup_gfx:-}" ] && [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
     _setup_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
 fi
-# A resolved/forwarded gfx arch (UNSLOTH_ROCM_GFX_ARCH) means an AMD GPU even when
-# no ROCm tooling is on PATH; route it to the fork so the per-gfx prebuilt is
-# picked instead of ggml-org / a source build.
-if [ "$_LINUX_HAS_GPU" = false ] && [ -n "${_setup_gfx:-}" ]; then
-    _LINUX_HAS_GPU=true
-fi
-
-if [ "$_HOST_SYSTEM" = "Linux" ] \
-        && [ "$_HOST_MACHINE" = "x86_64" ] \
-        && [ "$_LINUX_HAS_GPU" = false ]; then
-    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
-elif [ "$_HOST_SYSTEM" = "Linux" ] \
-        && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
-        && [ "$_LINUX_HAS_GPU" = false ]; then
-    # CPU-only Linux ARM64 (Ampere Altra, Raspberry Pi 5, GitHub
-    # `ubuntu-24.04-arm`, CPU-only Jetson rescue mode, ...). The fork ships no
-    # arm64 CPU bundle, so without this branch the prebuilt resolver returns 0
-    # attempts and the installer falls back to a source build. ggml-org ships
-    # llama-bNNNN-bin-ubuntu-arm64.tar.gz from at least b9072 onward.
-    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
-else
-    # GPU Linux (x64 CUDA/ROCm, arm64 CUDA), Windows (CUDA/ROCm), and macOS.
-    _HELPER_RELEASE_REPO="unslothai/llama.cpp"
-fi
-unset _GPU_TOOL
 _LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
 _SKIP_PREBUILT_INSTALL=false
 _LLAMA_PR_FORCE="${UNSLOTH_LLAMA_PR_FORCE:-${_DEFAULT_LLAMA_PR_FORCE}}"
@@ -1157,7 +1231,90 @@ fi
 
 verbose_substep "requested llama.cpp tag: $_REQUESTED_LLAMA_TAG (repo: $_HELPER_RELEASE_REPO)"
 
-if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
+# GGUF export's check_llama_cpp() looks for a llama-quantize shim at the root of
+# the install dir, but a source build keeps the binary under build/bin/. Mirror
+# the source-build-reuse step and create the shim when the reused tree has one
+# but no root shim yet. Best-effort: the tree may be read-only (shared/CI cache),
+# and under `set -e` a failed ln would otherwise abort an good reuse.
+_link_local_llama_quantize_shim() {
+    if [ -x "$1/build/bin/llama-quantize" ] && [ ! -e "$1/llama-quantize" ]; then
+        ln -sf build/bin/llama-quantize "$1/llama-quantize" 2>/dev/null || \
+            substep "could not create llama-quantize shim in linked dir (read-only?); GGUF export may be unavailable"
+    fi
+}
+
+# Accept any layout LlamaCppBackend._layout_candidates() resolves so the flag
+# never rejects a tree Studio could actually run: a root-level llama-server (a
+# `make` build or a flat-extracted release) or the CMake build/bin/llama-server.
+_has_local_llama_server() {
+    [ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]
+}
+
+_LOCAL_LLAMA_CPP_LINKED=false
+if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
+    if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
+        step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR" "$C_ERR"
+        exit 1
+    fi
+    _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" && pwd -P)"
+    # Canonicalize the install path the same way before comparing: _RESOLVED_LOCAL
+    # is fully resolved, but LLAMA_CPP_DIR is textual ($UNSLOTH_HOME/llama.cpp). If
+    # $HOME (or UNSLOTH_HOME) contains a symlink, the two never match even when the
+    # user pointed the flag at the canonical install itself -- and the rm -rf below
+    # would then wipe the very tree they asked to reuse. Resolve via the parent so
+    # this works whether or not the leaf currently exists.
+    _CANON_LLAMA_CPP_DIR="$LLAMA_CPP_DIR"
+    _LLAMA_CPP_PARENT="$(dirname "$LLAMA_CPP_DIR")"
+    if [ -d "$_LLAMA_CPP_PARENT" ]; then
+        _CANON_LLAMA_CPP_DIR="$(CDPATH= cd -P -- "$_LLAMA_CPP_PARENT" && pwd -P)/$(basename "$LLAMA_CPP_DIR")"
+    fi
+    if [ "$_RESOLVED_LOCAL" = "$_CANON_LLAMA_CPP_DIR" ]; then
+        # Points at the canonical install location itself: never delete-then-link
+        # it onto itself. If a usable build is already there, reuse it and skip
+        # both the prebuilt download and the source build -- the prebuilt installer
+        # uses os.replace() and would otherwise clobber an existing source build at
+        # this path. If nothing is built there yet, fall through to the normal
+        # install so it gets built in place exactly as it would without the flag.
+        if _has_local_llama_server "$LLAMA_CPP_DIR"; then
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR is the canonical install location and already holds a build; reusing it"
+            _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
+            _LOCAL_LLAMA_CPP_LINKED=true
+            _NEED_LLAMA_SOURCE_BUILD=false
+            _SKIP_PREBUILT_INSTALL=true
+        else
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location with nothing built there yet; running the normal install"
+        fi
+    else
+        # Reusing disables BOTH the prebuilt download and the source build, so the
+        # linked tree must already contain a runnable llama-server in one of the
+        # layouts the backend resolves (root-level or build/bin/). Fail clearly
+        # rather than link an unbuilt or wrong-platform checkout and leave Studio
+        # with no usable binary.
+        if ! _has_local_llama_server "$_RESOLVED_LOCAL"; then
+            step "llama.cpp" "no llama-server under $_RESOLVED_LOCAL (looked for ./llama-server and ./build/bin/llama-server) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "$C_ERR"
+            exit 1
+        fi
+        # A stale link from a previous --with-llama-cpp-dir run isn't Studio-owned
+        # content; drop it before the ownership check so re-runs stay idempotent
+        # for a custom UNSLOTH_STUDIO_HOME (the assert would otherwise follow the
+        # link into the user's dir and reject it as unowned).
+        [ -L "$LLAMA_CPP_DIR" ] && rm -f "$LLAMA_CPP_DIR"
+        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+        fi
+        rm -rf "$LLAMA_CPP_DIR"
+        ln -sfn "$_RESOLVED_LOCAL" "$LLAMA_CPP_DIR"
+        _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
+        step "llama.cpp" "linked local directory: $_RESOLVED_LOCAL"
+        _LOCAL_LLAMA_CPP_LINKED=true
+        _NEED_LLAMA_SOURCE_BUILD=false
+        _SKIP_PREBUILT_INSTALL=true
+    fi
+fi
+
+if [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then
+    : # local directory linked above; skip prebuilt install
+elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true
 elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
@@ -1548,8 +1705,6 @@ else
                     fi
 
                     if [ "$_CUDA_TOOLKIT_ALLOWED" = true ]; then
-                        CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
-
                         # glibc >= 2.41 + CUDA < 13.3: rsqrt/rsqrtf header clash fails
                         # every .cu -> CPU fallback; only fix is CUDA >= 13.3. Diagnostic
                         # only (never changes flags or aborts), against the final _NVCC_VER
@@ -1568,33 +1723,38 @@ else
                             fi
                         fi
 
-                        CUDA_ARCHS=""
-                        if command -v nvidia-smi &>/dev/null; then
-                            _raw_caps=$(_setup_run_smi nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
-                            while IFS= read -r _cap; do
-                                _cap=$(echo "$_cap" | tr -d '[:space:]')
-                                if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-                                    _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-                                    case ";$CUDA_ARCHS;" in
-                                        *";$_arch;"*) ;;
-                                        *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
-                                    esac
-                                fi
-                            done <<< "$_raw_caps"
+                        # Resolve the arch list before committing to a CUDA build;
+                        # an empty list means CPU instead of a PTX-only binary (#5854).
+                        _raw_caps=""
+                        # Resolve nvidia-smi as _setup_has_usable_nvidia_gpu does
+                        # (PATH, then /usr/bin); `command -v` alone would miss an
+                        # off-PATH binary and wrongly drop a CUDA host to CPU.
+                        _smi_bin=""
+                        if command -v nvidia-smi >/dev/null 2>&1; then
+                            _smi_bin="nvidia-smi"
+                        elif [ -x "/usr/bin/nvidia-smi" ]; then
+                            _smi_bin="/usr/bin/nvidia-smi"
                         fi
+                        if [ -n "$_smi_bin" ]; then
+                            _raw_caps=$(_setup_run_smi "$_smi_bin" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                        fi
+                        CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps" "${UNSLOTH_LLAMA_CUDA_ARCHS:-}")"
 
                         if [ -n "$CUDA_ARCHS" ]; then
-                            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+                            CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+                            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
                             _BUILD_DESC="building (CUDA, sm_${CUDA_ARCHS//;/+sm_})"
+
+                            # Allow a host gcc/clang newer than nvcc's whitelist (else a fresh
+                            # toolkit aborts with "unsupported GNU version"); via env to avoid word-splitting.
+                            export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                         else
-                            _BUILD_DESC="building (CUDA)"
+                            # No detectable arch: build CPU (CMAKE_ARGS has no
+                            # -DGGML_CUDA=ON yet, so clearing GPU_BACKEND yields CPU).
+                            substep "could not detect a CUDA compute capability; building CPU llama.cpp instead of a PTX-only binary (set UNSLOTH_LLAMA_CUDA_ARCHS, e.g. \"120\", to force a CUDA build)." "$C_WARN"
+                            GPU_BACKEND=""
+                            _BUILD_DESC="building (CPU, CUDA arch undetectable)"
                         fi
-
-                        CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
-
-                        # Allow a host gcc/clang newer than nvcc's whitelist (else a fresh
-                        # toolkit aborts with "unsupported GNU version"); via env to avoid word-splitting.
-                        export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                     fi
                 fi
             elif [ "$GPU_BACKEND" = "rocm" ]; then
@@ -1872,19 +2032,19 @@ if [ "$_HOST_SYSTEM" = "Linux" ] \
 fi
 
 # ── arm64 Linux GPU: CPU prebuilt as a last resort ──
-# arm64 Linux with a GPU has no CUDA prebuilt anywhere (the unslothai fork is
-# x64 only; ggml-org ships no Linux CUDA build), so it source-builds for the
-# GPU above. If that produced no binary, install ggml-org's arm64 CPU prebuilt
-# instead of leaving the host without llama.cpp.
+# An arm64 Linux GPU host source-builds for the GPU above. If that produced no
+# binary, install the fork's arm64 CPU prebuilt (app-<tag>-linux-arm64-cpu.tar.gz)
+# instead of leaving the host without llama.cpp. --cpu-fallback drops the GPU
+# attributes so the CPU bundle is selected rather than re-attempting CUDA.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] \
         && [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
-    substep "GPU source build unavailable; trying ggml-org arm64 CPU prebuilt..."
+    substep "GPU source build unavailable; trying arm64 CPU prebuilt..."
     _ARM64_CPU_CMD=(
         python "$SCRIPT_DIR/install_llama_prebuilt.py"
         --install-dir "$LLAMA_CPP_DIR"
         --llama-tag "$_REQUESTED_LLAMA_TAG"
-        --published-repo "ggml-org/llama.cpp"
+        --published-repo "unslothai/llama.cpp"
         --cpu-fallback
     )
     # Trust the installer's exit code: it validates the server before exiting 0,
@@ -1937,6 +2097,7 @@ else
         printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     fi
     printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 to allow network / cloud access)"
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
 fi
 echo ""
 

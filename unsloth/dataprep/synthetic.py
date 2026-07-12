@@ -391,7 +391,7 @@ class SyntheticDataKit:
         assert os.path.exists(filename)
         assert hasattr(self, "tokenizer")
         if not hasattr(self, "max_seq_length"):
-            raise RuntimeError("Please use SynthetidDataKit.from_pretrained(...) first!")
+            raise RuntimeError("Please use SyntheticDataKit.from_pretrained(...) first!")
         if not hasattr(self, "overlap") or not hasattr(self, "max_generation_tokens"):
             raise RuntimeError("Please use prepare_qa_generation first!")
 
@@ -403,14 +403,32 @@ class SyntheticDataKit:
         )  # -128 to reduce errors
         if max_tokens <= 5:
             raise RuntimeError("Generation length is way too long!")
+        if max_tokens <= self.overlap:
+            # A non-positive stride (max_tokens - overlap) makes the n_chunks
+            # computation below divide by zero or go negative, so reject it.
+            raise RuntimeError(
+                f"The chunk size (max_seq_length - 2 * max_generation_tokens - 128 = "
+                f"{max_tokens}) must be larger than the overlap ({self.overlap}). "
+                f"Reduce overlap or max_generation_tokens."
+            )
         input_ids = self.tokenizer(text, add_special_tokens = False).input_ids
 
         # Get left and right boundaries
         length = len(input_ids)
-        n_chunks = int(np.ceil(length / (max_tokens - self.overlap)))
-        boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks)).astype(int)
-        boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
-        boundaries = np.minimum(boundaries, length).tolist()
+        if length <= max_tokens:
+            # The whole document fits in one chunk window, so emit it as a single
+            # chunk. Routing it through the multi-chunk path below would drop it
+            # (the linspace/stack pairing emits one fewer range than boundary
+            # points) or, for a document shorter than the overlap, slice the wrong
+            # tokens via negative start indices. Empty doc -> no chunk.
+            boundaries = [[0, length]] if length > 0 else []
+        else:
+            # length > max_tokens > overlap here, so length - overlap > 0 and the
+            # linspace boundaries below are always non-negative.
+            n_chunks = int(np.ceil(length / (max_tokens - self.overlap)))
+            boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks)).astype(int)
+            boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
+            boundaries = np.minimum(boundaries, length).tolist()
 
         filename, extension = os.path.splitext(filename)
         if filename.endswith("/"):

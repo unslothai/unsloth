@@ -13,6 +13,7 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 from __future__ import annotations
 
 import base64
+import json
 from loggers import get_logger
 import os
 import queue as _queue
@@ -26,6 +27,9 @@ from typing import Any
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
 
+_SHARE_OBJECT_MAX_BYTES = 1 << 20
+_SHARE_OBJECT_ERROR_SIZE = -1
+
 # studio/backend root, prepended to sys.path so the spawned subprocess can
 # import the utils/core packages.
 _BACKEND_PATH = str(Path(__file__).resolve().parent.parent.parent)
@@ -36,13 +40,13 @@ def _ensure_backend_on_path() -> None:
         sys.path.insert(0, _BACKEND_PATH)
 
 
-def _activate_transformers_version(model_name: str) -> None:
+def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
     _ensure_backend_on_path()
 
     from utils.transformers_version import activate_transformers_for_subprocess
 
-    activate_transformers_for_subprocess(model_name)
+    activate_transformers_for_subprocess(model_name, hf_token)
 
 
 def _decode_image(image_base64: str):
@@ -73,6 +77,17 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         resp_queue.put(response)
     except (OSError, ValueError) as exc:
         logger.error("Failed to send response: %s", exc)
+
+
+def _encode_share_object(obj: Any) -> bytes:
+    data = json.dumps(obj, separators = (",", ":"), ensure_ascii = False).encode("utf-8")
+    if len(data) > _SHARE_OBJECT_MAX_BYTES:
+        raise ValueError("Distributed object share payload is too large")
+    return data
+
+
+def _decode_share_object(data: Any) -> Any:
+    return json.loads(bytes(data.tolist()).decode("utf-8"))
 
 
 def _clean_token(value: str | None) -> str | None:
@@ -160,6 +175,114 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     return load_in_4bit
 
 
+def _ensure_ssm_kernels(targets: list, resp_queue: Any) -> bool:
+    """Install the SSM kernels the given model(s) lazy-import in from_pretrained; no-op for
+    non-SSM models, idempotent. Returns True on success; on a fatal mamba-ssm failure sends a
+    'loaded' failure response and returns False. Call BEFORE importing transformers, which
+    snapshots its optional-backend gates at import (a later install may not be picked up).
+    """
+    try:
+        from utils.ssm_runtime import ensure_ssm_runtime
+    except Exception as exc:
+        logger.debug("ssm_runtime unavailable (%s); skipping SSM kernel pre-install", exc)
+        return True
+
+    _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
+    try:
+        for ssm_target in dict.fromkeys(t for t in targets if t):
+            ensure_ssm_runtime(ssm_target, status_cb = _ssm_status)
+        return True
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "loaded",
+                "success": False,
+                "message": (
+                    f"This model needs SSM kernel libraries (causal-conv1d / "
+                    f"mamba-ssm) that could not be installed: {exc}"
+                ),
+                "error_kind": "ssm_runtime_install_failed",
+            },
+        )
+        return False
+
+
+def _run_security_gates(
+    targets: list,
+    *,
+    trust_remote_code: bool,
+    hf_token: str | None,
+    approved_fingerprint: str | None,
+    resp_queue: Any,
+    compute_subdirs: bool = True,
+    subject: str | None = None,
+) -> bool:
+    """Malware + (when trust_remote_code) remote-code consent gates over *targets*
+    (model + base). Sends the matching 'loaded' failure and returns False if blocked; True
+    when every target is clear.
+
+    ``compute_subdirs=False`` keeps the gate transformers-free (``security_load_subdirs``
+    imports ``model_config`` -> ``transformers``, which would snapshot optional-backend
+    availability before the SSM kernels are installed): used for the pre-import preflight,
+    where ``_handle_load`` re-runs the authoritative gate with full subdir scoping.
+    """
+    targets = list(dict.fromkeys(t for t in targets if t))
+
+    # A poisoned pickle deserializes during from_pretrained even with trust_remote_code
+    # False, so check HF's security scan every load (for a LoRA, the base deserializes).
+    from utils.security import evaluate_file_security
+
+    if compute_subdirs:
+        from utils.security import security_load_subdirs
+
+    for target in targets:
+        _subdirs = security_load_subdirs(target, hf_token) if compute_subdirs else ()
+        _fs = evaluate_file_security(target, hf_token = hf_token, load_subdirs = _subdirs)
+        if _fs.blocked:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "loaded",
+                    "success": False,
+                    "message": _fs.reason,
+                    "error_kind": "malware_blocked",
+                    "security": _fs.response_payload(),
+                },
+            )
+            return False
+
+    # Scan auto_map code before it runs; block CRITICAL/HIGH unless pinned-approved. Adapter
+    # and base are scanned as one unit, pinned by a single fingerprint.
+    if trust_remote_code:
+        from utils.security import evaluate_remote_code_consent_for_targets
+        _rc = evaluate_remote_code_consent_for_targets(
+            targets,
+            hf_token = hf_token,
+            trust_remote_code = True,
+            approved_fingerprint = approved_fingerprint,
+            subject = subject,
+        )
+        if _rc.blocked:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "loaded",
+                    "success": False,
+                    "message": (
+                        f"Model '{_rc.model_name}' ships custom code flagged as "
+                        f"{_rc.max_severity} by the security scan. Review "
+                        f"and approve it to proceed."
+                    ),
+                    "error_kind": "remote_code_blocked",
+                    "remote_code": _rc.response_payload(),
+                },
+            )
+            return False
+
+    return True
+
+
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
     try:
@@ -175,61 +298,32 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "Auto-enabled trust_remote_code for Nemotron model: %s", config["model_name"]
             )
 
-        # Malware gate: a poisoned pickle deserializes during from_pretrained even
-        # with trust_remote_code False, so check HF's security scan (metadata-only)
-        # every load. For a LoRA, gate the base whose weights deserialize.
-        from utils.security import evaluate_file_security, security_load_subdirs
-
-        malware_targets = [config["model_name"]]
+        # Authoritative gates over the model + the LoRA base resolved via mc. Must run before
+        # the SSM install so a blocked model never triggers a native kernel build.
+        targets = [config["model_name"]]
         if mc.is_lora and getattr(mc, "base_model", None):
-            malware_targets.append(str(mc.base_model))
-        for target in dict.fromkeys(malware_targets):
-            _fs = evaluate_file_security(
-                target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
-            )
-            if _fs.blocked:
-                _send_response(
-                    resp_queue,
-                    {
-                        "type": "loaded",
-                        "success": False,
-                        "message": _fs.reason,
-                        "error_kind": "malware_blocked",
-                        "security": _fs.response_payload(),
-                    },
-                )
-                return
+            targets.append(str(mc.base_model))
+        if not _run_security_gates(
+            targets,
+            trust_remote_code = trust_remote_code,
+            hf_token = hf_token,
+            approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            resp_queue = resp_queue,
+            subject = config.get("subject"),
+        ):
+            return
 
-        # Consent gate: scan auto_map code before it runs; block CRITICAL/HIGH
-        # unless pinned-approved. For a LoRA, gate the base whose code runs.
-        if trust_remote_code:
-            from utils.security import evaluate_remote_code_consent_for_targets
+        # Install SSM/Mamba kernels: a no-op for the initial load (pre-installed before import)
+        # but still needed for a LoRA's base (resolved only now via mc) and in-process loads.
+        # Skip on MLX (no macOS wheel). Probe the base, not the adapter id / local path.
+        if getattr(backend, "device", None) != "mlx":
+            from utils.ssm_runtime import ssm_probe_identifier
 
-            consent_targets = [config["model_name"]]
-            if mc.is_lora and getattr(mc, "base_model", None):
-                consent_targets.append(str(mc.base_model))
-            # Scan adapter + base as one unit, pinned by a single fingerprint.
-            _rc = evaluate_remote_code_consent_for_targets(
-                consent_targets,
-                hf_token = hf_token,
-                trust_remote_code = True,
-                approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            _ssm_base = (
+                str(mc.base_model) if (mc.is_lora and getattr(mc, "base_model", None)) else None
             )
-            if _rc.blocked:
-                _send_response(
-                    resp_queue,
-                    {
-                        "type": "loaded",
-                        "success": False,
-                        "message": (
-                            f"Model '{_rc.model_name}' ships custom code flagged as "
-                            f"{_rc.max_severity} by the security scan. Review "
-                            f"and approve it to proceed."
-                        ),
-                        "error_kind": "remote_code_blocked",
-                        "remote_code": _rc.response_payload(),
-                    },
-                )
+            ssm_targets = [ssm_probe_identifier(config["model_name"], _ssm_base)]
+            if not _ensure_ssm_kernels(ssm_targets, resp_queue):
                 return
 
         # Heartbeat keeps the orchestrator's inactivity deadline alive during slow
@@ -250,14 +344,18 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
         try:
-            success = backend.load_model(
-                config = mc,
-                max_seq_length = config.get("max_seq_length", 2048),
-                load_in_4bit = load_in_4bit,
-                hf_token = hf_token,
-                trust_remote_code = trust_remote_code,
-                gpu_ids = config.get("resolved_gpu_ids"),
-            )
+            load_kwargs = {
+                "config": mc,
+                "max_seq_length": config.get("max_seq_length", 2048),
+                "load_in_4bit": load_in_4bit,
+                "hf_token": hf_token,
+                "trust_remote_code": trust_remote_code,
+                "gpu_ids": config.get("resolved_gpu_ids"),
+            }
+            if getattr(backend, "device", None) == "mlx":
+                load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
+                load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
+            success = backend.load_model(**load_kwargs)
         finally:
             heartbeat_stop.set()
 
@@ -327,6 +425,32 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         )
 
 
+def _drain_skip_generate(cmd: dict, resp_queue: Any, drain_event) -> bool:
+    """Skip a generate queued behind a cancelled one during an unload.
+
+    The parent sets ``drain_event`` for the whole unload. Because the parent's
+    per-token ``cancel_event`` is cleared at the start of every generate, a cancel
+    set while this generate was still queued would otherwise be lost when it is
+    dequeued. If the drain is in effect, emit an immediate (empty) ``gen_done`` so
+    the parent's stream/mailbox drains fast and the switch stays fast, and report
+    the generate was skipped so the caller does not clear the cancel or run it.
+    """
+    if drain_event is None or not drain_event.is_set():
+        return False
+    request_id = cmd.get("request_id", "")
+    logger.info("Skipping generate for request %s: unload draining", request_id)
+    _send_response(
+        resp_queue,
+        {
+            "type": "gen_done",
+            "request_id": request_id,
+            "cancelled": True,
+            "stats": None,
+        },
+    )
+    return True
+
+
 def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle a generate command: stream tokens back via resp_queue.
 
@@ -352,6 +476,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             "min_p": cmd.get("min_p", 0.0),
             "max_new_tokens": cmd.get("max_new_tokens", 256),
             "repetition_penalty": cmd.get("repetition_penalty", 1.0),
+            "presence_penalty": cmd.get("presence_penalty", 0.0),
             "cancel_event": cancel_event,
         }
 
@@ -408,6 +533,67 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             resp_queue,
             {
                 "type": "gen_error",
+                "request_id": request_id,
+                "error": str(exc),
+                "stack": traceback.format_exc(limit = 20),
+            },
+        )
+
+
+def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
+    """Share a small Python object across MLX distributed ranks."""
+    request_id = cmd.get("request_id", "")
+    group = getattr(backend, "_distributed_group", None)
+    rank = int(getattr(backend, "_distributed_rank", 0) or 0)
+    world_size = int(getattr(backend, "_distributed_world_size", 1) or 1)
+    obj = cmd.get("object")
+
+    try:
+        if group is None or world_size <= 1:
+            shared = obj
+        else:
+            import mlx.core as mx
+            if rank == 0:
+                if obj is None:
+                    mx.eval(mx.distributed.all_sum(mx.array(0), group = group))
+                    shared = None
+                else:
+                    try:
+                        data = mx.array(_encode_share_object(obj), dtype = mx.uint8)
+                    except Exception:
+                        mx.eval(
+                            mx.distributed.all_sum(
+                                mx.array(_SHARE_OBJECT_ERROR_SIZE),
+                                group = group,
+                            )
+                        )
+                        raise
+                    mx.eval(mx.distributed.all_sum(mx.array(data.size), group = group))
+                    mx.eval(mx.distributed.all_sum(data, group = group))
+                    shared = obj
+            else:
+                size = int(mx.distributed.all_sum(mx.array(0), group = group).item())
+                if size == _SHARE_OBJECT_ERROR_SIZE:
+                    raise RuntimeError("Failed to share distributed object")
+                if size == 0:
+                    shared = None
+                else:
+                    data = mx.zeros(size, dtype = mx.uint8)
+                    data = mx.distributed.all_sum(data, group = group)
+                    shared = _decode_share_object(data)
+        _send_response(
+            resp_queue,
+            {
+                "type": "shared",
+                "request_id": request_id,
+                "object": shared,
+            },
+        )
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "share_error",
                 "request_id": request_id,
                 "error": str(exc),
                 "stack": traceback.format_exc(limit = 20),
@@ -553,7 +739,14 @@ def _handle_unload(backend, cmd: dict, resp_queue: Any) -> None:
         )
 
 
-def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, config: dict) -> None:
+def run_inference_process(
+    *,
+    cmd_queue: Any,
+    resp_queue: Any,
+    cancel_event,
+    config: dict,
+    drain_event = None,
+) -> None:
     """Subprocess entrypoint. Persistent — runs the command loop until shutdown.
 
     Args:
@@ -561,6 +754,10 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         resp_queue: mp.Queue for sending responses to parent.
         cancel_event: mp.Event the parent sets to cancel generation.
         config: Initial configuration dict with model info.
+        drain_event: mp.Event the parent sets for the duration of an unload. Unlike
+            cancel_event (cleared at the start of every generate), it is never cleared
+            here, so a generate still queued behind a cancelled one is skipped rather
+            than run — the cancel survives the queue handoff.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
@@ -594,7 +791,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         # Non-fatal: fall through with the installed version, but log the cause
         # instead of swallowing it (issue #6103).
         try:
-            _activate_transformers_version(model_name)
+            _activate_transformers_version(model_name, config.get("hf_token") or None)
         except Exception as exc:
             logger.warning(
                 "Failed to activate transformers version for '%s' (MLX inference); "
@@ -603,9 +800,29 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 exc,
             )
         try:
-            from core.inference.mlx_inference import MLXInferenceBackend
+            from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
 
             backend = MLXInferenceBackend()
+            if config.get("mlx_distributed"):
+                group, rank, size = _init_mlx_distributed()
+                config["_mlx_distributed_group"] = group
+                if size <= 1:
+                    # A singleton group (MLX built without distributed support,
+                    # or an invalid launch env/hostfile) would leave nonzero ranks
+                    # looping forever on share_distributed_object. Fail the load
+                    # instead of silently continuing without sharding.
+                    raise RuntimeError(
+                        "MLX distributed launch requested but initialized a singleton "
+                        "group (size 1). Ensure the installed MLX has distributed "
+                        "support and the launch environment/hostfile is valid, or run "
+                        "without distributed."
+                    )
+                logger.info(
+                    "MLX distributed initialized in worker: rank=%s size=%s mode=%s",
+                    rank,
+                    size,
+                    config.get("mlx_parallel_mode"),
+                )
             _send_response(
                 resp_queue,
                 {"type": "status", "message": "Loading model..."},
@@ -636,8 +853,19 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
             cmd_type = cmd.get("type", "")
             try:
                 if cmd_type == "generate":
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
                     cancel_event.clear()
+                    # Re-check the drain after clearing: the parent sets drain_event
+                    # then cancel_event for an unload, so if that pair landed between
+                    # the check above and this clear, the clear just erased the unload's
+                    # cancel. Skip here so the outgoing model is not run to completion,
+                    # which would stall the switch until the dispatcher idle-timeout.
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
                     _handle_generate(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "share_object":
+                    _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
                     if backend.active_model_name:
                         backend.unload_model(backend.active_model_name)
@@ -678,9 +906,33 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 )
         return
 
-    # ── 1. Activate transformers version BEFORE any ML imports ──
+    # ── Resolve the effective base once, before activation/gates/install (no ML import) ──
+    # A remote LoRA's base is in its Hub adapter_config.json (else surfaced only by ModelConfig
+    # after import). _lora_base is set only for a genuine adapter, never a full fine-tune's base.
+    import json as _json
+
+    _ensure_backend_on_path()
+    from utils.transformers_version import _remote_lora_base, _resolve_base_model
+
+    _hf_token = _clean_token(config.get("hf_token"))
+    _lora_base = None
+    _local_adapter_cfg = Path(model_name) / "adapter_config.json"
+    if _local_adapter_cfg.is_file():
+        try:
+            _lora_base = (
+                _json.loads(_local_adapter_cfg.read_text()).get("base_model_name_or_path") or None
+            )
+        except Exception:
+            _lora_base = None
+    if not _lora_base:
+        _lora_base = _remote_lora_base(model_name, hf_token = _hf_token)
+    # Base for tier activation + the SSM-kernel heuristic: the LoRA base if any, else a full
+    # fine-tune's recorded base from config.json (its name reveals the SSM/sidecar arch).
+    _base = _lora_base or _resolve_base_model(model_name)
+
+    # ── 1. Activate transformers version (on the resolved base) BEFORE any ML imports ──
     try:
-        _activate_transformers_version(model_name)
+        _activate_transformers_version(_base, _hf_token)
     except Exception as exc:
         _send_response(
             resp_queue,
@@ -704,6 +956,36 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
+    # ── 1c. Security gates, then SSM/Mamba kernels, BEFORE importing transformers ──
+    # transformers snapshots its optional-backend gates at import, so a hybrid model's kernels
+    # must be installed before the import below ("mamba-ssm is required" otherwise). The gates
+    # are metadata-only, so run them first and refuse a blocked model before any native build.
+    # Gate only the model + a genuine LoRA base (matching _handle_load), never a full fine-tune's
+    # unloaded base; _handle_load re-runs the authoritative gates with the mc base.
+    _gate_targets = [model_name]
+    if _lora_base:
+        _gate_targets.append(_lora_base)
+    _trust_remote_code = config.get("trust_remote_code", False) or _needs_nemotron_trust(
+        model_name, hf_token = _hf_token
+    )
+    if not _run_security_gates(
+        _gate_targets,
+        trust_remote_code = _trust_remote_code,
+        hf_token = _hf_token,
+        approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+        resp_queue = resp_queue,
+        compute_subdirs = False,  # stay transformers-free until the SSM kernels are installed
+        subject = config.get("subject"),
+    ):
+        return
+    # Probe the resolved base for SSM kernels, not the adapter id / local checkpoint path
+    # (arbitrary names must not match the SSM substrings).
+    from utils.ssm_runtime import ssm_probe_identifier
+
+    _ssm_targets = [ssm_probe_identifier(model_name, _base)]
+    if not _ensure_ssm_kernels(_ssm_targets, resp_queue):
+        return
+
     # ── 2. Import ML libraries (fresh in this clean process) ──
     try:
         _send_response(
@@ -715,6 +997,11 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         )
 
         _ensure_backend_on_path()
+
+        # Recover from any namespace-package shadow before importing Unsloth.
+        from core.import_guards import ensure_real_packages
+
+        ensure_real_packages("unsloth_zoo", "unsloth")
 
         from core.inference.inference import InferenceBackend
 
@@ -780,8 +1067,20 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
 
         try:
             if cmd_type == "generate":
+                if _drain_skip_generate(cmd, resp_queue, drain_event):
+                    continue
                 cancel_event.clear()
+                # Re-check the drain after clearing: the parent sets drain_event then
+                # cancel_event for an unload, so if that pair landed between the check
+                # above and this clear, the clear just erased the unload's cancel. Skip
+                # here so the outgoing model is not run to completion, which would stall
+                # the switch until the dispatcher idle-timeout tears the subprocess down.
+                if _drain_skip_generate(cmd, resp_queue, drain_event):
+                    continue
                 _handle_generate(backend, cmd, resp_queue, cancel_event)
+
+            elif cmd_type == "share_object":
+                _handle_share_object(backend, cmd, resp_queue)
 
             elif cmd_type == "load":
                 if backend.active_model_name:

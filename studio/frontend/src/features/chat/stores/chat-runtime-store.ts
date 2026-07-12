@@ -1,27 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { RememberedLoadSettings } from "@/components/assistant-ui/model-selector/remembered-load-settings";
+import { cancelStagedModelDownload } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
-import { cancelStagedModelDownload } from "@/features/hub";
+import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
   type ChatPresetSource,
   type Preset,
   getPresetSource,
 } from "../presets/preset-policy";
+import { getExternalMaxOutputTokens } from "../provider-capabilities";
 import {
   type ChatLoraSummary,
   type ChatModelSummary,
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
-import { isExternalModelId, parseExternalModelId } from "../external-providers";
-import { getExternalMaxOutputTokens } from "../provider-capabilities";
-import { useExternalProvidersStore } from "./external-providers-store";
 import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
+import { useExternalProvidersStore } from "./external-providers-store";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
@@ -37,6 +38,12 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_LOAD_ON_SELECTION_KEY = "unsloth_chat_load_on_selection";
+export const CHAT_EXPAND_QUANTIZATIONS_KEY =
+  "unsloth_chat_expand_quantizations";
+export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
+  "unsloth_chat_show_all_quantizations";
+export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
+  "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
@@ -46,6 +53,8 @@ export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
 export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
 export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
   "unsloth_chat_rag_autoinject_min_score";
+export const CHAT_RAG_OCR_KEY = "unsloth_chat_rag_ocr_scanned";
+export const CHAT_RAG_CAPTION_KEY = "unsloth_chat_rag_caption_figures";
 export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
 
 // Persist only the model-agnostic intents (auto/ngram/off). MTP modes
@@ -53,9 +62,7 @@ export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
 // choice would silently no-op on models without an MTP head. Unknown -> auto.
 const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
-export type RagSource =
-  | { type: "thread" }
-  | { type: "kb"; kbId: string };
+export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
 
 export type RagMode = "hybrid" | "lexical" | "dense";
 
@@ -66,6 +73,12 @@ export const DEFAULT_RAG_TOP_K = 5;
 export type RagAutoInject = "auto" | "on" | "off";
 export const DEFAULT_RAG_AUTOINJECT: RagAutoInject = "auto";
 export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
+// OCR scanned/image-only PDF pages at ingest time. On by default; off skips the
+// extra vision pass (only matters when the loaded chat model has vision).
+export const DEFAULT_RAG_OCR = true;
+// Describe figures/charts in PDFs at ingest time so they become searchable. On by
+// default (no-op without a vision model); off skips the per-figure vision calls.
+export const DEFAULT_RAG_CAPTION = true;
 
 function loadRagSource(): RagSource {
   if (typeof window === "undefined") return DEFAULT_RAG_SOURCE;
@@ -120,7 +133,11 @@ function loadRagTopK(): number {
 function loadRagNumber(
   key: string,
   fallback: number,
-  { min, max, integer = false }: { min: number; max: number; integer?: boolean },
+  {
+    min,
+    max,
+    integer = false,
+  }: { min: number; max: number; integer?: boolean },
 ): number {
   if (typeof window === "undefined") return fallback;
   try {
@@ -360,7 +377,10 @@ export function normalizeSpeculativeType(
   }
   if (s === "mtp+ngram") return "mtp+ngram";
   // Comma-chained legacy values (e.g. from older backend echoes).
-  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+  const parts = s
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
   const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
   const hasNgram = parts.some(
     (p) => p === "ngram" || p === "ngram-mod" || p === "ngram-simple",
@@ -411,7 +431,9 @@ export function saveSpeculativeType(value: string | null): void {
 function notifyHfTokenChanged(value: string): void {
   if (!canUseStorage()) return;
   try {
-    window.dispatchEvent(new CustomEvent(HF_TOKEN_CHANGED_EVENT, { detail: value }));
+    window.dispatchEvent(
+      new CustomEvent(HF_TOKEN_CHANGED_EVENT, { detail: value }),
+    );
   } catch {
     // ignore
   }
@@ -435,6 +457,12 @@ export type PendingModelSelection = {
    *  Scoped here (not the shared `ggufContextLength`) so a staged model's
    *  metadata never pollutes the currently-loaded model's context display. */
   contextLength?: number | null;
+  /** "Load on selection" on + un-cached GGUF: download via the manager (global
+   *  indicator) without opening the sheet, then load once the download finishes. */
+  autoLoad?: boolean;
+  /** Uncached non-GGUF HF repo: download the full snapshot via the manager
+   *  (variant null) the same way GGUF picks download a variant. */
+  isHubRepo?: boolean;
 };
 
 /** A pick is a GGUF (HF variant, native file, or a direct local .gguf) and so
@@ -449,8 +477,51 @@ export function hasGgufSource(x: {
   );
 }
 
+/** A local-disk model id: Unix absolute (/), relative (./ ../), tilde (~/),
+ *  Windows drive (C:\) or UNC (\\server). Shared so the loader and the
+ *  hub-repo predicate classify ids identically. */
+export function isLocalModelPath(id: string): boolean {
+  return /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(id);
+}
+
+/** An uncached HF hub repo we can download as a full snapshot (non-GGUF
+ *  safetensors / MLX). Excludes GGUF sources, local paths, native files, LoRA,
+ *  and external provider models so none are mis-routed into a snapshot. */
+export function isDownloadableHubRepo(x: {
+  id: string;
+  source?: string;
+  isLora?: boolean;
+  ggufVariant?: string;
+  nativePathToken?: string;
+  isGguf?: boolean;
+}): boolean {
+  return (
+    x.source === "hub" &&
+    !hasGgufSource(x) &&
+    x.isLora !== true &&
+    x.nativePathToken == null &&
+    !isLocalModelPath(x.id)
+  );
+}
+
 export function isPendingGguf(pending: PendingModelSelection | null): boolean {
   return pending != null && hasGgufSource(pending);
+}
+
+/** Whether `pending` refers to the same model as `pick` (id + GGUF variant +
+ *  native path token, optionals null-normalized). Native ids are display labels
+ *  that can collide, so the token must match too — id alone can land on the
+ *  wrong file. */
+export function pendingSelectionMatches(
+  pending: PendingModelSelection | null,
+  pick: { id: string; ggufVariant?: string | null; nativePathToken?: string | null },
+): boolean {
+  return (
+    pending != null &&
+    pending.id === pick.id &&
+    (pending.ggufVariant ?? null) === (pick.ggufVariant ?? null) &&
+    (pending.nativePathToken ?? null) === (pick.nativePathToken ?? null)
+  );
 }
 
 type ChatRuntimeStore = {
@@ -466,6 +537,9 @@ type ChatRuntimeStore = {
   autoTitle: boolean;
   hfToken: string;
   modelsError: string | null;
+  // Set only when a LOAD fails (not refresh/list/unload, which use modelsError);
+  // lets the attach gates flag a failed load vs "no model picked".
+  lastModelLoadError: string | null;
   activeGgufVariant: string | null;
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
@@ -528,6 +602,10 @@ type ChatRuntimeStore = {
   // autoInject = forced first-pass retrieval before answering.
   ragAutoInject: RagAutoInject;
   ragAutoInjectMinScore: number;
+  // OCR scanned/image-only PDF pages at ingest time (vision model required).
+  ragOcrScanned: boolean;
+  // Describe figures/charts at ingest time (vision model required).
+  ragCaptionFigures: boolean;
   /**
    * When on, local Studio tool calls pause for an explicit allow/deny in the
    * chat before they run.
@@ -568,6 +646,7 @@ type ChatRuntimeStore = {
   toolStatus: string | null;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
+  nudgeToolCalls: boolean;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
@@ -590,6 +669,14 @@ type ChatRuntimeStore = {
    *  `pendingSelection` (and opens settings) instead of loading immediately,
    *  so load settings can be set before the single load. */
   loadOnSelection: boolean;
+  /** Persisted: expand every On Device GGUF repo's quantizations by default
+   *  instead of waiting for a click. */
+  expandQuantizations: boolean;
+  /** Persisted: show non-downloaded quantizations too, not just downloaded. */
+  showAllQuantizations: boolean;
+  /** Persisted, shared by the chat model selector and the Hub page: list only
+   *  models whose size fits this device's memory budget. */
+  fitOnDeviceOnly: boolean;
   /** A local model picked while `loadOnSelection` is off: staged, not loaded.
    *  The settings sheet shows its load knobs and a Load button. */
   pendingSelection: PendingModelSelection | null;
@@ -644,6 +731,7 @@ type ChatRuntimeStore = {
   setAutoTitle: (enabled: boolean) => void;
   setHfToken: (token: string) => void;
   setModelsError: (error: string | null) => void;
+  setLastModelLoadError: (error: string | null) => void;
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
   setActiveProjectId: (projectId: string | null) => void;
@@ -687,10 +775,13 @@ type ChatRuntimeStore = {
   setRagTopK: (topK: number) => void;
   setRagAutoInject: (value: RagAutoInject) => void;
   setRagAutoInjectMinScore: (score: number) => void;
+  setRagOcrScanned: (enabled: boolean) => void;
+  setRagCaptionFigures: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
   setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
+  setNudgeToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
@@ -701,15 +792,23 @@ type ChatRuntimeStore = {
    *  start each deferred-staging session clean so one staged pick's settings
    *  don't leak onto the next. */
   resetModelSettingsToLoaded: () => void;
+  /** Seed the editable load knobs from a model's remembered settings. Shared by
+   *  the settings sheet's restore effect and the "Load on selection" paths,
+   *  which skip the sheet but must still honor a saved config. */
+  applyRememberedLoadSettings: (settings: RememberedLoadSettings) => void;
   setTensorParallel: (value: boolean) => void;
   setLoadOnSelection: (value: boolean) => void;
+  setExpandQuantizations: (value: boolean) => void;
+  setShowAllQuantizations: (value: boolean) => void;
+  setFitOnDeviceOnly: (value: boolean) => void;
   setPendingSelection: (selection: PendingModelSelection | null) => void;
   /** Stage a pick for a deferred load: revert knobs to the loaded baseline,
    *  record the selection, and open the settings sheet. */
   stageModel: (selection: PendingModelSelection) => void;
-  /** Abandon a staged pick without loading: revert the knobs to the loaded
-   *  baseline and clear the pending selection. */
-  abandonStagedModel: () => void;
+  /** Abandon a staged pick without loading: revert knobs to the loaded baseline
+   *  and clear the pending selection. Cancels its in-flight download too, unless
+   *  `keepDownload` is set (navigation keeps the transfer running, like Hub). */
+  abandonStagedModel: (opts?: { keepDownload?: boolean }) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -735,6 +834,7 @@ type ScalarSettingKey =
   | "collapseHtmlArtifacts"
   | "allowArtifactNetworkAccess"
   | "autoHealToolCalls"
+  | "nudgeToolCalls"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout";
 
@@ -760,6 +860,7 @@ const PERSISTED_INFERENCE_PARAM_KEYS = [
   "maxSeqLength",
   "maxTokens",
   "systemPrompt",
+  "systemVariables",
   "trustRemoteCode",
   "fastMode",
 ] as const satisfies readonly PersistedInferenceParamKey[];
@@ -771,6 +872,7 @@ const SCALAR_SETTING_KEYS = [
   "collapseHtmlArtifacts",
   "allowArtifactNetworkAccess",
   "autoHealToolCalls",
+  "nudgeToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
 ] as const satisfies readonly ScalarSettingKey[];
@@ -948,6 +1050,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   autoTitle: false,
   hfToken: loadString(HF_TOKEN_KEY, ""),
   modelsError: null,
+  lastModelLoadError: null,
   activeGgufVariant: null,
   ggufContextLength: null,
   ggufMaxContextLength: null,
@@ -998,10 +1101,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     DEFAULT_RAG_AUTOINJECT_MIN_SCORE,
     { min: 0, max: 1 },
   ),
+  ragOcrScanned: loadBool(CHAT_RAG_OCR_KEY, DEFAULT_RAG_OCR),
+  ragCaptionFigures: loadBool(CHAT_RAG_CAPTION_KEY, DEFAULT_RAG_CAPTION),
   toolStatus: null,
   generatingStatus: null,
   activeDiffusionCanvas: null,
   autoHealToolCalls: true,
+  nudgeToolCalls: true,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
@@ -1014,6 +1120,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   tensorParallel: false,
   loadedTensorParallel: null,
   loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
+  expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
+  showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
+  fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   pendingSelection: null,
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -1143,6 +1252,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     notifyHfTokenChanged(hfToken);
   },
   setModelsError: (modelsError) => set({ modelsError }),
+  setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
   setCheckpoint: (modelId, ggufVariant) =>
     set((state) => {
       // Persist external selections so they survive a refresh. Local ids are
@@ -1154,7 +1264,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // render gate would otherwise show old counters until the next completion.
       const checkpointChanged = state.params.checkpoint !== modelId;
       const pendingToClear =
-        checkpointChanged && state.params.checkpoint ? state.pendingSelection : null;
+        checkpointChanged && state.params.checkpoint
+          ? state.pendingSelection
+          : null;
       if (pendingToClear) {
         cancelStagedModelDownload(pendingToClear);
       }
@@ -1414,6 +1526,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return { ragAutoInjectMinScore };
     }),
+  setRagOcrScanned: (ragOcrScanned) =>
+    set(() => {
+      saveBool(CHAT_RAG_OCR_KEY, ragOcrScanned);
+      return { ragOcrScanned };
+    }),
+  setRagCaptionFigures: (ragCaptionFigures) =>
+    set(() => {
+      saveBool(CHAT_RAG_CAPTION_KEY, ragCaptionFigures);
+      return { ragCaptionFigures };
+    }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setActiveDiffusionCanvas: (activeDiffusionCanvas) =>
     set({ activeDiffusionCanvas }),
@@ -1426,6 +1548,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.autoHealToolCalls,
       );
       return { autoHealToolCalls };
+    }),
+  setNudgeToolCalls: (nudgeToolCalls) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "nudgeToolCalls",
+        nudgeToolCalls,
+        state.nudgeToolCalls,
+      );
+      return { nudgeToolCalls };
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {
@@ -1450,40 +1581,60 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
   setTensorParallel: (tensorParallel) => set({ tensorParallel }),
   resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
+  applyRememberedLoadSettings: (settings) =>
+    // Coalesce every field: a blob persisted by an older/newer build can omit
+    // keys, and a raw spread would push `undefined` into fields typed non-null.
+    set({
+      customContextLength: settings.contextLength ?? null,
+      kvCacheDtype: settings.kvCacheDtype ?? null,
+      speculativeType: settings.speculativeType ?? "auto",
+      specDraftNMax: settings.specDraftNMax ?? null,
+      tensorParallel: settings.tensorParallel ?? false,
+    }),
   setLoadOnSelection: (loadOnSelection) => {
     saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
     set({ loadOnSelection });
   },
+  setExpandQuantizations: (expandQuantizations) => {
+    saveBool(CHAT_EXPAND_QUANTIZATIONS_KEY, expandQuantizations);
+    set({ expandQuantizations });
+  },
+  setShowAllQuantizations: (showAllQuantizations) => {
+    saveBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, showAllQuantizations);
+    set({ showAllQuantizations });
+  },
+  setFitOnDeviceOnly: (fitOnDeviceOnly) => {
+    saveBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, fitOnDeviceOnly);
+    set({ fitOnDeviceOnly });
+  },
   setPendingSelection: (pendingSelection) => set({ pendingSelection }),
-  stageModel: (selection) =>
+  stageModel: (selection) => {
+    // Refuse staging mid-load: post-load cleanup would silently drop the queued
+    // pick. stageOrLoad toasts first for callers that can.
+    if (get().modelLoading) return;
+    // Rebinding to a new pick keeps the prior pick's download running so the
+    // user can queue multiple downloads at once (Hub-style).
     set((s) => {
-      if (
-        s.pendingSelection &&
-        (s.pendingSelection.id !== selection.id ||
-          (s.pendingSelection.ggufVariant ?? null) !==
-            (selection.ggufVariant ?? null))
-      ) {
-        cancelStagedModelDownload(s.pendingSelection);
-      }
       return {
         ...loadedBaselineSettings(s),
         pendingSelection: selection,
-        settingsPanelOpen: true,
+        // autoLoad downloads silently and loads on completion, so keep the sheet shut.
+        settingsPanelOpen: !selection.autoLoad,
         // Speculative starts from the standing default, not the loaded model's
         // mode, so a fresh pick doesn't inherit (and then carry, via the staged
         // Load's keepSpeculative) a forced MTP mode onto a model that may lack it.
         speculativeType: readPersistedSpeculativeType(),
         specDraftNMax: null,
       };
-    }),
-  abandonStagedModel: () => {
+    });
+  },
+  abandonStagedModel: (opts) => {
     const { pendingSelection } = get();
     if (!pendingSelection) return;
-    // Cancel the staged pick's in-flight download so it doesn't keep running
-    // after the staging UI is gone. Centralized here so every abandon path
-    // (sheet close, thread switch, route exit, new chat) cancels it, including
-    // root-level callers that have no access to the useRepoDownload hook.
-    cancelStagedModelDownload(pendingSelection);
+    // Cancel the staged pick's in-flight download (centralized for every abandon
+    // path: sheet close, thread switch, route exit, new chat). `keepDownload`
+    // opts out so navigation leaves the transfer running, like a Hub download.
+    if (!opts?.keepDownload) cancelStagedModelDownload(pendingSelection);
     set((s) => ({ ...loadedBaselineSettings(s), pendingSelection: null }));
   },
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
@@ -1511,7 +1662,7 @@ export function resolveSpeculativeSettingsForLoad({
   const state = useChatRuntimeStore.getState();
   const speculativeType = usePersistedPreference
     ? readPersistedSpeculativeType()
-    : state.speculativeType ?? readPersistedSpeculativeType();
+    : (state.speculativeType ?? readPersistedSpeculativeType());
   return {
     speculativeType,
     specDraftNMax:

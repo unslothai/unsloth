@@ -3,20 +3,31 @@
 
 """Model loading and streaming shared by `inference` and `chat`."""
 
+import asyncio
+import json
 import os
 import re
 import sys
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import typer
 
 _THINK_OPEN = "<think>"
 _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
+_STREAMED_ERROR_PREFIX = "Error: "
 
 # Cloudflare (in front of remote Studio proxies like RunPod) 403s the default
 # "Python-urllib/X.Y" User-Agent as a bot; send a real one on every request.
 _USER_AGENT = "unsloth-cli"
+_MPI_ENV_PAIRS = (
+    ("OMPI_COMM_WORLD_RANK", "OMPI_COMM_WORLD_SIZE"),
+    ("PMI_RANK", "PMI_SIZE"),
+    ("PMIX_RANK", "PMIX_SIZE"),
+    ("MPI_RANK", "MPI_WORLD_SIZE"),
+    ("MV2_COMM_WORLD_RANK", "MV2_COMM_WORLD_SIZE"),
+)
 
 # Built lazily; urllib stays function-local to match this module.
 _no_redirect_opener = None
@@ -58,6 +69,108 @@ def configure_quiet_logging() -> None:
     level = getattr(logging, level_name, logging.WARNING)
     structlog.configure(wrapper_class = structlog.make_filtering_bound_logger(level))
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+
+def _parse_nonnegative_int(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _first_mpi_env_pair() -> tuple[Optional[int], Optional[int]]:
+    for rank_name, size_name in _MPI_ENV_PAIRS:
+        rank = _parse_nonnegative_int(os.environ.get(rank_name))
+        world_size = _parse_nonnegative_int(os.environ.get(size_name))
+        if rank is not None and world_size is not None and world_size > 1 and rank < world_size:
+            return rank, world_size
+    return None, None
+
+
+def _json_rank_count_from_env(name: str) -> Optional[int]:
+    value = os.environ.get(name)
+    if not value:
+        return None
+    try:
+        if value.lstrip().startswith(("[", "{")):
+            data = json.loads(value)
+        else:
+            with open(value, "r") as f:
+                data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(data, list):
+        return len(data)
+    if isinstance(data, dict) and isinstance(data.get("hosts"), list):
+        return len(data["hosts"])
+    return None
+
+
+def mlx_distributed_info() -> tuple[bool, int, Optional[int]]:
+    """Return launch-context metadata without initializing MLX distributed."""
+    rank = _parse_nonnegative_int(os.environ.get("MLX_RANK"))
+    world_size = _parse_nonnegative_int(os.environ.get("MLX_WORLD_SIZE"))
+    if rank is not None:
+        if (
+            world_size is not None
+            and world_size > 1
+            and rank < world_size
+            and os.environ.get("NCCL_HOST_IP")
+            and os.environ.get("NCCL_PORT")
+        ):
+            return True, rank, world_size
+        inferred_size = _json_rank_count_from_env("MLX_HOSTFILE")
+        if inferred_size is not None and inferred_size > 1 and rank < inferred_size:
+            return True, rank, inferred_size
+        inferred_size = _json_rank_count_from_env("MLX_IBV_DEVICES")
+        if (
+            inferred_size is not None
+            and inferred_size > 1
+            and rank < inferred_size
+            and os.environ.get("MLX_JACCL_COORDINATOR")
+        ):
+            return True, rank, inferred_size
+        return False, 0, None
+
+    mpi_rank, mpi_world_size = _first_mpi_env_pair()
+    return mpi_rank is not None, mpi_rank or 0, mpi_world_size
+
+
+def mlx_distributed_uses_mpi() -> bool:
+    """Whether the current distributed context was launched through MPI."""
+    return (
+        _parse_nonnegative_int(os.environ.get("MLX_RANK")) is None
+        and _first_mpi_env_pair()[0] is not None
+    )
+
+
+@contextmanager
+def quiet_if_nonzero_mlx_rank():
+    """Silence parent and child-process stdout/stderr on nonzero ranks."""
+    if mlx_distributed_info()[1] == 0:
+        yield
+        return
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved_stdout_fd = os.dup(1)
+    saved_stderr_fd = os.dup(2)
+    with open(os.devnull, "w") as devnull:
+        try:
+            os.dup2(devnull.fileno(), 1)
+            os.dup2(devnull.fileno(), 2)
+            with redirect_stdout(devnull), redirect_stderr(devnull):
+                yield
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(saved_stdout_fd, 1)
+            os.dup2(saved_stderr_fd, 2)
+            os.close(saved_stdout_fd)
+            os.close(saved_stderr_fd)
 
 
 def visible_text(text: str, show_thinking: bool) -> str:
@@ -117,6 +230,21 @@ def collect_stream(stream, show_thinking: bool) -> str:
         if isinstance(chunk, str):
             raw = chunk
     return visible_text(raw, show_thinking)
+
+
+def raise_on_streamed_error(stream):
+    # Match real backend errors by type (GenStreamError), not the "Error:" text
+    # prefix, so a completion whose text opens with "Error:" is not misread as a
+    # failure that aborts a distributed run.
+    try:
+        ensure_studio_backend_path()
+        from core.inference.orchestrator import GenStreamError
+    except Exception:
+        GenStreamError = None
+    for chunk in stream:
+        if GenStreamError is not None and isinstance(chunk, GenStreamError):
+            raise RuntimeError(str(chunk)[len(_STREAMED_ERROR_PREFIX) :].strip() or "Unknown error")
+        yield chunk
 
 
 def render_columns(
@@ -199,6 +327,19 @@ class ChatBackend:
         except Exception:
             pass
 
+    def share_distributed_object(
+        self,
+        obj,
+        *,
+        timeout = 300.0,
+    ):
+        if self._kind != "unsloth" or not hasattr(self._backend, "share_distributed_object"):
+            raise RuntimeError(
+                "Distributed MLX chat requires the Unsloth MLX backend; "
+                f"backend '{self._kind}' cannot broadcast chat turns."
+            )
+        return self._backend.share_distributed_object(obj, timeout = timeout)
+
 
 def resolve_model_config(model: str, *, hf_token: Optional[str]):
     ensure_studio_backend_path()
@@ -211,28 +352,65 @@ def resolve_model_config(model: str, *, hf_token: Optional[str]):
     return model_config
 
 
-def _load_gguf_backend(model_config, *, hf_token, max_seq_length):
+def _validate_llama_extra_args_or_exit(llama_extra_args: Optional[List[str]]) -> list[str]:
+    from core.inference.llama_server_args import validate_extra_args
+    try:
+        return validate_extra_args(llama_extra_args)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err = True)
+        raise typer.Exit(code = 1)
+
+
+def _load_gguf_backend(
+    model_config,
+    *,
+    hf_token,
+    max_seq_length,
+    tensor_parallel: bool = False,
+    llama_extra_args: Optional[List[str]] = None,
+):
     ensure_studio_backend_path()
     from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.tensor_fallback import load_with_tensor_fallback
 
     llama_backend = LlamaCppBackend()
+    extra_args = _validate_llama_extra_args_or_exit(llama_extra_args)
     common = dict(
         hf_variant = model_config.gguf_variant,
         model_identifier = model_config.identifier,
         is_vision = model_config.is_vision,
         n_ctx = max_seq_length,
     )
-    if model_config.gguf_hf_repo:
-        loaded = llama_backend.load_model(
-            hf_repo = model_config.gguf_hf_repo, hf_token = hf_token, **common
+
+    async def _attempt_gguf_load(
+        requested_tensor_parallel: bool, attempt_extra_args: Optional[List[str]]
+    ) -> bool:
+        attempt_common = dict(
+            common,
+            tensor_parallel = requested_tensor_parallel,
+            extra_args = attempt_extra_args,
         )
-    else:
-        loaded = llama_backend.load_model(
+        if model_config.gguf_hf_repo:
+            return llama_backend.load_model(
+                hf_repo = model_config.gguf_hf_repo,
+                hf_token = hf_token,
+                **attempt_common,
+            )
+        return llama_backend.load_model(
             gguf_path = model_config.gguf_file,
             mmproj_path = model_config.gguf_mmproj_file,
             mtp_draft_path = model_config.gguf_mtp_file,
-            **common,
+            **attempt_common,
         )
+
+    loaded = asyncio.run(
+        load_with_tensor_fallback(
+            _attempt_gguf_load,
+            requested_tensor = tensor_parallel,
+            extra_args = extra_args,
+            label = model_config.identifier,
+        )
+    )
     if not loaded:
         typer.echo("Model load failed", err = True)
         raise typer.Exit(code = 1)
@@ -245,6 +423,8 @@ def load_chat_backend(
     hf_token: Optional[str],
     max_seq_length: int,
     load_in_4bit: bool,
+    tensor_parallel: bool = False,
+    llama_extra_args: Optional[List[str]] = None,
     model_config = None,
     fresh_backend: bool = False,
 ):
@@ -253,30 +433,59 @@ def load_chat_backend(
     fresh_backend uses a private orchestrator so a second model (compare's
     base column) can run alongside the main one.
     """
-    if model_config is None:
-        model_config = resolve_model_config(model, hf_token = hf_token)
+    with quiet_if_nonzero_mlx_rank():
+        is_mlx_distributed, rank, _world_size = mlx_distributed_info()
+        if model_config is None:
+            model_config = resolve_model_config(model, hf_token = hf_token)
 
-    typer.echo(f"Loading {model}", err = True)
+        if is_mlx_distributed and model_config.is_gguf:
+            if rank == 0:
+                typer.echo(
+                    "Distributed MLX inference does not support GGUF/llama.cpp models. "
+                    "Use a non-GGUF MLX model under mlx.launch, or run GGUF without "
+                    "mlx.launch.",
+                    err = True,
+                )
+            raise typer.Exit(code = 1)
 
-    if model_config.is_gguf:
-        return _load_gguf_backend(model_config, hf_token = hf_token, max_seq_length = max_seq_length)
+        if rank == 0:
+            typer.echo(f"Loading {model}", err = True)
 
-    if fresh_backend:
-        ensure_studio_backend_path()
-        from core.inference import InferenceOrchestrator
-        backend = InferenceOrchestrator()
-    else:
-        ensure_studio_backend_path()
-        from core.inference import get_inference_backend
-        backend = get_inference_backend()
-    if not backend.load_model(
-        config = model_config,
-        max_seq_length = max_seq_length,
-        load_in_4bit = load_in_4bit,
-        hf_token = hf_token,
-    ):
-        typer.echo("Model load failed", err = True)
-        raise typer.Exit(code = 1)
+        if model_config.is_gguf:
+            return _load_gguf_backend(
+                model_config,
+                hf_token = hf_token,
+                max_seq_length = max_seq_length,
+                tensor_parallel = tensor_parallel,
+                llama_extra_args = llama_extra_args,
+            )
+
+        if fresh_backend:
+            ensure_studio_backend_path()
+            from core.inference import InferenceOrchestrator
+            backend = InferenceOrchestrator()
+        else:
+            ensure_studio_backend_path()
+            from core.inference import get_inference_backend
+            backend = get_inference_backend()
+        try:
+            loaded = backend.load_model(
+                config = model_config,
+                max_seq_length = max_seq_length,
+                load_in_4bit = load_in_4bit,
+                hf_token = hf_token,
+                tensor_parallel = tensor_parallel,
+                mlx_distributed = is_mlx_distributed,
+            )
+        except Exception as exc:
+            if not is_mlx_distributed:
+                raise
+            if rank == 0:
+                typer.echo(str(exc) or "Model load failed", err = True)
+            raise typer.Exit(code = 1)
+        if not loaded:
+            typer.echo("Model load failed", err = True)
+            raise typer.Exit(code = 1)
     return ChatBackend("unsloth", backend)
 
 
@@ -447,18 +656,31 @@ class HttpChatBackend:
         # No redirects: this carries a bearer token (see urlopen_no_redirect).
         return urlopen_no_redirect(request, timeout = timeout)
 
-    def ensure_loaded(self, model: str, *, hf_token, max_seq_length, load_in_4bit) -> None:
+    def ensure_loaded(
+        self,
+        model: str,
+        *,
+        hf_token,
+        max_seq_length,
+        load_in_4bit,
+        tensor_parallel: bool = False,
+        llama_extra_args: Optional[List[str]] = None,
+    ) -> None:
         typer.echo(f"Loading {model} on the Studio server", err = True)
+        payload = {
+            "model_path": model,
+            "hf_token": hf_token,
+            "max_seq_length": max_seq_length,
+            "load_in_4bit": load_in_4bit,
+            "tensor_parallel": tensor_parallel,
+        }
+        if llama_extra_args:
+            payload["llama_extra_args"] = llama_extra_args
         try:
             self._request(
                 "POST",
                 "/api/inference/load",
-                {
-                    "model_path": model,
-                    "hf_token": hf_token,
-                    "max_seq_length": max_seq_length,
-                    "load_in_4bit": load_in_4bit,
-                },
+                payload,
             ).close()
         except Exception as exc:
             typer.echo(f"Model load failed: {exc}", err = True)
@@ -538,7 +760,15 @@ class HttpChatBackend:
         pass
 
 
-def connect_studio_server(model: str, *, hf_token, max_seq_length, load_in_4bit):
+def connect_studio_server(
+    model: str,
+    *,
+    hf_token,
+    max_seq_length,
+    load_in_4bit,
+    tensor_parallel: bool = False,
+    llama_extra_args: Optional[List[str]] = None,
+):
     """Backend on a running Studio server, or None (caller loads locally)."""
     base_url = find_studio_server()
     if not base_url:
@@ -576,6 +806,11 @@ def connect_studio_server(model: str, *, hf_token, max_seq_length, load_in_4bit)
         return _refuse("couldn't self-issue a Studio token (is Studio set up here?).")
     backend = HttpChatBackend(base_url, token)
     backend.ensure_loaded(
-        model, hf_token = hf_token, max_seq_length = max_seq_length, load_in_4bit = load_in_4bit
+        model,
+        hf_token = hf_token,
+        max_seq_length = max_seq_length,
+        load_in_4bit = load_in_4bit,
+        tensor_parallel = tensor_parallel,
+        llama_extra_args = llama_extra_args,
     )
     return backend

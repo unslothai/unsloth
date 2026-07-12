@@ -34,6 +34,26 @@ def is_external_host(host: str) -> bool:
     return host.lower() not in _LOOPBACK_HOSTS
 
 
+# Tauri desktop webview origins. api-only serving (the desktop app calling a
+# local backend) locks CORS to these.
+_TAURI_CORS_ORIGINS = (
+    "tauri://localhost",  # Linux/macOS Tauri webview
+    "http://tauri.localhost",  # Windows Tauri webview
+    "http://localhost",  # dev fallback
+    "http://localhost:5173",  # Tauri dev/Vite
+    "http://127.0.0.1:5173",  # Tauri dev/Vite fallback
+)
+
+
+def cors_origins_for_mode(*, api_only: bool, secure: bool) -> list[str]:
+    """Allowed CORS origins. Default is any-origin (["*"]); api-only locks down
+    to the Tauri desktop app, except in secure mode where the API is published
+    over Cloudflare and must stay reachable from remote browser origins."""
+    if api_only and not secure:
+        return list(_TAURI_CORS_ORIGINS)
+    return ["*"]
+
+
 def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> None:
     """Default stdio MCP servers on when bound to loopback.
 

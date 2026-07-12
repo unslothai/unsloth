@@ -20,6 +20,7 @@ if "structlog" not in sys.modules:
     )
 
 import routes.models as models_route
+from hub.services.models import gguf_variants as GV
 
 
 def _repo(
@@ -82,6 +83,7 @@ def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monk
             "repo_id": "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
             "size_bytes": 5_000,
             "cache_path": str(repo.repo_path),
+            "has_vision": False,
         }
     ]
 
@@ -103,6 +105,7 @@ def test_list_cached_gguf_matches_extension_case_insensitively(monkeypatch, tmp_
             "repo_id": "Org/Model-Without-Suffix",
             "size_bytes": 7_000,
             "cache_path": str(repo.repo_path),
+            "has_vision": False,
         }
     ]
 
@@ -197,6 +200,7 @@ def test_list_cached_gguf_keeps_largest_duplicate_repo_across_scans(monkeypatch,
             "repo_id": "org/dupe",
             "size_bytes": 6_000,
             "cache_path": str(larger.repo_path),
+            "has_vision": False,
         }
     ]
 
@@ -226,6 +230,7 @@ def test_list_cached_gguf_dedupes_shared_blobs_across_revisions(monkeypatch, tmp
             "repo_id": "Org/SharedBlobRepo",
             "size_bytes": 5_000,
             "cache_path": str(repo.repo_path),
+            "has_vision": False,
         }
     ]
 
@@ -275,6 +280,7 @@ def test_list_cached_gguf_includes_mixed_repo_with_gguf_and_safetensors(monkeypa
             "repo_id": "Org/MixedRepo",
             "size_bytes": 5_000,
             "cache_path": str(mixed.repo_path),
+            "has_vision": False,
         }
     ]
 
@@ -301,6 +307,7 @@ def test_list_cached_gguf_handles_none_size_on_disk(monkeypatch, tmp_path):
             "repo_id": "Org/PartialDownload",
             "size_bytes": 5_000,
             "cache_path": str(partial.repo_path),
+            "has_vision": False,
         }
     ]
 
@@ -336,6 +343,7 @@ def test_list_cached_gguf_skips_malformed_repo_without_wiping_response(monkeypat
             "repo_id": "Org/Healthy",
             "size_bytes": 5_000,
             "cache_path": str(healthy.repo_path),
+            "has_vision": False,
         }
     ]
 
@@ -411,6 +419,7 @@ def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeyp
             "repo_id": "Org/VisionGguf",
             "size_bytes": 5_000,
             "cache_path": str(vision_repo.repo_path),
+            "has_vision": True,
         }
     ]
 
@@ -464,6 +473,7 @@ def test_all_hf_cache_scans_survives_inaccessible_aux_cache(monkeypatch, tmp_pat
             "repo_id": "Org/Active",
             "size_bytes": 5_000,
             "cache_path": str(tmp_path / "active"),
+            "has_vision": False,
         }
     ]
 
@@ -518,21 +528,32 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
     """The per-quant 'downloaded' flag is driven by the real weight file in a
     single snapshot; an mmproj vision adapter (matching a quant label) must
     not make that quant appear downloaded."""
-    import huggingface_hub.constants as hf_constants
-
     variants = [
-        SimpleNamespace(filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10_000),
-        SimpleNamespace(filename = "model-F16.gguf", quant = "F16", size_bytes = 20_000),
+        SimpleNamespace(
+            filename = "model-Q4_K_M.gguf",
+            quant = "Q4_K_M",
+            display_label = None,
+            size_bytes = 10_000,
+        ),
+        SimpleNamespace(
+            filename = "model-F16.gguf",
+            quant = "F16",
+            display_label = None,
+            size_bytes = 20_000,
+        ),
     ]
     monkeypatch.setattr(
-        models_route, "list_gguf_variants", lambda repo_id, hf_token = None: (variants, True)
+        GV,
+        "list_gguf_variants",
+        lambda repo_id, hf_token = None: (variants, True, []),
     )
-    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(GV, "_local_main_gguf_blobs_by_quant", lambda _repo_id: {})
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snap.mkdir(parents = True)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 10_000)  # real weight, fully present
     (snap / "mmproj-F16.gguf").write_bytes(b"y" * 20_000)  # mmproj adapter, label "F16"
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
 
     result = asyncio.run(
         models_route.get_gguf_variants(
@@ -546,21 +567,32 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
 
 
 def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
-    import huggingface_hub.constants as hf_constants
-
     siblings = [
         SimpleNamespace(rfilename = "model-Q4_K_M-be.gguf", size = 100),
         SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10),
     ]
     monkeypatch.setattr(
-        "huggingface_hub.model_info",
-        lambda *_args, **_kwargs: SimpleNamespace(siblings = siblings),
+        GV,
+        "list_gguf_variants",
+        lambda repo_id, hf_token = None: (
+            [
+                SimpleNamespace(
+                    filename = "model-Q4_K_M.gguf",
+                    quant = "Q4_K_M",
+                    display_label = None,
+                    size_bytes = 10,
+                )
+            ],
+            False,
+            siblings,
+        ),
     )
-    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(GV, "_local_main_gguf_blobs_by_quant", lambda _repo_id: {})
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snap.mkdir(parents = True)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 10)
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
 
     result = asyncio.run(
         models_route.get_gguf_variants(
@@ -574,19 +606,25 @@ def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
 
 
 def test_gguf_variants_cached_big_endian_does_not_satisfy_variant(monkeypatch, tmp_path):
-    import huggingface_hub.constants as hf_constants
-
     variants = [
-        SimpleNamespace(filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10),
+        SimpleNamespace(
+            filename = "model-Q4_K_M.gguf",
+            quant = "Q4_K_M",
+            display_label = None,
+            size_bytes = 10,
+        ),
     ]
     monkeypatch.setattr(
-        models_route, "list_gguf_variants", lambda repo_id, hf_token = None: (variants, False)
+        GV,
+        "list_gguf_variants",
+        lambda repo_id, hf_token = None: (variants, False, []),
     )
-    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(GV, "_local_main_gguf_blobs_by_quant", lambda _repo_id: {})
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snap.mkdir(parents = True)
     (snap / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 10)
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
 
     result = asyncio.run(
         models_route.get_gguf_variants(

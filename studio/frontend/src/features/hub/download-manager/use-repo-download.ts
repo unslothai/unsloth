@@ -120,8 +120,10 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   );
 
   const requestStartDownload = useCallback(
-    (variant: string | null, expectedBytes: number) => {
-      return downloadManager.requestStart({
+    async (variant: string | null, expectedBytes: number) => {
+      // This surface renders the conflict resolver (transportConflict), so the
+      // start outcome is handled by the card UI; the awaited result is ignored.
+      await downloadManager.requestStart({
         kind,
         repoId,
         variant,

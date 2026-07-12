@@ -45,8 +45,16 @@ export function HubDetailView({
       <div
         ref={scrollRef}
         data-hub-scroll="true"
-        // Right margin nudges the scrollbar in from the pane's edge.
-        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto [overflow-anchor:none] mr-2 [scrollbar-gutter:stable] [scrollbar-width:thin]"
+        // Mirror the catalog's gutter strategy so the centered column lines up
+        // with the top bar: the full overlay reserves an equal both-edges gutter
+        // to stay symmetric; split pins a narrow pane so it nudges the scrollbar
+        // in from the edge with a right gutter only.
+        className={cn(
+          "min-h-0 flex-1 overflow-x-hidden overflow-y-auto [overflow-anchor:none] [scrollbar-width:thin]",
+          compact
+            ? "mr-2 [scrollbar-gutter:stable]"
+            : "[scrollbar-gutter:stable_both-edges]",
+        )}
       >
         <div
           className={cn(

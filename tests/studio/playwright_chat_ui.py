@@ -380,6 +380,18 @@ with sync_playwright() as p:
                 fail(f"/api/auth/refresh wedged: {refresh_resp['error']!r}")
             refresh = refresh_resp.get("body") or {}
             token = (refresh or {}).get("access_token")
+            next_refresh_token = (refresh or {}).get("refresh_token")
+            if token and next_refresh_token:
+                robust_evaluate(
+                    page,
+                    """([accessToken, refreshToken]) => {
+                        localStorage.setItem('unsloth_auth_token', accessToken);
+                        localStorage.setItem('unsloth_auth_refresh_token', refreshToken);
+                    }""",
+                    [token, next_refresh_token],
+                )
+            elif token:
+                fail("/api/auth/refresh returned access_token but no refresh_token")
     if not token:
         fail("could not obtain auth token after change-password")
 
@@ -494,12 +506,15 @@ with sync_playwright() as p:
             # typeahead actually filters (else an ignored-input regression
             # would silently pass).
             def picker_visible_text():
-                return page.evaluate("""() => {
+                return robust_evaluate(
+                    page,
+                    """() => {
                     const el = document.querySelector(
                         '[role="dialog"], [role="listbox"], [role="menu"]'
                     );
                     return el ? (el.innerText || '').trim() : '';
-                }""")
+                }""",
+                )
 
             search.fill("qwen")
             page.wait_for_timeout(800)
@@ -535,9 +550,12 @@ with sync_playwright() as p:
 
     def _bubble_count():
         """Total [data-role='assistant'] elements (empty or not)."""
-        return page.evaluate("""() => {
+        return robust_evaluate(
+            page,
+            """() => {
             return document.querySelectorAll('[data-role="assistant"]').length;
-        }""")
+        }""",
+        )
 
     def send_and_wait(prompt, idx):
         # 1. Wait until the previous turn fully stopped: Send attached
@@ -569,6 +587,21 @@ with sync_playwright() as p:
         #    this at temp 0), and the old non-empty predicate got stuck
         #    on such bubbles.
         bubbles_before = _bubble_count()
+        # The llama.cpp and web update banners are fixed bottom-right toasts
+        # (z-9998 / z-9999) that can overlap the composer's Send button and
+        # intercept the click. Snooze whichever is showing before sending.
+        for prefix in ("llama", "web"):
+            snooze_btn = page.locator(f'[data-testid="{prefix}-update-snooze-button"]')
+            if snooze_btn.count():
+                try:
+                    snooze_btn.first.click(timeout = 2_000)
+                    page.wait_for_selector(
+                        f'[data-testid="{prefix}-update-banner"]',
+                        state = "detached",
+                        timeout = 5_000,
+                    )
+                except Exception:
+                    pass
         composer.click()
         composer.fill(prompt)
         page.locator('button[aria-label="Send message"]').click()
@@ -611,8 +644,11 @@ with sync_playwright() as p:
         send_and_wait(p_, i)
     shoot("04-after-five-turns")
 
-    texts = page.evaluate("""() => Array.from(document.querySelectorAll('[data-role="assistant"]'))
-        .map(e => (e.innerText || '').trim())""")
+    texts = robust_evaluate(
+        page,
+        """() => Array.from(document.querySelectorAll('[data-role="assistant"]'))
+        .map(e => (e.innerText || '').trim())""",
+    )
     if len(texts) < len(prompts):
         fail(f"expected >= {len(prompts)} assistant bubbles, got {len(texts)}")
     info(f"five turn lengths = {[len(t) for t in texts[:5]]}")
@@ -825,7 +861,9 @@ with sync_playwright() as p:
             # Settle. The ".dark" class on <html> is the ground truth
             # (theme-store toggles only that); don't gate on ".light".
             page.wait_for_timeout(700)
-            bg = page.evaluate("""() => {
+            bg = robust_evaluate(
+                page,
+                """() => {
                 const root = document.documentElement;
                 return {
                     cls:    root.className,
@@ -833,7 +871,8 @@ with sync_playwright() as p:
                     bg:     getComputedStyle(document.body).backgroundColor,
                     rbg:    getComputedStyle(root).backgroundColor,
                 };
-            }""")
+            }""",
+            )
             observed.append(bg)
             shoot(f"10-theme-cycle-{cycle + 1}")
             info(f"  cycle {cycle + 1}: dark={bg['isDark']} body bg={bg['bg']!r}")
@@ -1035,7 +1074,8 @@ with sync_playwright() as p:
             shoot("15d-recent-clicked")
             info(f"OK clicked recent entry: {t[:60]!r}")
             # The landed thread must include at least one of our prompts.
-            turns_text = page.evaluate(
+            turns_text = robust_evaluate(
+                page,
                 """() => {
                 const els = document.querySelectorAll(
                     '[data-role="user"], [data-role="assistant"]'
@@ -1043,7 +1083,6 @@ with sync_playwright() as p:
                 return Array.from(els).map(e => (e.innerText || '')
                     .toLowerCase()).join(' ');
             }""",
-                None,
             )
             clicked_recent = True
             if any(k in turns_text for k in PROMPT_KEYWORDS):
@@ -1142,6 +1181,13 @@ with sync_playwright() as p:
         fail(f"curl login returned no access_token: {login_body!r}")
     info("CLI obtained an access token")
 
+    browser_refresh_token = robust_evaluate(
+        page,
+        "() => localStorage.getItem('unsloth_auth_refresh_token')",
+    )
+    if not browser_refresh_token:
+        fail("browser refresh token missing before CLI rotation")
+
     change_proc = subprocess.run(
         [
             "curl",
@@ -1176,18 +1222,39 @@ with sync_playwright() as p:
 
     # /change-password revoked refresh tokens server-side (auth.py), so
     # the browser's /api/auth/refresh must now fail.
-    refresh_after = evaluate_fetch(
-        page,
-        f"{BASE}/api/auth/refresh",
-        method = "POST",
-        timeout_ms = FETCH_TIMEOUT_MS,
+    refresh_proc = subprocess.run(
+        [
+            "curl",
+            "-sS",
+            "-o",
+            os.devnull,
+            "-w",
+            "%{http_code}",
+            "-X",
+            "POST",
+            f"{BASE}/api/auth/refresh",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            json.dumps({"refresh_token": browser_refresh_token}),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 15,
     )
-    if refresh_after.get("error"):
-        fail(f"/api/auth/refresh wedged: {refresh_after['error']!r}")
-    if refresh_after["status"] == 200:
+    if refresh_proc.returncode != 0:
+        fail(
+            f"curl refresh-token check failed: rc={refresh_proc.returncode} "
+            f"stderr={refresh_proc.stderr!r} stdout={refresh_proc.stdout!r}"
+        )
+    try:
+        refresh_status = int(refresh_proc.stdout.strip())
+    except ValueError:
+        fail(f"curl refresh-token check returned invalid status: " f"{refresh_proc.stdout!r}")
+    if refresh_status == 200:
         fail(f"/api/auth/refresh should fail after CLI rotation; got 200")
     info(
-        f"OK browser /api/auth/refresh now {refresh_after['status']} "
+        f"OK browser /api/auth/refresh now {refresh_status} "
         "(refresh token revoked) -- old studio session can no longer renew"
     )
 
@@ -1197,20 +1264,124 @@ with sync_playwright() as p:
     # placeholder, and /api/health goes unreachable shortly after.
     # ─────────────────────────────────────────────────────
     step("Shutdown via account menu")
-    # Re-login with NEW2 for a valid /api/shutdown token (CLI rotation
-    # invalidated the old one). The stale token can make the SPA auth
-    # guard abort this goto with ERR_ABORTED; resolve on
-    # domcontentloaded and tolerate it -- the pw-field wait confirms /login.
+    # Start fresh after the CLI rotation invalidates this browser session.
+    # Stay in the SAME context: macOS Chromium runs --single-process, where
+    # closing the last context kills the browser and a second context cannot
+    # be created. Open the new page before closing the old one; the context
+    # init script covers the new page.
     try:
-        page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
+        ctx.clear_cookies()
     except Exception as exc:
-        if "ERR_ABORTED" not in str(exc):
-            raise
-        info(f"goto /login aborted ({exc!r}); password-field wait will confirm /login")
-    pw_field = page.locator("#password")
-    pw_field.wait_for(state = "visible", timeout = 60_000)
-    pw_field.fill(NEW2)
-    page.locator('button[type="submit"]').click()
+        info(f"WARN clearing stale session cookies failed: {exc!r}")
+    # Auth tokens live in localStorage, and /login's guest guard redirects on
+    # their mere presence, so drop them before navigating.
+    try:
+        page.evaluate(
+            "['unsloth_auth_token', 'unsloth_auth_refresh_token']"
+            ".forEach((key) => localStorage.removeItem(key))"
+        )
+    except Exception as exc:
+        info(f"WARN clearing stale auth tokens failed: {exc!r}")
+    _fresh_page = ctx.new_page()
+    _fresh_page.set_default_timeout(60_000)
+    _fresh_page.on("pageerror", lambda e: page_errors.append(str(e)))
+    _fresh_page.on("console", _on_console)
+    try:
+        page.close()
+    except Exception:
+        pass
+    page = _fresh_page
+
+    # Re-login with NEW2 for a valid /api/shutdown token. Route changes can
+    # still abort or interrupt this navigation, so the field wait below is the
+    # final confirmation that we reached /login.
+    _tolerated_nav = ("ERR_ABORTED", "interrupted by another navigation")
+    # A slow CI runner can make this re-login navigation time out even with the
+    # server healthy, so retry the whole goto/wait/fill/submit sequence (mirrors
+    # the change-password retry above). wait_for_health is a diagnostic pre-gate.
+    wait_for_health(BASE, timeout = 30.0, info = info)
+    relogin_err: Exception | None = None
+    for _relogin_attempt in range(3):
+        try:
+            try:
+                page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
+            except Exception as exc:
+                if not any(t in str(exc) for t in _tolerated_nav):
+                    raise
+                info(f"goto /login interrupted ({exc!r}); password-field wait will confirm /login")
+            pw_field = page.locator("#password")
+            pw_field.wait_for(state = "visible", timeout = 60_000)
+            pw_field.fill(NEW2)
+            # Wait on the login POST so a transient 4xx/5xx is caught and retried
+            # here, not swallowed until the out-of-loop composer wait.
+            status, _ = click_and_wait_for_response(
+                page,
+                url_substr = "/api/auth/login",
+                method = "POST",
+                do_click = lambda: page.locator('button[type="submit"]').click(),
+                timeout_ms = 30_000,
+                info = lambda m: print(f"[ui]   {m}", flush = True),
+            )
+            if status is not None and status >= 400:
+                raise AssertionError(
+                    f"login POST returned {status}; see console_errors={console_errors[:1]!r}"
+                )
+            relogin_err = None
+            break
+        except Exception as e:
+            relogin_err = e
+            try:
+                cur_url = page.url
+            except Exception:
+                cur_url = "<page closed>"
+            print(
+                f"[ui]   re-login attempt {_relogin_attempt + 1} failed: "
+                f"{type(e).__name__}: {str(e)[:200]}; page.url={cur_url}; "
+                f"page_errors={len(page_errors)} console_errors={len(console_errors)}",
+                flush = True,
+            )
+            if console_errors:
+                print(
+                    f"[ui]   first console.error: {console_errors[0][:200]!r}",
+                    flush = True,
+                )
+            if page_errors:
+                print(f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True)
+            try:
+                shoot(f"18-relogin-attempt-{_relogin_attempt + 1}-fail")
+            except Exception:
+                pass
+            if _relogin_attempt < 2:
+                # ERR_NO_BUFFER_SPACE needs the OS to recover socket
+                # buffers; back off 5s then 15s before retrying.
+                if "ERR_NO_BUFFER_SPACE" in str(e):
+                    backoff_s = 5 if _relogin_attempt == 0 else 15
+                    print(
+                        f"[ui]   ENOBUFS detected; sleeping {backoff_s}s "
+                        f"before retry to let OS recover socket buffers...",
+                        flush = True,
+                    )
+                    time.sleep(backoff_s)
+                # Replace the page if it died; otherwise next iteration's
+                # page.goto() handles the reload.
+                old_page = page
+                page = recover_or_replace_page(
+                    page,
+                    ctx,
+                    default_timeout_ms = 60_000,
+                    info = lambda m: print(f"[ui]   recovery: {m}", flush = True),
+                )
+                # A freshly created replacement page loses the pageerror/console
+                # listeners; re-attach so error tracking survives recovery.
+                if page is not old_page:
+                    page.on("pageerror", lambda e: page_errors.append(str(e)))
+                    page.on("console", _on_console)
+    if relogin_err is not None:
+        raise relogin_err
+    # Composer mount confirms the rotated session is authenticated. Kept OUTSIDE the
+    # retry: the loop breaks right after submit, so we never re-goto /login once login
+    # has set tokens -- that would hit the guest guard, redirect to /chat, and make a
+    # merely-slow composer look like a broken login.
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
     shoot("18-relogin-with-NEW2")

@@ -2,6 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
+import {
+  loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
@@ -47,6 +51,7 @@ import {
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
   GgufVariantDetail,
@@ -62,11 +67,17 @@ import {
   listStoredChatThreads,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import {
+  readLastLocalModelLoad,
+  recordLastLocalModelLoad,
+  type LastLocalModelKind,
+} from "../utils/last-local-model-load";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   hasClosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   generateAudio,
   listCachedGguf,
@@ -139,8 +150,39 @@ interface ServerTimings {
   diffusion_steps_per_second?: number;
 }
 
+interface ResponseDetailsMetadata {
+  modelId: string;
+  modelLabel: string;
+  responseModelId: string;
+  providerId?: string;
+  providerName: string;
+  providerType: string;
+  startedAt: number;
+  finishedAt: number;
+  durationMs: number;
+  sessionId?: string;
+  cancelId: string;
+  toolCalls: string[];
+  tools: {
+    search: boolean;
+    fetch: boolean;
+    code: boolean;
+    images: boolean;
+    mcp: boolean;
+    docs: boolean;
+    artifacts: boolean;
+    confirmToolCalls: boolean;
+    bypassPermissions: boolean;
+  };
+}
+
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
 type RunMessage = RunMessages[number];
+
+type OpenAIStreamAdapterOptions = {
+  modelType?: ModelType;
+  pairId?: string;
+};
 
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
@@ -183,6 +225,124 @@ const pendingFirstThreadSaves = new Map<string, Promise<void>>();
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseSystemVariablesMap(raw: string): Record<string, unknown> {
+  if (!raw.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Invalid JSON: keep unresolved placeholders in output prompt.
+  }
+  return {};
+}
+
+function hasOwn(object: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function getNestedValue(
+  values: Record<string, unknown>,
+  path: string,
+): unknown | undefined {
+  const parts = path.split(".").map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 0) {
+    return undefined;
+  }
+  let current: unknown = values;
+  for (const part of parts) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    if (!hasOwn(current, part)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+function padDatePart(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function formatLocalDate(now: Date): string {
+  return [
+    now.getFullYear(),
+    padDatePart(now.getMonth() + 1),
+    padDatePart(now.getDate()),
+  ].join("-");
+}
+
+function formatLocalTime(now: Date): string {
+  return [
+    padDatePart(now.getHours()),
+    padDatePart(now.getMinutes()),
+    padDatePart(now.getSeconds()),
+  ].join(":");
+}
+
+function formatTimezoneOffset(now: Date): string {
+  const offsetMinutes = -now.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  const hours = Math.floor(abs / 60);
+  const minutes = abs % 60;
+  return `${sign}${padDatePart(hours)}:${padDatePart(minutes)}`;
+}
+
+function stringifyTemplateValue(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function resolveSystemPromptVariables(
+  prompt: string,
+  customVariablesRaw: string,
+): string {
+  if (!prompt) {
+    return prompt;
+  }
+  const now = new Date();
+  const localDate = formatLocalDate(now);
+  const localTime = formatLocalTime(now);
+  const systemVariables: Record<string, string> = {
+    $date: localDate,
+    $time: localTime,
+    $now: `${localDate}T${localTime}${formatTimezoneOffset(now)}`,
+  };
+  const customVariables = parseSystemVariablesMap(customVariablesRaw);
+  return prompt.replaceAll(
+    /{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}/g,
+    (full, keyRaw) => {
+      const key = String(keyRaw).trim();
+      if (hasOwn(systemVariables, key)) {
+        return systemVariables[key] ?? full;
+      }
+      const resolved = getNestedValue(customVariables, key);
+      if (resolved === undefined) {
+        return full;
+      }
+      return stringifyTemplateValue(resolved);
+    },
+  );
 }
 
 export const ThreadAutosaveHandle: ThreadAutosaveHandle = {
@@ -1064,7 +1224,17 @@ export function findLatestUserAudioBase64(
 
 async function resolveUseAdapter(
   threadId: string | undefined,
+  options: OpenAIStreamAdapterOptions = {},
 ): Promise<boolean | undefined> {
+  if (options.modelType === "model1" || options.modelType === "model2") {
+    return undefined;
+  }
+  if (
+    options.pairId &&
+    (options.modelType === "base" || options.modelType === "lora")
+  ) {
+    return options.modelType === "lora";
+  }
   if (!threadId) {
     return undefined;
   }
@@ -1149,6 +1319,30 @@ const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
   /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
 
+type AutoLoadCandidate = {
+  id: string;
+  kind: LastLocalModelKind;
+  ggufVariant: string | null;
+  maxSeqLength: number;
+  successLabel: string;
+};
+
+function autoLoadCandidateKey(
+  kind: LastLocalModelKind,
+  id: string,
+  ggufVariant?: string | null,
+): string {
+  return `${kind}:${id.toLowerCase()}:${(ggufVariant ?? "").toLowerCase()}`;
+}
+
+function findCachedRepo<T extends { repo_id: string }>(
+  repos: T[],
+  id: string,
+): T | undefined {
+  const normalized = id.toLowerCase();
+  return repos.find((repo) => repo.repo_id.toLowerCase() === normalized);
+}
+
 function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolean {
   const normalized = filename.replace(/\\/g, "/").toLowerCase();
   const separatorIndex = normalized.lastIndexOf("/");
@@ -1197,14 +1391,18 @@ async function autoLoadSmallestModel(): Promise<{
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const specSettings = resolveSpeculativeSettingsForLoad();
+  const lastLoaded = readLastLocalModelLoad();
   const toastId = toast("Loading a model…", {
-    description: "Auto-selecting the smallest downloaded model.",
+    description: lastLoaded
+      ? "Loading last used model."
+      : "Auto-selecting the smallest downloaded model.",
     duration: 5000,
     closeButton: true,
   });
   let blockedByTrustRemoteCode = false;
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
+  const skippedAutoLoadCandidates = new Set<string>();
 
   async function canAutoLoad(payload: {
     model_path: string;
@@ -1229,11 +1427,223 @@ async function autoLoadSmallestModel(): Promise<{
     }
     return true;
   }
+
+  async function loadAutoLoadCandidate(
+    candidate: AutoLoadCandidate,
+  ): Promise<boolean> {
+    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+      return false;
+    }
+    const currentStore = useChatRuntimeStore.getState();
+    const remembered = loadRememberedLoadSettings(
+      rememberedLoadSettingsKey({
+        id: candidate.id,
+        ggufVariant: candidate.ggufVariant,
+      }),
+    );
+    const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
+      modelId: candidate.id,
+      ggufVariant: candidate.ggufVariant,
+      isGguf: candidate.kind === "gguf",
+      customContextLength: remembered?.contextLength ?? null,
+      ggufContextLength: null,
+      currentCheckpoint: currentStore.params.checkpoint,
+      activeGgufVariant: currentStore.activeGgufVariant,
+      maxSeqLength: candidate.maxSeqLength,
+      presetSource: currentStore.activePresetSource,
+    });
+    const effectiveSpeculativeType =
+      remembered?.speculativeType ?? specSettings.speculativeType;
+    const effectiveSpecDraftNMax =
+      remembered?.specDraftNMax ?? specSettings.specDraftNMax;
+    if (
+      !(await canAutoLoad({
+        model_path: candidate.id,
+        max_seq_length: effectiveMaxSeqLength,
+        is_lora: false,
+        gguf_variant: candidate.ggufVariant,
+      }))
+    ) {
+      skippedAutoLoadCandidates.add(
+        autoLoadCandidateKey(candidate.kind, candidate.id, candidate.ggufVariant),
+      );
+      return false;
+    }
+    loadAttempts += 1;
+    const loadResp = await loadModel({
+      model_path: candidate.id,
+      hf_token: hfToken,
+      max_seq_length: effectiveMaxSeqLength,
+      load_in_4bit: true,
+      is_lora: false,
+      gguf_variant: candidate.ggufVariant,
+      trust_remote_code: trustRemoteCode,
+      cache_type_kv: remembered?.kvCacheDtype ?? null,
+      speculative_type: effectiveSpeculativeType,
+      spec_draft_n_max: effectiveSpecDraftNMax,
+      tensor_parallel: remembered?.tensorParallel ?? false,
+    });
+    saveSpeculativeType(effectiveSpeculativeType);
+    useChatRuntimeStore
+      .getState()
+      .setCheckpoint(candidate.id, candidate.ggufVariant ?? undefined);
+    const store = useChatRuntimeStore.getState();
+    store.setModelRequiresTrustRemoteCode(
+      loadResp.requires_trust_remote_code ?? false,
+    );
+    store.setParams({
+      ...store.params,
+      maxTokens:
+        candidate.kind === "gguf"
+          ? loadResp.context_length ?? 131072
+          : effectiveMaxSeqLength,
+    });
+    const autoModel: ChatModelSummary = {
+      id: candidate.id,
+      name: loadResp.display_name ?? candidate.id,
+      isVision: loadResp.is_vision ?? false,
+      isLora: loadResp.is_lora ?? false,
+      isGguf: loadResp.is_gguf ?? candidate.kind === "gguf",
+      isAudio: loadResp.is_audio ?? false,
+      audioType: loadResp.audio_type ?? null,
+      hasAudioInput: loadResp.has_audio_input ?? false,
+    };
+    if (!store.models.some((m) => m.id === candidate.id)) {
+      store.setModels([...store.models, autoModel]);
+    }
+    if (candidate.kind === "gguf") {
+      useChatRuntimeStore.setState({
+        ggufContextLength: loadResp.context_length ?? 131072,
+        ggufMaxContextLength:
+          loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+        ggufNativeContextLength: loadResp.native_context_length ?? null,
+        supportsReasoning: loadResp.supports_reasoning ?? false,
+        reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
+        reasoningEnabled: loadResp.supports_reasoning ?? false,
+        ...reasoningCapsFromLoad(loadResp),
+        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
+        supportsTools: loadResp.supports_tools ?? false,
+        ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
+        kvCacheDtype: loadResp.cache_type_kv ?? null,
+        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        tensorParallel: loadResp.tensor_parallel ?? false,
+        loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        defaultChatTemplate: loadResp.chat_template ?? null,
+        chatTemplateOverride: null,
+        loadedChatTemplateOverride: null,
+        loadedIsMultimodal: isMultimodalResponse(loadResp),
+        loadedIsDiffusion: loadResp.is_diffusion ?? false,
+        ...resolveLoadedSpeculativeSettings(loadResp),
+      });
+    } else {
+      useChatRuntimeStore.setState({
+        supportsReasoning: loadResp.supports_reasoning ?? false,
+        reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
+        reasoningEnabled: loadResp.supports_reasoning ?? false,
+        ...reasoningCapsFromLoad(loadResp),
+        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
+        supportsTools: loadResp.supports_tools ?? false,
+        ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
+        kvCacheDtype: loadResp.cache_type_kv ?? null,
+        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        tensorParallel: loadResp.tensor_parallel ?? false,
+        loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        defaultChatTemplate: loadResp.chat_template ?? null,
+        chatTemplateOverride: null,
+        loadedChatTemplateOverride: null,
+        ...resolveLoadedSpeculativeSettings(loadResp),
+        loadedIsMultimodal: isMultimodalResponse(loadResp),
+        loadedIsDiffusion: loadResp.is_diffusion ?? false,
+      });
+    }
+    if (!(loadResp.is_lora ?? false)) {
+      recordLastLocalModelLoad({
+        id: candidate.id,
+        kind: candidate.kind,
+        ggufVariant: candidate.ggufVariant,
+      });
+    }
+    toast.success(candidate.successLabel, { id: toastId });
+    return true;
+  }
   try {
     const [ggufRepos, modelRepos] = await Promise.all([
       listCachedGguf().catch(() => []),
       listCachedModels().catch(() => []),
     ]);
+
+    if (lastLoaded) {
+      if (lastLoaded.kind === "gguf") {
+        const repo = findCachedRepo(ggufRepos, lastLoaded.id);
+        if (repo && lastLoaded.ggufVariant) {
+          try {
+            const variants = await listGgufVariants(repo.repo_id);
+            const variant = variants.variants.find(
+              (entry) =>
+                entry.downloaded &&
+                entry.quant?.toLowerCase() ===
+                  lastLoaded.ggufVariant?.toLowerCase() &&
+                isAutoLoadableGgufVariant(entry),
+            );
+            if (variant) {
+              toast("Loading last used model…", {
+                id: toastId,
+                description: `${repo.repo_id} (${variant.quant})`,
+                duration: 5000,
+              });
+              if (
+                await loadAutoLoadCandidate({
+                  id: repo.repo_id,
+                  kind: "gguf",
+                  ggufVariant: variant.quant,
+                  maxSeqLength: 0,
+                  successLabel: `Loaded ${repo.repo_id} (${variant.quant})`,
+                })
+              ) {
+                return { loaded: true, blockedByTrustRemoteCode: false };
+              }
+            }
+          } catch {
+            hadNonTrustFailure = true;
+            skippedAutoLoadCandidates.add(
+              autoLoadCandidateKey("gguf", repo.repo_id, lastLoaded.ggufVariant),
+            );
+          }
+        }
+      } else {
+        const repo = findCachedRepo(modelRepos, lastLoaded.id);
+        if (repo) {
+          try {
+            toast("Loading last used model…", {
+              id: toastId,
+              description: repo.repo_id,
+              duration: 5000,
+            });
+            if (
+              await loadAutoLoadCandidate({
+                id: repo.repo_id,
+                kind: "model",
+                ggufVariant: null,
+                maxSeqLength: store.params.maxSeqLength,
+                successLabel: `Loaded ${repo.repo_id}`,
+              })
+            ) {
+              return { loaded: true, blockedByTrustRemoteCode: false };
+            }
+          } catch {
+            hadNonTrustFailure = true;
+            skippedAutoLoadCandidates.add(
+              autoLoadCandidateKey("model", repo.repo_id),
+            );
+          }
+        }
+      }
+      toast("Loading a model…", {
+        id: toastId,
+        description: "Auto-selecting the smallest downloaded model.",
+        duration: 5000,
+      });
+    }
 
     // GGUF first: smallest-total-size repo, then its smallest variant.
     if (ggufRepos.length > 0) {
@@ -1248,82 +1658,23 @@ async function autoLoadSmallestModel(): Promise<{
           if (downloaded.length > 0) {
             const variant = downloaded[0];
             if (
-              !(await canAutoLoad({
-                model_path: repo.repo_id,
-                max_seq_length: 0,
-                is_lora: false,
-                gguf_variant: variant.quant,
-              }))
+              skippedAutoLoadCandidates.has(
+                autoLoadCandidateKey("gguf", repo.repo_id, variant.quant),
+              )
             ) {
               continue;
             }
-            loadAttempts += 1;
-            const loadResp = await loadModel({
-              model_path: repo.repo_id,
-              hf_token: hfToken,
-              max_seq_length: 0,
-              load_in_4bit: true,
-              is_lora: false,
-              gguf_variant: variant.quant,
-              trust_remote_code: trustRemoteCode,
-              speculative_type: specSettings.speculativeType,
-              spec_draft_n_max: specSettings.specDraftNMax,
-            });
-            saveSpeculativeType(specSettings.speculativeType);
-            useChatRuntimeStore
-              .getState()
-              .setCheckpoint(repo.repo_id, variant.quant);
-            const store = useChatRuntimeStore.getState();
-            store.setModelRequiresTrustRemoteCode(
-              loadResp.requires_trust_remote_code ?? false,
-            );
-            store.setParams({
-              ...store.params,
-              maxTokens: loadResp.context_length ?? 131072,
-            });
-            // Add to store so the selector shows the name.
-            const autoModel: ChatModelSummary = {
-              id: repo.repo_id,
-              name: loadResp.display_name ?? repo.repo_id,
-              isVision: loadResp.is_vision ?? false,
-              isLora: loadResp.is_lora ?? false,
-              isGguf: loadResp.is_gguf ?? false,
-              isAudio: loadResp.is_audio ?? false,
-              audioType: loadResp.audio_type ?? null,
-              hasAudioInput: loadResp.has_audio_input ?? false,
-            };
-            const existingModels = store.models;
-            if (!existingModels.some((m) => m.id === repo.repo_id)) {
-              store.setModels([...existingModels, autoModel]);
+            if (
+              await loadAutoLoadCandidate({
+                id: repo.repo_id,
+                kind: "gguf",
+                ggufVariant: variant.quant,
+                maxSeqLength: 0,
+                successLabel: `Loaded ${repo.repo_id} (${variant.quant})`,
+              })
+            ) {
+              return { loaded: true, blockedByTrustRemoteCode: false };
             }
-            useChatRuntimeStore.setState({
-              ggufContextLength: loadResp.context_length ?? 131072,
-              ggufMaxContextLength:
-                loadResp.max_context_length ??
-                loadResp.context_length ??
-                131072,
-              supportsReasoning: loadResp.supports_reasoning ?? false,
-              reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
-              reasoningEnabled: loadResp.supports_reasoning ?? false,
-              ...reasoningCapsFromLoad(loadResp),
-              supportsPreserveThinking:
-                loadResp.supports_preserve_thinking ?? false,
-              supportsTools: loadResp.supports_tools ?? false,
-              ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-              kvCacheDtype: loadResp.cache_type_kv ?? null,
-              loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-              tensorParallel: loadResp.tensor_parallel ?? false,
-              loadedTensorParallel: loadResp.tensor_parallel ?? false,
-              defaultChatTemplate: loadResp.chat_template ?? null,
-              chatTemplateOverride: null,
-              loadedChatTemplateOverride: null,
-              loadedIsMultimodal: isMultimodalResponse(loadResp),
-              ...resolveLoadedSpeculativeSettings(loadResp),
-            });
-            toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, {
-              id: toastId,
-            });
-            return { loaded: true, blockedByTrustRemoteCode: false };
           }
         } catch {
           hadNonTrustFailure = true;
@@ -1341,64 +1692,23 @@ async function autoLoadSmallestModel(): Promise<{
         if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
         try {
           if (
-            !(await canAutoLoad({
-              model_path: repo.repo_id,
-              max_seq_length: 4096,
-              is_lora: false,
-              gguf_variant: null,
-            }))
+            skippedAutoLoadCandidates.has(
+              autoLoadCandidateKey("model", repo.repo_id),
+            )
           ) {
             continue;
           }
-          loadAttempts += 1;
-          const sfLoadResp = await loadModel({
-            model_path: repo.repo_id,
-            hf_token: hfToken,
-            max_seq_length: 4096,
-            load_in_4bit: true,
-            is_lora: false,
-            gguf_variant: null,
-            trust_remote_code: trustRemoteCode,
-            speculative_type: specSettings.speculativeType,
-            spec_draft_n_max: specSettings.specDraftNMax,
-          });
-          saveSpeculativeType(specSettings.speculativeType);
-          useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
-          const store = useChatRuntimeStore.getState();
-          store.setModelRequiresTrustRemoteCode(
-            sfLoadResp.requires_trust_remote_code ?? false,
-          );
-          store.setParams({ ...store.params, maxTokens: 4096 });
-          useChatRuntimeStore.setState({
-            supportsReasoning: sfLoadResp.supports_reasoning ?? false,
-            reasoningAlwaysOn: sfLoadResp.reasoning_always_on ?? false,
-            reasoningEnabled: sfLoadResp.supports_reasoning ?? false,
-            ...reasoningCapsFromLoad(sfLoadResp),
-            supportsPreserveThinking:
-              sfLoadResp.supports_preserve_thinking ?? false,
-            supportsTools: sfLoadResp.supports_tools ?? false,
-            // Parity with the GGUF branch above.
-            ...resolveToolsEnabledOnLoad(sfLoadResp.supports_tools ?? false),
-            defaultChatTemplate: sfLoadResp.chat_template ?? null,
-            chatTemplateOverride: null,
-            loadedChatTemplateOverride: null,
-            ...resolveLoadedSpeculativeSettings(sfLoadResp),
-          });
-          const sfModel: ChatModelSummary = {
-            id: repo.repo_id,
-            name: sfLoadResp.display_name ?? repo.repo_id,
-            isVision: sfLoadResp.is_vision ?? false,
-            isLora: sfLoadResp.is_lora ?? false,
-            isGguf: sfLoadResp.is_gguf ?? false,
-          };
-          if (!store.models.some((m) => m.id === repo.repo_id)) {
-            store.setModels([...store.models, sfModel]);
+          if (
+            await loadAutoLoadCandidate({
+              id: repo.repo_id,
+              kind: "model",
+              ggufVariant: null,
+              maxSeqLength: 4096,
+              successLabel: `Loaded ${repo.repo_id}`,
+            })
+          ) {
+            return { loaded: true, blockedByTrustRemoteCode: false };
           }
-          useChatRuntimeStore.setState({
-            loadedIsMultimodal: isMultimodalResponse(sfLoadResp),
-          });
-          toast.success(`Loaded ${repo.repo_id}`, { id: toastId });
-          return { loaded: true, blockedByTrustRemoteCode: false };
         } catch {
           hadNonTrustFailure = true;
           continue;
@@ -1490,6 +1800,11 @@ async function autoLoadSmallestModel(): Promise<{
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         ...resolveLoadedSpeculativeSettings(loadResp),
       });
+      recordLastLocalModelLoad({
+        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
+        kind: "gguf",
+        ggufVariant: "UD-Q4_K_XL",
+      });
       toast.success("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)", { id: toastId });
       return { loaded: true, blockedByTrustRemoteCode: false };
     } catch {
@@ -1511,7 +1826,9 @@ async function autoLoadSmallestModel(): Promise<{
   }
 }
 
-export function createOpenAIStreamAdapter(): ChatModelAdapter {
+export function createOpenAIStreamAdapter(
+  options: OpenAIStreamAdapterOptions = {},
+): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
       await useChatRuntimeStore.getState().hydratePersistedSettings();
@@ -1633,6 +1950,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             (provider) => provider.id === externalSelection.providerId,
           )
         : null;
+      const selectedModelSummary = runtime.models.find(
+        (model) => model.id === params.checkpoint,
+      );
       const externalApiKey = externalProvider
         ? getExternalProviderApiKey(externalProvider.id).trim()
         : "";
@@ -1778,7 +2098,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
 
       const safeSystemPrompt =
-        typeof params.systemPrompt === "string" ? params.systemPrompt : "";
+        typeof params.systemPrompt === "string"
+          ? resolveSystemPromptVariables(
+              params.systemPrompt,
+              typeof params.systemVariables === "string"
+                ? params.systemVariables
+                : "",
+            )
+          : "";
       const projectInstructions =
         await resolveProjectInstructions(resolvedThreadId);
       const combinedSystemPrompt = [
@@ -1926,6 +2253,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           externalModelLabel: externalSelection?.modelId ?? null,
           loadedIsMultimodal: runtime.loadedIsMultimodal,
           modelLoaded: !!params.checkpoint && !runtime.modelLoading,
+          loadError: runtime.lastModelLoadError,
         });
         if (imageGateReason) {
           toast.error(imageGateReason);
@@ -1950,7 +2278,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
         runtime.clearPendingAudio();
       }
-      const useAdapter = await resolveUseAdapter(resolvedThreadId);
+      const useAdapter = await resolveUseAdapter(resolvedThreadId, options);
 
       // ── Audio model path (non-streaming) ─────────────────────
       const activeModel = runtime.models.find(
@@ -2007,6 +2335,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let waitingFirstChunk = true;
       let firstTokenSettled = false;
       const streamStartTime = Date.now();
+      let responseModelId = externalSelection?.modelId ?? params.checkpoint;
       let firstTokenTime: number | undefined;
       let totalChunks = 0;
       let resolveFirstToken: (() => void) | null = null;
@@ -2228,6 +2557,59 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const externalBackendProviderType = toExternalBackendProviderType(
           externalProvider?.providerType,
         );
+        const buildResponseDetails = (
+          finishedAt: number,
+        ): ResponseDetailsMetadata => ({
+          modelId: params.checkpoint,
+          modelLabel:
+            (isExternalRequest || responseModelId !== params.checkpoint
+              ? responseModelId
+              : selectedModelSummary?.name || responseModelId) ||
+            params.checkpoint ||
+            "Unknown model",
+          responseModelId:
+            responseModelId ||
+            externalSelection?.modelId ||
+            params.checkpoint,
+          ...(externalProvider?.id ? { providerId: externalProvider.id } : {}),
+          providerName:
+            externalProvider?.name ??
+            (isExternalRequest ? "External provider" : "Local model"),
+          providerType: externalProvider?.providerType ?? "local",
+          startedAt: streamStartTime,
+          finishedAt,
+          durationMs: finishedAt - streamStartTime,
+          ...(sandboxSessionId ? { sessionId: sandboxSessionId } : {}),
+          cancelId,
+          toolCalls: Array.from(
+            new Set(
+              toolCallParts
+                .map((part) => part.toolName)
+                .filter(
+                  (toolName): toolName is string =>
+                    typeof toolName === "string" && toolName.length > 0,
+                ),
+            ),
+          ),
+          tools: {
+            search:
+              webSearchEnabledForThisTurn ||
+              (!isExternalRequest && supportsTools && toolsEnabled),
+            fetch: webFetchEnabledForThisTurn,
+            code:
+              codeExecEnabledForThisTurn ||
+              (!isExternalRequest && supportsTools && codeToolsEnabled),
+            images: imageGenerationEnabledForThisTurn,
+            mcp: !isExternalRequest && supportsTools && mcpEnabledForChat,
+            docs:
+              !isExternalRequest &&
+              supportsTools &&
+              (ragEnabled || projectRagEnabled),
+            artifacts: renderHtmlToolEnabledForThisTurn,
+            confirmToolCalls,
+            bypassPermissions,
+          },
+        });
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
         );
@@ -2584,11 +2966,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                             params.checkpoint,
                           ),
                           autoinject_min_score: ragAutoInjectMinScore,
+
+                          ...(ragAutoInject === "off"
+                            ? { whole_doc: false }
+                            : {}),
+                          context_length:
+                            runtime.ggufContextLength ?? params.maxSeqLength ?? undefined,
                         },
                       }
                     : {}),
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
+                  nudge_tool_calls: useChatRuntimeStore.getState().nudgeToolCalls,
                   max_tool_calls_per_message:
                     useChatRuntimeStore.getState().maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
@@ -2617,12 +3006,28 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             const stream = streamChatCompletions(requestPayload, abortSignal);
 
             for await (const chunk of stream) {
+              const chunkModel = (chunk as { model?: unknown }).model;
+              if (typeof chunkModel === "string" && chunkModel.length > 0) {
+                responseModelId = chunkModel;
+              }
+
               // Handle tool status events
               const toolStatusText = (
                 chunk as unknown as { _toolStatus?: string }
               )._toolStatus;
               if (toolStatusText !== undefined) {
                 runtime.setToolStatus(toolStatusText || null);
+                continue;
+              }
+
+              // Local GGUF sends server-timed reasoning duration. Guard the type
+              // so a malformed or proxied chunk (string/null/NaN duration) can
+              // never turn the label into NaN.
+              const reasoningMs = (
+                chunk as { _reasoningDurationMs?: number } | null | undefined
+              )?._reasoningDurationMs;
+              if (typeof reasoningMs === "number" && Number.isFinite(reasoningMs)) {
+                reasoningDuration = Math.max(0, Math.round(reasoningMs / 1000));
                 continue;
               }
 
@@ -3174,6 +3579,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               }
               const textParts = parseAssistantContent(cumulativeText);
 
+              // Fallback when no server-side reasoning_summary arrives.
               if (
                 textParts.some((part) => part.type === "reasoning") &&
                 !reasoningStartAt
@@ -3272,16 +3678,24 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           });
         }
 
+        const finishedAt = Date.now();
         const finalTiming = buildTiming(
           streamStartTime,
           totalChunks,
           serverPromptEvalTime ?? firstTokenTime,
-          Date.now() - streamStartTime,
+          finishedAt - streamStartTime,
           finalTokenCount,
           toolCallParts.length,
           finalTokPerSec,
         );
 
+        // Finalize reasoning-only streams.
+        if (reasoningStartAt && !reasoningDuration) {
+          reasoningDuration = Math.max(
+            0,
+            Math.round((Date.now() - reasoningStartAt) / 1000),
+          );
+        }
         yield {
           content: [
             ...buildAssistantContent(cumulativeText),
@@ -3305,6 +3719,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     modelId: params.checkpoint,
                   }
                 : undefined,
+              responseDetails: buildResponseDetails(finishedAt),
               timing: finalTiming,
             },
           },

@@ -91,7 +91,8 @@ jobs:
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
@@ -110,7 +111,8 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -346,7 +348,8 @@ jobs:
         id: download-gguf
         if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p gguf-cache
@@ -363,7 +366,8 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -426,6 +430,8 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import time
+          import urllib.error
           import urllib.request
 
           BASE = os.environ["BASE_URL"]
@@ -446,8 +452,24 @@ jobs:
                       "Content-Type": "application/json",
                   },
               )
-              with urllib.request.urlopen(req, timeout = timeout) as resp:
-                  return resp.status, json.loads(resp.read().decode())
+              # Shared CI runners stall sporadically, so retry transport-level
+              # failures only; HTTP status errors surface immediately. Bounded
+              # to fit the job's timeout-minutes: short probes get 3 full
+              # attempts, long probes one retry capped at 300s (a healthy
+              # server answers a retry quickly; a stalled one never does).
+              attempts = 3 if timeout <= 300 else 2
+              for attempt in range(attempts):
+                  try:
+                      t = timeout if attempt == 0 else min(timeout, 300)
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          return resp.status, json.loads(resp.read().decode())
+                  except urllib.error.HTTPError:
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      if attempt == attempts - 1:
+                          raise
+                      print(f"[retry] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
 
           def post_sse(path, body, *, timeout = 600):
               """POST a streaming request and accumulate the assistant
@@ -725,7 +747,8 @@ jobs:
         # Authenticated + parallel: shared macos-14 NAT egress stalls
         # multi-GB anonymous downloads.
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p gguf-cache
@@ -752,7 +775,8 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -819,6 +843,8 @@ jobs:
           import base64
           import json
           import os
+          import time
+          import urllib.error
           import urllib.request
           from openai import OpenAI
           from anthropic import Anthropic
@@ -842,8 +868,24 @@ jobs:
                       "Content-Type":  "application/json",
                   },
               )
-              with urllib.request.urlopen(req, timeout = timeout) as resp:
-                  return resp.status, json.loads(resp.read().decode())
+              # Shared CI runners stall sporadically, so retry transport-level
+              # failures only; HTTP status errors surface immediately. Bounded
+              # to fit the job's timeout-minutes: short probes get 3 full
+              # attempts, long probes one retry capped at 300s (a healthy
+              # server answers a retry quickly; a stalled one never does).
+              attempts = 3 if timeout <= 300 else 2
+              for attempt in range(attempts):
+                  try:
+                      t = timeout if attempt == 0 else min(timeout, 300)
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          return resp.status, json.loads(resp.read().decode())
+                  except urllib.error.HTTPError:
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      if attempt == attempts - 1:
+                          raise
+                      print(f"[retry] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
 
           # ── 1. response_format = json_object (JSON mode) ─────────────
           # llama.cpp's HTTP server supports OpenAI-compatible JSON

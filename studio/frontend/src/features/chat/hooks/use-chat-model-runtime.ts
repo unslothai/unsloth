@@ -25,6 +25,8 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import {
+  isLocalModelPath,
+  pendingSelectionMatches,
   readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
@@ -42,6 +44,7 @@ import {
   mergeBackendRecommendedInference,
   resolveLoadMaxSeqLength,
 } from "../presets/preset-policy";
+import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import {
   isMultimodalResponse,
 } from "../types/api";
@@ -56,6 +59,11 @@ export type SelectedModelInput = {
   id: string;
   isLora?: boolean;
   ggufVariant?: string;
+  /** Where the pick came from (e.g. "hub", "local", "external"). Used to decide
+   *  whether an uncached repo should download via the Hub manager. */
+  source?: string;
+  /** Uncached non-GGUF HF repo staged for a snapshot download (variant null). */
+  isHubRepo?: boolean;
   loadingDescription?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
@@ -245,6 +253,9 @@ export function useChatModelRuntime() {
   const setLoras = useChatRuntimeStore((state) => state.setLoras);
   const setParams = useChatRuntimeStore((state) => state.setParams);
   const setModelsError = useChatRuntimeStore((state) => state.setModelsError);
+  const setLastModelLoadError = useChatRuntimeStore(
+    (state) => state.setLastModelLoadError,
+  );
   const setCheckpoint = useChatRuntimeStore((state) => state.setCheckpoint);
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
 
@@ -253,6 +264,7 @@ export function useChatModelRuntime() {
     displayName: string;
     isDownloaded?: boolean;
     isCachedLora?: boolean;
+    ggufVariant?: string | null;
     nativePathToken?: string | null;
   } | null>(null);
   const [loadToastDismissed, setLoadToastDismissed] = useState(false);
@@ -301,14 +313,18 @@ export function useChatModelRuntime() {
     [],
   );
 
-  const refresh = useCallback(async (options?: { signal?: AbortSignal }) => {
+  const refresh = useCallback(async (options?: {
+    signal?: AbortSignal;
+    includeLoras?: boolean;
+  }) => {
     const signal = options?.signal;
+    const includeLoras = options?.includeLoras ?? true;
     setModelsError(null);
     try {
       const [listRes, statusRes, lorasRes] = await Promise.all([
         listModels(),
         getInferenceStatus(),
-        listLoras(),
+        includeLoras ? listLoras() : Promise.resolve(null),
       ]);
 
       // Cancellation can land while the requests above are in flight. Bail
@@ -316,7 +332,9 @@ export function useChatModelRuntime() {
       if (signal?.aborted) return;
 
       setModels(listRes.models.map(toChatModelSummary));
-      setLoras(lorasRes.loras.map(toLoraSummary));
+      if (lorasRes) {
+        setLoras(lorasRes.loras.map(toLoraSummary));
+      }
 
       const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
       const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
@@ -399,29 +417,51 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.keepSpeculative ?? false;
       // Picking/loading any model abandons a staged (deferred) selection.
       // Before the early-returns below so even a no-op re-select clears the
-      // stage, and so the Load button unmounts on first click (no double-load).
+      // stage.
       const staged = useChatRuntimeStore.getState().pendingSelection;
       if (staged) {
-        // Loading a DIFFERENT model abandons this stage, so cancel its in-flight
-        // download. Loading the staged pick itself keeps it (that download feeds
-        // this load).
-        const loadingStagedPick =
-          staged.id === modelId &&
-          (staged.ggufVariant ?? null) === (ggufVariant ?? null) &&
-          (staged.nativePathToken ?? null) === (nativePathToken ?? null);
-        if (!loadingStagedPick) cancelStagedModelDownload(staged);
-        useChatRuntimeStore.getState().setPendingSelection(null);
+        // Loading a DIFFERENT model abandons this stage. Loading the staged pick
+        // ITSELF keeps it so the sidebar can show its load settings (context, KV
+        // cache, …) during the load. Cleared on success below; on failure it's
+        // left staged so the user can retry (see onLoadPendingModel's catch).
+        const loadingStagedPick = pendingSelectionMatches(staged, {
+          id: modelId,
+          ggufVariant,
+          nativePathToken,
+        });
+        if (!loadingStagedPick) {
+          cancelStagedModelDownload(staged);
+          useChatRuntimeStore.getState().setPendingSelection(null);
+        }
       }
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
         return;
       }
-      // Prevent duplicate loads if already loading this model
-      if (
-        loadingModelRef.current?.id === modelId &&
-        (loadingModelRef.current?.nativePathToken ?? null) === (nativePathToken ?? null)
-      )
+      // A load is already in flight. If it's this exact pick (id + GGUF variant +
+      // native path token), ignore the duplicate click. If it's a DIFFERENT model
+      // -- crucially including a different GGUF variant of the same repo, which the
+      // old id+token-only guard wrongly treated as a duplicate and silently
+      // no-op'd -- don't start a second concurrent load (the load path has no clean
+      // supersession) and don't silently swallow the request: surface it so the
+      // user knows to wait for, or cancel, the in-flight load. Centralized here so
+      // every entry point is covered, not just the staged Load button.
+      const inFlightLoad = loadingModelRef.current;
+      if (inFlightLoad) {
+        const loadingSamePick =
+          inFlightLoad.id === modelId &&
+          (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
+          (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
+        if (loadingSamePick) return;
+        const message =
+          "Another model is already loading. Wait for it to finish or cancel it first.";
+        setModelsError(message);
+        if (throwOnError) throw new Error(message);
+        toast.info("Another model is already loading", {
+          description: "Wait for it to finish or cancel it first.",
+        });
         return;
+      }
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
@@ -457,8 +497,7 @@ export function useChatModelRuntime() {
         : undefined;
       const previousIsLora =
         previousModel?.isLora ?? (previousLora?.exportType === "lora");
-      // Covers Unix absolute (/), relative (./  ../), tilde (~/), Windows drive (C:\), UNC (\\server)
-      const isLocal = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(modelId);
+      const isLocal = isLocalModelPath(modelId);
       const isCachedLora = isLora && isLocal;
       const loadingDescription = [
         currentCheckpoint ? "Switching models." : null,
@@ -469,12 +508,14 @@ export function useChatModelRuntime() {
         .filter(Boolean)
         .join(" ");
       setModelsError(null);
+      setLastModelLoadError(null); // clear prior failed-load marker
       setLoadToastDismissedState(false);
       const loadInfo = {
         id: modelId,
         displayName,
         isDownloaded,
         isCachedLora,
+        ggufVariant: ggufVariant ?? null,
         nativePathToken: nativePathToken ?? null,
       };
       setLoadingModel(loadInfo);
@@ -509,6 +550,21 @@ export function useChatModelRuntime() {
             stateBeforeUnload.modelRequiresTrustRemoteCode;
           const previousActiveNativePathToken =
             stateBeforeUnload.activeNativePathToken;
+          // Snapshot the load settings at click time, before the awaits below
+          // (validation, the trust dialog, unload). For a staged Load these knobs
+          // stay editable and a sheet-close revert (abandonStagedModel) can fire
+          // mid-load; reading them live just before loadModel would let the load
+          // use post-click values. The model-switch speculative reset below
+          // updates this snapshot in lock-step so non-staged loads are unchanged.
+          const loadChatTemplateOverride = stateBeforeUnload.chatTemplateOverride;
+          const loadKvCacheDtype = stateBeforeUnload.kvCacheDtype;
+          const loadCustomContextLength = stateBeforeUnload.customContextLength;
+          const loadGgufContextLength = stateBeforeUnload.ggufContextLength;
+          const loadTensorParallel = stateBeforeUnload.tensorParallel;
+          const loadActivePresetSource = stateBeforeUnload.activePresetSource;
+          const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
+          let loadSpeculativeType = stateBeforeUnload.speculativeType;
+          let loadSpecDraftNMax = stateBeforeUnload.specDraftNMax;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -517,18 +573,17 @@ export function useChatModelRuntime() {
               : undefined;
             // Validate with the same effective context /load uses: a GGUF native
             // context can exceed maxSeqLength, so sizing on raw maxSeqLength could
-            // pass, unload, then have /load refuse it. Read pre-unload state; load
-            // recomputes its own value, so this leaves loading untouched.
-            const preUnloadState = useChatRuntimeStore.getState();
+            // pass, unload, then have /load refuse it. Uses the click-time
+            // snapshot (same values loadModel uses below), so the two agree.
             const validateMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,
               ggufVariant,
-              customContextLength: preUnloadState.customContextLength,
-              ggufContextLength: preUnloadState.ggufContextLength,
+              customContextLength: loadCustomContextLength,
+              ggufContextLength: loadGgufContextLength,
               currentCheckpoint,
-              activeGgufVariant: preUnloadState.activeGgufVariant,
+              activeGgufVariant: loadActiveGgufVariant,
               maxSeqLength,
-              presetSource: preUnloadState.activePresetSource,
+              presetSource: loadActivePresetSource,
             });
             const validation = await validateModel({
               model_path: modelId,
@@ -586,32 +641,23 @@ export function useChatModelRuntime() {
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
               });
+              loadSpeculativeType = persistedSpeculativeType;
+              loadSpecDraftNMax = null;
             }
 
-            const {
-              chatTemplateOverride,
-              kvCacheDtype,
-              customContextLength,
-              ggufContextLength,
-              speculativeType,
-              specDraftNMax,
-              tensorParallel,
-              activePresetSource,
-              activeGgufVariant,
-            } = useChatRuntimeStore.getState();
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,
               ggufVariant,
               isGguf,
-              customContextLength,
-              ggufContextLength,
+              customContextLength: loadCustomContextLength,
+              ggufContextLength: loadGgufContextLength,
               currentCheckpoint,
-              activeGgufVariant,
+              activeGgufVariant: loadActiveGgufVariant,
               maxSeqLength,
-              presetSource: activePresetSource,
+              presetSource: loadActivePresetSource,
             });
             const effectiveChatTemplateOverride =
-              chatTemplateOverride?.trim() ? chatTemplateOverride : null;
+              loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
             const loadResponse = await loadModel({
               model_path: modelId,
               nativePathLease: loadNativePathLease,
@@ -623,10 +669,10 @@ export function useChatModelRuntime() {
               trust_remote_code: trustRemoteCode,
               approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
               chat_template_override: effectiveChatTemplateOverride,
-              cache_type_kv: kvCacheDtype,
-              speculative_type: speculativeType,
-              spec_draft_n_max: specDraftNMax,
-              tensor_parallel: tensorParallel,
+              cache_type_kv: loadKvCacheDtype,
+              speculative_type: loadSpeculativeType,
+              spec_draft_n_max: loadSpecDraftNMax,
+              tensor_parallel: loadTensorParallel,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -636,7 +682,7 @@ export function useChatModelRuntime() {
             // The load applied this spec mode, so persist the user's standing
             // preference now (the requested intent, not the resolved echo;
             // saveSpeculativeType keeps only the universal auto/ngram/off).
-            saveSpeculativeType(speculativeType);
+            saveSpeculativeType(loadSpeculativeType);
 
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(
@@ -773,6 +819,42 @@ export function useChatModelRuntime() {
               }
             }
             await refresh({ signal: abortCtrl.signal });
+            if (
+              !isLora &&
+              !(loadResponse.is_lora ?? false) &&
+              !nativePathToken &&
+              !isLocalModelPath(modelId) &&
+              !isExternalModelId(modelId)
+            ) {
+              if (loadResponse.is_gguf || isGguf || ggufVariant) {
+                recordLastLocalModelLoad({
+                  id: modelId,
+                  kind: "gguf",
+                  ggufVariant: ggufVariant ?? null,
+                });
+              } else {
+                recordLastLocalModelLoad({ id: modelId, kind: "model" });
+              }
+            }
+            // A successful load owns the shared (pick-unscoped) settings fields,
+            // so any surviving stage is stale: the just-loaded pick itself, or a
+            // pick queued for a different model mid-load whose knobs this load
+            // overwrote. Drop it. Only a DIFFERENT pick's download needs
+            // cancelling; the loaded pick's is already consumed, and cancelling
+            // it inside its post-complete linger window would flicker its card.
+            const staleStage = useChatRuntimeStore.getState().pendingSelection;
+            if (staleStage) {
+              if (
+                !pendingSelectionMatches(staleStage, {
+                  id: modelId,
+                  ggufVariant,
+                  nativePathToken,
+                })
+              ) {
+                cancelStagedModelDownload(staleStage);
+              }
+              useChatRuntimeStore.getState().setPendingSelection(null);
+            }
           } catch (error) {
             // Skip rollback if user cancelled -- model is already being unloaded.
             if (abortCtrl.signal.aborted) throw error;
@@ -1135,6 +1217,7 @@ export function useChatModelRuntime() {
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
+        setLastModelLoadError(message); // load-specific failure for the attach gates
         if (throwOnError) {
           throw error instanceof Error ? error : new Error(message);
         }
@@ -1150,6 +1233,7 @@ export function useChatModelRuntime() {
       resetLoadingUi,
       setLoadToastDismissedState,
       setModelsError,
+      setLastModelLoadError,
       setParams,
     ],
   );

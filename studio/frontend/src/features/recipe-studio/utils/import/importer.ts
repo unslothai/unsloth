@@ -16,11 +16,7 @@ import type {
 } from "../../types";
 import { buildEdges } from "./edges";
 import { isRecord, parseJson, readString } from "./helpers";
-import {
-  parseColumn,
-  parseModelConfig,
-  parseModelProvider,
-} from "./parsers";
+import { parseColumn, parseModelConfig, parseModelProvider } from "./parsers";
 import { parseSeedConfig } from "./parsers/seed-config-parser";
 import { buildNodes, parseUi } from "./ui";
 import type { ImportResult } from "./types";
@@ -43,12 +39,17 @@ type UiInput = {
   seed_drop_columns?: unknown;
   seed_preview_rows?: unknown;
   local_file_name?: unknown;
+  unstructured_upload_uid?: unknown;
   unstructured_file_ids?: unknown;
   unstructured_file_names?: unknown;
   unstructured_file_sizes?: unknown;
   unstructured_chunk_size?: unknown;
   unstructured_chunk_overlap?: unknown;
   advanced_open_by_node?: unknown;
+};
+
+type ImportRecipePayloadOptions = {
+  preserveUnstructuredUploads?: boolean;
 };
 
 type UiMarkdownNoteNode = {
@@ -90,7 +91,7 @@ function parseProcessors(input: unknown): RecipeProcessorConfig[] {
         ? templateRaw
         : isRecord(templateRaw)
           ? JSON.stringify(templateRaw, null, 2)
-          : "{\n  \"text\": \"{{ column_name }}\"\n}";
+          : '{\n  "text": "{{ column_name }}"\n}';
     processors.push({
       id: `p${index + 1}`,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -135,9 +136,7 @@ function parseSeedDropColumns(input: unknown): string[] {
   return Array.from(values);
 }
 
-function parseMcpProviders(
-  input: unknown,
-): Map<string, LlmMcpProviderConfig> {
+function parseMcpProviders(input: unknown): Map<string, LlmMcpProviderConfig> {
   const providers = new Map<string, LlmMcpProviderConfig>();
   if (!Array.isArray(input)) {
     return providers;
@@ -156,13 +155,12 @@ function parseMcpProviders(
     const args = Array.isArray(item.args)
       ? item.args.map((value) => String(value))
       : [];
-    const envPairs =
-      isRecord(item.env)
-        ? Object.entries(item.env).map(([key, value]) => ({
-            key: String(key),
-            value: String(value),
-          }))
-        : [];
+    const envPairs = isRecord(item.env)
+      ? Object.entries(item.env).map(([key, value]) => ({
+          key: String(key),
+          value: String(value),
+        }))
+      : [];
     providers.set(name, {
       id: `mcp-${index + 1}`,
       name,
@@ -209,7 +207,8 @@ function parseToolConfigs(input: unknown): Map<string, LlmToolConfig> {
       allow_tools: allowTools,
       // biome-ignore lint/style/useNamingConvention: api schema
       max_tool_call_turns:
-        item.max_tool_call_turns === null || item.max_tool_call_turns === undefined
+        item.max_tool_call_turns === null ||
+        item.max_tool_call_turns === undefined
           ? "5"
           : String(item.max_tool_call_turns),
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -257,7 +256,9 @@ function parseUiMarkdownNoteNodes(input: unknown): UiMarkdownNoteNode[] {
   return noteNodes;
 }
 
-function parseUiToolProfileNodes(input: unknown): Map<string, Record<string, string[]>> {
+function parseUiToolProfileNodes(
+  input: unknown,
+): Map<string, Record<string, string[]>> {
   const toolProfiles = new Map<string, Record<string, string[]>>();
   if (!Array.isArray(input)) {
     return toolProfiles;
@@ -312,9 +313,15 @@ function parseAdvancedOpenByNode(input: unknown): Record<string, boolean> {
   return out;
 }
 
-type AdvancedOpenConfig = LlmConfig | SamplerConfig | SeedConfig | ValidatorConfig;
+type AdvancedOpenConfig =
+  | LlmConfig
+  | SamplerConfig
+  | SeedConfig
+  | ValidatorConfig;
 
-function isAdvancedOpenConfig(config: NodeConfig): config is AdvancedOpenConfig {
+function isAdvancedOpenConfig(
+  config: NodeConfig,
+): config is AdvancedOpenConfig {
   return (
     config.kind === "llm" ||
     config.kind === "sampler" ||
@@ -350,7 +357,8 @@ function buildToolProfileConfig(
       .map((providerName) => mcpProvidersByName.get(providerName))
       .flatMap((provider) => (provider ? [cloneMcpProvider(provider)] : [])),
     // biome-ignore lint/style/useNamingConvention: ui schema
-    fetched_tools_by_provider: fetchedToolsByProfileName.get(canonical.tool_alias) ?? {},
+    fetched_tools_by_provider:
+      fetchedToolsByProfileName.get(canonical.tool_alias) ?? {},
     // biome-ignore lint/style/useNamingConvention: api schema
     allow_tools: [...(canonical.allow_tools ?? [])],
     // biome-ignore lint/style/useNamingConvention: api schema
@@ -360,7 +368,10 @@ function buildToolProfileConfig(
   };
 }
 
-export function importRecipePayload(input: string): ImportResult {
+export function importRecipePayload(
+  input: string,
+  options: ImportRecipePayloadOptions = {},
+): ImportResult {
   const parsed = parseJson(input);
   if (!parsed.data || !isRecord(parsed.data)) {
     return {
@@ -369,9 +380,9 @@ export function importRecipePayload(input: string): ImportResult {
     };
   }
 
-  const recipe = (isRecord(parsed.data.recipe)
-    ? parsed.data.recipe
-    : parsed.data) as RecipeInput;
+  const recipe = (
+    isRecord(parsed.data.recipe) ? parsed.data.recipe : parsed.data
+  ) as RecipeInput;
   const ui = isRecord(parsed.data.ui) ? (parsed.data.ui as UiInput) : null;
 
   if (!Array.isArray(recipe.columns)) {
@@ -410,21 +421,36 @@ export function importRecipePayload(input: string): ImportResult {
         .map((row) => ({ ...row }))
     : undefined;
   const uiLocalFileName = readString(ui?.local_file_name) ?? undefined;
-  // Preserve file IDs/names from saved recipes (cleared at share time by sanitizeSeedForShare)
-  const uiUnstructuredFileIds: string[] = Array.isArray(ui?.unstructured_file_ids)
-    ? (ui.unstructured_file_ids as string[]).filter((v): v is string => typeof v === "string")
-    : [];
-  const uiUnstructuredFileNames: string[] = Array.isArray(ui?.unstructured_file_names)
-    ? (ui.unstructured_file_names as string[]).filter((v): v is string => typeof v === "string")
-    : [];
-  const uiUnstructuredFileSizes: number[] = Array.isArray(ui?.unstructured_file_sizes)
-    ? (ui.unstructured_file_sizes as number[]).filter((v): v is number => typeof v === "number")
-    : [];
+  const preserveUnstructuredUploads =
+    options.preserveUnstructuredUploads === true;
+  const uiUnstructuredUploadUid = preserveUnstructuredUploads
+    ? (readString(ui?.unstructured_upload_uid) ?? undefined)
+    : undefined;
+  const uiUnstructuredFileIds: string[] =
+    preserveUnstructuredUploads && Array.isArray(ui?.unstructured_file_ids)
+      ? (ui.unstructured_file_ids as string[]).filter(
+          (v): v is string => typeof v === "string",
+        )
+      : [];
+  const uiUnstructuredFileNames: string[] =
+    preserveUnstructuredUploads && Array.isArray(ui?.unstructured_file_names)
+      ? (ui.unstructured_file_names as string[]).filter(
+          (v): v is string => typeof v === "string",
+        )
+      : [];
+  const uiUnstructuredFileSizes: number[] =
+    preserveUnstructuredUploads && Array.isArray(ui?.unstructured_file_sizes)
+      ? (ui.unstructured_file_sizes as number[]).filter(
+          (v): v is number => typeof v === "number",
+        )
+      : [];
   const uiUnstructuredChunkSize = readStringNumber(ui?.unstructured_chunk_size);
   const uiUnstructuredChunkOverlap = readStringNumber(
     ui?.unstructured_chunk_overlap,
   );
-  const uiAdvancedOpenByNode = parseAdvancedOpenByNode(ui?.advanced_open_by_node);
+  const uiAdvancedOpenByNode = parseAdvancedOpenByNode(
+    ui?.advanced_open_by_node,
+  );
   const uiMarkdownNotes = parseUiMarkdownNoteNodes(ui?.nodes);
   const uiToolProfilesByName = parseUiToolProfileNodes(ui?.nodes);
 
@@ -459,11 +485,13 @@ export function importRecipePayload(input: string): ImportResult {
           : payloadSeedDropColumns,
       seed_preview_rows: uiSeedPreviewRows,
       local_file_name: uiLocalFileName,
+      unstructuredUploadUid: uiUnstructuredUploadUid,
       unstructuredFileIds: uiUnstructuredFileIds,
       unstructuredFileNames: uiUnstructuredFileNames,
       unstructuredFileSizes: uiUnstructuredFileSizes,
       unstructured_chunk_size: uiUnstructuredChunkSize,
       unstructured_chunk_overlap: uiUnstructuredChunkOverlap,
+      preserveUnstructuredUploads,
     });
     if (seedConfig) {
       applyAdvancedOpen(seedConfig, uiAdvancedOpenByNode);
@@ -567,12 +595,7 @@ export function importRecipePayload(input: string): ImportResult {
   const { layouts, auxNodes, edges: uiEdges, layoutDirection } = parseUi(ui);
   const resolvedLayoutDirection = layoutDirection ?? "LR";
   const nodes = buildNodes(configs, layouts);
-  const edges = buildEdges(
-    configs,
-    nameToId,
-    uiEdges,
-    resolvedLayoutDirection,
-  );
+  const edges = buildEdges(configs, nameToId, uiEdges, resolvedLayoutDirection);
   const auxNodePositions = Object.fromEntries(
     auxNodes.flatMap((item) => {
       const llmId = nameToId.get(item.llm);
@@ -583,10 +606,7 @@ export function importRecipePayload(input: string): ImportResult {
     }),
   );
 
-  const maxY = nodes.reduce(
-    (acc, node) => Math.max(acc, node.position.y),
-    0,
-  );
+  const maxY = nodes.reduce((acc, node) => Math.max(acc, node.position.y), 0);
 
   return {
     errors: [],

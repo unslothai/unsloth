@@ -6,9 +6,9 @@
 # windows-latest runner:
 #
 #   1. install.ps1 --local --no-torch installs Studio AND auto-fetches
-#      the prebuilt llama.cpp Windows binary (llama-bNNNN-bin-win-cpu-
-#      x64 from ggml-org/llama.cpp). Hitting the source-build fallback
-#      is treated as an Unsloth bug -- Studio must always pick the
+#      the prebuilt llama.cpp Windows binary (app-<tag>-windows-x64-cpu
+#      from unslothai/llama.cpp). Hitting the source-build fallback is
+#      treated as an Unsloth bug -- Studio must always pick the
 #      prebuilt on Windows.
 #   2. unsloth studio update --local is idempotent. Two consecutive
 #      runs both report "prebuilt up to date and validated", no
@@ -133,7 +133,8 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # *>&1 captures Write-Host (Information stream) output;
@@ -180,7 +181,8 @@ jobs:
       - name: First update should be a no-op (prebuilt already validated)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           set -o pipefail
           unsloth studio update --local 2>&1 | tee logs/update.log
@@ -199,7 +201,8 @@ jobs:
       - name: Second update must also be a no-op
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           set -o pipefail
           unsloth studio update --local 2>&1 | tee logs/update2.log

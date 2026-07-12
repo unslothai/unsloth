@@ -6,6 +6,7 @@
 /* eslint-disable react-refresh/only-export-components */
 
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import { MessageResponseModelBadge } from "@/components/assistant-ui/message-response-details-sheet";
 import {
   Collapsible,
   CollapsibleContent,
@@ -20,7 +21,8 @@ import {
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type VariantProps, cva } from "class-variance-authority";
-import { ChevronDownIcon, CopyIcon, LightbulbIcon } from "lucide-react";
+import { ChevronDownIcon, CopyIcon } from "lucide-react";
+import { BulbIcon } from "@/lib/bulb-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -128,7 +130,7 @@ function ReasoningTrigger({
       )}
       {...props}
     >
-      <LightbulbIcon className="aui-reasoning-trigger-icon size-4 shrink-0" />
+      <BulbIcon className="aui-reasoning-trigger-icon size-4 shrink-0" />
       <span
         data-slot="reasoning-trigger-label"
         className="aui-reasoning-trigger-label-wrapper relative inline-block leading-none"
@@ -389,13 +391,17 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       onOpenChange={handleOpenChange}
       variant={variant}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <ReasoningTrigger
-          className="min-w-0 flex-1"
+          className="min-w-0 flex-none"
           active={isReasoningStreaming}
-          duration={duration || persistedDuration}
+          // Prefer server timing when available.
+          duration={persistedDuration || duration}
         />
-        <div className="flex w-16 shrink-0 justify-end">
+        <span className="hidden min-w-0 max-w-[12rem] group-hover/assistant-message:inline-flex group-focus-within/assistant-message:inline-flex sm:max-w-[16rem]">
+          <MessageResponseModelBadge className="min-w-0" />
+        </span>
+        <div className="ml-auto flex w-16 shrink-0 justify-end">
           {isOpen && !isReasoningStreaming && (
             <ReasoningCopyButton startIndex={startIndex} endIndex={endIndex} />
           )}
