@@ -464,7 +464,6 @@ def test_unknown_tools_fail_closed():
 
 def test_is_always_safe_tool():
     from core.inference.tools import is_always_safe_tool
-
     for name in ("web_search", "search_knowledge_base", "render_html"):
         assert is_always_safe_tool(name) is True
     for name in ("python", "terminal", "mystery_tool", "mcp__srv__read"):

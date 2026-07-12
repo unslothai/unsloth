@@ -1836,9 +1836,7 @@ def test_auto_mode_render_html_streams_provisional_card_despite_confirm(monkeypa
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
 
-    monkeypatch.setattr(
-        "core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK"
-    )
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK")
 
     events = list(
         backend.generate_chat_completion_with_tools(
