@@ -55,11 +55,19 @@ def test_cuda12_torch2110_pins_matching_local_build(cuda: str):
     assert xf.url and f"/whl/{cuda}/" in xf.url, f"xformers not on the {cuda} index: {xf.url}"
 
 
-def test_cu130_torch2110_stays_bare():
-    # cu130 matches torch 2.11's PyPI default, so no local pin is needed (and a
-    # +cu130 pin could fail to resolve from PyPI's unlabelled default wheel).
+def test_cu130_torch2110_uses_arbitrary_equality():
+    # cu130 matches torch 2.11's PyPI default, so no +cu130 local pin is needed
+    # (it could fail to resolve from PyPI's unlabelled default wheel). But a
+    # RANGE is not enough either: PEP 440 ranks a local build (2.11.0+cu126)
+    # above the unlabelled 2.11.0, so with any CUDA-12 extra index configured a
+    # range silently pairs a CUDA-12 trio with the cu130 xformers. Arbitrary
+    # equality (===) matches only the unlabelled release, excluding every
+    # +cuXXX local candidate.
+    expected = {"torch": "2.11.0", "torchvision": "0.26.0", "torchaudio": "2.11.0"}
     reqs = _reqs(_extra("cu130onlytorch2110"))
     for pkg in _TORCH_TRIO:
         spec = str(reqs[pkg].specifier)
-        assert "+cu" not in spec, f"cu130onlytorch2110: {pkg} should stay bare, got '{spec}'"
-        assert ">=2.11" in spec or ">=0.26" in spec, f"cu130: {pkg} lost its 2.11 floor: '{spec}'"
+        assert spec == f"==={expected[pkg]}", (
+            f"cu130onlytorch2110: {pkg} must pin ==={expected[pkg]} "
+            f"(excludes +cuXXX local builds), got '{spec}'"
+        )

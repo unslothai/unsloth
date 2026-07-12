@@ -365,10 +365,15 @@ cu128onlytorch2110 = [
 cu130onlytorch2110 = [
     # No +cu130 local pin needed: torch 2.11's DEFAULT PyPI wheel is already CUDA
     # 13.0, so a bare resolve lands on a cu130 torch that matches the cu130
-    # xformers below even without a dedicated index.
-    "torch>=2.11.0,<2.12.0",
-    "torchvision>=0.26.0,<0.27.0",
-    "torchaudio>=2.11.0,<2.12.0",
+    # xformers below even without a dedicated index. Arbitrary equality (===)
+    # rather than a range: PEP 440 ranks a local build (2.11.0+cu126/+cu128)
+    # ABOVE the unlabelled 2.11.0, so with any CUDA-12 extra index configured a
+    # range would silently pair a CUDA-12 torch trio with the cu130 xformers
+    # (pip verified: torch>=2.11,<2.12 + --extra-index-url .../cu126 installs
+    # 2.11.0+cu126; torch===2.11.0 installs the unlabelled cu130 default).
+    "torch===2.11.0",
+    "torchvision===0.26.0",
+    "torchaudio===2.11.0",
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32')",
 ]
