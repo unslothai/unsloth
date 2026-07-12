@@ -514,13 +514,13 @@ class TestPinnedRocmLeafDigitParity:
         case-only custom-index change is not falsely matched equal (URL paths can be
         case-sensitive). All three installers must digit-gate the rocm prefix."""
         sh = INSTALL_SH.read_text(encoding = "utf-8")
-        assert re.search(r"rocm\[0-9\]\*\|gfx\*\|cpu\|cu\[0-9\]\*", sh), (
-            "install.sh _normalize_family_leaf must digit-gate rocm (rocm[0-9]*)"
-        )
+        assert re.search(
+            r"rocm\[0-9\]\*\|gfx\*\|cpu\|cu\[0-9\]\*", sh
+        ), "install.sh _normalize_family_leaf must digit-gate rocm (rocm[0-9]*)"
         setup = SETUP_PS1.read_text(encoding = "utf-8")
-        assert "-match '^(rocm[0-9]|gfx)'" in setup, (
-            "setup.ps1 Get-NormalizedFamilyLeaf must digit-gate rocm (^(rocm[0-9]|gfx))"
-        )
+        assert (
+            "-match '^(rocm[0-9]|gfx)'" in setup
+        ), "setup.ps1 Get-NormalizedFamilyLeaf must digit-gate rocm (^(rocm[0-9]|gfx))"
         stack = STACK_PY.read_text(encoding = "utf-8")
         assert re.search(r'r"\^\(rocm\|cu\)\[0-9\]"', stack), (
             "install_python_stack.py _normalize_family_leaf must digit-gate rocm "
@@ -550,7 +550,7 @@ class TestPinnedRocmLeafDigitParity:
             '[ "$_torch_index_is_rocm_family" = true ]' in text
         ), "install.sh ROCm bnb/repair hooks must gate on _torch_index_is_rocm_family"
         assert (
-            '*/rocm*|*/gfx*)\n                _install_bnb_rocm' not in text
+            "*/rocm*|*/gfx*)\n                _install_bnb_rocm" not in text
         ), "install.sh must not gate _install_bnb_rocm on a bare */rocm* whole-URL glob"
 
 
