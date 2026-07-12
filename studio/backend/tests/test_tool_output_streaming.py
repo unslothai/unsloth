@@ -469,11 +469,28 @@ def test_missing_path_hint_detection():
     hint = _missing_path_hint(err)
     assert "working directory is writable" in hint
     assert "relative path" in hint
+    # The hint echoes the actual failing path, not a canned example.
+    assert "'x.html', not '/mnt/data/x.html'" in hint
     # A failure on a local path gets no hint.
     assert _missing_path_hint("FileNotFoundError: 'local.txt'") == ""
     # Mentioning /mnt/data without a file error gets no hint.
     assert _missing_path_hint("saved to /mnt/data, all good") == ""
     assert _missing_path_hint("") == ""
+
+
+def test_missing_path_hint_generalizes_beyond_convention_prefixes():
+    # A hallucinated absolute path outside the enumerated prefixes (invented
+    # from the model's CWD) still earns the hint, echoing that path.
+    err = (
+        "FileNotFoundError: [Errno 2] No such file or directory: "
+        "'/home/ubuntu/Sandbox/flappy_bird.html'"
+    )
+    hint = _missing_path_hint(err)
+    assert "working directory is writable" in hint
+    assert "'flappy_bird.html', not '/home/ubuntu/Sandbox/flappy_bird.html'" in hint
+    # A bash-style error on an absolute path outside the workdir is echoed too.
+    bash_err = "cat: /var/data/report.csv: No such file or directory"
+    assert "'report.csv', not '/var/data/report.csv'" in _missing_path_hint(bash_err)
 
 
 def test_code_tool_descriptions_mention_relative_paths():
@@ -530,6 +547,37 @@ def test_python_exec_pathlib_write_text_is_remapped_into_workdir():
             assert f.read() == "pathlib remap"
         assert "pathlib remap" in baseline
         assert "/mnt/data does not exist in this sandbox" in baseline
+        _os.remove(target)
+        streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
+        assert streamed == baseline
+        assert _os.path.isfile(target)
+    finally:
+        if _os.path.exists(target):
+            _os.remove(target)
+
+
+def test_python_exec_hallucinated_absolute_write_is_remapped_into_workdir():
+    # The reported failure: the model invents an absolute path from its CWD
+    # (not one of the enumerated prefixes) and opens it for writing. The
+    # write-mode fallback redirects it to the basename in the sandbox workdir
+    # instead of dying with FileNotFoundError.
+    fname = f"remap_{_uuid.uuid4().hex}.html"
+    hallucinated = f"/nonexistent_root_xyz/Sandbox/{fname}"
+    # Read-back goes through the mapped basename, not the hallucinated path:
+    # reads are never redirected by the fallback (only the write is healed).
+    code = (
+        f"with open('{hallucinated}', 'w') as f:\n"
+        "    f.write('hello fallback')\n"
+        f"print(open('{fname}').read())\n"
+    )
+    target = _os.path.join(get_sandbox_workdir(), fname)
+    try:
+        baseline = _python_exec(code, timeout = 60)
+        assert _os.path.isfile(target), baseline
+        with open(target) as f:
+            assert f.read() == "hello fallback"
+        assert "hello fallback" in baseline
+        assert "does not exist in this sandbox" in baseline
         _os.remove(target)
         streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
         assert streamed == baseline

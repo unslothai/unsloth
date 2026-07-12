@@ -12,7 +12,19 @@ the ``terminal`` tool launches (the env is inherited).
 
 It remaps those prefixes onto the working directory in ``open()`` /
 ``io.open()``, ``os.makedirs()`` and ``os.mkdir()`` / ``pathlib.Path.mkdir()``:
-the calls model-written file code funnels through. ``io.open`` is patched
+the calls model-written file code funnels through. Prefix lists cannot enumerate
+every path a model invents, though: models also hallucinate absolute paths from
+seeing their own CWD (e.g. ``open('/home/ubuntu/Sandbox/flappy_bird.html',
+'w')`` after the sandbox CWD is ``/home/ubuntu/studio_sandbox/<thread>``). So
+``open()`` / ``io.open()`` gain a write-mode fallback on top of the prefix
+remaps: when a write/create-mode open targets an absolute path that is NOT under
+the CWD and whose parent directory does not exist, the file is redirected to the
+basename in the CWD. Read modes never hit the fallback (reading a real system
+file must fail or succeed truthfully); the prefix remaps still cover reads. The
+fallback is deliberately NOT applied to ``os.mkdir`` / ``os.makedirs`` /
+``pathlib.Path.mkdir``: making an arbitrary absolute directory can legitimately
+succeed (e.g. under writable ``/home/ubuntu``) and must not be second-guessed.
+``io.open`` is patched
 alongside ``builtins.open`` because ``pathlib.Path.open`` (and therefore
 ``read_text`` / ``write_text`` / ``read_bytes`` / ``write_bytes``) calls
 ``io.open`` directly, bypassing the builtins patch. ``os.mkdir`` is patched
@@ -48,19 +60,73 @@ _CONDITIONAL_PREFIXES = ("/tmp/outputs",)
 _notified = False
 
 
+def _note(subject, original, mapped):
+    """Print the one-shot stderr notice so the model learns the real location.
+
+    ``subject`` is what "does not exist" (the convention prefix, or the whole
+    invented path for the write-mode fallback); ``original`` is the exact path
+    the model passed, echoed in the ``(original -> mapped)`` tail.
+    """
+    global _notified
+    if _notified:
+        return
+    _notified = True
+    print(
+        f"note: {subject} does not exist in this sandbox; "
+        f"using the working directory instead ({original} -> {mapped})",
+        file = sys.stderr,
+    )
+
+
 def _map_onto_cwd(prefix, text):
     """Map ``<prefix>/rest`` onto ``./rest`` in the CWD and note it once."""
-    global _notified
     rel = text[len(prefix) :].lstrip("/")
     mapped = os.path.join(os.getcwd(), rel) if rel else os.getcwd()
-    if not _notified:
-        _notified = True
-        print(
-            f"note: {prefix} does not exist in this sandbox; "
-            f"using the working directory instead ({text} -> {mapped})",
-            file = sys.stderr,
-        )
+    _note(prefix, text, mapped)
     return mapped
+
+
+def _is_write_mode(mode):
+    """True when an ``open()`` mode string implies writing/creating a file."""
+    return isinstance(mode, str) and any(c in mode for c in ("w", "a", "x", "+"))
+
+
+def _remap_open(file, mode):
+    """Remap for ``open()`` / ``io.open()``.
+
+    The prefix remaps run first (they cover reads and writes and preserve
+    subpaths). Only if no prefix matched and the call is a write/create does the
+    generalized fallback kick in: an absolute target outside the CWD whose
+    parent directory is missing is a path the model invented from its CWD, so
+    redirect it to the basename in the CWD. Reads are never redirected here.
+    """
+    mapped = _remap(file)
+    if mapped is not file:
+        return mapped
+    if not _is_write_mode(mode):
+        return file
+    try:
+        text = os.fspath(file)
+    except TypeError:
+        return file
+    # bytes paths are left untouched: os.getcwd() is str and the prefix remaps
+    # above already skip non-str, so keep the fallback str-only too.
+    if not isinstance(text, str) or not os.path.isabs(text):
+        return file
+    cwd = os.getcwd()
+    # Already inside the CWD: a real target the model meant; leave it alone.
+    if text == cwd or text.startswith(cwd + os.sep):
+        return file
+    parent = os.path.dirname(text)
+    # Only redirect when the parent directory is missing. An existing external
+    # directory (a real /home/ubuntu path, a user-made dir, a symlink to one --
+    # os.path.exists follows symlinks) is a deliberate, working target and must
+    # pass through untouched so real writes stay truthful.
+    if parent and os.path.exists(parent):
+        return file
+    remapped = os.path.join(cwd, os.path.basename(text))
+    _note(text, text, remapped)
+    return remapped
 
 
 def _remap(path):
@@ -91,12 +157,25 @@ def _install():
     original_mkdir = os.mkdir
     original_path_mkdir = pathlib.Path.mkdir
 
-    def _open(file, *args, **kwargs):
-        return original_open(_remap(file), *args, **kwargs)
+    def _open(
+        file,
+        mode = "r",
+        *args,
+        **kwargs,
+    ):
+        return original_open(_remap_open(file, mode), mode, *args, **kwargs)
 
-    def _io_open(file, *args, **kwargs):
-        return original_io_open(_remap(file), *args, **kwargs)
+    def _io_open(
+        file,
+        mode = "r",
+        *args,
+        **kwargs,
+    ):
+        return original_io_open(_remap_open(file, mode), mode, *args, **kwargs)
 
+    # mkdir/makedirs get only the prefix remap, never the write-mode fallback:
+    # creating an arbitrary absolute directory can legitimately succeed on the
+    # host (e.g. under writable /home/ubuntu), so it must not be second-guessed.
     def _makedirs(name, *args, **kwargs):
         return original_makedirs(_remap(name), *args, **kwargs)
 

@@ -58,6 +58,67 @@ def test_always_remap_prefixes_map_into_cwd(monkeypatch, tmp_path):
     assert mod._remap("relative.txt") == "relative.txt"
 
 
+def test_write_fallback_remaps_hallucinated_absolute_path(monkeypatch, tmp_path):
+    # Models invent absolute paths from seeing their CWD (e.g.
+    # /home/ubuntu/Sandbox/x.html). Prefix lists cannot enumerate these, so a
+    # write/create-mode open on an absolute path outside the CWD whose parent is
+    # missing is redirected to the basename in the CWD.
+    mod = _load_shim()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    cwd = os.getcwd()
+    hallucinated = "/home/ubuntu/Sandbox/flappy_bird.html"
+    for mode in ("w", "a", "x", "w+"):
+        assert mod._remap_open(hallucinated, mode) == os.path.join(cwd, "flappy_bird.html")
+    # A nested missing tree collapses to just the basename in the CWD.
+    assert mod._remap_open("/no/such/tree/report.txt", "w") == os.path.join(cwd, "report.txt")
+
+
+def test_write_fallback_never_touches_read_modes(monkeypatch, tmp_path):
+    # Reading a real system file (or a genuinely missing one) must fail or
+    # succeed truthfully -- the fallback is write-only.
+    mod = _load_shim()
+    monkeypatch.chdir(tmp_path)
+    for mode in ("r", "rb", "r+"):
+        assert mod._remap_open("/etc/definitely_missing_xyz.conf", mode) == (
+            "/etc/definitely_missing_xyz.conf"
+        )
+
+
+def test_write_fallback_passes_through_existing_external_dir(monkeypatch, tmp_path):
+    # A write to an absolute path whose parent directory exists is a deliberate,
+    # working target (e.g. a real writable dir) and must NOT be redirected.
+    mod = _load_shim()
+    external = tmp_path / "external"
+    external.mkdir()
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    target = str(external / "out.txt")
+    assert mod._remap_open(target, "w") is target
+
+
+def test_write_fallback_leaves_relative_and_bytes_paths(monkeypatch, tmp_path):
+    mod = _load_shim()
+    monkeypatch.chdir(tmp_path)
+    # Relative paths are already inside the CWD.
+    assert mod._remap_open("out.txt", "w") == "out.txt"
+    # Bytes paths are left untouched (os.getcwd() is str; prefix remap skips
+    # non-str too).
+    assert mod._remap_open(b"/no/such/tree/x.bin", "w") == b"/no/such/tree/x.bin"
+
+
+def test_remap_open_still_applies_prefix_remaps(monkeypatch, tmp_path):
+    # The prefix remaps run first in open(), for reads and writes alike, and
+    # preserve subpaths -- the write-mode fallback is only the last resort.
+    mod = _load_shim()
+    monkeypatch.chdir(tmp_path)
+    cwd = os.getcwd()
+    assert mod._remap_open("/mnt/data/sub/out.txt", "w") == os.path.join(cwd, "sub", "out.txt")
+    assert mod._remap_open("/mnt/data/sub/out.txt", "r") == os.path.join(cwd, "sub", "out.txt")
+
+
 def test_tmp_outputs_is_a_conditional_prefix():
     mod = _load_shim()
     assert "/tmp/outputs" in mod._CONDITIONAL_PREFIXES

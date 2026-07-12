@@ -2801,20 +2801,67 @@ _MISSING_PATH_PREFIXES = (
     "/tmp/outputs",
 )
 
+# The quoted path in a Python OSError str ("... No such file or directory:
+# '/abs/path'") and the bare path in a bash error ("cat: /abs/path: No such
+# file or directory"). Both are matched only on the error line so an unrelated
+# quoted path elsewhere in stdout is not mistaken for the failing one.
+_QUOTED_ABS_PATH_RE = re.compile(r"""['"](/[^'"\n]+)['"]""")
+_BASH_ABS_PATH_RE = re.compile(r"(/[^\s:'\"]+):\s*No such file or directory")
+
+# The sandbox CWD is a per-thread dir under ~/studio_sandbox; an absolute path
+# under it is a genuine local miss, not a hallucinated out-of-sandbox write.
+_SANDBOX_ROOT = os.path.join(os.path.expanduser("~"), "studio_sandbox")
+
+
+def _extract_missing_abs_path(output: str) -> str | None:
+    """Pull the absolute path a FileNotFoundError / bash error named, if any."""
+    for line in reversed(output.splitlines()):
+        if "No such file or directory" not in line and "FileNotFoundError" not in line:
+            continue
+        m = _QUOTED_ABS_PATH_RE.search(line)
+        if m:
+            return m.group(1)
+        m = _BASH_ABS_PATH_RE.search(line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _is_outside_workdir(abs_path: str) -> bool:
+    """True when ``abs_path`` is not the sandbox working directory or under it."""
+    root = os.path.realpath(_SANDBOX_ROOT)
+    rp = os.path.realpath(abs_path)
+    return rp != root and not rp.startswith(root + os.sep)
+
 
 def _missing_path_hint(output: str) -> str:
-    """Model-visible healing when an execution fails on a code-interpreter
-    convention path (e.g. ``open('/mnt/data/x.html', 'w')``). Detected on the
-    full pre-truncation output; identical with and without streaming because
-    the output itself is."""
+    """Model-visible healing when an execution fails on an absolute path that
+    does not exist in the sandbox (a ChatGPT code-interpreter habit path like
+    ``/mnt/data/x.html``, or a path the model invented from its CWD like
+    ``/home/ubuntu/Sandbox/x.html``). Detected on the full pre-truncation
+    output; identical with and without streaming because the output itself is.
+    The hint echoes the actual failing path so the model retries with the right
+    relative name."""
     if "FileNotFoundError" not in output and "No such file or directory" not in output:
         return ""
-    if not any(prefix in output for prefix in _MISSING_PATH_PREFIXES):
-        return ""
+    abs_path = _extract_missing_abs_path(output)
+    # Fast path: a known code-interpreter convention prefix is always outside
+    # the sandbox, so hint even if the exact path could not be isolated.
+    convention = any(prefix in output for prefix in _MISSING_PATH_PREFIXES)
+    if not convention:
+        # Generalized: only hint when the failing path is an absolute path
+        # outside the working directory. A relative miss (a real typo of a
+        # local file) must not get misleading "use a relative path" advice.
+        if abs_path is None or not _is_outside_workdir(abs_path):
+            return ""
+    if abs_path:
+        example = f"'{os.path.basename(abs_path)}', not '{abs_path}'"
+    else:
+        example = "'output.html', not '/mnt/data/output.html'"
     return (
         "\nHint: that absolute path does not exist in this sandbox. The current "
         "working directory is writable and persists for this conversation; retry "
-        "with a relative path (for example 'output.html', not '/mnt/data/output.html')."
+        f"with a relative path (for example {example})."
     )
 
 
