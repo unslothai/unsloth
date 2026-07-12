@@ -236,8 +236,6 @@ export const ja = {
         resetAll: "カスタマイズをリセット",
         preferencesTitle: "環境設定",
         colors: {
-          description:
-            "現在のモードに適用されます。もう一方はカラー構成を切り替えて編集します。",
           lightGroup: "ライトテーマ",
           darkGroup: "ダークテーマ",
           accent: "アクセント",
@@ -259,19 +257,15 @@ export const ja = {
         },
         uiFont: {
           label: "UI フォント",
-          description: "インターフェイスで使用するフォント。",
         },
         headingFont: {
           label: "見出しフォント",
-          description: "タイトルや見出しに使用するフォント。",
         },
         chatFont: {
           label: "チャットフォント",
-          description: "チャットメッセージに使用するフォント。",
         },
         codeFont: {
           label: "コードフォント",
-          description: "コードと差分で使用するフォント。",
         },
         importFont: {
           upload: "アップロード",

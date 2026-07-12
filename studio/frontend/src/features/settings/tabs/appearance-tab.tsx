@@ -63,7 +63,6 @@ export function AppearanceTab() {
             ? "settings.appearance.custom.colors.lightGroup"
             : "settings.appearance.custom.colors.darkGroup",
         )}
-        description={t("settings.appearance.custom.colors.description")}
       >
         <SettingsRow label={t("settings.appearance.custom.colors.accent")}>
           <ActiveColorControl
@@ -83,28 +82,16 @@ export function AppearanceTab() {
             label={t("settings.appearance.custom.colors.foreground")}
           />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.uiFont.label")}
-          description={t("settings.appearance.custom.uiFont.description")}
-        >
+        <SettingsRow label={t("settings.appearance.custom.uiFont.label")}>
           <UiFontRow />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.headingFont.label")}
-          description={t("settings.appearance.custom.headingFont.description")}
-        >
+        <SettingsRow label={t("settings.appearance.custom.headingFont.label")}>
           <HeadingFontRow />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.chatFont.label")}
-          description={t("settings.appearance.custom.chatFont.description")}
-        >
+        <SettingsRow label={t("settings.appearance.custom.chatFont.label")}>
           <ChatFontRow />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.codeFont.label")}
-          description={t("settings.appearance.custom.codeFont.description")}
-        >
+        <SettingsRow label={t("settings.appearance.custom.codeFont.label")}>
           <CodeFontRow />
         </SettingsRow>
         <SettingsRow

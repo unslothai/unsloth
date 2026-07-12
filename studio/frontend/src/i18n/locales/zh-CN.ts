@@ -213,7 +213,6 @@ export const zhCN = {
         resetAll: "重置自定义",
         preferencesTitle: "偏好设置",
         colors: {
-          description: "应用于当前模式。切换颜色主题可编辑另一种模式。",
           lightGroup: "浅色主题",
           darkGroup: "深色主题",
           accent: "强调色",
@@ -235,19 +234,15 @@ export const zhCN = {
         },
         uiFont: {
           label: "界面字体",
-          description: "界面使用的字体。",
         },
         headingFont: {
           label: "标题字体",
-          description: "标题使用的字体。",
         },
         chatFont: {
           label: "聊天字体",
-          description: "聊天消息使用的字体。",
         },
         codeFont: {
           label: "代码字体",
-          description: "代码和差异视图使用的字体。",
         },
         importFont: {
           upload: "上传",

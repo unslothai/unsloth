@@ -235,8 +235,6 @@ export const ptBR = {
         resetAll: "Redefinir personalização",
         preferencesTitle: "Preferências",
         colors: {
-          description:
-            "Aplica-se ao modo em uso. Troque o esquema de cores para editar o outro.",
           lightGroup: "Tema claro",
           darkGroup: "Tema escuro",
           accent: "Destaque",
@@ -258,19 +256,15 @@ export const ptBR = {
         },
         uiFont: {
           label: "Fonte da interface",
-          description: "Fonte usada na interface.",
         },
         headingFont: {
           label: "Fonte de títulos",
-          description: "Fonte usada em títulos e cabeçalhos.",
         },
         chatFont: {
           label: "Fonte do chat",
-          description: "Fonte usada nas mensagens do chat.",
         },
         codeFont: {
           label: "Fonte de código",
-          description: "Fonte usada em código e diffs.",
         },
         importFont: {
           upload: "Enviar",

@@ -283,8 +283,6 @@ export const en = {
         resetAll: "Reset customization",
         preferencesTitle: "Preferences",
         colors: {
-          description:
-            "Applies to the mode you're using now. Switch the color scheme to edit the other.",
           lightGroup: "Light theme",
           darkGroup: "Dark theme",
           accent: "Accent",
@@ -306,19 +304,15 @@ export const en = {
         },
         uiFont: {
           label: "UI font",
-          description: "Font used across the interface.",
         },
         headingFont: {
           label: "Heading font",
-          description: "Font used for titles and headings.",
         },
         chatFont: {
           label: "Chat font",
-          description: "Font used for chat messages.",
         },
         codeFont: {
           label: "Code font",
-          description: "Font used for code and diffs.",
         },
         importFont: {
           upload: "Upload",
