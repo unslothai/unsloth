@@ -878,7 +878,9 @@ class TrainingBackend:
 
         if defer_auto_selection:
             try:
-                resolved_gpu_ids, gpu_selection = prepare_gpu_selection(None, **gpu_selection_kwargs)
+                resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                    None, **gpu_selection_kwargs
+                )
             except Exception:
                 # The spawn-in-progress flag is already raised; a failed GPU
                 # selection must not leave is_training_active stuck True.

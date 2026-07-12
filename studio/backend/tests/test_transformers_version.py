@@ -2761,9 +2761,7 @@ class TestLatestTierForces16Bit:
         assert loadck.index("sidecar_swap_in_progress()") < loadck.index("_shutdown_subprocess()")
         # The training handshake precedes the VRAM-freeing before_spawn hook, so
         # losing the race never tears down chat/export for a run that won't spawn.
-        assert training.index("self._spawn_in_progress = True") < training.index(
-            "before_spawn()"
-        )
+        assert training.index("self._spawn_in_progress = True") < training.index("before_spawn()")
         # The spawn-time export check is op-aware: inside an active op the install
         # is the side that aborts, so a transient reservation must not kill the op.
         assert "sidecar_swap_in_progress() and not self._export_active" in spawn

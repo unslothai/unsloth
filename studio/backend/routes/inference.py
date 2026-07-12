@@ -4905,9 +4905,12 @@ async def install_latest_transformers_route(
                 # count while holding this gate, so once it is held nothing can
                 # slip past this count (the pre-gate check is only a fast path,
                 # and a wait on a long /load can outlast it).
-                if other_inference_request_count(
-                    current_request_counted = False, include_pending = False
-                ) > 0:
+                if (
+                    other_inference_request_count(
+                        current_request_counted = False, include_pending = False
+                    )
+                    > 0
+                ):
                     end_sidecar_swap()
                     raise HTTPException(
                         status_code = 409,
