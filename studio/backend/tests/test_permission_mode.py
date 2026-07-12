@@ -414,6 +414,38 @@ def test_terminal_classifier(command, unsafe):
             "base = 'data'\nopen(base + '/x').read()",
             False,
         ),  # a single benign literal path var stays safe
+        (
+            "from zipfile import ZipFile\nZipFile('out.zip', 'w')",
+            True,
+        ),  # bare archive constructor with write mode
+        (
+            "from tarfile import TarFile as T\nT('a.tar', 'w')",
+            True,
+        ),  # aliased bare archive constructor
+        (
+            "from zipfile import ZipFile\nZipFile('in.zip')",
+            False,
+        ),  # bare archive constructor reading stays safe
+        (
+            "import os\ng = getattr\nrm = g(os, 'remove')\nrm('file')",
+            True,
+        ),  # dynamic lookup aliased through a getattr alias
+        (
+            "import os\ng = getattr\nn = g(os, 'name')\nprint(n)",
+            False,
+        ),  # resolving (not calling) through a getattr alias stays safe
+        (
+            "from functools import partial\nw = partial(open, mode='w')\nw('out.txt')",
+            True,
+        ),  # partial wrapping open hides the write mode
+        (
+            "import os\nfrom functools import partial\nw = partial(os.remove)\nw('f')",
+            True,
+        ),  # partial wrapping a mutating callable
+        (
+            "from functools import partial\np = partial(print, end='')\np('hi')",
+            False,
+        ),  # partial wrapping a safe callable stays safe
     ],
 )
 def test_python_classifier(code, unsafe):
@@ -428,6 +460,15 @@ def test_builtin_readonly_tools_are_safe():
 
 def test_unknown_tools_fail_closed():
     assert is_potentially_unsafe_tool_call("mystery_tool", {}) is True
+
+
+def test_is_always_safe_tool():
+    from core.inference.tools import is_always_safe_tool
+
+    for name in ("web_search", "search_knowledge_base", "render_html"):
+        assert is_always_safe_tool(name) is True
+    for name in ("python", "terminal", "mystery_tool", "mcp__srv__read"):
+        assert is_always_safe_tool(name) is False
 
 
 @pytest.mark.parametrize(

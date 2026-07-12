@@ -1291,6 +1291,37 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Module names bound to a pickle-backed loader (import torch as t), so
     # t.load(...) is still gated as a code-executing deserialize.
     load_module_aliases = set(_AUTO_UNSAFE_PY_LOAD_MODULES)
+    # Names bound to the builtin getattr (g = getattr), so a dynamic lookup
+    # aliased through it (rm = g(os, "remove"); rm("f")) still fails closed.
+    getattr_aliases = {"getattr"}
+    # Names bound to functools.partial, so a partial that wraps open/a writer
+    # (w = partial(open, mode="w"); w("out.txt")) fails closed when w is called.
+    partial_aliases: "set[str]" = set()
+    # Archive constructors imported bare (from zipfile import ZipFile), so
+    # ZipFile(name, "w") is gated like the zipfile.ZipFile attribute call.
+    archive_ctor_aliases: "set[str]" = set()
+
+    def _wraps_write_callable(arg) -> bool:
+        # The callable a partial wraps (partial(open, ...)); True when calling it
+        # could create/overwrite a file or resolve a dynamic/mutating function.
+        if isinstance(arg, ast.Name):
+            return (
+                arg.id in open_aliases
+                or arg.id in dynamic_aliases
+                or arg.id in code_exec_aliases
+                or arg.id in getattr_aliases
+                or arg.id in writer_aliases
+                or arg.id in archive_ctor_aliases
+            )
+        if isinstance(arg, ast.Attribute):
+            return (
+                arg.attr == "open"
+                or arg.attr in _AUTO_UNSAFE_PY_ATTRS
+                or arg.attr in _AUTO_UNSAFE_PY_WRITE_METHODS
+                or arg.attr in ("ZipFile", "TarFile")
+            )
+        return False
+
     # Names bound more than once cannot be folded to a single literal: this scan
     # visits every assignment before any call is checked, so a later benign
     # reassignment (base = '/etc'; open(base + '/passwd'); base = 'data') would
@@ -1333,6 +1364,18 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 for alias in node.names:
                     if alias.name == "join":
                         pathjoin_aliases.add(alias.asname or "join")
+            if node.module == "functools":
+                for alias in node.names:
+                    if alias.name == "partial":
+                        partial_aliases.add(alias.asname or "partial")
+            if node.module == "zipfile":
+                for alias in node.names:
+                    if alias.name == "ZipFile":
+                        archive_ctor_aliases.add(alias.asname or "ZipFile")
+            if node.module == "tarfile":
+                for alias in node.names:
+                    if alias.name == "TarFile":
+                        archive_ctor_aliases.add(alias.asname or "TarFile")
             for alias in node.names:
                 if alias.name in _AUTO_UNSAFE_PY_WRITE_METHODS:
                     writer_aliases.add(alias.asname or alias.name)
@@ -1346,6 +1389,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
             if isinstance(value, ast.Name) and value.id in open_aliases:
                 open_aliases.update(targets)
+            elif isinstance(value, ast.Name) and value.id in getattr_aliases:
+                getattr_aliases.update(targets)  # g = getattr
+            elif isinstance(value, ast.Name) and value.id in partial_aliases:
+                partial_aliases.update(targets)  # p = partial
             elif (
                 isinstance(value, ast.Attribute)
                 and value.attr == "open"
@@ -1365,9 +1412,19 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             elif (
                 isinstance(value, ast.Call)
                 and isinstance(value.func, ast.Name)
-                and value.func.id == "getattr"
+                and value.func.id in getattr_aliases
             ):
-                dynamic_aliases.update(targets)
+                dynamic_aliases.update(targets)  # rm = getattr(os, "remove") / g(...)
+            elif (
+                isinstance(value, ast.Call)
+                and (
+                    (isinstance(value.func, ast.Name) and value.func.id in partial_aliases)
+                    or (isinstance(value.func, ast.Attribute) and value.func.attr == "partial")
+                )
+                and value.args
+                and _wraps_write_callable(value.args[0])
+            ):
+                dynamic_aliases.update(targets)  # w = partial(open, mode="w")
             elif isinstance(value, ast.Constant) and isinstance(value.value, str):
                 # base = '/etc' -> resolve base in a later folded path. A name
                 # bound more than once is poisoned (\x02) so it fails closed.
@@ -1463,6 +1520,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # A writer imported as a bare name (from numpy import save).
                     if func.id in writer_aliases:
                         return True
+                    # A bare archive constructor (from zipfile import ZipFile)
+                    # takes the mode as its 2nd arg like open, so ZipFile(x, "w")
+                    # writes but ZipFile(x) reads.
+                    if func.id in archive_ctor_aliases and _builtin_open_writes(node):
+                        return True
                 elif isinstance(func, ast.Attribute):
                     # Writer methods persist to disk without open() (np.save,
                     # img.save, plt.savefig, df.to_csv, json.dump); ask before
@@ -1543,6 +1605,18 @@ def _mcp_arguments_mutate(arguments) -> bool:
     return walk(arguments)
 
 
+# Tools that are read-only / non state-mutating regardless of their arguments,
+# so auto mode never has to pause them (their safety needs no argument scan).
+_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base", "render_html"})
+
+
+def is_always_safe_tool(name: str) -> bool:
+    """True for tools that never need an auto-mode prompt on any arguments, so a
+    caller (e.g. the streaming provisional card) can allow them before the full
+    arguments are known."""
+    return name in _ALWAYS_SAFE_TOOLS
+
+
 def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     """Whether a tool call must still pause for approval in auto mode.
 
@@ -1550,7 +1624,7 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     auto-run, anything that can mutate state, execute arbitrary code, or is
     simply unrecognized asks first. Unknown tools fail closed.
     """
-    if name in ("web_search", "search_knowledge_base", "render_html"):
+    if name in _ALWAYS_SAFE_TOOLS:
         return False
     if name.startswith(MCP_TOOL_PREFIX):
         tool_name = name.split("__", 2)[-1]

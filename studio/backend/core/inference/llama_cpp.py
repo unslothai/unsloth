@@ -8984,6 +8984,7 @@ class LlamaCppBackend:
         from core.inference.tools import (
             build_rag_autoinject,
             execute_tool,
+            is_always_safe_tool,
             is_potentially_unsafe_tool_call,
         )
 
@@ -9380,8 +9381,16 @@ class LlamaCppBackend:
                                             in provisional_started_tool_calls.values()
                                         )
                                         # Later parallel cards only reconcile when parallel use is enabled.
+                                        # In auto mode an always-safe tool (render_html) never
+                                        # prompts, so it must stream its early card too; mirror
+                                        # that here instead of gating on the raw confirm flag.
                                         _confirm_gated = (
-                                            confirm_tool_calls and not bypass_permissions
+                                            confirm_tool_calls
+                                            and not bypass_permissions
+                                            and not (
+                                                permission_mode == "auto"
+                                                and is_always_safe_tool(current_name)
+                                            )
                                         )
                                         # Keep small-argument tools on the normal path.
                                         _args_len = len(

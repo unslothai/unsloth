@@ -1826,6 +1826,38 @@ def test_large_python_tool_call_emits_early_provisional_start(monkeypatch):
     assert any(e.get("type") == "tool_end" and e.get("tool_name") == "python" for e in events)
 
 
+def test_auto_mode_render_html_streams_provisional_card_despite_confirm(monkeypatch):
+    """render_html never needs an auto-mode prompt, so its early provisional card
+    must still stream when confirm_tool_calls is set with permission_mode="auto";
+    the raw confirm flag no longer suppresses always-safe tools here."""
+    args = {"code": "<html>" + "x" * 80 + "</html>"}
+    first_stream = _streamed_structured_tool_call("render_html", args, "call_rh")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK"
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "make a card"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            confirm_tool_calls = True,
+            permission_mode = "auto",
+            max_tool_iterations = 1,
+        )
+    )
+
+    tool_starts = [e for e in events if e.get("type") == "tool_start"]
+    provisional = [e for e in tool_starts if not e.get("arguments")]
+    assert len(provisional) == 1, tool_starts
+    assert provisional[0]["tool_name"] == "render_html"
+    assert provisional[0]["tool_call_id"] == "call_rh"
+    assert provisional[0]["provenance"].get("provisional") is True
+
+
 def test_small_python_tool_call_has_no_provisional_start(monkeypatch):
     """A small tool-call argument finishes streaming instantly, so it keeps the
     existing behavior of a single (real) tool_start with no provisional card."""

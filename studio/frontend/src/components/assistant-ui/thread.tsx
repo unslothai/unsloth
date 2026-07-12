@@ -1425,11 +1425,14 @@ const Composer: FC<{
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  // More than 4 pills: collapse to icons only. Search, Code and the
-  // permission pill always show; Images, RAG, Canvas and MCP are conditional.
+  // More than 4 pills: collapse to icons only. Search and Code always show; the
+  // permission pill shows in every mode except "off" (it renders null there);
+  // Images, RAG, Canvas and MCP are conditional.
   const pillsCompact =
-    3 +
+    2 +
+      (permissionMode !== "off" ? 1 : 0) +
       (ragEnabled ? 1 : 0) +
       (supportsBuiltinImageGeneration ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
