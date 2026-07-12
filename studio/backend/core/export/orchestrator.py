@@ -209,11 +209,9 @@ class ExportOrchestrator:
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new export subprocess."""
-        # Last-resort recheck for spawns outside an active op. Inside an op,
-        # _export_active is already set and load_checkpoint's early recheck ran,
-        # so any reservation seen here belongs to an install that is about to
-        # observe is_export_active() and abort; raising would kill this export
-        # (after the old worker was torn down) for an install that never proceeds.
+        # Last-resort recheck for spawns outside an active op. Inside an op, _export_active is set and
+        # load_checkpoint already rechecked, so a reservation here is an install about to observe
+        # is_export_active() and abort; raising would kill this export for an install that never proceeds.
         from utils.transformers_version import sidecar_swap_in_progress
 
         if sidecar_swap_in_progress() and not self._export_active:
@@ -426,11 +424,9 @@ class ExportOrchestrator:
             self._export_active = True
             op_success, op_message = False, ""
             try:
-                # Handshake with the sidecar install route: _export_active is set
-                # above, so either this recheck sees a reservation and refuses
-                # BEFORE tearing down the old worker (keeping the loaded
-                # checkpoint), or the install route sees is_export_active() and
-                # 409s. The spawn-time recheck stays as a last resort.
+                # Handshake with the sidecar install route: _export_active is set above, so either this
+                # recheck refuses BEFORE tearing down the old worker (keeping the loaded checkpoint), or
+                # the install sees is_export_active() and 409s. The spawn-time recheck stays as a last resort.
                 from utils.transformers_version import sidecar_swap_in_progress
 
                 if sidecar_swap_in_progress():
@@ -590,12 +586,9 @@ class ExportOrchestrator:
             self._export_active = True
             op_success, op_message, op_output_path = False, "", None
             try:
-                # Handshake with the sidecar install route (see load_checkpoint):
-                # _export_active is set above, so either this recheck refuses
-                # before the command is sent, or the install sees the active op
-                # and 409s. Without it, an install that won the reservation would
-                # block in cleanup_memory behind an hours-long export op instead
-                # of the intended 409.
+                # Handshake with the sidecar install route (see load_checkpoint): _export_active is set
+                # above, so this recheck refuses before the command is sent, or the install sees the active
+                # op and 409s. Without it, an install would block in cleanup_memory behind a long export op.
                 from utils.transformers_version import sidecar_swap_in_progress
 
                 if sidecar_swap_in_progress():

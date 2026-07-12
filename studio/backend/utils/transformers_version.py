@@ -237,8 +237,7 @@ _VENV_T5_DIR = _VENV_T5_550_DIR
 # reuses the workspace torch (torch-agnostic).
 _VENV_LLMCOMPRESSOR_DIR = str(_studio_root() / ".venv_llmcompressor")
 
-# User-consented "latest transformers" sidecar, created only after the user confirms the
-# install popup (utils/transformers_latest.py); the pinned version lives in a marker file.
+# User-consented "latest transformers" sidecar (utils/transformers_latest.py); pinned version in a marker file.
 _VENV_T5_LATEST_DIR = str(_studio_root() / ".venv_t5_latest")
 _LATEST_PIN_MARKER = ".unsloth_pinned_transformers"
 
@@ -1037,8 +1036,7 @@ def _model_types_from_source(source: str) -> set[str]:
 
 def _config_model_types(tier: str) -> frozenset[str]:
     """model_type keys in a tier's CONFIG_MAPPING_NAMES (5.10 moved it to auto_mappings.py)."""
-    # Kill switch beats the cache: a mapping read before the operator set it must
-    # not keep routing latest-only models into the sidecar until restart.
+    # Kill switch beats the cache: a stale mapping must not keep routing latest-only models until restart.
     if tier == "latest" and _latest_tier_disabled():
         return frozenset()
     cached = _config_mapping_cache.get(tier)
@@ -1282,8 +1280,7 @@ def _probe_tier(
         key = f"{key}\0floor={floor}:def={int(include_default)}"
     if key in _probe_tier_cache:
         cached = _probe_tier_cache[key]
-        # Kill switch beats the cache (matching _config_model_types): a probe that
-        # resolved to latest before the switch was set must not keep activating it.
+        # Kill switch beats the cache (like _config_model_types): a stale 'latest' probe must not keep activating it.
         if cached != "latest" or not _latest_tier_disabled():
             return cached
 
@@ -1829,8 +1826,7 @@ def _ensure_venv_t5_exists() -> bool:
 
 # --- User-consented "latest transformers" sidecar (.venv_t5_latest) --------------------------
 # Provisioned via ensure_latest_transformers_venv() after the user confirms the upgrade popup
-# (utils/transformers_latest.py); the version is pinned in a marker file so restarts
-# revalidate it and routing picks the tier up automatically.
+# (utils/transformers_latest.py); pinned in a marker file so restarts revalidate and routing auto-picks it.
 
 # PEP 440-ish release strings only (guards the pip install spec against injection).
 _LATEST_VERSION_RE = r"[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?"
@@ -1892,13 +1888,10 @@ def _venv_t5_latest_packages(version: str, extra_packages: tuple[str, ...] = ())
     ) + tuple(extra_packages)
 
 
-# Single reservation for ANY .venv_t5_latest replacement (consented install or lazy
-# repair). Training and export starts check it so a worker never spawns mid-swap;
-# the install route raises it BEFORE waiting on the inference lifecycle gate.
-# Backed by a lock FILE next to the sidecar, not just a module flag: the lazy
-# repair runs inside worker subprocesses (activation), where a process-local flag
-# would be invisible to the parent's route checks. The in-process flag remains the
-# ownership marker (only the owner deletes the file).
+# Single reservation for ANY .venv_t5_latest replacement (consented install or lazy repair),
+# checked by training/export starts so no worker spawns mid-swap. Backed by a lock FILE (not just
+# this flag) so a lazy repair running in a worker subprocess stays visible to the parent's route
+# checks; the in-process flag marks ownership (only the owner unlinks the file).
 _sidecar_swap_lock = threading.Lock()
 _sidecar_swap_active = False
 # An install is minutes; a lock this old is a crashed owner, not a live swap.
@@ -1940,8 +1933,7 @@ def try_begin_sidecar_swap() -> bool:
                 except OSError:
                     return False
             except OSError:
-                # Lock file not creatable (odd filesystem): keep the process-local
-                # reservation rather than blocking installs entirely.
+                # Lock file not creatable (odd filesystem): fall back to the process-local reservation.
                 fd = None
                 break
         if fd is not None:
@@ -2047,9 +2039,8 @@ def _ensure_venv_t5_latest_exists() -> bool:
             version,
         )
         return False
-    # Same stage-and-swap as the install, under the same reservation so training
-    # and export starts (which check sidecar_swap_in_progress) also wait out a
-    # lazy repair. A failed repair never loses the pin.
+    # Same stage-and-swap as the install, under the same reservation so training/export starts
+    # (which check sidecar_swap_in_progress) wait out a lazy repair; a failed repair keeps the pin.
     if not try_begin_sidecar_swap():
         logger.warning(
             "Cannot repair .venv_t5_latest: another sidecar install or repair is in progress."

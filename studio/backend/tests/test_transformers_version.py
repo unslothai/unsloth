@@ -2661,8 +2661,7 @@ class TestLatestTierForces16Bit:
             "validate_model must apply the latest-sidecar 16-bit flip before "
             "_guard_chat_load_against_training so /validate and /load agree."
         )
-        # First-time loads have no sidecar pin yet, so an installable upgrade must
-        # also size 16-bit: the upgrade check runs before the guard and feeds it.
+        # First-time loads have no pin yet, so an installable upgrade must also size 16-bit.
         assert body.index("check_upgrade_for_model") < body.index(
             "_guard_chat_load_against_training"
         ), "the upgrade check must run before the training guard"
@@ -2671,8 +2670,8 @@ class TestLatestTierForces16Bit:
         ), "an installable upgrade must force 16-bit sizing for the guard"
 
     def test_install_route_guards_active_latest_workers(self):
-        # Stage-and-swap replaces .venv_t5_latest in place; a live worker with the
-        # old sidecar on sys.path would lazy-import files from the new version.
+        # Stage-and-swap replaces .venv_t5_latest in place, so a live worker on the
+        # old sidecar would lazy-import files from the new version.
         src = self._read("routes/inference.py")
         body = src.split("async def install_latest_transformers_route", 1)[1].split(
             "\nasync def ", 1
@@ -2686,18 +2685,15 @@ class TestLatestTierForces16Bit:
             "runs, and hold the lifecycle gate while unloading the chat model and "
             "swapping the sidecar."
         )
-        # The unload (by name, via before_swap so failed installs keep the model
-        # loaded), the idle export-worker teardown, and the install itself must
-        # all sit INSIDE the gate so no /load can interleave with the swap.
+        # The unload (via before_swap so failed installs keep the model), the export-worker
+        # teardown, and the install must all sit INSIDE the gate so no /load interleaves.
         assert "unload_model(active)" in body
         assert "cleanup_memory()" in body
-        # Export teardown precedes the chat unload so its failure aborts while
-        # the user's model is still loaded.
+        # Export teardown precedes the chat unload so its failure aborts with the model still loaded.
         assert body.index("cleanup_memory()") < body.index("unload_model(active)")
         assert "install_latest_transformers(" in body and "_unload_before_swap" in body
-        # The gate must be owned by the shielded task, not the request coroutine:
-        # a cancelled POST unwinding out of an async-with would release the only
-        # guard /load honors while the installer thread still runs.
+        # The gate must be owned by the shielded task, not the request coroutine: a cancelled
+        # POST unwinding an async-with would release the only guard /load honors mid-install.
         gated_task = body.split("async def _gated_install", 1)[1]
         assert "inference_lifecycle_gate():" in gated_task
         assert "asyncio.to_thread(_run_install)" in gated_task
@@ -2714,10 +2710,9 @@ class TestLatestTierForces16Bit:
         # The installer thread owns (and releases) the reservation, shielded from
         # request cancellation, so a cancelled POST cannot unlock a live swap.
         assert "asyncio.shield" in body and "end_sidecar_swap()" in body
-        # In-flight generation streams predate the gate; the route must refuse
-        # rather than kill their responses via the before_swap unload. The count
-        # is rechecked UNDER the gate: a wait on a long /load outlasts the
-        # pre-gate fast path, and streams start by taking this same gate.
+        # In-flight generation streams predate the gate; the route refuses rather than kill them
+        # via the before_swap unload. The count is rechecked UNDER the gate, since a wait on a
+        # long /load outlasts the pre-gate fast path and streams take this same gate.
         assert "other_inference_request_count" in body
         gated_task = body.split("async def _gated_install", 1)[1]
         assert "other_inference_request_count" in gated_task
@@ -2747,9 +2742,8 @@ class TestLatestTierForces16Bit:
         assert (
             "sidecar_swap_in_progress()" in spawn
         ), "the export subprocess spawn must recheck the sidecar swap reservation"
-        # Training marks the spawn active BEFORE its recheck, so either side of
-        # the interleaving sees the other: the install route's is_training_active
-        # covers the window between proc.start() and the _proc assignment.
+        # Training marks the spawn active BEFORE its recheck, so either side sees the other:
+        # is_training_active covers the window between proc.start() and the _proc assignment.
         assert training.index("self._spawn_in_progress = True") < training.index(
             "if sidecar_swap_in_progress():"
         )

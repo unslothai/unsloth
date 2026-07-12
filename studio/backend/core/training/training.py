@@ -852,10 +852,9 @@ class TrainingBackend:
         else:
             defer_auto_selection = True
 
-        # Handshake with the sidecar install route: mark the spawn in progress
-        # BEFORE rechecking the reservation, so any interleaving is safe. Either
-        # this recheck sees the install and aborts, or the install route's
-        # is_training_active() sees this flag (or the recorded proc) and refuses.
+        # Handshake with the sidecar install route: mark the spawn in progress BEFORE rechecking
+        # the reservation, so either this recheck aborts, or the install's is_training_active()
+        # sees this flag (or the recorded proc) and refuses.
         from utils.transformers_version import sidecar_swap_in_progress
 
         self._spawn_in_progress = True
@@ -867,9 +866,8 @@ class TrainingBackend:
             )
 
         # Synchronous validation passed -> free VRAM (export + chat) now, before
-        # auto-selection and the spawn, so placement sees the freed memory. Runs
-        # AFTER the handshake above: losing the race to an install must not tear
-        # down the user's chat/export workloads for a training run that never spawns.
+        # auto-selection and the spawn, so placement sees the freed memory. Runs AFTER the handshake
+        # so a lost race to an install can't tear down chat/export for a training run that never spawns.
         if before_spawn is not None:
             try:
                 before_spawn()
@@ -882,8 +880,7 @@ class TrainingBackend:
                     None, **gpu_selection_kwargs
                 )
             except Exception:
-                # The spawn-in-progress flag is already raised; a failed GPU
-                # selection must not leave is_training_active stuck True.
+                # Flag is already set; a failed GPU selection must not leave is_training_active stuck True.
                 self._spawn_in_progress = False
                 raise
             config["resolved_gpu_ids"] = resolved_gpu_ids
@@ -1064,9 +1061,8 @@ class TrainingBackend:
 
         from .worker import run_training_process
 
-        # This run is active, so an install route request will 409 rather than
-        # proceed: a reservation observed here is transient (an install about to
-        # abort, or a short lazy repair). Wait it out instead of stranding the
+        # This run is active, so an install request 409s rather than proceeds: a reservation seen here
+        # is transient (an aborting install or short lazy repair). Wait it out instead of stranding the
         # stalled run; only a wedged reservation fails the respawn.
         from utils.transformers_version import sidecar_swap_in_progress
 
@@ -1159,8 +1155,8 @@ class TrainingBackend:
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
-        # A spawn that has passed its sidecar-swap recheck counts as active even
-        # before _proc is recorded, so an install cannot slip in mid-spawn.
+        # A spawn past its sidecar-swap recheck counts as active even before _proc is recorded,
+        # so an install cannot slip in mid-spawn.
         if getattr(self, "_spawn_in_progress", False):
             return True
         # Self-heal a crashed pump first: a dead pump must never leave the worker

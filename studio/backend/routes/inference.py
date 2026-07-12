@@ -4040,8 +4040,8 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 f"Resolved load_in_4bit={effective_load_in_4bit} for '{model_log_label}' "
                 f"from adapter_config.json / base model (requested {request.load_in_4bit})"
             )
-        # Latest-sidecar models load 16-bit (worker refuses bnb 4-bit); size the VRAM
-        # guard and worker command the same way. Off-loop: tier resolution reads configs.
+        # Latest-sidecar models load 16-bit (worker refuses bnb 4-bit); size the guard
+        # to match. Off-loop: tier resolution reads configs.
         if effective_load_in_4bit and not config.is_gguf:
             from utils.transformers_version import latest_tier_active_for
             if await asyncio.to_thread(latest_tier_active_for, config.identifier, request.hf_token):
@@ -4628,9 +4628,9 @@ async def validate_model(
         security_targets = list(dict.fromkeys(security_targets))
 
         is_gguf = getattr(config, "is_gguf", False)
-        # Does a newer transformers ship this model_type? Static overlay lookup first;
-        # only unknown types hit the cached PyPI/main snapshot. Never fails validation.
-        # Computed BEFORE the training guard: an installable upgrade sizes as 16-bit.
+        # Does a newer transformers ship this model_type? Static overlay first, cached
+        # PyPI/main snapshot only for unknown types. Never fails validation; run before
+        # the training guard so an installable upgrade sizes as 16-bit.
         transformers_upgrade: Optional[TransformersUpgradeInfo] = None
         if not is_gguf:
             from utils.transformers_latest import check_upgrade_for_model
@@ -4644,11 +4644,9 @@ async def validate_model(
                     transformers_upgrade = TransformersUpgradeInfo(**_upgrade)
                     break
 
-        # Mirror /load's latest-sidecar 16-bit flip so the guard sizes it the same
-        # way; otherwise validation passes a load that /load then 409s. An
-        # installable upgrade counts too: the sidecar is not pinned yet on a
-        # first-time load, but after the consent dialog installs it, /load and
-        # the worker force this same model to 16-bit.
+        # Mirror /load's latest-sidecar 16-bit flip so the guard sizes it the same way;
+        # else validation passes a load /load then 409s. An installable upgrade counts
+        # too: after the consent dialog installs it, /load and the worker force 16-bit.
         if effective_load_in_4bit and not is_gguf:
             from utils.transformers_version import latest_tier_active_for
             if (
@@ -4787,17 +4785,12 @@ async def install_latest_transformers_route(
     from utils.transformers_latest import install_latest_transformers
     from utils.transformers_version import end_sidecar_swap, try_begin_sidecar_swap
 
-    # The install stage-and-swaps .venv_t5_latest in place. A live worker with the
-    # old sidecar on sys.path would lazy-import files from the NEW version mid-run
-    # (transformers is lazy-import heavy), mixing incompatible modules. Gate on
-    # worker LIVENESS, not on the worker's tier: this route has no HF token, so
-    # tier re-resolution is unreliable for gated repos. Training and export are
-    # refused; the chat model is unloaded (this consent flow ends in loading a
-    # different model, which unloads it anyway).
-    #
-    # Reserve the swap FIRST, before any await (notably the lifecycle-gate wait):
-    # training/export starts check this reservation, so raising it after the gate
-    # wait would let a worker spawn in that window and then swap under it.
+    # The install stage-and-swaps .venv_t5_latest in place; a live worker would
+    # lazy-import from the new version mid-run, mixing incompatible modules. Gate on
+    # worker LIVENESS not tier (no HF token here, so tier re-resolution is unreliable
+    # for gated repos): training and export are refused, the chat model unloaded.
+    # Reserve the swap FIRST, before any await: training/export starts check this
+    # reservation, so raising it after the gate wait would let a worker slip in.
     if not try_begin_sidecar_swap():
         raise HTTPException(
             status_code = 409,
@@ -4826,11 +4819,10 @@ async def install_latest_transformers_route(
                     "installing a new transformers version."
                 ),
             )
-        # In-flight generation streams passed the middleware long ago, so the
-        # lifecycle gate below cannot protect them; the swap's unload would kill
-        # their responses mid-stream. Mirror the model auto-switch busy check.
-        # This admin route is not middleware-counted, and pending requests are
-        # still blocked in the middleware, so neither is subtracted here.
+        # In-flight streams passed the middleware already, so the lifecycle gate can't
+        # protect them and the swap's unload would kill them mid-stream; mirror the
+        # auto-switch busy check. This route is not middleware-counted and pending
+        # requests stay blocked in the middleware, so neither is subtracted here.
         from core.inference.llama_keepwarm import (
             inference_lifecycle_gate,
             note_model_unloaded,
@@ -4846,25 +4838,21 @@ async def install_latest_transformers_route(
                 ),
             )
 
-        # Hold the same lifecycle gate /load holds for its whole load, so no HF worker
-        # can start (or be mid-load with active_model_name unset) while the sidecar is
-        # swapped. Teardown happens via before_swap, i.e. only once the staged install
-        # succeeded and the swap is certain: a failed pip/compat check must not leave
-        # the user with their working model gone and only an error dialog. GGUF stays
-        # loaded: llama-server never imports transformers.
+        # Hold the lifecycle gate /load holds so no HF worker can start (or be mid-load
+        # with active_model_name unset) while the sidecar is swapped. Teardown runs via
+        # before_swap, only once the staged install succeeded: a failed pip/compat check
+        # must not leave the user with their model gone. GGUF stays loaded (llama-server
+        # never imports transformers).
         backend = get_inference_backend()
         export_backend = get_export_backend()
 
         def _unload_before_swap() -> None:
             # Runs on the install thread, inside the gate held by _gated_install. Any
-            # failure here raises so the previous sidecar stays untouched:
-            # a worker that did not tear down cleanly may still lazy-import
-            # from the directory the swap would replace.
-            #
-            # Export teardown runs FIRST so its failure aborts while the chat
-            # model is still loaded. cleanup_memory shuts the subprocess down
-            # even when the cleanup command itself fails, so judge by worker
-            # liveness, not by its return value.
+            # failure raises so the previous sidecar stays untouched (a worker that did
+            # not tear down cleanly may still lazy-import from it). Export teardown runs
+            # FIRST so its failure aborts while the chat model is still loaded;
+            # cleanup_memory shuts the subprocess down even when its command fails, so
+            # judge by worker liveness, not its return value.
             export_backend.cleanup_memory()
             export_alive = getattr(export_backend, "is_worker_alive", None)
             if callable(export_alive) and export_alive():
@@ -4888,23 +4876,20 @@ async def install_latest_transformers_route(
                     raise RuntimeError("Inference worker still alive before the transformers swap")
 
         def _run_install() -> dict:
-            # Owns the reservation from here: releasing in the thread (not the
-            # route) keeps the lock held if the request is cancelled or times
-            # out while the minute-long install is still staging/renaming.
+            # Owns the reservation from here: releasing in the thread, not the route,
+            # keeps it held if the request is cancelled while the install still stages.
             try:
                 return install_latest_transformers(request.version, _unload_before_swap, True)
             finally:
                 end_sidecar_swap()
 
         async def _gated_install() -> dict:
-            # The gate is held by THIS task, not the request coroutine: a
-            # cancelled POST unwinding out of an `async with` here would release
-            # the only guard /load honors while the installer thread still runs.
+            # Held by THIS task, not the request coroutine: a cancelled POST unwinding an
+            # `async with` here would drop the only guard /load honors mid-install.
             async with inference_lifecycle_gate():
-                # Recheck under the gate: new streams increment their in-flight
-                # count while holding this gate, so once it is held nothing can
-                # slip past this count (the pre-gate check is only a fast path,
-                # and a wait on a long /load can outlast it).
+                # Recheck under the gate: new streams bump their in-flight count while
+                # holding it, so once held nothing slips past (the pre-gate check is only
+                # a fast path and can be outlasted by a wait on a long /load).
                 if (
                     other_inference_request_count(
                         current_request_counted = False, include_pending = False
@@ -4924,9 +4909,8 @@ async def install_latest_transformers_route(
 
         install_task = asyncio.ensure_future(_gated_install())
         owns_reservation = False
-        # shield: a cancelled request stops waiting, but the installer keeps
-        # running to completion (holding the gate) instead of being torn down
-        # mid-swap.
+        # shield: a cancelled request stops waiting, but the installer runs to
+        # completion (holding the gate) instead of being torn down mid-swap.
         result = await asyncio.shield(install_task)
     finally:
         if owns_reservation:

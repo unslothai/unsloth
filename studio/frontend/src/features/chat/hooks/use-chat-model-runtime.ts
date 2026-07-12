@@ -613,10 +613,9 @@ export function useChatModelRuntime() {
               if (!upgraded) {
                 throw new Error(getTransformersUpgradeRequiredMessage(displayName));
               }
-              // The server's install unloads the active chat model before the
-              // sidecar swap, so from here the previous model is gone even if a
-              // later gate (e.g. security consent) cancels this load: rollback
-              // must run. The custom-code fallback resolves without installing.
+              // The install unloads the previous model before the swap, so a later
+              // gate cancelling this load must still roll back. installRan is false
+              // for the custom-code fallback, which resolves without installing.
               if (
                 currentCheckpoint
                 && useTransformersUpgradeDialogStore.getState().installRan

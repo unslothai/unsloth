@@ -18,10 +18,9 @@ interface TransformersUpgradeDialogStore {
   errorMessage: string | null;
   /** Model ships custom code; without a PyPI install the load may fall back to trust_remote_code. */
   trustRemoteCodeFallback: boolean;
-  /** True once this consent's install completed. The server's install unloads the
-   *  active chat model before swapping, so the caller must treat its previous
-   *  model as already unloaded (rollback bookkeeping); the custom-code fallback
-   *  resolves true WITHOUT an install and leaves the model loaded. */
+  /** True once this consent's install completed. The install unloads the previous
+   *  model before swapping, so the caller must treat it as already unloaded; the
+   *  custom-code fallback resolves true without installing and leaves it loaded. */
   installRan: boolean;
   /** Open the dialog for a paused load; resolves true on install success or custom-code fallback. */
   requestConsent: (

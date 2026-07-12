@@ -74,9 +74,8 @@ _FAILURE_BACKOFF_SECONDS = 300
 _CACHE_FILE_NAME = "transformers_latest_check.json"
 _SNAPSHOT_SCHEMA = 1
 
-# Snapshot: {"schema", "fetched_at", "pypi_version", "pypi_model_types", "main_model_types"}
-# The install-in-progress state lives in utils.transformers_version (the sidecar swap
-# reservation), shared with the lazy repair path.
+# Snapshot: {"schema", "fetched_at", "pypi_version", "pypi_model_types", "main_model_types"}.
+# Install-in-progress state lives in utils.transformers_version (the sidecar swap reservation).
 _lock = threading.Lock()
 _memory_snapshot: dict | None = None
 _last_failure_at: float = 0.0
@@ -381,8 +380,7 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
 
 # --- Dependency compatibility preflight ------------------------------------------------------
 # Sidecars install transformers --no-deps atop the base env. Before installing, compare
-# requires_dist to the running env: unsatisfied shadowable deps become exact pins in the
-# --target dir; anything else unsatisfied blocks the install.
+# requires_dist: unsatisfied shadowable deps become exact --target pins, anything else blocks.
 
 # Safe to shadow inside the sidecar dir (pure wheels, no torch coupling).
 _SHADOWABLE_DEPS = frozenset({"tokenizers", "safetensors"})
