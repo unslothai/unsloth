@@ -73,6 +73,17 @@ _EXCLUDED_SUFFIXES = (
     ".woff2",
     ".ttf",
 )
+# Successful chat thread/project CRUD carries no signal beyond the generation,
+# tool-call, and engine-stats events. Suppress its 2xx access line; non-2xx
+# (errors) still log.
+_QUIET_SUCCESS_PREFIXES = (
+    "/api/chat/threads",
+    "/api/chat/projects",
+)
+
+
+def _is_chat_crud_noise(path: str, status_code: int) -> bool:
+    return 200 <= status_code < 300 and path.startswith(_QUIET_SUCCESS_PREFIXES)
 
 
 class LoggingMiddleware:
@@ -140,8 +151,12 @@ class LoggingMiddleware:
             raise
         else:
             end_time = time.perf_counter()
-            if not excluded and not self._is_redundant_repeat(
-                scope["method"], path, scope.get("query_string", b""), status_code, end_time
+            if (
+                not excluded
+                and not _is_chat_crud_noise(path, status_code)
+                and not self._is_redundant_repeat(
+                    scope["method"], path, scope.get("query_string", b""), status_code, end_time
+                )
             ):
                 logger.info(
                     "request_completed",
