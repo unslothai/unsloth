@@ -597,7 +597,9 @@ class TestFirstCustomPinAppliedWithoutMarker:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         # The unknown-family else branch must promote a null marker to an in-place
         # force-reinstall (PinChangedForceReinstall), NOT a wipe ($shouldRebuild).
-        assert 'if ($null -eq $_markerMismatch) { $script:PinChangedForceReinstall = $true }' in text, (
+        assert (
+            "if ($null -eq $_markerMismatch) { $script:PinChangedForceReinstall = $true }" in text
+        ), (
             "setup.ps1 must set PinChangedForceReinstall for an unknown-family pin on a "
             "marker-less venv so the torch block reinstalls from $PinnedTorchIndexUrl in place"
         )
