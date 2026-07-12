@@ -5,6 +5,7 @@
 (DuckDuckGo), Python code execution, and terminal commands."""
 
 import ast
+import fnmatch
 import http.client
 import os
 import signal
@@ -450,7 +451,8 @@ _AUTO_UNSAFE_MCP_VERB_RE = re.compile(
     r"modify|upload|replace|revoke|grant|approve|merge|close|cancel|pay|"
     r"transfer|buy|sell|reset|clear|purge|destroy|terminate|revert|rollback|"
     r"trigger|enable|disable|install|uninstall|restart|stop|start|"
-    r"save|archive|submit|commit|push|sync|register)(?:[_\-]|$)",
+    r"save|archive|submit|commit|push|sync|register|"
+    r"clone|checkout|comment|fork|tag|invite|share)(?:[_\-]|$)",
     re.IGNORECASE,
 )
 
@@ -572,17 +574,47 @@ _SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]+)")
 # Shell quotes only delimit; bash concatenates the pieces (cat /proc/x/enviro''n
 # reads .../environ), so strip them before the sensitive-path scan.
 _SHELL_QUOTE_RE = re.compile(r"['\"]")
+# A glob bracket class [s] -> s, so .s[s]h de-obfuscates to .ssh for the scan.
+_GLOB_BRACKET_RE = re.compile(r"\[([^!\]][^\]]*)\]")
+# Canonical sensitive files a ? / * / [..] glob could expand to; fnmatch tests
+# whether the pattern reaches one (cat /e??/passwd -> /etc/passwd).
+_SENSITIVE_GLOB_TARGETS = (
+    "/etc/passwd",
+    "/etc/shadow",
+    "/etc/sudoers",
+    "/root/.ssh/id_rsa",
+    "/root/.aws/credentials",
+    "/home/u/.ssh/id_rsa",
+    "/home/u/.ssh/id_ed25519",
+    "/home/u/.aws/credentials",
+    "/home/u/.netrc",
+    "/home/u/.git-credentials",
+)
 
 
 def _references_sensitive_path(text: str) -> bool:
     """True if a command or string literal reads a credential path or escapes
     the sandbox workdir via parent traversal."""
     norm = _REDUNDANT_SLASH_RE.sub("", text)
+    debracket = _GLOB_BRACKET_RE.sub(lambda m: m.group(1)[0], text)
     return bool(
         _PARENT_TRAVERSAL_RE.search(text)
         or _SENSITIVE_PATH_RE.search(text)
         or _SENSITIVE_PATH_RE.search(norm)
+        or _SENSITIVE_PATH_RE.search(debracket)
     )
+
+
+def _glob_hits_sensitive(command: str) -> bool:
+    """True if a ? / * / [..] glob token could expand to a sensitive file, so
+    `cat /e??/passwd` asks even though the raw text has no literal /etc/passwd."""
+    for token in command.replace(";", " ").replace("|", " ").split():
+        token = _SHELL_QUOTE_RE.sub("", token)
+        if any(c in token for c in "?*[") and any(
+            fnmatch.fnmatch(target, token) for target in _SENSITIVE_GLOB_TARGETS
+        ):
+            return True
+    return False
 
 
 def _expand_shell_assignments(command: str) -> str:
@@ -689,7 +721,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     # NAME=value prefixes first so `cat /proc/$PPID/enviro''n` and
     # `p="/proc/$PPID"; cat $p/environ` are caught too.
     stripped = _SHELL_QUOTE_RE.sub("", command)
-    if any(
+    if _glob_hits_sensitive(command) or any(
         _references_sensitive_path(c)
         for c in (
             command,
@@ -793,6 +825,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # builtins_aliases tracks `import builtins [as b]` for builtins.exec/eval.
     open_aliases = {"open"}
     builtins_aliases = {"builtins"}
+    # Names bound to a dynamic lookup (rm = getattr(os, "remove")) whose calls
+    # cannot be proven read-only, so they fail closed.
+    dynamic_aliases = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -806,6 +841,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             value = node.value
             if isinstance(value, ast.Name) and value.id in open_aliases:
                 open_aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            elif (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id == "getattr"
+            ):
+                dynamic_aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
             elif isinstance(value, (ast.Tuple, ast.List)):
                 # Destructuring: f, _ = (open, print) -> track f.
                 for target in node.targets:
@@ -871,6 +912,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 if isinstance(func, (ast.Call, ast.Subscript)):
                     return True  # calling a call/subscript result is dynamic
                 if isinstance(func, ast.Name):
+                    if func.id in dynamic_aliases:
+                        return True  # call through a getattr alias is dynamic
                     if func.id in open_aliases and _builtin_open_writes(node):
                         return True
                 elif isinstance(func, ast.Attribute):

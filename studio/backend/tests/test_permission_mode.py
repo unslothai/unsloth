@@ -110,6 +110,11 @@ def _clear_pending():
         ("LESSOPEN='|touch x; cat %s' less f.txt", True),  # less input preprocessor
         ("less file.txt", False),  # plain less stays safe
         ("cat /proc/cpuinfo", False),  # non-sensitive procfs read stays safe
+        ("cat /e??/passwd", True),  # glob expands to /etc/passwd
+        ("cat /e[t]c/passwd", True),  # bracket class hides etc
+        ("head /etc/shado?", True),
+        ("ls *.py", False),  # benign glob stays safe
+        ("head data?.txt", False),
         ("cat logs/app.log", False),  # ordinary relative read
     ],
 )
@@ -178,6 +183,8 @@ def test_terminal_classifier(command, unsafe):
         ),  # relative stays safe
         ("import runpy\nrunpy.run_path('s.py')", True),  # runpy runs code
         ("from runpy import run_module\nrun_module('m')", True),
+        ("import os\nrm = getattr(os, 'remove')\nrm('f')", True),  # getattr alias call
+        ("x = getattr(obj, 'name')\nprint(x)", False),  # getattr result not called
     ],
 )
 def test_python_classifier(code, unsafe):
@@ -209,6 +216,9 @@ def test_unknown_tools_fail_closed():
         ("get_and_commit_changes", True),  # commit/save/archive are mutating
         ("read_and_save_file", True),
         ("list_and_archive", True),
+        ("list_and_clone_repo", True),  # clone/checkout/comment are mutating
+        ("fetch_and_comment_issue", True),
+        ("get_and_checkout_branch", True),
     ],
 )
 def test_mcp_classifier(tool, unsafe):

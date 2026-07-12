@@ -9006,8 +9006,11 @@ class LlamaCppBackend:
         # the same tool card + citations a real call would. Skip it only when a
         # retrieval call would actually prompt (ask mode); auto never gates the
         # safe search_knowledge_base tool, so retrieval must still run there.
+        # off never prompts either, so it also keeps first-pass retrieval.
         _skip_autoinject = (
-            confirm_tool_calls and not bypass_permissions and permission_mode != "auto"
+            confirm_tool_calls
+            and not bypass_permissions
+            and permission_mode not in ("auto", "off")
         )
         _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:

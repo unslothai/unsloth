@@ -468,7 +468,13 @@ def run_safetensors_tool_loop(
     # mode); auto never gates the safe search_knowledge_base tool.
     from core.inference.tools import build_rag_autoinject
 
-    _skip_autoinject = confirm_tool_calls and not bypass_permissions and permission_mode != "auto"
+    # off never prompts, so (like auto) it must not lose first-pass retrieval
+    # even if a direct caller passes a stale confirm_tool_calls flag.
+    _skip_autoinject = (
+        confirm_tool_calls
+        and not bypass_permissions
+        and permission_mode not in ("auto", "off")
+    )
     _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
     if _auto:
         for _ev in _auto["events"]:
