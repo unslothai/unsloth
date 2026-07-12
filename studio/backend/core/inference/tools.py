@@ -475,6 +475,14 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "connect",
         "bind",
         "sendall",
+        # pathlib link creators, os node/metadata mutators, dynamic import.
+        "symlink_to",
+        "hardlink_to",
+        "link_to",
+        "mkfifo",
+        "mknod",
+        "utime",
+        "import_module",
     }
 )
 _PY_WRITE_MODE_RE = re.compile(r"[wax+]")
@@ -533,7 +541,9 @@ def _attr_open_writes(node) -> bool:
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
             if _PY_MODE_LITERAL_RE.match(first.value):
                 return bool(_PY_WRITE_MODE_RE.search(first.value))
-            return False  # a filename, not a mode: read
+            # Filename first arg reads, but a 2nd positional arg may be
+            # os.open(path, flags) via an os alias (O_CREAT/O_TRUNC): ask.
+            return len(node.args) >= 2
         return True  # dynamic first arg: cannot prove read-only
     return False  # no args: read
 

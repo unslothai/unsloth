@@ -16,6 +16,7 @@ import pytest
 from core.inference.mcp_client import MCP_TOOL_PREFIX
 from core.inference.safetensors_agentic import run_safetensors_tool_loop
 from core.inference.tools import is_potentially_unsafe_tool_call
+from models.inference import AnthropicMessagesRequest, ChatCompletionRequest
 from state import tool_approvals
 from state.tool_approvals import resolve_tool_decision
 
@@ -104,6 +105,11 @@ def test_terminal_classifier(command, unsafe):
         ("import os\nos.open('data.txt', os.O_CREAT)", True),  # os.open writes fd
         ("import tempfile\ntempfile.mkstemp()", True),  # tempfile side effects
         ("getattr(os, 'remove')('x')", True),  # dynamic call target
+        ("import os as o\no.open('out.txt', o.O_CREAT)", True),  # os.open via alias
+        ("from pathlib import Path\nPath('l').symlink_to('t')", True),  # pathlib link
+        ("import importlib\nimportlib.import_module('subprocess')", True),  # dynamic import
+        ("import os\nos.mkfifo('p')", True),  # node creation
+        ("import os\nos.utime('x', None)", True),  # metadata mutation
     ],
 )
 def test_python_classifier(code, unsafe):
@@ -294,3 +300,16 @@ def test_bypass_flag_implies_full_mode():
     starts = _tool_starts(events)
     assert starts and starts[0]["awaiting_confirmation"] is False
     assert exec_fn.disable_sandbox_seen == [True]
+
+
+def test_bypass_permissions_folds_to_full_on_request_models():
+    # A legacy bypass caller that also sends a stale ask/auto mode normalizes to
+    # full, so the route guards (which reject ask/auto) don't 400 the request.
+    for cls in (ChatCompletionRequest, AnthropicMessagesRequest):
+        req = cls(
+            messages = [{"role": "user", "content": "hi"}],
+            bypass_permissions = True,
+            permission_mode = "auto",
+        )
+        assert req.permission_mode == "full"
+        assert req.bypass_permissions is True

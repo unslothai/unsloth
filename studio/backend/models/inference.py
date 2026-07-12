@@ -1054,6 +1054,9 @@ class ChatCompletionRequest(BaseModel):
         the flag (else a full request would trip the confirm-gate rejections)."""
         if self.permission_mode == "full":
             self.bypass_permissions = True
+        elif self.bypass_permissions:
+            # Legacy bypass callers map onto Full access (mirrors the tool loop).
+            self.permission_mode = "full"
         elif self.permission_mode == "off":
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
@@ -1761,6 +1764,9 @@ class AnthropicMessagesRequest(BaseModel):
         Chat Completions request)."""
         if self.permission_mode == "full":
             self.bypass_permissions = True
+        elif self.bypass_permissions:
+            # Legacy bypass callers map onto Full access (mirrors the tool loop).
+            self.permission_mode = "full"
         elif self.permission_mode == "off":
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
