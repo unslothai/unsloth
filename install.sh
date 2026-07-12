@@ -165,7 +165,7 @@ run_install_cmd() {
     # redirects torch resolution to its own per-backend index even against a
     # --default-index pin. Other installs keep the user's mirror and backend.
     case " $* " in
-        *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND "$@" ;;
+        *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS "$@" ;;
     esac
     if _is_verbose; then
         "$@" && return 0

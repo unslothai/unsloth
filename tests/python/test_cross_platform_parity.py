@@ -567,6 +567,28 @@ class TestPinnedIndexClearsUvEnvParity:
             '"PIP_EXTRA_INDEX_URL",' in stack
         ), "install_python_stack.py strip tuple must include PIP_EXTRA_INDEX_URL"
 
+    def test_all_installers_scrub_find_links(self):
+        """uv's --find-links (env UV_FIND_LINKS) adds candidate locations that can
+        satisfy torch off a pinned index; every pinned-install scrub must clear it."""
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        assert "-u UV_FIND_LINKS" in sh
+        for path in (INSTALL_PS1, SETUP_PS1):
+            assert "'UV_FIND_LINKS'" in path.read_text(encoding = "utf-8"), path.name
+        stack = STACK_PY.read_text(encoding = "utf-8")
+        assert '"UV_FIND_LINKS",' in stack and '"PIP_FIND_LINKS",' in stack
+
+    def test_setup_ps1_scrub_covers_pip_fallback(self):
+        """setup.ps1's Fast-Install must keep the scrub active through the pip
+        fallback (pip honours PIP_EXTRA_INDEX_URL / PIP_FIND_LINKS in addition to
+        --index-url); restoring the vars before the fallback reopens the hole."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        fi = text[text.find("function Fast-Install") :][:2500]
+        assert "'PIP_EXTRA_INDEX_URL'" in fi and "'PIP_FIND_LINKS'" in fi
+        # the pip fallback must sit INSIDE the try whose finally restores the vars
+        assert fi.find("python -m pip install") < fi.find("finally"), (
+            "pip fallback must run before the scrub is restored"
+        )
+
     def test_setup_ps1_stale_check_requires_rocm_digit(self):
         """The marker stale check must use the same rocm+digit gate as the
         install selection, or a custom rocm-* leaf force-reinstalls on every
