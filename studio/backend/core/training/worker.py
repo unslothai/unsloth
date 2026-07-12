@@ -2584,7 +2584,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             # warnings still show.
             if os.environ.get("BNB_ROCM_VERSION"):
                 import logging as _logging
-
                 _logging.getLogger("bitsandbytes.cextension").addFilter(
                     lambda _r: "environment variable detected" not in _r.getMessage()
                 )

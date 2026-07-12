@@ -163,7 +163,6 @@ if sys.platform == "win32":
     # import; drop only that record so real errors and mismatch warnings show.
     if os.environ.get("BNB_ROCM_VERSION"):
         import logging as _logging
-
         _logging.getLogger("bitsandbytes.cextension").addFilter(
             lambda _r: "environment variable detected" not in _r.getMessage()
         )
