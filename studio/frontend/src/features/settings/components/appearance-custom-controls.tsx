@@ -415,11 +415,11 @@ function FontSelect({
             </CommandGroup>
           </CommandList>
         </Command>
-        <div className="mt-1 flex gap-1 border-t border-border/60 pt-1">
+        <div className="mt-1 flex items-center gap-1 border-t border-border/60 pt-1">
           <button
             type="button"
             onClick={requestUpload}
-            className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-[11px] px-2 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
+            className="flex flex-1 cursor-pointer items-center gap-2 rounded-[11px] px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <HugeiconsIcon
               icon={Upload01Icon}
@@ -427,10 +427,11 @@ function FontSelect({
             />
             {t("settings.appearance.custom.importFont.upload")}
           </button>
+          <div className="h-4 w-px shrink-0 bg-border" />
           <button
             type="button"
             onClick={requestFolder}
-            className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-[11px] px-2 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
+            className="flex flex-1 cursor-pointer items-center gap-2 rounded-[11px] px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <HugeiconsIcon
               icon={Folder01Icon}
