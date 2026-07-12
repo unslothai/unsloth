@@ -268,7 +268,6 @@ export const zhCN = {
       description: "通过兼容 OpenAI 的 API 以编程方式访问 Unsloth。",
       readDocs: "阅读 API 文档",
       noAccess: "还没有 API 访问权限。",
-      newBadge: "新",
       accessTokens: "访问 token",
       loadError: "无法加载 API 访问权限。",
       createError: "无法创建访问 token。",

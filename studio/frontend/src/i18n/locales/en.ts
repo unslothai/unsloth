@@ -410,7 +410,6 @@ export const en = {
       description: "Access Unsloth via the OpenAI-compatible API.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
-      newBadge: "New",
       accessTokens: "Access tokens",
       loadError: "Couldn't load API access.",
       createError: "Couldn't create access token.",
