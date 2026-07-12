@@ -7,8 +7,7 @@ import type { TransformersUpgradeInfo, TransformersUpgradePhase } from "../types
 
 type Resolver = (installed: boolean) => void;
 
-// One in-flight consent at a time; a new request resolves any prior pending one as
-// declined so its promise never leaks (mirrors the remote-code consent store).
+// One in-flight consent; a new request resolves any prior pending one as declined.
 let pendingResolver: Resolver | null = null;
 
 interface TransformersUpgradeDialogStore {
@@ -17,19 +16,15 @@ interface TransformersUpgradeDialogStore {
   upgrade: TransformersUpgradeInfo | null;
   phase: TransformersUpgradePhase;
   errorMessage: string | null;
-  /** The model also declares custom (auto_map) code, so when no PyPI install is
-   *  possible the load can still continue into the trust_remote_code consent
-   *  flow as a last resort instead of hard-aborting. */
+  /** Model ships custom code; without a PyPI install the load may fall back to trust_remote_code. */
   trustRemoteCodeFallback: boolean;
-  /** Open the dialog for a paused load; resolves true after a successful install
-   *  (or, with no installable release, after the user continues into the
-   *  custom-code fallback when one exists). */
+  /** Open the dialog for a paused load; resolves true on install success or custom-code fallback. */
   requestConsent: (
     modelName: string,
     upgrade: TransformersUpgradeInfo,
     options?: { trustRemoteCodeFallback?: boolean },
   ) => Promise<boolean>;
-  /** Accept/Retry: run the sidecar install; on success resolve(true) and close. */
+  /** Accept/Retry: run the install; on success resolve(true) and close. */
   install: () => Promise<void>;
   resolve: (installed: boolean) => void;
 }
@@ -64,8 +59,7 @@ export const useTransformersUpgradeDialogStore =
       try {
         await installLatestTransformers(version);
       } catch (error) {
-        // Only surface the failure if this consent is still the active one (a
-        // newer request supersedes the dialog state).
+        // Ignore the failure if a newer request superseded this consent.
         if (pendingResolver === requestResolver) {
           set({
             phase: "error",

@@ -2616,9 +2616,7 @@ class TestLatestTierForces16Bit:
         )
 
     def test_validate_route_mirrors_16bit_flip(self):
-        # /validate runs the same training guard before /load; without the same
-        # flip, a latest-sidecar model validates as 4-bit and then /load rejects
-        # the correctly sized 16-bit load with a 409 the user never saw coming.
+        # Without the same flip, /validate sizes 4-bit and /load then 409s.
         src = self._read("routes/inference.py")
         body = src.split("async def validate_model", 1)[1].split("\nasync def ", 1)[0]
         assert "latest_tier_active_for" in body, (

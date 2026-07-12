@@ -67,9 +67,9 @@ _RAW_URL = (
 _AUTO_FILES = ("configuration_auto.py", "auto_mappings.py")
 
 _FETCH_TIMEOUT_SECONDS = 5.0
-_FETCH_RETRIES = 1  # one retry max per URL
-_CACHE_TTL_SECONDS = 24 * 60 * 60  # ~1 day
-_FAILURE_BACKOFF_SECONDS = 300  # back off 5 min after a failed refresh
+_FETCH_RETRIES = 1
+_CACHE_TTL_SECONDS = 24 * 60 * 60
+_FAILURE_BACKOFF_SECONDS = 300
 
 _CACHE_FILE_NAME = "transformers_latest_check.json"
 _SNAPSHOT_SCHEMA = 1
@@ -96,8 +96,7 @@ def _cache_file() -> Path:
     return _studio_root() / "cache" / _CACHE_FILE_NAME
 
 
-# Sentinel for HTTP 404: the file legitimately does not exist at that ref, which is
-# different from a transient failure (timeout, 5xx) that must not poison caches.
+# Sentinel for HTTP 404 (absent at ref), distinct from transient failures.
 _FETCH_MISSING = "__unsloth_fetch_missing__"
 
 
@@ -266,9 +265,7 @@ def _get_snapshot() -> dict | None:
             else:
                 _memory_snapshot = fresh
     if fresh is None:
-        # A stale snapshot beats no answer for a "can this ever load" hint, but a
-        # stale positive could offer a version PyPI no longer serves; be strict and
-        # return None (graceful fallthrough to current behavior).
+        # A stale positive could offer a version PyPI no longer serves; be strict.
         return None
     _save_snapshot_file(fresh)
     return fresh
@@ -307,8 +304,7 @@ def latest_transformers_supports(model_type: str) -> dict | None:
     }
 
 
-# model_types the hardcoded per-tier tables already route; never trigger the remote check
-# for these even if a sidecar overlay is not provisioned yet.
+# model_types the hardcoded tier tables already route; never remote-check these.
 def _hardcoded_model_types() -> frozenset[str]:
     return frozenset(
         _TRANSFORMERS_530_MODEL_TYPES
@@ -338,8 +334,7 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         candidates = _model_types_from_config(cfg)
         if not candidates:
             return None
-        # Requires a readable base mapping: if even the default overlay is missing, every
-        # type would look "brand new", so bail out instead of mass-flagging.
+        # Without a readable base mapping every type looks brand new; bail out.
         if not _config_model_types("default"):
             return None
         hardcoded = _hardcoded_model_types()
@@ -347,22 +342,19 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
             candidate
             for candidate in candidates
             if candidate not in hardcoded
-            # Known to some installed overlay -> current routing handles it.
             and not any(candidate in _config_model_types(tier) for tier in _TIER_RANK)
         ]
         if not missing:
             return None
-        # Installing latest only helps if it can load EVERY missing type (routing needs the
-        # primary loadable; wrappers instantiate nested sub-configs through CONFIG_MAPPING);
-        # otherwise the load still fails.
+        # Latest must load EVERY missing type (wrappers build nested sub-configs
+        # through CONFIG_MAPPING) or the load still fails.
         supports = [latest_transformers_supports(candidate) for candidate in missing]
         if any(
             s is None or not (s["supported_in_pypi"] or s["supported_in_main"]) for s in supports
         ):
             return None
-        # Aggregate over ALL missing types: offering the PyPI install requires every one in
-        # the release; a main-only type in the mix surfaces as dev-only so no failing install
-        # is offered.
+        # Offer the PyPI install only if the release ships every missing type; a
+        # main-only type in the mix surfaces as dev-only.
         model_type = missing[0]
         supported_in_pypi = all(s["supported_in_pypi"] for s in supports)
         supported_in_main = all(s["supported_in_pypi"] or s["supported_in_main"] for s in supports)
@@ -387,16 +379,15 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
 
 
 # --- Dependency compatibility preflight ------------------------------------------------------
-# Sidecars install transformers --no-deps and reuse the base env's runtime deps. A future
-# release may raise a floor the base env no longer satisfies, so before installing we compare
-# requires_dist against the running env: shadowable deps become exact pins in the --target dir;
-# anything else unsatisfied blocks the install with a clear message instead of failing at load.
+# Sidecars install transformers --no-deps atop the base env. Before installing, compare
+# requires_dist to the running env: unsatisfied shadowable deps become exact pins in the
+# --target dir; anything else unsatisfied blocks the install.
 
-# Deps that are safe to shadow inside the sidecar dir (pure wheels, no torch coupling).
+# Safe to shadow inside the sidecar dir (pure wheels, no torch coupling).
 _SHADOWABLE_DEPS = frozenset({"tokenizers", "safetensors"})
-# Provided by the sidecar recipe itself; checked against the recipe pin, not the base env.
+# Provided by the sidecar recipe; checked against its pin, not the base env.
 _SIDECAR_PROVIDED = {"huggingface-hub": "1.8.0", "hf-xet": "1.4.2"}
-# CLI-only requirements transformers never imports at runtime in Studio's workers.
+# CLI-only; never imported at runtime in Studio's workers.
 _IGNORED_DEPS = frozenset({"typer"})
 
 
@@ -533,8 +524,8 @@ def _install_latest_transformers_locked(version: str) -> dict:
             "version": version,
             "message": "Cannot install: Studio is in offline mode.",
         }
-    # Re-verify against a LIVE snapshot so a release published inside the cache TTL is not
-    # missed; fall back to the cached one on fetch failure.
+    # Re-verify against a LIVE snapshot (a release may land inside the cache TTL);
+    # fall back to the cached one on fetch failure.
     global _memory_snapshot
     snapshot = _refresh_snapshot()
     if snapshot is not None:

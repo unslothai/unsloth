@@ -80,10 +80,9 @@ export interface ValidateModelResponse {
   requires_security_review?: boolean;
   /** Native context length from the local GGUF header; null until downloaded. */
   context_length?: number | null;
-  /** The model's architecture is unknown to every installed transformers but a
-   *  newer release ships it; the UI pauses the load on the upgrade dialog. */
+  /** Architecture only shipped by a newer transformers; UI pauses on the upgrade dialog. */
   requires_transformers_upgrade?: boolean;
-  /** Details for the upgrade dialog; set only when requires_transformers_upgrade. */
+  /** Set only when requires_transformers_upgrade. */
   transformers_upgrade?: TransformersUpgradeInfo | null;
 }
 

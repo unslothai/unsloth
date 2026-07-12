@@ -746,8 +746,8 @@ def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None)
     """
     token_arg = hf_token or ""
 
-    # Latest-only architectures need the pinned latest sidecar for AutoConfig;
-    # every other tier keeps the 5.5 sidecar used today.
+    # Latest-only architectures need the latest sidecar for AutoConfig;
+    # other tiers keep the 5.5 sidecar.
     sidecar_dir = _VENV_T5_DIR
     try:
         from utils.transformers_version import _VENV_T5_LATEST_DIR, get_transformers_tier
@@ -906,9 +906,8 @@ def _is_vision_model_uncached(
     )
     if raw is not None:
         if raw is False and not local_files_only:
-            # Latest-only architectures are invisible to the raw heuristics (built from
-            # older transformers); when routing to the latest tier, trust that sidecar's
-            # AutoConfig probe over the heuristic False.
+            # Raw heuristics predate latest-only architectures; on the latest tier,
+            # trust that sidecar's AutoConfig probe over the heuristic False.
             try:
                 from utils.transformers_version import get_transformers_tier
                 if get_transformers_tier(model_name, hf_token, probe = False) == "latest":

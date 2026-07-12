@@ -291,11 +291,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         hf_token = _clean_token(config.get("hf_token"))
         load_in_4bit = _resolve_lora_4bit(mc, config.get("load_in_4bit", True))
 
-        # Brand-new architectures (consented latest-transformers sidecar) load in
-        # 16-bit: bnb 4-bit routes packed uint8 expert weights into code paths the
-        # new release has not been validated against here (e.g. transformers'
-        # grouped-MoE kernels feed quantized weights into torch._grouped_mm and
-        # generation fails), so correctness wins until support lands in a fixed tier.
+        # Latest-transformers sidecar models load 16-bit: bnb 4-bit feeds quantized
+        # expert weights into unvalidated paths (e.g. grouped-MoE torch._grouped_mm).
         if load_in_4bit:
             from utils.transformers_version import latest_tier_active_for
             if latest_tier_active_for(config["model_name"], hf_token):

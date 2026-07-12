@@ -12,18 +12,14 @@ import pytest
 from pathlib import Path
 
 
-# ---------------------------------------------------------------------------
-# The studio backend uses relative-style imports (``from utils.…``), so
-# add the backend directory to *sys.path* if not already present.
-# ---------------------------------------------------------------------------
+# The backend uses "from utils..." imports; ensure the backend dir is on sys.path.
 import sys
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub the custom logger before import so ``from loggers import
-# get_logger`` doesn't fail.
+# Stub the custom logger before importing the modules under test.
 import types as _types
 
 _loggers_stub = _types.ModuleType("loggers")
@@ -140,9 +136,7 @@ def _no_network(monkeypatch, exc = None):
     return calls
 
 
-# ---------------------------------------------------------------------------
-# AST extraction shared with the static router
-# ---------------------------------------------------------------------------
+# --- AST extraction shared with the static router ---
 
 
 class TestModelTypesFromSource:
@@ -178,8 +172,7 @@ class TestFetchRemoteModelTypes:
         assert _fetch_remote_model_types("main") is None
 
     def test_transient_failure_of_one_file_fails_whole_lookup(self, monkeypatch):
-        # configuration_auto.py succeeds but auto_mappings.py times out: the partial
-        # map (missing most current model types) must not be returned and cached.
+        # One file times out: the partial map must not be returned and cached.
         def _fake(req, timeout = None):
             url = req.full_url if hasattr(req, "full_url") else str(req)
             if url.endswith("configuration_auto.py"):
@@ -190,8 +183,7 @@ class TestFetchRemoteModelTypes:
         assert _fetch_remote_model_types("main") is None
 
     def test_missing_auto_mappings_404_still_succeeds(self, monkeypatch):
-        # Pre-5.10 tags legitimately have no auto_mappings.py: a 404 (unlike a
-        # transient failure) must not fail the lookup.
+        # Pre-5.10 tags have no auto_mappings.py; a 404 must not fail the lookup.
         import urllib.error
 
         def _fake(req, timeout = None):
@@ -205,7 +197,6 @@ class TestFetchRemoteModelTypes:
         assert keys is not None and "brandnew_arch" in keys
 
     def test_unparseable_file_fails_whole_lookup(self, monkeypatch):
-        # A syntax error in either fetched file means the map may be incomplete.
         def _fake(req, timeout = None):
             url = req.full_url if hasattr(req, "full_url") else str(req)
             if url.endswith("configuration_auto.py"):
@@ -216,9 +207,7 @@ class TestFetchRemoteModelTypes:
         assert _fetch_remote_model_types("main") is None
 
 
-# ---------------------------------------------------------------------------
-# latest_transformers_supports — snapshot, cache, offline, kill switch
-# ---------------------------------------------------------------------------
+# --- latest_transformers_supports: snapshot, cache, offline, kill switch ---
 
 
 class TestLatestTransformersSupports:
@@ -308,9 +297,7 @@ class TestLatestTransformersSupports:
         assert calls["n"] == first  # backed off, no second network attempt
 
 
-# ---------------------------------------------------------------------------
-# check_upgrade_for_model — the tier hook
-# ---------------------------------------------------------------------------
+# --- check_upgrade_for_model: the tier hook ---
 
 
 def _local_model(tmp_path: Path, model_type: str) -> str:
@@ -386,7 +373,7 @@ class TestCheckUpgradeForModel:
     def test_hardcoded_tier_type_never_fetches_even_without_overlays(
         self, tmp_path: Path, monkeypatch
     ):
-        # Sidecar overlays unreadable (not provisioned) but the hardcoded tables route it.
+        # Sidecar overlays unreadable, but the hardcoded tables route it.
         _fake_overlays(
             monkeypatch,
             {"default": frozenset({"llama"})},
@@ -438,10 +425,7 @@ class TestNestedModelTypeExtraction:
         assert _model_types_from_config({}) == []
 
 
-# ---------------------------------------------------------------------------
-# Routing parity: every model_type any installed overlay ships must route exactly
-# as before and must never trigger the remote checker.
-# ---------------------------------------------------------------------------
+# --- Routing parity: overlay-shipped model_types route as before, never remote-check ---
 
 
 class TestRoutingParity:
@@ -460,7 +444,6 @@ class TestRoutingParity:
         for model_type, tier in expected_tier.items():
             cfg = {"model_type": model_type}
             assert _tier_from_config_mapping(cfg) == tier, model_type
-            # The checker never fires (no network call, returns None).
             assert check_upgrade_for_model(_local_model(tmp_path, model_type)) is None
         assert calls["n"] == 0
 
@@ -491,9 +474,7 @@ class TestRoutingParity:
         assert get_transformers_tier(path, probe = False) == tier_default == "default"
 
 
-# ---------------------------------------------------------------------------
-# .venv_t5_latest provisioning and routing participation
-# ---------------------------------------------------------------------------
+# --- .venv_t5_latest provisioning and routing participation ---
 
 
 class TestLatestVenvProvisioning:
@@ -523,7 +504,7 @@ class TestLatestVenvProvisioning:
         monkeypatch.setattr(tv, "_ensure_venv_dir", _fake_ensure)
         _config_mapping_cache["latest"] = frozenset({"stale"})
         assert ensure_latest_transformers_venv("5.13.0") is True
-        # Stage-and-swap: pip installs into the staging dir, the live dir is the swap result.
+        # Stage-and-swap: pip installs into staging, the live dir is the swap result.
         assert recorded["dir"] == str(venv_dir) + ".staging"
         assert "transformers==5.13.0" in recorded["packages"]
         assert venv_dir.is_dir()
@@ -534,17 +515,15 @@ class TestLatestVenvProvisioning:
     def test_ensure_latest_upgrade_failure_keeps_old_sidecar(self, tmp_path: Path, monkeypatch):
         venv_dir = tmp_path / ".venv_t5_latest"
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
-        # A working pinned sidecar exists.
         venv_dir.mkdir(parents = True)
         (venv_dir / tv._LATEST_PIN_MARKER).write_text(
             json.dumps({"version": "5.12.0", "packages": ["transformers==5.12.0"]})
         )
         (venv_dir / "transformers").mkdir()
         monkeypatch.setattr(tv, "_venv_dir_is_valid", lambda *a, **k: True)
-        # The new install fails mid-flight.
+        # Install fails mid-flight: the previous sidecar and pin survive.
         monkeypatch.setattr(tv, "_ensure_venv_dir", lambda *a, **k: False)
         assert ensure_latest_transformers_venv("5.13.0") is False
-        # The previous sidecar and its pin survive untouched.
         assert latest_venv_pinned_version() == "5.12.0"
         assert (venv_dir / "transformers").is_dir()
         assert not Path(str(venv_dir) + ".staging").exists()
@@ -593,7 +572,7 @@ class TestLatestVenvProvisioning:
 
         monkeypatch.setattr(tv, "_ensure_venv_dir", _fake_ensure)
         assert tv._ensure_venv_t5_latest_exists() is True
-        # Repair goes through stage-and-swap, never installing into the live dir.
+        # Repair also stage-and-swaps, never installing into the live dir.
         assert recorded["dir"] == str(venv_dir) + ".staging"
         assert "transformers==5.13.0" in recorded["packages"]
         assert latest_venv_pinned_version() == "5.13.0"
@@ -616,8 +595,7 @@ class TestLatestTierRouting:
         venv_dir = tmp_path / ".venv_t5_latest"
         (venv_dir / "transformers").mkdir(parents = True)
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
-        # Unpinned (partial/manual dir): mapping must ignore it, since
-        # activation refuses an unpinned sidecar.
+        # Unpinned dir is ignored: activation refuses an unpinned sidecar.
         assert tv._overlay_transformers_dir("latest") is None
         (venv_dir / tv._LATEST_PIN_MARKER).write_text("5.13.0")
         assert tv._overlay_transformers_dir("latest") == str(venv_dir / "transformers")
@@ -660,9 +638,7 @@ class TestLatestTierRouting:
             activate_transformers_for_subprocess("some/brand-new-model")
 
 
-# ---------------------------------------------------------------------------
-# install_latest_transformers — the consent endpoint helper
-# ---------------------------------------------------------------------------
+# --- install_latest_transformers: the consent endpoint helper ---
 
 
 class TestInstallLatestTransformers:
@@ -960,8 +936,7 @@ def test_vision_subprocess_unions_sidecar_registry():
         },
     }
     ns = {}
-    # Run only the registry-union block: everything between the AutoConfig
-    # import and the config fetch, against a stubbed sidecar registry.
+    # Exec only the registry-union block against a stubbed sidecar registry.
     body = script.split("from transformers import AutoConfig", 1)[1]
     body = body.split("kwargs = {", 1)[0]
     helpers = script.split("sys.path.insert(0, backend_dir)", 1)[1]

@@ -235,10 +235,8 @@ _VENV_T5_DIR = _VENV_T5_550_DIR
 # reuses the workspace torch (torch-agnostic).
 _VENV_LLMCOMPRESSOR_DIR = str(_studio_root() / ".venv_llmcompressor")
 
-# User-consented "latest transformers" sidecar for brand-new architectures no
-# pre-provisioned overlay ships. Unlike the fixed sidecars it is created only after the user
-# confirms the install popup (see utils/transformers_latest.py); the pinned version lives in
-# a marker file so restarts revalidate it.
+# User-consented "latest transformers" sidecar, created only after the user confirms the
+# install popup (utils/transformers_latest.py); the pinned version lives in a marker file.
 _VENV_T5_LATEST_DIR = str(_studio_root() / ".venv_t5_latest")
 _LATEST_PIN_MARKER = ".unsloth_pinned_transformers"
 
@@ -942,8 +940,7 @@ def _latest_tier_disabled() -> bool:
 def _overlay_transformers_dir(tier: str) -> str | None:
     """transformers source dir for a tier, located without importing it."""
     if tier != "default":
-        # latest participates only with a valid pin (activation refuses unpinned) and
-        # while the kill switch is off.
+        # latest requires a valid pin and the kill switch off.
         if tier == "latest" and (_latest_tier_disabled() or latest_venv_pinned_version() is None):
             return None
         root = {
@@ -1014,7 +1011,6 @@ def _model_types_from_source(source: str) -> set[str]:
     keys: set[str] = set()
     tree = ast.parse(source)
     for node in ast.walk(tree):
-        # direct binding, or a CONFIG_MAPPING_NAMES.update({...}) mutation
         if isinstance(node, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id == "CONFIG_MAPPING_NAMES" for t in node.targets
         ):
@@ -1785,9 +1781,9 @@ def _ensure_venv_t5_exists() -> bool:
 
 
 # --- User-consented "latest transformers" sidecar (.venv_t5_latest) --------------------------
-# Provisioned only via ensure_latest_transformers_venv() after the user confirms the upgrade
-# popup (see utils/transformers_latest.py). The pip version is pinned in a marker file, so
-# restarts revalidate it and routing picks the tier up automatically (just a --target dir).
+# Provisioned via ensure_latest_transformers_venv() after the user confirms the upgrade popup
+# (utils/transformers_latest.py); the version is pinned in a marker file so restarts
+# revalidate it and routing picks the tier up automatically.
 
 # PEP 440-ish release strings only (guards the pip install spec against injection).
 _LATEST_VERSION_RE = r"[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?"
@@ -1859,8 +1855,7 @@ def _stage_and_swap_latest_venv(version: str, packages: tuple[str, ...]) -> bool
     shutil.rmtree(staging, ignore_errors = True)
     try:
         if not _ensure_venv_dir(staging, packages, f"transformers {version} (latest)"):
-            # No exception raised, so the except cleanup below never runs:
-            # remove the partial staging dir instead of leaking it on disk.
+            # No exception, so the except cleanup below never runs; drop the partial dir.
             shutil.rmtree(staging, ignore_errors = True)
             return False
         (Path(staging) / _LATEST_PIN_MARKER).write_text(
@@ -1881,8 +1876,7 @@ def _stage_and_swap_latest_venv(version: str, packages: tuple[str, ...]) -> bool
         shutil.rmtree(staging, ignore_errors = True)
         return False
     shutil.rmtree(retired, ignore_errors = True)
-    # CONFIG_MAPPING_NAMES may have changed (fresh install/upgrade): drop the cached key
-    # set so the next routing decision re-reads it.
+    # CONFIG_MAPPING_NAMES may have changed: drop the cached key set.
     _config_mapping_cache.pop("latest", None)
     logger.info("Provisioned .venv_t5_latest with transformers %s", version)
     return True
@@ -1909,8 +1903,7 @@ def _ensure_venv_t5_latest_exists() -> bool:
             version,
         )
         return False
-    # Repair via the same stage-and-swap as the consented install: the incomplete-but-pinned
-    # live dir survives a failed repair, so the pin is never lost.
+    # Same stage-and-swap as the install: a failed repair never loses the pin.
     return _stage_and_swap_latest_venv(version, packages)
 
 

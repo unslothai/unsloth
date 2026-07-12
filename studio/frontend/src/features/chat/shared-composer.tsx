@@ -956,14 +956,12 @@ export function SharedComposer({
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
         });
-        // Upgrade dialog first (mirrors the primary load path): the load cannot
-        // proceed at all until the consented sidecar install completes.
+        // Upgrade dialog first (mirrors the primary load path).
         if (validation.requires_transformers_upgrade) {
           const upgraded = await confirmTransformersUpgradeIfNeeded({
             modelName: sel.id,
             upgrade: validation.transformers_upgrade,
-            // With no installable release, a model that ships custom code can
-            // still continue into the trust_remote_code gate below (last resort).
+            // No installable release: custom-code models may fall back to the trust_remote_code gate below.
             trustRemoteCodeFallback: validation.requires_trust_remote_code,
           });
           if (!upgraded) {

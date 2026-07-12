@@ -17,17 +17,13 @@ import { PackageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useTransformersUpgradeDialogStore } from "../stores/transformers-upgrade-dialog-store";
 
-/** Last path segment of the model id, for display. */
 function modelDisplayName(modelName: string | null): string {
   if (!modelName) return "This model";
   return modelName.split("/").pop() || modelName;
 }
 
-/** App-wide consent dialog for models whose architecture needs a newer transformers
- *  than any installed one (validate: requires_transformers_upgrade). On Install it
- *  runs the sidecar install itself and resolves the paused load on success, so the
- *  load continues automatically. Mounted once in the root layout, next to the
- *  remote-code consent dialog. */
+/** Root-mounted consent dialog for models needing a newer transformers;
+ *  Install runs the sidecar install and resumes the paused load on success. */
 export function TransformersUpgradeDialog() {
   const open = useTransformersUpgradeDialogStore((s) => s.open);
   const modelName = useTransformersUpgradeDialogStore((s) => s.modelName);
@@ -43,8 +39,7 @@ export function TransformersUpgradeDialog() {
   const displayName = modelDisplayName(modelName);
   const modelType = upgrade?.model_type ?? "unknown";
   const version = upgrade?.pypi_version ?? null;
-  // Installable only from a released PyPI version; main-branch (dev) builds are
-  // never offered, matching the backend's install-latest-transformers contract.
+  // Only released PyPI versions are installable; dev (main) builds are never offered.
   const installable = Boolean(upgrade?.supported_in_pypi && version);
   const devOnly = !installable && Boolean(upgrade?.supported_in_main);
   const installing = phase === "installing";
@@ -53,8 +48,7 @@ export function TransformersUpgradeDialog() {
     <AlertDialog
       open={open}
       onOpenChange={(next) => {
-        // The dialog stays up while the install runs; Cancel is disabled below
-        // and an Escape/overlay dismiss must not abandon an in-flight install.
+        // Escape/overlay dismiss must not abandon an in-flight install.
         if (!next && !installing) resolve(false);
       }}
     >
@@ -129,10 +123,8 @@ export function TransformersUpgradeDialog() {
           {installable ? (
             <>
               {phase === "error" && trustRemoteCodeFallback ? (
-                // Install failed but the model ships its own modeling code, so
-                // offer the trust_remote_code consent gate instead of forcing a
-                // retry: resolving true resumes the caller, whose security gate
-                // then reviews the custom code as a last resort.
+                // Install failed but the model ships custom code: offer the
+                // caller's trust_remote_code gate instead of forcing a retry.
                 <AlertDialogAction
                   className="bg-transparent text-foreground hover:bg-accent"
                   onClick={() => resolve(true)}
@@ -144,8 +136,7 @@ export function TransformersUpgradeDialog() {
                 disabled={installing}
                 className={cn(installing && "pointer-events-none")}
                 onClick={(event) => {
-                  // Keep the dialog open while the install runs; the store closes
-                  // it (and resumes the paused load) on success.
+                  // Keep the dialog open; the store closes it on success.
                   event.preventDefault();
                   void install();
                 }}
@@ -163,10 +154,8 @@ export function TransformersUpgradeDialog() {
               </AlertDialogAction>
             </>
           ) : trustRemoteCodeFallback ? (
-            // No installable release, but the model declares custom (auto_map)
-            // code: let the load continue into the trust_remote_code consent
-            // dialog as the last resort. Resolving true resumes the caller,
-            // whose existing security gate then reviews the custom code.
+            // No installable release but the model ships custom code: continue
+            // into the caller's trust_remote_code gate as the last resort.
             <AlertDialogAction onClick={() => resolve(true)}>
               Continue with custom code
             </AlertDialogAction>

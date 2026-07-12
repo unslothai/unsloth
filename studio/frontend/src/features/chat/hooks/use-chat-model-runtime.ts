@@ -599,15 +599,12 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
             });
-            // A brand-new architecture needs the latest transformers before anything
-            // else can proceed, so its consent dialog runs first: on Accept it installs
-            // the sidecar and this load continues; the security dialogs follow.
+            // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
             if (validation.requires_transformers_upgrade) {
               const upgraded = await confirmTransformersUpgradeIfNeeded({
                 modelName: modelId,
                 upgrade: validation.transformers_upgrade,
-                // With no installable release, a model that ships custom code can
-                // still continue into the trust_remote_code gate below (last resort).
+                // No installable release: custom-code models may fall back to the trust_remote_code gate below.
                 trustRemoteCodeFallback: validation.requires_trust_remote_code,
               });
               if (!upgraded) {

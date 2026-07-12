@@ -662,8 +662,7 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
         info = {"required_gb": 40.0, "usable_gb": 5.0, "needed_gb": 50.0, "mode": "auto"}
 
         with (
-            # The latest-sidecar 16-bit flip resolves the model's transformers tier
-            # (network for hub ids); pin it to False so the guard path stays offline.
+            # Pin the latest-sidecar tier check so the guard path stays offline.
             patch("utils.transformers_version.latest_tier_active_for", return_value = False),
             patch.object(self.route, "validate_extra_args", return_value = None),
             patch.object(

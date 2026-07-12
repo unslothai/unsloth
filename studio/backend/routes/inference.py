@@ -4040,9 +4040,8 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 f"Resolved load_in_4bit={effective_load_in_4bit} for '{model_log_label}' "
                 f"from adapter_config.json / base model (requested {request.load_in_4bit})"
             )
-        # A brand-new architecture on the consented latest sidecar loads 16-bit
-        # (the worker refuses bnb 4-bit for it); size the VRAM guard and the
-        # worker command the same way. Off-loop: tier resolution can read configs.
+        # Latest-sidecar models load 16-bit (worker refuses bnb 4-bit); size the VRAM
+        # guard and worker command the same way. Off-loop: tier resolution reads configs.
         if effective_load_in_4bit and not config.is_gguf:
             from utils.transformers_version import latest_tier_active_for
             if await asyncio.to_thread(latest_tier_active_for, config.identifier, request.hf_token):
@@ -4613,9 +4612,8 @@ async def validate_model(
                 detail = "gpu_ids is not supported for GGUF models yet.",
             )
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
-        # Mirror /load: a model on the consented latest sidecar loads 16-bit (the
-        # worker refuses bnb 4-bit for it), so the guard must size it the same way
-        # here or validation would pass a load that /load then rejects with a 409.
+        # Mirror /load's latest-sidecar 16-bit flip so the guard sizes it the same
+        # way; otherwise validation passes a load that /load then 409s.
         if effective_load_in_4bit and not config.is_gguf:
             from utils.transformers_version import latest_tier_active_for
             if await asyncio.to_thread(latest_tier_active_for, config.identifier, request.hf_token):
@@ -4659,9 +4657,8 @@ async def validate_model(
             requires_security_review = any(
                 _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
             )
-        # Brand-new architecture check: does a newer transformers ship this model_type?
-        # Static overlay lookup for known models (no network); only an unknown model_type
-        # hits the cached PyPI/main snapshot. Best-effort: never fails validation.
+        # Does a newer transformers ship this model_type? Static overlay lookup first;
+        # only unknown types hit the cached PyPI/main snapshot. Never fails validation.
         transformers_upgrade: Optional[TransformersUpgradeInfo] = None
         if not is_gguf:
             from utils.transformers_latest import check_upgrade_for_model
@@ -4759,8 +4756,7 @@ async def validate_model(
         )
 
 
-# studio_router only: a consented server-side install is an admin action, not reachable
-# through the OpenAI-compatible /v1 mount.
+# studio_router only: admin action, kept off the OpenAI-compatible /v1 mount.
 @studio_router.post(
     "/install-latest-transformers", response_model = InstallLatestTransformersResponse
 )

@@ -10,9 +10,7 @@ interface InstallLatestTransformersResponse {
   message: string;
 }
 
-/** Consented install of the latest transformers release into the persistent
- *  sidecar. Synchronous on the backend (a pip install runs off-loop), so this
- *  can take up to a few minutes on a cold cache; the caller shows progress. */
+/** Consented install of the latest transformers into the sidecar; synchronous, can take minutes. */
 export async function installLatestTransformers(
   version: string,
 ): Promise<InstallLatestTransformersResponse> {

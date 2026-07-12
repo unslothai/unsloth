@@ -188,8 +188,7 @@ class ValidateModelResponse(BaseModel):
         description = "Native training context length, read from the GGUF header when the file "
         "is already downloaded locally; None for non-GGUF, gated, or not-yet-downloaded models.",
     )
-    # Additive fields: no frontend path consumes them yet; the consent dialog
-    # that does ships in the follow-up frontend PR.
+    # Additive fields; the consuming consent dialog ships in a follow-up frontend PR.
     requires_transformers_upgrade: bool = Field(
         False,
         description = "True when the model's architecture is unknown to every installed "
