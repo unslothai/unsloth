@@ -50,6 +50,7 @@ _EXCLUDED_PATHS = {
     "/api/train/status",
     "/api/train/metrics",
     "/api/train/hardware",
+    "/api/export/status",
     "/api/system",
 }
 _EXCLUDED_SUFFIXES = (
