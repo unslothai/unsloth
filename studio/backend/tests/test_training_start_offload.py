@@ -131,7 +131,12 @@ def test_is_training_active_true_during_start_reservation():
     release = threading.Event()
     captured = {}
 
-    def _slow_impl(job_id, *, before_spawn = None, **kwargs):
+    def _slow_impl(
+        job_id,
+        *,
+        before_spawn = None,
+        **kwargs,
+    ):
         entered.set()
         release.wait(timeout = 5.0)
         return True
