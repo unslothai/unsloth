@@ -482,6 +482,68 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert backend.is_loaded is False
 
 
+def test_generate_progress_active_during_setup(fake_runtime, tmp_path, monkeypatch):
+    # A generation must report active from the moment it holds the lock, BEFORE the slow
+    # pre-denoise setup (deferred compile / LoRA resolution / ControlNet build) runs.
+    # Otherwise a reload's mount probe sees idle while the lock is held and lets a second
+    # generate queue behind the first. _apply_loras runs inside that setup window, so probing
+    # generate_progress() from there exercises the gap the reviewer flagged.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+        hf_token = "hf_secret",
+    )
+
+    seen = {}
+
+    def fake_apply(self, state, loras, cancel):
+        seen["progress"] = self.generate_progress()
+
+    monkeypatch.setattr(DiffusionBackend, "_apply_loras", fake_apply)
+
+    # Idle before the run.
+    assert backend.generate_progress()["active"] is False
+
+    gen = backend.generate(prompt = "a sloth", steps = 4)
+    assert len(gen["images"]) == 1
+
+    # Active was published during setup, with the requested step total and step 0.
+    assert seen["progress"]["active"] is True
+    assert seen["progress"]["total_steps"] == 4
+    assert seen["progress"]["step"] == 0
+
+    # And it is cleared once the generation returns.
+    assert backend.generate_progress()["active"] is False
+
+
+def test_generate_progress_cleared_on_setup_error(fake_runtime, tmp_path, monkeypatch):
+    # A setup-time failure skips the inner finally that nulls _gen, so the outer finally must
+    # clear the published progress; otherwise a crashed generation leaves the UI stuck "active".
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+        hf_token = "hf_secret",
+    )
+
+    def boom(self, state, loras, cancel):
+        raise RuntimeError("setup failed")
+
+    monkeypatch.setattr(DiffusionBackend, "_apply_loras", boom)
+
+    with pytest.raises(RuntimeError, match = "setup failed"):
+        backend.generate(prompt = "a sloth", steps = 4)
+
+    assert backend.generate_progress()["active"] is False
+
+
 def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_path, monkeypatch):
     # Dense models with speed unset stay bit-identical eager for the first two generations; the
     # 3rd engages the `default` profile mid-session (repeated use amortises the one-time compile),

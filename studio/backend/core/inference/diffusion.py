@@ -2216,6 +2216,15 @@ class DiffusionBackend:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 # Register under _lock so unload()/a load can signal THIS generation.
                 self._active_generate_cancel = cancel
+                # Publish an active (step 0) progress state the moment the lock is held, BEFORE
+                # the slow pre-denoise setup (deferred compile, LoRA resolution/application,
+                # ControlNet download/build). Without this generate_progress() reports inactive
+                # across that window, so a reload's mount probe shows idle even though this
+                # generation holds _generate_lock; the user then starts a second generate that
+                # merely blocks behind this one (and can duplicate the result). The per-step
+                # callback swaps in its own _GenState at denoise start; this is the queued phase.
+                # Mirrors the video backend's queued state and the training start guard.
+                self._gen = _GenState(total_steps = steps)
             try:
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state.
                 generator = torch.Generator(device = state.device)
@@ -2550,6 +2559,11 @@ class DiffusionBackend:
                 with self._lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                    # Drop the published progress state. The normal path already nulled it after
+                    # the denoise; this also covers a setup-time error that skips that inner
+                    # finally. Safe under _generate_lock: no other generation can have installed
+                    # its own _gen while this one runs.
+                    self._gen = None
 
     def generate_progress(self) -> dict[str, Any]:
         """Live per-step progress for an in-flight generation (lock-free read)."""
