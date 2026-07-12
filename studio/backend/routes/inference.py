@@ -4837,9 +4837,7 @@ async def install_latest_transformers_route(
             other_inference_request_count,
         )
 
-        if other_inference_request_count(
-            current_request_counted = False, include_pending = False
-        ) > 0:
+        if other_inference_request_count(current_request_counted = False, include_pending = False) > 0:
             raise HTTPException(
                 status_code = 409,
                 detail = (
@@ -4870,15 +4868,11 @@ async def install_latest_transformers_route(
             export_backend.cleanup_memory()
             export_alive = getattr(export_backend, "is_worker_alive", None)
             if callable(export_alive) and export_alive():
-                raise RuntimeError(
-                    "Export worker still alive before the transformers swap"
-                )
+                raise RuntimeError("Export worker still alive before the transformers swap")
             active = getattr(backend, "active_model_name", None)
             if active:
                 if not backend.unload_model(active):
-                    raise RuntimeError(
-                        f"Could not unload '{active}' before the transformers swap"
-                    )
+                    raise RuntimeError(f"Could not unload '{active}' before the transformers swap")
                 note_model_unloaded()
                 logger.info(
                     "Unloaded '%s' before swapping in transformers %s",
@@ -4891,18 +4885,14 @@ async def install_latest_transformers_route(
             if callable(worker_alive) and worker_alive():
                 backend._shutdown_subprocess()
                 if worker_alive():
-                    raise RuntimeError(
-                        "Inference worker still alive before the transformers swap"
-                    )
+                    raise RuntimeError("Inference worker still alive before the transformers swap")
 
         def _run_install() -> dict:
             # Owns the reservation from here: releasing in the thread (not the
             # route) keeps the lock held if the request is cancelled or times
             # out while the minute-long install is still staging/renaming.
             try:
-                return install_latest_transformers(
-                    request.version, _unload_before_swap, True
-                )
+                return install_latest_transformers(request.version, _unload_before_swap, True)
             finally:
                 end_sidecar_swap()
 

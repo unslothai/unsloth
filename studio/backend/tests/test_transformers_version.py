@@ -2735,14 +2735,14 @@ class TestLatestTierForces16Bit:
         # The route-level guards are one-shot; validation between them and the
         # actual spawn can outlast an install's start, so the spawn itself rechecks.
         training = self._read("core/training/training.py")
-        assert training.count("sidecar_swap_in_progress()") >= 2, (
-            "both training spawn sites must recheck the sidecar swap reservation"
-        )
+        assert (
+            training.count("sidecar_swap_in_progress()") >= 2
+        ), "both training spawn sites must recheck the sidecar swap reservation"
         export = self._read("core/export/orchestrator.py")
         spawn = export.split("def _spawn_subprocess", 1)[1].split("\n    def ", 1)[0]
-        assert "sidecar_swap_in_progress()" in spawn, (
-            "the export subprocess spawn must recheck the sidecar swap reservation"
-        )
+        assert (
+            "sidecar_swap_in_progress()" in spawn
+        ), "the export subprocess spawn must recheck the sidecar swap reservation"
 
 
 class TestSidecarSwapReservation:
