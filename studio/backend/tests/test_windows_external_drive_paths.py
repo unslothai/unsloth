@@ -168,9 +168,9 @@ def test_is_path_inside_allowlist_real_descendants_and_siblings(tmp_path):
     sibling.mkdir()
 
     is_inside = ns["_is_path_inside_allowlist"]
-    assert is_inside(root, [root]) is True       # the root itself
-    assert is_inside(child, [root]) is True       # a genuine descendant
-    assert is_inside(sibling, [root]) is False    # prefix-collision sibling
+    assert is_inside(root, [root]) is True  # the root itself
+    assert is_inside(child, [root]) is True  # a genuine descendant
+    assert is_inside(sibling, [root]) is False  # prefix-collision sibling
 
 
 def test_is_path_inside_allowlist_posix_root_does_not_authorize_descendants(monkeypatch):
@@ -180,8 +180,8 @@ def test_is_path_inside_allowlist_posix_root_does_not_authorize_descendants(monk
     monkeypatch.setattr(os.path, "realpath", lambda p: str(p))  # keep "/" intact
 
     is_inside = ns["_is_path_inside_allowlist"]
-    assert is_inside("/", ["/"]) is True             # the root itself
-    assert is_inside("/etc", ["/"]) is False          # not a licensed descendant
+    assert is_inside("/", ["/"]) is True  # the root itself
+    assert is_inside("/etc", ["/"]) is False  # not a licensed descendant
     assert is_inside("/root/models", ["/"]) is False
 
 
@@ -206,9 +206,9 @@ def test_is_path_inside_allowlist_windows_drive_root_descendants():
     ns = _extract_routes_function("_is_path_inside_allowlist", {"os": win_os})
     is_inside = ns["_is_path_inside_allowlist"]
 
-    assert is_inside("D:\\", ["D:\\"]) is True               # drive root itself
-    assert is_inside("D:\\models", ["D:\\"]) is True          # descendant on the drive
-    assert is_inside("D:\\models\\gguf", ["D:\\"]) is True    # deeper descendant
-    assert is_inside("d:\\models", ["D:\\"]) is True          # case-insensitive drive letter
-    assert is_inside("C:\\Users", ["D:\\"]) is False          # different drive
+    assert is_inside("D:\\", ["D:\\"]) is True  # drive root itself
+    assert is_inside("D:\\models", ["D:\\"]) is True  # descendant on the drive
+    assert is_inside("D:\\models\\gguf", ["D:\\"]) is True  # deeper descendant
+    assert is_inside("d:\\models", ["D:\\"]) is True  # case-insensitive drive letter
+    assert is_inside("C:\\Users", ["D:\\"]) is False  # different drive
     assert is_inside("D:\\models", ["E:\\"]) is False

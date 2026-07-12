@@ -41,7 +41,7 @@ class _HTTPException(Exception):
 def _extract_is_denied_windows():
     """is_denied_system_path (+ _denied_path_prefixes) from studio_db.py run
     under faithful Windows semantics (ntpath) on a POSIX host."""
-    src = (_BACKEND_ROOT / "storage" / "studio_db.py").read_text(encoding="utf-8")
+    src = (_BACKEND_ROOT / "storage" / "studio_db.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
     funcs = [
         n
@@ -49,21 +49,21 @@ def _extract_is_denied_windows():
         if isinstance(n, ast.FunctionDef)
         and n.name in {"_denied_path_prefixes", "is_denied_system_path"}
     ]
-    module = ast.Module(body=funcs, type_ignores=[])
+    module = ast.Module(body = funcs, type_ignores = [])
     ast.fix_missing_locations(module)
 
     win_os = SimpleNamespace(
-        sep="\\",
-        environ={
+        sep = "\\",
+        environ = {
             "SystemRoot": r"C:\Windows",
             "ProgramFiles": r"C:\Program Files",
             "ProgramFiles(x86)": r"C:\Program Files (x86)",
         },
-        path=SimpleNamespace(normcase=ntpath.normcase),
+        path = SimpleNamespace(normcase = ntpath.normcase),
     )
     ns = {
         "os": win_os,
-        "platform": SimpleNamespace(system=lambda: "Windows"),
+        "platform": SimpleNamespace(system = lambda: "Windows"),
         # /run has no Windows analog, so the carve-out is never reached.
         "is_linux_run_media_path": lambda _p: False,
     }
@@ -76,8 +76,19 @@ def _extract_is_denied_windows():
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "path",
-    ["/etc", "/etc/ssl/private", "/proc", "/proc/1", "/sys", "/dev", "/boot",
-     "/run", "/run/systemd/private", "/run/media", "/run/media/dspofu"],
+    [
+        "/etc",
+        "/etc/ssl/private",
+        "/proc",
+        "/proc/1",
+        "/sys",
+        "/dev",
+        "/boot",
+        "/run",
+        "/run/systemd/private",
+        "/run/media",
+        "/run/media/dspofu",
+    ],
 )
 def test_is_denied_system_path_linux_denies_system_dirs(monkeypatch, path):
     monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
@@ -116,8 +127,16 @@ def test_legacy_and_hub_denylist_agree(monkeypatch):
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "path",
-    [r"C:\Windows", r"C:\Windows\System32", r"c:\windows", r"C:\WINDOWS\Temp",
-     r"C:\Program Files", r"C:\Program Files\x", r"C:\Program Files (x86)\y", r"c:\program files"],
+    [
+        r"C:\Windows",
+        r"C:\Windows\System32",
+        r"c:\windows",
+        r"C:\WINDOWS\Temp",
+        r"C:\Program Files",
+        r"C:\Program Files\x",
+        r"C:\Program Files (x86)\y",
+        r"c:\program files",
+    ],
 )
 def test_is_denied_system_path_windows_denies_system_dirs(path):
     is_denied = _extract_is_denied_windows()
@@ -126,8 +145,15 @@ def test_is_denied_system_path_windows_denies_system_dirs(path):
 
 @pytest.mark.parametrize(
     "path",
-    [r"C:\Models", r"D:\models", r"C:\WindowsApps", r"C:\ProgramData",
-     r"C:\Program Files Extra", r"E:\gguf", r"C:\Users\me\models"],
+    [
+        r"C:\Models",
+        r"D:\models",
+        r"C:\WindowsApps",
+        r"C:\ProgramData",
+        r"C:\Program Files Extra",
+        r"E:\gguf",
+        r"C:\Users\me\models",
+    ],
 )
 def test_is_denied_system_path_windows_allows_non_system(path):
     is_denied = _extract_is_denied_windows()
@@ -140,7 +166,7 @@ def test_is_denied_system_path_windows_allows_non_system(path):
 def _extract_resolver():
     """Extract the legacy browse resolver; its inline imports resolve to the
     real storage.studio_db (so is_denied_system_path is the real policy)."""
-    src = (_BACKEND_ROOT / "routes" / "models.py").read_text(encoding="utf-8")
+    src = (_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
     names = {
         "_is_path_inside_allowlist",
@@ -150,14 +176,14 @@ def _extract_resolver():
         "_resolve_browse_target",
     }
     funcs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
-    module = ast.Module(body=funcs, type_ignores=[])
+    module = ast.Module(body = funcs, type_ignores = [])
     ast.fix_missing_locations(module)
     ns = {
         "os": os,
         "Path": Path,
         "Optional": Optional,
         "HTTPException": _HTTPException,
-        "logger": SimpleNamespace(warning=lambda *a, **k: None, debug=lambda *a, **k: None),
+        "logger": SimpleNamespace(warning = lambda *a, **k: None, debug = lambda *a, **k: None),
     }
     exec(compile(module, "<extracted routes/models.py>", "exec"), ns)
     return ns["_resolve_browse_target"]
@@ -190,7 +216,7 @@ def test_resolve_browse_target_allows_legit_nested_dir(tmp_path):
     resolve = _extract_resolver()
     base = tmp_path / "allowed"
     sub = base / "models" / "gguf"
-    sub.mkdir(parents=True)
+    sub.mkdir(parents = True)
     assert resolve(str(sub), [base]) == sub.resolve()
 
 
@@ -200,7 +226,7 @@ def test_resolve_browse_target_symlink_escape_blocked(tmp_path):
     base.mkdir()
     link = base / "escape"
     try:
-        link.symlink_to("/etc", target_is_directory=True)
+        link.symlink_to("/etc", target_is_directory = True)
     except OSError:
         pytest.skip("symlinks unsupported on this host")
     with pytest.raises(_HTTPException) as exc:
@@ -213,11 +239,11 @@ def test_resolve_browse_target_symlink_escape_blocked(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_legacy_add_scan_folder_rejects_filesystem_root(monkeypatch):
     monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
-    with pytest.raises(ValueError, match="filesystem root"):
+    with pytest.raises(ValueError, match = "filesystem root"):
         studio_db.add_scan_folder("/")
 
 
 def test_hub_add_scan_folder_rejects_filesystem_root(monkeypatch):
     monkeypatch.setattr(scan_folders.platform, "system", lambda: "Linux")
-    with pytest.raises(ValueError, match="filesystem root"):
+    with pytest.raises(ValueError, match = "filesystem root"):
         scan_folders.add_scan_folder("/")
