@@ -170,6 +170,9 @@ _AUTO_UNSAFE_ENV_ASSIGN = frozenset(
         "PERL5LIB",
         "RUBYOPT",
         "RUBYLIB",
+        # LESSOPEN/LESSCLOSE run an input preprocessor command for less.
+        "LESSOPEN",
+        "LESSCLOSE",
     }
 )
 
@@ -477,6 +480,8 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "marshal",
         "shelve",
         "dill",
+        # runpy runs a script/module as code.
+        "runpy",
     }
 )
 # Attribute calls that mutate the filesystem / spawn processes (os.remove,
@@ -532,6 +537,11 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "utime",
         "import_module",
         "FileIO",
+        # os.chdir escapes the workdir; runpy helpers run arbitrary code.
+        "chdir",
+        "fchdir",
+        "run_path",
+        "run_module",
     }
 )
 _PY_WRITE_MODE_RE = re.compile(r"[wax+]")
@@ -559,6 +569,9 @@ _PARENT_TRAVERSAL_RE = re.compile(r"(?:^|[\s/\\'\"=:])\.\.(?:[/\\]|$|[\s'\"])")
 _REDUNDANT_SLASH_RE = re.compile(r"/\.?(?=/)")
 _SHELL_VAR_RE = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 _SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]+)")
+# Shell quotes only delimit; bash concatenates the pieces (cat /proc/x/enviro''n
+# reads .../environ), so strip them before the sensitive-path scan.
+_SHELL_QUOTE_RE = re.compile(r"['\"]")
 
 
 def _references_sensitive_path(text: str) -> bool:
@@ -628,12 +641,25 @@ def _attr_open_writes(node) -> bool:
 def _folded_path(node) -> "str | None":
     """Best-effort constant value of a path built from string literals, so a
     sensitive path assembled from pieces (os.path.join('/etc', 'passwd'),
-    '/etc' + '/passwd') is still visible to the sensitive-path scan."""
+    '/etc' + '/passwd', Path('/etc') / 'passwd', f'/proc/{pid}/environ') is
+    still visible to the sensitive-path scan. A dynamic f-string piece becomes
+    a non-slash placeholder so /proc/<pid>/environ still matches."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+    if isinstance(node, ast.JoinedStr):
+        out = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                out.append(value.value)
+            else:
+                out.append("\x00")  # dynamic piece: matches [^/\s'"]+
+        return "".join(out)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Div)):
         left, right = _folded_path(node.left), _folded_path(node.right)
-        return left + right if left is not None and right is not None else None
+        if left is None or right is None:
+            return None
+        # Path('/etc') / 'passwd' joins with a separator; '+' concatenates.
+        return left + "/" + right if isinstance(node.op, ast.Div) else left + right
     if isinstance(node, ast.Call):
         parts = [_folded_path(a) for a in node.args]
         if any(p is None for p in parts):
@@ -659,10 +685,18 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     if ">" in command or "`" in command or "$(" in command or "<(" in command:
         return True
     # Reads that escape the sandbox workdir (../) or hit credential paths are
-    # not "safe" reads; ask before running them. Expand simple NAME=value
-    # prefixes first so `p=/etc; cat $p/passwd` is caught too.
-    if _references_sensitive_path(command) or _references_sensitive_path(
-        _expand_shell_assignments(command)
+    # not "safe" reads; ask before running them. Strip shell quotes and expand
+    # NAME=value prefixes first so `cat /proc/$PPID/enviro''n` and
+    # `p="/proc/$PPID"; cat $p/environ` are caught too.
+    stripped = _SHELL_QUOTE_RE.sub("", command)
+    if any(
+        _references_sensitive_path(c)
+        for c in (
+            command,
+            stripped,
+            _expand_shell_assignments(command),
+            _expand_shell_assignments(stripped),
+        )
     ):
         return True
     # Newlines (and CR) separate commands in a shell but read as plain
@@ -822,8 +856,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # Credential paths / parent traversal in a string literal.
                 if isinstance(node.value, str) and _references_sensitive_path(node.value):
                     return True
-            elif isinstance(node, ast.BinOp):
-                # A sensitive path concatenated from literals ('/etc'+'/passwd').
+            elif isinstance(node, (ast.BinOp, ast.JoinedStr)):
+                # A sensitive path concatenated from literals ('/etc'+'/passwd'),
+                # a pathlib / chain, or an f-string (f'/proc/{pid}/environ').
                 folded = _folded_path(node)
                 if folded and _references_sensitive_path(folded):
                     return True
