@@ -1530,7 +1530,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // requested for both ask and auto).
       savePermissionMode(permissionMode);
       if (permissionMode === "full") {
-        return { permissionMode, bypassPermissions: true };
+        // Full access sends confirm_tool_calls=false; keep the store flag in
+        // sync so response metadata does not report confirmations as enabled.
+        return { permissionMode, bypassPermissions: true, confirmToolCalls: false };
       }
       const confirmToolCalls =
         permissionMode === "ask" || permissionMode === "auto";
@@ -1543,7 +1545,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     // Turning bypass off returns to the last persisted ask/auto level.
     set(() => {
       if (bypassPermissions) {
-        return { bypassPermissions, permissionMode: "full" as PermissionMode };
+        // Full access never prompts; mirror confirm_tool_calls=false in the
+        // store so metadata does not report confirmations as enabled.
+        return {
+          bypassPermissions,
+          permissionMode: "full" as PermissionMode,
+          confirmToolCalls: false,
+        };
       }
       const permissionMode = loadPermissionMode();
       return {
