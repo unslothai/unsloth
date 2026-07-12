@@ -430,6 +430,9 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
 # find/fd expressions group with (...) which resets command context, so scan
 # every token for these once find/fd is seen anywhere in the command.
 _AUTO_UNSAFE_FIND_LIKE_FLAGS = _AUTO_UNSAFE_COMMAND_FLAGS["find"] | _AUTO_UNSAFE_COMMAND_FLAGS["fd"]
+# Recursive readers: an absolute-path target escapes the session workdir and can
+# read host files (grep -R TOKEN /home, rg TOKEN /), so those ask.
+_AUTO_RECURSIVE_SEARCH = frozenset({"grep", "egrep", "fgrep", "rg", "ug", "find", "fd"})
 # Benign wrappers: they count as safe AND forward command position to their
 # target (which is then checked itself). sudo/su/chroot/etc. are deliberately
 # absent, so they classify as unsafe.
@@ -714,8 +717,12 @@ def _folded_path(node) -> "str | None":
         return left + "/" + right if isinstance(node.op, ast.Div) else left + right
     if isinstance(node, ast.Call):
         func = node.func
-        if (isinstance(func, ast.Attribute) and func.attr == "join") or (
-            isinstance(func, ast.Name) and func.id in ("Path", "PurePath", "PurePosixPath")
+        ctors = ("Path", "PurePath", "PurePosixPath")
+        # os.path.join / posixpath.join, or a bare/qualified pathlib constructor
+        # (Path(...) or pathlib.Path(...)).
+        if (
+            (isinstance(func, ast.Attribute) and func.attr in ("join", *ctors))
+            or (isinstance(func, ast.Name) and func.id in ctors)
         ):
             parts = [(_folded_path(a) or "\x00") for a in node.args]
             return "/".join(parts)
@@ -770,6 +777,12 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     # -x/--exec-batch).
     if any(os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in tokens):
         if any(t.split("=", 1)[0] in _AUTO_UNSAFE_FIND_LIKE_FLAGS for t in tokens):
+            return True
+    # A recursive search rooted at an absolute path reads host files outside the
+    # sandbox tree (grep -R TOKEN /home, rg TOKEN /); ask. A path-qualified
+    # command token starts with "/" too, but that already asks below.
+    if any(os.path.basename(t.strip(";&|()`{}")).lower() in _AUTO_RECURSIVE_SEARCH for t in tokens):
+        if any(t.startswith("/") for t in tokens):
             return True
     expect_command = True
     prefix_pending = False
@@ -862,9 +875,14 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             for alias in node.names:
                 if alias.name == "open":
                     open_aliases.add(alias.asname or "open")
-        elif isinstance(node, ast.Assign):
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
             value = node.value
-            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            # AnnAssign (f: object = open) has a single target, no destructuring.
+            if isinstance(node, ast.AnnAssign):
+                assign_targets = [node.target]
+            else:
+                assign_targets = node.targets
+            targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
             if isinstance(value, ast.Name) and value.id in open_aliases:
                 open_aliases.update(targets)
             elif (
@@ -884,7 +902,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 dynamic_aliases.update(targets)
             elif isinstance(value, (ast.Tuple, ast.List)):
                 # Destructuring: f, _ = (open, print) -> track f.
-                for target in node.targets:
+                for target in assign_targets:
                     if isinstance(target, (ast.Tuple, ast.List)) and len(target.elts) == len(
                         value.elts
                     ):

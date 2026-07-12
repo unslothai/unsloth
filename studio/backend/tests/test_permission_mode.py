@@ -123,6 +123,11 @@ def _clear_pending():
         ("cat /etc/pass\\wd", True),
         ("ls *.py", False),  # benign glob stays safe
         ("head data?.txt", False),
+        ("grep -R TOKEN /home", True),  # recursive search escapes the workdir
+        ("rg TOKEN /", True),
+        ("fd pattern /etc", True),
+        ("grep -r foo src/", False),  # sandbox-relative search stays safe
+        ("rg TOKEN .", False),
         ("cat logs/app.log", False),  # ordinary relative read
     ],
 )
@@ -200,6 +205,9 @@ def test_terminal_classifier(command, unsafe):
         ("name = 'passwd'\nopen(f'/etc/{name}').read()", True),  # dynamic /etc segment
         ("import os\nopen(os.path.join('/etc', name)).read()", True),  # composed dynamic seg
         ("open(f'/tmp/{name}.txt').read()", False),  # dynamic seg under /tmp stays safe
+        ("import pathlib\n(pathlib.Path('/etc') / name).read_text()", True),  # qualified pathlib
+        ("import pathlib\n(pathlib.Path('data') / name).read_text()", False),  # relative stays safe
+        ("f: object = open\nf('out', 'w').write('x')", True),  # annotated open alias
         ("import urllib3\nurllib3.PoolManager().request('GET', 'http://x')", True),  # network
         ("import dbm\ndbm.open('cache', 'c')", True),  # dbm create flag writes
         ("import dbm\ndbm.open('cache')", True),  # dbm import itself signals writes
