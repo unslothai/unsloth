@@ -142,14 +142,6 @@ function exportAllListsCsv(entries: PromptListEntry[]): void {
   downloadBlob(`list_name,order,prompt_text\n${rows}`, "prompt-lists.csv", "text/csv");
 }
 
-function exportCollectionJsonl(prompts: PromptEntry[], lists: PromptListEntry[]): void {
-  const lines = [
-    ...prompts.map((e) => JSON.stringify({ type: "prompt", name: e.name, text: e.text })),
-    ...lists.map((e) => JSON.stringify({ type: "prompt_list", name: e.name, items: e.items })),
-  ].join("\n");
-  downloadBlob(lines, "prompt-collection.jsonl", "application/x-ndjson");
-}
-
 function contentBlocksToText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return JSON.stringify(content);

@@ -60,18 +60,6 @@ const TTL_MAX = 20; // OpenAI hard cap on expires_after.minutes
 // minute without hammering /v1/containers.
 const REFRESH_POLL_MS = 30_000;
 
-function ageLabel(epochSeconds: number | null | undefined): string {
-  if (!epochSeconds) return "";
-  const ageSec = Math.max(0, Math.floor(Date.now() / 1000) - epochSeconds);
-  if (ageSec < 60) return `${ageSec}s ago`;
-  const ageMin = Math.floor(ageSec / 60);
-  if (ageMin < 60) return `${ageMin}m ago`;
-  const ageHr = Math.floor(ageMin / 60);
-  if (ageHr < 48) return `${ageHr}h ago`;
-  const ageDay = Math.floor(ageHr / 24);
-  return `${ageDay}d ago`;
-}
-
 function shortContainerId(id: string): string {
   // Mid-truncate keeps the "cntr_" prefix readable and still surfaces the
   // tail digits users sometimes copy off OpenAI's dashboard.
