@@ -599,6 +599,8 @@ def _check_font_name(value: str) -> str:
     if any(c in _FONT_NAME_FORBIDDEN or ord(c) < 0x20 for c in value):
         raise ValueError("Font name contains invalid characters.")
     return value
+
+
 # Matches FONT_DATA_URL_PATTERN in the frontend appearance-custom-store.
 _FONT_DATA_URL_PATTERN = re.compile(
     r"^data:(?:font/(?:woff2?|ttf|otf|sfnt)"
