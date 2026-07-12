@@ -3900,11 +3900,14 @@ const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
+  // hideWhenRunning is thread-level, so a new run would hide this bar and its
+  // only Stop reading control while read-aloud keeps playing; keep it shown.
+  const speaking = useAuiState(({ message }) => message.speech != null);
 
   return (
     <>
       <ActionBarPrimitive.Root
-        hideWhenRunning={true}
+        hideWhenRunning={!speaking}
         className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />

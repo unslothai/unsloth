@@ -296,13 +296,17 @@ function useDictation(
       setIsDictating(false);
     };
     recognition.onend = () => {
-      releaseStream();
-      recognitionRef.current = null;
+      // A stop()+immediate restart can install a new recognizer before this
+      // old one ends; only tear down shared refs when we are still current.
+      if (recognitionRef.current === recognition) {
+        releaseStream();
+        recognitionRef.current = null;
+        setIsDictating(false);
+      }
       if (sessionTranscript) {
         recordRecentDictation(sessionTranscript);
         sessionTranscript = "";
       }
-      setIsDictating(false);
     };
     try {
       if (audioTrack) {

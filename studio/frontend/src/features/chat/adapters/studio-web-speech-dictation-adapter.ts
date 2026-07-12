@@ -197,7 +197,14 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         const transcript = result[0]?.transcript ?? "";
         if (result.isFinal) {
           const corrected = applyDictationDictionary(transcript);
-          finalTranscript += corrected;
+          // Join final chunks with a single space so recorded transcripts do
+          // not merge words when a browser omits leading whitespace.
+          const trimmed = corrected.trim();
+          if (trimmed) {
+            finalTranscript = finalTranscript
+              ? `${finalTranscript} ${trimmed}`
+              : trimmed;
+          }
           for (const callback of speechCallbacks) {
             callback({ transcript: corrected, isFinal: true });
           }

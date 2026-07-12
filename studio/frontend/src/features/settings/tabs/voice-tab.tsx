@@ -411,7 +411,9 @@ export function VoiceTab() {
 
   const previewTts = async () => {
     if (!ttsSupported) return;
-    if (previewing) {
+    // Ref, not state: a double-click before rerender still reads previewing
+    // as false and would start a second request that orphans the first.
+    if (previewingRef.current) {
       stopPreview();
       return;
     }
@@ -568,6 +570,9 @@ export function VoiceTab() {
               variant="ghost"
               size="icon"
               className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
+              // Keep the click from blurring an empty input first, which would
+              // commit-splice this row and make onClick delete the next one.
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => removeDictionaryEntry(index)}
               aria-label={`Remove dictionary entry ${index + 1}`}
             >
