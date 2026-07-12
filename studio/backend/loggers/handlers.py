@@ -41,17 +41,6 @@ _QUIET_POLL_PATHS = {
     "/api/auth/status",
     "/api/inference/status",
     "/api/inference/monitor",
-    "/api/inference/load-progress",
-    # Hub download polls: fire ~2x/s for the whole download; keep a heartbeat.
-    "/api/hub/download-status",
-    "/api/hub/download-progress",
-    "/api/hub/gguf-download-progress",
-    "/api/hub/active-downloads",
-    "/api/hub/transport-status",
-    "/api/hub/datasets/download-status",
-    "/api/hub/datasets/download-progress",
-    "/api/hub/datasets/active-downloads",
-    "/api/hub/datasets/transport-status",
 }
 _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
@@ -74,17 +63,32 @@ _EXCLUDED_SUFFIXES = (
     ".woff2",
     ".ttf",
 )
-# Successful chat thread/project CRUD carries no signal beyond the generation,
-# tool-call, and engine-stats events. Suppress its 2xx access line; non-2xx
-# (errors) still log.
+# Paths whose 2xx access line carries no signal, so suppress it entirely; non-2xx
+# (errors) still log. Download/load polls fire ~2x/s but their progress is already
+# reported by the hub_download_progress / inference_load_progress events, and chat
+# thread/project CRUD is covered by the generation, tool-call, and stats events.
+_QUIET_SUCCESS_PATHS = {
+    "/api/inference/load-progress",
+    "/api/hub/download-status",
+    "/api/hub/download-progress",
+    "/api/hub/gguf-download-progress",
+    "/api/hub/active-downloads",
+    "/api/hub/transport-status",
+    "/api/hub/datasets/download-status",
+    "/api/hub/datasets/download-progress",
+    "/api/hub/datasets/active-downloads",
+    "/api/hub/datasets/transport-status",
+}
 _QUIET_SUCCESS_PREFIXES = (
     "/api/chat/threads",
     "/api/chat/projects",
 )
 
 
-def _is_chat_crud_noise(path: str, status_code: int) -> bool:
-    return 200 <= status_code < 300 and path.startswith(_QUIET_SUCCESS_PREFIXES)
+def _is_quiet_success(path: str, status_code: int) -> bool:
+    return 200 <= status_code < 300 and (
+        path in _QUIET_SUCCESS_PATHS or path.startswith(_QUIET_SUCCESS_PREFIXES)
+    )
 
 
 class LoggingMiddleware:
@@ -154,7 +158,7 @@ class LoggingMiddleware:
             end_time = time.perf_counter()
             if (
                 not excluded
-                and not _is_chat_crud_noise(path, status_code)
+                and not _is_quiet_success(path, status_code)
                 and not self._is_redundant_repeat(
                     scope["method"], path, scope.get("query_string", b""), status_code, end_time
                 )
