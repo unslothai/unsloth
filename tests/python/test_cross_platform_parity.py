@@ -585,9 +585,9 @@ class TestPinnedIndexClearsUvEnvParity:
         fi = text[text.find("function Fast-Install") :][:2500]
         assert "'PIP_EXTRA_INDEX_URL'" in fi and "'PIP_FIND_LINKS'" in fi
         # the pip fallback must sit INSIDE the try whose finally restores the vars
-        assert fi.find("python -m pip install") < fi.find("finally"), (
-            "pip fallback must run before the scrub is restored"
-        )
+        assert fi.find("python -m pip install") < fi.find(
+            "finally"
+        ), "pip fallback must run before the scrub is restored"
 
     def test_setup_ps1_stale_check_requires_rocm_digit(self):
         """The marker stale check must use the same rocm+digit gate as the
