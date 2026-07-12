@@ -2759,7 +2759,10 @@ class TestLatestTierForces16Bit:
         # The spawn-time export check is op-aware for installs (the install side
         # aborts on is_export_active) but always refuses for repairs, which have
         # no such abort and can be rebuilding the sidecar right now.
-        assert '_swap_kind == "repair" or (_swap_kind is not None and not self._export_active)' in spawn
+        assert (
+            '_swap_kind == "repair" or (_swap_kind is not None and not self._export_active)'
+            in spawn
+        )
 
 
 class TestSidecarSwapReservation:

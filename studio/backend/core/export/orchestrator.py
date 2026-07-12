@@ -438,7 +438,6 @@ class ExportOrchestrator:
 
                 if sidecar_swap_in_progress():
                     from utils.transformers_version import SidecarSwapInProgress
-
                     op_message = (
                         "A transformers installation is replacing the latest "
                         "sidecar; retry when it completes."
@@ -602,7 +601,6 @@ class ExportOrchestrator:
 
                 if sidecar_swap_in_progress():
                     from utils.transformers_version import SidecarSwapInProgress
-
                     op_message = (
                         "A transformers installation is replacing the latest "
                         "sidecar; retry when it completes."
