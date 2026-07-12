@@ -4612,22 +4612,6 @@ async def validate_model(
                 detail = "gpu_ids is not supported for GGUF models yet.",
             )
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
-        # Mirror /load's latest-sidecar 16-bit flip so the guard sizes it the same
-        # way; otherwise validation passes a load that /load then 409s.
-        if effective_load_in_4bit and not config.is_gguf:
-            from utils.transformers_version import latest_tier_active_for
-            if await asyncio.to_thread(latest_tier_active_for, config.identifier, request.hf_token):
-                effective_load_in_4bit = False
-        # Off-loop: guard does sync nvidia-smi / HF work.
-        await asyncio.to_thread(
-            _guard_chat_load_against_training,
-            config,
-            model_identifier = model_identifier,
-            hf_token = request.hf_token,
-            load_in_4bit = effective_load_in_4bit,
-            max_seq_length = request.max_seq_length,
-            requested_gpu_ids = effective_gpu_ids,
-        )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
         # either repo can ship auto_map code or a poisoned pickle.
@@ -4644,6 +4628,49 @@ async def validate_model(
         security_targets = list(dict.fromkeys(security_targets))
 
         is_gguf = getattr(config, "is_gguf", False)
+        # Does a newer transformers ship this model_type? Static overlay lookup first;
+        # only unknown types hit the cached PyPI/main snapshot. Never fails validation.
+        # Computed BEFORE the training guard: an installable upgrade sizes as 16-bit.
+        transformers_upgrade: Optional[TransformersUpgradeInfo] = None
+        if not is_gguf:
+            from utils.transformers_latest import check_upgrade_for_model
+
+            # Cover [adapter, base]: the worker activates transformers for the base model.
+            for _target in security_targets:
+                _upgrade = await asyncio.to_thread(
+                    check_upgrade_for_model, _target, request.hf_token
+                )
+                if _upgrade is not None:
+                    transformers_upgrade = TransformersUpgradeInfo(**_upgrade)
+                    break
+
+        # Mirror /load's latest-sidecar 16-bit flip so the guard sizes it the same
+        # way; otherwise validation passes a load that /load then 409s. An
+        # installable upgrade counts too: the sidecar is not pinned yet on a
+        # first-time load, but after the consent dialog installs it, /load and
+        # the worker force this same model to 16-bit.
+        if effective_load_in_4bit and not is_gguf:
+            from utils.transformers_version import latest_tier_active_for
+
+            if (
+                transformers_upgrade is not None
+                and transformers_upgrade.supported_in_pypi
+                and transformers_upgrade.pypi_version
+            ) or await asyncio.to_thread(
+                latest_tier_active_for, config.identifier, request.hf_token
+            ):
+                effective_load_in_4bit = False
+        # Off-loop: guard does sync nvidia-smi / HF work.
+        await asyncio.to_thread(
+            _guard_chat_load_against_training,
+            config,
+            model_identifier = model_identifier,
+            hf_token = request.hf_token,
+            load_in_4bit = effective_load_in_4bit,
+            max_seq_length = request.max_seq_length,
+            requested_gpu_ids = effective_gpu_ids,
+        )
+
         # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a
         # mixed repo are inert for this load, so gating on them is a false positive. Only
         # run the remote-code/security preflight for non-GGUF loads.
@@ -4657,20 +4684,6 @@ async def validate_model(
             requires_security_review = any(
                 _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
             )
-        # Does a newer transformers ship this model_type? Static overlay lookup first;
-        # only unknown types hit the cached PyPI/main snapshot. Never fails validation.
-        transformers_upgrade: Optional[TransformersUpgradeInfo] = None
-        if not is_gguf:
-            from utils.transformers_latest import check_upgrade_for_model
-
-            # Cover [adapter, base]: the worker activates transformers for the base model.
-            for _target in security_targets:
-                _upgrade = await asyncio.to_thread(
-                    check_upgrade_for_model, _target, request.hf_token
-                )
-                if _upgrade is not None:
-                    transformers_upgrade = TransformersUpgradeInfo(**_upgrade)
-                    break
         # Native context length, read from the local GGUF header when present.
         # Lets the staged ("Load on selection" off) flow populate the context
         # slider before the GPU load; None until the file is downloaded.
@@ -4773,44 +4786,51 @@ async def install_latest_transformers_route(
     this and every future start. A pip install runs off-loop, so this can take a minute.
     """
     from utils.transformers_latest import install_latest_transformers
-    from utils.transformers_version import latest_tier_active_for
 
     # The install stage-and-swaps .venv_t5_latest in place. A live worker with the
     # old sidecar on sys.path would lazy-import files from the NEW version mid-run
-    # (transformers is lazy-import heavy), mixing incompatible modules. Refuse
-    # while training runs on the latest tier; unload a latest-tier chat model
-    # (the consenting user is about to load a different model anyway).
+    # (transformers is lazy-import heavy), mixing incompatible modules. Gate on
+    # worker LIVENESS, not on the worker's tier: this route has no HF token, so
+    # tier re-resolution is unreliable for gated repos. Training and export are
+    # refused; the chat model is unloaded (this consent flow ends in loading a
+    # different model, which unloads it anyway).
+    from core.export import get_export_backend
     from core.training import get_training_backend
 
-    training = get_training_backend()
-    training_model = getattr(training, "model_name", None)
-    if (
-        training.is_training_active()
-        and training_model
-        and await asyncio.to_thread(latest_tier_active_for, str(training_model))
-    ):
+    if get_training_backend().is_training_active():
         raise HTTPException(
             status_code = 409,
             detail = (
-                "A training run is using the current latest-transformers sidecar. "
-                "Wait for it to finish before installing a new transformers version."
+                "A training run is active. Wait for it to finish before "
+                "installing a new transformers version."
+            ),
+        )
+    if get_export_backend().is_export_active():
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "An export is running. Wait for it to finish before "
+                "installing a new transformers version."
             ),
         )
 
-    backend = get_inference_backend()
-    active = getattr(backend, "active_model_name", None)
-    if active and await asyncio.to_thread(latest_tier_active_for, active):
-        from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
-        async with inference_lifecycle_gate():
-            await asyncio.to_thread(backend.unload_model)
-            note_model_unloaded()
-        logger.info(
-            "Unloaded latest-sidecar model '%s' before installing transformers %s",
-            active,
-            request.version,
-        )
+    # Hold the same lifecycle gate /load holds for its whole load, so no HF worker
+    # can start (or be mid-load with active_model_name unset) while the sidecar is
+    # swapped. GGUF stays loaded: llama-server never imports transformers.
+    from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
 
-    result = await asyncio.to_thread(install_latest_transformers, request.version)
+    async with inference_lifecycle_gate():
+        backend = get_inference_backend()
+        active = getattr(backend, "active_model_name", None)
+        if active:
+            await asyncio.to_thread(backend.unload_model, active)
+            note_model_unloaded()
+            logger.info(
+                "Unloaded '%s' before installing transformers %s",
+                active,
+                request.version,
+            )
+        result = await asyncio.to_thread(install_latest_transformers, request.version)
     if not result["success"]:
         raise HTTPException(status_code = 400, detail = result["message"])
     return InstallLatestTransformersResponse(**result)

@@ -2661,6 +2661,14 @@ class TestLatestTierForces16Bit:
             "validate_model must apply the latest-sidecar 16-bit flip before "
             "_guard_chat_load_against_training so /validate and /load agree."
         )
+        # First-time loads have no sidecar pin yet, so an installable upgrade must
+        # also size 16-bit: the upgrade check runs before the guard and feeds it.
+        assert body.index("check_upgrade_for_model") < body.index(
+            "_guard_chat_load_against_training"
+        ), "the upgrade check must run before the training guard"
+        assert "supported_in_pypi" in body.split("_guard_chat_load_against_training")[0], (
+            "an installable upgrade must force 16-bit sizing for the guard"
+        )
 
     def test_install_route_guards_active_latest_workers(self):
         # Stage-and-swap replaces .venv_t5_latest in place; a live worker with the
@@ -2669,10 +2677,19 @@ class TestLatestTierForces16Bit:
         body = src.split("async def install_latest_transformers_route", 1)[1].split(
             "\nasync def ", 1
         )[0]
-        assert "is_training_active" in body and "latest_tier_active_for" in body, (
-            "install_latest_transformers_route must refuse while training runs on "
-            "the latest sidecar and unload a latest-tier chat model before swapping."
+        assert (
+            "is_training_active" in body
+            and "is_export_active" in body
+            and "inference_lifecycle_gate" in body
+        ), (
+            "install_latest_transformers_route must refuse while training or export "
+            "runs, and hold the lifecycle gate while unloading the chat model and "
+            "swapping the sidecar."
         )
+        # The unload (by name) and install must happen INSIDE the gate so no /load
+        # can interleave with the swap.
+        gated = body.split("inference_lifecycle_gate():", 1)[1]
+        assert "unload_model, active" in gated and "install_latest_transformers," in gated
 
 
 class TestRaiseTierForNested:
