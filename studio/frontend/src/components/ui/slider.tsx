@@ -84,7 +84,7 @@ function Slider({
         <SliderPrimitive.Range
           data-slot="slider-range"
           className={cn(
-            "bg-control-accent absolute select-none data-horizontal:h-full data-vertical:w-full",
+            "bg-primary absolute select-none data-horizontal:h-full data-vertical:w-full",
             isSingleThumbHorizontal && "opacity-0",
           )}
         />
@@ -92,7 +92,7 @@ function Slider({
           <div
             aria-hidden={true}
             className={cn(
-              "absolute inset-y-0 left-0 bg-control-accent pointer-events-none",
+              "absolute inset-y-0 left-0 bg-primary pointer-events-none",
               fillPercent === 100 ? "rounded-4xl" : "rounded-l-4xl",
             )}
             style={{ width: fillWidth }}

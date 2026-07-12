@@ -1736,8 +1736,11 @@ html[data-chat-font] .aui-root {
 		--tw-ring-offset-shadow: 0 0 #0000 !important;
 	}
 
-	/* Set Hellix explicitly; .aui-thread-root resets --font-heading to sans. */
+	/* Keep the greeting on Hellix: the base h1 rule reads --font-heading
+	   with !important and .aui-thread-root resets that var to sans, so the
+	   stack is restored on the element itself. */
 	.unsloth-welcome-title {
+		--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
 		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans);
 		font-weight: 500;
 	}
