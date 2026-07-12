@@ -131,7 +131,7 @@ function SliderRow({
           min={min}
           max={max}
           step={step}
-          className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
+          className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
         />
       </div>
     </Row>
@@ -325,7 +325,7 @@ export function ParamsSection(): ReactElement {
                     min={1}
                     max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                     step={1}
-                    className="w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
+                    className="w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
                   />
                 </div>
               </div>
@@ -714,7 +714,7 @@ export function ParamsSection(): ReactElement {
                         onClick={() => store.setLoraVariant(opt.value)}
                         className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer ${
                           store.loraVariant === opt.value
-                            ? "border-primary/50 bg-primary/5 ring-1 ring-primary/20"
+                            ? "border-ring-strong bg-primary/5"
                             : "border-border hover:border-foreground/20"
                         }`}
                       >

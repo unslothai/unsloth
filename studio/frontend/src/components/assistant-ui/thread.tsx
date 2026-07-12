@@ -1217,7 +1217,7 @@ const ThreadComposerDock: FC<{
       <div
         aria-hidden={true}
         className={cn(
-          "absolute inset-x-0 bottom-0 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-[rgb(from_var(--background)_r_g_b/0)]",
+          "thread-bottom-fade absolute inset-x-0 bottom-0 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-[rgb(from_var(--background)_r_g_b/0)]",
           queueVisible
             ? "h-32 backdrop-blur-[1px] [mask-image:linear-gradient(to_top,black_0%,black_58%,transparent_100%)]"
             : "top-[10px]",
@@ -3286,7 +3286,7 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
                         cancelEditing();
                       }
                     }}
-                    className="max-h-20 min-h-8 min-w-0 resize-none rounded-md border border-border/45 bg-transparent px-2 py-1.5 text-sm leading-5 text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/35"
+                    className="max-h-20 min-h-8 min-w-0 resize-none rounded-md border border-border/45 bg-transparent px-2 py-1.5 text-sm leading-5 text-foreground outline-none transition-colors focus-visible:border-ring"
                     aria-label={`Edit queued prompt ${visiblePosition}`}
                   />
                   <Button
@@ -3640,7 +3640,7 @@ const AssistantMessage: FC = () => {
             <textarea
               ref={textareaRef}
               defaultValue={extractTaggedText(messageContent)}
-              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-2 focus:ring-primary outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70vh]"
+              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-1 focus:ring-ring outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70vh]"
               autoFocus
               onInput={adjustHeight}
               onKeyDown={(e) => {

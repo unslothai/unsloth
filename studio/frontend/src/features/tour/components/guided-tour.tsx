@@ -352,7 +352,7 @@ export function GuidedTour({
                       <div className="flex items-center gap-2">
                         <Button
                           variant="outline"
-                          className="border-black/10 bg-white/70 text-foreground hover:bg-white hover:text-foreground dark:border-white/15 dark:bg-white/[0.07] dark:text-zinc-100 dark:hover:bg-white/[0.12]"
+                          className="border-black/10 bg-white/70 text-foreground hover:bg-white hover:text-foreground dark:border-transparent dark:bg-white/[0.07] dark:text-zinc-100 dark:hover:bg-white/[0.12]"
                           disabled={idx === 0}
                           onClick={() => setIdx((i) => Math.max(0, i - 1))}
                         >

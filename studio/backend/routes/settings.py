@@ -619,6 +619,43 @@ class PersonalizationImportedFont(BaseModel):
         return value
 
 
+# Optional user-menu items; the boolean is each id's default visibility.
+# Settings-tab shortcuts ship hidden.
+SIDEBAR_MENU_ITEM_DEFAULTS = {
+    "api": True,
+    "darkMode": True,
+    "guidedTour": True,
+    "profile": False,
+    "appearance": False,
+    "resources": False,
+    "chat": False,
+    "connections": False,
+}
+
+
+class PersonalizationSidebarMenuItem(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    id: Literal[
+        "api",
+        "darkMode",
+        "guidedTour",
+        "profile",
+        "appearance",
+        "resources",
+        "chat",
+        "connections",
+    ]
+    visible: bool = True
+
+
+def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
+    return [
+        PersonalizationSidebarMenuItem(id = item_id, visible = visible)
+        for item_id, visible in SIDEBAR_MENU_ITEM_DEFAULTS.items()
+    ]
+
+
 class PersonalizationCustomization(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
@@ -646,6 +683,25 @@ class PersonalizationCustomization(BaseModel):
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
     fontSmoothing: bool = True
+    edgeFades: bool = True
+    sidebarMenu: list[PersonalizationSidebarMenuItem] = Field(
+        default_factory = _default_sidebar_menu,
+        max_length = len(SIDEBAR_MENU_ITEM_DEFAULTS),
+    )
+
+    @field_validator("sidebarMenu")
+    @classmethod
+    def _validate_sidebar_menu(
+        cls, value: list[PersonalizationSidebarMenuItem]
+    ) -> list[PersonalizationSidebarMenuItem]:
+        # Drop duplicate ids (keep the first) and re-append any missing ids so
+        # the stored list always covers every optional menu item exactly once.
+        seen: set[str] = set()
+        items = [item for item in value if not (item.id in seen or seen.add(item.id))]
+        for item_id, visible in SIDEBAR_MENU_ITEM_DEFAULTS.items():
+            if item_id not in seen:
+                items.append(PersonalizationSidebarMenuItem(id = item_id, visible = visible))
+        return items
 
 
 class PersonalizationAppearance(BaseModel):

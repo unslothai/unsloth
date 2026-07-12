@@ -10,6 +10,7 @@ import {
   CodeFontRow,
   CodeFontSizeRow,
   ContrastSliderRow,
+  EdgeFadesSwitch,
   FontSmoothingSwitch,
   HeadingFontRow,
   ImportFontControls,
@@ -21,6 +22,7 @@ import {
 } from "../components/appearance-custom-controls";
 import { PaletteCards } from "../components/palette-cards";
 import { SettingsRow } from "../components/settings-row";
+import { SidebarMenuCustomizer } from "../components/sidebar-menu-customizer";
 import { SettingsSection } from "../components/settings-section";
 import { ThemeSegmented } from "../components/theme-segmented";
 import { useTheme } from "../stores/theme-store";
@@ -156,6 +158,12 @@ export function AppearanceTab() {
           <FontSmoothingSwitch />
         </SettingsRow>
         <SettingsRow
+          label={t("settings.appearance.custom.edgeFades.label")}
+          description={t("settings.appearance.custom.edgeFades.description")}
+        >
+          <EdgeFadesSwitch />
+        </SettingsRow>
+        <SettingsRow
           label={t("settings.appearance.layout.compactSidebar")}
           description={t(
             "settings.appearance.layout.compactSidebarDescription",
@@ -163,6 +171,15 @@ export function AppearanceTab() {
         >
           <Switch checked={pinned} onCheckedChange={setPinned} />
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
+        title={t("settings.appearance.sidebarMenu.title")}
+        description={t("settings.appearance.sidebarMenu.description")}
+      >
+        <div className="pt-3">
+          <SidebarMenuCustomizer />
+        </div>
       </SettingsSection>
 
       <div className="flex justify-end border-t border-border/60 pt-4">

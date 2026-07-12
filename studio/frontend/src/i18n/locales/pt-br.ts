@@ -199,6 +199,8 @@ export const ptBR = {
       greetingSloth: "Preguiça na saudação",
       greetingSlothDescription: "Mostra a preguiça na saudação do chat.",
       chooseSloth: "Ou escolha uma preguiça como foto de perfil",
+      noPicture: "Sem foto de perfil",
+      noneLabel: "Nenhuma",
       nameSaved: "Nome de perfil salvo",
       namePersistErrorTitle: "Não foi possível persistir o nome de perfil",
       namePersistErrorDescription:
@@ -294,6 +296,10 @@ export const ptBR = {
           label: "Suavização de fonte",
           description: "Usar anti-aliasing suavizado nas fontes.",
         },
+        edgeFades: {
+          label: "Esmaecimento nas bordas",
+          description: "Esmaece o conteúdo nas bordas dos painéis. Desligado mostra uma linha divisória fina.",
+        },
         contrast: {
           label: "Contraste",
           description: "Intensidade das bordas e do texto secundário.",
@@ -321,6 +327,13 @@ export const ptBR = {
         compactSidebar: "Fixar barra lateral por padrão",
         compactSidebarDescription:
           "Mantém a barra lateral expandida em vez de recolhê-la em ícones.",
+      },
+      sidebarMenu: {
+        title: "Menu da barra lateral",
+        description:
+          "Mostre, oculte e reordene os itens do menu de perfil da barra lateral. Configurações, Ajuda, Sair e Desligar permanecem fixos.",
+        darkModeToggle: "Alternador de modo escuro",
+        dragToReorder: "Arraste para reordenar",
       },
     },
     resources: {

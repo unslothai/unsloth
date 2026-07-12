@@ -202,6 +202,8 @@ export const ja = {
       greetingSloth: "挨拶にナマケモノを表示",
       greetingSlothDescription: "チャットの挨拶にナマケモノを表示します。",
       chooseSloth: "またはナマケモノのプロフィール画像を選択",
+      noPicture: "プロフィール画像なし",
+      noneLabel: "なし",
       nameSaved: "プロフィール名を保存しました",
       namePersistErrorTitle: "プロフィール名を永続化できませんでした",
       namePersistErrorDescription: "名前はこのセッション用に更新されましたが、再読み込み後に保持されない可能性があります。",
@@ -294,6 +296,10 @@ export const ja = {
           label: "フォントスムージング",
           description: "滑らかなアンチエイリアスを使用します。",
         },
+        edgeFades: {
+          label: "エッジのフェード",
+          description: "パネル端でコンテンツをフェードします。オフにすると細い区切り線を表示します。",
+        },
         contrast: {
           label: "コントラスト",
           description: "枠線と補助テキストの強さ。",
@@ -320,6 +326,13 @@ export const ja = {
         title: "レイアウト",
         compactSidebar: "デフォルトでサイドバーを固定",
         compactSidebarDescription: "サイドバーをアイコンに折りたたまず、展開したままにします。",
+      },
+      sidebarMenu: {
+        title: "サイドバーメニュー",
+        description:
+          "サイドバーのプロフィールメニュー項目の表示と並び順を変更します。設定、ヘルプ、ログアウト、シャットダウンは固定です。",
+        darkModeToggle: "ダークモード切り替え",
+        dragToReorder: "ドラッグして並べ替え",
       },
     },
     chat: {

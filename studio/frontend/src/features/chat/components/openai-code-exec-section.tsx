@@ -509,7 +509,7 @@ export function OpenAICodeExecSection({
                   key={c.id}
                   className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs transition-colors ${
                     isActive
-                      ? "border-primary/30 bg-primary/5"
+                      ? "border-ring-strong bg-primary/5"
                       : "border-border/60 hover:bg-muted/40"
                   } ${canActivate ? "cursor-pointer" : ""} ${
                     running ? "" : "opacity-60"

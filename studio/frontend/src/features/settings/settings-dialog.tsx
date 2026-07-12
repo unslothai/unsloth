@@ -24,7 +24,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { SETTINGS_SEARCH_INDEX } from "./settings-search";
 import {
   type SettingsTab,
@@ -108,6 +108,10 @@ export function SettingsDialog() {
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
   const opener = useSettingsDialogStore((s) => s.opener);
   const reduced = useReducedMotion();
+  // Mounting a heavy tab panel (System, Connections) in the same commit as
+  // the nav highlight makes the highlight lag the click. Render the panel
+  // from a deferred value so the nav updates first.
+  const panelTab = useDeferredValue(activeTab);
   const [query, setQuery] = useState("");
 
   const results = useMemo(() => {
@@ -233,7 +237,7 @@ export function SettingsDialog() {
                   }}
                   placeholder={t("settings.dialog.searchPlaceholder")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
-                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:border-white/10 dark:bg-white/[0.06]"
+                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06]"
                 />
                 {query && (
                   <button
@@ -309,10 +313,12 @@ export function SettingsDialog() {
                       className={cn(
                         "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium transition-colors",
                         "max-sm:shrink-0",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+                        "focus-visible:outline-none",
+                        // The active pill already marks the current tab, so
+                        // only unselected items get a keyboard focus ring.
                         active
                           ? "text-accent-foreground"
-                          : "text-[#383835] dark:text-[#c7c7c4] hover:bg-accent hover:text-accent-foreground",
+                          : "text-[#383835] dark:text-[#c7c7c4] hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring",
                       )}
                     >
                       {active && (
@@ -354,7 +360,7 @@ export function SettingsDialog() {
               <button
                 type="button"
                 onClick={closeDialog}
-                className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 aria-label={t("settings.dialog.closeAriaLabel")}
               >
                 <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
@@ -363,7 +369,7 @@ export function SettingsDialog() {
                 ref={mainScrollRef}
                 className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
               >
-                {renderTab(activeTab)}
+                {renderTab(panelTab)}
               </div>
             </main>
           </div>

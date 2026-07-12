@@ -52,11 +52,22 @@ def test_customization_defaults():
     assert c.contrast == 50
     assert c.reduceMotion == "system"
     assert c.fontSmoothing is True
+    assert c.edgeFades is True
     assert c.pointerCursors is False
     assert c.colors.light.accent is None
     assert c.headingFont is None
     assert c.chatFont is None
     assert c.uiFontSize is None
+    assert [(i.id, i.visible) for i in c.sidebarMenu] == [
+        ("api", True),
+        ("darkMode", True),
+        ("guidedTour", True),
+        ("profile", False),
+        ("appearance", False),
+        ("resources", False),
+        ("chat", False),
+        ("connections", False),
+    ]
 
 
 def test_customization_invalid_values_rejected():
@@ -72,6 +83,38 @@ def test_customization_invalid_values_rejected():
         PersonalizationPayload.model_validate(
             {"appearance": {"customization": {"reduceMotion": "sometimes"}}}
         )
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            {"appearance": {"customization": {"sidebarMenu": [{"id": "chats"}]}}}
+        )
+
+
+def test_customization_sidebar_menu_normalized():
+    p = PersonalizationPayload.model_validate(
+        {
+            "appearance": {
+                "customization": {
+                    "sidebarMenu": [
+                        {"id": "guidedTour", "visible": False},
+                        {"id": "guidedTour", "visible": True},
+                        {"id": "api"},
+                    ]
+                }
+            }
+        }
+    )
+    # Duplicates keep the first entry; missing ids are appended with their
+    # default visibility.
+    assert [(i.id, i.visible) for i in p.appearance.customization.sidebarMenu] == [
+        ("guidedTour", False),
+        ("api", True),
+        ("darkMode", True),
+        ("profile", False),
+        ("appearance", False),
+        ("resources", False),
+        ("chat", False),
+        ("connections", False),
+    ]
 
 
 def test_customization_imported_fonts_validated():
@@ -264,6 +307,17 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                 "pointerCursors": True,
                 "reduceMotion": "off",
                 "fontSmoothing": True,
+                "edgeFades": False,
+                "sidebarMenu": [
+                    {"id": "darkMode", "visible": True},
+                    {"id": "api", "visible": False},
+                    {"id": "guidedTour", "visible": True},
+                    {"id": "profile", "visible": True},
+                    {"id": "appearance", "visible": False},
+                    {"id": "resources", "visible": False},
+                    {"id": "chat", "visible": False},
+                    {"id": "connections", "visible": False},
+                ],
             },
         },
     }

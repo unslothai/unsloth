@@ -20,6 +20,41 @@ export type ImportedFont = {
   dataUrl: string;
 };
 
+/**
+ * Optional entries of the sidebar profile menu. Settings, Help, Log out, and
+ * Shutdown are pinned and never appear here. The settings-tab shortcuts ship
+ * hidden; General and About are covered by the pinned Settings and Help.
+ */
+export const SIDEBAR_MENU_ITEM_IDS = [
+  "api",
+  "darkMode",
+  "guidedTour",
+  "profile",
+  "appearance",
+  "resources",
+  "chat",
+  "connections",
+] as const;
+
+export type SidebarMenuItemId = (typeof SIDEBAR_MENU_ITEM_IDS)[number];
+
+export type SidebarMenuItemPref = {
+  id: SidebarMenuItemId;
+  visible: boolean;
+};
+
+export const SIDEBAR_MENU_DEFAULT_VISIBLE: Record<SidebarMenuItemId, boolean> =
+  {
+    api: true,
+    darkMode: true,
+    guidedTour: true,
+    profile: false,
+    appearance: false,
+    resources: false,
+    chat: false,
+    connections: false,
+  };
+
 export const MAX_IMPORTED_FONTS = 3;
 /** ~1.5 MB file → ~2 MB base64; must stay in sync with the backend cap. */
 export const MAX_IMPORTED_FONT_DATA_URL_LENGTH = 2_200_000;
@@ -47,6 +82,10 @@ export type AppearanceCustomization = {
   reduceMotion: ReduceMotionSetting;
   /** true = the app default (antialiased). */
   fontSmoothing: boolean;
+  /** true = content dissolves at panel edges; false = thin divider lines. */
+  edgeFades: boolean;
+  /** Order and visibility of the optional sidebar profile menu items. */
+  sidebarMenu: SidebarMenuItemPref[];
 };
 
 const EMPTY_MODE_COLORS: CustomModeColors = {
@@ -68,6 +107,11 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   pointerCursors: false,
   reduceMotion: "system",
   fontSmoothing: true,
+  edgeFades: true,
+  sidebarMenu: SIDEBAR_MENU_ITEM_IDS.map((id) => ({
+    id,
+    visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id],
+  })),
 };
 
 export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 16 } as const;
@@ -144,6 +188,28 @@ function sanitizeImportedFonts(value: unknown): ImportedFont[] {
   return fonts;
 }
 
+function isSidebarMenuItemId(value: unknown): value is SidebarMenuItemId {
+  return SIDEBAR_MENU_ITEM_IDS.includes(value as SidebarMenuItemId);
+}
+
+function sanitizeSidebarMenu(value: unknown): SidebarMenuItemPref[] {
+  const items: SidebarMenuItemPref[] = [];
+  const seen = new Set<SidebarMenuItemId>();
+  for (const entry of Array.isArray(value) ? value : []) {
+    const source = (entry ?? {}) as Partial<SidebarMenuItemPref>;
+    if (!isSidebarMenuItemId(source.id) || seen.has(source.id)) continue;
+    seen.add(source.id);
+    items.push({ id: source.id, visible: source.visible !== false });
+  }
+  // Ids added after the payload was written land at the end with their
+  // default visibility.
+  for (const id of SIDEBAR_MENU_ITEM_IDS) {
+    if (!seen.has(id))
+      items.push({ id, visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id] });
+  }
+  return items;
+}
+
 /**
  * Coerce arbitrary (persisted/remote) data into a valid customization object.
  * Anything malformed falls back to the default for that field, so a bad
@@ -176,6 +242,8 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
         ? source.reduceMotion
         : "system",
     fontSmoothing: source.fontSmoothing !== false,
+    edgeFades: source.edgeFades !== false,
+    sidebarMenu: sanitizeSidebarMenu(source.sidebarMenu),
   };
 }
 
@@ -427,4 +495,7 @@ export function applyCustomizationToDocument(
   // the media rules in index.css skip html.force-motion.
   el.classList.toggle("force-motion", c.reduceMotion === "off");
   el.classList.toggle("no-font-smoothing", !c.fontSmoothing);
+  // Off swaps the scroll-edge dissolves for thin divider lines (index.css
+  // and hub.css key their fade rules off this class).
+  el.classList.toggle("no-edge-fades", !c.edgeFades);
 }

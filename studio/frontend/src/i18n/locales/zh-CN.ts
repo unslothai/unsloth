@@ -172,6 +172,8 @@ export const zhCN = {
       greetingSloth: "问候语中显示树懒",
       greetingSlothDescription: "在对话问候语中显示树懒。",
       chooseSloth: "或选择一只树懒作为头像",
+      noPicture: "无头像",
+      noneLabel: "无",
       nameSaved: "个人资料名称已保存",
       namePersistErrorTitle: "无法持久保存个人资料名称",
       namePersistErrorDescription:
@@ -270,6 +272,10 @@ export const zhCN = {
           label: "字体平滑",
           description: "使用平滑的字体抗锯齿。",
         },
+        edgeFades: {
+          label: "边缘淡出",
+          description: "在面板边缘淡出内容。关闭后显示细分隔线。",
+        },
         contrast: {
           label: "对比度",
           description: "边框和次要文本的强度。",
@@ -290,6 +296,13 @@ export const zhCN = {
         title: "布局",
         compactSidebar: "默认固定侧边栏",
         compactSidebarDescription: "保持侧边栏展开，而不是折叠为图标。",
+      },
+      sidebarMenu: {
+        title: "侧边栏菜单",
+        description:
+          "显示、隐藏和重新排序侧边栏个人菜单中的项目。设置、帮助、退出登录和关闭保持固定。",
+        darkModeToggle: "深色模式切换",
+        dragToReorder: "拖动以重新排序",
       },
     },
     chat: {

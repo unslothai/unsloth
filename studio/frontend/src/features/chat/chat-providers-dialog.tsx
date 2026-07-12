@@ -1137,7 +1137,7 @@ export function ChatProvidersSettings({
                     <button
                       type="button"
                       onClick={() => setShowApiKey((visible) => !visible)}
-                      className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={showApiKey ? "Hide API key" : "Show API key"}
                       aria-pressed={showApiKey}
                     >
@@ -1567,7 +1567,7 @@ export function ChatProvidersSettings({
           <button
             type="button"
             onClick={openAddProvider}
-            className="group/add flex w-full items-center justify-between gap-3 border-border/60 border-b px-3 py-2.5 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-control-accent/25 focus-visible:ring-inset"
+            className="group/add flex w-full items-center justify-between gap-3 border-border/60 border-b px-3 py-2.5 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
           >
             <span className="flex min-w-0 items-center gap-2 rounded-full border border-border bg-background/50 px-3 py-1.5 transition-colors group-hover/add:border-control-accent/25 group-hover/add:text-control-accent">
               <HugeiconsIcon icon={PlusSignIcon} className="size-4 shrink-0" />

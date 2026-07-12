@@ -10,7 +10,7 @@ import { getAuthToken } from "@/features/auth";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
 import { toastError, toastSuccess } from "@/shared/toast";
-import { Camera01Icon } from "@hugeicons/core-free-icons";
+import { Edit03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SLOTH_AVATARS } from "../sloth-avatars";
@@ -133,7 +133,7 @@ export function ProfilePersonalizationPanel() {
     }
   };
 
-  const applyAvatar = (value: string) => {
+  const applyAvatar = (value: string | null) => {
     setAvatarDataUrl(value);
     const persisted = readPersistedProfile();
     if (persisted && persisted.avatarDataUrl === value) {
@@ -159,9 +159,29 @@ export function ProfilePersonalizationPanel() {
     }
   };
 
-  const pickSloth = (path: string) => {
+  // The avatar is shown all over the app (sidebar, chat messages, greeting),
+  // so writing it to the store can trigger a wide re-render. Mark the picked
+  // value locally first so its ring moves this frame, then commit the store
+  // write on the next frame. Boxed because null is a valid pick (no picture).
+  const [pendingAvatar, setPendingAvatar] = useState<{
+    value: string | null;
+  } | null>(null);
+  const shownAvatar = pendingAvatar ? pendingAvatar.value : avatarDataUrl;
+
+  useEffect(() => {
+    if (pendingAvatar && avatarDataUrl === pendingAvatar.value) {
+      setPendingAvatar(null);
+    }
+  }, [avatarDataUrl, pendingAvatar]);
+
+  const pickAvatarValue = (value: string | null) => {
     setImageError(null);
-    applyAvatar(publicAssetUrl(path));
+    setPendingAvatar({ value });
+    requestAnimationFrame(() => applyAvatar(value));
+  };
+
+  const pickSloth = (path: string) => {
+    pickAvatarValue(publicAssetUrl(path));
   };
 
   return (
@@ -169,7 +189,7 @@ export function ProfilePersonalizationPanel() {
       <div className="relative">
         <UserAvatar
           name={previewName}
-          imageUrl={avatarDataUrl}
+          imageUrl={shownAvatar}
           size="lg"
           className="size-[124px] text-[3.15rem]"
         />
@@ -186,10 +206,10 @@ export function ProfilePersonalizationPanel() {
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="absolute right-0 bottom-0 -translate-x-[15.625%] -translate-y-[15.625%] flex size-8 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          className="absolute right-0 bottom-0 -translate-x-[15.625%] -translate-y-[15.625%] flex size-8 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           aria-label={t("settings.profile.changePicture")}
         >
-          <HugeiconsIcon icon={Camera01Icon} className="size-3.5" strokeWidth={2} />
+          <HugeiconsIcon icon={Edit03Icon} className="size-3.5" strokeWidth={2} />
         </button>
       </div>
 
@@ -300,9 +320,24 @@ export function ProfilePersonalizationPanel() {
           {t("settings.profile.chooseSloth")}
         </Label>
         <div className="grid grid-cols-7 gap-2 sm:grid-cols-9">
+          <button
+            type="button"
+            onClick={() => pickAvatarValue(null)}
+            aria-pressed={shownAvatar === null}
+            aria-label={t("settings.profile.noPicture")}
+            title={t("settings.profile.noPicture")}
+            className={cn(
+              "relative flex aspect-square items-center justify-center overflow-hidden rounded-full bg-muted text-muted-foreground ring-1 ring-border hover:ring-ring focus-visible:outline-none",
+              shownAvatar === null && "ring-ring-strong hover:ring-ring-strong",
+            )}
+          >
+            <span className="text-[11px] font-medium">
+              {t("settings.profile.noneLabel")}
+            </span>
+          </button>
           {SLOTH_AVATARS.map((path) => {
             const url = publicAssetUrl(path);
-            const selected = avatarDataUrl === url;
+            const selected = shownAvatar === url;
             const label =
               path.split("/").pop()?.replace(/\.png$/i, "").replace(/^large\s+/i, "").trim() ??
               "sloth";
@@ -315,8 +350,11 @@ export function ProfilePersonalizationPanel() {
                 aria-label={label}
                 title={label}
                 className={cn(
-                  "relative aspect-square overflow-hidden rounded-full bg-muted ring-1 ring-border transition hover:ring-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  selected && "ring-2 ring-primary",
+                  // No transition here: animating the ring makes the old
+                  // icon's selection border linger when switching sloths.
+                  "relative aspect-square overflow-hidden rounded-full bg-muted ring-1 ring-border hover:ring-ring focus-visible:outline-none",
+                  // Selection keeps the 1px weight, only darker.
+                  selected && "ring-ring-strong hover:ring-ring-strong",
                 )}
               >
                 <img src={url} alt="" loading="lazy" className="size-full object-cover" />

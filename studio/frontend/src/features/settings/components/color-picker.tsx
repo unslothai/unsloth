@@ -229,7 +229,7 @@ export function ColorPickerSwatch({
               }}
               aria-label={t("settings.appearance.custom.colorPicker.hex")}
               spellCheck={false}
-              className="h-8 w-full min-w-0 rounded-full border border-border bg-background px-3 font-mono text-xs text-foreground uppercase outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 dark:border-white/10 dark:bg-white/[0.06]"
+              className="h-8 w-full min-w-0 rounded-full border border-border bg-background px-3 font-mono text-xs text-foreground uppercase outline-none focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06]"
             />
             {eyeDropperCtor && (
               <button

@@ -52,11 +52,11 @@ function resolveTheme(theme: Theme): ResolvedTheme {
 
 function applyToDocument(resolved: ResolvedTheme) {
   if (typeof document === "undefined") return;
-  // Keep "dark"/"light" mutually exclusive: next-themes (via Sonner) adds
-  // "light" on first mount, so without this toggle we'd get "light dark".
-  const cl = document.documentElement.classList;
-  cl.toggle("dark", resolved === "dark");
-  cl.toggle("light", resolved === "light");
+  const el = document.documentElement;
+  el.classList.toggle("dark", resolved === "dark");
+  el.classList.toggle("light", resolved === "light");
+  // Native controls (scrollbars, spinners, pickers) follow the app mode.
+  el.style.colorScheme = resolved;
 }
 
 function applyPaletteToDocument(palette: Palette) {
@@ -84,10 +84,7 @@ function subscribe(cb: () => void) {
     cb();
   };
   // Apply on mount so this store is the single source of truth for the DOM
-  // class. Without this, initial paint depends solely on next-themes, which on
-  // a fresh origin (e.g. a new Cloudflare --secure link with empty
-  // localStorage) falls back to its own default and shows light while the
-  // control still reads "system".
+  // class after the index.html bootstrap script painted the first frame.
   applyToDocument(resolveTheme(readStoredTheme()));
   applyPaletteToDocument(readStoredPalette());
   const onStorage = (e: StorageEvent) => {
@@ -133,8 +130,7 @@ function getResolvedServerSnapshot(): ResolvedTheme {
  */
 export function setTheme(next: Theme): void {
   if (typeof window === "undefined") return;
-  // Persist "system" explicitly so next-themes doesn't clobber the choice on
-  // reload.
+  // Persist "system" explicitly so a reload keeps following the OS.
   try {
     window.localStorage.setItem(STORAGE_KEY, next);
   } catch {

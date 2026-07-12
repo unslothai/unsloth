@@ -402,7 +402,7 @@ function LiveGpuPanel({
             <select
               value={selectedGpu}
               onChange={(e) => setSelectedGpu(Number(e.target.value))}
-              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-[11px] text-popover-foreground outline-none hover:bg-muted focus:border-primary transition-colors font-medium appearance-none"
+              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-[11px] text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none"
               title="Select GPU"
             >
               {gpus.map((device, index) => (

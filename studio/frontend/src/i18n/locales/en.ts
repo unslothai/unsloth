@@ -247,6 +247,8 @@ export const en = {
       greetingSloth: "Sloth in greeting",
       greetingSlothDescription: "Show the sloth in the chat greeting.",
       chooseSloth: "Or pick a sloth profile picture",
+      noPicture: "No profile picture",
+      noneLabel: "None",
       nameSaved: "Profile name saved",
       namePersistErrorTitle: "Could not persist profile name",
       namePersistErrorDescription:
@@ -341,6 +343,11 @@ export const en = {
           label: "Font smoothing",
           description: "Use smoothed font anti-aliasing.",
         },
+        edgeFades: {
+          label: "Edge fades",
+          description:
+            "Fade content at panel edges. Off shows a thin divider line instead.",
+        },
         contrast: {
           label: "Contrast",
           description: "Strength of borders and secondary text.",
@@ -368,6 +375,13 @@ export const en = {
         compactSidebar: "Pin sidebar by default",
         compactSidebarDescription:
           "Keep the sidebar expanded instead of collapsing to icons.",
+      },
+      sidebarMenu: {
+        title: "Sidebar menu",
+        description:
+          "Show, hide, and reorder items in the sidebar profile menu. Settings, Help, Log out, and Shutdown stay fixed.",
+        darkModeToggle: "Dark mode toggle",
+        dragToReorder: "Drag to reorder",
       },
     },
     resources: {

@@ -113,6 +113,14 @@ export function ActiveColorControl({
 
 /* ------------------------------ Typography ------------------------------ */
 
+/** Font each slot resolves to when no override is set (see index.css). */
+const DEFAULT_FONT_NAMES = {
+  ui: "Inter Variable",
+  heading: "Hellix",
+  chat: "Inter Variable",
+  code: "JetBrains Mono",
+} as const;
+
 /** Fonts Unsloth Studio already ships (bundled @font-face / fontsource). */
 const BUNDLED_FONTS = [
   "Inter Variable",
@@ -234,14 +242,17 @@ async function loadDeviceFonts(): Promise<string[]> {
 
 function FontSelect({
   value,
+  defaultFont,
   onCommit,
   ariaLabel,
 }: {
   value: string | null;
+  defaultFont: string;
   onCommit: (next: string | null) => void;
   ariaLabel: string;
 }) {
   const t = useT();
+  const defaultLabel = `${defaultFont} (${t("settings.appearance.custom.fontDefault")})`;
   const [open, setOpen] = useState(false);
   const [deviceFonts, setDeviceFonts] = useState<string[] | null>(
     deviceFontsCache,
@@ -289,11 +300,9 @@ function FontSelect({
           type="button"
           aria-label={ariaLabel}
           aria-expanded={open}
-          className="flex h-8 w-56 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-xs outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:border-white/10 dark:bg-white/[0.06] dark:hover:bg-white/10"
+          className="flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-xs outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
         >
-          <span className="min-w-0 truncate">
-            {value ?? t("settings.appearance.custom.fontDefault")}
-          </span>
+          <span className="min-w-0 truncate">{value ?? defaultLabel}</span>
           <HugeiconsIcon
             icon={ChevronDownStandardIcon}
             strokeWidth={2}
@@ -314,12 +323,12 @@ function FontSelect({
               {t("settings.appearance.custom.fontNoResults")}
             </CommandEmpty>
             <CommandItem
-              value={t("settings.appearance.custom.fontDefault")}
+              value={defaultLabel}
               onSelect={() => select(null)}
               data-checked={value === null}
               className="cursor-pointer rounded-[11px]"
             >
-              <span>{t("settings.appearance.custom.fontDefault")}</span>
+              <span>{defaultLabel}</span>
             </CommandItem>
             <CommandGroup
               className="p-0"
@@ -361,6 +370,7 @@ export function UiFontRow() {
   return (
     <FontSelect
       value={uiFont}
+      defaultFont={DEFAULT_FONT_NAMES.ui}
       onCommit={(next) => patch({ uiFont: next })}
       ariaLabel={t("settings.appearance.custom.uiFont.label")}
     />
@@ -376,6 +386,7 @@ export function HeadingFontRow() {
   return (
     <FontSelect
       value={headingFont}
+      defaultFont={DEFAULT_FONT_NAMES.heading}
       onCommit={(next) => patch({ headingFont: next })}
       ariaLabel={t("settings.appearance.custom.headingFont.label")}
     />
@@ -389,6 +400,7 @@ export function ChatFontRow() {
   return (
     <FontSelect
       value={chatFont}
+      defaultFont={DEFAULT_FONT_NAMES.chat}
       onCommit={(next) => patch({ chatFont: next })}
       ariaLabel={t("settings.appearance.custom.chatFont.label")}
     />
@@ -402,6 +414,7 @@ export function CodeFontRow() {
   return (
     <FontSelect
       value={codeFont}
+      defaultFont={DEFAULT_FONT_NAMES.code}
       onCommit={(next) => patch({ codeFont: next })}
       ariaLabel={t("settings.appearance.custom.codeFont.label")}
     />
@@ -639,6 +652,17 @@ export function CodeFontSizeRow() {
       range={CODE_FONT_SIZE_RANGE}
       onCommit={(next) => patch({ codeFontSize: next })}
       ariaLabel={t("settings.appearance.custom.codeFontSize.label")}
+    />
+  );
+}
+
+export function EdgeFadesSwitch() {
+  const edgeFades = useAppearanceCustomStore((s) => s.customization.edgeFades);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  return (
+    <Switch
+      checked={edgeFades}
+      onCheckedChange={(checked) => patch({ edgeFades: checked })}
     />
   );
 }

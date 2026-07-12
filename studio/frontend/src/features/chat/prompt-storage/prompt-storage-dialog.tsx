@@ -1117,7 +1117,7 @@ function ExportModal({
                 className={cn(
                   "flex w-full cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 transition-all",
                   scope === "single"
-                    ? "border-primary/40 bg-primary/5 ring-1 ring-primary/20"
+                    ? "border-ring-strong bg-primary/5"
                     : "border-border/60 hover:border-border hover:bg-muted/30",
                 )}
               >
@@ -1140,7 +1140,7 @@ function ExportModal({
                 className={cn(
                   "flex w-full cursor-pointer items-start gap-3 rounded-lg border px-4 py-3 transition-all",
                   scope === "training"
-                    ? "border-primary/40 bg-primary/5 ring-1 ring-primary/20"
+                    ? "border-ring-strong bg-primary/5"
                     : "border-border/60 hover:border-border hover:bg-muted/30",
                 )}
               >
@@ -1262,14 +1262,14 @@ function PromptCard({
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Prompt name..."
-          className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow"
+          className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
         />
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
           rows={4}
           placeholder="Prompt text..."
-          className="w-full resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow leading-relaxed"
+          className="w-full resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
         />
         <div className="flex gap-2 justify-end">
           <Button size="sm" variant="ghost" onClick={() => { setName(entry.name); setText(entry.text); setEditing(false); }}>
@@ -1373,14 +1373,14 @@ function NewPromptForm({ onClose, onRefresh }: { onClose: () => void; onRefresh:
         onChange={(e) => setName(e.target.value)}
         placeholder="Prompt name (optional)..."
         autoFocus
-        className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow"
+        className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
         rows={4}
         placeholder="Write your prompt here..."
-        className="w-full resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow leading-relaxed"
+        className="w-full resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
       />
       <div className="flex gap-2 justify-end">
         <Button size="sm" variant="ghost" onClick={onClose}>
@@ -1440,7 +1440,7 @@ function PromptListCard({
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="List name..."
-          className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow"
+          className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
         />
         <p className="text-xs font-semibold text-muted-foreground">Prompts (sent in order)</p>
         <div className="flex flex-col gap-2">
@@ -1453,7 +1453,7 @@ function PromptListCard({
                 onChange={(e) => updateItem(i, e.target.value)}
                 rows={2}
                 placeholder={`Prompt ${i + 1}...`}
-                className="flex-1 resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow leading-relaxed"
+                className="flex-1 resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
               />
               <button
                 type="button"
@@ -1593,7 +1593,7 @@ function NewPromptListForm({ onClose, onRefresh }: { onClose: () => void; onRefr
         onChange={(e) => setName(e.target.value)}
         placeholder="List name..."
         autoFocus
-        className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow"
+        className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
       <p className="text-xs font-semibold text-muted-foreground">
         Prompts — loaded into the composer one at a time
@@ -1607,7 +1607,7 @@ function NewPromptListForm({ onClose, onRefresh }: { onClose: () => void; onRefr
               onChange={(e) => updateItem(i, e.target.value)}
               rows={2}
               placeholder={`Prompt ${i + 1}...`}
-              className="flex-1 resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow leading-relaxed"
+              className="flex-1 resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
             />
             <button
               type="button"
@@ -1887,7 +1887,7 @@ export function PromptStorageDialog({
                 onFocus={() => setShowSuggestions(true)}
                 onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
                 placeholder={`Search ${activeTab === "prompts" ? "prompts by name or text" : "prompt lists by name"}…`}
-                className="w-full rounded-lg border-0 bg-muted/50 pl-9 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary/50 placeholder:text-muted-foreground/60 transition-shadow"
+                className="w-full rounded-lg border-0 bg-muted/50 pl-9 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60 transition-shadow"
               />
               {showSuggestions && searchQuery.trim() !== "" && suggestions.length > 0 && (
                 <div className="absolute top-full left-0 right-0 z-50 mt-1 rounded-xl border border-border/60 bg-popover shadow-lg overflow-hidden">

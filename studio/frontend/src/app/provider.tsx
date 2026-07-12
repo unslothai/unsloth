@@ -27,7 +27,6 @@ import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
 import { useRouterState } from "@tanstack/react-router";
 import { MotionConfig } from "motion/react";
-import { ThemeProvider } from "next-themes";
 import {
   type CSSProperties,
   type ReactNode,
@@ -508,21 +507,19 @@ export function AppProvider({ children }: AppProviderProps) {
     (s) => s.customization.reduceMotion,
   );
   return (
-    <ThemeProvider attribute="class" defaultTheme="system" enableSystem={true}>
-      <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
-        <TooltipProvider>
-          <AppearanceCustomizationEffect />
-          <TauriWrapper>{children}</TauriWrapper>
-          <Toaster
-            position="top-right"
-            visibleToasts={2}
-            expand={true}
-            closeButton={true}
-            // Clear the chat header buttons on the right.
-            offset={{ top: 12, right: 64 }}
-          />
-        </TooltipProvider>
-      </MotionConfig>
-    </ThemeProvider>
+    <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
+      <TooltipProvider>
+        <AppearanceCustomizationEffect />
+        <TauriWrapper>{children}</TauriWrapper>
+        <Toaster
+          position="top-right"
+          visibleToasts={2}
+          expand={true}
+          closeButton={true}
+          // Clear the chat header buttons on the right.
+          offset={{ top: 12, right: 64 }}
+        />
+      </TooltipProvider>
+    </MotionConfig>
   );
 }
