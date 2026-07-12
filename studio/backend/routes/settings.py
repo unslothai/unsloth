@@ -763,9 +763,7 @@ def get_personalization_settings(
     response = PersonalizationResponse.model_validate(stored or {})
     response.saved = bool(stored)
     appearance = stored.get("appearance") if isinstance(stored, dict) else None
-    response.customizationSaved = (
-        isinstance(appearance, dict) and "customization" in appearance
-    )
+    response.customizationSaved = isinstance(appearance, dict) and "customization" in appearance
     return response
 
 
