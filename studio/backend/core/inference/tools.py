@@ -827,7 +827,7 @@ def _attr_open_writes(node) -> bool:
     return False  # no args: read
 
 
-def _folded_path(node, literals=None) -> "str | None":
+def _folded_path(node, literals = None) -> "str | None":
     """Best-effort value of a path built from string literals, so a sensitive
     path assembled from pieces (os.path.join('/etc', 'passwd'), '/etc'+'/passwd',
     Path('/etc') / 'passwd', f'/proc/{pid}/environ', f'/etc/{name}') is still
