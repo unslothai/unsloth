@@ -706,9 +706,9 @@ class DiffusionTrainingStartRequest(BaseModel):
     lora_rank: int = Field(16, ge = 1, le = 320)
     lora_alpha: Optional[int] = Field(None, ge = 1, le = 640, description = "Defaults to lora_rank")
     lora_dropout: float = Field(0.0, ge = 0.0, le = 1.0)
-    # Mirror the remaining training-affecting knobs of DiffusionLoraConfig so a client that
-    # sets them is not silently trained with defaults. Default the target list to the SDXL
-    # attention projections (the trainer's DEFAULT_LORA_TARGETS) so it is never None.
+    # Mirror the remaining training-affecting knobs of DiffusionLoraConfig so a client that sets
+    # them isn't silently trained with defaults. Default targets to the SDXL attention
+    # projections (the trainer's DEFAULT_LORA_TARGETS) so it is never None.
     lora_target_modules: List[str] = Field(
         default_factory = lambda: ["to_k", "to_q", "to_v", "to_out.0"],
         description = "U-Net modules to attach LoRA to",
@@ -796,15 +796,15 @@ class DiffusionTrainingStatusResponse(BaseModel):
     loss: Optional[float] = None
     avg_loss: Optional[float] = None
     learning_rate: Optional[float] = None
-    # Total pre-clip gradient norm from the last optimizer step (the training health
-    # signal the UI charts alongside the loss).
+    # Total pre-clip gradient norm from the last optimizer step (health signal the UI charts
+    # alongside the loss).
     grad_norm: Optional[float] = None
     num_images: Optional[int] = None
     in_model_load: bool = False
     output_dir: Optional[str] = None
     lora_path: Optional[str] = None
-    # Where the trained adapter was mirrored into the Studio LoRA catalog, and what family
-    # / base it was trained from -- lets the UI deploy the adapter onto the right base.
+    # Where the adapter was mirrored into the Studio LoRA catalog, and what family / base it was
+    # trained from -- lets the UI deploy it onto the right base.
     catalog_path: Optional[str] = None
     family: Optional[str] = None
     base_model: Optional[str] = None
@@ -872,15 +872,14 @@ class DiffusionTrainableFamily(BaseModel):
     base_repos: List[str] = Field(default_factory = list)
     defaults: dict = Field(default_factory = dict)
     vram_note: str = ""
-    # base_precision modes this machine supports for the family (empty = the family has no
-    # precision selector, e.g. SDXL), plus the recommended pick and whether regional
-    # torch.compile applies. Defaults keep older backends' payloads valid.
+    # base_precision modes this machine supports for the family (empty = no precision selector,
+    # e.g. SDXL), plus the recommended pick and whether regional torch.compile applies. Defaults
+    # keep older backends' payloads valid.
     precision_modes: List[str] = Field(default_factory = list)
     recommended_precision: str = "nf4"
     supports_compile: bool = False
-    # When set, deploying a LoRA trained on this family previews it on this repo instead of
-    # the training base (Krea trains on Raw but runs adapters on Turbo). Null for families
-    # that deploy on the base they trained on.
+    # When set, a LoRA trained on this family previews on this repo instead of the training base
+    # (Krea trains on Raw but runs adapters on Turbo). Null when it deploys on the training base.
     deploy_base: Optional[str] = None
 
 

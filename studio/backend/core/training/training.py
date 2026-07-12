@@ -739,9 +739,8 @@ class TrainingBackend:
         # True while a pump thread should be running; cleared on intended exits.
         # Left True after an abnormal death so _ensure_pump_alive spots a crash.
         self._pump_running: bool = False
-        # True from the start_training() guard passing until its spawn attempt
-        # finishes; blocks a second concurrent start (routes call start_training
-        # from a worker thread, so overlapping requests are possible).
+        # True from the start_training() guard passing until its spawn finishes; blocks a
+        # second concurrent start (routes call it from a worker thread, so starts can overlap).
         self._start_in_progress: bool = False
         self._lock = threading.Lock()
 
@@ -804,11 +803,10 @@ class TrainingBackend:
         still letting auto-selection place training against the freed memory.
         Hook failures never block the start.
         """
-        # Compare-and-set start guard: the route runs this whole method on a worker
-        # thread (asyncio.to_thread), so two overlapping /train/start requests can
-        # reach it concurrently. Without the flag both would pass the alive-check
-        # below (the proc is only assigned at the end) and double-spawn. Mirrors the
-        # diffusion training service's reserve().
+        # Compare-and-set start guard: the route runs this method on a worker thread, so two
+        # overlapping /train/start requests can reach it concurrently. Without the flag both
+        # would pass the alive-check below (the proc is only assigned at the end) and
+        # double-spawn. Mirrors the diffusion training service's reserve().
         with self._lock:
             if self._start_in_progress:
                 logger.warning("Training start already in progress")

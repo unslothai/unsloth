@@ -1894,9 +1894,9 @@ class DiffusionLoadRequest(BaseModel):
     @field_validator("attention_backend", mode = "before")
     @classmethod
     def _normalize_attention_backend(cls, value):
-        # The dispatcher accepts case/whitespace variants ("CuDNN", " sage "), but the
-        # Literal above is validated before any normaliser runs, so fold a string to its
-        # canonical lower/stripped form here -- otherwise valid casing gets a 422.
+        # The dispatcher accepts case/whitespace variants ("CuDNN", " sage "), but the Literal
+        # above is validated before any normaliser runs, so fold a string to its canonical
+        # lower/stripped form here -- otherwise valid casing gets a 422.
         return value.strip().lower() if isinstance(value, str) else value
 
 
@@ -1953,8 +1953,8 @@ class ControlNetSpec(BaseModel):
 
     @model_validator(mode = "after")
     def _check_guidance_range(self) -> "ControlNetSpec":
-        # An inverted range (start > end) means "act over no steps"; reject it as a clean
-        # 422 instead of letting the diffusers pipeline raise a 500 deep in the denoise.
+        # An inverted range (start > end) means "act over no steps"; reject it as a clean 422
+        # instead of letting the diffusers pipeline 500 deep in the denoise.
         if self.guidance_start > self.guidance_end:
             raise ValueError("guidance_start must be <= guidance_end")
         return self
@@ -1973,21 +1973,19 @@ class DiffusionGenerateRequest(BaseModel):
     )
     steps: int = Field(9, ge = 1, le = 100, description = "Number of denoising steps")
     guidance: float = Field(0.0, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale")
-    # le = 2**53-1: seeds round-trip through JSON gallery recipes, where JavaScript
-    # rounds integers above Number.MAX_SAFE_INTEGER -- a restored recipe would then
-    # generate a different image. Random seeds are already masked to this range.
+    # le = 2**53-1: seeds round-trip through JSON gallery recipes, where JavaScript rounds
+    # integers above Number.MAX_SAFE_INTEGER -- a restored recipe would then generate a
+    # different image. Random seeds are already masked to this range.
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
     )
     batch_size: int = Field(
         1, ge = 1, le = 32, description = "Images generated in one forward pass (VRAM-heavy)"
     )
-    # Image-conditioned workflows (base64 or data-URL). An init_image alone runs img2img;
-    # init_image + mask_image runs inpaint. Both require a model family with the matching
-    # pipeline (img2img/inpaint) or the load is rejected with a clear message.
-    # Cap each base64 image string so a single request can't buffer a multi-GB payload (the
-    # decoded dimensions are bounded separately in the backend). ~32 MiB comfortably fits a
-    # full 4096px image yet rejects abuse.
+    # Image-conditioned workflows (base64 or data-URL): init_image alone runs img2img,
+    # init_image + mask_image runs inpaint. Both require a family with the matching pipeline or
+    # the load is rejected. Cap each base64 string so one request can't buffer a multi-GB payload
+    # (decoded dimensions are bounded separately); ~32 MiB fits a full 4096px image yet rejects abuse.
     init_image: Optional[str] = Field(
         None,
         max_length = 32 * 1024 * 1024,
@@ -2038,9 +2036,9 @@ class DiffusionGenerateRequest(BaseModel):
     @classmethod
     def _unique_lora_ids(cls, value: Optional[list[LoraSpec]]) -> Optional[list[LoraSpec]]:
         # Both apply paths break alias collisions by suffixing the adapter name/file, so a
-        # repeated id would load the SAME adapter as several distinct adapters and stack
-        # its effect past the per-adapter weight bound. The UI already prevents duplicates;
-        # reject them for API clients too so each adapter takes effect at most once.
+        # repeated id would load the SAME adapter several times and stack its effect past the
+        # per-adapter weight bound. The UI already blocks duplicates; reject them for API clients
+        # too so each adapter takes effect at most once.
         if value:
             seen: set[str] = set()
             for spec in value:
@@ -2054,8 +2052,8 @@ class DiffusionGenerateRequest(BaseModel):
     @field_validator("reference_images")
     @classmethod
     def _bounded_reference_items(cls, value: Optional[list[str]]) -> Optional[list[str]]:
-        # Each reference is a base64 image; bound its length like init_image/mask_image so a
-        # request carrying several references can't buffer a multi-GB payload.
+        # Each reference is a base64 image; bound its length like init_image/mask_image so
+        # several references can't buffer a multi-GB payload.
         if value is not None:
             for item in value:
                 if len(item) > 32 * 1024 * 1024:
@@ -2065,9 +2063,8 @@ class DiffusionGenerateRequest(BaseModel):
     @field_validator("width", "height")
     @classmethod
     def _multiple_of_16(cls, value: int) -> int:
-        # Z-Image requires dimensions divisible by 16 (8x VAE downsample + 2x
-        # patch). Non-multiples crash deep in the pipeline, so reject them here
-        # for a clean 422 instead of a cryptic 500.
+        # Z-Image requires dimensions divisible by 16 (8x VAE downsample + 2x patch).
+        # Non-multiples crash deep in the pipeline, so reject them here for a clean 422.
         if value % 16 != 0:
             raise ValueError("must be a multiple of 16")
         return value
@@ -2213,10 +2210,10 @@ class DiffusionStatusResponse(BaseModel):
         "picker's enabled state). Diffusers only, for families with a ControlNet pipeline; False "
         "for the native engine, GGUF-via-diffusers, and torchao fp8/int8 dense.",
     )
-    # Additive: per-Advanced-control provenance {control: {value, source, reason}}. Present
-    # only on backends that record it; null when nothing is loaded or on older backends. The
-    # frontend renders an "Auto: X" badge next to each control whose source == "auto". Declared
-    # explicitly so pydantic's default extra='ignore' does not silently drop the resolved record.
+    # Additive: per-Advanced-control provenance {control: {value, source, reason}}. Present only
+    # on backends that record it; null when nothing is loaded or on older backends. The frontend
+    # renders an "Auto: X" badge next to each control whose source == "auto". Declared explicitly
+    # so pydantic's extra='ignore' doesn't drop the resolved record.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
         None,
         description = "Per-control resolved value + provenance (source auto|explicit + reason), "
@@ -2253,12 +2250,11 @@ class DiffusionInferenceInfoResponse(BaseModel):
 
 # ── OpenAI-compatible images API (POST /v1/images/generations) ──
 #
-# Shapes mirror OpenAI's CreateImageRequest / ImagesResponse so off-the-shelf
-# OpenAI clients work unchanged. The loaded image GGUF stands in for the model;
-# GPT-image-only knobs (quality, style, background, output_format, ...) are
-# accepted and ignored, exactly as dall-e-2 ignores them. The size string is
-# parsed and `stream` is rejected in the route, where the diffusion backend is
-# in reach; everything Pydantic can check declaratively lives here.
+# Shapes mirror OpenAI's CreateImageRequest / ImagesResponse so off-the-shelf clients work
+# unchanged. The loaded image GGUF stands in for the model; GPT-image-only knobs (quality,
+# style, background, output_format, ...) are accepted and ignored, like dall-e-2. The size
+# string is parsed and `stream` is rejected in the route (where the diffusion backend is in
+# reach); everything Pydantic can check declaratively lives here.
 
 
 class ImageGenerationRequest(BaseModel):
@@ -2280,8 +2276,8 @@ class ImageGenerationRequest(BaseModel):
         "url", description = "Return each image as a URL or a base64-encoded PNG."
     )
     user: Optional[str] = Field(None, description = "End-user identifier (accepted, unused).")
-    # gpt-image-only; declared so we can reject it with a clear error instead of
-    # silently returning JSON to a client that asked for an SSE stream.
+    # gpt-image-only; declared so we can reject it clearly instead of returning JSON to a
+    # client that asked for an SSE stream.
     stream: Optional[bool] = Field(
         None, description = "Streaming image generation is not supported; omit or set false."
     )
@@ -2289,8 +2285,8 @@ class ImageGenerationRequest(BaseModel):
     @field_validator("n", "size", "response_format", mode = "before")
     @classmethod
     def _null_means_default(cls, value, info):
-        # OpenAI marks these nullable WITH a default, so an explicit null means
-        # "use the default" — coalesce it instead of 400-ing a spec-valid body.
+        # OpenAI marks these nullable WITH a default, so an explicit null means "use the
+        # default" -- coalesce it instead of 400-ing a spec-valid body.
         if value is None:
             return cls.model_fields[info.field_name].default
         return value
@@ -2435,8 +2431,8 @@ class VideoGenerateRequest(BaseModel):
     negative_prompt: Optional[str] = Field(
         None, description = "What to avoid (if the model supports it)"
     )
-    # Width/height/num_frames/fps default per loaded family (the backend snaps them to
-    # the family's required multiples/lattice), so they are optional here.
+    # Width/height/num_frames/fps default per loaded family (the backend snaps them to its
+    # required multiples/lattice), so they are optional here.
     width: Optional[int] = Field(
         None, ge = 32, le = 2048, description = "Frame width in pixels (family multiple)"
     )
@@ -2467,9 +2463,9 @@ class VideoGenerateRequest(BaseModel):
         "pipeline default it to the main guidance. Ignored by single-DiT families (their pipeline "
         "signature has no second guidance kwarg).",
     )
-    # le = 2**53-1: seeds round-trip through JSON gallery recipes, where JavaScript
-    # rounds integers above Number.MAX_SAFE_INTEGER -- a restored recipe would then
-    # generate a different clip. Random seeds are already masked to this range.
+    # le = 2**53-1: seeds round-trip through JSON gallery recipes, where JavaScript rounds
+    # integers above Number.MAX_SAFE_INTEGER -- a restored recipe would then generate a
+    # different clip. Random seeds are already masked to this range.
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
     )
@@ -2617,9 +2613,9 @@ class VideoStatusResponse(BaseModel):
     defaults: Optional[VideoGenerationDefaults] = Field(
         None, description = "Per-family generation defaults + shape constraints; null when unloaded"
     )
-    # Additive: per-Advanced-control provenance {control: {value, source, reason}}. Same
-    # shape as the diffusion status uses; null when nothing is loaded. The frontend renders
-    # an "Auto: X" badge next to each control whose source == "auto".
+    # Additive: per-Advanced-control provenance {control: {value, source, reason}}. Same shape
+    # as the diffusion status; null when nothing is loaded. The frontend renders an "Auto: X"
+    # badge next to each control whose source == "auto".
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
         None,
         description = "Per-control resolved value + provenance (source auto|explicit + reason), "

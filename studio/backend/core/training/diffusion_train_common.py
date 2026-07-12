@@ -32,18 +32,17 @@ from core.inference.diffusion_families import (
     trainable_family_names,
 )
 
-# Default LoRA target modules: the attention projections common to the SDXL U-Net and the
-# DiT transformers (the diffusers/kohya convention). A family whose trainer wants a wider
-# set overrides this in its own defaults; kept here so DiffusionLoraConfig has a sane fallback.
+# Default LoRA target modules: the attention projections common to the SDXL U-Net and the DiT
+# transformers (the diffusers/kohya convention). A family wanting a wider set overrides this in
+# its own defaults; kept here so DiffusionLoraConfig has a sane fallback.
 DEFAULT_LORA_TARGETS: tuple[str, ...] = ("to_k", "to_q", "to_v", "to_out.0")
 
 # diffusers' SchedulerType names (diffusers.optimization.get_scheduler). piecewise_constant is
-# intentionally excluded: it is the only scheduler that needs a `step_rules` string, which the
-# trainers never pass (get_scheduler is called with only warmup/training steps, and there is no
-# config field for it). Accepting it would pass normalized(), free the resident GPU workloads,
-# then crash in the trainer subprocess (get_piecewise_constant_schedule does step_rules.split(",")
-# on None) -- the exact evict-then-fail the up-front validation exists to prevent. The remaining
-# six all run with only warmup/training steps.
+# excluded: it is the only scheduler needing a `step_rules` string, which the trainers never pass
+# (and there is no config field for it). Accepting it would pass normalized(), free the resident
+# GPU workloads, then crash in the child (get_piecewise_constant_schedule does
+# step_rules.split(",") on None) -- the evict-then-fail this validation prevents. The other six
+# run with only warmup/training steps.
 _LR_SCHEDULERS: frozenset[str] = frozenset(
     {
         "linear",
@@ -64,11 +63,10 @@ _CAPTION_EXTS = (".txt", ".caption")
 # diffusers' canonical single-file LoRA name, so load_lora_weights(dir) finds it.
 DEFAULT_LORA_FILENAME = "pytorch_lora_weights.safetensors"
 
-# Architectures Studio can neither train nor even load, so they are not in the family
-# registry, but are recognisable by name. Rejecting them by name turns a confusing
-# mid-run crash into an immediate, clear error. Families that ARE in the registry
-# (flux / qwen-image / z-image / kontext) are handled by the positive registry check in
-# ``resolve_trainable_family`` instead, so they are intentionally absent here.
+# Architectures Studio can neither train nor load, so they are not in the family registry but are
+# recognisable by name. Rejecting them by name turns a confusing mid-run crash into a clear error.
+# Registry families (flux / qwen-image / z-image / kontext) are handled by the positive check in
+# ``resolve_trainable_family``, so they are intentionally absent here.
 _NON_TRAINABLE_RESIDUAL_TOKENS = frozenset({"sd3", "pixart", "sana", "lumina", "cogview"})
 _NON_TRAINABLE_RESIDUAL_PHRASES = ("stable-diffusion-3", "hunyuan-dit")
 
@@ -104,11 +102,10 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
       compatible: a genuinely wrong pick still fails cleanly later in from_pretrained).
     """
     name = str(base_model or "").strip().lower()
-    # GGUF weights (a ``.gguf`` file or a ``*-GGUF`` repo) are inference-only: training needs
-    # the full diffusers pipeline (transformer + VAE + text encoders), which a GGUF repo does
-    # not provide. Reject by name even when the family itself is trainable.
-    # Exempt a local diffusers checkout that merely has "gguf" in its path, identified by its
-    # ``model_index.json`` marker (same marker the loader uses), not a bare ``is_dir()``.
+    # GGUF weights (a ``.gguf`` file or ``*-GGUF`` repo) are inference-only: training needs the
+    # full diffusers pipeline (transformer + VAE + text encoders), which a GGUF repo lacks. Reject
+    # by name even when the family is trainable. Exempt a local diffusers checkout that merely has
+    # "gguf" in its path, identified by its ``model_index.json`` marker, not a bare ``is_dir()``.
     local = Path(base_model).expanduser() if base_model else None
     is_local_diffusers = bool(local and (local / "model_index.json").is_file())
     if name.endswith(".gguf") or ("gguf" in name and not is_local_diffusers):
@@ -243,9 +240,9 @@ def get_trainer(family: str) -> Callable[..., str]:
     raise ValueError(f"No trainer is registered for family {family!r}.")
 
 
-# Per-family training defaults surfaced by the Train UI. Distilled/turbo bases and the big
-# DiTs want different rank / learning rate / resolution; these are starting points, not
-# hard limits. Families absent here fall back to the DiffusionLoraConfig defaults.
+# Per-family training defaults surfaced by the Train UI. Distilled/turbo bases and the big DiTs
+# want different rank / learning rate / resolution; these are starting points, not hard limits.
+# Families absent here fall back to the DiffusionLoraConfig defaults.
 FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "sdxl": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 1024},
     "flux.1": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 512},
@@ -285,10 +282,10 @@ _FAMILY_VRAM_NOTES = {
     ),
 }
 
-# The flow-matching DiT families (run by diffusion_dit_trainer). They expose the
-# base_precision / compile levers and require bf16 compute on CUDA; SDXL is absent because
-# it uses its own mixed_precision path. Kept as a set so the UI gate, the bf16 preflight,
-# and any future dispatch stay in sync.
+# The flow-matching DiT families (run by diffusion_dit_trainer). They expose the base_precision /
+# compile levers and require bf16 compute on CUDA; SDXL is absent (it uses its own
+# mixed_precision path). A set so the UI gate, the bf16 preflight, and any future dispatch stay
+# in sync.
 _DIT_TRAIN_FAMILIES = frozenset({"flux.1", "qwen-image", "z-image", "krea-2"})
 
 
@@ -351,8 +348,8 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
     if fam in _DIT_TRAIN_FAMILIES and mode in ("bf16", "int8", "fp8", "mxfp8"):
         # The DiT trainer's dense precisions all require CUDA (_resolve_base_precision rejects
         # bf16/int8/fp8/mxfp8 on device != "cuda"). bf16_unsupported_reason exempts a CPU-only host
-        # (the fp32 fallback for import/unit tests), so without this a dense request on a GPU-less
-        # host would pass the preflight, evict resident workloads, then raise only in the child.
+        # (the fp32 fallback for tests), so without this a dense request on a GPU-less host would
+        # pass the preflight, evict residents, then raise only in the child.
         try:
             import torch
             has_cuda = torch.cuda.is_available()
@@ -369,9 +366,9 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
                 "missing or the non-functional Windows-ROCm stub. Use 'nf4', 'bf16', or 'auto'."
             )
         # mxfp8 needs Blackwell (sm100+): its MX GEMM has no kernel below sm100 and raises at the
-        # first training step, AFTER a full dense-transformer load. Re-check here (mirroring
-        # _resolve_base_precision) so a stale or direct client on an older CUDA GPU fails fast
-        # before eviction instead of crashing mid-run.
+        # first training step, AFTER a full dense load. Re-check here (mirroring
+        # _resolve_base_precision) so a stale/direct client on an older GPU fails fast before
+        # eviction instead of crashing mid-run.
         if mode == "mxfp8":
             try:
                 import torch
@@ -400,16 +397,15 @@ def family_train_infos() -> list[dict[str, Any]]:
         if fam is None:
             continue
         repos = list(fam.train_base_repos) or [fam.base_repo]
-        # base_precision applies to the DiT trainer only; SDXL keeps its mixed_precision
-        # lever, so the UI hides the precision selector for it. compile applies everywhere:
-        # the SDXL trainer regionally compiles the U-Net's transformer blocks too.
+        # base_precision applies to the DiT trainer only; SDXL keeps its mixed_precision lever, so
+        # the UI hides the precision selector for it. compile applies everywhere: the SDXL trainer
+        # regionally compiles the U-Net's transformer blocks too.
         is_dit = name in _DIT_TRAIN_FAMILIES
-        # On a non-bf16 CUDA GPU the start route's preflight rejects EVERY DiT family (even nf4,
-        # since the DiT trainer requires bf16 unconditionally on CUDA), so advertise no precision
-        # for it -- otherwise /info offers an nf4 DiT option that always 400s. Otherwise drop any
-        # scheme this family's DiT corrupts (fp8 on Qwen-Image: activation outliers exceed fp8's
-        # range; the inference path denies the same set), so the UI never offers a mode
-        # normalized() would then reject.
+        # On a non-bf16 CUDA GPU the start preflight rejects EVERY DiT family (even nf4, since the
+        # DiT trainer requires bf16 on CUDA), so advertise no precision -- else /info offers an nf4
+        # DiT option that always 400s. Otherwise drop any scheme this family's DiT corrupts (fp8 on
+        # Qwen-Image: activation outliers exceed fp8's range; the inference path denies the same
+        # set), so the UI never offers a mode normalized() would reject.
         dit_block = bf16_unsupported_reason(name) if is_dit else None
         if not is_dit or dit_block:
             fam_modes: list[str] = []
@@ -470,9 +466,9 @@ class DiffusionLoraConfig:
     caption_column: str = "text"  # column in metadata.jsonl
     adapter_name: str = "default"
     hf_token: Optional[str] = None
-    # Precompute the VAE latents once (freeing the VAE for the whole run) instead of
-    # re-encoding every step. ``cache_variants`` crop/flip draws are frozen per image;
-    # the per-step VAE sampling noise itself is preserved (see the DiT trainer docstring).
+    # Precompute the VAE latents once (freeing the VAE for the run) instead of re-encoding every
+    # step. ``cache_variants`` crop/flip draws are frozen per image; the per-step VAE sampling
+    # noise itself is preserved (see the DiT trainer docstring).
     cache_latents: bool = True
     cache_variants: int = 4
     # Regional torch.compile of the transformer blocks: "off" | "on" | "auto" (auto turns
@@ -481,17 +477,16 @@ class DiffusionLoraConfig:
     # TF32 matmuls + high fp32 matmul precision + cudnn autotuning for the run. Near-lossless;
     # disable for strict bit-reproducibility A/Bs.
     enable_tf32: bool = True
-    # DiT base transformer precision: "nf4" (bitsandbytes QLoRA, the memory floor and the
-    # default), "bf16" (dense, fastest eager, compile-friendly), "int8" (torchao
-    # weight-only, half of bf16), "fp8" (torchao float8 training compute on the frozen
-    # linears, Ada/Hopper/Blackwell + compile), or "auto" (pick by free VRAM + GPU class).
-    # Non-nf4 modes need a dense base repo (not a prequant bnb-4bit one). SDXL ignores it.
+    # DiT base transformer precision: "nf4" (bitsandbytes QLoRA, the memory floor and default),
+    # "bf16" (dense, fastest eager, compile-friendly), "int8" (torchao weight-only, half of bf16),
+    # "fp8" (torchao float8 training on the frozen linears, Ada/Hopper/Blackwell + compile), or
+    # "auto" (by free VRAM + GPU class). Non-nf4 modes need a dense base repo. SDXL ignores it.
     base_precision: str = "nf4"
     # How often to emit a progress event (in optimizer steps).
     log_every: int = 1
-    # Optional explicit family override ("sdxl" / "flux.1" / ...); None = detect from
-    # base_model. ``resolved_family`` is filled by normalized() with the trainer family
-    # that will actually run, so the process adapter can dispatch through the registry.
+    # Optional explicit family override ("sdxl" / "flux.1" / ...); None = detect from base_model.
+    # ``resolved_family`` is filled by normalized() with the trainer family that will run, so the
+    # process adapter can dispatch through the registry.
     model_family: Optional[str] = None
     resolved_family: str = "sdxl"
 
@@ -539,10 +534,10 @@ class DiffusionLoraConfig:
         base_precision = str(self.base_precision or "nf4").strip().lower()
         if base_precision not in ("nf4", "bf16", "int8", "fp8", "mxfp8", "auto"):
             raise ValueError("base_precision must be one of nf4 / bf16 / int8 / fp8 / mxfp8 / auto")
-        # base_precision is a DiT-only lever (the transformer load precision); SDXL uses its
-        # own mixed_precision path and ignores base_precision entirely, so the dense-mode
-        # gates (prequant base / non-bf16 compute) apply only to the DiT families. The
-        # mode-name validity check above still runs for every family.
+        # base_precision is a DiT-only lever (transformer load precision); SDXL uses its own
+        # mixed_precision path and ignores it, so the dense-mode gates (prequant base / non-bf16
+        # compute) apply only to the DiT families. The mode-name check above still runs for every
+        # family.
         if resolved_family != "sdxl" and base_precision in ("bf16", "int8", "fp8", "mxfp8"):
             if repo_is_prequantized(self.base_model):
                 raise ValueError(
@@ -556,10 +551,9 @@ class DiffusionLoraConfig:
                     f"mixed_precision to bf16."
                 )
             # Some DiT families are corrupted by fp8's activation range: outliers exceed even
-            # per-row fp8's dynamic range, so the frozen linears' float8 training compute
-            # learns against a garbage forward pass. The inference path already denies these
-            # schemes; mirror that deny here so the run fails fast instead of silently
-            # producing a broken adapter. int8 (per-token) is unaffected and stays allowed.
+            # per-row fp8's range, so the frozen linears' float8 compute learns against a garbage
+            # forward pass. The inference path already denies these schemes; mirror it here so the
+            # run fails fast instead of producing a broken adapter. int8 (per-token) is unaffected.
             from core.inference.diffusion_transformer_quant import _family_denied
 
             if _family_denied(resolved_family, base_precision):
@@ -640,9 +634,9 @@ class PermutationBatchSampler:
         self._pos = 0
 
     def next_batch(self, k: int) -> list[int]:
-        # k may exceed n (batch larger than the dataset): the permutation is refilled across
-        # as many cycles as needed so the caller always gets exactly k indices and the batch
-        # never shrinks, matching the old sampler's fixed batch shape.
+        # k may exceed n (batch larger than the dataset): the permutation is refilled across as
+        # many cycles as needed so the caller always gets exactly k indices and the batch never
+        # shrinks, matching the old sampler's fixed batch shape.
         out: list[int] = []
         while len(out) < k:
             if self._pos >= len(self._order):
@@ -726,11 +720,10 @@ def discover_image_caption_pairs(
             caption = instance_prompt
         if caption:
             if verify_images:
-                # Reject a corrupt / zero-byte / truncated image now via a cheap PIL header
-                # probe (verify() does not decode the full pixels): otherwise it passes this
-                # filename-only discovery, the start route frees the resident GPU models, and
-                # the spawned trainer only then crashes in Image.open -- the eviction this
-                # preflight exists to prevent.
+                # Reject a corrupt/zero-byte/truncated image now via a cheap PIL header probe
+                # (verify() doesn't decode full pixels): otherwise it passes this filename-only
+                # discovery, the start route frees the resident GPU models, and the trainer only
+                # then crashes in Image.open -- the eviction this preflight prevents.
                 try:
                     from PIL import Image
                     with Image.open(img) as _probe:
@@ -780,18 +773,18 @@ def _plan_cache_variants(
     return plan
 
 
-# Host-memory budget for the AUTOMATIC latent cache. The cache holds two fp32 posterior
-# tensors (mean/std, VAE scale folded in) per crop/flip variant per image, pinned on a CUDA
-# host. At 1024px an SDXL variant is ~0.5 MiB and a 16-channel DiT variant several times
-# that, so a few thousand images x cache_variants can exhaust host or pinned RAM with no
-# fallback. Over this budget the default falls back to per-step VAE encoding. A fixed
-# constant (rather than a psutil RAM fraction) keeps the gate dependency-free and identical
-# across hosts; it is deliberately conservative, well under a typical training host's RAM.
+# Host-memory budget for the AUTOMATIC latent cache. The cache holds two fp32 posterior tensors
+# (mean/std, VAE scale folded in) per crop/flip variant per image, pinned on a CUDA host. At
+# 1024px an SDXL variant is ~0.5 MiB and a 16-channel DiT variant several times that, so a few
+# thousand images x cache_variants can exhaust host or pinned RAM. Over budget the default falls
+# back to per-step VAE encoding. A fixed constant (not a psutil RAM fraction) keeps the gate
+# dependency-free and identical across hosts; deliberately conservative, well under a typical
+# host's RAM.
 _LATENT_CACHE_BUDGET_BYTES = 4 * 1024**3  # 4 GiB
 
-# Returned by the cache builders when the estimated cache exceeds the budget: the caller
-# keeps the VAE resident and encodes each step's latents in-loop. A distinct sentinel from
-# ``None`` (which means a stop was requested mid-build) so the two are not conflated.
+# Returned by the cache builders when the estimate exceeds budget: the caller keeps the VAE
+# resident and encodes each step's latents in-loop. A distinct sentinel from ``None`` (a stop
+# requested mid-build) so the two are not conflated.
 LATENT_CACHE_OVER_BUDGET: Any = object()
 
 
@@ -851,10 +844,10 @@ def _apply_perf_flags(
             torch.set_float32_matmul_precision("highest")
         if cudnn_benchmark:
             torch.backends.cudnn.benchmark = True
-        # The cuDNN SDPA backend's TRAINING graph is broken for the FLUX attention shapes
-        # on torch 2.10 + cu130 (B200): mha_graph.execute fails, then poisons the context
-        # into illegal memory accesses. Flash / mem-efficient SDPA are mathematically
-        # equivalent, so pin those for the run (restored on exit).
+        # The cuDNN SDPA backend's TRAINING graph is broken for the FLUX attention shapes on
+        # torch 2.10 + cu130 (B200): mha_graph.execute fails, then poisons the context into
+        # illegal memory accesses. Flash / mem-efficient SDPA are equivalent, so pin those for the
+        # run (restored on exit).
         cuda_backends = getattr(torch.backends, "cuda", None)
         if cuda_backends is not None and hasattr(cuda_backends, "enable_cudnn_sdp"):
             try:
@@ -907,9 +900,9 @@ def _assert_trusted_base_model(base_model: str) -> None:
             f"a trusted repo (an unsloth/* repo or an official base)."
         )
     # An existing LOCAL base is loaded as a full pipeline (from_pretrained(base_model)) by the
-    # spawned trainer, which needs a model_index.json. Any existing path is "trusted" above, so
-    # reject a non-pipeline local dir here -- before /diffusion/start frees the resident GPU
-    # models -- rather than have the child fail after the teardown.
+    # trainer, which needs a model_index.json. Any existing path is "trusted" above, so reject a
+    # non-pipeline local dir here -- before /diffusion/start frees the GPU models -- rather than
+    # have the child fail after teardown.
     _assert_local_base_is_pipeline(base_model)
 
 
@@ -969,13 +962,13 @@ def _write_lora_sidecar(sidecar_path: Path, cfg: DiffusionLoraConfig) -> None:
 
 
 # Aliases from the generic Studio training payload onto DiffusionLoraConfig fields, so the
-# diffusion trainer can also be driven by the shared training request shape (not only its
-# own request model whose keys already match).
+# diffusion trainer can also be driven by the shared training request shape (not only its own
+# request model, whose keys already match).
 _CONFIG_ALIASES = {
     "model_name": "base_model",
     "max_steps": "train_steps",
-    # The generic payload's num_epochs already matches the diffusion field name, but list it
-    # so the epochs override is threaded through the shared-payload path as explicitly as
+    # The generic payload's num_epochs already matches the diffusion field name, but list it so
+    # the epochs override is threaded through the shared-payload path as explicitly as
     # max_steps -> train_steps is.
     "num_epochs": "num_epochs",
     "batch_size": "train_batch_size",
@@ -1016,11 +1009,10 @@ def _config_from_dict(config: dict) -> DiffusionLoraConfig:
     for k, v in config.items():
         if k in valid:
             kwargs[k] = v
-    # Epoch-mode payloads from the generic Studio UI carry max_steps: 0 as the "use epochs"
-    # sentinel, which the max_steps -> train_steps alias copies as train_steps: 0. Since
-    # normalized() rejects train_steps < 1 before resolve_train_steps() can apply num_epochs,
-    # drop a falsy/0 train_steps when num_epochs > 0 so the dataclass default stands in until
-    # epoch resolution replaces it.
+    # Epoch-mode payloads from the generic UI carry max_steps: 0 as the "use epochs" sentinel,
+    # which the max_steps -> train_steps alias copies as train_steps: 0. Since normalized()
+    # rejects train_steps < 1 before resolve_train_steps() applies num_epochs, drop a falsy/0
+    # train_steps when num_epochs > 0 so the dataclass default stands in until epoch resolution.
     try:
         _num_epochs = int(kwargs.get("num_epochs") or 0)
     except (TypeError, ValueError):
