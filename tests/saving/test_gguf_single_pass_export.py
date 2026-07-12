@@ -177,9 +177,9 @@ def test_parallel_quants_preserve_request_order(monkeypatch, tmp_path):
         "testmodel.Q5_K_M.gguf",
         "testmodel.Q4_K_M.gguf",
     ]
-    assert all(c["n_threads"] is not None for c in h.quantize_calls), (
-        "parallel workers must split the thread budget explicitly"
-    )
+    assert all(
+        c["n_threads"] is not None for c in h.quantize_calls
+    ), "parallel workers must split the thread budget explicitly"
 
 
 def test_parallel_quants_env_kill_switch(monkeypatch, tmp_path):
