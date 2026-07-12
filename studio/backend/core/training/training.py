@@ -867,6 +867,16 @@ class TrainingBackend:
 
         from .worker import run_training_process
 
+        # Recheck right before the spawn: the route-level guard is one-shot and
+        # validation between it and this point can outlast an install's start.
+        from utils.transformers_version import sidecar_swap_in_progress
+
+        if sidecar_swap_in_progress():
+            raise RuntimeError(
+                "A transformers installation is replacing the latest sidecar; "
+                "retry when it completes."
+            )
+
         try:
             with native_path_secret_removed_for_child_start():
                 event_queue = _CTX.Queue()
@@ -1037,6 +1047,16 @@ class TrainingBackend:
         logger.warning("Respawning training worker with HF_HUB_DISABLE_XET=1 after Xet stall")
 
         from .worker import run_training_process
+
+        # Recheck right before the spawn: the route-level guard is one-shot and
+        # validation between it and this point can outlast an install's start.
+        from utils.transformers_version import sidecar_swap_in_progress
+
+        if sidecar_swap_in_progress():
+            raise RuntimeError(
+                "A transformers installation is replacing the latest sidecar; "
+                "retry when it completes."
+            )
 
         try:
             with native_path_secret_removed_for_child_start():

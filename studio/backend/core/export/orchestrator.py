@@ -209,6 +209,15 @@ class ExportOrchestrator:
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new export subprocess."""
+        # Recheck right before the spawn: the route-level guard is one-shot and
+        # a sidecar install may have started while this op was validating.
+        from utils.transformers_version import sidecar_swap_in_progress
+
+        if sidecar_swap_in_progress():
+            raise RuntimeError(
+                "A transformers installation is replacing the latest sidecar; "
+                "retry when it completes."
+            )
         from utils.native_path_leases import (
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,

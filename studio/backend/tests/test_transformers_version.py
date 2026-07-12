@@ -2689,26 +2689,31 @@ class TestLatestTierForces16Bit:
         # The unload (by name, via before_swap so failed installs keep the model
         # loaded), the idle export-worker teardown, and the install itself must
         # all sit INSIDE the gate so no /load can interleave with the swap.
-        gated = body.split("inference_lifecycle_gate():", 1)[1]
-        assert "unload_model(active)" in gated
-        assert "cleanup_memory()" in gated
+        assert "unload_model(active)" in body
+        assert "cleanup_memory()" in body
         # Export teardown precedes the chat unload so its failure aborts while
         # the user's model is still loaded.
-        assert gated.index("cleanup_memory()") < gated.index("unload_model(active)")
-        assert "install_latest_transformers(" in gated and "_unload_before_swap" in gated
+        assert body.index("cleanup_memory()") < body.index("unload_model(active)")
+        assert "install_latest_transformers(" in body and "_unload_before_swap" in body
+        # The gate must be owned by the shielded task, not the request coroutine:
+        # a cancelled POST unwinding out of an async-with would release the only
+        # guard /load honors while the installer thread still runs.
+        gated_task = body.split("async def _gated_install", 1)[1]
+        assert "inference_lifecycle_gate():" in gated_task
+        assert "asyncio.to_thread(_run_install)" in gated_task
         # The reservation must be taken BEFORE the (awaitable) gate wait, or a
         # training/export start could slip in while this request queues on the gate.
         assert body.index("try_begin_sidecar_swap()") < body.index(
             "inference_lifecycle_gate():"
         ), "the swap reservation must be raised before waiting on the lifecycle gate"
         # A failed teardown must abort the swap (raise), not fall through to it.
-        assert gated.count("raise RuntimeError") >= 3, (
+        assert body.count("raise RuntimeError") >= 3, (
             "export, chat-unload, and idle-worker teardown failures must raise so "
             "the staged install never swaps under a live worker"
         )
         # The installer thread owns (and releases) the reservation, shielded from
         # request cancellation, so a cancelled POST cannot unlock a live swap.
-        assert "asyncio.shield" in gated and "end_sidecar_swap()" in gated
+        assert "asyncio.shield" in body and "end_sidecar_swap()" in body
         # In-flight generation streams predate the gate; the route must refuse
         # rather than kill their responses via the before_swap unload.
         assert "other_inference_request_count" in body
@@ -2725,6 +2730,19 @@ class TestLatestTierForces16Bit:
         assert (
             "is_install_in_progress" in helper
         ), "mutating export routes must refuse while a transformers install is in progress"
+
+    def test_spawn_sites_recheck_reservation(self):
+        # The route-level guards are one-shot; validation between them and the
+        # actual spawn can outlast an install's start, so the spawn itself rechecks.
+        training = self._read("core/training/training.py")
+        assert training.count("sidecar_swap_in_progress()") >= 2, (
+            "both training spawn sites must recheck the sidecar swap reservation"
+        )
+        export = self._read("core/export/orchestrator.py")
+        spawn = export.split("def _spawn_subprocess", 1)[1].split("\n    def ", 1)[0]
+        assert "sidecar_swap_in_progress()" in spawn, (
+            "the export subprocess spawn must recheck the sidecar swap reservation"
+        )
 
 
 class TestSidecarSwapReservation:
@@ -2848,6 +2866,21 @@ class TestStageAndSwapBeforeSwap:
 
 
 class TestKillSwitchBeatsMappingCache:
+    def test_cached_latest_probe_ignored_when_disabled(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        key = tv._probe_cache_key("some/model")
+        monkeypatch.setitem(tv._probe_tier_cache, key, "latest")
+        monkeypatch.setenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "1")
+        # With the switch set, the cached latest entry must not short-circuit;
+        # the probe re-resolves against the non-latest order (stub it to 530).
+        monkeypatch.setattr(tv, "_probe_tier_venvs", lambda: {})
+        monkeypatch.setattr(tv, "_probe_tier_order", lambda: ())
+        assert tv._probe_tier("some/model", None, "test") != "latest"
+        # Cached non-latest entries and the unset switch still short-circuit.
+        monkeypatch.delenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS")
+        assert tv._probe_tier("some/model", None, "test") == "latest"
+
     def test_cached_latest_mapping_ignored_when_disabled(self, monkeypatch):
         import utils.transformers_version as tv
 

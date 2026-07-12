@@ -4837,7 +4837,9 @@ async def install_latest_transformers_route(
             other_inference_request_count,
         )
 
-        if other_inference_request_count(current_request_counted = False, include_pending = False) > 0:
+        if other_inference_request_count(
+            current_request_counted = False, include_pending = False
+        ) > 0:
             raise HTTPException(
                 status_code = 409,
                 detail = (
@@ -4852,60 +4854,71 @@ async def install_latest_transformers_route(
         # succeeded and the swap is certain: a failed pip/compat check must not leave
         # the user with their working model gone and only an error dialog. GGUF stays
         # loaded: llama-server never imports transformers.
-        async with inference_lifecycle_gate():
-            backend = get_inference_backend()
-            export_backend = get_export_backend()
+        backend = get_inference_backend()
+        export_backend = get_export_backend()
 
-            def _unload_before_swap() -> None:
-                # Runs on the install thread, inside the gate held above. Any
-                # failure here raises so the previous sidecar stays untouched:
-                # a worker that did not tear down cleanly may still lazy-import
-                # from the directory the swap would replace.
-                #
-                # Export teardown runs FIRST so its failure aborts while the chat
-                # model is still loaded. cleanup_memory shuts the subprocess down
-                # even when the cleanup command itself fails, so judge by worker
-                # liveness, not by its return value.
-                export_backend.cleanup_memory()
-                export_alive = getattr(export_backend, "is_worker_alive", None)
-                if callable(export_alive) and export_alive():
-                    raise RuntimeError("Export worker still alive before the transformers swap")
-                active = getattr(backend, "active_model_name", None)
-                if active:
-                    if not backend.unload_model(active):
-                        raise RuntimeError(
-                            f"Could not unload '{active}' before the transformers swap"
-                        )
-                    note_model_unloaded()
-                    logger.info(
-                        "Unloaded '%s' before swapping in transformers %s",
-                        active,
-                        request.version,
+        def _unload_before_swap() -> None:
+            # Runs on the install thread, inside the gate held by _gated_install. Any
+            # failure here raises so the previous sidecar stays untouched:
+            # a worker that did not tear down cleanly may still lazy-import
+            # from the directory the swap would replace.
+            #
+            # Export teardown runs FIRST so its failure aborts while the chat
+            # model is still loaded. cleanup_memory shuts the subprocess down
+            # even when the cleanup command itself fails, so judge by worker
+            # liveness, not by its return value.
+            export_backend.cleanup_memory()
+            export_alive = getattr(export_backend, "is_worker_alive", None)
+            if callable(export_alive) and export_alive():
+                raise RuntimeError(
+                    "Export worker still alive before the transformers swap"
+                )
+            active = getattr(backend, "active_model_name", None)
+            if active:
+                if not backend.unload_model(active):
+                    raise RuntimeError(
+                        f"Could not unload '{active}' before the transformers swap"
                     )
-                # A failed load can leave a live worker with no active model that
-                # still holds sidecar modules (and blocks the rename on Windows).
-                worker_alive = getattr(backend, "is_worker_alive", None)
-                if callable(worker_alive) and worker_alive():
-                    backend._shutdown_subprocess()
-                    if worker_alive():
-                        raise RuntimeError(
-                            "Inference worker still alive before the transformers swap"
-                        )
+                note_model_unloaded()
+                logger.info(
+                    "Unloaded '%s' before swapping in transformers %s",
+                    active,
+                    request.version,
+                )
+            # A failed load can leave a live worker with no active model that
+            # still holds sidecar modules (and blocks the rename on Windows).
+            worker_alive = getattr(backend, "is_worker_alive", None)
+            if callable(worker_alive) and worker_alive():
+                backend._shutdown_subprocess()
+                if worker_alive():
+                    raise RuntimeError(
+                        "Inference worker still alive before the transformers swap"
+                    )
 
-            def _run_install() -> dict:
-                # Owns the reservation from here: releasing in the thread (not the
-                # route) keeps the lock held if the request is cancelled or times
-                # out while the minute-long install is still staging/renaming.
-                try:
-                    return install_latest_transformers(request.version, _unload_before_swap, True)
-                finally:
-                    end_sidecar_swap()
+        def _run_install() -> dict:
+            # Owns the reservation from here: releasing in the thread (not the
+            # route) keeps the lock held if the request is cancelled or times
+            # out while the minute-long install is still staging/renaming.
+            try:
+                return install_latest_transformers(
+                    request.version, _unload_before_swap, True
+                )
+            finally:
+                end_sidecar_swap()
 
-            install_task = asyncio.ensure_future(asyncio.to_thread(_run_install))
-            owns_reservation = False
-            # shield: a cancelled request stops waiting, but the installer keeps
-            # running to completion instead of being torn down mid-swap.
-            result = await asyncio.shield(install_task)
+        async def _gated_install() -> dict:
+            # The gate is held by THIS task, not the request coroutine: a
+            # cancelled POST unwinding out of an `async with` here would release
+            # the only guard /load honors while the installer thread still runs.
+            async with inference_lifecycle_gate():
+                return await asyncio.to_thread(_run_install)
+
+        install_task = asyncio.ensure_future(_gated_install())
+        owns_reservation = False
+        # shield: a cancelled request stops waiting, but the installer keeps
+        # running to completion (holding the gate) instead of being torn down
+        # mid-swap.
+        result = await asyncio.shield(install_task)
     finally:
         if owns_reservation:
             end_sidecar_swap()

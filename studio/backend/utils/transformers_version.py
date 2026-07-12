@@ -1281,7 +1281,11 @@ def _probe_tier(
     if include_default or floor != "530":
         key = f"{key}\0floor={floor}:def={int(include_default)}"
     if key in _probe_tier_cache:
-        return _probe_tier_cache[key]
+        cached = _probe_tier_cache[key]
+        # Kill switch beats the cache (matching _config_model_types): a probe that
+        # resolved to latest before the switch was set must not keep activating it.
+        if cached != "latest" or not _latest_tier_disabled():
+            return cached
 
     def _cache(tier: str, *, skipped: bool) -> str:
         # Do not pin a result that depended on a skipped lower tier: once that sidecar is
