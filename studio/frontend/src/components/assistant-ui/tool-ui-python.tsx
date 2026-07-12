@@ -22,7 +22,11 @@ import {
 import { ToolLiveOutput } from "./tool-live-output";
 import { ToolResultOutput } from "./tool-result-output";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { toolOutputKey, useToolPaneScope } from "@/features/chat";
+import {
+  preferFullToolOutput,
+  toolOutputKey,
+  useToolPaneScope,
+} from "@/features/chat";
 
 interface StructuredResult {
   text: string;
@@ -140,14 +144,14 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   }
 
   // When the live stream captured more than the (model-visible, truncated)
-  // final result, show the full stream instead. Session-transient: after a
-  // reload only the truncated result remains.
+  // final result, show the full stream instead -- but never drop the result's
+  // failure/exit status (timeout notice, "Exit code N"), which the stream
+  // never produced. Session-transient: after a reload only the result remains.
   const paneScope = useToolPaneScope();
   const fullOutput = useChatRuntimeStore(
     (s) => s.toolFullOutput[toolOutputKey(paneScope, toolCallId)] ?? "",
   );
-  const displayOutput =
-    fullOutput.length > output.length ? fullOutput : output;
+  const displayOutput = preferFullToolOutput(fullOutput, output);
 
   const authToken = getAuthToken();
 

@@ -30,13 +30,35 @@ import io
 import os
 import sys
 
+# Prefixes that never exist on the sandbox host, so remapping is always safe.
 _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
+# /tmp exists on the host and model code can legitimately create /tmp/outputs
+# (e.g. Path('/tmp/outputs').mkdir(), which goes through the unpatched os.mkdir,
+# or a subprocess mkdir). Remap it only while it is absent -- healing the
+# code-interpreter habit into the per-conversation workdir so the files are
+# preserved/served and isolated -- and pass a real /tmp/outputs straight
+# through so we never shadow a directory the user's own code created.
+_CONDITIONAL_PREFIXES = ("/tmp/outputs",)
 _notified = False
+
+
+def _map_onto_cwd(prefix, text):
+    """Map ``<prefix>/rest`` onto ``./rest`` in the CWD and note it once."""
+    global _notified
+    rel = text[len(prefix) :].lstrip("/")
+    mapped = os.path.join(os.getcwd(), rel) if rel else os.getcwd()
+    if not _notified:
+        _notified = True
+        print(
+            f"note: {prefix} does not exist in this sandbox; "
+            f"using the working directory instead ({text} -> {mapped})",
+            file = sys.stderr,
+        )
+    return mapped
 
 
 def _remap(path):
     """Map ``<prefix>/rest`` onto ``./rest`` in the CWD; other paths pass through."""
-    global _notified
     try:
         text = os.fspath(path)
     except TypeError:
@@ -45,16 +67,12 @@ def _remap(path):
         return path
     for prefix in _PREFIXES:
         if text == prefix or text.startswith(prefix + "/"):
-            rel = text[len(prefix) :].lstrip("/")
-            mapped = os.path.join(os.getcwd(), rel) if rel else os.getcwd()
-            if not _notified:
-                _notified = True
-                print(
-                    f"note: {prefix} does not exist in this sandbox; "
-                    f"using the working directory instead ({text} -> {mapped})",
-                    file = sys.stderr,
-                )
-            return mapped
+            return _map_onto_cwd(prefix, text)
+    for prefix in _CONDITIONAL_PREFIXES:
+        # Only heal the habit path while the real directory is absent, so a
+        # /tmp/outputs the user code actually created is never shadowed.
+        if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(prefix):
+            return _map_onto_cwd(prefix, text)
     return path
 
 

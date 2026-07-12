@@ -84,9 +84,11 @@ def _env_int(name: str, default: int) -> int:
 
 
 # Model-visible cap on python/terminal tool results (protects the context
-# window from a runaway stdout). The live UI stream is capped separately
-# (tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS) and much higher, so the
-# user still sees the full output even when the model's copy is truncated.
+# window from a runaway stdout). When a live UI stream is delivered it is
+# capped separately (tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS) and much
+# higher, so the user sees far more than the model's truncated copy; on
+# non-streaming chat/API and direct execute_tool() paths nothing is streamed,
+# which is why the truncation notice stays mode-neutral (see _truncate).
 _MAX_OUTPUT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000)
 _BLOCKED_COMMANDS_COMMON = frozenset(
     {
@@ -2772,18 +2774,32 @@ def _cancel_watcher(
 
 
 def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
+    # Mode-neutral notice: this same result string serves the streaming UI
+    # path AND non-streaming chat/API and direct execute_tool() callers, where
+    # no output_callback delivers anything to a user, so it must not claim the
+    # user saw the full output. It also stays byte-identical with and without
+    # an output_callback (the streaming vs non-streaming invariant the
+    # regression tests assert), which a mode-dependent wording would break.
     if len(text) > limit:
         return text[:limit] + (
-            f"\n\n... (truncated, {len(text)} chars total; the user was shown "
-            "the full output, and any files the code wrote persist in the "
-            "working directory)"
+            f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
+            "total. The full output is not retained here; any files the code wrote "
+            "persist in the working directory.)"
         )
     return text
 
 
 # ChatGPT code-interpreter path conventions models write out of habit; none of
 # them exist in the Studio sandbox (its CWD is a per-thread persistent dir).
-_MISSING_PATH_PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
+# /tmp/outputs is named in the tool description too, so a failure on it earns
+# the same retry hint (the sitecustomize shim remaps it only while absent).
+_MISSING_PATH_PREFIXES = (
+    "/mnt/data",
+    "/mnt/outputs",
+    "/home/sandbox",
+    "/workspace",
+    "/tmp/outputs",
+)
 
 
 def _missing_path_hint(output: str) -> str:

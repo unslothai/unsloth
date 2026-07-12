@@ -416,6 +416,7 @@ import uuid as _uuid
 from core.inference.tools import (
     PYTHON_TOOL,
     TERMINAL_TOOL,
+    _MAX_OUTPUT_CHARS,
     _env_int,
     _missing_path_hint,
     _truncate,
@@ -423,14 +424,32 @@ from core.inference.tools import (
 )
 
 
-def test_truncate_notice_mentions_user_and_workdir():
+def test_truncate_notice_is_neutral_and_mentions_workdir():
     out = _truncate("y" * 50, limit = 10)
     assert out.startswith("y" * 10)
-    assert "truncated, 50 chars total" in out
-    assert "the user was shown the full output" in out
+    assert "truncated" in out and "50 chars total" in out
     assert "persist in the working directory" in out
+    # The notice must NOT claim the user saw the output: this same wrapper
+    # serves non-streaming chat/API and direct execute_tool() callers where no
+    # output_callback delivers anything to anyone.
+    assert "the user was shown the full output" not in out
+    assert "shown" not in out
     # Under the limit: untouched.
     assert _truncate("short", limit = 10) == "short"
+
+
+def test_truncated_result_identical_and_notice_neutral_with_streaming():
+    # A long output crosses the model-visible cap. The truncation notice must be
+    # byte-identical with and without an output_callback (the streaming vs
+    # non-streaming hard invariant, which a mode-dependent notice would break),
+    # and must not claim the user was shown the full output.
+    code = f"print('x' * {_MAX_OUTPUT_CHARS + 5000})"
+    baseline = _python_exec(code, timeout = 60)
+    streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
+    assert streamed == baseline
+    assert "truncated" in baseline
+    assert "the user was shown the full output" not in baseline
+    assert "persist in the working directory" in baseline
 
 
 def test_result_cap_env_override(monkeypatch):
