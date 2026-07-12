@@ -1124,10 +1124,7 @@ from transformers.modeling_utils import logger as transformers_logger
 # before .to(device) to restore the fast DMA path. The is_integrated gate runs
 # lazily in the wrapper, so this import never inits CUDA (fork-safe; runs before
 # patch_dgx_spark_memory_config). No-op off-UMA. Opt out: UNSLOTH_DISABLE_UMA_CLONE_LOAD=1.
-from ._uma_safetensors import (
-    is_integrated_unified_memory_gpu,
-    patch_unified_memory_safetensors_load,
-)
+from ._uma_safetensors import patch_unified_memory_safetensors_load
 
 patch_unified_memory_safetensors_load()
 
