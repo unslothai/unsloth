@@ -715,11 +715,11 @@ def test_bypass_permissions_folds_to_full_on_request_models():
 def test_ask_auto_self_enable_confirm_on_chat_request():
     # A direct /chat/completions caller that requests ask/auto but omits the
     # legacy confirm flag must still hit the confirmation gate when Studio's own
-    # tool loop is requested (enable_tools / enabled_tools / mcp_enabled).
+    # tool loop is requested. Only the router's own loop-entry signals count
+    # (enable_tools / mcp_enabled); enabled_tools alone never starts the loop.
     for mode in ("ask", "auto"):
         for loop in (
             {"enable_tools": True},
-            {"enabled_tools": ["terminal"]},
             {"mcp_enabled": True},
         ):
             req = ChatCompletionRequest(
@@ -728,6 +728,17 @@ def test_ask_auto_self_enable_confirm_on_chat_request():
                 **loop,
             )
             assert req.confirm_tool_calls is True
+    # enabled_tools by itself is a passthrough filter, not a loop-entry signal:
+    # a client-tool passthrough that also lists enabled_tools must route verbatim
+    # (confirm stays unset), else the confirm-without-stream guard 400s it.
+    for mode in ("ask", "auto"):
+        req = ChatCompletionRequest(
+            messages = [{"role": "user", "content": "hi"}],
+            permission_mode = mode,
+            enabled_tools = ["terminal"],
+            tools = [{"type": "function", "function": {"name": "f"}}],
+        )
+        assert req.confirm_tool_calls is None
     # A contradictory confirm=False is overridden by the explicit mode.
     req = ChatCompletionRequest(
         messages = [{"role": "user", "content": "hi"}],

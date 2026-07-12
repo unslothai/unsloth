@@ -1064,14 +1064,16 @@ class ChatCompletionRequest(BaseModel):
         elif (
             self.permission_mode in ("ask", "auto")
             and not (self.provider_id or self.provider_type)
-            and (self.enable_tools is True or bool(self.enabled_tools) or bool(self.mcp_enabled))
+            and (self.enable_tools is True or bool(self.mcp_enabled))
         ):
             # These modes gate on their own; a direct API caller that omits the
             # legacy confirm flag must still hit the confirmation gate for
             # Studio's own tool loop. Only self-enable when that loop is actually
-            # requested (enable_tools / enabled_tools / mcp_enabled); a plain
-            # client-tool passthrough (client-supplied `tools` that Studio does
-            # not execute) must route verbatim, and external-provider routing
+            # requested (enable_tools / mcp_enabled) -- the router enters the loop
+            # on those signals, not on enabled_tools alone (which merely filters
+            # which tools run). A plain client-tool passthrough (client-supplied
+            # `tools` that Studio does not execute) must route verbatim, and
+            # external-provider routing
             # rejects confirm_tool_calls with tools, so skip the fold there too.
             self.confirm_tool_calls = True
         return self

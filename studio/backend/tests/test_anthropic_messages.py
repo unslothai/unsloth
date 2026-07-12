@@ -1809,6 +1809,41 @@ class TestAnthropicMessagesToolRouting:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
 
+    def test_permission_mode_rejected_before_auto_switch(self, monkeypatch):
+        # The unsupported-mode rejection must run before _maybe_auto_switch_model,
+        # so an invalid confirm-gated request never evicts the resident model
+        # (mirrors the pre-switch malformed- and mixed-tool guards).
+        import routes.inference as inf_mod
+
+        switch_calls = []
+
+        async def _rec_switch(*_args, **_kwargs):
+            switch_calls.append(1)
+
+        monkeypatch.setattr(inf_mod, "_maybe_auto_switch_model", _rec_switch)
+        safe_tools = [{"type": "web_search_20250305", "name": "web_search"}]
+
+        # ask/auto (any server tool) and an omitted mode selecting a local tool are
+        # rejected up front, before the switch runs.
+        for payload in (
+            _basic_payload(tools = safe_tools, permission_mode = "ask"),
+            _basic_payload(tools = safe_tools, permission_mode = "auto"),
+            _basic_payload(tools = [{"type": "terminal", "name": "terminal"}]),
+        ):
+            switch_calls.clear()
+            _mock_backend(monkeypatch)
+            with pytest.raises(HTTPException) as exc:
+                _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert exc.value.status_code == 400
+            assert switch_calls == [], "rejection must precede the auto-switch"
+
+        # A supported request (off) still reaches the switch and runs the loop.
+        switch_calls.clear()
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(tools = safe_tools, permission_mode = "off")
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert switch_calls == [1]
+
     def test_per_request_enable_tools_false_blocks_server_tool_alias(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
