@@ -6943,8 +6943,7 @@ async def openai_chat_completions(
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
                     # Bypass Permissions takes precedence over the confirm gate:
                     # never prompt while bypassing.
-                    confirm_tool_calls = _effective_confirm
-                    and not bool(payload.bypass_permissions),
+                    confirm_tool_calls = _effective_confirm and not bool(payload.bypass_permissions),
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
                 )
@@ -8246,8 +8245,7 @@ async def openai_chat_completions(
                 rag_scope = payload.rag_scope,
                 # Bypass Permissions takes precedence over the confirm gate:
                 # never prompt while bypassing.
-                confirm_tool_calls = _sf_effective_confirm
-                and not bool(payload.bypass_permissions),
+                confirm_tool_calls = _sf_effective_confirm and not bool(payload.bypass_permissions),
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = payload.permission_mode,
                 use_adapter = payload.use_adapter,
