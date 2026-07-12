@@ -6365,9 +6365,7 @@ async def openai_chat_completions(
         _use_tools_intent = _effective_enable_tools(payload) or (
             bool(payload.mcp_enabled) and _cli_policy_pre is not False
         )
-        if payload.tool_choice == "none" and not _explicit_studio_tool_loop_requested(
-            payload
-        ):
+        if payload.tool_choice == "none" and not _explicit_studio_tool_loop_requested(payload):
             _use_tools_intent = False
         _client_tool_passthrough = (
             bool(payload.tools)
