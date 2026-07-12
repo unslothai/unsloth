@@ -51,7 +51,17 @@ def _ensure_export_supported() -> None:
 
     Keeps the backend authoritative even if a client bypasses the UI gate. Read-only endpoints
     (scan/status/logs) are intentionally NOT gated so the Export page can still render the reason.
+    Also refuses (409) while a latest-transformers install is swapping .venv_t5_latest: an
+    export worker spawned mid-swap could activate a half-replaced sidecar.
     """
+    from utils.transformers_latest import is_install_in_progress
+
+    if is_install_in_progress():
+        raise HTTPException(
+            status_code = 409,
+            detail = "A transformers installation is in progress. Retry when it completes.",
+        )
+
     from utils.hardware import export_capability
 
     cap = export_capability()

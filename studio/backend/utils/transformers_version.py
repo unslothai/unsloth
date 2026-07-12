@@ -1035,6 +1035,10 @@ def _model_types_from_source(source: str) -> set[str]:
 
 def _config_model_types(tier: str) -> frozenset[str]:
     """model_type keys in a tier's CONFIG_MAPPING_NAMES (5.10 moved it to auto_mappings.py)."""
+    # Kill switch beats the cache: a mapping read before the operator set it must
+    # not keep routing latest-only models into the sidecar until restart.
+    if tier == "latest" and _latest_tier_disabled():
+        return frozenset()
     cached = _config_mapping_cache.get(tier)
     if cached is not None:
         return cached
@@ -1882,11 +1886,18 @@ def _venv_t5_latest_packages(version: str, extra_packages: tuple[str, ...] = ())
     ) + tuple(extra_packages)
 
 
-def _stage_and_swap_latest_venv(version: str, packages: tuple[str, ...]) -> bool:
+def _stage_and_swap_latest_venv(
+    version: str,
+    packages: tuple[str, ...],
+    before_swap = None,
+) -> bool:
     """Stage-and-swap: build the new sidecar next to the live one and swap only
     once complete, so a failed install or marker write never destroys a
     previously working .venv_t5_latest or its pin. Shared by the consented
-    install and the lazy repair path."""
+    install and the lazy repair path. *before_swap* (optional callable) runs
+    after the staging build succeeds and immediately before the live dir is
+    replaced, so callers can tear down workers only when the swap is certain;
+    if it raises, the previous sidecar is left untouched."""
     staging = _VENV_T5_LATEST_DIR + ".staging"
     retired = _VENV_T5_LATEST_DIR + ".old"
     shutil.rmtree(staging, ignore_errors = True)
@@ -1898,6 +1909,8 @@ def _stage_and_swap_latest_venv(version: str, packages: tuple[str, ...]) -> bool
         (Path(staging) / _LATEST_PIN_MARKER).write_text(
             json.dumps({"version": version, "packages": list(packages)}), encoding = "utf-8"
         )
+        if before_swap is not None:
+            before_swap()
         shutil.rmtree(retired, ignore_errors = True)
         if os.path.isdir(_VENV_T5_LATEST_DIR):
             os.rename(_VENV_T5_LATEST_DIR, retired)
@@ -1944,7 +1957,11 @@ def _ensure_venv_t5_latest_exists() -> bool:
     return _stage_and_swap_latest_venv(version, packages)
 
 
-def ensure_latest_transformers_venv(version: str, extra_packages: tuple[str, ...] = ()) -> bool:
+def ensure_latest_transformers_venv(
+    version: str,
+    extra_packages: tuple[str, ...] = (),
+    before_swap = None,
+) -> bool:
     """Provision .venv_t5_latest/ pinned to *version* (user-consented install path).
 
     Reuses the same --target/--no-deps installer as the fixed sidecars, then writes the pin
@@ -1970,7 +1987,7 @@ def ensure_latest_transformers_venv(version: str, extra_packages: tuple[str, ...
         and _venv_dir_is_valid(_VENV_T5_LATEST_DIR, packages)
     ):
         return True
-    return _stage_and_swap_latest_venv(version, packages)
+    return _stage_and_swap_latest_venv(version, packages, before_swap = before_swap)
 
 
 # --- llm-compressor-main shadow (FP8/FP4 export of newer-transformers models) ---------------------

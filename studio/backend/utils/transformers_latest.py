@@ -485,13 +485,22 @@ def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
     return tuple(extras), blockers
 
 
-def install_latest_transformers(version: str) -> dict:
+def is_install_in_progress() -> bool:
+    """True while a consented latest-transformers install runs. Training and export
+    starts check this so a fresh worker never activates the sidecar mid-swap."""
+    with _install_lock:
+        return _is_installing
+
+
+def install_latest_transformers(version: str, before_swap = None) -> dict:
     """Consented install of the latest transformers sidecar; returns a structured result.
 
     Guards: the requested *version* must match the current PyPI latest from the (cached)
     snapshot, so a client cannot pin an arbitrary package version through this endpoint.
     On success ``.venv_t5_latest`` is provisioned and pinned; routing then resolves the
-    new tier automatically on this and every future start.
+    new tier automatically on this and every future start. *before_swap* is forwarded
+    to the stage-and-swap: it runs only after the staged install succeeded, right
+    before the live sidecar is replaced.
     """
     global _is_installing
     with _install_lock:
@@ -503,13 +512,13 @@ def install_latest_transformers(version: str) -> dict:
             }
         _is_installing = True
     try:
-        return _install_latest_transformers_locked(version)
+        return _install_latest_transformers_locked(version, before_swap = before_swap)
     finally:
         with _install_lock:
             _is_installing = False
 
 
-def _install_latest_transformers_locked(version: str) -> dict:
+def _install_latest_transformers_locked(version: str, before_swap = None) -> dict:
     """Body of install_latest_transformers; runs with the in-progress flag held."""
     if _disabled():
         return {
@@ -556,7 +565,7 @@ def _install_latest_transformers_locked(version: str) -> dict:
             f"{version}: this environment does not satisfy {', '.join(blockers)}. "
             "A Studio update is required first.",
         }
-    if not ensure_latest_transformers_venv(version, extra_packages):
+    if not ensure_latest_transformers_venv(version, extra_packages, before_swap = before_swap):
         return {
             "success": False,
             "version": version,

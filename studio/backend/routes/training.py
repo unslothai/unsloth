@@ -146,6 +146,18 @@ async def start_training(
         # No in-process ensure_transformers_version(): the subprocess
         # (worker.py) activates the correct version before importing ML libs.
 
+        # A consented latest-transformers install stage-and-swaps .venv_t5_latest;
+        # a worker spawned mid-swap could activate a half-replaced sidecar.
+        from utils.transformers_latest import is_install_in_progress
+        if is_install_in_progress():
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "A transformers installation is in progress. "
+                    "Retry when it completes."
+                ),
+            )
+
         backend = get_training_backend()
 
         # S3 dataset loading needs the optional boto3 dependency. Reject early

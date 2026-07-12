@@ -4815,21 +4815,35 @@ async def install_latest_transformers_route(
 
     # Hold the same lifecycle gate /load holds for its whole load, so no HF worker
     # can start (or be mid-load with active_model_name unset) while the sidecar is
-    # swapped. GGUF stays loaded: llama-server never imports transformers.
+    # swapped. The chat model is unloaded via before_swap, i.e. only once the staged
+    # install succeeded and the swap is certain: a failed pip/compat check must not
+    # leave the user with their working model gone and only an error dialog. GGUF
+    # stays loaded: llama-server never imports transformers.
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
 
     async with inference_lifecycle_gate():
         backend = get_inference_backend()
-        active = getattr(backend, "active_model_name", None)
-        if active:
-            await asyncio.to_thread(backend.unload_model, active)
-            note_model_unloaded()
-            logger.info(
-                "Unloaded '%s' before installing transformers %s",
-                active,
-                request.version,
-            )
-        result = await asyncio.to_thread(install_latest_transformers, request.version)
+        export_backend = get_export_backend()
+
+        def _unload_before_swap() -> None:
+            # Runs on the install thread, inside the gate held above.
+            active = getattr(backend, "active_model_name", None)
+            if active:
+                backend.unload_model(active)
+                note_model_unloaded()
+                logger.info(
+                    "Unloaded '%s' before swapping in transformers %s",
+                    active,
+                    request.version,
+                )
+            # An idle export worker persists between ops with the old sidecar
+            # imported; cleanup_memory serializes with ops and shuts it down
+            # (fast no-op when no worker is alive).
+            export_backend.cleanup_memory()
+
+        result = await asyncio.to_thread(
+            install_latest_transformers, request.version, _unload_before_swap
+        )
     if not result["success"]:
         raise HTTPException(status_code = 400, detail = result["message"])
     return InstallLatestTransformersResponse(**result)

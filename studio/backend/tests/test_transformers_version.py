@@ -2686,10 +2686,84 @@ class TestLatestTierForces16Bit:
             "runs, and hold the lifecycle gate while unloading the chat model and "
             "swapping the sidecar."
         )
-        # The unload (by name) and install must happen INSIDE the gate so no /load
-        # can interleave with the swap.
+        # The unload (by name, via before_swap so failed installs keep the model
+        # loaded), the idle export-worker teardown, and the install itself must
+        # all sit INSIDE the gate so no /load can interleave with the swap.
         gated = body.split("inference_lifecycle_gate():", 1)[1]
-        assert "unload_model, active" in gated and "install_latest_transformers," in gated
+        assert "unload_model(active)" in gated
+        assert "cleanup_memory()" in gated
+        assert "install_latest_transformers, request.version, _unload_before_swap" in gated
+
+    def test_start_routes_refuse_during_install(self):
+        # A worker spawned mid-swap could activate a half-replaced sidecar.
+        training = self._read("routes/training.py")
+        start = training.split("async def start_training", 1)[1].split("\nasync def ", 1)[0]
+        assert "is_install_in_progress" in start, (
+            "training /start must refuse while a transformers install is in progress"
+        )
+        export = self._read("routes/export.py")
+        helper = export.split("def _ensure_export_supported", 1)[1].split("\ndef ", 1)[0]
+        assert "is_install_in_progress" in helper, (
+            "mutating export routes must refuse while a transformers install is in progress"
+        )
+
+
+class TestStageAndSwapBeforeSwap:
+    """before_swap fires only when the staged install succeeded and the swap is next."""
+
+    def _setup(self, monkeypatch, tmp_path, build_ok):
+        import utils.transformers_version as tv
+
+        live = tmp_path / "venv_latest"
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(live))
+
+        def _fake_build(target, packages, label):
+            if build_ok:
+                Path(target).mkdir(parents = True, exist_ok = True)
+            return build_ok
+
+        monkeypatch.setattr(tv, "_ensure_venv_dir", _fake_build)
+        return tv, live
+
+    def test_called_after_successful_staging(self, monkeypatch, tmp_path):
+        tv, live = self._setup(monkeypatch, tmp_path, build_ok = True)
+        calls = []
+        assert tv._stage_and_swap_latest_venv(
+            "5.99.0", ("transformers==5.99.0",), before_swap = lambda: calls.append(1)
+        )
+        assert calls == [1] and live.is_dir()
+
+    def test_not_called_when_staging_fails(self, monkeypatch, tmp_path):
+        tv, live = self._setup(monkeypatch, tmp_path, build_ok = False)
+        calls = []
+        assert not tv._stage_and_swap_latest_venv(
+            "5.99.0", ("transformers==5.99.0",), before_swap = lambda: calls.append(1)
+        )
+        assert calls == [] and not live.exists()
+
+    def test_failure_in_before_swap_keeps_previous_sidecar(self, monkeypatch, tmp_path):
+        tv, live = self._setup(monkeypatch, tmp_path, build_ok = True)
+        live.mkdir()
+        (live / "sentinel").write_text("old")
+
+        def _boom():
+            raise RuntimeError("worker teardown failed")
+
+        assert not tv._stage_and_swap_latest_venv(
+            "5.99.0", ("transformers==5.99.0",), before_swap = _boom
+        )
+        assert (live / "sentinel").read_text() == "old"
+
+
+class TestKillSwitchBeatsMappingCache:
+    def test_cached_latest_mapping_ignored_when_disabled(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setitem(tv._config_mapping_cache, "latest", frozenset({"brandnew"}))
+        monkeypatch.setenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "1")
+        assert tv._config_model_types("latest") == frozenset()
+        monkeypatch.delenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS")
+        assert tv._config_model_types("latest") == frozenset({"brandnew"})
 
 
 class TestRaiseTierForNested:
