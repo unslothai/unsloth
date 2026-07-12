@@ -2724,9 +2724,14 @@ class TestSidecarSwapReservation:
     def _repair_setup(self, monkeypatch, tmp_path):
         import utils.transformers_version as tv
 
-        monkeypatch.setattr(tv, "_latest_pin_data", lambda: {
-            "version": "5.99.0", "packages": ["transformers==5.99.0"],
-        })
+        monkeypatch.setattr(
+            tv,
+            "_latest_pin_data",
+            lambda: {
+                "version": "5.99.0",
+                "packages": ["transformers==5.99.0"],
+            },
+        )
         monkeypatch.setattr(tv, "_venv_dir_is_valid", lambda d, p: False)
         monkeypatch.setattr(tv, "_env_offline", lambda: False)
         return tv
@@ -2735,7 +2740,11 @@ class TestSidecarSwapReservation:
         tv = self._repair_setup(monkeypatch, tmp_path)
         seen = {}
 
-        def _fake_swap(version, packages, before_swap = None):
+        def _fake_swap(
+            version,
+            packages,
+            before_swap = None,
+        ):
             seen["active_during_swap"] = tv.sidecar_swap_in_progress()
             return True
 

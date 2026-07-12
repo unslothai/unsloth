@@ -491,11 +491,14 @@ def is_install_in_progress() -> bool:
     reservation. Training and export starts check this so a fresh worker never
     activates the sidecar mid-swap."""
     from utils.transformers_version import sidecar_swap_in_progress
-
     return sidecar_swap_in_progress()
 
 
-def install_latest_transformers(version: str, before_swap = None, reserved: bool = False) -> dict:
+def install_latest_transformers(
+    version: str,
+    before_swap = None,
+    reserved: bool = False,
+) -> dict:
     """Consented install of the latest transformers sidecar; returns a structured result.
 
     Guards: the requested *version* must match the current PyPI latest from the (cached)
