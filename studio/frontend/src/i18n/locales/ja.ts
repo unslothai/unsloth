@@ -41,7 +41,7 @@ export const ja = {
       compare: "比較",
       search: "検索",
       hub: "ハブ",
-      train: "トレイン",
+      train: "トレーニング",
       recipes: "レシピ",
       export: "エクスポート",
       recents: "履歴",
@@ -494,7 +494,7 @@ export const ja = {
     },
   },
   studio: {
-    routeTitle: "トレイン",
+    routeTitle: "トレーニング",
     title: "Fine-tuning Studio",
     subtitles: {
       configure: "設定とトレーニングの開始",
