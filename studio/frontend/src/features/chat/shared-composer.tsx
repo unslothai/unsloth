@@ -962,6 +962,9 @@ export function SharedComposer({
           const upgraded = await confirmTransformersUpgradeIfNeeded({
             modelName: sel.id,
             upgrade: validation.transformers_upgrade,
+            // With no installable release, a model that ships custom code can
+            // still continue into the trust_remote_code gate below (last resort).
+            trustRemoteCodeFallback: validation.requires_trust_remote_code,
           });
           if (!upgraded) {
             throw new Error(

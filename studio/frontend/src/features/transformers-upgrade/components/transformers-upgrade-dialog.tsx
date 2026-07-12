@@ -34,6 +34,9 @@ export function TransformersUpgradeDialog() {
   const upgrade = useTransformersUpgradeDialogStore((s) => s.upgrade);
   const phase = useTransformersUpgradeDialogStore((s) => s.phase);
   const errorMessage = useTransformersUpgradeDialogStore((s) => s.errorMessage);
+  const trustRemoteCodeFallback = useTransformersUpgradeDialogStore(
+    (s) => s.trustRemoteCodeFallback,
+  );
   const install = useTransformersUpgradeDialogStore((s) => s.install);
   const resolve = useTransformersUpgradeDialogStore((s) => s.resolve);
 
@@ -83,10 +86,11 @@ export function TransformersUpgradeDialog() {
                     </>
                   ) : devOnly ? (
                     <>
-                      It is currently only available on the transformers
-                      development branch (main). Studio does not install
-                      development builds; support arrives with the next
-                      transformers release on PyPI.
+                      Even the latest transformers release on PyPI does not
+                      support it yet: the architecture is only available on the
+                      transformers development branch (main), and Studio does
+                      not install development builds. Support arrives with the
+                      next transformers release on PyPI.
                     </>
                   ) : (
                     <>
@@ -94,6 +98,13 @@ export function TransformersUpgradeDialog() {
                       cannot be loaded.
                     </>
                   )}
+                  {!installable && trustRemoteCodeFallback ? (
+                    <>
+                      {" "}
+                      This model also ships its own modeling code; you can
+                      continue and review enabling that custom code instead.
+                    </>
+                  ) : null}
                 </AlertDialogDescription>
               </div>
 
@@ -136,6 +147,14 @@ export function TransformersUpgradeDialog() {
               ) : (
                 `Install transformers ${version}`
               )}
+            </AlertDialogAction>
+          ) : trustRemoteCodeFallback ? (
+            // No installable release, but the model declares custom (auto_map)
+            // code: let the load continue into the trust_remote_code consent
+            // dialog as the last resort. Resolving true resumes the caller,
+            // whose existing security gate then reviews the custom code.
+            <AlertDialogAction onClick={() => resolve(true)}>
+              Continue with custom code
             </AlertDialogAction>
           ) : null}
         </AlertDialogFooter>

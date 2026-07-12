@@ -17,10 +17,17 @@ interface TransformersUpgradeDialogStore {
   upgrade: TransformersUpgradeInfo | null;
   phase: TransformersUpgradePhase;
   errorMessage: string | null;
-  /** Open the dialog for a paused load; resolves true only after a successful install. */
+  /** The model also declares custom (auto_map) code, so when no PyPI install is
+   *  possible the load can still continue into the trust_remote_code consent
+   *  flow as a last resort instead of hard-aborting. */
+  trustRemoteCodeFallback: boolean;
+  /** Open the dialog for a paused load; resolves true after a successful install
+   *  (or, with no installable release, after the user continues into the
+   *  custom-code fallback when one exists). */
   requestConsent: (
     modelName: string,
     upgrade: TransformersUpgradeInfo,
+    options?: { trustRemoteCodeFallback?: boolean },
   ) => Promise<boolean>;
   /** Accept/Retry: run the sidecar install; on success resolve(true) and close. */
   install: () => Promise<void>;
@@ -34,7 +41,8 @@ export const useTransformersUpgradeDialogStore =
     upgrade: null,
     phase: "consent",
     errorMessage: null,
-    requestConsent: (modelName, upgrade) =>
+    trustRemoteCodeFallback: false,
+    requestConsent: (modelName, upgrade, options) =>
       new Promise<boolean>((resolve) => {
         pendingResolver?.(false);
         pendingResolver = resolve;
@@ -44,6 +52,7 @@ export const useTransformersUpgradeDialogStore =
           upgrade,
           phase: "consent",
           errorMessage: null,
+          trustRemoteCodeFallback: Boolean(options?.trustRemoteCodeFallback),
         });
       }),
     install: async () => {
@@ -81,6 +90,7 @@ export const useTransformersUpgradeDialogStore =
         upgrade: null,
         phase: "consent",
         errorMessage: null,
+        trustRemoteCodeFallback: false,
       });
       resolver?.(installed);
     },
