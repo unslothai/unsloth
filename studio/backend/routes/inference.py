@@ -3846,15 +3846,13 @@ async def load_model(
     if sidecar_swap_in_progress():
         raise HTTPException(
             status_code = 409,
-            detail = (
-                "A transformers installation is in progress. "
-                "Retry when it completes."
-            ),
+            detail = ("A transformers installation is in progress. Retry when it completes."),
         )
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
     from core.inference.llama_keepwarm import inference_lifecycle_gate
+
     async with inference_lifecycle_gate():
         return await _load_model_impl(request, fastapi_request, current_subject)
 
