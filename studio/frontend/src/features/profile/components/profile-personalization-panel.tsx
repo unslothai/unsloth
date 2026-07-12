@@ -213,7 +213,10 @@ export function ProfilePersonalizationPanel() {
         </button>
       </div>
 
-      <div className="flex w-full max-w-[560px] flex-col gap-2">
+      <div
+        data-settings-label={t("settings.profile.displayName")}
+        className="flex w-full max-w-[560px] flex-col gap-2"
+      >
         <Label htmlFor="profile-display-name" className="text-xs font-medium text-muted-foreground">
           {t("settings.profile.displayName")}
         </Label>
@@ -240,7 +243,10 @@ export function ProfilePersonalizationPanel() {
         </div>
       </div>
 
-      <div className="flex w-full max-w-[560px] flex-col gap-2">
+      <div
+        data-settings-label={t("settings.profile.nickname")}
+        className="flex w-full max-w-[560px] flex-col gap-2"
+      >
         <Label htmlFor="profile-nickname" className="text-xs font-medium text-muted-foreground">
           {t("settings.profile.nickname")}
         </Label>
@@ -267,7 +273,10 @@ export function ProfilePersonalizationPanel() {
         </div>
       </div>
 
-      <div className="flex w-full max-w-[560px] flex-col gap-2">
+      <div
+        data-settings-label={t("settings.profile.avatarShape")}
+        className="flex w-full max-w-[560px] flex-col gap-2"
+      >
         <Label className="text-xs font-medium text-muted-foreground">
           {t("settings.profile.avatarShape")}
         </Label>

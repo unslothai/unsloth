@@ -117,10 +117,18 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
         // The wrapper is now the flex/grid item, so mirror the field's width:
         // default to the full width the bare input used, and let an explicit
         // w-*/max-w-* from the caller win so the stepper stays on the field edge.
+        // Also carry React Flow interaction classes (nodrag/nopan/nowheel) so
+        // the stepper buttons, which live in the wrapper, don't drag the node.
         "group/number relative inline-flex items-center w-full min-w-0",
         (className ?? "")
           .split(/\s+/)
-          .filter((c) => /^(?:min-w|max-w|w)-/.test(c)),
+          .filter(
+            (c) =>
+              /^(?:min-w|max-w|w)-/.test(c) ||
+              c === "nodrag" ||
+              c === "nopan" ||
+              c === "nowheel",
+          ),
       )}
     >
       {field}

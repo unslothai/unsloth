@@ -215,25 +215,34 @@ export function usePersonalizationSync(enabled: boolean): void {
         const remote = await loadPersonalization();
         if (cancelled) return;
         if (remote.saved) {
+          // Legacy records predating a field come back server-defaulted. Keep
+          // the local value and re-push it (lastSaved below records the remote
+          // default so the push detects the diff) rather than treating the
+          // default as an explicit remote choice. A record that actually stored
+          // the field reports <field>Saved=true and still wins.
+          const localGreeting = useUserProfileStore.getState().showGreetingSloth;
+          const remoteGreeting = remote.profile.showGreetingSloth !== false;
+          const keepLocalGreeting =
+            remote.greetingSlothSaved === false && localGreeting === false;
           const nextProfile: ProfileSnapshot = {
             displayName: remote.profile.displayName ?? "",
             nickname: remote.profile.nickname ?? "",
             avatarDataUrl: remote.profile.avatarDataUrl ?? null,
             avatarShape:
               remote.profile.avatarShape === "rounded" ? "rounded" : "circle",
-            showGreetingSloth: remote.profile.showGreetingSloth !== false,
+            showGreetingSloth: keepLocalGreeting ? localGreeting : remoteGreeting,
           };
           const nextTheme = remote.appearance.theme;
-          const nextPalette = isPalette(remote.appearance.palette)
+          const localPalette = latestPaletteRef.current;
+          const remotePalette = isPalette(remote.appearance.palette)
             ? remote.appearance.palette
-            : latestPaletteRef.current;
+            : localPalette;
+          const keepLocalPalette =
+            remote.paletteSaved === false && localPalette !== "standard";
+          const nextPalette = keepLocalPalette ? localPalette : remotePalette;
           const remoteCustomization = sanitizeCustomization(
             remote.appearance.customization,
           );
-          // A record saved before the customization field existed reports
-          // customizationSaved=false with the field server-defaulted. Keep local
-          // overrides (and re-push them below) instead of wiping them; an
-          // explicit remote reset reports customizationSaved=true and still wins.
           const localCustomization = latestCustomizationRef.current;
           const keepLocalCustomization =
             remote.customizationSaved === false &&
@@ -256,13 +265,14 @@ export function usePersonalizationSync(enabled: boolean): void {
           }
           if (nextLanguage !== latestLanguageRef.current)
             setLocale(nextLanguage);
+          // lastSaved records what the server actually has (server-side defaults
+          // for legacy fields) so the debounced push re-uploads preserved local
+          // values.
           lastSavedRef.current = serialized(
             payload(
-              nextProfile,
+              { ...nextProfile, showGreetingSloth: remoteGreeting },
               nextTheme,
-              nextPalette,
-              // Record what the server actually has so the debounced push
-              // re-uploads any preserved local customization.
+              remotePalette,
               remoteCustomization,
               nextLanguage,
             ),

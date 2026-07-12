@@ -750,9 +750,11 @@ class PersonalizationPayload(BaseModel):
 
 class PersonalizationResponse(PersonalizationPayload):
     saved: bool = False
-    # False when the stored record predates the customization field, so the
-    # client keeps local overrides instead of treating server defaults as a reset.
+    # False when the stored record predates a field, so the client keeps local
+    # overrides instead of treating a server-filled default as an explicit value.
     customizationSaved: bool = False
+    paletteSaved: bool = False
+    greetingSlothSaved: bool = False
 
 
 @router.get("/personalization", response_model = PersonalizationResponse)
@@ -763,7 +765,10 @@ def get_personalization_settings(
     response = PersonalizationResponse.model_validate(stored or {})
     response.saved = bool(stored)
     appearance = stored.get("appearance") if isinstance(stored, dict) else None
+    profile = stored.get("profile") if isinstance(stored, dict) else None
     response.customizationSaved = isinstance(appearance, dict) and "customization" in appearance
+    response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
+    response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
     return response
 
 
