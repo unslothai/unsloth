@@ -116,7 +116,10 @@ def test_terminal_classifier(command, unsafe):
         ("globals()['open']('x', 'w')", True),  # dynamic open lookup
         ("import pickle\npickle.loads(b'')", True),  # code exec on load
         ("import io\nio.FileIO('out', 'w')", True),  # raw write handle
-        ("import zipfile\nprint(zipfile.ZipFile('a').open('n.txt', 'r'))", False),  # explicit read mode
+        (
+            "import zipfile\nprint(zipfile.ZipFile('a').open('n.txt', 'r'))",
+            False,
+        ),  # explicit read mode
     ],
 )
 def test_python_classifier(code, unsafe):
