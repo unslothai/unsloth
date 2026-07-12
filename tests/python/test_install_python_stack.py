@@ -239,7 +239,9 @@ class TestPinnedIndexClearsUvEnv:
         """PIP_EXTRA_INDEX_URL is stripped for pinned commands so the pip
         fallback cannot satisfy torch from an inherited extra index."""
         with mock.patch.dict(os.environ, {"PIP_EXTRA_INDEX_URL": "https://mirror/simple"}):
-            env = ips._install_env_for_cmd(["pip", "install", "torch", "--index-url", "https://x/cu128"])
+            env = ips._install_env_for_cmd(
+                ["pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
         assert env is not None and "PIP_EXTRA_INDEX_URL" not in env
 
     def test_pinned_cmd_strips_uv_torch_backend(self):

@@ -551,19 +551,21 @@ class TestPinnedIndexClearsUvEnvParity:
         assert "-u UV_TORCH_BACKEND" in sh, "install.sh pinned scrub must clear UV_TORCH_BACKEND"
         for path in (INSTALL_PS1, SETUP_PS1):
             text = path.read_text(encoding = "utf-8")
-            assert "'UV_TORCH_BACKEND'" in text, f"{path.name} pinned scrub must clear UV_TORCH_BACKEND"
+            assert (
+                "'UV_TORCH_BACKEND'" in text
+            ), f"{path.name} pinned scrub must clear UV_TORCH_BACKEND"
         stack = STACK_PY.read_text(encoding = "utf-8")
-        assert '"UV_TORCH_BACKEND",' in stack, (
-            "install_python_stack.py strip tuple must include UV_TORCH_BACKEND"
-        )
+        assert (
+            '"UV_TORCH_BACKEND",' in stack
+        ), "install_python_stack.py strip tuple must include UV_TORCH_BACKEND"
 
     def test_stack_py_strips_pip_extra_index_for_pip_fallback(self):
         """The pip fallback honours PIP_EXTRA_INDEX_URL (pip adds it IN ADDITION
         to --index-url), so the pinned-command scrub must strip it."""
         stack = STACK_PY.read_text(encoding = "utf-8")
-        assert '"PIP_EXTRA_INDEX_URL",' in stack, (
-            "install_python_stack.py strip tuple must include PIP_EXTRA_INDEX_URL"
-        )
+        assert (
+            '"PIP_EXTRA_INDEX_URL",' in stack
+        ), "install_python_stack.py strip tuple must include PIP_EXTRA_INDEX_URL"
 
     def test_setup_ps1_stale_check_requires_rocm_digit(self):
         """The marker stale check must use the same rocm+digit gate as the
@@ -571,10 +573,9 @@ class TestPinnedIndexClearsUvEnvParity:
         studio update."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         stale = text[text.find("Get-RocmPinStaleTags -PinLeaf") - 2500 :][:2500]
-        assert "-match '^rocm\\d'" in stale.replace("\\", "\\"), (
-            "setup.ps1 stale check must digit-gate rocm leaves"
-        )
-        assert stale.count("-like 'rocm*'") == 0, (
-            "setup.ps1 stale check must not use a bare -like 'rocm*' glob"
-        )
-
+        assert "-match '^rocm\\d'" in stale.replace(
+            "\\", "\\"
+        ), "setup.ps1 stale check must digit-gate rocm leaves"
+        assert (
+            stale.count("-like 'rocm*'") == 0
+        ), "setup.ps1 stale check must not use a bare -like 'rocm*' glob"
