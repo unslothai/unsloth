@@ -10,6 +10,7 @@ import argparse
 import atexit
 import errno
 import fnmatch
+import glob
 import hashlib
 import json
 import os
@@ -265,6 +266,7 @@ class HostInfo:
     has_physical_nvidia: bool
     has_usable_nvidia: bool
     has_rocm: bool = False
+    has_intel_gpu: bool = False
     rocm_gfx_target: str | None = None
     # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
     # Skips a macos prebuilt whose minimum-OS exceeds this host.
@@ -1284,162 +1286,6 @@ def synthetic_checksums_for_release(
     )
 
 
-def parse_direct_linux_release_bundle(
-    repo: str, release: dict[str, Any]
-) -> PublishedReleaseBundle | None:
-    release_tag = release.get("tag_name")
-    if not isinstance(release_tag, str) or not release_tag:
-        return None
-
-    assets = release_asset_map(release)
-    artifacts: list[PublishedLlamaArtifact] = []
-    inferred_labels: list[str] = []
-
-    linux_asset_re = re.compile(
-        r"^app-(?P<label>.+)-(?P<target>linux-x64(?:-cpu)?|linux-x64-cuda\d+-(?:older|newer|portable))\.tar\.gz$"
-    )
-    for asset_name in sorted(assets):
-        match = linux_asset_re.fullmatch(asset_name)
-        if not match:
-            continue
-        inferred_labels.append(match.group("label"))
-        target = match.group("target")
-        if target in {"linux-x64", "linux-x64-cpu"}:
-            artifacts.append(
-                PublishedLlamaArtifact(
-                    asset_name = asset_name,
-                    install_kind = "linux-cpu",
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
-                    bundle_profile = None,
-                    rank = 1000,
-                )
-            )
-            continue
-
-        bundle_profile = target.removeprefix("linux-x64-")
-        profile = _resolve_linux_bundle_profile(bundle_profile)
-        if profile is None:
-            continue
-        artifacts.append(
-            PublishedLlamaArtifact(
-                asset_name = asset_name,
-                install_kind = "linux-cuda",
-                runtime_line = str(profile["runtime_line"]),
-                coverage_class = str(profile["coverage_class"]),
-                supported_sms = [str(value) for value in profile["supported_sms"]],
-                min_sm = int(profile["min_sm"]),
-                max_sm = int(profile["max_sm"]),
-                bundle_profile = bundle_profile,
-                rank = int(profile["rank"]),
-            )
-        )
-
-    if not artifacts:
-        return None
-
-    upstream_tag = (
-        release_tag
-        if is_release_tag_like(release_tag)
-        else inferred_labels[0]
-        if len(set(inferred_labels)) == 1 and inferred_labels
-        else release_tag
-    )
-    selection_log = [
-        f"published_release: repo={repo}",
-        f"published_release: tag={release_tag}",
-        f"published_release: upstream_tag={upstream_tag}",
-        "published_release: direct_asset_scan=linux",
-    ]
-    return PublishedReleaseBundle(
-        repo = repo,
-        release_tag = release_tag,
-        upstream_tag = upstream_tag,
-        assets = assets,
-        manifest_asset_name = DEFAULT_PUBLISHED_MANIFEST_ASSET,
-        artifacts = artifacts,
-        selection_log = selection_log,
-    )
-
-
-def direct_linux_release_plan(
-    release: dict[str, Any], host: HostInfo, repo: str, requested_tag: str
-) -> InstallReleasePlan | None:
-    bundle = parse_direct_linux_release_bundle(repo, release)
-    if bundle is None:
-        return None
-    if not direct_release_matches_request(
-        release_tag = bundle.release_tag,
-        llama_tag = bundle.upstream_tag,
-        requested_tag = requested_tag,
-    ):
-        return None
-
-    attempts: list[AssetChoice] = []
-    if host.has_usable_nvidia:
-        # Prefer the cudart major Studio loads at runtime (torch's bundled
-        # libcudart), not the newest on disk. Otherwise a stray cuda13
-        # runtime outranks the torch cuda12 the binary links against.
-        torch_preference = detect_torch_cuda_runtime_preference(host)
-        selection = linux_cuda_choice_from_release(
-            host,
-            bundle,
-            preferred_runtime_line = torch_preference.runtime_line,
-            selection_preamble = torch_preference.selection_log,
-        )
-        if selection is not None:
-            attempts.extend(selection.attempts)
-    elif not host.has_rocm:
-        # A ROCm-only host gets no CPU asset: leaving attempts empty lets the
-        # raise below trigger a HIP source build instead of shipping a CPU
-        # binary on a GPU host (this ggml-org path has no per-gfx ROCm asset).
-        cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
-        if cpu_choice is not None:
-            attempts.append(cpu_choice)
-    # NVIDIA hosts whose CUDA selection produced nothing fall through to the
-    # raise below (mirroring the ROCm policy above): the caller then walks
-    # back to an older release that still ships a usable CUDA line instead of
-    # silently installing a CPU binary on a GPU host. Today's walk-back only
-    # works because partial releases ship no CPU bundle; this keeps it working
-    # if a future partial release does.
-    if not attempts:
-        raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
-    approved_checksums = synthetic_checksums_for_release(
-        repo,
-        bundle.release_tag,
-        bundle.upstream_tag,
-    )
-    resolved_upstream_tag = bundle.upstream_tag
-    if DEFAULT_PUBLISHED_SHA256_ASSET in bundle.assets and not is_release_tag_like(
-        bundle.upstream_tag
-    ):
-        approved_checksums = load_approved_release_checksums(repo, bundle.release_tag)
-        # Require exact source provenance for branch/pull/commit releases.
-        # Mirrors validated_checksums_for_bundle so incomplete metadata fails
-        # closed instead of degrading to the legacy branch-as-tag source
-        # hydration path this PR eliminates.
-        if (
-            not approved_checksums.source_commit
-            or exact_source_archive_hash(approved_checksums) is None
-            or source_clone_url_from_checksums(approved_checksums) is None
-        ):
-            raise PrebuiltFallback(
-                f"approved checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} for "
-                f"{repo}@{bundle.release_tag} did not contain exact source provenance"
-            )
-        attempts = apply_approved_hashes(attempts, approved_checksums)
-    return InstallReleasePlan(
-        requested_tag = requested_tag,
-        llama_tag = resolved_upstream_tag,
-        release_tag = bundle.release_tag,
-        attempts = attempts,
-        approved_checksums = approved_checksums,
-    )
-
-
 def direct_upstream_release_plan(
     release: dict[str, Any], host: HostInfo, repo: str, requested_tag: str
 ) -> InstallReleasePlan | None:
@@ -1480,6 +1326,24 @@ def direct_upstream_release_plan(
                         url = hip_url,
                         source_label = "upstream",
                         install_kind = "windows-hip",
+                    )
+                )
+        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt. Gate
+        # on no PHYSICAL NVIDIA (not just no usable one): a host that hid NVIDIA
+        # via CUDA_VISIBLE_DEVICES must not reach Vulkan, which ignores that mask
+        # and could enumerate the reserved card. Falls through to CPU below.
+        elif host.has_intel_gpu and not host.has_physical_nvidia:
+            vulkan_asset = f"llama-{release_tag}-bin-win-vulkan-x64.zip"
+            vulkan_url = assets.get(vulkan_asset)
+            if vulkan_url:
+                attempts.append(
+                    AssetChoice(
+                        repo = repo,
+                        tag = release_tag,
+                        name = vulkan_asset,
+                        url = vulkan_url,
+                        source_label = "upstream",
+                        install_kind = "windows-vulkan",
                     )
                 )
         cpu_asset = f"llama-{release_tag}-bin-win-cpu-x64.zip"
@@ -1545,6 +1409,23 @@ def direct_upstream_release_plan(
         # ROCm hosts are excluded: this ggml-org path ships no per-gfx ROCm
         # asset, so they fall through to the empty-attempts raise (HIP source
         # build) rather than silently getting a CPU binary on a GPU host.
+        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt. The
+        # elif already excludes usable NVIDIA and ROCm; also require no PHYSICAL
+        # NVIDIA so a CUDA-hidden card isn't reached through Vulkan (CPU below).
+        if host.has_intel_gpu and not host.has_physical_nvidia:
+            vulkan_asset = f"llama-{release_tag}-bin-ubuntu-vulkan-x64.tar.gz"
+            vulkan_url = assets.get(vulkan_asset)
+            if vulkan_url:
+                attempts.append(
+                    AssetChoice(
+                        repo = repo,
+                        tag = release_tag,
+                        name = vulkan_asset,
+                        url = vulkan_url,
+                        source_label = "upstream",
+                        install_kind = "linux-vulkan",
+                    )
+                )
         asset_name = f"llama-{release_tag}-bin-ubuntu-x64.tar.gz"
         asset_url = assets.get(asset_name)
         if asset_url:
@@ -1564,6 +1445,23 @@ def direct_upstream_release_plan(
         # selector returned 0 attempts and the installer fell back to a
         # source build on every Linux ARM64 host (DGX Spark, Ampere
         # Altra, GitHub-hosted ubuntu-24.04-arm runners, etc.).
+        # Intel (or other non-NVIDIA/non-AMD) GPU: prefer the Vulkan prebuilt,
+        # mirroring the x86_64 branch. Upstream ships bin-ubuntu-vulkan-arm64.
+        # No physical NVIDIA: don't reach a CUDA-hidden card through Vulkan.
+        if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
+            vulkan_asset = f"llama-{release_tag}-bin-ubuntu-vulkan-arm64.tar.gz"
+            vulkan_url = assets.get(vulkan_asset)
+            if vulkan_url:
+                attempts.append(
+                    AssetChoice(
+                        repo = repo,
+                        tag = release_tag,
+                        name = vulkan_asset,
+                        url = vulkan_url,
+                        source_label = "upstream",
+                        install_kind = "linux-vulkan",
+                    )
+                )
         asset_name = f"llama-{release_tag}-bin-ubuntu-arm64.tar.gz"
         asset_url = assets.get(asset_name)
         if asset_url:
@@ -2864,6 +2762,64 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
     return _tokens[0]
 
 
+# Display-adapter device class: one NNNN subkey per installed display driver
+# config, each carrying the driver's DriverDesc and PCI MatchingDeviceId.
+_WINDOWS_DISPLAY_CLASS_KEY = (
+    r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+)
+
+
+def windows_intel_gpu_in_registry() -> bool:
+    """Whether the Windows registry lists an Intel display adapter.
+
+    In-process Windows counterpart of the Linux DRM vendor-id check (0x8086),
+    with weaker semantics: the class key lists installed display-driver
+    configs, which can outlive removed hardware, where sysfs lists present
+    devices. A stale Intel entry at worst routes to the upstream Vulkan
+    prebuilt instead of the fork CPU bundle: inference still works (the
+    Vulkan build runs on CPU when no Vulkan device exists), at the cost of
+    fork-only extras such as the DiffusionGemma visual server. detect_host's
+    PowerShell + WMI probe can silently miss a real Intel GPU: a cold
+    powershell.exe start plus the first CIM query routinely exceeds the 15s
+    budget on hosts with slow AV scanning or a degraded WMI repository, and
+    the probe swallows the timeout (#4452, Arc A770 routed to the CPU
+    prebuilt). Reading the display-adapter class key needs no subprocess and
+    answers in microseconds. Matches the PCI vendor id in MatchingDeviceId
+    (ven_8086) or an Intel DriverDesc.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DISPLAY_CLASS_KEY) as class_key:
+            for index in range(winreg.QueryInfoKey(class_key)[0]):
+                try:
+                    name = winreg.EnumKey(class_key, index)
+                    if not name.isdigit():
+                        # "Properties" is ACL-restricted and not an adapter.
+                        continue
+                    with winreg.OpenKey(class_key, name) as adapter_key:
+                        for value_name, needle in (
+                            ("MatchingDeviceId", "ven_8086"),
+                            ("DriverDesc", "intel"),
+                        ):
+                            try:
+                                value, _ = winreg.QueryValueEx(adapter_key, value_name)
+                            except OSError:
+                                continue
+                            if needle in str(value).lower():
+                                return True
+                except OSError:
+                    continue
+    except Exception:
+        # Advisory probe: any unexpected failure must degrade to the CIM
+        # fallback, never crash the installer (mirrors detect_host's own
+        # swallow around the CIM probe).
+        return False
+    return False
+
+
 def detect_host() -> HostInfo:
     system = platform.system()
     machine = platform.machine().lower()
@@ -3075,6 +3031,46 @@ def detect_host() -> HostInfo:
         # Note: amdhip64.dll presence alone is NOT treated as GPU evidence
         # since the HIP SDK can be installed without an AMD GPU.
 
+    # Detect an Intel GPU; gates the Vulkan prebuilt. Linux reads the DRM sysfs
+    # vendor id (0x8086); Windows reads the display-adapter registry class,
+    # then falls back to the WMI video controller list. Only probed with no
+    # usable NVIDIA and no ROCm (matching the Vulkan branches), keeping the
+    # probe (notably the Windows powershell call) off that path.
+    has_intel_gpu = False
+    if not has_usable_nvidia and not has_rocm:
+        if is_linux:
+            for _vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
+                try:
+                    with open(_vendor_file) as _vf:
+                        if _vf.read().strip().lower() == "0x8086":
+                            has_intel_gpu = True
+                            break
+                except OSError:
+                    continue
+        elif is_windows:
+            # Registry first (in-process; see windows_intel_gpu_in_registry).
+            # The CIM query stays as the fallback when the registry shows no
+            # Intel adapter.
+            has_intel_gpu = windows_intel_gpu_in_registry()
+            if not has_intel_gpu:
+                _ps = shutil.which("powershell") or shutil.which("pwsh")
+                if _ps:
+                    try:
+                        _result = run_capture(
+                            [
+                                _ps,
+                                "-NoProfile",
+                                "-Command",
+                                "Get-CimInstance Win32_VideoController | "
+                                "Select-Object -ExpandProperty Name",
+                            ],
+                            timeout = 15,
+                        )
+                        if _result.returncode == 0 and "intel" in _result.stdout.lower():
+                            has_intel_gpu = True
+                    except Exception:
+                        pass
+
     return HostInfo(
         system = system,
         machine = machine,
@@ -3090,6 +3086,7 @@ def detect_host() -> HostInfo:
         has_physical_nvidia = has_physical_nvidia,
         has_usable_nvidia = has_usable_nvidia,
         has_rocm = has_rocm,
+        has_intel_gpu = has_intel_gpu,
         rocm_gfx_target = rocm_gfx_target,
         macos_version = macos_version,
     )
@@ -3126,6 +3123,7 @@ def _apply_host_overrides(
             has_physical_nvidia = False,
             has_rocm = False,
             rocm_gfx_target = None,
+            has_intel_gpu = False,
         )
     gfx = _normalize_forwarded_gfx(override_rocm_gfx)
     if gfx:
@@ -3866,6 +3864,23 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                 "falling back to source build with HIP support"
             )
 
+        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt. No
+        # physical NVIDIA (not just no usable one): a CUDA-hidden card must not
+        # be reached through Vulkan, which ignores CUDA_VISIBLE_DEVICES.
+        if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
+            vulkan_name = f"llama-{llama_tag}-bin-ubuntu-vulkan-x64.tar.gz"
+            if vulkan_name in upstream_assets:
+                log(f"Intel GPU detected -- using upstream Vulkan prebuilt {vulkan_name}")
+                return AssetChoice(
+                    repo = UPSTREAM_REPO,
+                    tag = llama_tag,
+                    name = vulkan_name,
+                    url = upstream_assets[vulkan_name],
+                    source_label = "upstream",
+                    install_kind = "linux-vulkan",
+                )
+            log("Intel GPU detected but no Vulkan prebuilt found -- falling back to CPU")
+
         upstream_name = f"llama-{llama_tag}-bin-ubuntu-x64.tar.gz"
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream Linux CPU asset was not found")
@@ -3907,6 +3922,24 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     install_kind = "windows-hip",
                 )
             log("AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU")
+
+        # Intel (or other non-NVIDIA/non-AMD) GPU on Windows: use Vulkan. No
+        # physical NVIDIA so a CUDA-hidden card isn't reached through Vulkan.
+        if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
+            vulkan_name = f"llama-{llama_tag}-bin-win-vulkan-x64.zip"
+            if vulkan_name in upstream_assets:
+                log(
+                    f"Intel GPU detected on Windows -- using upstream Vulkan prebuilt {vulkan_name}"
+                )
+                return AssetChoice(
+                    repo = UPSTREAM_REPO,
+                    tag = llama_tag,
+                    name = vulkan_name,
+                    url = upstream_assets[vulkan_name],
+                    source_label = "upstream",
+                    install_kind = "windows-vulkan",
+                )
+            log("Intel GPU detected on Windows but no Vulkan prebuilt found -- falling back to CPU")
 
         upstream_name = f"llama-{llama_tag}-bin-win-cpu-x64.zip"
         if upstream_name not in upstream_assets:
@@ -4503,6 +4536,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         "linux-arm64-cuda",
         "linux-rocm",
         "linux-arm64",
+        "linux-vulkan",
     }:
         return ["llama-server", "llama-quantize", "llama-diffusion-gemma-visual-server", "lib*.so*"]
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
@@ -4516,6 +4550,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         "windows-cpu",
         "windows-cuda",
         "windows-hip",
+        "windows-vulkan",
         "windows-rocm",
         "windows-arm64",
     }:
@@ -5731,8 +5766,10 @@ def validate_server(
             "linux-cuda",
             "linux-arm64-cuda",
             "linux-rocm",
+            "linux-vulkan",
             "windows-cuda",
             "windows-hip",
+            "windows-vulkan",
             "windows-rocm",
             "macos-arm64",
         }
@@ -6354,6 +6391,20 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libmtmd.so*"],
             ["libggml-hip.so*"],
         ]
+    if choice.install_kind == "linux-vulkan":
+        return [
+            ["libllama-common.so*"],
+            ["libllama.so*"],
+            ["libggml.so*"],
+            ["libggml-base.so*"],
+            # Match the sibling globs (linux-cuda/-rocm): x64 bundles ship
+            # arch-suffixed libggml-cpu-<variant>.so, arm64 may ship a bare
+            # libggml-cpu.so; the '-' form missed the latter and re-flagged
+            # the install unhealthy on every check.
+            ["libggml-cpu*.so*"],
+            ["libmtmd.so*"],
+            ["libggml-vulkan.so*"],
+        ]
     if choice.install_kind in {"windows-cpu", "windows-arm64"}:
         return [["llama.dll"]]
     if choice.install_kind == "windows-cuda":
@@ -6373,6 +6424,8 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
         return groups
     if choice.install_kind in {"windows-hip", "windows-rocm"}:
         return [["llama.dll"], ["*hip*.dll"]]
+    if choice.install_kind == "windows-vulkan":
+        return [["llama.dll"], ["ggml-vulkan.dll"]]
     return []
 
 
@@ -6654,6 +6707,89 @@ def validate_prebuilt_attempts(
     raise PrebuiltFallback("no prebuilt bundle passed validation")
 
 
+def force_vulkan_requested() -> bool:
+    """Whether UNSLOTH_FORCE_VULKAN opts this host into the Vulkan llama.cpp
+    prebuilt instead of its detected CUDA/ROCm backend (e.g. so an AMD user can
+    run the Vulkan build for inference). Scoped to the llama.cpp backend; the
+    torch/training stack installs separately and still sees the real GPU.
+    """
+    return os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _vulkan_only_host(host: HostInfo) -> HostInfo:
+    """Rewrite ``host`` so the asset selectors take their Vulkan branch.
+
+    That branch fires on ``has_intel_gpu and not nvidia and not rocm``, so clear
+    the CUDA/ROCm flags and raise the integrated-GPU flag. The synthetic flag
+    never leaves install planning -- it only routes the llama.cpp prebuilt
+    choice, not the torch/training stack.
+    """
+    return dataclasses_replace(
+        host,
+        has_usable_nvidia = False,
+        has_physical_nvidia = False,
+        has_rocm = False,
+        has_intel_gpu = True,
+    )
+
+
+def _route_to_vulkan_prebuilt(
+    host: HostInfo, published_repo: str, published_release_tag: str, *, force_cpu: bool
+) -> tuple[HostInfo, str, str]:
+    """Point a Vulkan-capable host at the upstream ggml-org Vulkan prebuilt.
+
+    The unsloth published repo ships only CUDA/ROCm/CPU assets, so Vulkan comes
+    from UPSTREAM_REPO. Two triggers route here, both suppressed under
+    --cpu-fallback (the explicit "give me CPU" last resort wins):
+      * UNSLOTH_FORCE_VULKAN forces Vulkan over the detected CUDA/ROCm backend;
+      * an auto-detected Intel GPU with NO physical NVIDIA/ROCm -- the purpose
+        of the has_intel_gpu probe, since the fork manifest ships no Vulkan asset.
+    Applied by BOTH the install path and the --resolve-prebuilt probe so the
+    "is a prebuilt available" answer matches what actually gets installed.
+
+    Returns the (possibly rewritten) host, repo, and release tag.
+    """
+    forced = force_vulkan_requested()
+    # Gate auto-routing on no PHYSICAL NVIDIA, not merely no usable one: a mixed
+    # NVIDIA+Intel host that hides NVIDIA with CUDA_VISIBLE_DEVICES=""/-1 keeps
+    # has_physical_nvidia=True while has_usable_nvidia goes False. Vulkan ignores
+    # CUDA_VISIBLE_DEVICES, so auto-routing such a host would let it grab the
+    # reserved NVIDIA GPU. An explicit UNSLOTH_FORCE_VULKAN still overrides.
+    auto_intel = host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
+    if force_cpu or not (forced or auto_intel):
+        return host, published_repo, published_release_tag
+    if host.is_macos:
+        if forced:
+            log(
+                "UNSLOTH_FORCE_VULKAN is set but ignored on macOS "
+                "(Metal is used; there is no Vulkan prebuilt)"
+            )
+        return host, published_repo, published_release_tag
+    if forced:
+        log(
+            "UNSLOTH_FORCE_VULKAN is set; installing the upstream Vulkan "
+            "llama.cpp prebuilt instead of the detected GPU backend"
+        )
+        # Forcing may override a detected NVIDIA/ROCm host, so normalize it to
+        # Vulkan-only; an auto-detected Intel host already is.
+        host = _vulkan_only_host(host)
+    else:
+        log("Intel GPU detected; installing the upstream Vulkan llama.cpp prebuilt")
+    # Swapping the fork for upstream invalidates a fork release pin: the two use
+    # different tag namespaces (fork b9596-mix-<sha> vs upstream b9596), so a
+    # pinned fork tag would make the upstream resolver query a nonexistent
+    # release and fall back to source. Drop it and let the upstream resolver
+    # pick by the requested llama tag. A pin already on an explicit upstream repo
+    # (repo unchanged here) is preserved.
+    if published_repo != UPSTREAM_REPO:
+        published_release_tag = ""
+    return host, UPSTREAM_REPO, published_release_tag
+
+
 def diffusion_visual_server_backfill_needed(
     install_dir: Path, host: HostInfo, choice: AssetChoice
 ) -> bool:
@@ -6696,6 +6832,9 @@ def install_prebuilt(
         override_rocm_gfx = override_rocm_gfx,
         force_cpu = force_cpu,
     )
+    host, published_repo, published_release_tag = _route_to_vulkan_prebuilt(
+        host, published_repo, published_release_tag, force_cpu = force_cpu
+    )
     choice: AssetChoice | None = None
     try:
         with install_lock(install_lock_path(install_dir)):
@@ -6708,7 +6847,9 @@ def install_prebuilt(
                     f"no existing llama.cpp install detected at {install_dir}; performing fresh prebuilt install"
                 )
             # Single resolver: every fork host selects from the release manifest;
-            # an explicit ggml-org override selects by asset filename instead.
+            # an explicit ggml-org override selects by asset filename instead. A
+            # forced-Vulkan host already has published_repo pointed at
+            # UPSTREAM_REPO above, so the resolver takes the Vulkan asset branch.
             requested_tag, release_plans = resolve_simple_install_release_plans(
                 llama_tag,
                 host,
@@ -6994,10 +7135,14 @@ def main() -> int:
             override_rocm_gfx = args.rocm_gfx,
             force_cpu = args.cpu_fallback,
         )
-        repo = args.published_repo
+        # Same Vulkan routing the install path applies, so the probe's answer
+        # matches what would install (an Intel/forced-Vulkan host -> upstream).
+        host, repo, release_tag = _route_to_vulkan_prebuilt(
+            host, args.published_repo, args.published_release_tag or "", force_cpu = args.cpu_fallback
+        )
         try:
             _requested, plans = resolve_simple_install_release_plans(
-                args.resolve_prebuilt, host, repo, args.published_release_tag or ""
+                args.resolve_prebuilt, host, repo, release_tag
             )
             choice = plans[0].attempts[0] if plans and plans[0].attempts else None
             if choice is None:
