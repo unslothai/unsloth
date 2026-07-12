@@ -431,9 +431,7 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
     # fd runs a command per result with -x/--exec and -X/--exec-batch, and
     # --base-directory/--search-path move the search root outside the workdir
     # without any positional "/" token (fdfind --help).
-    "fd": frozenset(
-        {"-x", "--exec", "-X", "--exec-batch", "--base-directory", "--search-path"}
-    ),
+    "fd": frozenset({"-x", "--exec", "-X", "--exec-batch", "--base-directory", "--search-path"}),
 }
 # find/fd expressions group with (...) which resets command context, so scan
 # every token for these once find/fd is seen anywhere in the command.
