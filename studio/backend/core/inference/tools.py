@@ -433,6 +433,10 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
     # without any positional "/" token (fdfind --help).
     "fd": frozenset({"-x", "--exec", "-X", "--exec-batch", "--base-directory", "--search-path"}),
 }
+# Commands that write their second positional argument (uniq [INPUT [OUTPUT]]):
+# a lone `uniq file` (or `... | uniq`) reads to stdout and stays safe, but a
+# second file positional creates/overwrites it, so it asks like `sort -o`.
+_AUTO_SECOND_POSITIONAL_WRITES = frozenset({"uniq"})
 # find/fd expressions group with (...) which resets command context, so scan
 # every token for these once find/fd is seen anywhere in the command.
 _AUTO_UNSAFE_FIND_LIKE_FLAGS = _AUTO_UNSAFE_COMMAND_FLAGS["find"] | _AUTO_UNSAFE_COMMAND_FLAGS["fd"]
@@ -1170,6 +1174,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     expect_command = True
     prefix_pending = False
     current_command = ""
+    positional_args = 0
     for token in tokens:
         # Runs of punctuation (";;", ";&") lex as one token; any token made
         # purely of separator characters still separates commands.
@@ -1181,6 +1186,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
             expect_command = True
             prefix_pending = False
             current_command = ""
+            positional_args = 0
             continue
         if token.startswith("-"):
             # A write/exec flag on an otherwise read-only command asks
@@ -1202,6 +1208,15 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
                 expect_command = False
             continue
         if not expect_command:
+            # uniq [INPUT [OUTPUT]] writes its second file positional; count file
+            # positionals (skipping numeric flag values like `-f 2`) and ask on
+            # the second one.
+            if current_command in _AUTO_SECOND_POSITIONAL_WRITES:
+                raw_pos = token.strip(";&|()`{}")
+                if raw_pos and not raw_pos.lstrip("+-").isdigit():
+                    positional_args += 1
+                    if positional_args >= 2:
+                        return True
             continue
         if _ASSIGNMENT_RE.match(token):
             # Benign NAME=value prefixes are skipped, but ones that change
@@ -1231,6 +1246,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         current_command = base
         expect_command = False
         prefix_pending = False
+        positional_args = 0
     return False
 
 
@@ -1505,6 +1521,10 @@ _MCP_ARG_MUTATION_RE = re.compile(
     r"grant\s+\w|revoke\s+\w|merge\s+into)\b",
     re.IGNORECASE,
 )
+# SQL engines treat /* */ and -- comments as whitespace, so DELETE/**/FROM and
+# UPDATE/**/users evade the \s+ in the mutation regex; collapse comments to a
+# space before matching.
+_SQL_COMMENT_RE = re.compile(r"/\*.*?\*/|--[^\n]*", re.DOTALL)
 
 
 def _mcp_arguments_mutate(arguments) -> bool:
@@ -1513,7 +1533,7 @@ def _mcp_arguments_mutate(arguments) -> bool:
 
     def walk(value) -> bool:
         if isinstance(value, str):
-            return bool(_MCP_ARG_MUTATION_RE.search(value))
+            return bool(_MCP_ARG_MUTATION_RE.search(_SQL_COMMENT_RE.sub(" ", value)))
         if isinstance(value, dict):
             return any(walk(v) for v in value.values())
         if isinstance(value, (list, tuple)):

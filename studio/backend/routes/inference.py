@@ -6344,25 +6344,23 @@ async def openai_chat_completions(
             )
         # Reject confirm-without-stream local tool requests before the switch: the
         # local tool path requires stream=true for the confirm gate, so this shape
-        # is invalid and must not evict the resident model first. Mirror that path's
-        # enablement exactly (_effective_enable_tools honors a CLI --enable-tools
-        # policy hard-override; mcp_enabled opens the tool loop on its own but still
-        # defers to a CLI --disable-tools policy), or an mcp_enabled/policy-forced
-        # request would slip past this guard and only 400 after the swap.
+        # is invalid and must not evict the resident model first.
         #
-        # permission_mode only implies the confirm gate for Studio's own local tool
-        # loop (enable_tools / enabled_tools / mcp_enabled). Client-tool passthrough
-        # (payload.tools, code-exec containers) forwards to the provider branch and
-        # the validator intentionally leaves confirm_tool_calls unset there, so only
-        # an explicit confirm_tool_calls=True should force the local-confirm
-        # rejection for those arms, never a bare permission_mode.
-        from state.tool_policy import get_tool_policy as _get_confirm_tool_policy
-
-        _confirm_cli_policy = _get_confirm_tool_policy()
+        # Enter the local-loop arm only for requests the passthrough router itself
+        # treats as Studio's own tool loop. That router uses
+        # _explicit_studio_tool_loop_requested (an explicit enable_tools/mcp ask,
+        # vetoed by --disable-tools) so a process-wide --enable-tools policy does
+        # not steal client-tool passthrough; mirror it here rather than the
+        # policy-inclusive _effective_enable_tools, or a policy-forced client-tool
+        # passthrough would 400 before ever reaching the passthrough branch.
+        #
+        # permission_mode only implies the confirm gate for that local loop.
+        # Client-tool passthrough (payload.tools, code-exec containers) forwards to
+        # the provider branch and the validator intentionally leaves
+        # confirm_tool_calls unset there, so only an explicit confirm_tool_calls=True
+        # should force the local-confirm rejection for those arms.
         _studio_local_tool_loop = (
-            _effective_enable_tools(payload)
-            or (bool(payload.mcp_enabled) and _confirm_cli_policy is not False)
-            or bool(payload.enabled_tools)
+            _explicit_studio_tool_loop_requested(payload) or bool(payload.enabled_tools)
         )
         _client_tool_passthrough = (
             bool(payload.tools)
@@ -11293,6 +11291,13 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
     "python": "python",
     "terminal": "terminal",
 }
+# Server tools that never need a confirmation prompt (read-only / non code-
+# executing; mirrors the unconditional-safe names in is_potentially_unsafe_tool_call).
+# Any other selected tool (terminal, python) can require the gate this channel
+# has no way to present, so an omitted permission_mode ("ask") only asks then.
+_ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
+    {"web_search", "search_knowledge_base", "render_html"}
+)
 
 
 def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
@@ -11750,17 +11755,30 @@ async def anthropic_messages(
                     err_type = "invalid_request_error",
                 ),
             )
-        # ask/auto need the confirmation gate, which this passthrough has no
-        # channel for (same limitation as confirm_tool_calls above). Reject
-        # them rather than silently running tools unprompted. An omitted mode
-        # documents as "ask", so it falls into the same rejection unless the
-        # caller already opted out of confirmation with confirm_tool_calls=False
-        # (the legacy equivalent of "off"). off/full are fine.
-        _perm_mode = getattr(payload, "permission_mode", None)
-        _defaults_to_ask = (
-            _perm_mode is None and getattr(payload, "confirm_tool_calls", None) is not False
+        from core.inference.tools import ALL_TOOLS
+
+        openai_tools = _select_anthropic_server_tools(
+            ALL_TOOLS,
+            requested_studio_tools,
+            payload.enabled_tools,
         )
-        if _perm_mode in ("ask", "auto") or _defaults_to_ask:
+        # ask/auto need the confirmation gate this passthrough has no channel for
+        # (same limitation as confirm_tool_calls above). An explicit ask/auto is a
+        # clear request for a per-call pause and is always rejected rather than
+        # silently ignored. An omitted mode documents as "ask", but existing
+        # Anthropic callers that only send safe server tools (web_search) must keep
+        # running for backwards compatibility, so an omitted mode only rejects when
+        # a tool that could need the gate (terminal/python) is selected. off/full
+        # and a confirm_tool_calls=False opt-out are always accepted.
+        _perm_mode = getattr(payload, "permission_mode", None)
+        _confirm_opt_out = getattr(payload, "confirm_tool_calls", None) is False
+        _gated_tool_selected = any(
+            tool["function"]["name"] not in _ANTHROPIC_UNPROMPTED_SAFE_TOOLS
+            for tool in openai_tools
+        )
+        if _perm_mode in ("ask", "auto") or (
+            _perm_mode is None and not _confirm_opt_out and _gated_tool_selected
+        ):
             api_monitor.fail(
                 monitor_id,
                 "permission_mode ask/auto is not supported for Anthropic Messages server tools.",
@@ -11769,18 +11787,12 @@ async def anthropic_messages(
                 status_code = 400,
                 detail = anthropic_error_body(
                     "permission_mode 'ask'/'auto' (the default when omitted) is not supported "
-                    "for Anthropic Messages server tools; set 'off' or 'full'.",
+                    "for local ('terminal'/'python') Anthropic Messages server tools; "
+                    "set 'off' or 'full'.",
                     status = 400,
                     err_type = "invalid_request_error",
                 ),
             )
-        from core.inference.tools import ALL_TOOLS
-
-        openai_tools = _select_anthropic_server_tools(
-            ALL_TOOLS,
-            requested_studio_tools,
-            payload.enabled_tools,
-        )
 
         # Build tool-use system prompt nudge (same logic as /chat/completions)
         _nudge = _build_tool_action_nudge(

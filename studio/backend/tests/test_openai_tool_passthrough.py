@@ -745,8 +745,10 @@ class TestChatCompletionRequestToolFields:
             }
         ]
 
-        def _setup():
+        def _setup(policy = None):
             reset_tool_policy()
+            if policy is not None:
+                set_tool_policy(policy)
             monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: True)
             monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 3))
             monkeypatch.setattr(
@@ -754,19 +756,23 @@ class TestChatCompletionRequestToolFields:
             )
             return self._v1_client(monkeypatch, _GGUFBackend())
 
-        for mode in ("ask", "auto"):
-            client = _setup()
-            resp = client.post(
-                "/v1/chat/completions",
-                json = {
-                    "messages": [{"role": "user", "content": "use client tool"}],
-                    "tools": client_tools,
-                    "permission_mode": mode,
-                    "stream": False,
-                },
-            )
-            assert resp.status_code == 200, resp.text
-            assert resp.json()["ok"] is True
+        # A process --enable-tools policy must not turn a client-tool passthrough
+        # into a Studio local loop, so a policy of None or True both keep the
+        # passthrough (the guard mirrors _explicit_studio_tool_loop_requested).
+        for policy in (None, True):
+            for mode in ("ask", "auto"):
+                client = _setup(policy)
+                resp = client.post(
+                    "/v1/chat/completions",
+                    json = {
+                        "messages": [{"role": "user", "content": "use client tool"}],
+                        "tools": client_tools,
+                        "permission_mode": mode,
+                        "stream": False,
+                    },
+                )
+                assert resp.status_code == 200, resp.text
+                assert resp.json()["ok"] is True
 
         # An explicit confirm_tool_calls=True with client tools and no stream is
         # still a confirm-without-stream request and must be rejected up front.

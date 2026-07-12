@@ -188,6 +188,10 @@ def _clear_pending():
         ("fd --search-path=/etc passwd", True),  # fd search-path escapes workdir
         ("fd --base-dir=/ passwd etc", True),  # abbreviated fd root flag too
         ("fd passwd", False),  # in-workdir fd search stays safe
+        ("uniq input.txt output.txt", True),  # second positional is a written OUTPUT
+        ("uniq -f 2 in out", True),  # numeric flag value skipped, two file positionals
+        ("uniq input.txt", False),  # single positional reads to stdout, stays safe
+        ("sort a.txt | uniq -c", False),  # piped uniq with no output file stays safe
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -487,6 +491,10 @@ def test_mcp_sensitive_arguments(args, unsafe):
         ({"query": "SELECT * FROM runs"}, False),  # read query stays safe
         ({"query": "how to delete old files"}, False),  # NL text with 'delete' stays safe
         ({"query": "find the created_at column"}, False),  # 'created' substring stays safe
+        ({"query": "DELETE/**/FROM runs"}, True),  # inline SQL comment as whitespace
+        ({"query": "UPDATE/**/t SET x=1"}, True),
+        ({"query": "DROP/**/TABLE users"}, True),
+        ({"query": "SELECT * FROM runs -- delete later"}, False),  # trailing comment stays safe
     ],
 )
 def test_mcp_mutating_arguments(args, unsafe):
