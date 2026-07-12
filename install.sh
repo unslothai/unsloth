@@ -2957,6 +2957,13 @@ for _p in ('torch', 'torchvision', 'torchaudio'):
             torch==*)
                 _UNSLOTH_TORCH_OVERRIDES=$(mktemp)
                 printf '%s\n' "$_torch_trio_pins" > "$_UNSLOTH_TORCH_OVERRIDES"
+                # The CLI --overrides flag REPLACES any UV_OVERRIDE env file (uv
+                # treats them as the same setting; macOS arm64 exports one for
+                # this very install path). Fold those pins into the temp file so
+                # they keep applying alongside the torch trio.
+                for _ov_file in ${UV_OVERRIDE:-}; do
+                    [ -f "$_ov_file" ] && cat "$_ov_file" >> "$_UNSLOTH_TORCH_OVERRIDES"
+                done
                 ;;
         esac
     fi

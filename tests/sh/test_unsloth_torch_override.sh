@@ -63,6 +63,12 @@ assert_true "pin snippet emits only exact trio ==pins (or nothing)" "$_rc"
 grep -q 'rm -f "\$_UNSLOTH_TORCH_OVERRIDES"' "$INSTALL_SH"
 assert_true "overrides temp file is removed after the unsloth installs" "$?"
 
+# 5. Any UV_OVERRIDE env file is folded into the temp overrides file (the CLI
+#    --overrides flag would otherwise replace it, dropping e.g. the macOS arm64
+#    darwin overrides on the generic install path).
+grep -q 'for _ov_file in \${UV_OVERRIDE:-}' "$INSTALL_SH"
+assert_true "UV_OVERRIDE env files are merged into the overrides file" "$?"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
