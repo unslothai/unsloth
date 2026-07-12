@@ -21,6 +21,13 @@ export function snapToStep(
   return Number(reclamped.toFixed(decimals));
 }
 
+function sanitizeNumeric(raw: string, allowNegative: boolean): string {
+  const sign = allowNegative && raw.startsWith("-") ? "-" : "";
+  const [head, ...rest] = raw.replace(/[^\d.]/g, "").split(".");
+  const tail = rest.length > 0 ? `.${rest.join("")}` : "";
+  return `${sign}${head}${tail}`;
+}
+
 export function NumericValueInput({
   value,
   min,
@@ -67,7 +74,10 @@ export function NumericValueInput({
       inputMode="decimal"
       disabled={disabled}
       size={sizeAttr}
-      style={{ width: `calc(${Math.max(displayed.length, 4)}ch + 18px)` }}
+      style={{
+        boxSizing: "content-box",
+        width: `calc(${Math.max(displayed.length, 4)}ch + 2px)`,
+      }}
       value={displayed}
       aria-label={ariaLabel}
       onFocus={(e) => {
@@ -85,7 +95,9 @@ export function NumericValueInput({
         }
         setFocused(false);
       }}
-      onChange={(e) => setDraft(e.target.value)}
+      onChange={(e) =>
+        setDraft(sanitizeNumeric(e.target.value, (min ?? 0) < 0))
+      }
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           e.currentTarget.blur();

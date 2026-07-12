@@ -50,6 +50,8 @@ import { NumericValueInput } from "./numeric-value-input";
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
   "min-w-0 truncate text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg";
+const LABEL_CLASS_WRAP =
+  "min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg";
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1]";
 const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
@@ -222,7 +224,7 @@ function GgufAdvancedSettings({
 
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>Speculative Decoding</span>
+          <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
           <InfoHint>
             Faster generation with no accuracy hit. Auto picks MTP / ngram based
             on the model and platform. Pick a strategy to force it.
@@ -242,7 +244,7 @@ function GgufAdvancedSettings({
             animateRadius={false}
             icon={ChevronDownStandardIcon}
             iconClassName="size-3.5"
-            className={`w-[124px] ${SELECT_TRIGGER_CLASS}`}
+            className={`w-[124px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
           >
             <SelectValue />
           </SelectTrigger>
