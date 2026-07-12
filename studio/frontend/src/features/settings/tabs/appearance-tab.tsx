@@ -22,10 +22,7 @@ import {
 import { PaletteCards } from "../components/palette-cards";
 import { SettingsRow } from "../components/settings-row";
 import { SidebarMenuCustomizer } from "../components/sidebar-menu-customizer";
-import {
-  SettingsGroupDivider,
-  SettingsSection,
-} from "../components/settings-section";
+import { SettingsSection } from "../components/settings-section";
 import { ThemeSegmented } from "../components/theme-segmented";
 import { useTheme } from "../stores/theme-store";
 
@@ -86,7 +83,6 @@ export function AppearanceTab() {
             label={t("settings.appearance.custom.colors.foreground")}
           />
         </SettingsRow>
-        <SettingsGroupDivider />
         <SettingsRow
           label={t("settings.appearance.custom.uiFont.label")}
           description={t("settings.appearance.custom.uiFont.description")}
@@ -111,7 +107,6 @@ export function AppearanceTab() {
         >
           <CodeFontRow />
         </SettingsRow>
-        <SettingsGroupDivider />
         <SettingsRow
           label={t("settings.appearance.custom.contrast.label")}
           description={t("settings.appearance.custom.contrast.description")}
