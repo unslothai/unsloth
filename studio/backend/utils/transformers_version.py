@@ -347,6 +347,28 @@ def activate_transformers_for_subprocess(model_name: str, hf_token: str | None =
         logger.info("Using default transformers (4.57.x) for %s", model_name)
 
 
+def latest_tier_active_for(model_name: str, hf_token: str | None = None) -> bool:
+    """True when *model_name* routes to the consented latest-transformers sidecar.
+
+    Mirrors ``activate_transformers_for_subprocess``'s tier resolution (LoRA base
+    plus a local checkpoint's own config). ``latest`` only wins when the sidecar
+    exists with a valid pin, i.e. exactly the loads that will import the newest
+    release. Never raises: any resolution failure returns False so callers treat
+    the model as a known tier.
+    """
+    try:
+        if _is_lora_adapter_dir(Path(model_name)):
+            resolved = _resolve_base_model(model_name)
+        else:
+            resolved = model_name
+        tier = get_transformers_tier(resolved, hf_token)
+        if model_name != resolved and _safe_is_file(Path(model_name) / "config.json"):
+            tier = _higher_tier(tier, get_transformers_tier(model_name, hf_token))
+        return tier == "latest"
+    except Exception:
+        return False
+
+
 def _has_adapter_weights(path: Path) -> bool:
     """True if *path* holds LoRA adapter weight files (``adapter_model.*``)."""
     try:

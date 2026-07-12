@@ -2550,3 +2550,71 @@ class TestHfEndpointUnreachable:
         t0 = time.time()
         result = hf_endpoint_unreachable(timeout = 2)
         assert result is True and (time.time() - t0) < 6.0
+
+
+class TestLatestTierActiveFor:
+    """latest_tier_active_for: the 16-bit guard for the consented latest sidecar."""
+
+    def test_true_when_tier_latest(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "get_transformers_tier", lambda *a, **k: "latest")
+        assert tv.latest_tier_active_for("Zyphra/ZAYA1-8B") is True
+
+    def test_false_for_fixed_tiers(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        for tier in ("default", "530", "550", "510"):
+            monkeypatch.setattr(
+                tv, "get_transformers_tier", lambda *a, _t = tier, **k: _t
+            )
+            assert tv.latest_tier_active_for("some/model") is False
+
+    def test_never_raises(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        def _boom(*a, **k):
+            raise RuntimeError("tier resolution exploded")
+
+        monkeypatch.setattr(tv, "get_transformers_tier", _boom)
+        assert tv.latest_tier_active_for("some/model") is False
+
+    def test_local_checkpoint_config_upgrades(self, monkeypatch, tmp_path):
+        """An adapter dir with its own config.json merges tiers like activation does."""
+        import utils.transformers_version as tv
+
+        adapter = tmp_path / "ckpt"
+        adapter.mkdir()
+        (adapter / "adapter_config.json").write_text("{}")
+        (adapter / "adapter_model.safetensors").write_text("x")
+        (adapter / "config.json").write_text("{}")
+        monkeypatch.setattr(tv, "_resolve_base_model", lambda name: "base/model")
+        tiers = {"base/model": "default", str(adapter): "latest"}
+        monkeypatch.setattr(
+            tv, "get_transformers_tier", lambda name, *a, **k: tiers.get(name, "default")
+        )
+        assert tv.latest_tier_active_for(str(adapter)) is True
+
+
+class TestLatestTierForces16Bit:
+    """The inference worker and load route refuse bnb 4-bit on the latest sidecar."""
+
+    def _read(self, rel):
+        backend_dir = Path(__file__).resolve().parent.parent
+        return (backend_dir / rel).read_text()
+
+    def test_worker_guard_present(self):
+        src = self._read("core/inference/worker.py")
+        assert "latest_tier_active_for" in src, (
+            "core/inference/worker.py must force load_in_4bit=False when "
+            "latest_tier_active_for(model) is true: transformers' grouped-MoE "
+            "kernels crash on bnb-quantized expert weights for brand-new "
+            "architectures."
+        )
+
+    def test_route_guard_present(self):
+        src = self._read("routes/inference.py")
+        assert "latest_tier_active_for" in src, (
+            "routes/inference.py must size the VRAM guard with the same 16-bit "
+            "flip the worker applies for latest-sidecar models."
+        )

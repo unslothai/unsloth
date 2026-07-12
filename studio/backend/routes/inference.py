@@ -4040,6 +4040,21 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 f"Resolved load_in_4bit={effective_load_in_4bit} for '{model_log_label}' "
                 f"from adapter_config.json / base model (requested {request.load_in_4bit})"
             )
+        # A brand-new architecture on the consented latest sidecar loads 16-bit
+        # (the worker refuses bnb 4-bit for it); size the VRAM guard and the
+        # worker command the same way. Off-loop: tier resolution can read configs.
+        if effective_load_in_4bit and not config.is_gguf:
+            from utils.transformers_version import latest_tier_active_for
+
+            if await asyncio.to_thread(
+                latest_tier_active_for, config.identifier, request.hf_token
+            ):
+                effective_load_in_4bit = False
+                logger.info(
+                    f"Latest-transformers sidecar active for '{model_log_label}' - "
+                    "sizing and loading in 16-bit (4-bit is disabled for brand-new "
+                    "architectures)"
+                )
 
         # Refuse a load that would OOM active training, before the unload step below
         # frees the resident model. Off-loop: guard does sync nvidia-smi / HF work.
