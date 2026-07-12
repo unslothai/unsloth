@@ -452,7 +452,7 @@ _AUTO_UNSAFE_MCP_VERB_RE = re.compile(
     r"transfer|buy|sell|reset|clear|purge|destroy|terminate|revert|rollback|"
     r"trigger|enable|disable|install|uninstall|restart|stop|start|"
     r"save|archive|submit|commit|push|sync|register|"
-    r"clone|checkout|comment|fork|tag|invite|share)(?:[_\-]|$)",
+    r"clone|checkout|comment|fork|tag|invite|share|append|prepend)(?:[_\-]|$)",
     re.IGNORECASE,
 )
 
@@ -469,6 +469,7 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "fcntl",
         "requests",
         "urllib",
+        "urllib3",
         "http",
         "httpx",
         "aiohttp",
@@ -566,6 +567,12 @@ _SENSITIVE_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 _PARENT_TRAVERSAL_RE = re.compile(r"(?:^|[\s/\\'\"=:])\.\.(?:[/\\]|$|[\s'\"])")
+# A sensitive directory: a dynamic segment under it (open(f"/etc/{name}")) is
+# not provably safe, so fail closed when a folded path has a dynamic piece here.
+_SENSITIVE_DIR_RE = re.compile(
+    r"/etc/|(?:^|[/\\])\.(?:ssh|aws|gnupg|docker|kube)[/\\]|(?:^|[/\\])\.config/gcloud[/\\]",
+    re.IGNORECASE,
+)
 # Collapse /./ and repeated slashes so /etc/./passwd and /etc//passwd, which
 # the OS resolves to /etc/passwd, still match the sensitive-path regex.
 _REDUNDANT_SLASH_RE = re.compile(r"/\.?(?=/)")
@@ -636,8 +643,15 @@ def _mode_arg_writes(mode_node) -> bool:
     return True  # dynamic mode: cannot prove read-only
 
 
+def _has_kwarg_splat(node) -> bool:
+    """True if the call has a ``**kwargs`` splat, which can hide a write mode."""
+    return any(kw.arg is None for kw in node.keywords or [])
+
+
 def _builtin_open_writes(node) -> bool:
     """Write check for builtin ``open(file, mode)`` (mode is the 2nd arg)."""
+    if _has_kwarg_splat(node):
+        return True  # **{"mode": "w"} could request a write
     mode = node.args[1] if len(node.args) >= 2 else None
     for kw in node.keywords or []:
         if kw.arg == "mode":
@@ -649,6 +663,8 @@ def _attr_open_writes(node) -> bool:
     """Write check for ``x.open(...)`` (e.g. ``Path.open(mode)`` where mode is
     the 1st arg). Only a mode-looking string is read as the mode, so a
     ``ZipFile.open("name.txt")`` read is not mistaken for a write."""
+    if _has_kwarg_splat(node):
+        return True  # **{"mode": "w"} could request a write
     for kw in node.keywords or []:
         if kw.arg == "mode":
             return _mode_arg_writes(kw.value)
@@ -671,41 +687,43 @@ def _attr_open_writes(node) -> bool:
 
 
 def _folded_path(node) -> "str | None":
-    """Best-effort constant value of a path built from string literals, so a
-    sensitive path assembled from pieces (os.path.join('/etc', 'passwd'),
-    '/etc' + '/passwd', Path('/etc') / 'passwd', f'/proc/{pid}/environ') is
-    still visible to the sensitive-path scan. A dynamic f-string piece becomes
-    a non-slash placeholder so /proc/<pid>/environ still matches."""
+    """Best-effort value of a path built from string literals, so a sensitive
+    path assembled from pieces (os.path.join('/etc', 'passwd'), '/etc'+'/passwd',
+    Path('/etc') / 'passwd', f'/proc/{pid}/environ', f'/etc/{name}') is still
+    visible to the scan. A dynamic piece becomes NUL, a non-slash placeholder,
+    so a dynamic segment under a sensitive dir (/etc/NUL) is still detectable."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.JoinedStr):
-        out = []
-        for value in node.values:
-            if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                out.append(value.value)
-            else:
-                out.append("\x00")  # dynamic piece: matches [^/\s'"]+
-        return "".join(out)
+        return "".join(
+            v.value if isinstance(v, ast.Constant) and isinstance(v.value, str) else "\x00"
+            for v in node.values
+        )
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Div)):
-        left, right = _folded_path(node.left), _folded_path(node.right)
-        if left is None or right is None:
-            return None
+        left = _folded_path(node.left)
+        right = _folded_path(node.right)
+        left = "\x00" if left is None else left
+        right = "\x00" if right is None else right
         # Path('/etc') / 'passwd' joins with a separator; '+' concatenates.
         return left + "/" + right if isinstance(node.op, ast.Div) else left + right
     if isinstance(node, ast.Call):
-        parts = [_folded_path(a) for a in node.args]
-        if any(p is None for p in parts):
-            return None
         func = node.func
-        if isinstance(func, ast.Attribute) and func.attr == "join":
-            return "/".join(parts)  # os.path.join / posixpath.join
-        if isinstance(func, ast.Name) and func.id in (
-            "Path",
-            "PurePath",
-            "PurePosixPath",
+        if (isinstance(func, ast.Attribute) and func.attr == "join") or (
+            isinstance(func, ast.Name) and func.id in ("Path", "PurePath", "PurePosixPath")
         ):
+            parts = [(_folded_path(a) or "\x00") for a in node.args]
             return "/".join(parts)
     return None
+
+
+def _folded_is_sensitive(folded) -> bool:
+    """A folded path is sensitive if it names a credential file, or has a
+    dynamic segment (NUL) directly under a sensitive directory (/etc/NUL)."""
+    if not folded:
+        return False
+    return _references_sensitive_path(folded) or (
+        "\x00" in folded and bool(_SENSITIVE_DIR_RE.search(folded))
+    )
 
 
 def _terminal_is_potentially_unsafe(command: str) -> bool:
@@ -717,10 +735,10 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     if ">" in command or "`" in command or "$(" in command or "<(" in command:
         return True
     # Reads that escape the sandbox workdir (../) or hit credential paths are
-    # not "safe" reads; ask before running them. Strip shell quotes and expand
-    # NAME=value prefixes first so `cat /proc/$PPID/enviro''n` and
-    # `p="/proc/$PPID"; cat $p/environ` are caught too.
-    stripped = _SHELL_QUOTE_RE.sub("", command)
+    # not "safe" reads; ask before running them. Strip shell quotes/backslash
+    # escapes and expand NAME=value prefixes first so `cat /proc/$PPID/enviro''n`,
+    # `cat /et\c/passwd`, and `p="/proc/$PPID"; cat $p/environ` are caught too.
+    stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
     if _glob_hits_sensitive(command) or any(
         _references_sensitive_path(c)
         for c in (
@@ -824,9 +842,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # f, _ = (open, print)) so an aliased writer call is still checked below.
     # builtins_aliases tracks `import builtins [as b]` for builtins.exec/eval.
     open_aliases = {"open"}
-    builtins_aliases = {"builtins"}
-    # Names bound to a dynamic lookup (rm = getattr(os, "remove")) whose calls
-    # cannot be proven read-only, so they fail closed.
+    builtins_aliases = {"builtins", "__builtins__"}
+    # Names bound to a dynamic lookup (rm = getattr(os, "remove");
+    # f = globals()["open"]) whose calls cannot be proven read-only, so they
+    # fail closed.
     dynamic_aliases = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -839,14 +858,24 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     open_aliases.add(alias.asname or "open")
         elif isinstance(node, ast.Assign):
             value = node.value
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
             if isinstance(value, ast.Name) and value.id in open_aliases:
-                open_aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
+                open_aliases.update(targets)
+            elif (
+                isinstance(value, ast.Attribute)
+                and value.attr == "open"
+                and isinstance(value.value, ast.Name)
+                and value.value.id in builtins_aliases
+            ):
+                open_aliases.update(targets)  # f = builtins.open
+            elif isinstance(value, ast.Subscript):
+                dynamic_aliases.update(targets)  # f = globals()["open"]
             elif (
                 isinstance(value, ast.Call)
                 and isinstance(value.func, ast.Name)
                 and value.func.id == "getattr"
             ):
-                dynamic_aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
+                dynamic_aliases.update(targets)
             elif isinstance(value, (ast.Tuple, ast.List)):
                 # Destructuring: f, _ = (open, print) -> track f.
                 for target in node.targets:
@@ -899,14 +928,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     return True
             elif isinstance(node, (ast.BinOp, ast.JoinedStr)):
                 # A sensitive path concatenated from literals ('/etc'+'/passwd'),
-                # a pathlib / chain, or an f-string (f'/proc/{pid}/environ').
-                folded = _folded_path(node)
-                if folded and _references_sensitive_path(folded):
+                # a pathlib / chain, an f-string (f'/proc/{pid}/environ'), or a
+                # dynamic segment under a sensitive dir (f'/etc/{name}').
+                if _folded_is_sensitive(_folded_path(node)):
                     return True
             elif isinstance(node, ast.Call):
-                # A sensitive path composed via os.path.join('/etc', 'passwd').
-                folded = _folded_path(node)
-                if folded and _references_sensitive_path(folded):
+                # A sensitive path composed via os.path.join('/etc', name).
+                if _folded_is_sensitive(_folded_path(node)):
                     return True
                 func = node.func
                 if isinstance(func, (ast.Call, ast.Subscript)):
@@ -935,6 +963,21 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     return False
 
 
+def _mcp_arguments_reference_sensitive(arguments) -> bool:
+    """True if any string in an MCP call's arguments names a credential path."""
+
+    def walk(value) -> bool:
+        if isinstance(value, str):
+            return _references_sensitive_path(value)
+        if isinstance(value, dict):
+            return any(walk(v) for v in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(walk(v) for v in value)
+        return False
+
+    return walk(arguments)
+
+
 def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     """Whether a tool call must still pause for approval in auto mode.
 
@@ -949,6 +992,10 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         # A mutating verb anywhere (get_or_create_issue, read_and_delete)
         # overrides a read-only prefix.
         if _AUTO_UNSAFE_MCP_VERB_RE.search(tool_name):
+            return True
+        # A read-named fs tool pointed at a credential path is still a
+        # sensitive read (mcp__fs__read_file {"path": "/etc/passwd"}).
+        if _mcp_arguments_reference_sensitive(arguments):
             return True
         return not _AUTO_SAFE_MCP_TOOL_RE.match(tool_name)
     if name == "terminal":

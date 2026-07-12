@@ -1061,9 +1061,13 @@ class ChatCompletionRequest(BaseModel):
         elif self.permission_mode == "off":
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
-        elif self.permission_mode in ("ask", "auto"):
+        elif self.permission_mode in ("ask", "auto") and not (
+            self.provider_id or self.provider_type
+        ):
             # These modes gate on their own; a direct API caller that omits the
-            # legacy confirm flag must still hit the confirmation gate.
+            # legacy confirm flag must still hit the confirmation gate. External
+            # providers reject confirm_tool_calls with tools, and permission_mode
+            # only governs local tools, so skip the fold when routing external.
             self.confirm_tool_calls = True
         return self
 

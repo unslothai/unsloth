@@ -113,6 +113,8 @@ def _clear_pending():
         ("cat /e??/passwd", True),  # glob expands to /etc/passwd
         ("cat /e[t]c/passwd", True),  # bracket class hides etc
         ("head /etc/shado?", True),
+        ("cat /et\\c/passwd", True),  # backslash escape hides /etc/passwd
+        ("cat /etc/pass\\wd", True),
         ("ls *.py", False),  # benign glob stays safe
         ("head data?.txt", False),
         ("cat logs/app.log", False),  # ordinary relative read
@@ -185,6 +187,15 @@ def test_terminal_classifier(command, unsafe):
         ("from runpy import run_module\nrun_module('m')", True),
         ("import os\nrm = getattr(os, 'remove')\nrm('f')", True),  # getattr alias call
         ("x = getattr(obj, 'name')\nprint(x)", False),  # getattr result not called
+        ("__builtins__.exec('x=1')", True),  # __builtins__ dynamic exec
+        ("f = globals()['open']\nf('out', 'w')", True),  # subscript alias write
+        ("import builtins\nf = builtins.open\nf('out', 'w')", True),  # attribute alias write
+        ("open('out', **{'mode': 'w'}).write('x')", True),  # kwargs splat mode
+        ("name = 'passwd'\nopen(f'/etc/{name}').read()", True),  # dynamic /etc segment
+        ("import os\nopen(os.path.join('/etc', name)).read()", True),  # composed dynamic seg
+        ("open(f'/tmp/{name}.txt').read()", False),  # dynamic seg under /tmp stays safe
+        ("import urllib3\nurllib3.PoolManager().request('GET', 'http://x')", True),  # network
+        ("cfg = d['k']\nprint(cfg)", False),  # subscript result not called stays safe
     ],
 )
 def test_python_classifier(code, unsafe):
@@ -219,11 +230,28 @@ def test_unknown_tools_fail_closed():
         ("list_and_clone_repo", True),  # clone/checkout/comment are mutating
         ("fetch_and_comment_issue", True),
         ("get_and_checkout_branch", True),
+        ("read_and_append_file", True),  # append/prepend are mutating
+        ("prepend_line", True),
     ],
 )
 def test_mcp_classifier(tool, unsafe):
     name = f"{MCP_TOOL_PREFIX}srv1__{tool}"
     assert is_potentially_unsafe_tool_call(name, {}) is unsafe
+
+
+@pytest.mark.parametrize(
+    ("args", "unsafe"),
+    [
+        ({"path": "/etc/passwd"}, True),  # read-named tool at a credential path
+        ({"path": "../../.ssh/id_rsa"}, True),
+        ({"nested": {"file": "~/.aws/credentials"}}, True),
+        ({"path": "notes.txt"}, False),  # ordinary path stays safe
+        ({"path": "data/report.csv"}, False),
+    ],
+)
+def test_mcp_sensitive_arguments(args, unsafe):
+    name = f"{MCP_TOOL_PREFIX}fs__read_file"
+    assert is_potentially_unsafe_tool_call(name, args) is unsafe
 
 
 # ── loop behavior ───────────────────────────────────────────────────
@@ -418,3 +446,12 @@ def test_ask_auto_self_enable_confirm_on_chat_request():
         confirm_tool_calls = False,
     )
     assert req.confirm_tool_calls is False
+    # External-provider requests are not folded (the provider branch rejects
+    # confirm_tool_calls with tools, and permission_mode is a local concept).
+    for extra in ({"provider_id": "p1"}, {"provider_type": "openai"}):
+        req = ChatCompletionRequest(
+            messages = [{"role": "user", "content": "hi"}],
+            permission_mode = "ask",
+            **extra,
+        )
+        assert req.confirm_tool_calls is None
