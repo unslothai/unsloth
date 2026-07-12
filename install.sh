@@ -2934,6 +2934,32 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
+    # Released unsloth wheels can pin an older torch than Step 1 installed (e.g.
+    # unsloth 2026.7.2 declares torch<2.11.0), and a with-deps resolve from PyPI
+    # then silently DOWNGRADES the whole torch trio -- swapping the pinned
+    # +cuXXX/+rocm build for PyPI's default wheel. The flavor guard below cannot
+    # catch every such swap (PyPI's torch 2.10 default is itself cu128-flavored,
+    # so the cuXXX tag comparison still matches), so freeze the trio via uv's
+    # --overrides: overrides REPLACE dependency requirements during resolution,
+    # keeping the installed wheels in place while unsloth's other dependencies
+    # resolve normally.
+    _UNSLOTH_TORCH_OVERRIDES=""
+    if [ "$SKIP_TORCH" = false ]; then
+        _torch_trio_pins=$("$_VENV_PY" -c "
+from importlib.metadata import version, PackageNotFoundError
+for _p in ('torch', 'torchvision', 'torchaudio'):
+    try:
+        print(_p + '==' + version(_p))
+    except PackageNotFoundError:
+        pass
+" 2>/dev/null) || _torch_trio_pins=""
+        case "$_torch_trio_pins" in
+            torch==*)
+                _UNSLOTH_TORCH_OVERRIDES=$(mktemp)
+                printf '%s\n' "$_torch_trio_pins" > "$_UNSLOTH_TORCH_OVERRIDES"
+                ;;
+        esac
+    fi
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps, then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
@@ -2957,6 +2983,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
+            ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --upgrade-package unsloth "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
@@ -2966,8 +2993,10 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
         run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
+            ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --upgrade-package unsloth -- "$PACKAGE_NAME" ${_MLX_LM_EXCLUDE_ARG:-}
     fi
+    [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
     if [ "$SKIP_TORCH" = false ]; then
