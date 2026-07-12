@@ -2770,7 +2770,12 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             $_markerMismatch = Test-MarkerPinMismatch -VenvDir $VenvDir -PinUrl $_pinnedIdx
             if ($_markerMismatch -eq $true) { $shouldRebuild = $true }
             # cu*/cpu leaves stay specific so a cu126-vs-cu128 mismatch rebuilds.
-            if ($_pinLeaf -like 'gfx*' -or $_pinLeaf -like 'rocm*') {
+            # Digit-gated like the install selection below: a custom rocm-* leaf
+            # (rocm-current / rocm-rel-7.2.1) is NOT a PyTorch ROCm family, stays on
+            # the verbatim/marker path, and must not be stale-compared as one (that
+            # reported not-rocm vs rocm(torch<2.11) and force-reinstalled on every
+            # studio update even though the pin never changed).
+            if ($_pinLeaf -like 'gfx*' -or $_pinLeaf -match '^rocm\d') {
                 # Do NOT collapse a pinned ROCm/gfx leaf to a generic "rocm": that
                 # would match any installed +rocm wheel and mask a pin change from
                 # one ROCm family to another (e.g. rocm6.4 -> gfx1151, or rocm6.4
@@ -2940,7 +2945,7 @@ function Fast-Install {
         # them only for index-pinned installs; mirrors still apply elsewhere.
         $saved = @{}
         if (@($Args_) -contains '--index-url') {
-            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL') {
+            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL', 'UV_TORCH_BACKEND') {
                 $saved[$n] = [Environment]::GetEnvironmentVariable($n)
                 Remove-Item "Env:$n" -ErrorAction SilentlyContinue
             }

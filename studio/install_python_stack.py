@@ -2584,12 +2584,17 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
 # to its own per-backend index even when a --index-url is given, so it defeats a
 # pin the same way ( _build_uv_cmd also refuses to turn it into a --torch-backend
 # flag for pinned commands; this covers uv reading the env var directly).
+# PIP_EXTRA_INDEX_URL matters for the pip FALLBACK (uv missing/failed): pip's
+# --extra-index-url env form adds indexes "in addition to --index-url", so an
+# inherited mirror could still satisfy torch off the pin. (PIP_INDEX_URL needs no
+# strip: the command's explicit --index-url flag overrides it.)
 _UV_INDEX_ENV_VARS = (
     "UV_DEFAULT_INDEX",
     "UV_INDEX_URL",
     "UV_INDEX",
     "UV_EXTRA_INDEX_URL",
     "UV_TORCH_BACKEND",
+    "PIP_EXTRA_INDEX_URL",
 )
 
 

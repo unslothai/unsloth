@@ -479,7 +479,7 @@ function Install-UnslothStudio {
         $savedUvIndex = $null
         if ($Command.ToString() -match '--default-index') {
             $savedUvIndex = @{}
-            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL') {
+            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL', 'UV_TORCH_BACKEND') {
                 $savedUvIndex[$n] = [Environment]::GetEnvironmentVariable($n)
                 Remove-Item "Env:$n" -ErrorAction SilentlyContinue
             }

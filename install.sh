@@ -161,9 +161,11 @@ run_install_cmd() {
     shift
     # Installer-pinned index installs (torch) must beat an inherited uv mirror
     # (#6898): when we pass --default-index, neutralize every uv index env var so
-    # the pinned index wins. Other installs keep the user's mirror.
+    # the pinned index wins. UV_TORCH_BACKEND is cleared too: uv's torch backend
+    # redirects torch resolution to its own per-backend index even against a
+    # --default-index pin. Other installs keep the user's mirror and backend.
     case " $* " in
-        *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL "$@" ;;
+        *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND "$@" ;;
     esac
     if _is_verbose; then
         "$@" && return 0
