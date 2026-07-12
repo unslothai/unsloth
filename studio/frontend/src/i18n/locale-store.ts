@@ -51,7 +51,16 @@ function detectLocale(): Locale {
     : navigatorRef?.language
       ? [navigatorRef.language]
       : [];
+  let sawTraditionalChinese = false;
   for (const tag of tags) {
+    const lower = tag.toLowerCase();
+    if (lower.split("-")[0] === "zh" && isTraditionalChinese(lower)) {
+      sawTraditionalChinese = true;
+    } else if (sawTraditionalChinese && lower === "zh") {
+      // A bare zh after a Traditional tag is the browser's base-subtag
+      // fallback, not a Simplified request; skip it so we keep falling through.
+      continue;
+    }
     const match = matchLocale(tag);
     if (match) return match;
   }
