@@ -235,11 +235,21 @@ function speakWithStudioModel(
  * Engines: "system" (speechSynthesis) or "studio" (loaded TTS audio model).
  */
 export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
-  static isSupported(): boolean {
+  /** Web Speech synthesis, used by the "system" engine. */
+  static systemVoicesSupported(): boolean {
     return (
       typeof window !== "undefined" &&
       "speechSynthesis" in window &&
       typeof window.SpeechSynthesisUtterance !== "undefined"
+    );
+  }
+
+  // The "studio" engine only needs fetch + Audio playback, so a WebView
+  // without Web Speech synthesis can still read aloud through the backend.
+  static isSupported(): boolean {
+    return (
+      StudioSpeechSynthesisAdapter.systemVoicesSupported() ||
+      (typeof window !== "undefined" && typeof window.Audio !== "undefined")
     );
   }
 
@@ -283,6 +293,17 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
         if (res.status.type !== "ended") res.status = { type: "running" };
       });
       cancelImpl = session.cancel;
+      return res;
+    }
+
+    if (!StudioSpeechSynthesisAdapter.systemVoicesSupported()) {
+      cancelImpl = () => handleEnd("cancelled");
+      queueMicrotask(() =>
+        handleEnd(
+          "error",
+          new Error("System speech synthesis is not available here."),
+        ),
+      );
       return res;
     }
 

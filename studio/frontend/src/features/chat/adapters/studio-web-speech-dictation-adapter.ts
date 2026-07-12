@@ -269,11 +269,15 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         try {
           recognition.start(audioTrack);
         } catch (error) {
-          // Older engines expose only start(); retry without the experimental track overload.
+          // Older engines expose only start(); retry without the experimental
+          // track overload. Recognition then captures from the default device,
+          // so release the selected-device stream instead of holding it open.
           console.debug(
             "Dictation start(audioTrack) failed; retrying start().",
             error,
           );
+          stopStream(stream);
+          stream = null;
           recognition.start();
         }
         started = true;

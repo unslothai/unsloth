@@ -23,10 +23,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { isMissingDeviceError } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import {
   applyDictationDictionary,
   recordRecentDictation,
   resolveDictationLanguage,
+  useVoiceSettingsStore,
 } from "@/features/settings/stores/voice-settings-store";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
@@ -204,7 +206,15 @@ function useDictation(
   const [isDictating, setIsDictating] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
 
-  const start = useCallback(() => {
+  const streamRef = useRef<MediaStream | null>(null);
+  const startingRef = useRef(false);
+
+  const releaseStream = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  }, []);
+
+  const start = useCallback(async () => {
     const SpeechRecognitionAPI =
       typeof window !== "undefined" &&
       (window.SpeechRecognition ??
@@ -216,6 +226,42 @@ function useDictation(
     if (!SpeechRecognitionAPI) {
       return;
     }
+    if (startingRef.current || recognitionRef.current) return;
+    startingRef.current = true;
+
+    // Open the microphone chosen in Voice settings, matching the main chat
+    // adapter, so Compare dictation honors the same device selection.
+    let audioTrack: MediaStreamTrack | undefined;
+    const { micDeviceId } = useVoiceSettingsStore.getState();
+    if (navigator.mediaDevices?.getUserMedia) {
+      try {
+        let stream: MediaStream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio:
+              micDeviceId && micDeviceId !== "default"
+                ? { deviceId: { exact: micDeviceId } }
+                : true,
+          });
+        } catch (error) {
+          // Saved mic may be unplugged; fall back to the default device.
+          if (micDeviceId !== "default" && isMissingDeviceError(error)) {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: true,
+            });
+          } else {
+            throw error;
+          }
+        }
+        streamRef.current = stream;
+        audioTrack = stream.getAudioTracks()[0];
+      } catch {
+        // Permission or device failure: recognition can still run on the
+        // browser default microphone.
+        audioTrack = undefined;
+      }
+    }
+
     const recognition = new SpeechRecognitionAPI() as SpeechRecognition;
     recognition.continuous = true;
     recognition.interimResults = true;
@@ -239,30 +285,53 @@ function useDictation(
       setIsDictating(false);
     };
     recognition.onend = () => {
+      releaseStream();
+      recognitionRef.current = null;
       if (sessionTranscript) {
         recordRecentDictation(sessionTranscript);
         sessionTranscript = "";
       }
       setIsDictating(false);
     };
-    recognition.start();
+    try {
+      if (audioTrack) {
+        try {
+          recognition.start(audioTrack);
+        } catch {
+          // No start(track) overload: recognition captures from the default
+          // device, so release the selected-device stream.
+          releaseStream();
+          recognition.start();
+        }
+      } else {
+        recognition.start();
+      }
+    } catch {
+      startingRef.current = false;
+      releaseStream();
+      return;
+    }
     recognitionRef.current = recognition;
+    startingRef.current = false;
     setIsDictating(true);
-  }, [setText]);
+  }, [setText, releaseStream]);
 
   const stop = useCallback(() => {
     if (recognitionRef.current) {
       recognitionRef.current.stop();
       recognitionRef.current = null;
     }
+    releaseStream();
     setIsDictating(false);
-  }, []);
+  }, [releaseStream]);
 
   useEffect(() => {
     return () => {
       if (recognitionRef.current) {
         recognitionRef.current.abort();
       }
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
     };
   }, []);
 

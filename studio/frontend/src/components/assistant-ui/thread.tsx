@@ -3917,27 +3917,27 @@ const AssistantActionBar: FC = () => {
         <ForkCountBadge />
         <DeleteMessageButton />
         {ttsEnabled && (
-          <>
-            <MessagePrimitive.If speaking={false}>
-              <ActionBarPrimitive.Speak asChild={true}>
-                <TooltipIconButton tooltip="Read aloud" aria-label="Read aloud">
-                  <Volume2Icon strokeWidth={1.75} className="size-icon" />
-                </TooltipIconButton>
-              </ActionBarPrimitive.Speak>
-            </MessagePrimitive.If>
-            <MessagePrimitive.If speaking={true}>
-              <ActionBarPrimitive.StopSpeaking asChild={true}>
-                <TooltipIconButton
-                  tooltip="Stop reading"
-                  aria-label="Stop reading"
-                  className="text-destructive"
-                >
-                  <VolumeXIcon strokeWidth={1.75} className="size-icon" />
-                </TooltipIconButton>
-              </ActionBarPrimitive.StopSpeaking>
-            </MessagePrimitive.If>
-          </>
+          <MessagePrimitive.If speaking={false}>
+            <ActionBarPrimitive.Speak asChild={true}>
+              <TooltipIconButton tooltip="Read aloud" aria-label="Read aloud">
+                <Volume2Icon strokeWidth={1.75} className="size-icon" />
+              </TooltipIconButton>
+            </ActionBarPrimitive.Speak>
+          </MessagePrimitive.If>
         )}
+        {/* Not gated on ttsEnabled: turning the setting off while a message
+            is being read aloud must not remove the only stop control. */}
+        <MessagePrimitive.If speaking={true}>
+          <ActionBarPrimitive.StopSpeaking asChild={true}>
+            <TooltipIconButton
+              tooltip="Stop reading"
+              aria-label="Stop reading"
+              className="text-destructive"
+            >
+              <VolumeXIcon strokeWidth={1.75} className="size-icon" />
+            </TooltipIconButton>
+          </ActionBarPrimitive.StopSpeaking>
+        </MessagePrimitive.If>
         <ActionBarMorePrimitive.Root>
           <ActionBarMorePrimitive.Trigger asChild={true}>
             <TooltipIconButton

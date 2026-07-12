@@ -170,10 +170,16 @@ function DictationTest() {
     [],
   );
 
+  // Set before the getUserMedia await so a double click or a slow
+  // permission prompt cannot start a second recognizer over the first.
+  const startingRef = useRef(false);
+
   const start = useCallback(async () => {
     const SpeechRecognitionAPI =
       window.SpeechRecognition ?? window.webkitSpeechRecognition;
     if (!SpeechRecognitionAPI) return;
+    if (startingRef.current || recognitionRef.current) return;
+    startingRef.current = true;
     setTranscript("");
     setInterim("");
     transcriptRef.current = "";
@@ -200,6 +206,7 @@ function DictationTest() {
       streamRef.current = stream;
       audioTrack = stream.getAudioTracks()[0];
     } catch {
+      startingRef.current = false;
       toast.error(t("settings.voice.dictation.micOpenFailed"));
       return;
     }
@@ -235,16 +242,22 @@ function DictationTest() {
         try {
           recognition.start(audioTrack);
         } catch {
+          // Engine has no start(track) overload: it will capture from the
+          // default device, so release the selected-device stream.
+          streamRef.current?.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
           recognition.start();
         }
       } else {
         recognition.start();
       }
     } catch {
+      startingRef.current = false;
       finalize();
       return;
     }
     recognitionRef.current = recognition;
+    startingRef.current = false;
     setTesting(true);
   }, [finalize, t]);
 
@@ -366,8 +379,17 @@ export function VoiceTab() {
 
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewAbortRef = useRef<AbortController | null>(null);
+  // Mirrors `previewing` so unmount cleanup can tell whether this tab owns
+  // the current speechSynthesis utterance; read-aloud shares the global
+  // synthesizer and must not be cancelled by merely closing settings.
+  const previewingRef = useRef(false);
+  const markPreviewing = useCallback((value: boolean) => {
+    previewingRef.current = value;
+    setPreviewing(value);
+  }, []);
 
   const stopPreview = useCallback(() => {
+    if (!previewingRef.current) return;
     window.speechSynthesis?.cancel();
     previewAbortRef.current?.abort();
     previewAbortRef.current = null;
@@ -376,8 +398,8 @@ export function VoiceTab() {
       previewAudioRef.current.src = "";
       previewAudioRef.current = null;
     }
-    setPreviewing(false);
-  }, []);
+    markPreviewing(false);
+  }, [markPreviewing]);
 
   const previewTts = async () => {
     if (!ttsSupported) return;
@@ -388,7 +410,7 @@ export function VoiceTab() {
     if (ttsEngine === "studio") {
       const controller = new AbortController();
       previewAbortRef.current = controller;
-      setPreviewing(true);
+      markPreviewing(true);
       try {
         const url = await generateStudioTtsAudio(
           TTS_PREVIEW_TEXT,
@@ -398,8 +420,8 @@ export function VoiceTab() {
         const audio = new Audio(url);
         audio.playbackRate = ttsRate;
         audio.volume = ttsVolume;
-        audio.addEventListener("ended", () => setPreviewing(false));
-        audio.addEventListener("error", () => setPreviewing(false));
+        audio.addEventListener("ended", () => markPreviewing(false));
+        audio.addEventListener("error", () => markPreviewing(false));
         previewAudioRef.current = audio;
         await audio.play();
       } catch (error) {
@@ -408,16 +430,20 @@ export function VoiceTab() {
             error instanceof Error ? error.message : "TTS preview failed",
           );
         }
-        setPreviewing(false);
+        markPreviewing(false);
       }
       return;
     }
+    if (!StudioSpeechSynthesisAdapter.systemVoicesSupported()) {
+      toast.error(t("settings.voice.readAloud.notSupported"));
+      return;
+    }
     const utterance = createConfiguredUtterance(TTS_PREVIEW_TEXT);
-    utterance.addEventListener("end", () => setPreviewing(false));
-    utterance.addEventListener("error", () => setPreviewing(false));
+    utterance.addEventListener("end", () => markPreviewing(false));
+    utterance.addEventListener("error", () => markPreviewing(false));
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
-    setPreviewing(true);
+    markPreviewing(true);
   };
 
   // Stop any preview playback when the tab unmounts.
@@ -445,7 +471,7 @@ export function VoiceTab() {
               : t("settings.voice.dictation.microphoneGrantDescription")
           }
         >
-          {hasLabels || devices.length > 0 ? (
+          {hasLabels ? (
             <Select value={micDeviceId} onValueChange={setMicDeviceId}>
               <SelectTrigger aria-label="Microphone" className="w-56" size="sm">
                 <SelectValue />
