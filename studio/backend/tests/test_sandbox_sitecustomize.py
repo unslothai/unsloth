@@ -7,10 +7,12 @@ The shim (``core/inference/sandbox_site/sitecustomize.py``) runs at interpreter
 startup inside every sandboxed tool subprocess and remaps ChatGPT
 code-interpreter habit paths (``/mnt/data`` etc.) onto the per-conversation
 working directory. Importing it calls ``_install()``, which monkeypatches
-``builtins.open`` / ``io.open`` / ``os.makedirs`` process-wide, so these tests
+``builtins.open`` / ``io.open`` / ``os.makedirs`` / ``os.mkdir`` /
+``pathlib.Path.mkdir`` process-wide, so these tests
 load it into a throwaway module and restore those globals immediately, then
 exercise the pure ``_remap()`` function directly -- no subprocess, and no real
-``/mnt`` or ``/tmp`` writes.
+``/mnt`` or ``/tmp`` writes. The mkdir test keeps the patch installed under a
+``chdir`` into ``tmp_path`` so the only real writes land in that temp dir.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import builtins
 import importlib.util
 import io
 import os
+import pathlib
 from pathlib import Path
 
 _SHIM = (
@@ -31,15 +34,15 @@ _SHIM = (
 
 
 def _load_shim():
-    """Import the shim without leaving its open()/makedirs patches installed."""
-    saved = (builtins.open, io.open, os.makedirs)
+    """Import the shim without leaving its open()/mkdir patches installed."""
+    saved = (builtins.open, io.open, os.makedirs, os.mkdir, pathlib.Path.mkdir)
     spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_under_test", _SHIM)
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)  # runs _install(), patching the globals
     finally:
         # Undo the process-wide patch so the test process stays clean.
-        builtins.open, io.open, os.makedirs = saved
+        builtins.open, io.open, os.makedirs, os.mkdir, pathlib.Path.mkdir = saved
     mod._notified = True  # silence the one-shot stderr notice in tests
     return mod
 
@@ -81,3 +84,42 @@ def test_tmp_outputs_remapped_only_while_absent(monkeypatch, tmp_path):
     os.makedirs(cond)
     assert mod._remap(cond + "/plot.png") == cond + "/plot.png"
     assert mod._remap(cond) == cond
+
+
+def test_pathlib_mkdir_parents_remaps_convention_path(monkeypatch, tmp_path):
+    # `Path('/mnt/data').mkdir(parents=True, exist_ok=True)` is a stock
+    # code-interpreter setup line. pathlib drives it through os.mkdir (not
+    # os.makedirs) per component and, on FileExistsError, Path.is_dir()/os.stat
+    # -- so the shim must patch os.mkdir AND Path.mkdir for the whole
+    # parents/exist_ok dance to land in the working directory instead of raising
+    # before any open() runs. This keeps the shim's mkdir patches installed
+    # (unlike _load_shim) under a chdir into tmp_path, so the only real writes
+    # land in that temp dir, and restores every patched global in finally.
+    saved = (builtins.open, io.open, os.makedirs, os.mkdir, pathlib.Path.mkdir)
+    spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_mkdir", _SHIM)
+    mod = importlib.util.module_from_spec(spec)
+    monkeypatch.chdir(tmp_path)
+    cwd = os.getcwd()
+    try:
+        spec.loader.exec_module(mod)  # installs the os.mkdir / Path.mkdir patches
+        mod._notified = True
+        # Bare convention path maps onto the CWD itself, which already exists:
+        # exist_ok=True must be honoured against the mapped location, not raise.
+        pathlib.Path("/mnt/data").mkdir(parents=True, exist_ok=True)
+        # A nested convention path is created inside the CWD, parents and all.
+        pathlib.Path("/mnt/data/plots/run1").mkdir(parents=True, exist_ok=True)
+        assert os.path.isdir(os.path.join(cwd, "plots", "run1"))
+        # Re-running the same setup is idempotent: exist_ok is evaluated on the
+        # mapped path (which now exists), not the never-present /mnt/data.
+        pathlib.Path("/mnt/data/plots/run1").mkdir(parents=True, exist_ok=True)
+
+        # Passthrough: real paths are created verbatim through both patches,
+        # never remapped into the CWD.
+        real_dir = tmp_path / "real_via_path"
+        pathlib.Path(str(real_dir)).mkdir()
+        assert real_dir.is_dir()
+        real_os = tmp_path / "real_via_os"
+        os.mkdir(str(real_os))
+        assert real_os.is_dir()
+    finally:
+        builtins.open, io.open, os.makedirs, os.mkdir, pathlib.Path.mkdir = saved

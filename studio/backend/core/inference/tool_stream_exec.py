@@ -112,6 +112,26 @@ def stream_tool_execution(
                 return "".join(parts)
             parts.append(item)
 
+    def _drain_and_drop() -> None:
+        """Discard the current and every queued chunk without concatenating.
+
+        Once the live-output cap is tripped every chunk is thrown away, so a
+        chatty tool (``yes``, a tight print loop) that enqueues far more than
+        one poll interval's worth of text must not pay to build a combined
+        string only to drop it -- that would let it blow past the memory/CPU
+        ceiling the cap exists to enforce. Still detect completion so the loop
+        can exit promptly.
+        """
+        nonlocal finished
+        while True:
+            try:
+                item = output_queue.get_nowait()
+            except queue.Empty:
+                return
+            if item is done_sentinel:
+                finished = True
+                return
+
     while not finished:
         try:
             item = output_queue.get(timeout = poll_interval_s)
@@ -125,15 +145,19 @@ def stream_tool_execution(
         if item is done_sentinel:
             break
 
-        chunk = item + _drain_pending()
         if stream_capped:
-            # Past the cap chunks are discarded, but the keepalive cadence
-            # must survive: consuming them without pacing would neither yield
-            # anything nor let an idle poll fire (a chatty tool keeps the
-            # queue non-empty), so the SSE stream would go silent past proxy
-            # idle timeouts. Sleep one poll interval per drain (time.sleep,
-            # not time.monotonic -- tests patch the clock) and count it as an
-            # idle poll so heartbeats keep flowing at the configured cadence.
+            # Past the cap this chunk and every queued sibling are discarded.
+            # Drop them without concatenating (see _drain_and_drop): a chatty
+            # tool can enqueue far more than one poll interval's worth of text,
+            # and building a combined string just to throw it away would defeat
+            # the cap's memory/CPU bound. The keepalive cadence must still
+            # survive: draining without pacing would neither yield anything nor
+            # let an idle poll fire (a chatty tool keeps the queue non-empty),
+            # so the SSE stream would go silent past proxy idle timeouts. Sleep
+            # one poll interval per drain (time.sleep, not time.monotonic --
+            # tests patch the clock) and count it as an idle poll so heartbeats
+            # keep flowing at the configured cadence.
+            _drain_and_drop()
             if finished:
                 break
             time.sleep(poll_interval_s)
@@ -143,6 +167,7 @@ def stream_tool_execution(
                 yield {"type": "heartbeat"}
             continue
 
+        chunk = item + _drain_pending()
         idle_polls = 0
         if streamed_chars + len(chunk) > TOOL_OUTPUT_STREAM_MAX_CHARS:
             chunk = chunk[: max(0, TOOL_OUTPUT_STREAM_MAX_CHARS - streamed_chars)]
