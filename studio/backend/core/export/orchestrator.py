@@ -590,6 +590,20 @@ class ExportOrchestrator:
             self._export_active = True
             op_success, op_message, op_output_path = False, "", None
             try:
+                # Handshake with the sidecar install route (see load_checkpoint):
+                # _export_active is set above, so either this recheck refuses
+                # before the command is sent, or the install sees the active op
+                # and 409s. Without it, an install that won the reservation would
+                # block in cleanup_memory behind an hours-long export op instead
+                # of the intended 409.
+                from utils.transformers_version import sidecar_swap_in_progress
+
+                if sidecar_swap_in_progress():
+                    op_message = (
+                        "A transformers installation is replacing the latest "
+                        "sidecar; retry when it completes."
+                    )
+                    return False, op_message, None
                 cmd = {"type": "export", "export_type": export_type, **params}
                 try:
                     self._send_cmd(cmd)

@@ -18,6 +18,11 @@ interface TransformersUpgradeDialogStore {
   errorMessage: string | null;
   /** Model ships custom code; without a PyPI install the load may fall back to trust_remote_code. */
   trustRemoteCodeFallback: boolean;
+  /** True once this consent's install completed. The server's install unloads the
+   *  active chat model before swapping, so the caller must treat its previous
+   *  model as already unloaded (rollback bookkeeping); the custom-code fallback
+   *  resolves true WITHOUT an install and leaves the model loaded. */
+  installRan: boolean;
   /** Open the dialog for a paused load; resolves true on install success or custom-code fallback. */
   requestConsent: (
     modelName: string,
@@ -37,6 +42,7 @@ export const useTransformersUpgradeDialogStore =
     phase: "consent",
     errorMessage: null,
     trustRemoteCodeFallback: false,
+    installRan: false,
     requestConsent: (modelName, upgrade, options) =>
       new Promise<boolean>((resolve) => {
         pendingResolver?.(false);
@@ -48,6 +54,7 @@ export const useTransformersUpgradeDialogStore =
           phase: "consent",
           errorMessage: null,
           trustRemoteCodeFallback: Boolean(options?.trustRemoteCodeFallback),
+          installRan: false,
         });
       }),
     install: async () => {
@@ -72,6 +79,7 @@ export const useTransformersUpgradeDialogStore =
         return;
       }
       if (pendingResolver === requestResolver) {
+        set({ installRan: true });
         get().resolve(true);
       }
     },

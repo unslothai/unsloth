@@ -4,7 +4,10 @@
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
-import { confirmTransformersUpgradeIfNeeded } from "@/features/transformers-upgrade";
+import {
+  confirmTransformersUpgradeIfNeeded,
+  useTransformersUpgradeDialogStore,
+} from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import {
   notifyNative,
@@ -609,6 +612,16 @@ export function useChatModelRuntime() {
               });
               if (!upgraded) {
                 throw new Error(getTransformersUpgradeRequiredMessage(displayName));
+              }
+              // The server's install unloads the active chat model before the
+              // sidecar swap, so from here the previous model is gone even if a
+              // later gate (e.g. security consent) cancels this load: rollback
+              // must run. The custom-code fallback resolves without installing.
+              if (
+                currentCheckpoint
+                && useTransformersUpgradeDialogStore.getState().installRan
+              ) {
+                previousWasUnloaded = true;
               }
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
