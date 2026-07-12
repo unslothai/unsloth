@@ -59,7 +59,11 @@ function detectLocale(): Locale {
 }
 
 function normalizePreference(value: unknown): LocalePreference {
-  return isLocalePreference(value) ? value : DEFAULT_LOCALE_PREFERENCE;
+  if (value === AUTO_LOCALE) return AUTO_LOCALE;
+  // Return a value re-derived from our own locale table rather than the raw
+  // input, so only known language codes are ever persisted.
+  const locales = Object.keys(LOCALES) as Locale[];
+  return locales.find((locale) => locale === value) ?? DEFAULT_LOCALE_PREFERENCE;
 }
 
 function resolvePreference(preference: LocalePreference): Locale {
