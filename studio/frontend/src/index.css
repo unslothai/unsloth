@@ -710,8 +710,10 @@ html[data-chat-font] .aui-root {
 }
 
 @theme inline {
-	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
-	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
+	/* Reference the :root tokens instead of literal stacks so the runtime
+	   font overrides (Settings > Appearance) reach every font-* utility. */
+	--font-sans: var(--font-sans);
+	--font-heading: var(--font-heading);
 	--color-verified: var(--verified);
 	--color-sidebar-ring: var(--ring-soft);
 	--color-sidebar-border: var(--sidebar-border);
@@ -759,8 +761,8 @@ html[data-chat-font] .aui-root {
 	--radius-2xl: calc(var(--radius) + 8px);
 	--radius-3xl: calc(var(--radius) + 12px);
 	--radius-4xl: calc(var(--radius) + 16px);
-	--font-mono: JetBrains Mono, monospace;
-	--font-serif: Source Serif 4, serif;
+	--font-mono: var(--font-mono);
+	--font-serif: var(--font-serif);
 	--radius: 1.1rem;
 	--tracking-tighter: 0em;
 	--tracking-tight: 0em;
