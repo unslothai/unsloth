@@ -45,7 +45,7 @@ class FakeClient:
         # Models a dead stdio transport: real Client.is_connected() stays True
         # after the subprocess dies, so liveness is probed via the transport.
         self.dead = False
-        self.transport = SimpleNamespace(_is_session_dead=lambda: self.dead)
+        self.transport = SimpleNamespace(_is_session_dead = lambda: self.dead)
         FakeClient.instances.append(self)
 
     async def __aenter__(self):
