@@ -579,9 +579,7 @@ def _expand_shell_assignments(command: str) -> str:
     env = dict(_SHELL_ASSIGN_RE.findall(command))
     if not env:
         return command
-    return _SHELL_VAR_RE.sub(
-        lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command
-    )
+    return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command)
 
 
 def _mode_arg_writes(mode_node) -> bool:
@@ -644,7 +642,9 @@ def _folded_path(node) -> "str | None":
         if isinstance(func, ast.Attribute) and func.attr == "join":
             return "/".join(parts)  # os.path.join / posixpath.join
         if isinstance(func, ast.Name) and func.id in (
-            "Path", "PurePath", "PurePosixPath",
+            "Path",
+            "PurePath",
+            "PurePosixPath",
         ):
             return "/".join(parts)
     return None
@@ -775,9 +775,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             elif isinstance(value, (ast.Tuple, ast.List)):
                 # Destructuring: f, _ = (open, print) -> track f.
                 for target in node.targets:
-                    if isinstance(target, (ast.Tuple, ast.List)) and len(
-                        target.elts
-                    ) == len(value.elts):
+                    if isinstance(target, (ast.Tuple, ast.List)) and len(target.elts) == len(
+                        value.elts
+                    ):
                         for tgt_el, val_el in zip(target.elts, value.elts):
                             if (
                                 isinstance(val_el, ast.Name)
@@ -850,9 +850,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         return True
                     # ZipFile/TarFile take the mode as the 2nd arg (like builtin
                     # open), so ZipFile(name, "w") writes but ZipFile(name) reads.
-                    if func.attr in ("ZipFile", "TarFile") and _builtin_open_writes(
-                        node
-                    ):
+                    if func.attr in ("ZipFile", "TarFile") and _builtin_open_writes(node):
                         return True
     except Exception:
         return True  # unexpected AST shape: fail closed
