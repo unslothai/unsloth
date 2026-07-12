@@ -2556,12 +2556,17 @@ class TestLatestTierActiveFor:
     """latest_tier_active_for: the 16-bit guard for the consented latest sidecar."""
 
     @staticmethod
-    def _pin(monkeypatch, tv, version = "5.13.1"):
+    def _pin(
+        monkeypatch,
+        tv,
+        version = "5.13.1",
+    ):
         monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: version)
         monkeypatch.setattr(tv, "_remote_lora_base", lambda name, hf_token = None: None)
 
     def test_true_when_tier_latest(self, monkeypatch):
         import utils.transformers_version as tv
+
         self._pin(monkeypatch, tv)
         monkeypatch.setattr(tv, "get_transformers_tier", lambda *a, **k: "latest")
         assert tv.latest_tier_active_for("Zyphra/ZAYA1-8B") is True
@@ -2600,9 +2605,7 @@ class TestLatestTierActiveFor:
         import utils.transformers_version as tv
 
         monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.13.1")
-        monkeypatch.setattr(
-            tv, "_remote_lora_base", lambda name, hf_token = None: "Zyphra/ZAYA1-8B"
-        )
+        monkeypatch.setattr(tv, "_remote_lora_base", lambda name, hf_token = None: "Zyphra/ZAYA1-8B")
         tiers = {"Zyphra/ZAYA1-8B": "latest"}
         monkeypatch.setattr(
             tv, "get_transformers_tier", lambda name, *a, **k: tiers.get(name, "default")
@@ -2683,14 +2686,14 @@ class TestRaiseTierForNested:
 
     def test_nested_latest_only_type_raises(self, monkeypatch):
         import utils.transformers_version as tv
-        self._patch_types(
-            monkeypatch, {"550": {"gemma4"}, "latest": {"gemma4", "brandnew_arch"}}
-        )
+
+        self._patch_types(monkeypatch, {"550": {"gemma4"}, "latest": {"gemma4", "brandnew_arch"}})
         cfg = {"model_type": "gemma4", "text_config": {"model_type": "brandnew_arch"}}
         assert tv._raise_tier_for_nested(cfg, "550") == "latest"
 
     def test_never_lowers_a_fast_path_tier(self, monkeypatch):
         import utils.transformers_version as tv
+
         # Mapping alone would say 530, but the fast path (e.g. a name override) said 550.
         self._patch_types(monkeypatch, {"530": {"qwen3_5"}, "550": {"qwen3_5"}})
         assert tv._raise_tier_for_nested({"model_type": "qwen3_5"}, "550") == "550"
@@ -2701,6 +2704,7 @@ class TestRaiseTierForNested:
 
     def test_unknown_nested_type_never_vetoes(self, monkeypatch):
         import utils.transformers_version as tv
+
         # A nested type unknown everywhere (not even latest) keeps the fast path.
         self._patch_types(monkeypatch, {"550": {"gemma4"}, "latest": {"gemma4"}})
         cfg = {"model_type": "gemma4", "text_config": {"model_type": "unreleased"}}
@@ -2714,13 +2718,9 @@ class TestRaiseTierForNested:
         ckpt = tmp_path / "wrapper"
         ckpt.mkdir()
         (ckpt / "config.json").write_text(
-            json.dumps(
-                {"model_type": "gemma4", "text_config": {"model_type": "brandnew_arch"}}
-            )
+            json.dumps({"model_type": "gemma4", "text_config": {"model_type": "brandnew_arch"}})
         )
-        self._patch_types(
-            monkeypatch, {"550": {"gemma4"}, "latest": {"gemma4", "brandnew_arch"}}
-        )
+        self._patch_types(monkeypatch, {"550": {"gemma4"}, "latest": {"gemma4", "brandnew_arch"}})
         monkeypatch.setattr(tv, "_config_needs_510", lambda cfg: False)
         monkeypatch.setattr(tv, "_config_needs_550", lambda cfg: True)
         assert tv.get_transformers_tier(str(ckpt), probe = False) == "latest"

@@ -4801,7 +4801,6 @@ async def install_latest_transformers_route(
     active = getattr(backend, "active_model_name", None)
     if active and await asyncio.to_thread(latest_tier_active_for, active):
         from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
-
         async with inference_lifecycle_gate():
             await asyncio.to_thread(backend.unload_model)
             note_model_unloaded()
