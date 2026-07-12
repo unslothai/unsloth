@@ -2967,9 +2967,7 @@ def test_structured_tool_args_stream_to_provisional_card(monkeypatch):
 
     # The streamed display path must not perturb execution or the model view.
     assert executed == [("python", {"code": code})]
-    assistant_messages = [
-        m for m in payloads[1]["messages"] if m.get("role") == "assistant"
-    ]
+    assistant_messages = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
     tc = assistant_messages[-1]["tool_calls"][0]
     assert tc["id"] == call_id
     # The controller re-serializes arguments (normalized JSON); the parsed
@@ -3031,9 +3029,7 @@ def test_ordinary_json_answer_streams_no_tool_args(monkeypatch):
     """A large ordinary JSON answer (no enabled tool name) must not spawn a
     provisional card or tool_args events; it stays a normal content answer."""
 
-    answer = json.dumps(
-        {"result": "fine", "data": ["x" * 40] * 12, "note": "not a tool call"}
-    )
+    answer = json.dumps({"result": "fine", "data": ["x" * 40] * 12, "note": "not a tool call"})
     chunks = [answer[i : i + 64] for i in range(0, len(answer), 64)]
     stream = [_sse({"content": chunk}) for chunk in chunks] + [_done()]
     payloads: list[dict] = []

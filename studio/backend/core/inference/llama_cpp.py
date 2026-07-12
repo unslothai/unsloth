@@ -9440,9 +9440,9 @@ class LlamaCppBackend:
                                         if current_id in provisional_started_tool_calls:
                                             if current_id not in arg_streamed_tool_call_ids:
                                                 arg_streamed_tool_call_ids.add(current_id)
-                                                _args_backlog = tool_calls_acc[idx][
-                                                    "function"
-                                                ].get("arguments", "")
+                                                _args_backlog = tool_calls_acc[idx]["function"].get(
+                                                    "arguments", ""
+                                                )
                                                 if _args_backlog:
                                                     yield {
                                                         "type": "tool_args",
@@ -9513,9 +9513,7 @@ class LlamaCppBackend:
                                             and _text_args_call_start >= 0
                                         ):
                                             if not _text_args_id:
-                                                _call_text = content_accum[
-                                                    _text_args_call_start:
-                                                ]
+                                                _call_text = content_accum[_text_args_call_start:]
                                                 _sniffed = _sniff_text_tool_name(
                                                     _call_text, _enabled_tool_names
                                                 )
@@ -9548,13 +9546,8 @@ class LlamaCppBackend:
                                                         "tool_name": _sniffed,
                                                         "text": _call_text,
                                                     }
-                                                    _text_args_streamed_upto = len(
-                                                        content_accum
-                                                    )
-                                            elif (
-                                                len(content_accum)
-                                                > _text_args_streamed_upto
-                                            ):
+                                                    _text_args_streamed_upto = len(content_accum)
+                                            elif len(content_accum) > _text_args_streamed_upto:
                                                 yield {
                                                     "type": "tool_args",
                                                     "tool_call_id": _text_args_id,
@@ -9563,9 +9556,7 @@ class LlamaCppBackend:
                                                         _text_args_streamed_upto:
                                                     ],
                                                 }
-                                                _text_args_streamed_upto = len(
-                                                    content_accum
-                                                )
+                                                _text_args_streamed_upto = len(content_accum)
 
                                     elif detect_state == _S_STREAMING:
                                         if in_thinking:
@@ -9676,9 +9667,9 @@ class LlamaCppBackend:
                                             # buffer begins (for live arg display
                                             # only; slop is harmless, the UI
                                             # extracts the code value).
-                                            _text_args_call_start = len(
-                                                content_accum
-                                            ) - len(content_buffer)
+                                            _text_args_call_start = len(content_accum) - len(
+                                                content_buffer
+                                            )
                                             if _close_streamed_think():
                                                 yield {
                                                     "type": "content",
@@ -9710,9 +9701,9 @@ class LlamaCppBackend:
                                             # buffer (any visible prefix in it was
                                             # flushed above; the UI extracts the
                                             # code value, so slop is harmless).
-                                            _text_args_call_start = len(
-                                                content_accum
-                                            ) - len(content_buffer)
+                                            _text_args_call_start = len(content_accum) - len(
+                                                content_buffer
+                                            )
                                         elif _hold_buffer or (
                                             is_prefix
                                             and (
