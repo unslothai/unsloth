@@ -635,6 +635,14 @@
       "evidence_hash": "bba233b67f8ea4f0723b2fecaabf56528531bccd77ace836165bf38b47246bcc"
     },
     {
+      "package": "sentencepiece",
+      "file": "sentencepiece/__init__.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L772:             os.dup2(self.ostream.fileno(), self.orig_stream_fileno) | L777:             os.dup2(self.orig_stream_dup, self.orig_stream_fileno)",
+      "evidence_hash": "65b5a11cce128fe09b3f238c01bed7c883d1740d7d46d659118f67940f6c17dc"
+    },
+    {
       "package": "setuptools",
       "file": "distutils-precedence.pth",
       "check": ".pth has advanced obfuscation (marshal/compile/zlib/__import__)",
