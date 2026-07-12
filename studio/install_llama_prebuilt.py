@@ -2355,10 +2355,9 @@ def pinned_published_release_bundle(
     return bundle
 
 
-def validated_checksums_for_bundle(
-    repo: str, bundle: PublishedReleaseBundle
+def _validate_checksums_against_bundle(
+    repo: str, bundle: PublishedReleaseBundle, checksums: ApprovedReleaseChecksums
 ) -> ApprovedReleaseChecksums:
-    checksums = load_approved_release_checksums(repo, bundle.release_tag)
     manifest_hash = checksums.artifacts.get(bundle.manifest_asset_name)
     if manifest_hash is not None and bundle.manifest_sha256 is not None:
         if manifest_hash.sha256 != bundle.manifest_sha256:
@@ -2380,6 +2379,94 @@ def validated_checksums_for_bundle(
             "exact source archive without a source repo to clone it from"
         )
     return checksums
+
+
+def validated_checksums_for_bundle(
+    repo: str, bundle: PublishedReleaseBundle
+) -> ApprovedReleaseChecksums:
+    checksums = load_approved_release_checksums(repo, bundle.release_tag)
+    return _validate_checksums_against_bundle(repo, bundle, checksums)
+
+
+def _download_host_resolve_enabled() -> bool:
+    """Escape hatch to force the legacy GitHub API path instead of the
+    download-host fast path (which avoids the api.github.com rate limit)."""
+    return os.environ.get(
+        "UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", ""
+    ).strip().lower() not in {"1", "true", "yes", "on"}
+
+
+def _release_asset_download_url(repo: str, tag: str, asset_name: str) -> str:
+    """Tag-pinned asset URL on the release-assets CDN (not api.github.com, so no
+    rate limit)."""
+    return (
+        f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/download/"
+        f"{urllib.parse.quote(tag, safe = '')}/"
+        f"{urllib.parse.quote(asset_name, safe = '')}"
+    )
+
+
+def _release_latest_asset_download_url(repo: str, asset_name: str) -> str:
+    """Same CDN, resolving to GitHub's latest non-prerelease release (no tag, no
+    API call)."""
+    return (
+        f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/latest/download/"
+        f"{urllib.parse.quote(asset_name, safe = '')}"
+    )
+
+
+def _fetch_download_host_json(url: str) -> Any:
+    # Public CDN asset: plain unauthenticated GET, not the rate-limited API.
+    data = download_bytes(
+        url,
+        timeout = 30,
+        headers = {"User-Agent": "unsloth-studio-llama-prebuilt"},
+    )
+    return json.loads(data.decode("utf-8"))
+
+
+def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | None:
+    """Resolve the latest fork release from the download host with zero
+    api.github.com calls, reusing the API path's parsing and validation. Returns
+    None (caller falls back to the API) when the release lacks the JSON assets."""
+    sha_url = _release_latest_asset_download_url(repo, DEFAULT_PUBLISHED_SHA256_ASSET)
+    try:
+        sha_payload = _fetch_download_host_json(sha_url)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    if not isinstance(sha_payload, dict):
+        return None
+    release_tag = sha_payload.get("release_tag")
+    if not isinstance(release_tag, str) or not release_tag:
+        return None
+    checksums = parse_approved_release_checksums(repo, release_tag, sha_payload)
+    # Synthesize the API release payload with tag-pinned CDN URLs for every named
+    # asset; parse_published_release_bundle then reads the manifest, still no API.
+    asset_names = set(checksums.artifacts) | {
+        DEFAULT_PUBLISHED_MANIFEST_ASSET,
+        DEFAULT_PUBLISHED_SHA256_ASSET,
+    }
+    synthetic_release: dict[str, Any] = {
+        "tag_name": release_tag,
+        "draft": False,
+        "prerelease": False,
+        "assets": [
+            {
+                "name": name,
+                "browser_download_url": _release_asset_download_url(
+                    repo, release_tag, name
+                ),
+            }
+            for name in sorted(asset_names)
+        ],
+    }
+    bundle = parse_published_release_bundle(repo, synthetic_release)
+    if bundle is None:
+        return None
+    _validate_checksums_against_bundle(repo, bundle, checksums)
+    return ResolvedPublishedRelease(bundle = bundle, checksums = checksums)
 
 
 def published_release_matches_request(bundle: PublishedReleaseBundle, requested_ref: str) -> bool:
@@ -2448,6 +2535,8 @@ def iter_resolved_published_releases(
     requested_tag: str | None,
     published_repo: str,
     published_release_tag: str = "",
+    *,
+    allow_download_host_fast_path: bool = True,
 ) -> Iterable[ResolvedPublishedRelease]:
     repo = published_repo or DEFAULT_PUBLISHED_REPO
     normalized_requested = normalized_requested_llama_tag(requested_tag)
@@ -2465,6 +2554,30 @@ def iter_resolved_published_releases(
             checksums = validated_checksums_for_bundle(repo, bundle),
         )
         return
+
+    # Fast path: resolve the fork's latest release from the download host (no
+    # api.github.com rate limit). It only surfaces the single latest release, so
+    # the caller disables it when it needs the multi-release walk-back (macOS
+    # skipping too-new prebuilts); a broken latest asset then drops to a source
+    # build rather than an older release. A rejection or network error here is
+    # non-fatal and falls through to the API enumeration below.
+    if (
+        allow_download_host_fast_path
+        and repo == DEFAULT_PUBLISHED_REPO
+        and normalized_requested == "latest"
+        and _download_host_resolve_enabled()
+    ):
+        try:
+            resolved = _download_host_resolved_release(repo)
+        except PrebuiltFallback as exc:
+            log(f"download-host latest release rejected for {repo} ({exc}); trying GitHub API")
+            resolved = None
+        except Exception as exc:
+            log(f"download-host latest resolve unavailable for {repo} ({exc}); trying GitHub API")
+            resolved = None
+        if resolved is not None:
+            yield resolved
+            return
 
     matched_any = False
     skipped_invalid = 0
@@ -6190,6 +6303,9 @@ def _fork_manifest_release_plans(
         llama_tag,
         published_repo,
         published_release_tag,
+        # macOS relies on the multi-release walk-back to skip too-new prebuilts,
+        # which the single-latest download-host path cannot provide.
+        allow_download_host_fast_path = not host.is_macos,
     ):
         bundle = resolved_release.bundle
         checksums = resolved_release.checksums
