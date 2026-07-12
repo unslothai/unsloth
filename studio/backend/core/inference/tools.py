@@ -362,7 +362,7 @@ _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
 # Flags that turn an otherwise read-only command into a writer or executor
 # (sort -o FILE, tree -o FILE, xxd -r IN OUT, find -exec/-delete/...).
 _AUTO_UNSAFE_COMMAND_FLAGS = {
-    "sort": frozenset({"-o", "--output"}),
+    "sort": frozenset({"-o", "--output", "--compress-program"}),
     "tree": frozenset({"-o"}),
     "xxd": frozenset({"-r"}),
     "find": frozenset(
@@ -404,7 +404,8 @@ _AUTO_UNSAFE_MCP_VERB_RE = re.compile(
     r"patch|insert|drop|kill|exec|execute|run|deploy|publish|move|rename|edit|"
     r"modify|upload|replace|revoke|grant|approve|merge|close|cancel|pay|"
     r"transfer|buy|sell|reset|clear|purge|destroy|terminate|revert|rollback|"
-    r"trigger|enable|disable|install|uninstall|restart|stop|start)(?:[_\-]|$)",
+    r"trigger|enable|disable|install|uninstall|restart|stop|start|"
+    r"save|archive|submit|commit|push|sync|register)(?:[_\-]|$)",
     re.IGNORECASE,
 )
 
@@ -429,6 +430,11 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "telnetlib",
         "paramiko",
         "tempfile",
+        # deserialization that can execute arbitrary code on load.
+        "pickle",
+        "marshal",
+        "shelve",
+        "dill",
     }
 )
 # Attribute calls that mutate the filesystem / spawn processes (os.remove,
@@ -483,6 +489,7 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "mknod",
         "utime",
         "import_module",
+        "FileIO",
     }
 )
 _PY_WRITE_MODE_RE = re.compile(r"[wax+]")
@@ -541,9 +548,15 @@ def _attr_open_writes(node) -> bool:
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
             if _PY_MODE_LITERAL_RE.match(first.value):
                 return bool(_PY_WRITE_MODE_RE.search(first.value))
-            # Filename first arg reads, but a 2nd positional arg may be
-            # os.open(path, flags) via an os alias (O_CREAT/O_TRUNC): ask.
-            return len(node.args) >= 2
+            # A 2nd positional arg is either a mode (x.open(name, "w")) or
+            # os.open(path, O_CREAT) flags via an alias: honor a string mode,
+            # otherwise cannot prove read-only, so ask.
+            if len(node.args) >= 2:
+                second = node.args[1]
+                if isinstance(second, ast.Constant) and isinstance(second.value, str):
+                    return _mode_arg_writes(second)
+                return True
+            return False
         return True  # dynamic first arg: cannot prove read-only
     return False  # no args: read
 
@@ -635,6 +648,17 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         tree = ast.parse(code)
     except SyntaxError:
         return False  # runs into a normal traceback; nothing to guard
+    # Names bound to the builtin open (f = open; from builtins import open as f)
+    # so an aliased writer call is still checked below.
+    open_aliases = {"open"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "builtins":
+            for alias in node.names:
+                if alias.name == "open":
+                    open_aliases.add(alias.asname or "open")
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name):
+            if node.value.id in open_aliases:
+                open_aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
     try:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -663,10 +687,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     return True
             elif isinstance(node, ast.Call):
                 func = node.func
-                if isinstance(func, ast.Call):
-                    return True  # calling a call result is a dynamic target
+                if isinstance(func, (ast.Call, ast.Subscript)):
+                    return True  # calling a call/subscript result is dynamic
                 if isinstance(func, ast.Name):
-                    if func.id == "open" and _builtin_open_writes(node):
+                    if func.id in open_aliases and _builtin_open_writes(node):
                         return True
                 elif isinstance(func, ast.Attribute):
                     # os.open() always creates/writes a file descriptor.
