@@ -603,9 +603,9 @@ class TestFirstCustomPinAppliedWithoutMarker:
         pin is set and the marker does not already match it, exit 1 otherwise. Reusing the
         Python normalization keeps the shell side from duplicating (and drifting from) it."""
         text = STACK_PY.read_text(encoding = "utf-8")
-        assert '"--torch-pin-needs-apply" in sys.argv' in text, (
-            "install_python_stack.py must handle the --torch-pin-needs-apply query"
-        )
+        assert (
+            '"--torch-pin-needs-apply" in sys.argv' in text
+        ), "install_python_stack.py must handle the --torch-pin-needs-apply query"
         assert "_marker_pin_mismatch(_pin_query) is not False" in text, (
             "the probe must report 'needs apply' when the marker differs (True) or is absent "
             "(None), and only skip when it already matches (False)"
@@ -615,25 +615,26 @@ class TestFirstCustomPinAppliedWithoutMarker:
         """setup.ps1 must apply the same probe in its fast 'up to date' path for parity, so
         a known-family pin on a marker-less venv records its baseline (breaking the loop)."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        assert "--torch-pin-needs-apply" in text, (
-            "setup.ps1 fast path must probe install_python_stack.py --torch-pin-needs-apply"
-        )
-        assert "$env:UNSLOTH_TORCH_INDEX_URL -or $env:UNSLOTH_TORCH_INDEX_FAMILY" in text, (
-            "setup.ps1 must gate the probe on the pin env vars"
-        )
+        assert (
+            "--torch-pin-needs-apply" in text
+        ), "setup.ps1 fast path must probe install_python_stack.py --torch-pin-needs-apply"
+        assert (
+            "$env:UNSLOTH_TORCH_INDEX_URL -or $env:UNSLOTH_TORCH_INDEX_FAMILY" in text
+        ), "setup.ps1 must gate the probe on the pin env vars"
 
     def test_stack_py_records_pin_baseline_after_ensures(self):
         """The update torch-ensure sequence must record a pin baseline so a known-family
         pin on a marker-less venv (no reinstall needed) still writes the marker once --
         otherwise setup.sh/setup.ps1 would re-run the pass on every update forever."""
         text = STACK_PY.read_text(encoding = "utf-8")
-        assert "def _record_torch_index_pin_baseline" in text, (
-            "install_python_stack.py must define _record_torch_index_pin_baseline"
-        )
+        assert (
+            "def _record_torch_index_pin_baseline" in text
+        ), "install_python_stack.py must define _record_torch_index_pin_baseline"
         # It must run after _ensure_verbatim_torch_index in the ensure sequence(s).
-        assert text.count(
-            "_ensure_verbatim_torch_index()\n        _record_torch_index_pin_baseline()"
-        ) >= 2, (
+        assert (
+            text.count("_ensure_verbatim_torch_index()\n        _record_torch_index_pin_baseline()")
+            >= 2
+        ), (
             "_record_torch_index_pin_baseline must be called after the _ensure_* helpers in "
             "both update torch-ensure sequences"
         )

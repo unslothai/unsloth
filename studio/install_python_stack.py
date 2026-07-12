@@ -3209,5 +3209,7 @@ if __name__ == "__main__":
         # heavy dependency work. setup.sh treats a non-1 exit (0 or any error) as
         # "run the pass", so a probe failure fails safe toward applying the pin.
         _pin_query = _explicit_torch_index_url()
-        sys.exit(0 if (_pin_query is not None and _marker_pin_mismatch(_pin_query) is not False) else 1)
+        sys.exit(
+            0 if (_pin_query is not None and _marker_pin_mismatch(_pin_query) is not False) else 1
+        )
     sys.exit(install_python_stack())
