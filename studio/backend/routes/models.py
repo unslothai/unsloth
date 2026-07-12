@@ -1274,22 +1274,37 @@ def _build_browse_allowlist() -> list[Path]:
 def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
     """True if *target* equals or descends from any allowed root.
 
-    Uses ``os.path.realpath`` so symlinks can't escape the sandbox.
+    Uses ``os.path.realpath`` (symlinks can't escape the sandbox) and
+    ``os.path.commonpath`` for a component-wise containment test, so a string
+    prefix like ``/home/u`` never matches a sibling ``/home/user2`` and a
+    Windows drive root ``D:\\`` correctly contains ``D:\\models``.  A Windows
+    drive root legitimately authorizes its descendants, but a bare POSIX
+    filesystem root ``/`` must NOT -- otherwise a single ``/`` allowlist entry
+    would authorize every absolute path.  ``normcase`` keeps the Windows
+    drive-letter comparison case-insensitive, matching the hub browser.
     """
     try:
-        target_real = os.path.realpath(str(target))
+        target_real = os.path.normcase(os.path.realpath(str(target)))
     except OSError:
         return False
     for root in allowed_roots:
         try:
-            root_real = os.path.realpath(str(root))
+            root_real = os.path.normcase(os.path.realpath(str(root)))
         except OSError:
             continue
-        # A drive root ("D:\\") already ends in a separator; don't require a
-        # doubled one, or descendants of a drive root would be rejected.
-        root_prefix = root_real if root_real.endswith(os.sep) else root_real + os.sep
-        if target_real == root_real or target_real.startswith(root_prefix):
+        if target_real == root_real:
             return True
+        drive, _ = os.path.splitdrive(root_real)
+        if os.path.dirname(root_real) == root_real and not drive:
+            # Bare POSIX filesystem root ("/"): equality above is the only
+            # match; do not let it authorize arbitrary descendants.
+            continue
+        try:
+            if os.path.commonpath([target_real, root_real]) == root_real:
+                return True
+        except ValueError:
+            # Different drives / mixed absolute-relative: not contained.
+            continue
     return False
 
 
@@ -1347,7 +1362,10 @@ def _match_browse_child(current: Path, name: str) -> Optional[Path]:
 
 def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Path:
     """Resolve a requested browse path by walking from trusted allowlist roots."""
-    from storage.studio_db import contains_sensitive_path_component
+    from storage.studio_db import (
+        contains_sensitive_path_component,
+        is_denied_system_path,
+    )
 
     requested_path = _normalize_browse_request_path(path)
     resolved_roots: list[Path] = []
@@ -1404,12 +1422,24 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                     status_code = 403,
                     detail = "Credential or configuration directories are not browseable.",
                 )
+            if is_denied_system_path(str(resolved_child)):
+                raise HTTPException(
+                    status_code = 403,
+                    detail = "System directories are not browseable.",
+                )
             current = resolved_child
 
         if contains_sensitive_path_component(str(current)):
             raise HTTPException(
                 status_code = 403,
                 detail = "Credential or configuration directories are not browseable.",
+            )
+        # Catches the zero-component case where the requested path IS an
+        # allowlist root (e.g. a legacy-registered "/" or a Windows drive root).
+        if is_denied_system_path(str(current)):
+            raise HTTPException(
+                status_code = 403,
+                detail = "System directories are not browseable.",
             )
         if not current.is_dir():
             raise HTTPException(
@@ -1462,7 +1492,11 @@ async def browse_folders(
         linux_run_media_mount_roots,
         windows_drive_roots,
     )
-    from storage.studio_db import contains_sensitive_path_component, list_scan_folders
+    from storage.studio_db import (
+        contains_sensitive_path_component,
+        is_denied_system_path,
+        list_scan_folders,
+    )
 
     # Build once; the sandbox check and suggestion chips share it.
     allowed_roots = _build_browse_allowlist()
@@ -1517,6 +1551,10 @@ async def browse_folders(
                 continue
             if contains_sensitive_path_component(name):
                 continue
+            # Hide denied system dirs (C:\Windows, /etc, ...) so they never
+            # render as clickable rows that then 403 on descent.
+            if is_denied_system_path(str(child)):
+                continue
             entries.append(
                 BrowseEntry(
                     name = name,
@@ -1563,6 +1601,11 @@ async def browse_folders(
         except OSError:
             return
         if resolved in seen_sug:
+            return
+        # Drop a denied system dir (e.g. a stale scan-folder row) so it never
+        # becomes a chip that 403s on click. Drive roots stay: a drive root is
+        # not itself denied, only its system subdirectories are.
+        if is_denied_system_path(resolved):
             return
         if _safe_is_dir(resolved):
             seen_sug.add(resolved)

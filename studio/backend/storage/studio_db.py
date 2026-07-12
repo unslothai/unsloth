@@ -69,6 +69,27 @@ def _denied_path_prefixes() -> list[str]:
     return []
 
 
+def is_denied_system_path(path: str) -> bool:
+    """True if *path* is, or descends from, a denied system directory.
+
+    Mirrors the denylist add_scan_folder() enforces at registration so the
+    folder browser refuses to descend into /etc, /proc, C:\\Windows,
+    C:\\Program Files, etc. even when the allowlist contains a broad root such
+    as a Windows drive root (C:\\) or a legacy-registered filesystem root (/).
+    The /run carve-out keeps Linux removable-media mounts
+    (/run/media/<user>/<volume>) browseable. Expects an already-resolved
+    (realpath) path so symlinks/junctions cannot escape into a denied subtree.
+    """
+    is_win = platform.system() == "Windows"
+    check = os.path.normcase(path) if is_win else path
+    for prefix in _denied_path_prefixes():
+        if check == prefix or check.startswith(prefix + os.sep):
+            if prefix == "/run" and is_linux_run_media_path(check):
+                continue
+            return True
+    return False
+
+
 def _contains_sensitive_path_component(path: str) -> bool:
     return _shared_contains_sensitive_path_component(path)
 
@@ -931,6 +952,12 @@ def add_scan_folder(path: str) -> dict:
         raise ValueError("Path must be a directory, not a file")
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
+    # Reject a filesystem root ("/", or a bare Windows drive root like "C:\\",
+    # for which dirname() == the path itself). Registering one would seed the
+    # browse allowlist with a root that sits above denied system dirs; mirrors
+    # the guard hub/storage/scan_folders.py already enforces.
+    if os.path.dirname(normalized) == normalized:
+        raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
 

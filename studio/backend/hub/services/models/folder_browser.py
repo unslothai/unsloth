@@ -15,6 +15,7 @@ from loggers import get_logger
 from hub.schemas.inventory import BrowseEntry, BrowseFoldersResponse
 from hub.storage.scan_folders import (
     contains_sensitive_path_component,
+    is_denied_system_path,
     list_scan_folders,
 )
 from hub.utils.paths import (
@@ -352,12 +353,24 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                     status_code = 403,
                     detail = "Credential or configuration directories are not browseable.",
                 )
+            if is_denied_system_path(str(resolved_child)):
+                raise HTTPException(
+                    status_code = 403,
+                    detail = "System directories are not browseable.",
+                )
             current = resolved_child
 
         if contains_sensitive_path_component(str(current)):
             raise HTTPException(
                 status_code = 403,
                 detail = "Credential or configuration directories are not browseable.",
+            )
+        # Catches the zero-component case where the requested path IS an
+        # allowlist root (e.g. a legacy-registered "/" or a Windows drive root).
+        if is_denied_system_path(str(current)):
+            raise HTTPException(
+                status_code = 403,
+                detail = "System directories are not browseable.",
             )
         if not current.is_dir():
             raise HTTPException(
@@ -445,6 +458,10 @@ def browse_folders_response(
             # descending into them is refused and registration rejects them.
             if contains_sensitive_path_component(name):
                 continue
+            # Same for denied system dirs (C:\Windows, /etc, ...): descent is
+            # refused, so don't render them as clickable rows that then 403.
+            if is_denied_system_path(str(child)):
+                continue
             entries.append(
                 BrowseEntry(
                     name = name,
@@ -491,6 +508,11 @@ def browse_folders_response(
         except (OSError, RuntimeError, ValueError):
             return
         if resolved in seen_sug:
+            return
+        # Drop a denied system dir (e.g. a stale scan-folder row) so it never
+        # becomes a chip that 403s on click. Drive roots stay: a drive root is
+        # not itself denied, only its system subdirectories are.
+        if is_denied_system_path(resolved):
             return
         if _safe_is_dir(resolved):
             seen_sug.add(resolved)

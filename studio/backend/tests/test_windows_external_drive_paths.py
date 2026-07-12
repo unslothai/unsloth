@@ -130,6 +130,9 @@ def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
     fake_studio_db = SimpleNamespace(
         list_scan_folders = lambda: [],
         contains_sensitive_path_component = lambda _p: False,
+        # The simulated D:\ drive root maps to a tmp_path dir that is not a
+        # denied system path, so nothing is filtered here.
+        is_denied_system_path = lambda _p: False,
     )
     monkeypatch.setitem(sys.modules, "utils.paths", fake_paths)
     monkeypatch.setitem(sys.modules, "utils.paths.external_media", fake_external_media)
@@ -153,17 +156,59 @@ def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
     assert ns["_resolve_browse_target"](str(model_dir), allowlist) == model_dir.resolve()
 
 
-def test_is_path_inside_allowlist_allows_descendants_of_drive_root(monkeypatch):
-    # A drive root ("D:\\") already ends in a separator. The descendant check must
-    # not require a doubled separator, or subfolders under a drive root 403.
+def test_is_path_inside_allowlist_real_descendants_and_siblings(tmp_path):
+    # Component-wise containment (commonpath): a genuine descendant is allowed,
+    # but a sibling that only shares a string prefix ("models_root_evil" vs
+    # "models_root") is not -- the property the old startswith check could miss.
     ns = _extract_routes_function("_is_path_inside_allowlist")
-    # Identity realpath so a separator-terminated root survives the check; use the
-    # host's own os.sep so the doubled-separator bug is exercised natively.
-    monkeypatch.setattr(os.path, "realpath", lambda p: str(p))
-    sep = os.sep
-    root = f"X{sep}"  # drive-root analog: a root that ends in the separator
-    child = f"X{sep}models"
+    root = tmp_path / "models_root"
+    child = root / "gguf" / "qwen"
+    sibling = tmp_path / "models_root_evil"
+    child.mkdir(parents = True)
+    sibling.mkdir()
 
-    assert ns["_is_path_inside_allowlist"](root, [root]) is True  # the root itself
-    assert ns["_is_path_inside_allowlist"](child, [root]) is True  # a descendant
-    assert ns["_is_path_inside_allowlist"](f"Y{sep}models", [root]) is False  # unrelated
+    is_inside = ns["_is_path_inside_allowlist"]
+    assert is_inside(root, [root]) is True       # the root itself
+    assert is_inside(child, [root]) is True       # a genuine descendant
+    assert is_inside(sibling, [root]) is False    # prefix-collision sibling
+
+
+def test_is_path_inside_allowlist_posix_root_does_not_authorize_descendants(monkeypatch):
+    # Regression for the reported POSIX "/" unlock: a bare filesystem root may
+    # match itself but must NOT authorize arbitrary descendants such as /etc.
+    ns = _extract_routes_function("_is_path_inside_allowlist")
+    monkeypatch.setattr(os.path, "realpath", lambda p: str(p))  # keep "/" intact
+
+    is_inside = ns["_is_path_inside_allowlist"]
+    assert is_inside("/", ["/"]) is True             # the root itself
+    assert is_inside("/etc", ["/"]) is False          # not a licensed descendant
+    assert is_inside("/root/models", ["/"]) is False
+
+
+def test_is_path_inside_allowlist_windows_drive_root_descendants():
+    # Faithfully exercise the Windows drive-root branch on a POSIX CI host by
+    # backing os.path with ntpath (drive-letter parsing, case-insensitive
+    # normcase, backslash sep) and an identity realpath (the simulated drive
+    # paths do not exist on the test host). A drive root authorizes its
+    # descendants; a different drive does not.
+    import ntpath
+
+    win_os = SimpleNamespace(
+        sep = "\\",
+        path = SimpleNamespace(
+            normcase = ntpath.normcase,
+            realpath = lambda p: str(p),
+            splitdrive = ntpath.splitdrive,
+            dirname = ntpath.dirname,
+            commonpath = ntpath.commonpath,
+        ),
+    )
+    ns = _extract_routes_function("_is_path_inside_allowlist", {"os": win_os})
+    is_inside = ns["_is_path_inside_allowlist"]
+
+    assert is_inside("D:\\", ["D:\\"]) is True               # drive root itself
+    assert is_inside("D:\\models", ["D:\\"]) is True          # descendant on the drive
+    assert is_inside("D:\\models\\gguf", ["D:\\"]) is True    # deeper descendant
+    assert is_inside("d:\\models", ["D:\\"]) is True          # case-insensitive drive letter
+    assert is_inside("C:\\Users", ["D:\\"]) is False          # different drive
+    assert is_inside("D:\\models", ["E:\\"]) is False
