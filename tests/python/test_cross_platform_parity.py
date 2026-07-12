@@ -554,6 +554,61 @@ class TestPinnedRocmLeafDigitParity:
         ), "install.sh must not gate _install_bnb_rocm on a bare */rocm* whole-URL glob"
 
 
+class TestFirstCustomPinAppliedWithoutMarker:
+    """An explicitly-set custom (unknown-family) UNSLOTH_TORCH_INDEX_URL must be
+    applied on the FIRST `studio update` of a venv that predates the marker feature.
+    Such a venv has no .unsloth-torch-index marker, so the marker compare returns
+    None/$null and the version-tag heuristics cannot judge an unknown leaf; without
+    treating "no marker" as "apply verbatim once", the explicit pin would be silently
+    ignored until a marker happened to exist. The verbatim reinstall writes the
+    marker, so every later update is a no-op (marker == pin)."""
+
+    def test_stack_py_applies_pin_when_marker_absent(self):
+        text = STACK_PY.read_text(encoding = "utf-8")
+        body = text[text.find("def _ensure_verbatim_torch_index") :][:2200]
+        # The short-circuit must be "already this exact pin" (False), NOT the old
+        # "anything other than a definite mismatch" (is not True), which also bailed
+        # on a None (no-marker) result.
+        assert "if _mismatch is False:" in body, (
+            "_ensure_verbatim_torch_index must reinstall on an absent marker (None), "
+            "returning early only when the marker already records this exact pin (False)"
+        )
+        assert "if _mismatch is not True:" not in body, (
+            "_ensure_verbatim_torch_index must no longer skip the reinstall when the "
+            "marker is absent (None)"
+        )
+
+    def test_setup_sh_forces_stack_pass_when_pin_set(self):
+        """On Linux, `studio update` runs setup.sh, which skips install_python_stack.py
+        (the only place the marker-driven torch reinstall lives) when unsloth is already
+        current. Without an override that fast path silently ignores an explicit torch
+        index pin, so setup.sh must force the dependency pass when a pin env var is set."""
+        setup_sh = REPO_ROOT / "studio" / "setup.sh"
+        text = setup_sh.read_text(encoding = "utf-8")
+        assert (
+            '[ -n "${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]' in text
+            and "_SKIP_PYTHON_DEPS=false" in text
+        ), (
+            "setup.sh must clear _SKIP_PYTHON_DEPS when UNSLOTH_TORCH_INDEX_URL/_FAMILY is "
+            "set so install_python_stack.py runs and applies the pin (marker no-ops if unchanged)"
+        )
+
+    def test_setup_ps1_forces_reinstall_when_marker_absent(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        # The unknown-family else branch must promote a null marker to an in-place
+        # force-reinstall (PinChangedForceReinstall), NOT a wipe ($shouldRebuild).
+        assert 'if ($null -eq $_markerMismatch) { $script:PinChangedForceReinstall = $true }' in text, (
+            "setup.ps1 must set PinChangedForceReinstall for an unknown-family pin on a "
+            "marker-less venv so the torch block reinstalls from $PinnedTorchIndexUrl in place"
+        )
+        # Guard: the unknown-leaf branch must not trigger the venv wipe path.
+        else_branch = text[text.find("PEP 503 mirror ending in /simple") :][:900]
+        assert "$shouldRebuild = $true" not in else_branch, (
+            "setup.ps1 unknown-family branch must repair in place (PinChangedForceReinstall), "
+            "not wipe the venv ($shouldRebuild), which would strand a direct studio update"
+        )
+
+
 class TestPinnedIndexClearsUvEnvParity:
     """Every installer must neutralise the uv index env vars for a pinned torch
     install (#6898). uv treats the default index (--index-url / --default-index) as

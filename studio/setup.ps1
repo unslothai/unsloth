@@ -2804,6 +2804,17 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
                 # not also rebuild on a bogus tag comparison here.
                 $_expectedKnown = $false
                 $expectedTorchTag = $installedTorchTag
+                # A venv predating the marker feature has $_markerMismatch = $null.
+                # The user has now explicitly set an unknown-family URL pin, but the
+                # flavor heuristic cannot judge it, so without the marker the pin would
+                # be silently ignored on this first update (the fast path keeps
+                # $SkipPythonDeps true and the --index-url install never runs). Apply
+                # it ONCE in place: PinChangedForceReinstall forces the dependency pass
+                # so the torch block reinstalls from $PinnedTorchIndexUrl and writes the
+                # marker, making later updates no-ops. Do NOT set $shouldRebuild here --
+                # that wipes the venv and delegates to install.ps1, stranding a direct
+                # `studio update` at "Virtual environment not found".
+                if ($null -eq $_markerMismatch) { $script:PinChangedForceReinstall = $true }
             }
         } elseif ($HasNvidiaSmi) {
             $expectedTorchTag = Get-PytorchCudaTag

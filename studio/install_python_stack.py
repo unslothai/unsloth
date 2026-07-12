@@ -1420,12 +1420,18 @@ def _ensure_verbatim_torch_index() -> None:
     pin (it is neither rocm/gfx nor cpu nor cuXXX), so without this the pin would be
     silently ignored and the GPU-probed default index used instead.
 
-    Fires ONLY when the marker exists and records a DIFFERENT index than the pin
-    (or after this reinstalls, the marker is rewritten to match). With NO marker it
-    is a no-op: an old venv (or torch installed out-of-band) must not be blindly
-    force-reinstalled from an unverified custom index -- backward compatibility.
-    macOS/no-torch: skipped (no torch to repair). The install uses the pinned URL
-    exclusively (--index-url) with bare specs so it "wins verbatim".
+    Fires when the marker differs from the pin (True) OR is ABSENT (None): a venv
+    predating the marker feature has no record, and the version-tag heuristics
+    cannot judge an unknown-family pin, so an explicitly-set URL would otherwise be
+    silently ignored on the first `studio update` -- the user asked for this index,
+    so apply it verbatim ONCE and record it. The write below makes every later
+    update a no-op (marker == pin -> False). Skips only when the marker already
+    records this exact pin (False). A user who did NOT set the override gets
+    pin=None and is never touched, so an out-of-band torch install is safe. macOS/
+    no-torch: skipped (no torch to repair). The install uses the pinned URL
+    exclusively (--index-url) with bare specs so it "wins verbatim" -- an incomplete
+    mirror that cannot serve the trio fails loudly here, same as the marker-present
+    path (that is the cost of honouring an explicit pin).
     """
     if NO_TORCH or IS_MACOS:
         return
@@ -1433,13 +1439,14 @@ def _ensure_verbatim_torch_index() -> None:
     if pin is None:
         return
     _mismatch = _marker_pin_mismatch(pin)
-    if _mismatch is not True:
-        # None -> no marker (fall back / do nothing); False -> already this index.
+    if _mismatch is False:
+        # Marker already records this exact pin -> no reinstall (no per-update loop).
+        # True (marker differs) or None (no marker yet) both fall through to apply
+        # the explicit pin verbatim once, then _write_torch_index_marker below makes
+        # the next update a no-op.
         return
-    print(
-        f"   explicit torch index pin ({pin}) differs from the recorded index -- "
-        f"reinstalling torch verbatim from it"
-    )
+    _why = "differs from the recorded index" if _mismatch is True else "has no recorded index yet"
+    print(f"   explicit torch index pin ({pin}) {_why} -- reinstalling torch verbatim from it")
     pip_install(
         "torch (pinned custom index)",
         "--force-reinstall",

@@ -971,6 +971,21 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
     fi
 fi
 
+# Honor an explicit torch-index pin on `studio update` even when unsloth is already
+# current. install_python_stack.py owns the marker-driven torch reinstall (a verbatim
+# custom-index pin via _ensure_verbatim_torch_index, and cu*/rocm flavor/family repair
+# via _ensure_cuda/rocm_torch), and the fast "up to date" path above skips it -- so a
+# newly-set or changed UNSLOTH_TORCH_INDEX_URL / _FAMILY (including the gfx1151 ->
+# gfx120X-all marker case) would be silently ignored on Linux. Force the pass when a
+# pin is set; it is idempotent -- the _ensure_* helpers no-op when the marker already
+# records this index. Mirrors setup.ps1, whose stale-venv pre-check force-reinstalls on
+# a pin change. Same shape as the anyio-repair override above. Unpinned updates keep
+# the fast path.
+if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -n "${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]; then
+    substep "explicit torch-index pin set -- running dependency pass to apply/verify it..."
+    _SKIP_PYTHON_DEPS=false
+fi
+
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
 else
