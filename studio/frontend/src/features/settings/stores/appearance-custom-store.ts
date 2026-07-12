@@ -129,10 +129,12 @@ function sanitizeColor(value: unknown): string | null {
 
 function sanitizeFont(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  // Strip characters that could terminate the declaration or smuggle extra
-  // CSS through the inline style (the value lands in style.setProperty).
+  // Strip the same characters the backend rejects (_FONT_NAME_FORBIDDEN plus
+  // control chars) so a locally chosen name never fails the personalization PUT
+  // and stalls sync; also stops smuggling CSS through the inline setProperty.
   const cleaned = value
-    .replace(/[;{}()<>"']/g, "")
+    .replace(/[;{}()<>"'\\/,`]/g, "")
+    .replace(/\p{Cc}/gu, "")
     .trim()
     .slice(0, 200);
   return cleaned.length > 0 ? cleaned : null;
