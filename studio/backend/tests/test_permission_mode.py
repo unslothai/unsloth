@@ -141,6 +141,8 @@ def _clear_pending():
         ("cat /etc/pass${x:=wd}", True),
         ("echo ${x:-hello}", False),  # benign default param stays safe
         ("cat </e??/passwd", True),  # redirection prefix hides the glob
+        ("cat <../../notes", True),  # redirection with no space escapes workdir
+        ("cat notes.txt", False),  # ordinary read stays safe
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -234,6 +236,13 @@ def test_terminal_classifier(command, unsafe):
         ("import json\njson.dump(obj, f)", True),  # serialization writer
         ("df.to_string()", False),  # non-persisting render stays safe
         ("model.forward(x)", False),  # ordinary method call stays safe
+        ("open(''.join(['/etc', '/passwd'])).read()", True),  # str.join sensitive path
+        ("open('/'.join(['/etc', 'passwd'])).read()", True),  # separator join
+        ("print(''.join(['a', 'b']))", False),  # benign join stays safe
+        ("from builtins import eval as e\ne('1')", True),  # aliased builtin eval
+        ("import builtins\nx = builtins.exec\nx('a=1')", True),  # attr-aliased exec
+        ("from builtins import __import__ as imp\nimp('os')", True),  # aliased __import__
+        ("from mymod import evaluate as e\ne(1)", False),  # unrelated alias stays safe
     ],
 )
 def test_python_classifier(code, unsafe):

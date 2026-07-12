@@ -600,7 +600,9 @@ _SENSITIVE_PATH_RE = re.compile(
     r"|\w[\w.-]*\.(?:pem|key)(?:$|[\s'\"])",
     re.IGNORECASE,
 )
-_PARENT_TRAVERSAL_RE = re.compile(r"(?:^|[\s/\\'\"=:])\.\.(?:[/\\]|$|[\s'\"])")
+# A shell redirection with no following space (cat <../../notes) keeps `..`
+# adjacent to `<`/`>`, so those count as leading delimiters here too.
+_PARENT_TRAVERSAL_RE = re.compile(r"(?:^|[\s/\\'\"=:<>])\.\.(?:[/\\]|$|[\s'\"])")
 # A sensitive directory: a dynamic segment under it (open(f"/etc/{name}")) is
 # not provably safe, so fail closed when a folded path has a dynamic piece here.
 _SENSITIVE_DIR_RE = re.compile(
@@ -815,9 +817,22 @@ def _folded_path(node) -> "str | None":
     if isinstance(node, ast.Call):
         func = node.func
         ctors = ("Path", "PurePath", "PurePosixPath")
-        # os.path.join / posixpath.join, or a bare/qualified pathlib constructor
-        # (Path(...) or pathlib.Path(...)).
-        if (isinstance(func, ast.Attribute) and func.attr in ("join", *ctors)) or (
+        if isinstance(func, ast.Attribute) and func.attr == "join":
+            # str.join has the separator as the receiver and the pieces in one
+            # iterable arg ("".join(['/etc', '/passwd']) -> /etc/passwd); tell it
+            # apart from os.path.join(*pieces), whose receiver is not a literal.
+            sep = _folded_path(func.value)
+            if (
+                sep is not None
+                and len(node.args) == 1
+                and isinstance(node.args[0], (ast.List, ast.Tuple))
+            ):
+                pieces = [(_folded_path(e) or "\x00") for e in node.args[0].elts]
+                return sep.join(pieces)
+            parts = [(_folded_path(a) or "\x00") for a in node.args]
+            return "/".join(parts)
+        # A bare/qualified pathlib constructor (Path(...) or pathlib.Path(...)).
+        if (isinstance(func, ast.Attribute) and func.attr in ctors) or (
             isinstance(func, ast.Name) and func.id in ctors
         ):
             parts = [(_folded_path(a) or "\x00") for a in node.args]
@@ -983,6 +998,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # f = globals()["open"]) whose calls cannot be proven read-only, so they
     # fail closed.
     dynamic_aliases = set()
+    # Names bound to a dynamic-code builtin, including aliased ones
+    # (from builtins import eval as e; e = builtins.exec), so a call or
+    # reference through the alias fails closed too.
+    code_exec_aliases = {"exec", "eval", "__import__", "breakpoint"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -992,6 +1011,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             for alias in node.names:
                 if alias.name == "open":
                     open_aliases.add(alias.asname or "open")
+                elif alias.name in code_exec_aliases:
+                    code_exec_aliases.add(alias.asname or alias.name)
         elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
             value = node.value
             # AnnAssign (f: object = open) has a single target, no destructuring.
@@ -1009,6 +1030,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 and value.value.id in builtins_aliases
             ):
                 open_aliases.update(targets)  # f = builtins.open
+            elif (
+                isinstance(value, ast.Attribute)
+                and value.attr in code_exec_aliases
+                and isinstance(value.value, ast.Name)
+                and value.value.id in builtins_aliases
+            ):
+                code_exec_aliases.update(targets)  # e = builtins.eval
             elif isinstance(value, ast.Subscript):
                 dynamic_aliases.update(targets)  # f = globals()["open"]
             elif (
@@ -1061,7 +1089,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 ):
                     return True
             elif isinstance(node, ast.Name):
-                if node.id in {"exec", "eval", "__import__", "breakpoint"}:
+                if node.id in code_exec_aliases:
                     return True
             elif isinstance(node, ast.Constant):
                 # Credential paths / parent traversal in a string literal.
