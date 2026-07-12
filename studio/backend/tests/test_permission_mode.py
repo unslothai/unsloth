@@ -106,7 +106,7 @@ def _clear_pending():
         ("FOO=1 echo $FOO", False),  # benign variable expansion stays safe
         ("cat /proc/$PPID/enviro''n", True),  # quote-split procfs read
         ("cat /proc/self/'environ'", True),
-        ("p=\"/proc/$PPID\"; cat $p/environ", True),  # quoted+nested var procfs
+        ('p="/proc/$PPID"; cat $p/environ', True),  # quoted+nested var procfs
         ("LESSOPEN='|touch x; cat %s' less f.txt", True),  # less input preprocessor
         ("less file.txt", False),  # plain less stays safe
         ("cat /proc/cpuinfo", False),  # non-sensitive procfs read stays safe
@@ -168,8 +168,14 @@ def test_terminal_classifier(command, unsafe):
         ("import zipfile\nzipfile.ZipFile('a.zip').read('n')", False),  # zip read stays safe
         ("import os\nopen(f'/proc/{os.getppid()}/environ').read()", True),  # f-string procfs
         ("import os\nos.chdir('/')\nprint(open('etc/passwd').read())", True),  # chdir escape
-        ("from pathlib import Path\nprint((Path('/etc') / 'passwd').read_text())", True),  # pathlib /
-        ("from pathlib import Path\nprint((Path('a') / 'b.txt').read_text())", False),  # relative stays safe
+        (
+            "from pathlib import Path\nprint((Path('/etc') / 'passwd').read_text())",
+            True,
+        ),  # pathlib /
+        (
+            "from pathlib import Path\nprint((Path('a') / 'b.txt').read_text())",
+            False,
+        ),  # relative stays safe
         ("import runpy\nrunpy.run_path('s.py')", True),  # runpy runs code
         ("from runpy import run_module\nrun_module('m')", True),
     ],
