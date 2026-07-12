@@ -2463,6 +2463,15 @@ def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | Non
     bundle = parse_published_release_bundle(repo, synthetic_release)
     if bundle is None:
         return None
+    # The manifest may name a binary under its fork tag while the checksum JSON
+    # keys the same hash under an upstream-tag alias, so add tag-pinned URLs for
+    # any manifest artifact missing above (the API path gets these from the real
+    # asset list); apply_approved_hashes still verifies each download's sha256.
+    for artifact in bundle.artifacts:
+        bundle.assets.setdefault(
+            artifact.asset_name,
+            _release_asset_download_url(repo, release_tag, artifact.asset_name),
+        )
     _validate_checksums_against_bundle(repo, bundle, checksums)
     return ResolvedPublishedRelease(bundle = bundle, checksums = checksums)
 

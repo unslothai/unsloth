@@ -2,6 +2,7 @@
 path and the GitHub API enumeration; all I/O monkeypatched."""
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -101,3 +102,87 @@ def test_fast_path_rejected_checksum_falls_back_to_api(monkeypatch):
     with pytest.raises(PrebuiltFallback):
         _resolve()
     assert used["api"]
+
+
+# --- _download_host_resolved_release body (only download_bytes stubbed) --------
+
+RELEASE_TAG = "b9964-mix-53618c5"
+UPSTREAM_TAG = "b9964"
+BINARY_ASSET = "app-b9964-mix-53618c5-windows-x64-rocm-gfx1151.zip"
+MANIFEST_ASSET = ILP.DEFAULT_PUBLISHED_MANIFEST_ASSET
+SHA256_ASSET = ILP.DEFAULT_PUBLISHED_SHA256_ASSET
+
+
+def _manifest_bytes():
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "component": "llama.cpp",
+            "upstream_tag": UPSTREAM_TAG,
+            "source_repo": "unslothai/llama.cpp",
+            "source_repo_url": "https://github.com/unslothai/llama.cpp",
+            "artifacts": [
+                {
+                    "asset_name": BINARY_ASSET,
+                    "install_kind": "windows-rocm-app",
+                    "supported_sms": [],
+                    "gfx_target": "gfx1151",
+                    "mapped_targets": ["gfx1151"],
+                    "rank": 10,
+                }
+            ],
+        }
+    ).encode("utf-8")
+
+
+def _sha_payload(*, manifest_sha256 = None):
+    # BINARY_ASSET is deliberately absent: real releases key its hash under an
+    # upstream-tag alias, so the manifest name must still get a tag-pinned URL.
+    # The source archive entry keeps _validate_checksums_against_bundle happy.
+    artifacts = {"llama.cpp-source-b9964.tar.gz": {"sha256": "a" * 64}}
+    if manifest_sha256 is not None:
+        artifacts[MANIFEST_ASSET] = {"sha256": manifest_sha256}
+    return {
+        "schema_version": 1,
+        "component": "llama.cpp",
+        "release_tag": RELEASE_TAG,
+        "upstream_tag": UPSTREAM_TAG,
+        "artifacts": artifacts,
+    }
+
+
+def _stub_downloads(monkeypatch, sha_payload, manifest_bytes):
+    def _no_api(*_a, **_k):
+        raise AssertionError("GitHub API was used")
+
+    monkeypatch.setattr(ILP, "github_release", _no_api)
+    monkeypatch.setattr(ILP, "fetch_json", _no_api)
+
+    def _download_bytes(url, *_a, **_k):
+        if SHA256_ASSET in url:
+            return json.dumps(sha_payload).encode("utf-8")
+        if MANIFEST_ASSET in url:
+            return manifest_bytes
+        raise AssertionError(f"unexpected download: {url}")
+
+    monkeypatch.setattr(ILP, "download_bytes", _download_bytes)
+
+
+def test_resolved_release_adds_tag_pinned_url_for_manifest_only_asset(monkeypatch):
+    _stub_downloads(monkeypatch, _sha_payload(), _manifest_bytes())
+    resolved = ILP._download_host_resolved_release(FORK_REPO)
+    assert resolved is not None
+    assert resolved.bundle.release_tag == RELEASE_TAG
+    # Binary is named only in the manifest, yet the fast path must expose a
+    # tag-pinned CDN URL for it (the API path gets it from the real asset list).
+    assert resolved.bundle.assets[BINARY_ASSET] == (
+        f"https://github.com/{FORK_REPO}/releases/download/{RELEASE_TAG}/{BINARY_ASSET}"
+    )
+
+
+def test_resolved_release_rejects_manifest_checksum_mismatch(monkeypatch):
+    # A wrong manifest hash in the checksum payload must fail closed, so the
+    # router falls back to the API rather than trusting the fast path.
+    _stub_downloads(monkeypatch, _sha_payload(manifest_sha256 = "b" * 64), _manifest_bytes())
+    with pytest.raises(PrebuiltFallback, match = "manifest checksum"):
+        ILP._download_host_resolved_release(FORK_REPO)

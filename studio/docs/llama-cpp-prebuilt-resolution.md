@@ -24,11 +24,16 @@ API rate limit:
    `.../releases/download/<release_tag>/<asset>` (same CDN) and
    `codeload.github.com`. No API call.
 
-Net result for a normal install: zero `api.github.com` calls. Checksum and
-source-provenance validation are byte-for-byte identical to the API path; the
-fast path reuses `parse_approved_release_checksums`, `parse_published_release_bundle`,
-and `_validate_checksums_against_bundle`. It is an optimization, not a weaker
-trust path.
+Net result for a normal install: zero `api.github.com` calls. The fast path
+reuses the same parsers and verification as the API path
+(`parse_approved_release_checksums`, `parse_published_release_bundle`,
+`_validate_checksums_against_bundle`), so every downloaded binary is still
+checked against the approved `sha256` asset. It differs in one respect: the API
+path also cross-checks the checksum asset's `release_tag` against the live
+release tag, whereas the fast path reads that tag from the same payload and
+instead leans on the tag-pinned manifest fetch (a 404 or manifest-hash mismatch
+falls back to the API) and the downstream per-binary `sha256` check. It is an
+optimization, not a weaker trust path.
 
 ### Code
 
