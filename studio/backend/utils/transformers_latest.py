@@ -75,12 +75,12 @@ _CACHE_FILE_NAME = "transformers_latest_check.json"
 _SNAPSHOT_SCHEMA = 1
 
 # Snapshot: {"schema", "fetched_at", "pypi_version", "pypi_model_types", "main_model_types"}
+# The install-in-progress state lives in utils.transformers_version (the sidecar swap
+# reservation), shared with the lazy repair path.
 _lock = threading.Lock()
-_install_lock = threading.Lock()
 _memory_snapshot: dict | None = None
 _last_failure_at: float = 0.0
 _is_fetching: bool = False
-_is_installing: bool = False
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 
@@ -273,13 +273,14 @@ def _get_snapshot() -> dict | None:
 
 def clear_caches() -> None:
     """Test helper: drop the in-memory snapshot, failure backoff, and busy flags."""
-    global _memory_snapshot, _last_failure_at, _is_fetching, _is_installing
+    global _memory_snapshot, _last_failure_at, _is_fetching
     with _lock:
         _memory_snapshot = None
         _last_failure_at = 0.0
         _is_fetching = False
-    with _install_lock:
-        _is_installing = False
+    from utils.transformers_version import end_sidecar_swap
+
+    end_sidecar_swap()
 
 
 def latest_transformers_supports(model_type: str) -> dict | None:
@@ -486,13 +487,15 @@ def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
 
 
 def is_install_in_progress() -> bool:
-    """True while a consented latest-transformers install runs. Training and export
-    starts check this so a fresh worker never activates the sidecar mid-swap."""
-    with _install_lock:
-        return _is_installing
+    """True while a latest-transformers install or lazy repair holds the sidecar swap
+    reservation. Training and export starts check this so a fresh worker never
+    activates the sidecar mid-swap."""
+    from utils.transformers_version import sidecar_swap_in_progress
+
+    return sidecar_swap_in_progress()
 
 
-def install_latest_transformers(version: str, before_swap = None) -> dict:
+def install_latest_transformers(version: str, before_swap = None, reserved: bool = False) -> dict:
     """Consented install of the latest transformers sidecar; returns a structured result.
 
     Guards: the requested *version* must match the current PyPI latest from the (cached)
@@ -500,22 +503,23 @@ def install_latest_transformers(version: str, before_swap = None) -> dict:
     On success ``.venv_t5_latest`` is provisioned and pinned; routing then resolves the
     new tier automatically on this and every future start. *before_swap* is forwarded
     to the stage-and-swap: it runs only after the staged install succeeded, right
-    before the live sidecar is replaced.
+    before the live sidecar is replaced. *reserved* means the caller already holds the
+    sidecar swap reservation (the install route takes it before waiting on the
+    inference lifecycle gate, so worker starts see it for the whole window).
     """
-    global _is_installing
-    with _install_lock:
-        if _is_installing:
-            return {
-                "success": False,
-                "version": version,
-                "message": "A transformers installation is already in progress.",
-            }
-        _is_installing = True
+    from utils.transformers_version import end_sidecar_swap, try_begin_sidecar_swap
+
+    if not reserved and not try_begin_sidecar_swap():
+        return {
+            "success": False,
+            "version": version,
+            "message": "A transformers installation is already in progress.",
+        }
     try:
         return _install_latest_transformers_locked(version, before_swap = before_swap)
     finally:
-        with _install_lock:
-            _is_installing = False
+        if not reserved:
+            end_sidecar_swap()
 
 
 def _install_latest_transformers_locked(version: str, before_swap = None) -> dict:

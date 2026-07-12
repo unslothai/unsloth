@@ -4785,6 +4785,7 @@ async def install_latest_transformers_route(
     this and every future start. A pip install runs off-loop, so this can take a minute.
     """
     from utils.transformers_latest import install_latest_transformers
+    from utils.transformers_version import end_sidecar_swap, try_begin_sidecar_swap
 
     # The install stage-and-swaps .venv_t5_latest in place. A live worker with the
     # old sidecar on sys.path would lazy-import files from the NEW version mid-run
@@ -4793,57 +4794,78 @@ async def install_latest_transformers_route(
     # tier re-resolution is unreliable for gated repos. Training and export are
     # refused; the chat model is unloaded (this consent flow ends in loading a
     # different model, which unloads it anyway).
-    from core.export import get_export_backend
-    from core.training import get_training_backend
-
-    if get_training_backend().is_training_active():
+    #
+    # Reserve the swap FIRST, before any await (notably the lifecycle-gate wait):
+    # training/export starts check this reservation, so raising it after the gate
+    # wait would let a worker spawn in that window and then swap under it.
+    if not try_begin_sidecar_swap():
         raise HTTPException(
             status_code = 409,
-            detail = (
-                "A training run is active. Wait for it to finish before "
-                "installing a new transformers version."
-            ),
+            detail = "A transformers installation is already in progress.",
         )
-    if get_export_backend().is_export_active():
-        raise HTTPException(
-            status_code = 409,
-            detail = (
-                "An export is running. Wait for it to finish before "
-                "installing a new transformers version."
-            ),
-        )
+    try:
+        from core.export import get_export_backend
+        from core.training import get_training_backend
 
-    # Hold the same lifecycle gate /load holds for its whole load, so no HF worker
-    # can start (or be mid-load with active_model_name unset) while the sidecar is
-    # swapped. The chat model is unloaded via before_swap, i.e. only once the staged
-    # install succeeded and the swap is certain: a failed pip/compat check must not
-    # leave the user with their working model gone and only an error dialog. GGUF
-    # stays loaded: llama-server never imports transformers.
-    from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
+        if get_training_backend().is_training_active():
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "A training run is active. Wait for it to finish before "
+                    "installing a new transformers version."
+                ),
+            )
+        if get_export_backend().is_export_active():
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "An export is running. Wait for it to finish before "
+                    "installing a new transformers version."
+                ),
+            )
 
-    async with inference_lifecycle_gate():
-        backend = get_inference_backend()
-        export_backend = get_export_backend()
+        # Hold the same lifecycle gate /load holds for its whole load, so no HF worker
+        # can start (or be mid-load with active_model_name unset) while the sidecar is
+        # swapped. The chat model is unloaded via before_swap, i.e. only once the staged
+        # install succeeded and the swap is certain: a failed pip/compat check must not
+        # leave the user with their working model gone and only an error dialog. GGUF
+        # stays loaded: llama-server never imports transformers.
+        from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
 
-        def _unload_before_swap() -> None:
-            # Runs on the install thread, inside the gate held above.
-            active = getattr(backend, "active_model_name", None)
-            if active:
-                backend.unload_model(active)
-                note_model_unloaded()
-                logger.info(
-                    "Unloaded '%s' before swapping in transformers %s",
-                    active,
-                    request.version,
-                )
-            # An idle export worker persists between ops with the old sidecar
-            # imported; cleanup_memory serializes with ops and shuts it down
-            # (fast no-op when no worker is alive).
-            export_backend.cleanup_memory()
+        async with inference_lifecycle_gate():
+            backend = get_inference_backend()
+            export_backend = get_export_backend()
 
-        result = await asyncio.to_thread(
-            install_latest_transformers, request.version, _unload_before_swap
-        )
+            def _unload_before_swap() -> None:
+                # Runs on the install thread, inside the gate held above. Any
+                # failure here raises so the previous sidecar stays untouched:
+                # a worker that did not tear down cleanly may still lazy-import
+                # from the directory the swap would replace.
+                active = getattr(backend, "active_model_name", None)
+                if active:
+                    if not backend.unload_model(active):
+                        raise RuntimeError(
+                            f"Could not unload '{active}' before the transformers swap"
+                        )
+                    note_model_unloaded()
+                    logger.info(
+                        "Unloaded '%s' before swapping in transformers %s",
+                        active,
+                        request.version,
+                    )
+                # An idle export worker persists between ops with the old sidecar
+                # imported; cleanup_memory serializes with ops and shuts it down
+                # (fast no-op when no worker is alive).
+                if not export_backend.cleanup_memory():
+                    raise RuntimeError(
+                        "Could not shut down the export worker before the transformers swap"
+                    )
+
+            result = await asyncio.to_thread(
+                install_latest_transformers, request.version, _unload_before_swap, True
+            )
+    finally:
+        end_sidecar_swap()
     if not result["success"]:
         raise HTTPException(status_code = 400, detail = result["message"])
     return InstallLatestTransformersResponse(**result)

@@ -38,6 +38,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -1886,6 +1887,36 @@ def _venv_t5_latest_packages(version: str, extra_packages: tuple[str, ...] = ())
     ) + tuple(extra_packages)
 
 
+# Single reservation for ANY .venv_t5_latest replacement (consented install or lazy
+# repair). Training and export starts check it so a worker never spawns mid-swap;
+# the install route raises it BEFORE waiting on the inference lifecycle gate.
+_sidecar_swap_lock = threading.Lock()
+_sidecar_swap_active = False
+
+
+def try_begin_sidecar_swap() -> bool:
+    """Reserve the sidecar swap window; False when one is already reserved."""
+    global _sidecar_swap_active
+    with _sidecar_swap_lock:
+        if _sidecar_swap_active:
+            return False
+        _sidecar_swap_active = True
+        return True
+
+
+def end_sidecar_swap() -> None:
+    """Release the reservation taken by :func:`try_begin_sidecar_swap`."""
+    global _sidecar_swap_active
+    with _sidecar_swap_lock:
+        _sidecar_swap_active = False
+
+
+def sidecar_swap_in_progress() -> bool:
+    """True while a .venv_t5_latest install or repair holds the reservation."""
+    with _sidecar_swap_lock:
+        return _sidecar_swap_active
+
+
 def _stage_and_swap_latest_venv(
     version: str,
     packages: tuple[str, ...],
@@ -1953,8 +1984,18 @@ def _ensure_venv_t5_latest_exists() -> bool:
             version,
         )
         return False
-    # Same stage-and-swap as the install: a failed repair never loses the pin.
-    return _stage_and_swap_latest_venv(version, packages)
+    # Same stage-and-swap as the install, under the same reservation so training
+    # and export starts (which check sidecar_swap_in_progress) also wait out a
+    # lazy repair. A failed repair never loses the pin.
+    if not try_begin_sidecar_swap():
+        logger.warning(
+            "Cannot repair .venv_t5_latest: another sidecar install or repair is in progress."
+        )
+        return False
+    try:
+        return _stage_and_swap_latest_venv(version, packages)
+    finally:
+        end_sidecar_swap()
 
 
 def ensure_latest_transformers_venv(

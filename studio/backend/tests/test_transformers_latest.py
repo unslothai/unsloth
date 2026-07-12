@@ -810,12 +810,27 @@ def test_get_snapshot_dedupes_concurrent_fetch(monkeypatch):
 
 def test_install_serialized():
     """A second install call while one is in progress gets a structured refusal."""
-    with tl._install_lock:
-        tl._is_installing = True
+    from utils.transformers_version import try_begin_sidecar_swap
+
+    assert try_begin_sidecar_swap() is True
     out = tl.install_latest_transformers("5.13.0")
     assert out["success"] is False
     assert "already in progress" in out["message"]
     tl.clear_caches()
+
+
+def test_install_in_progress_reflects_reservation():
+    """is_install_in_progress mirrors the shared sidecar swap reservation, so a
+    lazy repair (which takes the same reservation) also blocks worker starts."""
+    from utils.transformers_version import end_sidecar_swap, try_begin_sidecar_swap
+
+    assert tl.is_install_in_progress() is False
+    assert try_begin_sidecar_swap() is True
+    try:
+        assert tl.is_install_in_progress() is True
+    finally:
+        end_sidecar_swap()
+    assert tl.is_install_in_progress() is False
 
 
 def test_upgrade_check_sees_nested_model_types(monkeypatch):

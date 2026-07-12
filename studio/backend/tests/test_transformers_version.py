@@ -2693,6 +2693,16 @@ class TestLatestTierForces16Bit:
         assert "unload_model(active)" in gated
         assert "cleanup_memory()" in gated
         assert "install_latest_transformers, request.version, _unload_before_swap" in gated
+        # The reservation must be taken BEFORE the (awaitable) gate wait, or a
+        # training/export start could slip in while this request queues on the gate.
+        assert body.index("try_begin_sidecar_swap()") < body.index(
+            "inference_lifecycle_gate():"
+        ), "the swap reservation must be raised before waiting on the lifecycle gate"
+        # A failed teardown must abort the swap (raise), not fall through to it.
+        assert gated.count("raise RuntimeError") >= 2, (
+            "unload_model and cleanup_memory failures must raise so the staged "
+            "install never swaps under a live worker"
+        )
 
     def test_start_routes_refuse_during_install(self):
         # A worker spawned mid-swap could activate a half-replaced sidecar.
@@ -2706,6 +2716,46 @@ class TestLatestTierForces16Bit:
         assert (
             "is_install_in_progress" in helper
         ), "mutating export routes must refuse while a transformers install is in progress"
+
+
+class TestSidecarSwapReservation:
+    """The lazy repair takes the same reservation the install route and worker starts use."""
+
+    def _repair_setup(self, monkeypatch, tmp_path):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_latest_pin_data", lambda: {
+            "version": "5.99.0", "packages": ["transformers==5.99.0"],
+        })
+        monkeypatch.setattr(tv, "_venv_dir_is_valid", lambda d, p: False)
+        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        return tv
+
+    def test_repair_holds_reservation_during_swap(self, monkeypatch, tmp_path):
+        tv = self._repair_setup(monkeypatch, tmp_path)
+        seen = {}
+
+        def _fake_swap(version, packages, before_swap = None):
+            seen["active_during_swap"] = tv.sidecar_swap_in_progress()
+            return True
+
+        monkeypatch.setattr(tv, "_stage_and_swap_latest_venv", _fake_swap)
+        assert tv._ensure_venv_t5_latest_exists() is True
+        assert seen["active_during_swap"] is True
+        assert tv.sidecar_swap_in_progress() is False
+
+    def test_repair_refused_while_install_holds_reservation(self, monkeypatch, tmp_path):
+        tv = self._repair_setup(monkeypatch, tmp_path)
+
+        def _must_not_run(*a, **k):
+            raise AssertionError("repair must not swap while an install is in progress")
+
+        monkeypatch.setattr(tv, "_stage_and_swap_latest_venv", _must_not_run)
+        assert tv.try_begin_sidecar_swap() is True
+        try:
+            assert tv._ensure_venv_t5_latest_exists() is False
+        finally:
+            tv.end_sidecar_swap()
 
 
 class TestStageAndSwapBeforeSwap:
