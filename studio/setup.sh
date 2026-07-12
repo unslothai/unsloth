@@ -976,14 +976,20 @@ fi
 # custom-index pin via _ensure_verbatim_torch_index, and cu*/rocm flavor/family repair
 # via _ensure_cuda/rocm_torch), and the fast "up to date" path above skips it -- so a
 # newly-set or changed UNSLOTH_TORCH_INDEX_URL / _FAMILY (including the gfx1151 ->
-# gfx120X-all marker case) would be silently ignored on Linux. Force the pass when a
-# pin is set; it is idempotent -- the _ensure_* helpers no-op when the marker already
-# records this index. Mirrors setup.ps1, whose stale-venv pre-check force-reinstalls on
-# a pin change. Same shape as the anyio-repair override above. Unpinned updates keep
-# the fast path.
+# gfx120X-all marker case) would be silently ignored on Linux. But forcing the full
+# dependency pass on EVERY update while a pin stays exported is wasteful once the pin
+# is already applied, so only force it when the pin still needs applying: ask the
+# Python side (which has the exact marker normalization) whether the recorded marker
+# already matches the pin. Exit 0 -> apply; exit 1 -> already recorded, keep the fast
+# path; any other code (probe error) -> fail safe and run the pass. Mirrors setup.ps1's
+# stale-venv pre-check. Same shape as the anyio-repair override above.
 if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -n "${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]; then
-    substep "explicit torch-index pin set -- running dependency pass to apply/verify it..."
-    _SKIP_PYTHON_DEPS=false
+    "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" --torch-pin-needs-apply 2>/dev/null
+    _PIN_NEEDS_APPLY=$?
+    if [ "$_PIN_NEEDS_APPLY" != 1 ]; then
+        substep "torch-index pin not yet applied -- running dependency pass to apply it..."
+        _SKIP_PYTHON_DEPS=false
+    fi
 fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then

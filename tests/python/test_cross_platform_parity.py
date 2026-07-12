@@ -578,19 +578,64 @@ class TestFirstCustomPinAppliedWithoutMarker:
             "marker is absent (None)"
         )
 
-    def test_setup_sh_forces_stack_pass_when_pin_set(self):
+    def test_setup_sh_forces_stack_pass_only_when_pin_needs_applying(self):
         """On Linux, `studio update` runs setup.sh, which skips install_python_stack.py
         (the only place the marker-driven torch reinstall lives) when unsloth is already
-        current. Without an override that fast path silently ignores an explicit torch
-        index pin, so setup.sh must force the dependency pass when a pin env var is set."""
+        current. setup.sh must force the pass for an explicit pin -- but only when it is
+        not yet applied (marker absent/different), via the --torch-pin-needs-apply probe,
+        so a persistent already-applied pin keeps the fast path (no every-update regress)."""
         setup_sh = REPO_ROOT / "studio" / "setup.sh"
         text = setup_sh.read_text(encoding = "utf-8")
         assert (
             '[ -n "${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]' in text
-            and "_SKIP_PYTHON_DEPS=false" in text
-        ), (
-            "setup.sh must clear _SKIP_PYTHON_DEPS when UNSLOTH_TORCH_INDEX_URL/_FAMILY is "
-            "set so install_python_stack.py runs and applies the pin (marker no-ops if unchanged)"
+        ), "setup.sh must gate the pin-apply pass on the pin env vars"
+        assert "--torch-pin-needs-apply" in text, (
+            "setup.sh must probe install_python_stack.py --torch-pin-needs-apply so the "
+            "expensive pass runs only when the marker does not already record the pin"
+        )
+        assert '[ "$_PIN_NEEDS_APPLY" != 1 ]' in text, (
+            "setup.sh must keep the fast path only on an explicit exit 1 (already applied) "
+            "and fail safe (run the pass) on exit 0 or a probe error"
+        )
+
+    def test_stack_py_exposes_torch_pin_needs_apply_probe(self):
+        """install_python_stack.py must answer the setup.sh/setup.ps1 probe: exit 0 when a
+        pin is set and the marker does not already match it, exit 1 otherwise. Reusing the
+        Python normalization keeps the shell side from duplicating (and drifting from) it."""
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert '"--torch-pin-needs-apply" in sys.argv' in text, (
+            "install_python_stack.py must handle the --torch-pin-needs-apply query"
+        )
+        assert "_marker_pin_mismatch(_pin_query) is not False" in text, (
+            "the probe must report 'needs apply' when the marker differs (True) or is absent "
+            "(None), and only skip when it already matches (False)"
+        )
+
+    def test_setup_ps1_probes_pin_needs_apply_in_fast_path(self):
+        """setup.ps1 must apply the same probe in its fast 'up to date' path for parity, so
+        a known-family pin on a marker-less venv records its baseline (breaking the loop)."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "--torch-pin-needs-apply" in text, (
+            "setup.ps1 fast path must probe install_python_stack.py --torch-pin-needs-apply"
+        )
+        assert "$env:UNSLOTH_TORCH_INDEX_URL -or $env:UNSLOTH_TORCH_INDEX_FAMILY" in text, (
+            "setup.ps1 must gate the probe on the pin env vars"
+        )
+
+    def test_stack_py_records_pin_baseline_after_ensures(self):
+        """The update torch-ensure sequence must record a pin baseline so a known-family
+        pin on a marker-less venv (no reinstall needed) still writes the marker once --
+        otherwise setup.sh/setup.ps1 would re-run the pass on every update forever."""
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert "def _record_torch_index_pin_baseline" in text, (
+            "install_python_stack.py must define _record_torch_index_pin_baseline"
+        )
+        # It must run after _ensure_verbatim_torch_index in the ensure sequence(s).
+        assert text.count(
+            "_ensure_verbatim_torch_index()\n        _record_torch_index_pin_baseline()"
+        ) >= 2, (
+            "_record_torch_index_pin_baseline must be called after the _ensure_* helpers in "
+            "both update torch-ensure sequences"
         )
 
     def test_setup_ps1_forces_reinstall_when_marker_absent(self):

@@ -1346,6 +1346,42 @@ class TestEnsureRocmTorchMarker:
                         stack_mod._ensure_verbatim_torch_index()
             mock_pip.assert_not_called()
 
+    def test_baseline_records_pin_when_marker_absent(self):
+        """A known-family pin on a pre-marker venv whose torch is already that family
+        is NOT force-reinstalled (identical wheels), but _record_torch_index_pin_baseline
+        records the resolved pin so `studio update` stops re-entering the dependency pass
+        and a later genuine change is detected. No marker seeded by the autouse fixture."""
+        assert not self._marker_path.exists()
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/cu128"}
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MACOS", False):
+                with patch.dict(stack_mod.os.environ, env, clear = False):
+                    stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                    stack_mod._record_torch_index_pin_baseline()
+        assert "https://mirror.local/cu128" in self._marker_path.read_text()
+
+    def test_baseline_leaves_present_marker_untouched(self):
+        """A present marker (a real install source, or one a reinstall just wrote) is
+        never overwritten by the baseline record."""
+        self._seed("https://download.pytorch.org/whl/cu128")
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/cu128"}
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MACOS", False):
+                with patch.dict(stack_mod.os.environ, env, clear = False):
+                    stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                    stack_mod._record_torch_index_pin_baseline()
+        assert self._marker_path.read_text().strip() == "https://download.pytorch.org/whl/cu128"
+
+    def test_baseline_noop_without_pin(self):
+        """No pin set -> nothing recorded (an unpinned venv never gets a spurious marker)."""
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MACOS", False):
+                with patch.dict(stack_mod.os.environ, {}, clear = False):
+                    stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
+                    stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                    stack_mod._record_torch_index_pin_baseline()
+        assert not self._marker_path.exists()
+
 
 # TEST: install_python_stack.py -- _has_rocm_gpu KFD sysfs vendor_id guard
 

@@ -3040,6 +3040,20 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
     }
 }
 
+# Honor an explicit torch-index pin even when unsloth is current: the fast path above
+# skips install_python_stack.py, which owns the marker-driven torch reinstall/record.
+# Only force the pass when the pin is not already applied (marker absent or different),
+# so a persistent, already-applied pin keeps the fast path. Exit 0 -> apply; 1 -> keep
+# the fast path; any other code (probe error) -> fail safe and run. Parity with
+# setup.sh; the stale-venv pre-check above already handles the reinstall decisions.
+if ($SkipPythonDeps -and ($env:UNSLOTH_TORCH_INDEX_URL -or $env:UNSLOTH_TORCH_INDEX_FAMILY)) {
+    & python "$PSScriptRoot\install_python_stack.py" --torch-pin-needs-apply 2>$null
+    if ($LASTEXITCODE -ne 1) {
+        substep "torch-index pin not yet applied -- running dependency pass to apply it..." "Cyan"
+        $SkipPythonDeps = $false
+    }
+}
+
 # if (-not $IsPipInstall) {
 #     # Running from repo: copy requirements and do editable install
 #     $RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path

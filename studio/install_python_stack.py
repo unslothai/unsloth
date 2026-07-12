@@ -1461,6 +1461,35 @@ def _ensure_verbatim_torch_index() -> None:
     _write_torch_index_marker(pin)
 
 
+def _record_torch_index_pin_baseline() -> None:
+    """Record an explicit torch-index pin as the marker baseline on a pre-marker venv
+    whose torch is already the pinned family.
+
+    The _ensure_{cuda,rocm,cpu,verbatim} helpers reinstall (and write the marker) when
+    the pin's family differs from what is installed, the marker records a different
+    index, or the pin names an unknown family (verbatim). What they deliberately do
+    NOT do is force-reinstall an old venv whose torch is already the pinned family
+    just because it has no marker -- a cu128 build is a cu128 build, so re-fetching
+    several GB from a same-family mirror is wasteful (backward compatibility). But a
+    permanently-absent marker means every `studio update` re-enters the dependency
+    pass, because setup.sh / setup.ps1 force it while a pin is set with no matching
+    marker. Recording the resolved pin here as a baseline breaks that loop and lets a
+    LATER genuine pin change (a different mirror or family) be detected and applied.
+
+    Writes ONLY when a pin is set and NO marker exists yet; a present marker (matching,
+    or just rewritten by a reinstall above) is left untouched, so this never overrides
+    a real install source. macOS/no-torch: nothing to record.
+    """
+    if NO_TORCH or IS_MACOS:
+        return
+    pin = _explicit_torch_index_url()
+    if pin is None:
+        return
+    if _read_torch_index_marker() is not None:
+        return
+    _write_torch_index_marker(pin)
+
+
 def _ensure_cuda_torch() -> None:
     """Repair a venv whose torch is a ROCm build on an NVIDIA host.
 
@@ -2959,6 +2988,7 @@ def install_python_stack() -> int:
         _ensure_rocm_torch()
         _ensure_cpu_torch()
         _ensure_verbatim_torch_index()
+        _record_torch_index_pin_baseline()
 
     # Windows + AMD GPU: warn if ROCm torch was not installed (wrong Python
     # version or unknown ROCm version).
@@ -3155,6 +3185,7 @@ def install_python_stack() -> int:
         _ensure_rocm_torch()
         _ensure_cpu_torch()
         _ensure_verbatim_torch_index()
+        _record_torch_index_pin_baseline()
 
     # 14. Final check (silent; third-party conflicts are expected)
     subprocess.run(
@@ -3169,4 +3200,14 @@ def install_python_stack() -> int:
 
 
 if __name__ == "__main__":
+    if "--torch-pin-needs-apply" in sys.argv:
+        # Lightweight query for setup.sh's fast "unsloth up to date" path: exit 0 when
+        # an explicit torch-index pin is set AND the recorded marker does not already
+        # match it (absent or different), so the dependency pass must run to apply it;
+        # exit 1 to keep the fast path. Reuses the exact marker normalization here so
+        # the shell side does not duplicate (and drift from) it. Returns before any
+        # heavy dependency work. setup.sh treats a non-1 exit (0 or any error) as
+        # "run the pass", so a probe failure fails safe toward applying the pin.
+        _pin_query = _explicit_torch_index_url()
+        sys.exit(0 if (_pin_query is not None and _marker_pin_mismatch(_pin_query) is not False) else 1)
     sys.exit(install_python_stack())
