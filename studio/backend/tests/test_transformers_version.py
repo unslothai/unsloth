@@ -2960,7 +2960,8 @@ class TestRaiseTierForNested:
         assert tv.get_transformers_tier("org/gemma-4-new", probe = False) == "latest"
         monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: None)
         monkeypatch.setattr(
-            tv, "_load_config_json",
+            tv,
+            "_load_config_json",
             lambda name, tok = None: (_ for _ in ()).throw(AssertionError("no I/O without a pin")),
         )
         assert tv.get_transformers_tier("org/gemma-4-new", probe = False) == "550"
