@@ -78,10 +78,22 @@ def _clear_pending():
         ("ls\npwd", False),  # multi-line stays safe when every line is
         ("ls\n", False),
         ("sort -o/tmp/out /tmp/in", True),  # attached short output flag
+        ("sort -uo out.txt in.txt", True),  # -o bundled in a short cluster
+        ("sort -bo out in", True),
+        ("sort -u in.txt", False),  # cluster without a write flag stays safe
         ("find . \\( -name x -delete \\)", True),  # -delete inside a group
         ("cat ../../.ssh/id_rsa", True),  # parent traversal read
         ("cat ~/.aws/credentials", True),  # credential path
         ("cat /etc/passwd", True),  # sensitive system file
+        ("cat /proc/self/environ", True),  # procfs env dump
+        ("cat /proc/1/cmdline", True),
+        ("head /proc/self/maps", True),
+        ("LD_PRELOAD=/tmp/hook.so ls", True),  # code-loading env prefix
+        ("PATH=. ls", True),  # command-lookup env prefix
+        ("IFS=x ls", True),
+        ("FOO=1 grep -r x .", False),  # benign env prefix stays safe
+        ("ps auxe", True),  # ps can dump process env; not on the safe list
+        ("ps aux", True),
         ("cat logs/app.log", False),  # ordinary relative read
     ],
 )
@@ -115,6 +127,7 @@ def test_terminal_classifier(command, unsafe):
         ("import tempfile\ntempfile.mkstemp()", True),  # tempfile side effects
         ("getattr(os, 'remove')('x')", True),  # dynamic call target
         ("import os as o\no.open('out.txt', o.O_CREAT)", True),  # os.open via alias
+        ("from os import open as o, O_CREAT\no('out', O_CREAT)", True),  # os.open bare name
         ("from pathlib import Path\nPath('l').symlink_to('t')", True),  # pathlib link
         ("import importlib\nimportlib.import_module('subprocess')", True),  # dynamic import
         ("import os\nos.mkfifo('p')", True),  # node creation

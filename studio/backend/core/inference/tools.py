@@ -150,6 +150,27 @@ _COMMAND_PREFIXES = frozenset(
     }
 )
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Env-assignment prefixes that change command lookup or code loading, so
+# `LD_PRELOAD=x ls` / `PATH=. ls` run attacker code before the read-only
+# utility. LD_*/DYLD_* and any *PATH are covered by the prefix/suffix check.
+_AUTO_UNSAFE_ENV_ASSIGN = frozenset(
+    {
+        "IFS", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "GLOBIGNORE",
+        "PROMPT_COMMAND", "PS4", "PYTHONSTARTUP", "PYTHONHOME", "NODE_OPTIONS",
+        "PERL5OPT", "PERL5LIB", "RUBYOPT", "RUBYLIB",
+    }
+)
+
+
+def _env_assignment_is_unsafe(name: str) -> bool:
+    """True if a NAME=value prefix affects command lookup/loading."""
+    return (
+        name in _AUTO_UNSAFE_ENV_ASSIGN
+        or name.startswith(("LD_", "DYLD_"))
+        or name.endswith("PATH")
+    )
+
+
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
 
@@ -307,7 +328,9 @@ _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
         "stat",
         "du",
         "df",
-        "ps",
+        # ps is intentionally absent: BSD environment flags (ps auxe, ps eww)
+        # dump a parent process's unscrubbed env and can't be flag-parsed
+        # reliably, so ps always asks in auto mode.
         "date",
         "cal",
         "whoami",
@@ -506,6 +529,8 @@ _SENSITIVE_PATH_RE = re.compile(
     r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
     r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
     r"|credentials|/etc/(?:passwd|shadow|sudoers)"
+    # procfs leaks a (possibly parent) process env/args/memory to a read.
+    r"|/proc/[^/\s'\"]+/(?:environ|cmdline|mem|maps)\b"
     # A .pem/.key file (basename before the extension), not a bare ".key"
     # (e.g. a jq '.key' filter).
     r"|\w[\w.-]*\.(?:pem|key)(?:$|[\s'\"])",
@@ -608,11 +633,15 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
             continue
         if token.startswith("-"):
             # A write/exec flag on an otherwise read-only command asks
-            # (sort -o, tree -o, xxd -r, find -exec/-delete/...). Match both
-            # "--output=x" and an attached short option like "-o/tmp/out".
+            # (sort -o, tree -o, xxd -r, find -exec/-delete/...). Match
+            # "--output=x", an attached short option "-o/tmp/out", and a short
+            # option bundled in a cluster (sort -uo out => -u -o).
             flag_head = token.split("=", 1)[0]
+            cluster = token[1:] if token[:2] != "--" and "=" not in token else ""
             for uf in _AUTO_UNSAFE_COMMAND_FLAGS.get(current_command, ()):
-                if flag_head == uf or (len(uf) == 2 and token.startswith(uf)):
+                if flag_head == uf or (
+                    len(uf) == 2 and (token.startswith(uf) or uf[1] in cluster)
+                ):
                     return True
             if not prefix_pending:
                 expect_command = False
@@ -620,6 +649,10 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         if not expect_command:
             continue
         if _ASSIGNMENT_RE.match(token):
+            # Benign NAME=value prefixes are skipped, but ones that change
+            # command lookup/loading (PATH, LD_PRELOAD, ...) fail closed.
+            if _env_assignment_is_unsafe(token.split("=", 1)[0]):
+                return True
             continue
         if prefix_pending and token.lstrip("-").isdigit():
             continue
@@ -679,6 +712,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # (from os import remove [as rm]); star imports hide anything.
                 for alias in node.names:
                     if alias.name == "*" or alias.name in _AUTO_UNSAFE_PY_ATTRS:
+                        return True
+                    # os.open imported as a bare callable is a low-level
+                    # create/write, like the os.open attribute call below.
+                    if alias.name == "open" and node.module in ("os", "posix"):
                         return True
             elif isinstance(node, ast.Attribute):
                 # Any reference to a mutating attribute fails closed, even
