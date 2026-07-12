@@ -4773,6 +4773,43 @@ async def install_latest_transformers_route(
     this and every future start. A pip install runs off-loop, so this can take a minute.
     """
     from utils.transformers_latest import install_latest_transformers
+    from utils.transformers_version import latest_tier_active_for
+
+    # The install stage-and-swaps .venv_t5_latest in place. A live worker with the
+    # old sidecar on sys.path would lazy-import files from the NEW version mid-run
+    # (transformers is lazy-import heavy), mixing incompatible modules. Refuse
+    # while training runs on the latest tier; unload a latest-tier chat model
+    # (the consenting user is about to load a different model anyway).
+    from core.training import get_training_backend
+
+    training = get_training_backend()
+    training_model = getattr(training, "model_name", None)
+    if (
+        training.is_training_active()
+        and training_model
+        and await asyncio.to_thread(latest_tier_active_for, str(training_model))
+    ):
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "A training run is using the current latest-transformers sidecar. "
+                "Wait for it to finish before installing a new transformers version."
+            ),
+        )
+
+    backend = get_inference_backend()
+    active = getattr(backend, "active_model_name", None)
+    if active and await asyncio.to_thread(latest_tier_active_for, active):
+        from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
+
+        async with inference_lifecycle_gate():
+            await asyncio.to_thread(backend.unload_model)
+            note_model_unloaded()
+        logger.info(
+            "Unloaded latest-sidecar model '%s' before installing transformers %s",
+            active,
+            request.version,
+        )
 
     result = await asyncio.to_thread(install_latest_transformers, request.version)
     if not result["success"]:

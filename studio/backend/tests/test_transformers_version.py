@@ -2555,16 +2555,35 @@ class TestHfEndpointUnreachable:
 class TestLatestTierActiveFor:
     """latest_tier_active_for: the 16-bit guard for the consented latest sidecar."""
 
+    @staticmethod
+    def _pin(monkeypatch, tv, version = "5.13.1"):
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: version)
+        monkeypatch.setattr(tv, "_remote_lora_base", lambda name, hf_token = None: None)
+
     def test_true_when_tier_latest(self, monkeypatch):
         import utils.transformers_version as tv
+        self._pin(monkeypatch, tv)
         monkeypatch.setattr(tv, "get_transformers_tier", lambda *a, **k: "latest")
         assert tv.latest_tier_active_for("Zyphra/ZAYA1-8B") is True
 
     def test_false_for_fixed_tiers(self, monkeypatch):
         import utils.transformers_version as tv
+        self._pin(monkeypatch, tv)
         for tier in ("default", "530", "550", "510"):
             monkeypatch.setattr(tv, "get_transformers_tier", lambda *a, _t = tier, **k: _t)
             assert tv.latest_tier_active_for("some/model") is False
+
+    def test_false_without_pin_and_no_resolution(self, monkeypatch):
+        """No sidecar pin returns False before any tier or network resolution."""
+        import utils.transformers_version as tv
+
+        def _boom(*a, **k):
+            raise AssertionError("must not resolve without a pin")
+
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: None)
+        monkeypatch.setattr(tv, "_remote_lora_base", _boom)
+        monkeypatch.setattr(tv, "get_transformers_tier", _boom)
+        assert tv.latest_tier_active_for("Zyphra/ZAYA1-8B") is False
 
     def test_never_raises(self, monkeypatch):
         import utils.transformers_version as tv
@@ -2572,8 +2591,23 @@ class TestLatestTierActiveFor:
         def _boom(*a, **k):
             raise RuntimeError("tier resolution exploded")
 
+        self._pin(monkeypatch, tv)
         monkeypatch.setattr(tv, "get_transformers_tier", _boom)
         assert tv.latest_tier_active_for("some/model") is False
+
+    def test_remote_lora_base_is_resolved(self, monkeypatch):
+        """A remote adapter is judged by its base model, like worker activation."""
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.13.1")
+        monkeypatch.setattr(
+            tv, "_remote_lora_base", lambda name, hf_token = None: "Zyphra/ZAYA1-8B"
+        )
+        tiers = {"Zyphra/ZAYA1-8B": "latest"}
+        monkeypatch.setattr(
+            tv, "get_transformers_tier", lambda name, *a, **k: tiers.get(name, "default")
+        )
+        assert tv.latest_tier_active_for("someuser/zaya-lora") is True
 
     def test_local_checkpoint_config_upgrades(self, monkeypatch, tmp_path):
         """An adapter dir with its own config.json merges tiers like activation does."""
@@ -2584,6 +2618,7 @@ class TestLatestTierActiveFor:
         (adapter / "adapter_config.json").write_text("{}")
         (adapter / "adapter_model.safetensors").write_text("x")
         (adapter / "config.json").write_text("{}")
+        self._pin(monkeypatch, tv)
         monkeypatch.setattr(tv, "_resolve_base_model", lambda name: "base/model")
         tiers = {"base/model": "default", str(adapter): "latest"}
         monkeypatch.setattr(
@@ -2623,3 +2658,69 @@ class TestLatestTierForces16Bit:
             "validate_model must apply the latest-sidecar 16-bit flip before "
             "_guard_chat_load_against_training so /validate and /load agree."
         )
+
+    def test_install_route_guards_active_latest_workers(self):
+        # Stage-and-swap replaces .venv_t5_latest in place; a live worker with the
+        # old sidecar on sys.path would lazy-import files from the new version.
+        src = self._read("routes/inference.py")
+        body = src.split("async def install_latest_transformers_route", 1)[1].split(
+            "\nasync def ", 1
+        )[0]
+        assert "is_training_active" in body and "latest_tier_active_for" in body, (
+            "install_latest_transformers_route must refuse while training runs on "
+            "the latest sidecar and unload a latest-tier chat model before swapping."
+        )
+
+
+class TestRaiseTierForNested:
+    """_raise_tier_for_nested: a wrapper's nested model_type can raise a fast-path tier."""
+
+    def _patch_types(self, monkeypatch, per_tier):
+        import utils.transformers_version as tv
+        monkeypatch.setattr(
+            tv, "_config_model_types", lambda tier: frozenset(per_tier.get(tier, ()))
+        )
+
+    def test_nested_latest_only_type_raises(self, monkeypatch):
+        import utils.transformers_version as tv
+        self._patch_types(
+            monkeypatch, {"550": {"gemma4"}, "latest": {"gemma4", "brandnew_arch"}}
+        )
+        cfg = {"model_type": "gemma4", "text_config": {"model_type": "brandnew_arch"}}
+        assert tv._raise_tier_for_nested(cfg, "550") == "latest"
+
+    def test_never_lowers_a_fast_path_tier(self, monkeypatch):
+        import utils.transformers_version as tv
+        # Mapping alone would say 530, but the fast path (e.g. a name override) said 550.
+        self._patch_types(monkeypatch, {"530": {"qwen3_5"}, "550": {"qwen3_5"}})
+        assert tv._raise_tier_for_nested({"model_type": "qwen3_5"}, "550") == "550"
+
+    def test_no_config_keeps_tier(self):
+        import utils.transformers_version as tv
+        assert tv._raise_tier_for_nested(None, "550") == "550"
+
+    def test_unknown_nested_type_never_vetoes(self, monkeypatch):
+        import utils.transformers_version as tv
+        # A nested type unknown everywhere (not even latest) keeps the fast path.
+        self._patch_types(monkeypatch, {"550": {"gemma4"}, "latest": {"gemma4"}})
+        cfg = {"model_type": "gemma4", "text_config": {"model_type": "unreleased"}}
+        assert tv._raise_tier_for_nested(cfg, "550") == "550"
+
+    def test_fast_path_folds_nested_tier(self, monkeypatch, tmp_path):
+        """End to end: a local wrapper config on a fixed fast path routes to latest
+        when its nested type only exists in the installed latest sidecar."""
+        import utils.transformers_version as tv
+
+        ckpt = tmp_path / "wrapper"
+        ckpt.mkdir()
+        (ckpt / "config.json").write_text(
+            json.dumps(
+                {"model_type": "gemma4", "text_config": {"model_type": "brandnew_arch"}}
+            )
+        )
+        self._patch_types(
+            monkeypatch, {"550": {"gemma4"}, "latest": {"gemma4", "brandnew_arch"}}
+        )
+        monkeypatch.setattr(tv, "_config_needs_510", lambda cfg: False)
+        monkeypatch.setattr(tv, "_config_needs_550", lambda cfg: True)
+        assert tv.get_transformers_tier(str(ckpt), probe = False) == "latest"

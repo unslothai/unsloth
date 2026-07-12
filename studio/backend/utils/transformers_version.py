@@ -348,17 +348,23 @@ def activate_transformers_for_subprocess(model_name: str, hf_token: str | None =
 def latest_tier_active_for(model_name: str, hf_token: str | None = None) -> bool:
     """True when *model_name* routes to the consented latest-transformers sidecar.
 
-    Mirrors ``activate_transformers_for_subprocess``'s tier resolution (LoRA base
-    plus a local checkpoint's own config). ``latest`` only wins when the sidecar
-    exists with a valid pin, i.e. exactly the loads that will import the newest
-    release. Never raises: any resolution failure returns False so callers treat
-    the model as a known tier.
+    Mirrors the inference worker's pre-activation resolution (local adapter dir,
+    then a remote adapter's Hub adapter_config.json). ``latest`` only wins when
+    the sidecar exists with a valid pin, i.e. exactly the loads that will import
+    the newest release. Never raises: any resolution failure returns False so
+    callers treat the model as a known tier.
     """
     try:
+        # No consented sidecar pin means nothing routes to latest; return before
+        # any resolution so the common case costs no config or network reads.
+        if latest_venv_pinned_version() is None:
+            return False
         if _is_lora_adapter_dir(Path(model_name)):
             resolved = _resolve_base_model(model_name)
         else:
-            resolved = model_name
+            # A remote LoRA activates the sidecar for its BASE model; sizing and the
+            # worker's 4-bit guard must see that base too, not the adapter repo.
+            resolved = _remote_lora_base(model_name, hf_token = hf_token) or model_name
         tier = get_transformers_tier(resolved, hf_token)
         if model_name != resolved and _safe_is_file(Path(model_name) / "config.json"):
             tier = _higher_tier(tier, get_transformers_tier(model_name, hf_token))
@@ -1096,6 +1102,26 @@ def _tier_from_config_mapping(cfg: dict) -> str | None:
     return best
 
 
+def _raise_tier_for_nested(cfg: dict | None, tier: str) -> str:
+    """Raise *tier* when the mapping resolver needs a higher one for *cfg*.
+
+    A wrapper's top-level model_type can match a hardcoded fast path while a
+    nested text/vision config's type only exists in a newer sidecar (e.g. the
+    installed latest); its sub-config is built through CONFIG_MAPPING, so the
+    fast-path tier would fail to load it. Raise-only: never lowers a fast-path
+    match, so name overrides (Qwen3.6) keep their tier. Never raises an
+    exception: a resolution failure keeps the fast-path tier."""
+    if not isinstance(cfg, dict):
+        return tier
+    try:
+        mapped = _tier_from_config_mapping(cfg)
+        if mapped is not None and _TIER_RANK.get(mapped, 0) > _TIER_RANK.get(tier, 0):
+            return mapped
+    except Exception:
+        pass
+    return tier
+
+
 # --- AutoConfig probe: general tier resolution for ambiguous models ----------
 # When the cheap signals only say "needs some 5.x", parse config.json with the built-in
 # parser in each candidate sidecar (lowest first) instead of guessing. Generalizes beyond
@@ -1387,17 +1413,21 @@ def get_transformers_tier(
         cfg = _load_config_json(model_name, hf_token)
         if cfg is not None:
             if _config_needs_510(cfg):
+                tier = _raise_tier_for_nested(cfg, "510")
                 logger.info(
-                    "Transformers tier 510 selected for %s (local config.json check)",
+                    "Transformers tier %s selected for %s (local config.json check)",
+                    tier,
                     model_name,
                 )
-                return "510"
+                return tier
             if _config_needs_550(cfg):
+                tier = _raise_tier_for_nested(cfg, "550")
                 logger.info(
-                    "Transformers tier 550 selected for %s (local config.json check)",
+                    "Transformers tier %s selected for %s (local config.json check)",
+                    tier,
                     model_name,
                 )
-                return "550"
+                return tier
             if _config_needs_530(cfg):
                 # Qwen3.6 reuses Qwen3.5 config ids but needs 5.5 by name. Only a real
                 # Hub id (or the folder basename) may override 530, so a stale local
@@ -1410,17 +1440,20 @@ def get_transformers_tier(
                 )
                 override = _higher_tier_name_override(hint_src)
                 if override is not None:
+                    override = _raise_tier_for_nested(cfg, override)
                     logger.info(
                         "Transformers tier %s selected for %s (name overrides 530 config)",
                         override,
                         model_name,
                     )
                     return override
+                tier = _raise_tier_for_nested(cfg, "530")
                 logger.info(
-                    "Transformers tier 530 selected for %s (local config.json check)",
+                    "Transformers tier %s selected for %s (local config.json check)",
+                    tier,
                     model_name,
                 )
-                return "530"
+                return tier
             # Unknown arch: resolve the base id from config. A resolved local dir
             # recurses (config check); a Hub id uses name rules only (no network).
             resolved = _resolve_base_model(model_name)
@@ -1492,11 +1525,13 @@ def get_transformers_tier(
 
     # --- Slow config fallbacks (network for HF IDs; authenticated with hf_token) --------
     if _check_config_needs_510(model_name, hf_token):
-        logger.info("Transformers tier 510 selected for %s (config.json check)", model_name)
-        return "510"
+        tier = _raise_tier_for_nested(_load_config_json(model_name, hf_token), "510")
+        logger.info("Transformers tier %s selected for %s (config.json check)", tier, model_name)
+        return tier
     if _check_config_needs_550(model_name, hf_token):
-        logger.info("Transformers tier 550 selected for %s (config.json check)", model_name)
-        return "550"
+        tier = _raise_tier_for_nested(_load_config_json(model_name, hf_token), "550")
+        logger.info("Transformers tier %s selected for %s (config.json check)", tier, model_name)
+        return tier
     if _check_config_needs_530(model_name, hf_token):
         # Qwen3.6 reuses Qwen3.5 config ids but needs 5.5 by name; honor a real Hub-id name
         # hint from _name_or_path before selecting 530.
@@ -1506,14 +1541,16 @@ def get_transformers_tier(
             base if isinstance(base, str) and base != model_name else None
         )
         if override is not None:
+            override = _raise_tier_for_nested(remote_cfg, override)
             logger.info(
                 "Transformers tier %s selected for %s (name overrides 530 config)",
                 override,
                 model_name,
             )
             return override
-        logger.info("Transformers tier 530 selected for %s (config.json check)", model_name)
-        return "530"
+        tier = _raise_tier_for_nested(remote_cfg, "530")
+        logger.info("Transformers tier %s selected for %s (config.json check)", tier, model_name)
+        return tier
     # _load_config_json (not the cache-only reader) so a config served from the hub
     # cache during a transient outage still feeds the mapping resolver.
     remote_cfg = _load_config_json(model_name, hf_token)
