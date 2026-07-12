@@ -320,21 +320,6 @@ export function ProfilePersonalizationPanel() {
           {t("settings.profile.chooseSloth")}
         </Label>
         <div className="grid grid-cols-7 gap-2 sm:grid-cols-9">
-          <button
-            type="button"
-            onClick={() => pickAvatarValue(null)}
-            aria-pressed={shownAvatar === null}
-            aria-label={t("settings.profile.noPicture")}
-            title={t("settings.profile.noPicture")}
-            className={cn(
-              "relative flex aspect-square items-center justify-center overflow-hidden rounded-full bg-muted text-muted-foreground ring-1 ring-border hover:ring-ring focus-visible:outline-none",
-              shownAvatar === null && "ring-ring-strong hover:ring-ring-strong",
-            )}
-          >
-            <span className="text-[11px] font-medium">
-              {t("settings.profile.noneLabel")}
-            </span>
-          </button>
           {SLOTH_AVATARS.map((path) => {
             const url = publicAssetUrl(path);
             const selected = shownAvatar === url;
@@ -361,6 +346,21 @@ export function ProfilePersonalizationPanel() {
               </button>
             );
           })}
+          <button
+            type="button"
+            onClick={() => pickAvatarValue(null)}
+            aria-pressed={shownAvatar === null}
+            aria-label={t("settings.profile.noPicture")}
+            title={t("settings.profile.noPicture")}
+            className={cn(
+              "relative flex aspect-square items-center justify-center overflow-hidden rounded-full bg-muted text-muted-foreground ring-1 ring-border hover:ring-ring focus-visible:outline-none",
+              shownAvatar === null && "ring-ring-strong hover:ring-ring-strong",
+            )}
+          >
+            <span className="text-[11px] font-medium">
+              {t("settings.profile.noneLabel")}
+            </span>
+          </button>
         </div>
       </div>
 
