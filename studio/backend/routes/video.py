@@ -77,13 +77,28 @@ def _guard_video_load_against_training() -> None:
 async def load_video_model(
     request: VideoLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
+    from core.inference.diffusion import resolve_local_single_file
     from core.inference.diffusion_device import resolve_diffusion_device_target
     from core.inference.gpu_arbiter import VIDEO, acquire_for, release
-    from core.inference.video import get_video_backend
+    from core.inference.video import get_video_backend, resolve_video_model_kind
     from utils.native_path_leases import redact_native_paths
 
     backend = get_video_backend()
     try:
+        # Resolve the load kind once (gguf / single_file / pipeline) so validation and the
+        # load agree; a bad explicit kind raises here -> 400.
+        kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
+        # A local On-Device pick can be a bare single-file .safetensors directory (no
+        # model_index.json): the scanner advertises it as a text-to-video model, but the
+        # local picker starts it as a pipeline with no filename, so a pipeline load would
+        # 400 on the missing model_index.json and the advertised model is unusable. If the
+        # directory holds exactly one checkpoint, reinterpret the pick as a single_file load
+        # of it, so validation and the load agree. Mirrors the image load route.
+        if kind == "pipeline" and not request.gguf_filename:
+            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            if sole is not None:
+                request.gguf_filename = sole
+                kind = resolve_video_model_kind(sole, None)
         # Validate cheaply BEFORE touching the GPU so an unloadable pick can't evict chat then 400.
         await asyncio.to_thread(
             backend.validate_load_request,
@@ -91,7 +106,7 @@ async def load_video_model(
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
-            model_kind = request.model_kind,
+            model_kind = kind,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
         )
@@ -118,7 +133,7 @@ async def load_video_model(
             transformer_cache_threshold = request.transformer_cache_threshold,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
-            model_kind = request.model_kind,
+            model_kind = kind,
         )
         return VideoStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:

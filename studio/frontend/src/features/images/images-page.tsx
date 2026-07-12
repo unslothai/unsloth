@@ -1450,6 +1450,56 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
   }, [dismissLoadToast, refreshStatus]);
 
+  // Re-enter the per-step generation poll for a run already in flight on the backend --
+  // one this page did not start (another client called /images/generate, or this browser
+  // reloaded mid-generate). The backend runs generations under a serialising lock and keeps
+  // reporting progress, so track it here instead of showing a stale idle view. The images
+  // generate-progress carries only per-step progress (no terminal record), so on completion
+  // refresh the gallery to merge any image saved after the mount fetch. Kept separate from
+  // handleGenerate's own loop, which prepends its synchronous results directly.
+  const resumeGeneratePoll = useCallback(() => {
+    if (genPollTimer.current) clearInterval(genPollTimer.current);
+    if (genVisibilityListener.current)
+      document.removeEventListener("visibilitychange", genVisibilityListener.current);
+    let pollInFlight = false;
+    const pollGenerateOnce = async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
+      try {
+        const p = await getGenerateProgress();
+        if (!p.active) {
+          if (genPollTimer.current) clearInterval(genPollTimer.current);
+          genPollTimer.current = null;
+          if (genVisibilityListener.current) {
+            document.removeEventListener("visibilitychange", genVisibilityListener.current);
+            genVisibilityListener.current = null;
+          }
+          if (!isMounted.current) return;
+          setBusy(null);
+          setGenStep(null);
+          // The finished run saved its image(s) to the backend gallery; re-fetch the first
+          // page to merge them (a full replace, so deduped) and resync status.
+          void loadGallery();
+          void refreshStatus();
+          return;
+        }
+        setGenStep((prev) => {
+          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
+          return p;
+        });
+      } catch {
+        // transient; keep polling
+      } finally {
+        pollInFlight = false;
+      }
+    };
+    genVisibilityListener.current = () => {
+      if (document.visibilityState === "visible") void pollGenerateOnce();
+    };
+    document.addEventListener("visibilitychange", genVisibilityListener.current);
+    genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
+  }, [loadGallery, refreshStatus]);
+
   useEffect(() => {
     void (async () => {
       await refreshStatus();
@@ -1468,6 +1518,21 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      // A generation started elsewhere -- another client, or this browser before a reload --
+      // keeps running on the backend under a serialising lock. Resume tracking it so the page
+      // reflects the in-flight run (progress bar + disabled Generate) instead of a stale idle
+      // view, then refreshes the gallery when it finishes to pick up an image saved after the
+      // mount fetch. Mirrors the video page's mount resume.
+      try {
+        const g = await getGenerateProgress();
+        if (g.active) {
+          setBusy("generating");
+          setGenStep(g);
+          resumeGeneratePoll();
+        }
+      } catch {
+        // Resume is best-effort; a failed probe just leaves the idle view.
+      }
     })();
     // Stop polling if the page unmounts mid-load / mid-generate, and dismiss the
     // load toast — its poll loop is gone, so it would otherwise hang forever
@@ -1481,7 +1546,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       }
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress]);
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress, resumeGeneratePoll]);
 
   // Seed the generation sliders to a resident model's recipe when the page discovers one it
   // did not load itself (left loaded by a prior session or another route). refreshStatus() only
@@ -1496,7 +1561,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (lastLoad.current) return;
     if (seededResident.current === repoId) return;
     seededResident.current = repoId;
-    const d = defaultsFor(repoId);
+    // Seed from the resolved base_repo, not repo_id: a GGUF/single_file resident (or one
+    // loaded from a bare local path like /models/checkpoint.safetensors) carries a repo_id
+    // with no family substring, so defaultsFor(repoId) would fall back to the distilled
+    // few-step/no-CFG recipe and the first resident generation would run with wrong defaults.
+    // base_repo is the resolved diffusers base (it holds the family), so prefer it when set.
+    const d = defaultsFor(status?.base_repo ?? repoId);
     setSteps(d.steps);
     setGuidance(d.guidance);
     // Wire "Reapply" to the resident model too, so an advanced-option reload works without
@@ -1508,7 +1578,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (kind === "pipeline") {
       lastLoad.current = { repoId, kind };
     }
-  }, [status?.loaded, status?.repo_id, status?.model_kind]);
+  }, [status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
 
   const handleLoad = useCallback(
     // Resolves true when the background load STARTED (callers may revert

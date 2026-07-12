@@ -113,3 +113,39 @@ def test_backend_start_guard_blocks_overlapping_starts():
     assert results["second"] is False
     # The flag is cleared once the winning start returns, so a later start may proceed.
     assert backend._start_in_progress is False
+
+
+def test_is_training_active_true_during_start_reservation():
+    # While start_training holds the compare-and-set reservation but has not yet spawned
+    # (before_spawn frees residents, then GPU auto-selection, then proc.start()), the LLM
+    # training run must already read as active: /images/load, /video/load, and
+    # /diffusion/start all gate on is_training_active(), so an idle reading in this window
+    # would let another pipeline race the reserved run for the just-freed VRAM.
+    from core.training.training import TrainingBackend
+
+    backend = TrainingBackend()
+    # Not reserved yet: idle.
+    assert backend.is_training_active() is False
+
+    entered = threading.Event()
+    release = threading.Event()
+    captured = {}
+
+    def _slow_impl(job_id, *, before_spawn = None, **kwargs):
+        entered.set()
+        release.wait(timeout = 5.0)
+        return True
+
+    backend._start_training_impl = _slow_impl
+
+    t = threading.Thread(target = lambda: backend.start_training("job-a"), daemon = True)
+    t.start()
+    assert entered.wait(timeout = 5.0)
+    # Inside the pre-spawn window: reserved, so active even though no proc/progress is set.
+    captured["in_window"] = backend.is_training_active()
+    release.set()
+    t.join(timeout = 5.0)
+
+    assert captured["in_window"] is True
+    # Reservation cleared once the start returns; with no live proc it reads idle again.
+    assert backend.is_training_active() is False
