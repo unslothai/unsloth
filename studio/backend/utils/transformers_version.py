@@ -1837,6 +1837,9 @@ def _stage_and_swap_latest_venv(version: str, packages: tuple[str, ...]) -> bool
     shutil.rmtree(staging, ignore_errors = True)
     try:
         if not _ensure_venv_dir(staging, packages, f"transformers {version} (latest)"):
+            # No exception raised, so the except cleanup below never runs:
+            # remove the partial staging dir instead of leaking it on disk.
+            shutil.rmtree(staging, ignore_errors = True)
             return False
         (Path(staging) / _LATEST_PIN_MARKER).write_text(
             json.dumps({"version": version, "packages": list(packages)}), encoding = "utf-8"

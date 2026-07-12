@@ -1036,3 +1036,19 @@ def test_repair_failure_preserves_pin_and_live_dir(tmp_path, monkeypatch):
     assert (venv_dir / "partial_file").exists()
     assert latest_venv_pinned_version() == "5.13.0"
     assert not (tmp_path / ".venv_t5_latest.staging").exists()
+
+
+def test_failed_staging_install_removes_staging_dir(tmp_path, monkeypatch):
+    """A pip failure inside _ensure_venv_dir returns False without raising, so
+    the except cleanup never runs; the partial staging dir must still go."""
+    venv_dir = tmp_path / ".venv_t5_latest"
+    monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
+
+    def _fake_ensure(dir_, packages, label):
+        Path(dir_).mkdir(parents = True, exist_ok = True)
+        (Path(dir_) / "partial").write_text("x")
+        return False
+
+    monkeypatch.setattr(tv, "_ensure_venv_dir", _fake_ensure)
+    assert ensure_latest_transformers_venv("5.13.0") is False
+    assert not Path(str(venv_dir) + ".staging").exists()
