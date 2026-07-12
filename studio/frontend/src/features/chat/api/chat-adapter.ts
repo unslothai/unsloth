@@ -12,6 +12,7 @@ import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
+import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
@@ -226,6 +227,53 @@ const pendingFirstThreadSaves = new Map<string, Promise<void>>();
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Best-effort partial parse of a live tool_args stream into a tool part's
+ * `args`, so tool cards (python code, terminal command, render_html canvas)
+ * render the payload while the model is still writing it.
+ *
+ * The structured tool-call path streams the raw arguments JSON; the text
+ * path streams the surrounding call markup (e.g. `<tool_call>{"name": ...,
+ * "arguments": {...}}`), so a call envelope is unwrapped when present.
+ * Returns null until anything parseable arrives; never throws.
+ */
+function parseLiveToolArgs(
+  raw: string,
+): { args: Record<string, unknown>; argsText: string } | null {
+  let candidate = raw.trimStart();
+  if (!candidate.startsWith("{")) {
+    const brace = candidate.indexOf("{");
+    if (brace < 0) return null;
+    candidate = candidate.slice(brace);
+  }
+  const parsed = parsePartialJsonObject(candidate) as
+    | Record<string, unknown>
+    | undefined;
+  if (!parsed || typeof parsed !== "object") return null;
+  // Call envelope from the text path: unwrap to the arguments payload.
+  const inner = parsed.arguments ?? parsed.parameters;
+  if (typeof parsed.name === "string" && inner !== undefined) {
+    if (typeof inner === "string") {
+      // Stringified arguments: partial-parse the inner JSON string.
+      const innerParsed = parsePartialJsonObject(inner) as
+        | Record<string, unknown>
+        | undefined;
+      if (innerParsed && typeof innerParsed === "object") {
+        return { args: innerParsed, argsText: inner };
+      }
+      return null;
+    }
+    if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+      return {
+        args: inner as Record<string, unknown>,
+        argsText: JSON.stringify(inner),
+      };
+    }
+    return null;
+  }
+  return { args: parsed, argsText: candidate };
 }
 
 function parseSystemVariablesMap(raw: string): Record<string, unknown> {
@@ -2391,6 +2439,11 @@ export function createOpenAIStreamAdapter(
       };
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: PositionedToolCallPart[] = [];
+      // Raw tool_args stream accumulator per tool card: the backend forwards
+      // the arguments while the model is still WRITING them (minutes for a
+      // big code payload), and the partial parse below feeds the card's
+      // args so the code renders live instead of a dead spinner.
+      const liveArgsTextById = new Map<string, string>();
       // Latest Gemini text-part thoughtSignature; pinned onto the final
       // text MessagePart so next-turn replay carries it.
       let latestTextThoughtSignature: string | undefined;
@@ -3140,6 +3193,56 @@ export function createOpenAIStreamAdapter(
                   }
                   continue;
                 }
+                if (toolEvent.type === "tool_args") {
+                  // The model is still WRITING this tool call's arguments
+                  // (minutes for a large code payload). Accumulate the raw
+                  // stream and feed a best-effort partial parse into the tool
+                  // part's args, so the card shows the code being written
+                  // instead of a dead spinner. The final tool_start replaces
+                  // args with the authoritative parse.
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const liveId =
+                    (backendToolCallId
+                      ? toolConfirmationIdsByBackendId.get(backendToolCallId)
+                      : undefined) ||
+                    backendToolCallId ||
+                    toolCallParts[toolCallParts.length - 1]?.toolCallId ||
+                    "";
+                  const fragment =
+                    typeof toolEvent.text === "string" ? toolEvent.text : "";
+                  if (liveId && fragment) {
+                    const accum =
+                      (liveArgsTextById.get(liveId) ?? "") + fragment;
+                    liveArgsTextById.set(liveId, accum);
+                    const partial = parseLiveToolArgs(accum);
+                    const idx = toolCallParts.findIndex(
+                      (p) => p.toolCallId === liveId,
+                    );
+                    if (partial && idx !== -1) {
+                      const existing = toolCallParts[
+                        idx
+                      ] as PositionedToolCallPart;
+                      toolCallParts[idx] = {
+                        ...existing,
+                        args: partial.args as ToolCallMessagePart["args"],
+                        argsText: partial.argsText,
+                      };
+                      yield {
+                        content: buildAssistantContent(cumulativeText),
+                        metadata: {
+                          timing: buildTiming(
+                            streamStartTime,
+                            totalChunks,
+                            firstTokenTime,
+                          ),
+                          custom: { reasoningDuration },
+                        },
+                      };
+                    }
+                  }
+                  continue;
+                }
                 closeReasoningContent();
                 const toolProvenance = parseToolProvenance(
                   toolEvent.provenance,
@@ -3215,6 +3318,7 @@ export function createOpenAIStreamAdapter(
                   useChatRuntimeStore.getState().clearToolConfirmation(id);
                   // The final result replaces the transient live output.
                   useChatRuntimeStore.getState().clearToolLiveOutput(id);
+                  liveArgsTextById.delete(id);
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );

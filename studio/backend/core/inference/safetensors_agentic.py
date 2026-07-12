@@ -551,6 +551,10 @@ def run_safetensors_tool_loop(
         provisional_render_html_started = False
         provisional_resolved = False
         provisional_render_html_id = f"call_{next_call_id}"
+        # Live argument streaming offset for the provisional render_html card:
+        # once the card is up, the drained call text streams as tool_args so
+        # the canvas shows the HTML being written instead of a dead spinner.
+        _live_args_streamed_upto = -1
         # When a human confirmation gate is active the real tool_start is keyed
         # by an approval id and carries awaiting_confirmation, so an early
         # provisional card (keyed by tool_call_id, no approval) would show the
@@ -613,6 +617,31 @@ def run_safetensors_tool_loop(
                         "arguments": {},
                         "provenance": _tool_event_provenance(provisional = True),
                     }
+                    # Backlog first: everything drained so far, so the canvas
+                    # starts from the top of the call being written.
+                    yield {
+                        "type": "tool_args",
+                        "tool_call_id": provisional_render_html_id,
+                        "tool_name": "render_html",
+                        "text": content_accum,
+                    }
+                    _live_args_streamed_upto = len(content_accum)
+                elif (
+                    provisional_render_html_started
+                    and not provisional_resolved
+                    and _live_args_streamed_upto >= 0
+                    and len(content_accum) > _live_args_streamed_upto
+                ):
+                    # The model is still writing the call: stream the fragment
+                    # so the card/canvas renders the HTML live. Display only;
+                    # content_accum still feeds the stream-end parser verbatim.
+                    yield {
+                        "type": "tool_args",
+                        "tool_call_id": provisional_render_html_id,
+                        "tool_name": "render_html",
+                        "text": content_accum[_live_args_streamed_upto:],
+                    }
+                    _live_args_streamed_upto = len(content_accum)
                 continue
 
             if detect_state == _state_streaming:
@@ -653,6 +682,13 @@ def run_safetensors_tool_loop(
                             "arguments": {},
                             "provenance": _tool_event_provenance(provisional = True),
                         }
+                        yield {
+                            "type": "tool_args",
+                            "tool_call_id": provisional_render_html_id,
+                            "tool_name": "render_html",
+                            "text": content_accum,
+                        }
+                        _live_args_streamed_upto = len(content_accum)
                     continue
                 cumulative_display = candidate
                 cleaned = strip_tool_markup_streaming(
@@ -809,6 +845,13 @@ def run_safetensors_tool_loop(
                         "arguments": {},
                         "provenance": _tool_event_provenance(provisional = True),
                     }
+                    yield {
+                        "type": "tool_args",
+                        "tool_call_id": provisional_render_html_id,
+                        "tool_name": "render_html",
+                        "text": content_accum,
+                    }
+                    _live_args_streamed_upto = len(content_accum)
             elif is_prefix and (is_rehearsal_prefix or len(stripped) < _MAX_BUFFER_CHARS):
                 # A rehearsal prefix is self-bounded; the buffer cap must not cut long MCP names short.
                 continue

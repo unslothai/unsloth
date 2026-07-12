@@ -7042,10 +7042,12 @@ async def openai_chat_completions(
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                             continue
 
-                        if event["type"] == "tool_output":
-                            # Incremental stdout/stderr from a running tool;
-                            # forwarded verbatim for live UI output. The final
-                            # tool result still arrives in tool_end.
+                        if event["type"] in ("tool_output", "tool_args"):
+                            # Incremental stdout/stderr from a running tool, or
+                            # the tool-call arguments while the model is still
+                            # writing them; forwarded verbatim for live UI
+                            # output. The final tool result still arrives in
+                            # tool_end.
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 
@@ -8331,8 +8333,9 @@ async def openai_chat_completions(
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
 
-                    if event["type"] == "tool_output":
-                        # Live stdout/stderr chunk from a running tool.
+                    if event["type"] in ("tool_output", "tool_args"):
+                        # Live stdout/stderr chunk from a running tool, or the
+                        # tool-call arguments while the model writes them.
                         yield f"data: {json.dumps(event)}\n\n"
                         continue
 
@@ -11960,10 +11963,10 @@ async def _anthropic_tool_stream(
                     # ignored by SSE parsers).
                     yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
-                if etype == "tool_output":
-                    # Live tool stdout is a Studio-UI concept with no
-                    # Anthropic Messages equivalent; the full result follows
-                    # in the tool_end -> tool_result block.
+                if etype in ("tool_output", "tool_args"):
+                    # Live tool stdout / argument streaming are Studio-UI
+                    # concepts with no Anthropic Messages equivalent; the full
+                    # call and result follow in tool_use / tool_result blocks.
                     continue
                 if etype == "metadata":
                     _fr = event.get("finish_reason")

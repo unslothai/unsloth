@@ -2883,3 +2883,171 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
         m.get("role") == "user" and "used all available tool calls" in m.get("content", "")
         for m in payloads[2]["messages"]
     ), payloads[2]["messages"]
+
+
+# ── Live tool-call argument streaming (tool_args events) ─────────────────────
+
+
+def _python_tool_schema() -> list[dict]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "python",
+                "description": "Run python code.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                    "required": ["code"],
+                },
+            },
+        }
+    ]
+
+
+def test_structured_tool_args_stream_to_provisional_card(monkeypatch):
+    """While the model writes a large structured tool call, the arguments must
+    stream as tool_args events to the provisional card (first the backlog that
+    triggered the card, then each fragment), and the executed call plus the
+    conversation the model sees must be exactly what the accumulator built."""
+
+    code = "print('x')\n" + ("# pad\n" * 80)
+    args_json = json.dumps({"code": code})
+    call_id = "call_live_args"
+    split = _PROVISIONAL_ARGS_MIN_CHARS + 16
+    frag1, frag2, frag3 = (
+        args_json[:split],
+        args_json[split : split + 40],
+        args_json[split + 40 :],
+    )
+
+    def _tc_delta(fragment: str, with_header: bool) -> str:
+        entry: dict = {"index": 0, "function": {"arguments": fragment}}
+        if with_header:
+            entry.update({"id": call_id, "type": "function"})
+            entry["function"]["name"] = "python"
+        return _sse({"tool_calls": [entry]})
+
+    first_stream = [
+        _tc_delta(frag1, with_header = True),
+        _tc_delta(frag2, with_header = False),
+        _tc_delta(frag3, with_header = False),
+        _done(),
+    ]
+    second_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, second_stream], payloads)
+
+    executed: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        executed.append((name, arguments))
+        return "ok"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run it"}],
+            tools = _python_tool_schema(),
+            max_tool_iterations = 1,
+        )
+    )
+
+    starts = [e for e in events if e.get("type") == "tool_start"]
+    assert starts and starts[0]["tool_call_id"] == call_id
+
+    args_events = [e for e in events if e.get("type") == "tool_args"]
+    assert args_events, "no tool_args events were streamed"
+    assert all(e["tool_call_id"] == call_id for e in args_events)
+    # First event carries the backlog that tripped the provisional card; the
+    # rest are raw fragments; together they are exactly the arguments JSON.
+    assert args_events[0]["text"] == frag1
+    assert "".join(e["text"] for e in args_events) == args_json
+
+    # The streamed display path must not perturb execution or the model view.
+    assert executed == [("python", {"code": code})]
+    assistant_messages = [
+        m for m in payloads[1]["messages"] if m.get("role") == "assistant"
+    ]
+    tc = assistant_messages[-1]["tool_calls"][0]
+    assert tc["id"] == call_id
+    # The controller re-serializes arguments (normalized JSON); the parsed
+    # payload must be exactly what was streamed.
+    assert json.loads(tc["function"]["arguments"]) == {"code": code}
+
+
+def test_text_tool_call_streams_args_and_reconciles_card(monkeypatch):
+    """A TEXT (XML) tool call drained by the state machine must stream its raw
+    call text as tool_args under the id the stream-end parser will assign
+    ("call_0"), so the provisional card and the final tool_start reconcile."""
+
+    code = "print('hello')\n" + ("# filler\n" * 60)
+    call_json = json.dumps({"name": "python", "arguments": {"code": code}})
+    call_text = f"<tool_call>{call_json}</tool_call>"
+    chunks = [call_text[i : i + 48] for i in range(0, len(call_text), 48)]
+    first_stream = [_sse({"content": chunk}) for chunk in chunks] + [_done()]
+    second_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, second_stream], payloads)
+
+    executed: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        executed.append((name, arguments))
+        return "ok"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run it"}],
+            tools = _python_tool_schema(),
+            max_tool_iterations = 1,
+        )
+    )
+
+    starts = [e for e in events if e.get("type") == "tool_start"]
+    assert starts, "no tool_start emitted"
+    # Provisional card first, under the parser's first-call id, then the
+    # authoritative start reconciling the same card.
+    assert starts[0]["tool_call_id"] == "call_0"
+    assert starts[0]["arguments"] == {}
+    assert starts[-1]["tool_call_id"] == "call_0"
+
+    args_events = [e for e in events if e.get("type") == "tool_args"]
+    assert args_events, "no tool_args events for the text call"
+    assert all(e["tool_call_id"] == "call_0" for e in args_events)
+    streamed = "".join(e["text"] for e in args_events)
+    # The streamed text is the drained call (display only); it must contain
+    # the code payload as written and never leak into content events.
+    assert '"name": "python"' in streamed
+    assert executed == [("python", {"code": code})]
+    content_events = [e for e in events if e.get("type") == "content"]
+    assert not any("<tool_call>" in e["text"] for e in content_events)
+
+
+def test_ordinary_json_answer_streams_no_tool_args(monkeypatch):
+    """A large ordinary JSON answer (no enabled tool name) must not spawn a
+    provisional card or tool_args events; it stays a normal content answer."""
+
+    answer = json.dumps(
+        {"result": "fine", "data": ["x" * 40] * 12, "note": "not a tool call"}
+    )
+    chunks = [answer[i : i + 64] for i in range(0, len(answer), 64)]
+    stream = [_sse({"content": chunk}) for chunk in chunks] + [_done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "give me json"}],
+            tools = _python_tool_schema(),
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert not [e for e in events if e.get("type") == "tool_args"]
+    assert not [e for e in events if e.get("type") == "tool_start"]
+    content_events = [e for e in events if e.get("type") == "content"]
+    assert content_events and answer in content_events[-1]["text"]

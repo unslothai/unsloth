@@ -301,6 +301,27 @@ def _gguf_has_genuine_tool_signal(text: str, signals, active_tools: list[dict]) 
     return False
 
 
+_TEXT_TOOL_NAME_RE = re.compile(r'"name"\s*:\s*"([\w.\-]+)"')
+_TEXT_TOOL_GEMMA_RE = re.compile(r"\s*call:([\w.\-]+)")
+_TEXT_TOOL_REHEARSAL_RE = re.compile(r"\s*([\w.\-]+)\s*\[ARGS\]")
+
+
+def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
+    """Best-effort tool name from a partially drained TEXT tool call, gated on
+    enabled names so prose can never spawn a card. Used only to open the live
+    argument pane early; the authoritative parse still happens at stream end."""
+    m = _TEXT_TOOL_NAME_RE.search(text[:4096])
+    if m and m.group(1) in enabled_names:
+        return m.group(1)
+    m = _TEXT_TOOL_GEMMA_RE.match(text[:256])
+    if m and m.group(1) in enabled_names:
+        return m.group(1)
+    m = _TEXT_TOOL_REHEARSAL_RE.match(text[:256])
+    if m and m.group(1) in enabled_names:
+        return m.group(1)
+    return ""
+
+
 def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
     """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for an
     active tool -- the bare tool name arriving in its own chunk before ``[ARGS]{...}``.
@@ -9239,6 +9260,21 @@ class LlamaCppBackend:
                 provisional_started_tool_calls: dict[str, str] = {}
                 resolved_provisional_tool_call_ids: set[str] = set()
                 _suppress_visible_output = _forced_tool_call_pending
+                # Live argument streaming: ids whose card already received its
+                # first tool_args event (the accumulated arguments so far);
+                # later fragments stream individually. The model spends the
+                # whole generation writing these arguments (minutes for a big
+                # code payload), so without this the card is a dead spinner.
+                arg_streamed_tool_call_ids: set[str] = set()
+                # TEXT tool-call path equivalents: once DRAINING commits to an
+                # enabled call, its raw text streams to a provisional card under
+                # the id the stream-end parser will assign to the first call
+                # ("call_0"), so the final tool_start reconciles in place.
+                _text_args_call_start = -1
+                _text_args_streamed_upto = -1
+                _text_args_id = ""
+                _text_args_name = ""
+                _confirm_gated_iteration = bool(confirm_tool_calls) and not bypass_permissions
 
                 with self._open_stream(url, payload, cancel_event) as (
                     response,
@@ -9393,6 +9429,34 @@ class LlamaCppBackend:
                                                     provisional = True,
                                                 ),
                                             }
+                                        # Live argument streaming: once the card
+                                        # exists, forward the arguments text so
+                                        # the UI shows the code being written
+                                        # instead of a dead spinner (the model
+                                        # can spend minutes here). First event
+                                        # carries the backlog, later ones the
+                                        # fragment; display only -- the
+                                        # accumulator above is untouched.
+                                        if current_id in provisional_started_tool_calls:
+                                            if current_id not in arg_streamed_tool_call_ids:
+                                                arg_streamed_tool_call_ids.add(current_id)
+                                                _args_backlog = tool_calls_acc[idx][
+                                                    "function"
+                                                ].get("arguments", "")
+                                                if _args_backlog:
+                                                    yield {
+                                                        "type": "tool_args",
+                                                        "tool_call_id": current_id,
+                                                        "tool_name": current_name,
+                                                        "text": _args_backlog,
+                                                    }
+                                            elif func.get("arguments"):
+                                                yield {
+                                                    "type": "tool_args",
+                                                    "tool_call_id": current_id,
+                                                    "tool_name": current_name,
+                                                    "text": func["arguments"],
+                                                }
                                     continue
 
                                 # ── Reasoning tokens ──
@@ -9431,7 +9495,77 @@ class LlamaCppBackend:
                                     content_accum += token
 
                                     if detect_state == _S_DRAINING:
-                                        pass  # accumulate silently
+                                        # Accumulate silently for parsing, but
+                                        # stream the drained TEXT call to a
+                                        # provisional card so the UI shows the
+                                        # code being written (the structured
+                                        # path streams arguments fragments
+                                        # instead). Gated on an enabled-name
+                                        # sniff + the provisional size floor so
+                                        # prose and small calls never spawn a
+                                        # pane; the id matches the one the
+                                        # stream-end parser gives the first
+                                        # call, so the final tool_start
+                                        # reconciles the same card.
+                                        if (
+                                            not has_structured_tc
+                                            and not _confirm_gated_iteration
+                                            and _text_args_call_start >= 0
+                                        ):
+                                            if not _text_args_id:
+                                                _call_text = content_accum[
+                                                    _text_args_call_start:
+                                                ]
+                                                _sniffed = _sniff_text_tool_name(
+                                                    _call_text, _enabled_tool_names
+                                                )
+                                                if _sniffed and (
+                                                    _sniffed == "render_html"
+                                                    or len(_call_text)
+                                                    >= _PROVISIONAL_ARGS_MIN_CHARS
+                                                ):
+                                                    _text_args_id = "call_0"
+                                                    _text_args_name = _sniffed
+                                                    if (
+                                                        _text_args_id
+                                                        not in provisional_started_tool_calls
+                                                    ):
+                                                        provisional_started_tool_calls[
+                                                            _text_args_id
+                                                        ] = _sniffed
+                                                        yield {
+                                                            "type": "tool_start",
+                                                            "tool_name": _sniffed,
+                                                            "tool_call_id": _text_args_id,
+                                                            "arguments": {},
+                                                            "provenance": tool_event_provenance(
+                                                                provisional = True,
+                                                            ),
+                                                        }
+                                                    yield {
+                                                        "type": "tool_args",
+                                                        "tool_call_id": _text_args_id,
+                                                        "tool_name": _sniffed,
+                                                        "text": _call_text,
+                                                    }
+                                                    _text_args_streamed_upto = len(
+                                                        content_accum
+                                                    )
+                                            elif (
+                                                len(content_accum)
+                                                > _text_args_streamed_upto
+                                            ):
+                                                yield {
+                                                    "type": "tool_args",
+                                                    "tool_call_id": _text_args_id,
+                                                    "tool_name": _text_args_name,
+                                                    "text": content_accum[
+                                                        _text_args_streamed_upto:
+                                                    ],
+                                                }
+                                                _text_args_streamed_upto = len(
+                                                    content_accum
+                                                )
 
                                     elif detect_state == _S_STREAMING:
                                         if in_thinking:
@@ -9538,6 +9672,13 @@ class LlamaCppBackend:
                                             # without yielding. A live <think> prefix is
                                             # separate from it -- close that.
                                             detect_state = _S_DRAINING
+                                            # The call text begins where the held
+                                            # buffer begins (for live arg display
+                                            # only; slop is harmless, the UI
+                                            # extracts the code value).
+                                            _text_args_call_start = len(
+                                                content_accum
+                                            ) - len(content_buffer)
                                             if _close_streamed_think():
                                                 yield {
                                                     "type": "content",
@@ -9565,6 +9706,13 @@ class LlamaCppBackend:
                                                         "text": cleaned,
                                                     }
                                             detect_state = _S_DRAINING
+                                            # Live-arg display starts at the held
+                                            # buffer (any visible prefix in it was
+                                            # flushed above; the UI extracts the
+                                            # code value, so slop is harmless).
+                                            _text_args_call_start = len(
+                                                content_accum
+                                            ) - len(content_buffer)
                                         elif _hold_buffer or (
                                             is_prefix
                                             and (

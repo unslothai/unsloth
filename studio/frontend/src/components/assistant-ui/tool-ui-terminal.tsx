@@ -5,6 +5,7 @@
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
+import { useToolArgsStatus } from "@assistant-ui/react";
 import { CopyIcon, TerminalIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -73,6 +74,10 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
 }) => {
   const command = (args as { command?: string })?.command ?? "";
   const isRunning = status?.type === "running";
+  // Args still streaming = the model is WRITING the command (tool_args
+  // events); execution has not started yet, so say so instead of "Running".
+  const { propStatus } = useToolArgsStatus();
+  const isWritingCommand = isRunning && propStatus.command === "streaming";
   const output =
     typeof result === "string"
       ? result
@@ -95,7 +100,7 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
             <>
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Spinner className="size-3.5" />
-                <span>Running&hellip;</span>
+                <span>{isWritingCommand ? "Writing command…" : "Running…"}</span>
               </div>
               {/* Live stdout streamed via tool_output SSE events. */}
               <ToolLiveOutput toolCallId={toolCallId} />

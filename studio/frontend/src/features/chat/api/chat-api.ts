@@ -929,12 +929,14 @@ export async function* streamChatCompletions(
           continue;
         }
         // Tool start/end events carry full input/output for the tool outputs
-        // panel; tool_output streams incremental stdout while a tool runs.
+        // panel; tool_output streams incremental stdout while a tool runs and
+        // tool_args streams the call arguments while the model writes them.
         if (
           "type" in parsed &&
           (parsed.type === "tool_start" ||
             parsed.type === "tool_end" ||
-            parsed.type === "tool_output")
+            parsed.type === "tool_output" ||
+            parsed.type === "tool_args")
         ) {
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);

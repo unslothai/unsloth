@@ -6,6 +6,7 @@
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { getAuthToken } from "@/features/auth/session";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
+import { useToolArgsStatus } from "@assistant-ui/react";
 import { code as codePlugin } from "@streamdown/code";
 import { CodeIcon, CopyIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -114,6 +115,10 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   const code = (args as { code?: string })?.code ?? "";
   const firstLine = code.split("\n")[0]?.slice(0, 60) ?? "";
   const isRunning = status?.type === "running";
+  // Args still streaming = the model is WRITING the code (tool_args events);
+  // execution has not started yet, so say so instead of "Running".
+  const { propStatus } = useToolArgsStatus();
+  const isWritingCode = isRunning && propStatus.code === "streaming";
 
   let output: string;
   let images: string[] = [];
@@ -157,7 +162,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
             <>
               <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
                 <Spinner className="size-3.5" />
-                <span>Running&hellip;</span>
+                <span>{isWritingCode ? "Writing code…" : "Running…"}</span>
               </div>
               {/* Live stdout streamed via tool_output SSE events. */}
               <ToolLiveOutput toolCallId={toolCallId} />
