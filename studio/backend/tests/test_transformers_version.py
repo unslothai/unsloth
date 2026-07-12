@@ -2946,6 +2946,25 @@ class TestRaiseTierForNested:
         cfg = {"model_type": "gemma4", "text_config": {"model_type": "unreleased"}}
         assert tv._raise_tier_for_nested(cfg, "550") == "550"
 
+    def test_name_fast_path_folds_when_latest_pinned(self, monkeypatch):
+        """A fixed-tier name match with a latest-only model_type routes to latest
+        once the sidecar is pinned; without a pin the name tier stands (no I/O)."""
+        import utils.transformers_version as tv
+
+        self._patch_types(monkeypatch, {"550": {"gemma4"}, "latest": {"brandnew_arch"}})
+        monkeypatch.setattr(tv, "_tier_from_name", lambda name: ("550", "gemma-4"))
+        monkeypatch.setattr(
+            tv, "_load_config_json", lambda name, tok = None: {"model_type": "brandnew_arch"}
+        )
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.99.0")
+        assert tv.get_transformers_tier("org/gemma-4-new", probe = False) == "latest"
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: None)
+        monkeypatch.setattr(
+            tv, "_load_config_json",
+            lambda name, tok = None: (_ for _ in ()).throw(AssertionError("no I/O without a pin")),
+        )
+        assert tv.get_transformers_tier("org/gemma-4-new", probe = False) == "550"
+
     def test_fast_path_folds_nested_tier(self, monkeypatch, tmp_path):
         """End to end: a local wrapper config on a fixed fast path routes to latest
         when its nested type only exists in the installed latest sidecar."""

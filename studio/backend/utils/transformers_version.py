@@ -1522,6 +1522,13 @@ def get_transformers_tier(
     result = _tier_from_name(model_name)
     if result is not None:
         tier, match = result
+        # With a consented latest sidecar pinned, a name that matches a fixed
+        # tier can still carry a latest-only model_type (e.g. a newer variant
+        # reusing a family name); consult the config so an accepted upgrade
+        # actually routes to the sidecar it installed. Costs a config read only
+        # in the pinned case, keeping the pre-latest path I/O-free.
+        if latest_venv_pinned_version() is not None:
+            tier = _raise_tier_for_nested(_load_config_json(model_name, hf_token), tier)
         logger.info(
             "Transformers tier %s selected for %s (substring match: %s)",
             tier,

@@ -4900,10 +4900,24 @@ async def install_latest_transformers_route(
             finally:
                 end_sidecar_swap()
 
+        # Snapshot before waiting on the gate: a /load already holding it can
+        # complete meanwhile, and the installer must not unload a model whose
+        # successful LoadResponse the client is about to render.
+        active_before_gate = getattr(backend, "active_model_name", None)
+
         async def _gated_install() -> dict:
             # Held by THIS task, not the request coroutine: a cancelled POST unwinding an
             # `async with` here would drop the only guard /load honors mid-install.
             async with inference_lifecycle_gate():
+                if getattr(backend, "active_model_name", None) != active_before_gate:
+                    end_sidecar_swap()
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = (
+                            "A model load completed while the install was waiting. "
+                            "Retry the install."
+                        ),
+                    )
                 # Recheck under the gate: new streams bump their in-flight count while
                 # holding it, so once held nothing slips past (the pre-gate check is only
                 # a fast path and can be outlasted by a wait on a long /load).
