@@ -3839,21 +3839,25 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
-    # A sidecar install that has reserved the swap but not yet won this gate must
-    # not lose to a load that then gets unloaded by the pre-swap teardown.
+    # A sidecar install that has reserved the swap must not lose to a load that
+    # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
+    # install can reserve while this request queues on the gate, so the pre-gate
+    # check alone is only a fast path.
+    from core.inference.llama_keepwarm import inference_lifecycle_gate
     from utils.transformers_version import sidecar_swap_in_progress
 
+    _swap_409 = HTTPException(
+        status_code = 409,
+        detail = "A transformers installation is in progress. Retry when it completes.",
+    )
     if sidecar_swap_in_progress():
-        raise HTTPException(
-            status_code = 409,
-            detail = ("A transformers installation is in progress. Retry when it completes."),
-        )
+        raise _swap_409
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
-    from core.inference.llama_keepwarm import inference_lifecycle_gate
-
     async with inference_lifecycle_gate():
+        if sidecar_swap_in_progress():
+            raise _swap_409
         return await _load_model_impl(request, fastapi_request, current_subject)
 
 

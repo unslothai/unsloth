@@ -79,6 +79,12 @@ export const useTransformersUpgradeDialogStore =
       let result: Awaited<ReturnType<typeof installLatestTransformers>>;
       try {
         result = await installLatestTransformers(version);
+        // Latch the server-side unload IMMEDIATELY, before any resolver-identity
+        // guard: even a superseded consent's install may have unloaded the chat
+        // model, and the signal must survive for whichever load consumes it next.
+        if (result.model_unloaded) {
+          set({ serverUnloadedChat: true });
+        }
       } catch (error) {
         // Ignore the failure if a newer request superseded this consent.
         if (pendingResolver === requestResolver) {
@@ -94,14 +100,10 @@ export const useTransformersUpgradeDialogStore =
       }
       if (pendingResolver === requestResolver) {
         if (result.success) {
-          // OR with the latched value: a retry after a failed-after-unload
-          // attempt reports model_unloaded=false (the model is already gone),
-          // which must not erase the earlier unload signal.
-          set({
-            installRan: true,
-            serverUnloadedChat:
-              get().serverUnloadedChat || Boolean(result.model_unloaded),
-          });
+          // serverUnloadedChat was latched above (and is never reset here): a
+          // retry after a failed-after-unload attempt reports false because the
+          // model is already gone, and a superseded install may have set it too.
+          set({ installRan: true });
           get().resolve(true);
           return;
         }
