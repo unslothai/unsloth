@@ -130,10 +130,8 @@ def test_chunk_data_uninitialized_error_names_real_class():
 
 
 def test_chunk_data_chunks_do_not_exceed_max_tokens():
-    # Every chunk must fit within max_tokens (= max_seq_length - 2*max_generation_tokens - 128).
-    # The multi-chunk path fed n_chunks points into linspace, but pairing boundaries[:-1] with
-    # boundaries[1:] turns N points into N-1 ranges, so it emitted one fewer, oversized chunk:
-    # chunks exceeded max_tokens and a document just over the threshold came back unsplit.
+    # Every chunk must fit within max_tokens. The old multi-chunk path emitted one
+    # fewer, oversized chunk, and a doc just over the threshold came back unsplit.
     kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 760, overlap = 64)
     max_tokens = 2048 - 760 * 2 - 128  # 400
 
@@ -150,11 +148,9 @@ def test_chunk_data_chunks_do_not_exceed_max_tokens():
 
 
 def test_chunk_data_does_not_over_split():
-    # n_chunks must be the *minimum* number of max_tokens-bounded chunks. Because
-    # consecutive chunks overlap, that count is ceil((length - overlap) / stride),
-    # not ceil(length / stride): the latter over-counts by one just past a stride
-    # multiple and emits an extra redundant chunk. With max_tokens=400 / overlap=64
-    # a 673-token doc fits in 2 chunks (~369 + ~368); the loose count gave 3 of ~267.
+    # n_chunks must be the minimum count: ceil((length - overlap) / stride), not
+    # ceil(length / stride) which over-splits just past a stride multiple. At 673
+    # tokens (max_tokens=400, overlap=64) the tight count gives 2 chunks (~369+368).
     kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 760, overlap = 64)
     max_tokens = 2048 - 760 * 2 - 128  # 400
     out, contents = _chunk("word " * 673, kit = kit)

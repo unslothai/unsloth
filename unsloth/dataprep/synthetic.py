@@ -425,15 +425,12 @@ class SyntheticDataKit:
         else:
             # length > max_tokens > overlap here, so length - overlap > 0 and the
             # linspace boundaries below are always non-negative.
-            # Consecutive chunks overlap by `overlap`, so N chunks capped at max_tokens
-            # cover N * (max_tokens - overlap) + overlap tokens. Covering `length` needs
-            # ceil((length - overlap) / (max_tokens - overlap)) chunks; dividing plain
-            # length by the stride over-counts by one just past a stride multiple and
-            # emits an extra redundant (smaller) chunk.
+            # Minimal count: overlapping chunks cover `length` in
+            # ceil((length - overlap) / stride) chunks, not ceil(length / stride)
+            # which over-splits just past a stride multiple.
             n_chunks = int(np.ceil((length - self.overlap) / (max_tokens - self.overlap)))
-            # Emit n_chunks ranges: pairing boundaries[:-1] with boundaries[1:] turns
-            # N points into N-1 ranges, so linspace needs n_chunks + 1 points. Using
-            # n_chunks points produced one fewer, oversized chunk (exceeding max_tokens).
+            # n_chunks + 1 points: [:-1]/[1:] pairing yields n_chunks ranges; using
+            # n_chunks points gave one fewer, oversized chunk (over max_tokens).
             boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks + 1)).astype(int)
             boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
             boundaries = np.minimum(boundaries, length).tolist()
