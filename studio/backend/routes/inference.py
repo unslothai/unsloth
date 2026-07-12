@@ -3562,7 +3562,6 @@ async def _maybe_auto_switch_model(
                         # Advertise the repo id (not the concrete load path) as the loaded
                         # model's public id and override key for /v1/models and idle stash.
                         get_llama_cpp_backend()._openai_advertised_id = override_id
-                        _record_owner_load(load_request)
                 finally:
                     _auto_switch_process_lock.release()
         finally:
@@ -3592,14 +3591,10 @@ async def _auto_switch_from_request_body(request: Request, current_subject: str)
     return body
 
 
-# Preview slot tracking: the public /p route shares the single model slot, so a
-# preview load must not clobber active inference and must restore what it evicted.
+# Preview requests share the single model slot but must never evict the Studio
+# model. They may load only into an empty slot or reuse their already-loaded
+# checkpoint.
 _preview_slot_lock = threading.Lock()
-_last_owner_load: Optional[LoadRequest] = None
-_preview_owns_slot = False
-_preview_slot_ident: Optional[str] = None
-_preview_displaced: Optional[LoadRequest] = None
-_preview_restore_ctx: Optional[tuple] = None
 _preview_request_count = 0
 
 
@@ -3612,34 +3607,6 @@ def note_preview_request(delta: int) -> None:
 def _other_preview_requests() -> int:
     with _preview_slot_lock:
         return max(0, _preview_request_count - 1)
-
-
-def _reset_preview_slot_locked() -> None:
-    global _preview_owns_slot, _preview_slot_ident, _preview_displaced, _preview_restore_ctx
-    _preview_owns_slot = False
-    _preview_slot_ident = None
-    _preview_displaced = None
-    _preview_restore_ctx = None
-
-
-def _record_owner_load(request: LoadRequest) -> None:
-    global _last_owner_load
-    with _preview_slot_lock:
-        _last_owner_load = request
-        _reset_preview_slot_locked()
-
-
-def _clear_owner_load() -> None:
-    global _last_owner_load
-    with _preview_slot_lock:
-        _last_owner_load = None
-        _reset_preview_slot_locked()
-
-
-def _clear_preview_slot(expected_ident: Optional[str]) -> None:
-    with _preview_slot_lock:
-        if _preview_owns_slot and _preview_slot_ident == expected_ident:
-            _reset_preview_slot_locked()
 
 
 def _loaded_slot_ident() -> Optional[str]:
@@ -3659,16 +3626,23 @@ async def load_model_for_preview(
         inference_lifecycle_gate,
         other_inference_request_count,
     )
-    global _preview_owns_slot, _preview_slot_ident, _preview_displaced, _preview_restore_ctx
     async with _auto_switch_lock():
         await _acquire_swap_gate()
         try:
             async with inference_lifecycle_gate():
                 loaded = _loaded_slot_ident()
                 same_target = loaded is not None and loaded.lower() == request.model_path.lower()
-                # Single slot: never tear down a model another request is using.
-                # Other preview requests are excluded -- they serialize on the
-                # preview lock, so none of them can be mid-generation here.
+                # A preview never borrows Studio's model slot. This includes an
+                # idle model: otherwise merely opening a preview link makes the
+                # Studio chat silently swap models between messages.
+                if loaded is not None and not same_target:
+                    raise HTTPException(
+                        status_code = 503,
+                        detail = "Studio already has a different model loaded. Unload it before using this preview.",
+                        headers = {"Retry-After": "10"},
+                    )
+                # A second preview visitor queued on the preview lock is not
+                # generating yet, so exclude those waiters from the busy count.
                 if (
                     not same_target
                     and other_inference_request_count(
@@ -3681,69 +3655,7 @@ async def load_model_for_preview(
                         detail = "The preview model is busy. Please try again shortly.",
                         headers = {"Retry-After": "10"},
                     )
-                with _preview_slot_lock:
-                    if _preview_owns_slot:
-                        displaced = _preview_displaced
-                    else:
-                        displaced = _last_owner_load if loaded and not same_target else None
-                try:
-                    await _load_model_impl(request, fastapi_request, current_subject)
-                finally:
-                    # Record even when the load failed: the owner's model may
-                    # already be torn down, so the restore must still know.
-                    with _preview_slot_lock:
-                        _preview_owns_slot = True
-                        _preview_slot_ident = _loaded_slot_ident()
-                        _preview_displaced = displaced
-                        _preview_restore_ctx = (
-                            getattr(fastapi_request, "app", None),
-                            current_subject,
-                        )
-        finally:
-            _auto_switch_process_lock.release()
-
-
-async def restore_displaced_model() -> bool:
-    # True: nothing (left) to restore; False: busy, retry later.
-    from types import SimpleNamespace
-
-    from core.inference.llama_keepwarm import (
-        inference_lifecycle_gate,
-        other_inference_request_count,
-    )
-
-    with _preview_slot_lock:
-        if not _preview_owns_slot:
-            return True
-    async with _auto_switch_lock():
-        await _acquire_swap_gate()
-        try:
-            async with inference_lifecycle_gate():
-                with _preview_slot_lock:
-                    owns = _preview_owns_slot
-                    ident = _preview_slot_ident
-                    displaced = _preview_displaced
-                    ctx = _preview_restore_ctx
-                if not owns:
-                    return True
-                loaded = _loaded_slot_ident()
-                if (
-                    (loaded or "").lower() != (ident or "").lower()
-                    or displaced is None
-                    or ctx is None
-                ):
-                    # Slot changed hands or nothing was displaced; stand down.
-                    _clear_preview_slot(ident)
-                    return True
-                if other_inference_request_count(current_request_counted = False) > 0:
-                    return False
-                app, subject = ctx
-                if app is None:
-                    app = SimpleNamespace(state = SimpleNamespace())
-                await _load_model_impl(displaced, SimpleNamespace(app = app), subject)
-                _record_owner_load(displaced)
-                logger.info("Restored model displaced by preview: %s", displaced.model_path)
-                return True
+                await _load_model_impl(request, fastapi_request, current_subject)
         finally:
             _auto_switch_process_lock.release()
 
@@ -4000,7 +3912,6 @@ async def load_model(
     from core.inference.llama_keepwarm import inference_lifecycle_gate
     async with inference_lifecycle_gate():
         response = await _load_model_impl(request, fastapi_request, current_subject)
-        _record_owner_load(request)
         return response
 
 
@@ -4904,7 +4815,6 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
         ):
             if await asyncio.to_thread(backend.cancel_load, request.model_path):
                 note_model_unloaded()
-                _clear_owner_load()
                 logger.info(f"Cancelled in-flight load: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
 
@@ -4928,7 +4838,6 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
         ):
             await asyncio.to_thread(llama_backend.unload_model)
             note_model_unloaded()
-            _clear_owner_load()
             logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
@@ -4950,7 +4859,6 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 # request is mid-stream (only the automatic idle loop defers to it).
                 llama_backend.unload_model()
                 note_model_unloaded()
-                _clear_owner_load()
                 logger.info(f"Unloaded GGUF model: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
 
@@ -4960,7 +4868,6 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             backend = get_inference_backend()
             await asyncio.to_thread(backend.unload_model, request.model_path)
             note_model_unloaded()
-            _clear_owner_load()
             logger.info(f"Unloaded model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 

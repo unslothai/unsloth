@@ -120,11 +120,17 @@ def test_page_renders_with_csp(client):
     assert r.headers.get("referrer-policy") == "no-referrer"
 
 
+def test_page_renders_friendly_busy_message(client):
+    r = client.get(f"/p/demorun?k={_sig('demorun')}")
+    assert "Studio is currently using another model" in r.text
+
+
 def test_page_escapes_title(tmp_path, monkeypatch, captured):
     outputs = tmp_path / "outputs"
     # Run dir name carries an HTML-special char; the page must escape it.
     _make_run(outputs, name = "a<b")
     _use_test_secret(monkeypatch)
+    monkeypatch.setattr(preview, "get_preview_sharing_enabled", lambda: True)
     from utils.paths import storage_roots as _sr
 
     monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
@@ -242,6 +248,9 @@ def test_chat_payload_sanitized(client, captured):
             "confirm_tool_calls": True,
             "session_id": "abc",
             "rag_scope": {"project_id": "x"},
+            "enable_thinking": True,
+            "reasoning_effort": "high",
+            "preserve_thinking": True,
         },
     )
     assert r.status_code == 200
@@ -262,6 +271,9 @@ def test_chat_payload_sanitized(client, captured):
     assert p.provider_type is None
     assert p.provider_base_url is None
     assert p.external_model is None
+    assert p.enable_thinking is False
+    assert p.reasoning_effort is None
+    assert p.preserve_thinking is False
     # Adapter pinned on for LoRA: a caller can't flip the shared backend to base.
     assert p.use_adapter is True
     # Generation cost capped on this public surface (no override sent -> ceiling).
@@ -280,6 +292,7 @@ def test_merged_checkpoint_strips_use_adapter(tmp_path, monkeypatch, captured):
     (merged / "config.json").write_text(json.dumps({"_name_or_path": "some/base"}))
 
     _use_test_secret(monkeypatch)
+    monkeypatch.setattr(preview, "get_preview_sharing_enabled", lambda: True)
     from utils.paths import storage_roots as _sr
 
     monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
@@ -496,7 +509,7 @@ def test_chat_rate_limited_returns_429(client, monkeypatch):
     assert r.headers.get("retry-after")
 
 
-# ── Model-slot guard and displaced-model restore ─────────────────────────────
+# ── Model-slot guard ─────────────────────────────────────────────────────────
 
 from types import SimpleNamespace
 
@@ -510,7 +523,6 @@ from models.inference import LoadRequest
 @pytest.fixture
 def slot_state():
     def _reset():
-        inference._clear_owner_load()
         with inference._preview_slot_lock:
             inference._preview_request_count = 0
 
@@ -539,11 +551,10 @@ def fake_slot(slot_state, monkeypatch):
     return state
 
 
-def test_preview_load_refused_while_inference_active(fake_slot):
-    # An owner model is loaded and another request is generating on it: the
-    # preview must refuse instead of tearing the model down mid-response.
+def test_preview_load_refused_when_studio_model_is_loaded(fake_slot):
+    # An owner model stays protected even while idle: a preview must not swap it
+    # out merely because the user is between Studio messages.
     fake_slot["ident"] = "owner-model"
-    fake_slot["busy"] = 1
 
     async def _run():
         with pytest.raises(HTTPException) as exc:
@@ -579,7 +590,7 @@ def test_preview_load_allowed_when_checkpoint_already_loaded(fake_slot):
 def test_preview_waiters_do_not_trip_busy_guard(fake_slot):
     # A second preview visitor queued on the preview lock is tracked in-flight,
     # but must not read as foreign traffic (it can't be mid-generation).
-    fake_slot["ident"] = "owner-model"
+    fake_slot["ident"] = "/outputs/run/ckpt"
     fake_slot["busy"] = 1
     inference.note_preview_request(1)
     inference.note_preview_request(1)
@@ -597,114 +608,13 @@ def test_preview_waiters_do_not_trip_busy_guard(fake_slot):
     assert fake_slot["loads"] == ["/outputs/run/ckpt"]
 
 
-def test_preview_restores_displaced_model(fake_slot):
-    fake_slot["ident"] = "owner-model"
-    inference._record_owner_load(LoadRequest(model_path = "owner-model"))
-
-    async def _run():
-        await inference.load_model_for_preview(
-            LoadRequest(model_path = "/outputs/run/ckpt"),
-            SimpleNamespace(app = None),
-            "admin",
-        )
-        assert fake_slot["ident"] == "/outputs/run/ckpt"
-        assert await inference.restore_displaced_model() is True
-
-    asyncio.run(_run())
-    assert fake_slot["loads"] == ["/outputs/run/ckpt", "owner-model"]
-    assert fake_slot["ident"] == "owner-model"
-    # Nothing left to restore afterwards.
-    assert asyncio.run(inference.restore_displaced_model()) is True
-    assert fake_slot["loads"] == ["/outputs/run/ckpt", "owner-model"]
-
-
-def test_restore_defers_while_inference_active(fake_slot):
-    fake_slot["ident"] = "owner-model"
-    inference._record_owner_load(LoadRequest(model_path = "owner-model"))
-
-    async def _run():
-        await inference.load_model_for_preview(
-            LoadRequest(model_path = "/outputs/run/ckpt"),
-            SimpleNamespace(app = None),
-            "admin",
-        )
-        fake_slot["busy"] = 1
-        assert await inference.restore_displaced_model() is False
-        fake_slot["busy"] = 0
-        assert await inference.restore_displaced_model() is True
-
-    asyncio.run(_run())
-    assert fake_slot["ident"] == "owner-model"
-
-
-def test_restore_stands_down_after_owner_reload(fake_slot):
-    fake_slot["ident"] = "owner-model"
-    inference._record_owner_load(LoadRequest(model_path = "owner-model"))
-
-    async def _run():
-        await inference.load_model_for_preview(
-            LoadRequest(model_path = "/outputs/run/ckpt"),
-            SimpleNamespace(app = None),
-            "admin",
-        )
-        # Owner deliberately loads a new model afterwards; the stale preview
-        # stash must not clobber it.
-        fake_slot["ident"] = "new-model"
-        inference._record_owner_load(LoadRequest(model_path = "new-model"))
-        assert await inference.restore_displaced_model() is True
-
-    asyncio.run(_run())
-    assert fake_slot["loads"] == ["/outputs/run/ckpt"]
-    assert fake_slot["ident"] == "new-model"
-
-
-def test_restore_after_failed_checkpoint_load(fake_slot):
-    # A checkpoint load can evict the owner's model and then fail; the restore
-    # must still bring the owner's model back.
-    fake_slot["ident"] = "owner-model"
-    inference._record_owner_load(LoadRequest(model_path = "owner-model"))
-    fake_slot["fail_load"] = True
-
-    async def _run():
-        with pytest.raises(HTTPException):
-            await inference.load_model_for_preview(
-                LoadRequest(model_path = "/outputs/run/ckpt"),
-                SimpleNamespace(app = None),
-                "admin",
-            )
-        fake_slot["fail_load"] = False
-        assert await inference.restore_displaced_model() is True
-
-    asyncio.run(_run())
-    assert fake_slot["loads"] == ["/outputs/run/ckpt", "owner-model"]
-    assert fake_slot["ident"] == "owner-model"
-
-
-def test_restore_stands_down_when_slot_changed_hands(fake_slot):
-    fake_slot["ident"] = "owner-model"
-    inference._record_owner_load(LoadRequest(model_path = "owner-model"))
-
-    async def _run():
-        await inference.load_model_for_preview(
-            LoadRequest(model_path = "/outputs/run/ckpt"),
-            SimpleNamespace(app = None),
-            "admin",
-        )
-        # Slot no longer holds the preview checkpoint (e.g. unloaded/replaced
-        # outside the tracked paths): restoring would clobber, so stand down.
-        fake_slot["ident"] = "something-else"
-        assert await inference.restore_displaced_model() is True
-
-    asyncio.run(_run())
-    assert fake_slot["loads"] == ["/outputs/run/ckpt"]
-
-
 def test_chat_returns_503_when_model_busy(tmp_path, monkeypatch, slot_state):
     # Route-level: the guard's 503 (with Retry-After) reaches the public caller
     # through the real _serve_chat, which must release the preview lock.
     outputs = tmp_path / "outputs"
     _make_run(outputs)
     _use_test_secret(monkeypatch)
+    monkeypatch.setattr(preview, "get_preview_sharing_enabled", lambda: True)
     from utils.paths import storage_roots as _sr
 
     monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)

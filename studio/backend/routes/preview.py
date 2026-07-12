@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import html
-import threading
-import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -24,7 +22,6 @@ from routes.inference import (
     load_model_for_preview,
     note_preview_request,
     openai_chat_completions,
-    restore_displaced_model,
 )
 from state.tool_policy import tools_force_disabled
 from utils.client_ip import client_ip
@@ -44,44 +41,6 @@ _PREVIEW_MAX_OUTPUT_TOKENS = 1024
 # Capability-gated (signed ref required); resolve_preview_checkpoint pins `run`
 # under outputs_root. One model loads at a time, so serialize load+generate.
 _preview_lock = asyncio.Lock()
-
-# Once preview traffic has been idle this long, reload the model the preview
-# displaced (debounced so a visitor's conversation doesn't thrash the slot).
-_RESTORE_IDLE_SECONDS = 60.0
-_RESTORE_RETRY_SECONDS = 10.0
-
-_restore_state_lock = threading.Lock()
-_restore_deadline = 0.0
-_restore_task: asyncio.Task | None = None
-
-
-def _schedule_restore() -> None:
-    global _restore_deadline, _restore_task
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    with _restore_state_lock:
-        _restore_deadline = time.monotonic() + _RESTORE_IDLE_SECONDS
-        if _restore_task is None or _restore_task.done():
-            _restore_task = loop.create_task(_restore_when_idle())
-
-
-async def _restore_when_idle() -> None:
-    while True:
-        with _restore_state_lock:
-            wait = _restore_deadline - time.monotonic()
-        if wait > 0:
-            await asyncio.sleep(wait)
-            continue
-        try:
-            if await restore_displaced_model():
-                return
-        except Exception as exc:
-            logger.warning("preview restore failed: %s", exc)
-            return
-        await asyncio.sleep(_RESTORE_RETRY_SECONDS)
-
 
 def _extract_token(request: Request) -> str | None:
     """Capability token from the ``?k=`` query (browser link + preview page) or an
@@ -177,6 +136,12 @@ def _sanitize_preview_payload(
             "external_model": None,
             "encrypted_api_key": None,
             "provider_base_url": None,
+            # The public preview is answer-first. Some small reasoning models
+            # emit their whole reply as hidden reasoning_content, which makes a
+            # shared preview appear blank.
+            "enable_thinking": False,
+            "reasoning_effort": None,
+            "preserve_thinking": False,
             "use_adapter": True if is_lora else None,
             "max_tokens": capped_max_tokens,
             "max_completion_tokens": capped_max_tokens,
@@ -193,7 +158,6 @@ async def _unlock_after(body_iterator):
     finally:
         _preview_lock.release()
         note_preview_request(-1)
-        _schedule_restore()
 
 
 async def _serve_chat(
@@ -229,7 +193,6 @@ async def _serve_chat(
         if not keep_locked:
             if locked:
                 _preview_lock.release()
-                _schedule_restore()
             note_preview_request(-1)
 
 

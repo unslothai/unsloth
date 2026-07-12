@@ -143,6 +143,21 @@
         margin-top: 16px;
         line-height: 1.75;
       }
+      .error {
+        color: #b42318;
+        border: 1px solid #fecdca;
+        border-radius: 12px;
+        background: #fef3f2;
+        padding: 10px 12px;
+        line-height: 1.5;
+      }
+      @media (prefers-color-scheme: dark) {
+        .error {
+          color: #fda29b;
+          border-color: #7a271a;
+          background: #2d1716;
+        }
+      }
       .dots {
         display: inline-flex;
         gap: 5px;
@@ -318,6 +333,22 @@
         down();
         return d;
       }
+      function showError(out, status, body) {
+        out.classList.add("error");
+        if (status === 503) {
+          out.textContent =
+            "Studio is currently using another model. To chat with this preview, unload that model in Studio, then try again.";
+          return;
+        }
+        let message = "Something went wrong. Please try again.";
+        try {
+          const parsed = JSON.parse(body);
+          message = parsed.detail || parsed.error?.message || message;
+        } catch (_) {
+          if (body) message = body.slice(0, 300);
+        }
+        out.textContent = "Couldn’t send your message: " + message;
+      }
       async function send() {
         // One path for button + Enter; ignore while a request is in flight.
         if (btn.disabled) return;
@@ -343,8 +374,7 @@
             }),
           });
           if (!r.ok) {
-            out.textContent =
-              "Error " + r.status + ": " + (await r.text()).slice(0, 300);
+            showError(out, r.status, await r.text());
             msgs.pop();
             input.value = content; // restore the prompt so the user can retry
             autosize();
