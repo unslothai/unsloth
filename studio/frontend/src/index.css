@@ -1736,12 +1736,23 @@ html[data-chat-font] .aui-root {
 		--tw-ring-offset-shadow: 0 0 #0000 !important;
 	}
 
-	/* Keep the greeting on Hellix: the base h1 rule reads --font-heading
-	   with !important and .aui-thread-root resets that var to sans, so the
-	   stack is restored on the element itself. */
+	/* The greeting is a heading: it follows the user's heading font and
+	   defaults to Hellix. Restored on the element because the base h1 rule
+	   reads --font-heading with !important and .aui-thread-root resets
+	   that var to sans for chat prose. */
 	.unsloth-welcome-title {
-		--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
-		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans);
+		--font-heading: var(
+			--custom-heading-font,
+			"Hellix",
+			"Space Grotesk Variable",
+			var(--font-sans)
+		);
+		font-family: var(
+			--custom-heading-font,
+			"Hellix",
+			"Space Grotesk Variable",
+			var(--font-sans)
+		);
 		font-weight: 500;
 	}
 

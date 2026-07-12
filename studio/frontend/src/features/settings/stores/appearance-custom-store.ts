@@ -446,6 +446,12 @@ export function applyCustomizationToDocument(
     "--font-heading",
     c.headingFont ? `"${c.headingFont}", ${DEFAULT_HEADING_STACK}` : null,
   );
+  // Only set while a heading font is chosen, so elements pinned to their
+  // own default (the chat greeting) can still follow the user's pick.
+  setVar(
+    "--custom-heading-font",
+    c.headingFont ? `"${c.headingFont}", ${DEFAULT_HEADING_STACK}` : null,
+  );
   setVar(
     "--font-mono",
     c.codeFont ? `"${c.codeFont}", ${DEFAULT_MONO_STACK}` : null,
