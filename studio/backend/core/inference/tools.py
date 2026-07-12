@@ -487,6 +487,9 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     # quoted ">" false-positives into a prompt, which is the safe direction.
     if ">" in command or "`" in command or "$(" in command or "<(" in command:
         return True
+    # Newlines (and CR) separate commands in a shell but read as plain
+    # whitespace to shlex, which would demote "ls\nrm x" to argument position.
+    command = command.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
     try:
         lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()")
         lexer.whitespace_split = True
@@ -497,7 +500,13 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     prefix_pending = False
     current_command = ""
     for token in tokens:
-        if token in _SHELL_SEPARATORS or token in _SHELL_KEYWORDS_AS_SEP:
+        # Runs of punctuation (";;", ";&") lex as one token; any token made
+        # purely of separator characters still separates commands.
+        if (
+            token in _SHELL_SEPARATORS
+            or token in _SHELL_KEYWORDS_AS_SEP
+            or not set(token) - set(";&|()")
+        ):
             expect_command = True
             prefix_pending = False
             current_command = ""

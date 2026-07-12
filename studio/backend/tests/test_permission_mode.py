@@ -59,6 +59,11 @@ def _clear_pending():
         ("xxd -r dump.hex out.bin", True),  # -r can write
         ("awk '{print}' file", True),  # awk can system()/write
         ("grep -o x file", False),  # grep -o is stdout only
+        ("ls\nrm -rf x", True),  # newline separates commands
+        ("ls\r\nrm x", True),  # CRLF separates commands
+        ("ls\n\n\nrm x", True),  # blank lines collapse to one separator
+        ("ls\npwd", False),  # multi-line stays safe when every line is
+        ("ls\n", False),
     ],
 )
 def test_terminal_classifier(command, unsafe):
