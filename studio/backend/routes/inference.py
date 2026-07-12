@@ -4613,6 +4613,16 @@ async def validate_model(
                 detail = "gpu_ids is not supported for GGUF models yet.",
             )
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
+        # Mirror /load: a model on the consented latest sidecar loads 16-bit (the
+        # worker refuses bnb 4-bit for it), so the guard must size it the same way
+        # here or validation would pass a load that /load then rejects with a 409.
+        if effective_load_in_4bit and not config.is_gguf:
+            from utils.transformers_version import latest_tier_active_for
+
+            if await asyncio.to_thread(
+                latest_tier_active_for, config.identifier, request.hf_token
+            ):
+                effective_load_in_4bit = False
         # Off-loop: guard does sync nvidia-smi / HF work.
         await asyncio.to_thread(
             _guard_chat_load_against_training,

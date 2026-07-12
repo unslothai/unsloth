@@ -177,6 +177,44 @@ class TestFetchRemoteModelTypes:
         )
         assert _fetch_remote_model_types("main") is None
 
+    def test_transient_failure_of_one_file_fails_whole_lookup(self, monkeypatch):
+        # configuration_auto.py succeeds but auto_mappings.py times out: the partial
+        # map (missing most current model types) must not be returned and cached.
+        def _fake(req, timeout = None):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if url.endswith("configuration_auto.py"):
+                return _FakeResponse(_MAPPING_SOURCE.encode())
+            raise OSError("timed out")
+
+        monkeypatch.setattr("urllib.request.urlopen", _fake)
+        assert _fetch_remote_model_types("main") is None
+
+    def test_missing_auto_mappings_404_still_succeeds(self, monkeypatch):
+        # Pre-5.10 tags legitimately have no auto_mappings.py: a 404 (unlike a
+        # transient failure) must not fail the lookup.
+        import urllib.error
+
+        def _fake(req, timeout = None):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if url.endswith("configuration_auto.py"):
+                return _FakeResponse(_MAPPING_SOURCE.encode())
+            raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+
+        monkeypatch.setattr("urllib.request.urlopen", _fake)
+        keys = _fetch_remote_model_types("v5.9.0")
+        assert keys is not None and "brandnew_arch" in keys
+
+    def test_unparseable_file_fails_whole_lookup(self, monkeypatch):
+        # A syntax error in either fetched file means the map may be incomplete.
+        def _fake(req, timeout = None):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if url.endswith("configuration_auto.py"):
+                return _FakeResponse(_MAPPING_SOURCE.encode())
+            return _FakeResponse(b"def broken(:\n")
+
+        monkeypatch.setattr("urllib.request.urlopen", _fake)
+        assert _fetch_remote_model_types("main") is None
+
 
 # ---------------------------------------------------------------------------
 # latest_transformers_supports — snapshot, cache, offline, kill switch

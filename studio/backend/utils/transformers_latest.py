@@ -96,8 +96,18 @@ def _cache_file() -> Path:
     return _studio_root() / "cache" / _CACHE_FILE_NAME
 
 
+# Sentinel for HTTP 404: the file legitimately does not exist at that ref, which is
+# different from a transient failure (timeout, 5xx) that must not poison caches.
+_FETCH_MISSING = "__unsloth_fetch_missing__"
+
+
 def _fetch_text(url: str) -> str | None:
-    """GET *url* with a bounded timeout and one retry; None on any failure."""
+    """GET *url* with a bounded timeout and one retry; None on any failure.
+
+    Returns ``_FETCH_MISSING`` (without retrying) on HTTP 404 so callers can tell
+    "absent at this ref" apart from "network flaked".
+    """
+    import urllib.error
     import urllib.request
 
     for attempt in range(1 + _FETCH_RETRIES):
@@ -105,6 +115,10 @@ def _fetch_text(url: str) -> str | None:
             req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
             with urllib.request.urlopen(req, timeout = _FETCH_TIMEOUT_SECONDS) as resp:
                 return resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return _FETCH_MISSING
+            logger.debug("Fetch failed (attempt %d) for %s: %s", attempt + 1, url, exc)
         except Exception as exc:
             logger.debug("Fetch failed (attempt %d) for %s: %s", attempt + 1, url, exc)
     return None
@@ -113,7 +127,7 @@ def _fetch_text(url: str) -> str | None:
 def _fetch_latest_pypi_version() -> str | None:
     """Latest transformers release version from PyPI's unauthenticated JSON API."""
     body = _fetch_text(_PYPI_JSON_URL)
-    if body is None:
+    if body is None or body == _FETCH_MISSING:
         return None
     try:
         version = json.loads(body).get("info", {}).get("version")
@@ -127,21 +141,27 @@ def _fetch_remote_model_types(ref: str) -> frozenset[str] | None:
     """CONFIG_MAPPING_NAMES keys at *ref* (a release tag like ``v5.12.0`` or ``main``).
 
     Fetches configuration_auto.py plus auto_mappings.py (the 5.10+ split) from
-    raw.githubusercontent.com and parses them with the shared AST extractor. A missing
-    auto_mappings.py (pre-5.10 tags) is fine as long as some keys were found; an empty
-    result is treated as a failure (None) so it is never cached as "supports nothing".
+    raw.githubusercontent.com and parses them with the shared AST extractor. A file
+    that 404s (auto_mappings.py on pre-5.10 tags) is skipped, but a transient fetch
+    or parse failure of EITHER file fails the whole lookup: most model types live in
+    auto_mappings.py on current releases, so a partial map cached for the TTL would
+    make /validate skip the upgrade prompt for architectures the release does ship.
+    An empty result is likewise a failure so it is never cached as "supports nothing".
     """
     keys: set[str] = set()
     fetched_any = False
     for name in _AUTO_FILES:
         source = _fetch_text(_RAW_URL.format(ref = ref, name = name))
         if source is None:
+            return None
+        if source == _FETCH_MISSING:
             continue
         fetched_any = True
         try:
             keys |= _model_types_from_source(source)
         except Exception as exc:
             logger.debug("Could not parse %s at %s: %s", name, ref, exc)
+            return None
     if not fetched_any or not keys:
         return None
     return frozenset(keys)
@@ -387,7 +407,7 @@ def _canonical_dep_name(name: str) -> str:
 def _fetch_requires_dist(version: str) -> list[str] | None:
     """Core (marker-free, non-extra) requires_dist of transformers *version* from PyPI."""
     body = _fetch_text(f"https://pypi.org/pypi/transformers/{version}/json")
-    if body is None:
+    if body is None or body == _FETCH_MISSING:
         return None
     try:
         reqs = json.loads(body).get("info", {}).get("requires_dist")
@@ -401,7 +421,7 @@ def _fetch_requires_dist(version: str) -> list[str] | None:
 def _resolve_exact_version(name: str, specifier) -> str | None:
     """Newest PyPI release of *name* satisfying *specifier* (exact pin for the shadow)."""
     body = _fetch_text(f"https://pypi.org/pypi/{name}/json")
-    if body is None:
+    if body is None or body == _FETCH_MISSING:
         return None
     try:
         from packaging.version import InvalidVersion, Version

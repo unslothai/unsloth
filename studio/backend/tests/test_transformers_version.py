@@ -2614,3 +2614,14 @@ class TestLatestTierForces16Bit:
             "routes/inference.py must size the VRAM guard with the same 16-bit "
             "flip the worker applies for latest-sidecar models."
         )
+
+    def test_validate_route_mirrors_16bit_flip(self):
+        # /validate runs the same training guard before /load; without the same
+        # flip, a latest-sidecar model validates as 4-bit and then /load rejects
+        # the correctly sized 16-bit load with a 409 the user never saw coming.
+        src = self._read("routes/inference.py")
+        body = src.split("async def validate_model", 1)[1].split("\nasync def ", 1)[0]
+        assert "latest_tier_active_for" in body, (
+            "validate_model must apply the latest-sidecar 16-bit flip before "
+            "_guard_chat_load_against_training so /validate and /load agree."
+        )
