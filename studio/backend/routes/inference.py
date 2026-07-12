@@ -2061,6 +2061,28 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
     return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
 
 
+def _permission_mode_confirm(payload) -> bool:
+    """Effective confirm-gate intent for Studio's own local tool loop.
+
+    Honors the documented default that an unset permission_mode behaves as
+    "ask". An explicit confirm_tool_calls (True or False) wins; explicit
+    ask/auto always engage the gate (a non-streaming one is then rejected, since
+    it cannot prompt); off/full never prompt. An unset mode defaults to ask, but
+    that is only realizable on a streaming request, so a non-streaming unset
+    request keeps the legacy run-without-gate behavior instead of 400ing. Used
+    at the pre-switch guard and the per-backend tool paths so a forced tool loop
+    (CLI --enable-tools) with the default mode still gates streaming requests.
+    """
+    if payload.confirm_tool_calls is not None:
+        return bool(payload.confirm_tool_calls)
+    mode = getattr(payload, "permission_mode", None)
+    if mode in ("ask", "auto"):
+        return True
+    if mode in ("off", "full"):
+        return False
+    return bool(getattr(payload, "stream", False))
+
+
 # Cancel registry. Proxies (e.g. Colab) can swallow client fetch aborts so
 # is_disconnected() never fires. POST /inference/cancel looks up in-flight
 # cancel_events here by cancel_id (per-run) or session_id / completion_id
@@ -6331,7 +6353,7 @@ async def openai_chat_completions(
 
         _confirm_cli_policy = _get_confirm_tool_policy()
         if (
-            payload.confirm_tool_calls
+            _permission_mode_confirm(payload)
             and not payload.bypass_permissions
             and not payload.stream
             and (
@@ -6862,9 +6884,7 @@ async def openai_chat_completions(
             # derive confirm here so the mode still gates the call (and a
             # non-stream ask/auto request is rejected below rather than running
             # unprompted). off/full never prompt, so they are excluded.
-            _effective_confirm = bool(payload.confirm_tool_calls) or (
-                payload.permission_mode in ("ask", "auto")
-            )
+            _effective_confirm = _permission_mode_confirm(payload)
             # Bypass Permissions suppresses confirm, so the stream requirement
             # (the gate needs streaming to prompt) no longer applies.
             if _effective_confirm and not payload.bypass_permissions and not payload.stream:
@@ -8163,9 +8183,7 @@ async def openai_chat_completions(
         # loop; when a CLI policy (--enable-tools) forces the loop on without a
         # request-level tool signal, derive confirm here so the mode still gates
         # the call (matching the GGUF path). off/full never prompt.
-        _sf_effective_confirm = bool(payload.confirm_tool_calls) or (
-            payload.permission_mode in ("ask", "auto")
-        )
+        _sf_effective_confirm = _permission_mode_confirm(payload)
         # Bypass Permissions suppresses confirm, so the stream requirement
         # (the gate needs streaming to prompt) no longer applies.
         if _sf_effective_confirm and not payload.bypass_permissions and not payload.stream:

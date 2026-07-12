@@ -671,3 +671,30 @@ def test_ask_auto_self_enable_confirm_on_chat_request():
             **extra,
         )
         assert req.confirm_tool_calls is None
+
+
+def test_permission_mode_confirm_derivation():
+    # The route derives the effective confirm gate from permission_mode so that a
+    # tool loop forced on by CLI policy (no request-level tool flag) still honors
+    # the documented "unset behaves as ask" default.
+    from routes.inference import _permission_mode_confirm
+
+    def req(**kw):
+        return ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}], **kw)
+
+    # An explicit confirm flag always wins (True gates, False opts out).
+    assert _permission_mode_confirm(req(confirm_tool_calls = True, stream = False)) is True
+    assert (
+        _permission_mode_confirm(req(confirm_tool_calls = False, permission_mode = "ask")) is False
+    )
+    # Explicit ask/auto always engage the gate (a non-streaming one is rejected
+    # by the guard that reads this).
+    assert _permission_mode_confirm(req(permission_mode = "ask", stream = False)) is True
+    assert _permission_mode_confirm(req(permission_mode = "auto", stream = False)) is True
+    # off/full never prompt.
+    assert _permission_mode_confirm(req(permission_mode = "off")) is False
+    assert _permission_mode_confirm(req(permission_mode = "full")) is False
+    # An unset mode defaults to ask, but only realizably on a streaming request;
+    # a non-streaming unset request keeps the legacy run-without-gate behavior.
+    assert _permission_mode_confirm(req(stream = True)) is True
+    assert _permission_mode_confirm(req(stream = False)) is False
