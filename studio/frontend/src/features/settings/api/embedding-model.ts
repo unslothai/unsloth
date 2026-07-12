@@ -23,6 +23,10 @@ type ApiEmbeddingModelSettings = {
  * (wrong type, gated repo, or offline). Retry with force to save anyway. */
 export class EmbeddingModelVerificationError extends Error {}
 
+/** 403 from the backend: the repo is flagged unsafe by Hugging Face's security scan.
+ * A hard block; force cannot bypass it, so it must not enter the "save anyway" flow. */
+export class EmbeddingModelBlockedError extends Error {}
+
 function fromApi(settings: ApiEmbeddingModelSettings): EmbeddingModelSettings {
   return {
     embeddingModel: settings.embedding_model,
@@ -56,6 +60,11 @@ export async function updateEmbeddingModelSettings(
       force: options?.force ?? false,
     }),
   });
+  if (res.status === 403) {
+    throw new EmbeddingModelBlockedError(
+      await readFastApiError(res, "This model is blocked by a security scan"),
+    );
+  }
   if (res.status === 409) {
     throw new EmbeddingModelVerificationError(
       await readFastApiError(res, "Could not verify the embedding model"),

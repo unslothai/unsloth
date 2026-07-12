@@ -27,6 +27,7 @@ from ..utils.attention_dispatch import (
     run_attention,
     SDPA,
     select_attention_backend,
+    resolve_prefix_seg_info,
 )
 from .llama import (
     LlamaRotaryEmbedding,
@@ -124,6 +125,9 @@ def MistralAttention_fast_forward(
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
+    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse
+    # (KV cache / padding mask) raises. None => byte-identical default.
+    _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
         q_len = q_len,
@@ -134,6 +138,7 @@ def MistralAttention_fast_forward(
         seq_info = seq_info,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
+        prefix_seg_info = _pg_seg,
     )
 
     A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
@@ -161,7 +166,13 @@ def MistralForCausalLM_fast_forward(
     *args,
     **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
-    if causal_mask is None and past_key_values is None:
+    # PrefixGrouper brings its own mask: a synthesized causal attention_mask would trip
+    # resolve_prefix_seg_info on the no-xFormers path and force a fallback.
+    if (
+        causal_mask is None
+        and past_key_values is None
+        and kwargs.get("prefix_seg_info", None) is None
+    ):
         bsz, q_len = input_ids.shape
         sliding_window = getattr(self.config, "sliding_window", None)
 

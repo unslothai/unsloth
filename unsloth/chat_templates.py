@@ -2103,8 +2103,9 @@ def get_chat_template(
 
 def remove_special_tokens(tokenizer, prompt):
     # Removes double BOS token
-    if prompt.startswith(tokenizer.bos_token):
-        prompt = prompt[len(tokenizer.bos_token):]
+    bos_token = getattr(tokenizer, "bos_token", None)
+    if bos_token is not None and prompt.startswith(bos_token):
+        prompt = prompt[len(bos_token):]
     return prompt
 
 
@@ -2185,7 +2186,16 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
 
         texts = []
         for row_idx in range(n_rows):
-            row_values = {column: examples[column][row_idx] for column in columns}
+            # Coerce missing (None) columns to "" so they do not render as the
+            # literal string "None" in the emitted text. In a [[...]] block only
+            # the first column gates the block, so a later column can still be
+            # None here; required columns can be None too. Coercing at the source
+            # covers both; since None is now "", the gate below only needs to
+            # test for "" (an empty first column still drops the block).
+            row_values = {
+                column: ("" if (value := examples[column][row_idx]) is None else value)
+                for column in columns
+            }
             formatter_values = {}
 
             for formatter_template in formatter_templates:
@@ -2196,7 +2206,7 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
                     continue
 
                 _, optional_name, prompt, needed_columns = formatter_template
-                if row_values[needed_columns[0]] not in (None, ""):
+                if row_values[needed_columns[0]] != "":
                     prompt_values = {column: row_values[column] for column in needed_columns}
                     formatter_values[optional_name] = prompt.format(**prompt_values)
                 else:
