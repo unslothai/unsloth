@@ -431,7 +431,7 @@ function FontSelect({
           <button
             type="button"
             onClick={requestFolder}
-            className="flex flex-1 cursor-pointer items-center gap-2 whitespace-nowrap rounded-[11px] px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
+            className="flex cursor-pointer items-center gap-2 whitespace-nowrap rounded-[11px] px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <HugeiconsIcon
               icon={Folder01Icon}
