@@ -163,6 +163,12 @@ def _clear_pending():
         ("p=passXd; cat /etc/${p/X/w}", True),  # pattern replacement builds path
         ("p=passXd; cat /etc/${p//X/w}", True),  # global pattern replacement
         ("p=hello; cat notes/${p/l/L}", False),  # benign replacement stays safe
+        ("p=PASSWD; cat /etc/${p,,}", True),  # case-lower expansion builds path
+        ("p=hello; cat notes/${p,,}", False),  # benign case expansion stays safe
+        ("f=-delete; find . $f", True),  # find action hidden behind an assignment
+        ("g=e??; cat /$g/passwd", True),  # glob assembled through an assignment
+        ("g=abc; cat /$g/readme", False),  # benign assigned path stays safe
+        ("cat /etc/pass[[:lower:]]d", True),  # POSIX class glob builds /etc/passwd
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -299,6 +305,22 @@ def test_terminal_classifier(command, unsafe):
         ),  # in-sandbox pathlib read stays safe
         ("import glob\nopen(glob.glob('/e??/passwd')[0]).read()", True),  # python glob to secret
         ("import glob\nfor f in glob.glob('*.py'):\n    print(f)", False),  # benign glob stays safe
+        (
+            "import glob\nbase = '/e??'\nopen(glob.glob(base + '/passwd')[0]).read()",
+            True,
+        ),  # glob pattern folded from a literal variable
+        ("from os.path import join\nopen(join('/etc', 'passwd')).read()", True),  # bare join alias
+        ("from os.path import join\nopen(join('data', 'x.txt')).read()", False),  # benign bare join
+        ("from numpy import save\nsave('out.npy', arr)", True),  # writer imported as a bare name
+        ("from numpy import mean\nmean(arr)", False),  # benign bare import stays safe
+        (
+            "from pathlib import Path as P\n(P('/etc') / 'passwd').read_text()",
+            True,
+        ),  # aliased pathlib constructor
+        (
+            "from pathlib import Path as P\n(P('data') / 'x').read_text()",
+            False,
+        ),  # aliased ctor with a relative path stays safe
     ],
 )
 def test_python_classifier(code, unsafe):

@@ -622,6 +622,9 @@ _SHELL_VAR_RE = re.compile(r"\$\{(\w+)(?::[^{}]*)?\}|\$(\w+)")
 # Pattern replacement (${p/X/w}, global ${p//X/w}) transforms the value before
 # the path is used; apply it so p=passXd; cat /etc/${p/X/w} is scanned.
 _SHELL_PARAM_REPL_RE = re.compile(r"\$\{(\w+)/(/)?([^/{}]*)/([^{}]*)\}")
+# Case modification (${p^^} upper, ${p,,} lower, ${p^}/${p,} first char) also
+# transforms the value, so p=PASSWD; cat /etc/${p,,} builds /etc/passwd.
+_SHELL_PARAM_CASE_RE = re.compile(r"\$\{(\w+)(\^\^|,,|\^|,)\}")
 _SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]+)")
 # Bash ANSI-C quoting ($'\x77' -> 'w') is expanded after this classifier, so
 # decode $'...' bodies before the sensitive-path scan.
@@ -631,6 +634,9 @@ _ANSI_C_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
 _SHELL_QUOTE_RE = re.compile(r"['\"]")
 # A glob bracket class [s] -> s, so .s[s]h de-obfuscates to .ssh for the scan.
 _GLOB_BRACKET_RE = re.compile(r"\[([^!\]][^\]]*)\]")
+# Bash POSIX character classes ([[:lower:]]) each match one char; Python fnmatch
+# does not understand them, so normalize to `?` before the glob check.
+_POSIX_CLASS_RE = re.compile(r"\[\[:\w+:\]\]")
 # Canonical sensitive files a ? / * / [..] glob could expand to; fnmatch tests
 # whether the pattern reaches one (cat /e??/passwd -> /etc/passwd).
 _SENSITIVE_GLOB_TARGETS = (
@@ -711,6 +717,9 @@ def _glob_token_sensitive(token: str) -> bool:
     or a file under a secret/credential directory. Shared by the terminal scan
     and the Python glob check (glob.glob('/e??/passwd'))."""
     token = _REDIR_PREFIX_RE.sub("", _SHELL_QUOTE_RE.sub("", token))
+    # A POSIX class ([[:lower:]]) matches one char, like `?`, but fnmatch treats
+    # it as a literal set; normalize so cat /etc/pass[[:lower:]]d resolves.
+    token = _POSIX_CLASS_RE.sub("?", token)
     if not any(c in token for c in "?*["):
         return False
     if any(fnmatch.fnmatch(target, token) for target in _SENSITIVE_GLOB_TARGETS):
@@ -749,7 +758,21 @@ def _expand_shell_assignments(command: str) -> str:
             return m.group(0)
         return env[var].replace(pat, rep) if is_global else env[var].replace(pat, rep, 1)
 
+    def repl_case(m):
+        var, op = m.group(1), m.group(2)
+        if var not in env:
+            return m.group(0)
+        v = env[var]
+        if op == ",,":
+            return v.lower()
+        if op == "^^":
+            return v.upper()
+        if op == ",":
+            return v[:1].lower() + v[1:]
+        return v[:1].upper() + v[1:]
+
     command = _SHELL_PARAM_REPL_RE.sub(repl_pattern, command)
+    command = _SHELL_PARAM_CASE_RE.sub(repl_case, command)
     return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command)
 
 
@@ -875,123 +898,138 @@ def _attr_open_writes(node) -> bool:
     return False  # no args: read
 
 
-def _folded_path(node, literals = None) -> "str | None":
+_PATH_CTORS = ("Path", "PurePath", "PurePosixPath")
+
+
+def _folded_path(node, literals = None, ctors = None, join_names = None) -> "str | None":
     """Best-effort value of a path built from string literals, so a sensitive
     path assembled from pieces (os.path.join('/etc', 'passwd'), '/etc'+'/passwd',
     Path('/etc') / 'passwd', f'/proc/{pid}/environ', f'/etc/{name}') is still
     visible to the scan. A dynamic piece becomes NUL, a non-slash placeholder,
     so a dynamic segment under a sensitive dir (/etc/NUL) is still detectable.
-    ``literals`` maps names bound to string literals (base = '/etc') so a path
-    split through a variable (base + '/passwd') resolves too."""
+    ``literals`` maps names bound to string literals (base = '/etc'); ``ctors``
+    is the set of pathlib constructor names (incl. import aliases); ``join_names``
+    are bare names bound to os.path.join (from os.path import join)."""
     literals = literals or {}
-    if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
-        # bytes paths are valid too (open(b'/etc/passwd')); decode for the scan.
-        return (
-            node.value.decode("latin-1", "ignore") if isinstance(node.value, bytes) else node.value
-        )
-    if isinstance(node, ast.Name):
-        return literals.get(node.id)
-    if isinstance(node, ast.Attribute) and node.attr in ("parent", "parents"):
-        # A pathlib .parent/.parents walks above the current dir, escaping the
-        # per-session workdir without a literal '..'; mark it so a read folds
-        # to unsafe (\x02 is a non-slash escape sentinel).
-        return "\x02"
-    if (
-        isinstance(node, ast.Subscript)
-        and isinstance(node.value, ast.Attribute)
-        and (node.value.attr == "parents")
-    ):
-        return "\x02"  # Path(...).parents[1]
-    if isinstance(node, ast.JoinedStr):
-        return "".join(
-            v.value
-            if isinstance(v, ast.Constant) and isinstance(v.value, str)
-            else (_folded_path(v.value, literals) or "\x00")
-            if isinstance(v, ast.FormattedValue)
-            else "\x00"
-            for v in node.values
-        )
-    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Div)):
-        left = _folded_path(node.left, literals)
-        right = _folded_path(node.right, literals)
-        left = "\x00" if left is None else left
-        right = "\x00" if right is None else right
-        # Path('/etc') / 'passwd' joins with a separator; '+' concatenates.
-        return left + "/" + right if isinstance(node.op, ast.Div) else left + right
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
-        # Old-style formatting: '%s/%s' % ('/etc', 'passwd') -> /etc/passwd.
-        template = _folded_path(node.left, literals)
-        if template is not None and "%" in template:
-            rhs = node.right
-            if isinstance(rhs, ast.Tuple):
-                args = tuple((_folded_path(e, literals) or "\x00") for e in rhs.elts)
-            else:
-                single = _folded_path(rhs, literals)
-                args = (single if single is not None else "\x00",)
-            try:
-                return template % args
-            except (TypeError, ValueError, KeyError):
-                return None
-        return None
-    if isinstance(node, ast.Call):
-        func = node.func
-        ctors = ("Path", "PurePath", "PurePosixPath")
-        if isinstance(func, ast.Attribute) and func.attr == "joinpath":
-            # Path('/etc').joinpath('passwd') -> the receiver and args are all
-            # pieces joined with a separator.
-            base = _folded_path(func.value, literals)
-            parts = [base if base is not None else "\x00"]
-            parts += [(_folded_path(a, literals) or "\x00") for a in node.args]
-            return "/".join(parts)
-        if isinstance(func, ast.Attribute) and func.attr == "join":
-            # str.join has the separator as the receiver and the pieces in one
-            # iterable arg ("".join(['/etc', '/passwd']) -> /etc/passwd); tell it
-            # apart from os.path.join(*pieces), whose receiver is not a literal.
-            sep = _folded_path(func.value, literals)
-            if (
-                sep is not None
-                and len(node.args) == 1
-                and isinstance(node.args[0], (ast.List, ast.Tuple))
-            ):
-                pieces = [(_folded_path(e, literals) or "\x00") for e in node.args[0].elts]
-                return sep.join(pieces)
-            parts = [(_folded_path(a, literals) or "\x00") for a in node.args]
-            return "/".join(parts)
-        # A bare/qualified pathlib constructor (Path(...) or pathlib.Path(...)).
-        if (isinstance(func, ast.Attribute) and func.attr in ctors) or (
-            isinstance(func, ast.Name) and func.id in ctors
+    ctors = ctors or _PATH_CTORS
+    join_names = join_names or frozenset()
+
+    def fold(node) -> "str | None":
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+            # bytes paths are valid too (open(b'/etc/passwd')); decode for scan.
+            return (
+                node.value.decode("latin-1", "ignore")
+                if isinstance(node.value, bytes)
+                else node.value
+            )
+        if isinstance(node, ast.Name):
+            return literals.get(node.id)
+        if isinstance(node, ast.Attribute) and node.attr in ("parent", "parents"):
+            # A pathlib .parent/.parents walks above the current dir, escaping
+            # the per-session workdir without a literal '..'; mark it so a read
+            # folds to unsafe (\x02 is a non-slash escape sentinel).
+            return "\x02"
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and (node.value.attr == "parents")
         ):
-            parts = [(_folded_path(a, literals) or "\x00") for a in node.args]
-            return "/".join(parts)
-        # '/etc/{}'.format('passwd') -> /etc/passwd (literal template + args); a
-        # dynamic arg becomes NUL so /etc/{}.format(name) stays detectable.
-        if isinstance(func, ast.Attribute) and func.attr == "format":
-            template = _folded_path(func.value, literals)
-            if template is not None and "{" in template:
-                parts = []
-                for a in node.args:
-                    if isinstance(a, ast.Constant):
-                        parts.append(str(a.value))
-                    else:
-                        folded = _folded_path(a, literals)
-                        parts.append("\x00" if folded is None else folded)
+            return "\x02"  # Path(...).parents[1]
+        if isinstance(node, ast.JoinedStr):
+            return "".join(
+                v.value
+                if isinstance(v, ast.Constant) and isinstance(v.value, str)
+                else (fold(v.value) or "\x00")
+                if isinstance(v, ast.FormattedValue)
+                else "\x00"
+                for v in node.values
+            )
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Div)):
+            left = fold(node.left)
+            right = fold(node.right)
+            left = "\x00" if left is None else left
+            right = "\x00" if right is None else right
+            # Path('/etc') / 'passwd' joins with a separator; '+' concatenates.
+            return left + "/" + right if isinstance(node.op, ast.Div) else left + right
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+            # Old-style formatting: '%s/%s' % ('/etc', 'passwd') -> /etc/passwd.
+            template = fold(node.left)
+            if template is not None and "%" in template:
+                rhs = node.right
+                if isinstance(rhs, ast.Tuple):
+                    args = tuple((fold(e) or "\x00") for e in rhs.elts)
+                else:
+                    single = fold(rhs)
+                    args = (single if single is not None else "\x00",)
                 try:
-                    return template.format(*parts)
-                except (IndexError, KeyError, ValueError):
+                    return template % args
+                except (TypeError, ValueError, KeyError):
                     return None
-    return None
+            return None
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "joinpath":
+                # Path('/etc').joinpath('passwd') -> receiver and args are pieces.
+                base = fold(func.value)
+                parts = [base if base is not None else "\x00"]
+                parts += [(fold(a) or "\x00") for a in node.args]
+                return "/".join(parts)
+            if isinstance(func, ast.Attribute) and func.attr == "join":
+                # str.join has the separator as the receiver and the pieces in
+                # one iterable arg ("".join(['/etc', '/passwd']) -> /etc/passwd);
+                # tell it apart from os.path.join(*pieces).
+                sep = fold(func.value)
+                if (
+                    sep is not None
+                    and len(node.args) == 1
+                    and isinstance(node.args[0], (ast.List, ast.Tuple))
+                ):
+                    pieces = [(fold(e) or "\x00") for e in node.args[0].elts]
+                    return sep.join(pieces)
+                parts = [(fold(a) or "\x00") for a in node.args]
+                return "/".join(parts)
+            # A bare os.path.join alias (from os.path import join): join(*pieces).
+            if isinstance(func, ast.Name) and func.id in join_names:
+                parts = [(fold(a) or "\x00") for a in node.args]
+                return "/".join(parts)
+            # A bare/qualified/aliased pathlib constructor (Path(...), P(...)).
+            if (isinstance(func, ast.Attribute) and func.attr in ctors) or (
+                isinstance(func, ast.Name) and func.id in ctors
+            ):
+                parts = [(fold(a) or "\x00") for a in node.args]
+                return "/".join(parts)
+            # '/etc/{}'.format('passwd') -> /etc/passwd (literal template + args).
+            if isinstance(func, ast.Attribute) and func.attr == "format":
+                template = fold(func.value)
+                if template is not None and "{" in template:
+                    parts = []
+                    for a in node.args:
+                        if isinstance(a, ast.Constant):
+                            parts.append(str(a.value))
+                        else:
+                            folded = fold(a)
+                            parts.append("\x00" if folded is None else folded)
+                    try:
+                        return template.format(*parts)
+                    except (IndexError, KeyError, ValueError):
+                        return None
+        return None
+
+    return fold(node)
 
 
 def _folded_is_sensitive(folded) -> bool:
     """A folded path is sensitive if it names a credential file, has a dynamic
-    segment (NUL) directly under a sensitive directory (/etc/NUL), or walks out
-    of the sandbox via a pathlib .parent/.parents escape (\\x02)."""
+    segment (NUL) directly under a sensitive directory (/etc/NUL), walks out of
+    the sandbox via a pathlib .parent/.parents escape (\\x02), or is a glob that
+    could resolve to a credential path (glob.glob('/e??/passwd'))."""
     if not folded:
         return False
     return (
         "\x02" in folded
         or _references_sensitive_path(folded)
         or ("\x00" in folded and bool(_SENSITIVE_DIR_RE.search(folded)))
+        or _glob_token_sensitive(folded)
     )
 
 
@@ -1020,6 +1058,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     if (
         _glob_hits_sensitive(command)
         or _glob_hits_sensitive(_expand_param_defaults(command))
+        or _glob_hits_sensitive(_expand_shell_assignments(_expand_param_defaults(command)))
         or any(_references_sensitive_path(c) for c in candidates)
     ):
         return True
@@ -1049,8 +1088,8 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     # trailing -delete/-exec could slip past. When find/fd is used anywhere,
     # scan every token for its mutating actions (find -exec/-delete/..., fd
     # -x/--exec-batch).
-    if any(os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in tokens):
-        if any(t.split("=", 1)[0] in _AUTO_UNSAFE_FIND_LIKE_FLAGS for t in tokens):
+    if any(os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in scan_tokens):
+        if any(t.split("=", 1)[0] in _AUTO_UNSAFE_FIND_LIKE_FLAGS for t in scan_tokens):
             return True
     # A recursive search rooted outside the sandbox reads host files (grep -R
     # TOKEN /home, rg TOKEN /, grep -R TOKEN ~root, p=/; grep -R TOKEN $p); ask.
@@ -1149,17 +1188,35 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Names bound to a string literal (base = '/etc'), so a sensitive path
     # split through a variable (base + '/passwd') folds and is caught.
     literal_str_vars: "dict[str, str]" = {}
+    # Pathlib constructor names incl. import aliases (from pathlib import Path as
+    # P), os.path.join names bound directly (from os.path import join as j), and
+    # writer functions imported as bare names (from numpy import save).
+    path_ctor_aliases = set(_PATH_CTORS)
+    pathjoin_aliases: "set[str]" = set()
+    writer_aliases: "set[str]" = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "builtins":
                     builtins_aliases.add(alias.asname or "builtins")
-        elif isinstance(node, ast.ImportFrom) and node.module == "builtins":
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "builtins":
+                for alias in node.names:
+                    if alias.name == "open":
+                        open_aliases.add(alias.asname or "open")
+                    elif alias.name in code_exec_aliases:
+                        code_exec_aliases.add(alias.asname or alias.name)
+            if node.module == "pathlib":
+                for alias in node.names:
+                    if alias.name in _PATH_CTORS:
+                        path_ctor_aliases.add(alias.asname or alias.name)
+            if node.module in ("os.path", "posixpath", "ntpath"):
+                for alias in node.names:
+                    if alias.name == "join":
+                        pathjoin_aliases.add(alias.asname or "join")
             for alias in node.names:
-                if alias.name == "open":
-                    open_aliases.add(alias.asname or "open")
-                elif alias.name in code_exec_aliases:
-                    code_exec_aliases.add(alias.asname or alias.name)
+                if alias.name in _AUTO_UNSAFE_PY_WRITE_METHODS:
+                    writer_aliases.add(alias.asname or alias.name)
         elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
             value = node.value
             # AnnAssign (f: object = open) has a single target, no destructuring.
@@ -1199,8 +1256,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             elif isinstance(value, (ast.Call, ast.BinOp, ast.Name, ast.JoinedStr)):
                 # p = Path('/etc'); q = p; r = os.path.join('/etc','x'): record a
                 # fully-literal folded path so a later reuse (p / 'passwd') folds.
-                folded = _folded_path(value, literal_str_vars)
-                if folded is not None and "\x00" not in folded:
+                folded = _folded_path(value, literal_str_vars, path_ctor_aliases, pathjoin_aliases)
+                if folded is not None and "\x00" not in folded and "\x02" not in folded:
                     for t in targets:
                         literal_str_vars[t] = folded
             elif isinstance(value, (ast.Tuple, ast.List)):
@@ -1265,11 +1322,15 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # a pathlib / chain, an f-string (f'/proc/{pid}/environ'), a
                 # dynamic segment under a sensitive dir (f'/etc/{name}'), or one
                 # split through a literal variable (base = '/etc'; base+'/passwd').
-                if _folded_is_sensitive(_folded_path(node, literal_str_vars)):
+                if _folded_is_sensitive(
+                    _folded_path(node, literal_str_vars, path_ctor_aliases, pathjoin_aliases)
+                ):
                     return True
             elif isinstance(node, ast.Call):
                 # A sensitive path composed via os.path.join('/etc', name).
-                if _folded_is_sensitive(_folded_path(node, literal_str_vars)):
+                if _folded_is_sensitive(
+                    _folded_path(node, literal_str_vars, path_ctor_aliases, pathjoin_aliases)
+                ):
                     return True
                 func = node.func
                 if isinstance(func, (ast.Call, ast.Subscript)):
@@ -1278,6 +1339,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     if func.id in dynamic_aliases:
                         return True  # call through a getattr alias is dynamic
                     if func.id in open_aliases and _builtin_open_writes(node):
+                        return True
+                    # A writer imported as a bare name (from numpy import save).
+                    if func.id in writer_aliases:
                         return True
                 elif isinstance(func, ast.Attribute):
                     # Writer methods persist to disk without open() (np.save,
