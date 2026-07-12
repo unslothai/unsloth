@@ -127,27 +127,41 @@ export function TransformersUpgradeDialog() {
         <AlertDialogFooter>
           <AlertDialogCancel disabled={installing}>Cancel</AlertDialogCancel>
           {installable ? (
-            <AlertDialogAction
-              disabled={installing}
-              className={cn(installing && "pointer-events-none")}
-              onClick={(event) => {
-                // Keep the dialog open while the install runs; the store closes
-                // it (and resumes the paused load) on success.
-                event.preventDefault();
-                void install();
-              }}
-            >
-              {installing ? (
-                <>
-                  <Spinner className="size-4" />
-                  Installing...
-                </>
-              ) : phase === "error" ? (
-                "Retry install"
-              ) : (
-                `Install transformers ${version}`
-              )}
-            </AlertDialogAction>
+            <>
+              {phase === "error" && trustRemoteCodeFallback ? (
+                // Install failed but the model ships its own modeling code, so
+                // offer the trust_remote_code consent gate instead of forcing a
+                // retry: resolving true resumes the caller, whose security gate
+                // then reviews the custom code as a last resort.
+                <AlertDialogAction
+                  className="bg-transparent text-foreground hover:bg-accent"
+                  onClick={() => resolve(true)}
+                >
+                  Continue with custom code
+                </AlertDialogAction>
+              ) : null}
+              <AlertDialogAction
+                disabled={installing}
+                className={cn(installing && "pointer-events-none")}
+                onClick={(event) => {
+                  // Keep the dialog open while the install runs; the store closes
+                  // it (and resumes the paused load) on success.
+                  event.preventDefault();
+                  void install();
+                }}
+              >
+                {installing ? (
+                  <>
+                    <Spinner className="size-4" />
+                    Installing...
+                  </>
+                ) : phase === "error" ? (
+                  "Retry install"
+                ) : (
+                  `Install transformers ${version}`
+                )}
+              </AlertDialogAction>
+            </>
           ) : trustRemoteCodeFallback ? (
             // No installable release, but the model declares custom (auto_map)
             // code: let the load continue into the trust_remote_code consent
