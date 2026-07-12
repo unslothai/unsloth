@@ -317,7 +317,9 @@ _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
         "ls",
         "dir",
         "pwd",
-        "cd",
+        # cd is intentionally absent: `cd /; cat etc/passwd` moves the shell
+        # out of the session workdir so a later relative read escapes it, which
+        # the literal path scan cannot see, so cd always asks.
         "cat",
         "head",
         "tail",
@@ -402,6 +404,9 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
     "xxd": frozenset({"-r"}),
     # rg runs an arbitrary program per file with --pre/--hostname-bin.
     "rg": frozenset({"--pre", "--hostname-bin"}),
+    # env -C/--chdir escapes the session workdir; -S/--split-string can build
+    # a fresh command line. (env is a wrapper, so its flags precede the target.)
+    "env": frozenset({"-C", "--chdir", "-S", "--split-string"}),
     "find": frozenset(
         {
             "-exec",
@@ -549,12 +554,34 @@ _SENSITIVE_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 _PARENT_TRAVERSAL_RE = re.compile(r"(?:^|[\s/\\'\"=:])\.\.(?:[/\\]|$|[\s'\"])")
+# Collapse /./ and repeated slashes so /etc/./passwd and /etc//passwd, which
+# the OS resolves to /etc/passwd, still match the sensitive-path regex.
+_REDUNDANT_SLASH_RE = re.compile(r"/\.?(?=/)")
+_SHELL_VAR_RE = re.compile(r"\$\{(\w+)\}|\$(\w+)")
+_SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]+)")
 
 
 def _references_sensitive_path(text: str) -> bool:
     """True if a command or string literal reads a credential path or escapes
     the sandbox workdir via parent traversal."""
-    return bool(_PARENT_TRAVERSAL_RE.search(text) or _SENSITIVE_PATH_RE.search(text))
+    norm = _REDUNDANT_SLASH_RE.sub("", text)
+    return bool(
+        _PARENT_TRAVERSAL_RE.search(text)
+        or _SENSITIVE_PATH_RE.search(text)
+        or _SENSITIVE_PATH_RE.search(norm)
+    )
+
+
+def _expand_shell_assignments(command: str) -> str:
+    """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path
+    split across an assignment and an argument (p=/etc; cat $p/passwd) is still
+    visible to the sensitive-path scan. Fail-open: only adds detections."""
+    env = dict(_SHELL_ASSIGN_RE.findall(command))
+    if not env:
+        return command
+    return _SHELL_VAR_RE.sub(
+        lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command
+    )
 
 
 def _mode_arg_writes(mode_node) -> bool:
@@ -600,6 +627,29 @@ def _attr_open_writes(node) -> bool:
     return False  # no args: read
 
 
+def _folded_path(node) -> "str | None":
+    """Best-effort constant value of a path built from string literals, so a
+    sensitive path assembled from pieces (os.path.join('/etc', 'passwd'),
+    '/etc' + '/passwd') is still visible to the sensitive-path scan."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _folded_path(node.left), _folded_path(node.right)
+        return left + right if left is not None and right is not None else None
+    if isinstance(node, ast.Call):
+        parts = [_folded_path(a) for a in node.args]
+        if any(p is None for p in parts):
+            return None
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "join":
+            return "/".join(parts)  # os.path.join / posixpath.join
+        if isinstance(func, ast.Name) and func.id in (
+            "Path", "PurePath", "PurePosixPath",
+        ):
+            return "/".join(parts)
+    return None
+
+
 def _terminal_is_potentially_unsafe(command: str) -> bool:
     """Classify a terminal command for auto mode (fail closed)."""
     if not command or not command.strip():
@@ -609,8 +659,11 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     if ">" in command or "`" in command or "$(" in command or "<(" in command:
         return True
     # Reads that escape the sandbox workdir (../) or hit credential paths are
-    # not "safe" reads; ask before running them.
-    if _references_sensitive_path(command):
+    # not "safe" reads; ask before running them. Expand simple NAME=value
+    # prefixes first so `p=/etc; cat $p/passwd` is caught too.
+    if _references_sensitive_path(command) or _references_sensitive_path(
+        _expand_shell_assignments(command)
+    ):
         return True
     # Newlines (and CR) separate commands in a shell but read as plain
     # whitespace to shlex, which would demote "ls\nrm x" to argument position.
@@ -677,6 +730,9 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
             base = stem
         if base in _AUTO_SAFE_WRAPPERS:
             prefix_pending = True
+            # Track the wrapper so its own flags (env --chdir) are checked;
+            # the real command overwrites this when it is reached.
+            current_command = base
             continue
         if base not in _AUTO_SAFE_TERMINAL_COMMANDS:
             return True
@@ -698,17 +754,37 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         tree = ast.parse(code)
     except SyntaxError:
         return False  # runs into a normal traceback; nothing to guard
-    # Names bound to the builtin open (f = open; from builtins import open as f)
-    # so an aliased writer call is still checked below.
+    # Names bound to the builtin open (f = open; from builtins import open as f;
+    # f, _ = (open, print)) so an aliased writer call is still checked below.
+    # builtins_aliases tracks `import builtins [as b]` for builtins.exec/eval.
     open_aliases = {"open"}
+    builtins_aliases = {"builtins"}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "builtins":
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "builtins":
+                    builtins_aliases.add(alias.asname or "builtins")
+        elif isinstance(node, ast.ImportFrom) and node.module == "builtins":
             for alias in node.names:
                 if alias.name == "open":
                     open_aliases.add(alias.asname or "open")
-        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name):
-            if node.value.id in open_aliases:
+        elif isinstance(node, ast.Assign):
+            value = node.value
+            if isinstance(value, ast.Name) and value.id in open_aliases:
                 open_aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            elif isinstance(value, (ast.Tuple, ast.List)):
+                # Destructuring: f, _ = (open, print) -> track f.
+                for target in node.targets:
+                    if isinstance(target, (ast.Tuple, ast.List)) and len(
+                        target.elts
+                    ) == len(value.elts):
+                        for tgt_el, val_el in zip(target.elts, value.elts):
+                            if (
+                                isinstance(val_el, ast.Name)
+                                and val_el.id in open_aliases
+                                and isinstance(tgt_el, ast.Name)
+                            ):
+                                open_aliases.add(tgt_el.id)
     try:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -732,6 +808,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # without an immediate call (rm = os.remove; rm("x")).
                 if node.attr in _AUTO_UNSAFE_PY_ATTRS:
                     return True
+                # builtins.exec / builtins.eval are dynamic code execution.
+                if (
+                    node.attr in ("exec", "eval")
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id in builtins_aliases
+                ):
+                    return True
             elif isinstance(node, ast.Name):
                 if node.id in {"exec", "eval", "__import__", "breakpoint"}:
                     return True
@@ -739,7 +822,16 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # Credential paths / parent traversal in a string literal.
                 if isinstance(node.value, str) and _references_sensitive_path(node.value):
                     return True
+            elif isinstance(node, ast.BinOp):
+                # A sensitive path concatenated from literals ('/etc'+'/passwd').
+                folded = _folded_path(node)
+                if folded and _references_sensitive_path(folded):
+                    return True
             elif isinstance(node, ast.Call):
+                # A sensitive path composed via os.path.join('/etc', 'passwd').
+                folded = _folded_path(node)
+                if folded and _references_sensitive_path(folded):
+                    return True
                 func = node.func
                 if isinstance(func, (ast.Call, ast.Subscript)):
                     return True  # calling a call/subscript result is dynamic
@@ -755,6 +847,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     ):
                         return True
                     if func.attr == "open" and _attr_open_writes(node):
+                        return True
+                    # ZipFile/TarFile take the mode as the 2nd arg (like builtin
+                    # open), so ZipFile(name, "w") writes but ZipFile(name) reads.
+                    if func.attr in ("ZipFile", "TarFile") and _builtin_open_writes(
+                        node
+                    ):
                         return True
     except Exception:
         return True  # unexpected AST shape: fail closed

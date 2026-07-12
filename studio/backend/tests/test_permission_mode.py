@@ -94,6 +94,16 @@ def _clear_pending():
         ("FOO=1 grep -r x .", False),  # benign env prefix stays safe
         ("ps auxe", True),  # ps can dump process env; not on the safe list
         ("ps aux", True),
+        ("cd /; cat etc/passwd", True),  # cd escapes the workdir
+        ("cd subdir; ls", True),  # cd is no longer auto-approved
+        ("env --chdir=/ cat etc/passwd", True),  # env -C escapes the workdir
+        ("env -S 'sh -c id' true", True),  # env --split-string builds a command
+        ("env FOO=1 grep -r x .", False),  # benign env wrapper stays safe
+        ("cat /etc//passwd", True),  # redundant slashes resolve to /etc/passwd
+        ("cat /etc/./passwd", True),
+        ("p=/etc; cat $p/passwd", True),  # path split across an assignment
+        ("d=/etc; cat ${d}/shadow", True),
+        ("FOO=1 echo $FOO", False),  # benign variable expansion stays safe
         ("cat logs/app.log", False),  # ordinary relative read
     ],
 )
@@ -141,6 +151,15 @@ def test_terminal_classifier(command, unsafe):
             "import zipfile\nprint(zipfile.ZipFile('a').open('n.txt', 'r'))",
             False,
         ),  # explicit read mode
+        ("f, _ = (open, print)\nf('out', 'w')", True),  # destructured open alias
+        ("import builtins\nbuiltins.exec('x=1')", True),  # attribute exec
+        ("import builtins as b\nb.eval('1')", True),
+        ("import re\nre.compile('x')", False),  # re.compile is not eval/exec
+        ("import os\nopen(os.path.join('/etc', 'passwd')).read()", True),  # composed path
+        ("open('/etc' + '/passwd').read()", True),  # concatenated path
+        ("import zipfile\nzipfile.ZipFile('o.zip', 'w').writestr('x', 'y')", True),  # zip write
+        ("import zipfile\nzipfile.ZipFile('o.zip', mode='a')", True),
+        ("import zipfile\nzipfile.ZipFile('a.zip').read('n')", False),  # zip read stays safe
     ],
 )
 def test_python_classifier(code, unsafe):
