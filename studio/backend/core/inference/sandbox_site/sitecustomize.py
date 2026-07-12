@@ -10,9 +10,12 @@ Studio sandbox. This module sits on the sandbox subprocess PYTHONPATH (see
 interpreter startup in every sandboxed ``python`` tool run AND in any Python
 the ``terminal`` tool launches (the env is inherited).
 
-It remaps those prefixes onto the working directory in ``open()`` and
-``os.makedirs()`` only: the two calls model-written file code funnels through
-(``pathlib`` I/O also lands in ``open``). A one-line notice is printed to
+It remaps those prefixes onto the working directory in ``open()`` /
+``io.open()`` and ``os.makedirs()`` only: the calls model-written file code
+funnels through. ``io.open`` is patched alongside ``builtins.open`` because
+``pathlib.Path.open`` (and therefore ``read_text`` / ``write_text`` /
+``read_bytes`` / ``write_bytes``) calls ``io.open`` directly, bypassing the
+builtins patch. A one-line notice is printed to
 stderr on the first remap so the model learns the real location. Everything
 else (C-level opens, os.listdir, shutil metadata calls) is intentionally NOT
 patched; those failures are handled by the model-visible retry hint appended
@@ -23,6 +26,7 @@ Identical with and without output streaming because the child env is.
 """
 
 import builtins
+import io
 import os
 import sys
 
@@ -56,15 +60,22 @@ def _remap(path):
 
 def _install():
     original_open = builtins.open
+    original_io_open = io.open
     original_makedirs = os.makedirs
 
     def _open(file, *args, **kwargs):
         return original_open(_remap(file), *args, **kwargs)
 
+    def _io_open(file, *args, **kwargs):
+        return original_io_open(_remap(file), *args, **kwargs)
+
     def _makedirs(name, *args, **kwargs):
         return original_makedirs(_remap(name), *args, **kwargs)
 
     builtins.open = _open
+    # pathlib.Path.open / write_text / read_text call io.open directly, not
+    # the builtins binding, so the remap must be installed on both.
+    io.open = _io_open
     os.makedirs = _makedirs
 
 

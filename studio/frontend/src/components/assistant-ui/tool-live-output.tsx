@@ -4,6 +4,7 @@
 "use client";
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { toolOutputKey, useToolPaneScope } from "@/features/chat";
 import { useEffect, useMemo, useRef } from "react";
 import { tailText } from "./tool-result-output";
 
@@ -17,8 +18,9 @@ import { tailText } from "./tool-result-output";
  * instead, so this is only mounted while the tool is running.
  */
 export function ToolLiveOutput({ toolCallId }: { toolCallId: string }) {
+  const paneScope = useToolPaneScope();
   const output = useChatRuntimeStore(
-    (s) => s.toolLiveOutput[toolCallId] ?? "",
+    (s) => s.toolLiveOutput[toolOutputKey(paneScope, toolCallId)] ?? "",
   );
   const scrollRef = useRef<HTMLPreElement>(null);
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from typing import Any, Callable, Generator
 
 from loggers import get_logger
@@ -124,21 +125,37 @@ def stream_tool_execution(
         if item is done_sentinel:
             break
 
-        idle_polls = 0
         chunk = item + _drain_pending()
-        if not stream_capped:
-            if streamed_chars + len(chunk) > TOOL_OUTPUT_STREAM_MAX_CHARS:
-                chunk = chunk[: max(0, TOOL_OUTPUT_STREAM_MAX_CHARS - streamed_chars)]
-                chunk += _STREAM_CAPPED_NOTICE
-                stream_capped = True
-            streamed_chars += len(chunk)
-            if chunk:
-                yield {
-                    "type": "tool_output",
-                    "tool_name": tool_name,
-                    "tool_call_id": tool_call_id,
-                    "text": chunk,
-                }
+        if stream_capped:
+            # Past the cap chunks are discarded, but the keepalive cadence
+            # must survive: consuming them without pacing would neither yield
+            # anything nor let an idle poll fire (a chatty tool keeps the
+            # queue non-empty), so the SSE stream would go silent past proxy
+            # idle timeouts. Sleep one poll interval per drain (time.sleep,
+            # not time.monotonic -- tests patch the clock) and count it as an
+            # idle poll so heartbeats keep flowing at the configured cadence.
+            if finished:
+                break
+            time.sleep(poll_interval_s)
+            idle_polls += 1
+            if idle_polls >= idle_polls_per_heartbeat:
+                idle_polls = 0
+                yield {"type": "heartbeat"}
+            continue
+
+        idle_polls = 0
+        if streamed_chars + len(chunk) > TOOL_OUTPUT_STREAM_MAX_CHARS:
+            chunk = chunk[: max(0, TOOL_OUTPUT_STREAM_MAX_CHARS - streamed_chars)]
+            chunk += _STREAM_CAPPED_NOTICE
+            stream_capped = True
+        streamed_chars += len(chunk)
+        if chunk:
+            yield {
+                "type": "tool_output",
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "text": chunk,
+            }
 
     worker.join()
     error = outcome.get("error")

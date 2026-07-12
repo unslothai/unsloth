@@ -3055,6 +3055,14 @@ def _bash_exec(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            # Match _python_exec: without an explicit encoding the pipe uses
+            # the locale default with strict errors, so invalid output bytes
+            # raise UnicodeDecodeError -- from communicate() on the
+            # non-streaming path but silently swallowed inside the reader
+            # thread on the streaming path (truncating the output). Decoding
+            # with "replace" keeps both paths alive and byte-identical.
+            encoding = "utf-8",
+            errors = "replace",
             cwd = workdir,
             env = safe_env,
         )

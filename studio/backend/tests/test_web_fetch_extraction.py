@@ -149,6 +149,48 @@ def test_nested_hidden_regions():
     assert "ok" in out
 
 
+def test_hidden_false_is_still_hidden():
+    # ``hidden`` is an enumerated attribute: the HTML spec maps invalid
+    # values (and the empty value) to the Hidden state, so hidden="false"
+    # is NOT rendered by browsers and must not reach the Markdown.
+    html = '<body><p>keep</p><div hidden="false">not rendered</div></body>'
+    out = html_to_markdown(html)
+    assert "keep" in out
+    assert "not rendered" not in out
+
+
+def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
+    # HTML5 optional end tags: a following sibling <p> start tag implicitly
+    # closes an open <p hidden>, so the hidden region ends there instead of
+    # swallowing every following sibling until the parent closes.
+    html = (
+        "<body><div><p hidden>secret"
+        "<p>visible one</p><p>visible two</p></div><p>after</p></body>"
+    )
+    out = html_to_markdown(html)
+    assert "secret" not in out
+    assert "visible one" in out
+    assert "visible two" in out
+    assert "after" in out
+
+
+def test_hidden_list_item_omitted_close_keeps_following_items():
+    # <li hidden> without </li> is implicitly closed by the next <li>.
+    html = "<body><ul><li hidden>secret<li>shown A</li><li>shown B</li></ul></body>"
+    out = html_to_markdown(html)
+    assert "secret" not in out
+    assert "shown A" in out
+    assert "shown B" in out
+
+
+def test_hr_implicitly_closes_hidden_paragraph():
+    # Void elements also imply closes: <hr> ends an open <p hidden>.
+    html = "<body><p hidden>secret<hr>kept text</body>"
+    out = html_to_markdown(html)
+    assert "secret" not in out
+    assert "kept text" in out
+
+
 # ── html_to_markdown: main-content scoping ───────────────────────
 
 

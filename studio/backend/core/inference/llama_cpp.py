@@ -9951,9 +9951,23 @@ class LlamaCppBackend:
                             f"{'structured delta' if has_structured_tc else 'content text'}"
                         )
                     if not tool_calls:
-                        # DRAINING but no tool calls (false positive). Merge
-                        # accumulated metrics from prior tool iterations so
-                        # they aren't silently dropped.
+                        # DRAINING but no tool calls (false positive). Close
+                        # any provisional tool cards first (a >=256-char text
+                        # sniff can open a card whose call later fails to
+                        # parse); without a tool_end the card would spin
+                        # forever while the text is delivered as content.
+                        for _pid, _pname in provisional_started_tool_calls.items():
+                            if _pid not in resolved_provisional_tool_call_ids:
+                                resolved_provisional_tool_call_ids.add(_pid)
+                                yield {
+                                    "type": "tool_end",
+                                    "tool_name": _pname,
+                                    "tool_call_id": _pid,
+                                    "result": "",
+                                    "provenance": tool_event_provenance(provisional = True),
+                                }
+                        # Merge accumulated metrics from prior tool iterations
+                        # so they aren't silently dropped.
                         yield {"type": "status", "text": ""}
                         if content_accum:
                             # Strip leaked tool-call XML before yielding.

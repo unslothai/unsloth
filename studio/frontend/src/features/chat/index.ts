@@ -17,6 +17,7 @@ export {
   type Preset,
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export { toolOutputKey, useToolPaneScope } from "./tool-output-scope";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";

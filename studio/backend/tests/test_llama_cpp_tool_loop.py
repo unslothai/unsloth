@@ -3047,3 +3047,43 @@ def test_ordinary_json_answer_streams_no_tool_args(monkeypatch):
     assert not [e for e in events if e.get("type") == "tool_start"]
     content_events = [e for e in events if e.get("type") == "content"]
     assert content_events and answer in content_events[-1]["text"]
+
+
+def test_provisional_text_card_closed_when_parse_fails(monkeypatch):
+    """A >=256-char enabled-name text sniff opens a provisional card; when the
+    drained text then fails to parse as a tool call (auto-heal off, truncated
+    call), the DRAINING false-positive path must close the card with a
+    tool_end instead of leaving it spinning forever."""
+
+    # Truncated mid-arguments and never closed: unparseable without healing.
+    call_text = '<tool_call>{"name": "python", "arguments": {"code": "' + "x" * (
+        _PROVISIONAL_ARGS_MIN_CHARS + 64
+    )
+    chunks = [call_text[i : i + 48] for i in range(0, len(call_text), 48)]
+    stream = [_sse({"content": chunk}) for chunk in chunks] + [_done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    executed: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        executed.append((name, arguments))
+        return "ok"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run it"}],
+            tools = _python_tool_schema(),
+            max_tool_iterations = 1,
+            auto_heal_tool_calls = False,
+        )
+    )
+
+    starts = [e for e in events if e.get("type") == "tool_start"]
+    ends = [e for e in events if e.get("type") == "tool_end"]
+    assert starts and starts[0]["tool_call_id"] == "call_0"
+    assert executed == []  # nothing parsed, nothing ran
+    assert ends, "provisional card left dangling (no tool_end)"
+    assert ends[-1]["tool_call_id"] == "call_0"

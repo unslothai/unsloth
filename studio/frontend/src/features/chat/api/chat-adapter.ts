@@ -52,6 +52,7 @@ import {
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import { toolOutputKey, toolPaneScope } from "../tool-output-scope";
 import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
@@ -1891,6 +1892,18 @@ export function createOpenAIStreamAdapter(
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
         : sandboxSessionId || "_default";
       const toolConfirmationIdsByBackendId = new Map<string, string>();
+      // Live/full tool output store keys are scoped by pane identity: local
+      // GGUF tool ids ("call_0") repeat across turns and across concurrently
+      // streaming panes (compare mode), so bare ids would collide. Track the
+      // keys this run wrote so end-of-run cleanup cannot wipe another pane's
+      // still-streaming entries.
+      const toolOutputPaneScope = toolPaneScope(
+        options.modelType,
+        options.pairId,
+      );
+      const scopedToolOutputKey = (id: string) =>
+        toolOutputKey(toolOutputPaneScope, id);
+      const runToolLiveOutputKeys = new Set<string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
       const selectedImageEditReference =
@@ -3187,9 +3200,11 @@ export function createOpenAIStreamAdapter(
                   const liveText =
                     typeof toolEvent.text === "string" ? toolEvent.text : "";
                   if (liveId && liveText) {
+                    const liveKey = scopedToolOutputKey(liveId);
+                    runToolLiveOutputKeys.add(liveKey);
                     useChatRuntimeStore
                       .getState()
-                      .appendToolLiveOutput(liveId, liveText);
+                      .appendToolLiveOutput(liveKey, liveText);
                   }
                   continue;
                 }
@@ -3262,6 +3277,14 @@ export function createOpenAIStreamAdapter(
                   if (awaitingConfirmation && backendToolCallId) {
                     toolConfirmationIdsByBackendId.set(backendToolCallId, id);
                   }
+                  // Backend tool ids repeat across turns and across tool
+                  // iterations within a turn ("call_0" restarts every
+                  // response): drop any stale live/preserved output an
+                  // earlier call left under this key, or the finished card
+                  // would keep showing the previous call's output.
+                  const staleKey = scopedToolOutputKey(id);
+                  useChatRuntimeStore.getState().clearToolLiveOutput(staleKey);
+                  useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
                   const idx = toolCallParts.findIndex(
@@ -3321,8 +3344,10 @@ export function createOpenAIStreamAdapter(
                   // (the model-visible result is truncated to protect the
                   // context window), preserve the full stream so the finished
                   // card keeps showing everything the tool printed.
+                  const liveKey = scopedToolOutputKey(id);
                   const liveOutput =
-                    useChatRuntimeStore.getState().toolLiveOutput[id] ?? "";
+                    useChatRuntimeStore.getState().toolLiveOutput[liveKey] ??
+                    "";
                   if (
                     id &&
                     liveOutput.length >
@@ -3330,9 +3355,10 @@ export function createOpenAIStreamAdapter(
                   ) {
                     useChatRuntimeStore
                       .getState()
-                      .setToolFullOutput(id, liveOutput);
+                      .setToolFullOutput(liveKey, liveOutput);
                   }
-                  useChatRuntimeStore.getState().clearToolLiveOutput(id);
+                  useChatRuntimeStore.getState().clearToolLiveOutput(liveKey);
+                  runToolLiveOutputKeys.delete(liveKey);
                   liveArgsTextById.delete(id);
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
@@ -3913,8 +3939,12 @@ export function createOpenAIStreamAdapter(
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
         // Live tool output is transient; the persisted tool result (or the
-        // interrupted state) is the record.
-        useChatRuntimeStore.getState().clearToolLiveOutput();
+        // interrupted state) is the record. Clear only this run's keys: a
+        // concurrently streaming pane (compare mode) owns its own entries.
+        for (const liveKey of runToolLiveOutputKeys) {
+          useChatRuntimeStore.getState().clearToolLiveOutput(liveKey);
+        }
+        runToolLiveOutputKeys.clear();
         // Drop the transient denoising canvas so the finished bubble shows only
         // the committed markdown answer (cancellation/error included).
         runtime.setActiveDiffusionCanvas(null);

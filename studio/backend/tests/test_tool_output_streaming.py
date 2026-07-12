@@ -150,6 +150,51 @@ def test_streamed_output_is_capped_but_result_is_not():
     assert "further live output not streamed" in streamed
 
 
+def test_heartbeats_continue_while_capped_output_flows():
+    # After the stream cap, discarded chunks must not starve the keepalive:
+    # a tool that keeps printing keeps the queue non-empty, so no idle poll
+    # (and before the fix no heartbeat) would ever fire, leaving the SSE
+    # stream silent past proxy idle timeouts for the rest of the run.
+    release = threading.Event()
+
+    def tool(callback):
+        callback("x" * (TOOL_OUTPUT_STREAM_MAX_CHARS + 10))  # trip the cap
+        while not release.is_set():
+            callback("post-cap spam")
+            time.sleep(0.005)
+        return "done"
+
+    # Watchdog: on regressed code the generator never yields while spam
+    # flows, so next(gen) would block forever; ending the tool from a timer
+    # turns that hang into a clean assertion failure (zero heartbeats).
+    watchdog = threading.Timer(8.0, release.set)
+    watchdog.start()
+    gen = stream_tool_execution(
+        tool,
+        tool_name = "python",
+        heartbeat_interval_s = 0.04,
+        poll_interval_s = 0.02,
+    )
+    events = []
+    result = None
+    try:
+        while True:
+            event = next(gen)
+            events.append(event)
+            if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
+                release.set()
+    except StopIteration as stop:
+        result = stop.value
+    finally:
+        release.set()
+        watchdog.cancel()
+    assert result == "done"
+    assert len([e for e in events if e["type"] == "heartbeat"]) >= 2
+    streamed = "".join(e["text"] for e in events if e["type"] == "tool_output")
+    assert "further live output not streamed" in streamed
+    assert "post-cap spam" not in streamed  # cap still enforced
+
+
 # ── python / terminal executors ──────────────────────────────────
 
 _PY_CODE = "for i in range(5):\n    print('row', i)\n"
@@ -218,6 +263,23 @@ def test_bash_exec_result_identical_with_streaming():
     streamed = _bash_exec(command, timeout = 60, output_callback = chunks.append)
     assert streamed == baseline
     assert "".join(chunks) == "one\ntwo\n"
+
+
+def test_bash_exec_invalid_utf8_identical_with_streaming():
+    # Invalid UTF-8 in tool output must not kill either path: the pipe
+    # decodes with errors="replace" (like _python_exec), so the streaming
+    # reader thread cannot die on UnicodeDecodeError (which readline raises
+    # as a ValueError subclass and the reader used to swallow, silently
+    # truncating output) and both paths return the same replaced text.
+    command = "printf 'ok\\377bad\\n'"  # \377 = 0xFF, invalid UTF-8
+    baseline = _bash_exec(command, timeout = 60)
+    chunks: list[str] = []
+    streamed = _bash_exec(command, timeout = 60, output_callback = chunks.append)
+    assert streamed == baseline
+    assert not baseline.startswith("Execution error")
+    assert "ok" in baseline and "bad" in baseline
+    assert "�" in baseline  # replacement character, not a crash
+    assert "".join(chunks) == "ok�bad\n"
 
 
 def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
@@ -421,6 +483,33 @@ def test_python_exec_mnt_data_open_is_remapped_into_workdir():
         with open(target) as f:
             assert f.read() == "hello remap"
         assert "hello remap" in baseline
+        assert "/mnt/data does not exist in this sandbox" in baseline
+        _os.remove(target)
+        streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
+        assert streamed == baseline
+        assert _os.path.isfile(target)
+    finally:
+        if _os.path.exists(target):
+            _os.remove(target)
+
+
+def test_python_exec_pathlib_write_text_is_remapped_into_workdir():
+    # pathlib.Path.open / write_text / read_text call io.open directly,
+    # bypassing the builtins.open patch, so the shim must remap io.open too.
+    fname = f"remap_{_uuid.uuid4().hex}.txt"
+    code = (
+        "from pathlib import Path\n"
+        f"p = Path('/mnt/data/{fname}')\n"
+        "p.write_text('pathlib remap')\n"
+        "print(p.read_text())\n"
+    )
+    target = _os.path.join(get_sandbox_workdir(), fname)
+    try:
+        baseline = _python_exec(code, timeout = 60)
+        assert _os.path.isfile(target), baseline
+        with open(target) as f:
+            assert f.read() == "pathlib remap"
+        assert "pathlib remap" in baseline
         assert "/mnt/data does not exist in this sandbox" in baseline
         _os.remove(target)
         streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)

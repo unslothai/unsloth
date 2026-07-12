@@ -53,6 +53,7 @@ import {
 } from "./open-document";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
   deleteStoredChatThreads,
@@ -1334,26 +1335,35 @@ export function ChatRuntimeProvider({
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
-      <ActiveThreadSync
-        enabled={
-          modelType === "base" && !pairId && !newThreadNonce && !initialThreadId
-        }
-      />
-      <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
-      <CancelRegistrar />
-      {initialThreadId && (
-        <ThreadAutoSwitch
-          threadId={initialThreadId}
-          syncActiveThreadId={syncActiveThreadId}
+      {/* Pane identity for the transient tool-output store maps: the stream
+          adapter (same modelType/pairId) prefixes its store keys with this
+          scope so concurrent panes with colliding backend tool ids ("call_0")
+          cannot bleed live output into each other's cards. */}
+      <ToolPaneScopeContext.Provider value={toolPaneScope(modelType, pairId)}>
+        <ActiveThreadSync
+          enabled={
+            modelType === "base" &&
+            !pairId &&
+            !newThreadNonce &&
+            !initialThreadId
+          }
         />
-      )}
-      {!initialThreadId && newThreadNonce && (
-        <ThreadNewChatSwitch nonce={newThreadNonce} />
-      )}
-      {/* The view stays mounted (only CSS-hidden by RootLayout) while off-route
-          so assistant-ui keeps the run attached and the stream alive. Unmounting
-          it here aborts the in-flight generation. */}
-      {children}
+        <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
+        <CancelRegistrar />
+        {initialThreadId && (
+          <ThreadAutoSwitch
+            threadId={initialThreadId}
+            syncActiveThreadId={syncActiveThreadId}
+          />
+        )}
+        {!initialThreadId && newThreadNonce && (
+          <ThreadNewChatSwitch nonce={newThreadNonce} />
+        )}
+        {/* The view stays mounted (only CSS-hidden by RootLayout) while off-route
+            so assistant-ui keeps the run attached and the stream alive. Unmounting
+            it here aborts the in-flight generation. */}
+        {children}
+      </ToolPaneScopeContext.Provider>
     </AssistantRuntimeProvider>
   );
 }

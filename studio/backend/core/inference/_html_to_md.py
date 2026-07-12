@@ -72,10 +72,67 @@ def _is_hidden_element(attr_dict: dict) -> bool:
     attribute or ``aria-hidden="true"``. Client-side placeholders (e.g.
     GitHub's ``<div data-show-on-forbidden-error hidden>`` "Uh oh! There was
     an error while loading." blocks) ship in the HTML but are only shown by
-    JavaScript on error, so they must not reach the Markdown output."""
-    if "hidden" in attr_dict and attr_dict.get("hidden") != "false":
+    JavaScript on error, so they must not reach the Markdown output.
+
+    ``hidden`` is an enumerated attribute (hidden / until-found): per the
+    HTML spec its invalid value default is the Hidden state, so any present
+    value -- including ``hidden="false"`` -- means not rendered."""
+    if "hidden" in attr_dict:
         return True
     return (attr_dict.get("aria-hidden") or "").strip().lower() == "true"
+
+
+# HTML5 optional end tags: a start tag in the value set implicitly closes an
+# open element of the key type, exactly as browsers do. Without this, an
+# unclosed ``<p hidden>`` / ``<li hidden>`` would keep its hidden mark on the
+# open-element stack and swallow every following sibling until the parent
+# closed. Keys are the elements whose end tag may be omitted; values are the
+# start tags that imply the close.
+_P_CLOSING_TAGS = frozenset(
+    {
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "details",
+        "div",
+        "dl",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "form",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hgroup",
+        "hr",
+        "main",
+        "menu",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "ul",
+    }
+)
+_IMPLICIT_CLOSERS: dict = {
+    "p": _P_CLOSING_TAGS,
+    "li": frozenset({"li"}),
+    "dt": frozenset({"dt", "dd"}),
+    "dd": frozenset({"dt", "dd"}),
+    "tr": frozenset({"tr"}),
+    "td": frozenset({"td", "th", "tr"}),
+    "th": frozenset({"td", "th", "tr"}),
+    "option": frozenset({"option", "optgroup"}),
+    "optgroup": frozenset({"optgroup"}),
+}
 
 
 _BLOCK_TAGS = frozenset(
@@ -219,6 +276,16 @@ class _MarkdownRenderer(HTMLParser):
     def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
         """Track open/hidden/scope state; return True when the tag's content
         should be rendered (False = suppressed)."""
+        # Optional end tags: pop implicitly-closed open elements (and any
+        # hidden marks that end with them) before this tag opens. Runs for
+        # void tags too (<hr> closes an open <p>), which never join the stack.
+        while self._open_tags:
+            closers = _IMPLICIT_CLOSERS.get(self._open_tags[-1])
+            if closers is None or tag not in closers:
+                break
+            self._open_tags.pop()
+            while self._hidden_marks and self._hidden_marks[-1] >= len(self._open_tags):
+                self._hidden_marks.pop()
         if tag not in _VOID_TAGS:
             self._open_tags.append(tag)
             if _is_hidden_element(attr_dict):

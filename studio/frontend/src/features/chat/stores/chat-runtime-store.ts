@@ -793,6 +793,8 @@ type ChatRuntimeStore = {
   clearToolLiveOutput: (toolCallId?: string) => void;
   /** Preserve a finished tool's full live-streamed output for display. */
   setToolFullOutput: (toolCallId: string, text: string) => void;
+  /** Drop a stale preserved full output (a new run is reusing the id). */
+  clearToolFullOutput: (toolCallId: string) => void;
   setGeneratingStatus: (status: string | null) => void;
   setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
@@ -1570,6 +1572,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         [toolCallId]: text,
       },
     })),
+  clearToolFullOutput: (toolCallId) =>
+    set((state) => {
+      if (!(toolCallId in state.toolFullOutput)) {
+        return {};
+      }
+      const next = { ...state.toolFullOutput };
+      delete next[toolCallId];
+      return { toolFullOutput: next };
+    }),
   clearToolLiveOutput: (toolCallId) =>
     set((state) => {
       if (toolCallId === undefined) {

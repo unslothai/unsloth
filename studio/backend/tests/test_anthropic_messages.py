@@ -1954,3 +1954,81 @@ def test_resumed_null_assistant_between_users_coalesced_on_messages_route(monkey
     if isinstance(merged, list):
         merged = " ".join(p.get("text", "") for p in merged if isinstance(p, dict))
     assert "first question" in merged and "please continue" in merged
+
+
+def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
+    """Heartbeats emitted while a parallel-disabled tool call is being dropped
+    must still reach the client as SSE keepalives: the dropped call executes
+    server-side (minutes for a slow tool), and the stall keepalive never fires
+    while the generator keeps producing events, so swallowing them recreates
+    the silent window the heartbeats exist to prevent."""
+    import threading as _threading
+
+    from routes.inference import (
+        _OPENAI_PASSTHROUGH_SSE_KEEPALIVE,
+        _anthropic_tool_stream,
+    )
+
+    def run_gen():
+        def gen():
+            yield {
+                "type": "tool_start",
+                "tool_name": "python",
+                "tool_call_id": "call_0",
+                "arguments": {},
+            }
+            yield {"type": "heartbeat"}
+            yield {
+                "type": "tool_end",
+                "tool_name": "python",
+                "tool_call_id": "call_0",
+                "result": "r1",
+            }
+            # Second call the same turn: dropped by disable_parallel_tool_use,
+            # but still executed server-side (heartbeats + live output).
+            yield {
+                "type": "tool_start",
+                "tool_name": "python",
+                "tool_call_id": "call_1",
+                "arguments": {},
+            }
+            yield {"type": "heartbeat"}
+            yield {
+                "type": "tool_output",
+                "tool_name": "python",
+                "tool_call_id": "call_1",
+                "text": "x",
+            }
+            yield {"type": "heartbeat"}
+            yield {
+                "type": "tool_end",
+                "tool_name": "python",
+                "tool_call_id": "call_1",
+                "result": "r2",
+            }
+            yield {"type": "content", "text": "final answer"}
+
+        return gen()
+
+    async def _drive():
+        async def _is_disconnected():
+            return False
+
+        request = SimpleNamespace(is_disconnected = _is_disconnected)
+        resp = await _anthropic_tool_stream(
+            request,
+            _threading.Event(),
+            run_gen,
+            "msg_hb",
+            "m",
+            disable_parallel_tool_use = True,
+        )
+        return [chunk async for chunk in resp.body_iterator]
+
+    chunks = asyncio.run(_drive())
+    keepalives = [c for c in chunks if c == _OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
+    # One heartbeat inside the kept call, two inside the dropped window.
+    assert len(keepalives) >= 3
+    # The dropped call must not surface as a second tool_use block.
+    tool_use_starts = [c for c in chunks if "content_block_start" in c and '"tool_use"' in c]
+    assert len(tool_use_starts) == 1

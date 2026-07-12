@@ -11951,17 +11951,22 @@ async def _anthropic_tool_stream(
                 if event is _sentinel:
                     break
                 etype = event.get("type")
-                if drop_until_tool_end:
-                    # disable_parallel_tool_use: a later tool call is being
-                    # dropped — skip every event until (and including) its tool_end.
-                    if etype == "tool_end":
-                        drop_until_tool_end = False
-                    continue
                 if etype == "heartbeat":
                     # Tool-execution wrapper heartbeat: keep the SSE stream
                     # alive through proxy idle timeouts (comment lines are
-                    # ignored by SSE parsers).
+                    # ignored by SSE parsers). Checked BEFORE the
+                    # drop_until_tool_end skip: a dropped tool call still
+                    # executes server-side, and swallowing its heartbeats
+                    # would leave the connection silent for the whole run
+                    # (the stall keepalive never fires while the generator
+                    # keeps producing events).
                     yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
+                if drop_until_tool_end:
+                    # disable_parallel_tool_use: a later tool call is being
+                    # dropped - skip every event until (and including) its tool_end.
+                    if etype == "tool_end":
+                        drop_until_tool_end = False
                     continue
                 if etype in ("tool_output", "tool_args"):
                     # Live tool stdout / argument streaming are Studio-UI
