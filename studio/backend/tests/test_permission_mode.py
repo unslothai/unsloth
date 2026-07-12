@@ -364,6 +364,18 @@ def test_terminal_classifier(command, unsafe):
         ("open('%s/%s' % ('/etc', 'passwd')).read()", True),  # percent-format path
         ("open('/etc/%s' % name).read()", True),  # percent-format dynamic segment
         ("open('%s/%s' % ('data', 'x.txt')).read()", False),  # benign percent-format
+        ("open('/etc/%(f)s' % {'f': 'passwd'}).read()", True),  # mapping-style percent path
+        ("open('/etc/%(f)s' % {'f': name}).read()", True),  # mapping-style dynamic segment
+        ("open('/etc/%(f)s' % mapping).read()", True),  # non-literal mapping fails closed
+        ("open('data/%(f)s' % {'f': 'x.txt'}).read()", False),  # benign mapping-style stays safe
+        ("import logging\nlogging.FileHandler('out.log', mode='w')", True),  # log file writer
+        ("import logging\nlogging.FileHandler('out.log')", True),  # default append still writes
+        ("from logging import FileHandler\nFileHandler('x.log')", True),  # bare-name file handler
+        (
+            "import logging.handlers\nlogging.handlers.RotatingFileHandler('x.log')",
+            True,
+        ),  # rotating log file writer
+        ("import logging\nlogging.getLogger('x').info('hi')", False),  # logging read stays safe
         (
             "from pathlib import Path\nPath('/etc').joinpath('passwd').read_text()",
             True,
@@ -575,6 +587,10 @@ def test_mcp_sensitive_arguments(args, unsafe):
         ({"query": "UPDATE/**/t SET x=1"}, True),
         ({"query": "DROP/**/TABLE users"}, True),
         ({"query": "SELECT * FROM runs -- delete later"}, False),  # trailing comment stays safe
+        ({"query": "COPY users FROM '/tmp/u.csv'"}, True),  # bulk load writes the table
+        ({"query": "COPY users (id, name)\nFROM STDIN"}, True),  # multiline COPY FROM
+        ({"query": "COPY (SELECT 1) TO '/tmp/o.csv'"}, True),  # COPY TO writes a server file
+        ({"query": "SELECT copy_count FROM t"}, False),  # 'copy' substring column stays safe
     ],
 )
 def test_mcp_mutating_arguments(args, unsafe):

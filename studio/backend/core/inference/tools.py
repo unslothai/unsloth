@@ -621,6 +621,14 @@ _AUTO_UNSAFE_PY_WRITE_METHODS = frozenset(
         "save_weights",
         "save_lora",
         "save_checkpoint",
+        # logging file handlers open a log file for writing (default mode "a"
+        # still creates/appends), so constructing one writes to disk like
+        # open(..., "w"); matched as an attribute call (logging.FileHandler) and
+        # as a bare import (from logging.handlers import RotatingFileHandler).
+        "FileHandler",
+        "WatchedFileHandler",
+        "RotatingFileHandler",
+        "TimedRotatingFileHandler",
     }
 )
 _PY_WRITE_MODE_RE = re.compile(r"[wax+]")
@@ -973,6 +981,9 @@ _PATH_PASSTHROUGH_ATTRS = frozenset(
 # target is never spelled out as a literal (Path('/etc/x').with_name('passwd')
 # -> /etc/passwd). Folded below so the rewritten path is still scanned.
 _PATH_NAME_REWRITES = frozenset({"with_name", "with_stem", "with_suffix"})
+# Mapping-style %-format conversion specifier: %(name)s / %(n)5.2f. Used to fold
+# '/etc/%(f)s' % {'f': 'passwd'} to /etc/passwd (a dynamic value becomes NUL).
+_PERCENT_NAMED_RE = re.compile(r"%\((\w+)\)[-#0 +]*\d*(?:\.\d+)?[a-zA-Z]")
 
 
 def _folded_path(
@@ -1035,6 +1046,20 @@ def _folded_path(
             template = fold(node.left)
             if template is not None and "%" in template:
                 rhs = node.right
+                if "%(" in template:
+                    # Mapping-style: '/etc/%(f)s' % {'f': 'passwd'} -> /etc/passwd.
+                    # A literal dict resolves each name; an unresolved value or a
+                    # non-literal mapping leaves the NUL marker so /etc/<dynamic>
+                    # still fails closed under a sensitive dir.
+                    mapping: "dict[str, str]" = {}
+                    if isinstance(rhs, ast.Dict):
+                        for k, v in zip(rhs.keys, rhs.values):
+                            if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                                fv = fold(v)
+                                mapping[k.value] = fv if fv is not None else "\x00"
+                    return _PERCENT_NAMED_RE.sub(
+                        lambda m: mapping.get(m.group(1), "\x00"), template
+                    )
                 if isinstance(rhs, ast.Tuple):
                     args = tuple((fold(e) or "\x00") for e in rhs.elts)
                 else:
@@ -1664,7 +1689,10 @@ _MCP_ARG_MUTATION_RE = re.compile(
     r"\b(?:delete\s+from|drop\s+(?:table|database|schema|index|view)|"
     r"truncate\s+(?:table\s+)?\w|update\s+\w+\s+set|insert\s+into|replace\s+into|"
     r"alter\s+(?:table|database|schema)|create\s+(?:table|database|schema|index|view)|"
-    r"grant\s+\w|revoke\s+\w|merge\s+into)\b",
+    r"grant\s+\w|revoke\s+\w|merge\s+into|"
+    # COPY ... FROM bulk-loads a table and COPY ... TO writes a server-side file
+    # ([^;] keeps the match inside one statement, spanning the table/column list).
+    r"copy\s+[^;]*?\b(?:from|to)\b)\b",
     re.IGNORECASE,
 )
 # SQL engines treat /* */ and -- comments as whitespace, so DELETE/**/FROM and
