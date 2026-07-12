@@ -41,6 +41,7 @@ _QUIET_POLL_PATHS = {
     "/api/auth/status",
     "/api/inference/status",
     "/api/inference/monitor",
+    "/api/inference/load-progress",
     # Hub download polls: fire ~2x/s for the whole download; keep a heartbeat.
     "/api/hub/download-status",
     "/api/hub/download-progress",

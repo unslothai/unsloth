@@ -5153,6 +5153,25 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         raise HTTPException(status_code = 500, detail = "Failed to get status")
 
 
+_load_progress_lock = threading.Lock()
+_last_load_progress_step = -1
+
+
+def _log_load_progress_step(fraction, phase):
+    """One inference_load_progress line per 10% step, so a model load shows
+    progress without a line per poll. Resyncs when a new load starts."""
+    global _last_load_progress_step
+    step = int(max(0.0, min(float(fraction), 1.0)) * 10)
+    with _load_progress_lock:
+        prev = _last_load_progress_step
+        if step == prev:
+            return
+        _last_load_progress_step = step
+        if step < prev:
+            return  # new load; resync without logging
+    logger.info("inference_load_progress", phase = phase or "", percent = step * 10)
+
+
 @router.get("/load-progress", response_model = LoadProgressResponse)
 async def get_load_progress(current_subject: str = Depends(get_current_subject)):
     """
@@ -5171,7 +5190,9 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
         progress = llama_backend.load_progress()
         if progress is None:
             return LoadProgressResponse()
-        return LoadProgressResponse(**progress)
+        resp = LoadProgressResponse(**progress)
+        _log_load_progress_step(resp.fraction, resp.phase)
+        return resp
     except Exception as e:
         logger.warning(f"Error sampling load progress: {e}")
         return LoadProgressResponse()
