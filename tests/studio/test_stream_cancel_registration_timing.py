@@ -17,7 +17,7 @@ from pathlib import Path
 
 
 SOURCE_PATH = Path(__file__).resolve().parents[2] / "studio" / "backend" / "routes" / "inference.py"
-SRC = SOURCE_PATH.read_text()
+SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 _TREE = ast.parse(SRC)
 
 
@@ -166,16 +166,20 @@ def test_chat_completions_streams_avoid_starlette_task_group():
 
 
 def test_openai_passthrough_stream_avoids_starlette_task_group():
-    top = _async_function("_openai_passthrough_stream")
+    functions = [
+        _async_function("_openai_passthrough_stream"),
+        _async_function("_openai_passthrough_stream_admitted"),
+    ]
     legacy_calls = []
     same_task_calls = 0
-    for sub in ast.walk(top):
-        if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)):
-            continue
-        if sub.func.id == "StreamingResponse":
-            legacy_calls.append(sub.lineno)
-        if sub.func.id == "_SameTaskStreamingResponse":
-            same_task_calls += 1
+    for fn in functions:
+        for sub in ast.walk(fn):
+            if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)):
+                continue
+            if sub.func.id == "StreamingResponse":
+                legacy_calls.append(sub.lineno)
+            if sub.func.id == "_SameTaskStreamingResponse":
+                same_task_calls += 1
     assert not legacy_calls, (
         "OpenAI passthrough streams must use _SameTaskStreamingResponse, "
         "not Starlette's legacy task-group StreamingResponse. Lines: "
@@ -197,7 +201,7 @@ def test_direct_llama_server_streams_install_disconnect_watcher():
         "openai_completions",
         "_responses_stream",
         "_anthropic_passthrough_stream",
-        "_openai_passthrough_stream",
+        "_openai_passthrough_stream_admitted",
     }
     missing = [
         name
