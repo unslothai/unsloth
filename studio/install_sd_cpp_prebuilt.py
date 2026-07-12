@@ -38,17 +38,17 @@ import zipfile
 from pathlib import Path
 from typing import Optional, Sequence
 
-# Default source: the Unsloth-built mirror, whose CPU/Apple prebuilts are compiled and
-# published by unslothai/stable-diffusion.cpp (the same way unslothai/llama.cpp ships its
-# prebuilts). Override with UNSLOTH_SD_CPP_REPO to point elsewhere (e.g. back to leejet).
-# GPU hosts never reach here -- they run diffusers -- so only CPU/Apple assets are needed.
+# Default source: the Unsloth-built mirror, whose CPU/Apple prebuilts are published by
+# unslothai/stable-diffusion.cpp (like unslothai/llama.cpp ships its prebuilts). Override with
+# UNSLOTH_SD_CPP_REPO to point elsewhere (e.g. back to leejet). GPU hosts never reach here (they
+# run diffusers), so only CPU/Apple assets are needed.
 DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 # Upstream we fall back to if the mirror can't serve this host (mirror release missing, or
 # a host we don't yet build): resolve against leejet so native install still works.
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
-# Pinned release tag for REPRODUCIBILITY: "releases/latest" silently swaps the binary
-# under users on every push. Override with UNSLOTH_SD_CPP_TAG; set it empty to track
-# latest. If the pinned tag is gone, install falls back to that repo's latest.
+# Pinned release tag for REPRODUCIBILITY: "releases/latest" silently swaps the binary under
+# users on every push. Override with UNSLOTH_SD_CPP_TAG; set it empty to track latest. If the
+# pinned tag is gone, install falls back to that repo's latest.
 DEFAULT_TAG = "master-741-484baa4"
 
 # Back-compat alias (some callers/tests import REPO).
@@ -124,9 +124,9 @@ def resolve_release_asset(
         sel = [a for a in pool if token in a.lower()]
         if sel:
             return sel[0]
-        # An EXPLICIT GPU accelerator with no matching asset is a real miss, not a CPU
-        # request: return None so the caller can fall back to a repo that builds it,
-        # rather than silently installing a CPU build for a --accelerator cuda request.
+        # An EXPLICIT GPU accelerator with no matching asset is a real miss, not a CPU request:
+        # return None so the caller can fall back to a repo that builds it, rather than installing
+        # a CPU build for a --accelerator cuda request.
         if accel in ("cuda", "vulkan", "rocm"):
             return None
         # auto / cpu -> a plain avx2 CPU build, else any windows build.
@@ -293,9 +293,9 @@ def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> Non
     print(f"downloading CUDA runtime {cudart['name']} ...", flush = True)
     try:
         _download(cudart["browser_download_url"], dest)
-        # Verify integrity BEFORE extracting, like the main sd-cli archive: these DLLs are
-        # loaded into sd-cli.exe at runtime, so a corrupt/tampered runtime archive must be
-        # rejected rather than extracted next to the binary.
+        # Verify integrity BEFORE extracting, like the main sd-cli archive: these DLLs load into
+        # sd-cli.exe at runtime, so a corrupt/tampered runtime archive must be rejected rather than
+        # extracted next to the binary.
         _verify_sha256(dest, cudart.get("digest"))
         with zipfile.ZipFile(dest) as zf:
             _safe_extractall(zf, target)
@@ -346,9 +346,9 @@ def _resolve_with_fallback(
     ``--print-asset`` so both honour the same fallback."""
     tag = _pinned_tag()
     primary = _repo()
-    # Fall back to upstream ONLY when the user did not pin a repo (env unset) and the
-    # built-in default is in use: an explicit UNSLOTH_SD_CPP_REPO (even one equal to the
-    # default) gets exactly that repo, with no surprise upstream substitution.
+    # Fall back to upstream ONLY when the user didn't pin a repo (env unset) and the built-in
+    # default is in use: an explicit UNSLOTH_SD_CPP_REPO (even one equal to the default) gets
+    # exactly that repo, with no surprise upstream substitution.
     repo_pinned = bool((os.environ.get("UNSLOTH_SD_CPP_REPO") or "").strip())
     allow_upstream = (
         not repo_pinned and primary == DEFAULT_REPO and DEFAULT_REPO != UPSTREAM_FALLBACK_REPO
@@ -375,9 +375,8 @@ def _resolve_with_fallback(
         )
         if release is not None and chosen:
             if repo != primary:
-                # Diagnostic goes to stderr, not stdout: --print-asset documents its
-                # stdout as the asset name only, so a caller parsing it as a single line
-                # must not see this fallback log mixed in.
+                # Diagnostic goes to stderr, not stdout: --print-asset documents its stdout as the
+                # asset name only, so a caller parsing it as a single line must not see this log.
                 print(
                     f"falling back to {repo} for {platform.system()}/{platform.machine()}",
                     file = sys.stderr,
@@ -442,9 +441,9 @@ def install(
         _make_executable(sd_server)
     if sd_server is not None:
         print(f"installed sd-server -> {sd_server}", flush = True)
-    # Ownership marker (the same one setup.sh/_is_studio_root use, and setup.ps1 writes into
-    # the Node sibling dir) so the uninstaller can tell a Studio-installed sd.cpp from a user's
-    # own stable-diffusion.cpp checkout beside a custom Studio root, and delete only ours.
+    # Ownership marker (the same one setup.sh/_is_studio_root use, and setup.ps1 writes into the
+    # Node sibling dir) so the uninstaller can tell a Studio-installed sd.cpp from a user's own
+    # stable-diffusion.cpp checkout beside a custom Studio root, and delete only ours.
     try:
         (target / ".unsloth-studio-owned").touch()
     except OSError:
@@ -464,9 +463,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = p.parse_args(argv)
 
     if args.print_asset:
-        # Route through the same primary/fallback resolution as install(), so a host the
-        # mirror does not build (e.g. a Linux Vulkan request) reports the upstream asset
-        # it would actually download instead of a false "no matching prebuilt".
+        # Route through the same primary/fallback resolution as install(), so a host the mirror
+        # doesn't build (e.g. a Linux Vulkan request) reports the upstream asset it would actually
+        # download instead of a false "no matching prebuilt".
         _used, _release, chosen = _resolve_with_fallback(args.accelerator, None)
         print(chosen or "(no matching prebuilt; build from source)")
         return 0 if chosen else 2

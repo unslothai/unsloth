@@ -38,9 +38,9 @@ logging.basicConfig(level = logging.INFO, format = "%(message)s")
 LOGGER = logging.getLogger("verify_prequant")
 
 # Prequant and runtime produce the SAME quantized weights, so their images must be
-# near-identical; anything above this LPIPS means the prequant path diverged and the run
-# fails. The prequant load peak must also sit clearly below the dense runtime peak (the
-# whole point of the path); require at least this fractional headroom.
+# near-identical; anything above this LPIPS means the prequant path diverged and the run fails.
+# The prequant load peak must also sit clearly below the dense runtime peak (the point of the
+# path); require at least this fractional headroom.
 LPIPS_MAX = 0.02
 PREQUANT_PEAK_MAX_FRACTION = 0.75
 _RUNTIME_PEAK_FILE = OUT / "runtime_peak.txt"
@@ -103,8 +103,8 @@ def run(mode, steps, seed, res):
 
     if mode == "prequant":
         # A local checkpoint is refused unless its directory is allowlisted (unpickling an
-        # arbitrary file is unsafe). This verifier's CKPT is operator-supplied and trusted,
-        # so allowlist its directory here or the load returns None and measures nothing.
+        # arbitrary file is unsafe). This verifier's CKPT is operator-supplied and trusted, so
+        # allowlist its directory here or the load returns None and measures nothing.
         ckpt_dir = os.path.dirname(os.path.realpath(CKPT))
         existing = os.environ.get(ALLOW_LOCAL_PREQUANT_PATH_ENV, "")
         os.environ[ALLOW_LOCAL_PREQUANT_PATH_ENV] = (

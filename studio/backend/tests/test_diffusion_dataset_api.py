@@ -410,11 +410,28 @@ def test_upload_rejects_exact_duplicate_name_within_one_batch(client, ds_root):
     r = _upload(client, "styleset", [("sample.txt", b"a"), ("sample.txt", b"b")])
     assert r.status_code == 400
     assert "more than once" in r.json()["detail"]
-    # A case VARIANT pair (Cat.png vs cat.png) stays exempt, matching the stem-guard
-    # contract: it is one file / an overwrite on case-insensitive filesystems and two
-    # files on Linux, not silent same-destination data loss.
+    # A STEM case variant pair (Cat.png vs cat.png) stays exempt, matching the stem-guard
+    # contract: it is one file / an overwrite on case-insensitive filesystems, and on Linux
+    # the two files write separate sidecars (Cat.txt vs cat.txt) -- no caption collision.
     r = _upload(client, "styleset", [("Cat.png", _png_bytes()), ("cat.png", _png_bytes())])
     assert r.status_code == 200
+
+
+def test_upload_rejects_extension_case_variant_sidecar_collision(client, ds_root):
+    # An EXTENSION-case variant pair (dog.PNG vs dog.png) has exactly equal stems: on a
+    # case-sensitive filesystem both files land and both resolve to ONE dog.txt caption
+    # sidecar, silently sharing/corrupting the caption. Must 400 both within one batch and
+    # against a file already on disk.
+    r = _upload(client, "styleset", [("dog.PNG", _png_bytes()), ("dog.png", _png_bytes())])
+    assert r.status_code == 400
+    assert "Duplicate image name" in r.json()["detail"]
+    folder = ds_root / "styleset"
+    assert not any(p.suffix.lower() == ".png" for p in folder.iterdir())  # all-or-nothing
+    assert _upload(client, "styleset", [("dog.png", _png_bytes())]).status_code == 200
+    dup = _upload(client, "styleset", [("dog.PNG", _png_bytes())])
+    assert dup.status_code == 400
+    assert "Duplicate image name" in dup.json()["detail"]
+    assert sorted(p.name for p in folder.iterdir() if p.suffix != ".txt") == ["dog.png"]
 
 
 def test_upload_allows_exact_name_overwrite_and_caption_sidecar(client, ds_root):

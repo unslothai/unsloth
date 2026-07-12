@@ -152,9 +152,9 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
   return merged;
 }
 
-// A full-page training workspace: left = configure (family, dataset, labeling, settings),
-// right = live run (progress, loss/grad-norm charts, completion + deploy). Kept mounted with the
-// page so a long run survives Create/Train tab switches; polling is gated on `active`.
+// A full-page training workspace: left = configure (family, dataset, labeling, settings), right
+// = live run (progress, loss/grad-norm charts, completion + deploy). Kept mounted with the page
+// so a long run survives tab switches; polling is gated on `active`.
 export function DiffusionTrainPanel({
   active,
   loadedFamily,
@@ -195,11 +195,21 @@ export function DiffusionTrainPanel({
   // sdxl trains the U-Net in mixed precision (no quantised base), so it uses the
   // mixed_precision control instead of base_precision. Everything else is a DiT family.
   const isDiT = familyName !== "sdxl";
+  // An EMPTY precision_modes list on a DiT family is the backend's signal that this host can't
+  // train it at all (a non-bf16 CUDA GPU fails the preflight for every mode, so /info advertises
+  // no precision rather than a start that always 400s; the reason rides in vram_note). Only an
+  // ABSENT field means an older backend, falling back to the default modes. SDXL reports [] too
+  // but isn't precision-gated (it keeps its mixed_precision lever), hence the isDiT scope.
+  const familyUntrainable =
+    isDiT &&
+    reportedFamily?.precision_modes != null &&
+    reportedFamily.precision_modes.length === 0;
   // The quantised base precisions this family can train in, with a stable fallback when the
   // backend does not report them (older backend, or a preset-only family).
   const precisionModes = useMemo<
     Array<"nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto">
   >(() => {
+    if (familyUntrainable) return [];
     const reported = reportedFamily?.precision_modes?.filter(
       (m): m is "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" =>
         m === "nf4" || m === "bf16" || m === "int8" || m === "fp8" || m === "mxfp8",
@@ -208,7 +218,7 @@ export function DiffusionTrainPanel({
     // Fallback without a backend report: the GPU-independent modes only (mxfp8 needs a
     // Blackwell probe, so it is offered strictly when the backend advertises it).
     return ["auto", "nf4", "bf16", "int8", "fp8"];
-  }, [reportedFamily?.precision_modes]);
+  }, [reportedFamily?.precision_modes, familyUntrainable]);
   // Whether to show the torch.compile control. The backend advertises this per family
   // (the SDXL U-Net path compiles regionally too now); default on for DiT families when
   // an older backend does not report it.
@@ -392,21 +402,20 @@ export function DiffusionTrainPanel({
     }
   }, [family, loadedBaseRepo, reportedFamily?.recommended_precision]);
 
-  // mixed_precision is an SDXL-only lever (its UI control is hidden for DiT families). A
-  // dense DiT base precision (bf16/int8/fp8) requires bf16 compute, and every DiT family
-  // trains in bf16, so reset precision to bf16 when the family changes to a DiT. Without
-  // this, an fp16/no value left over from SDXL rides along in the DiT start payload and the
-  // backend rejects it (dense modes need mixed_precision=bf16). Kept in its own effect so it
-  // does not re-trigger the base/settings reseed above.
+  // mixed_precision is an SDXL-only lever (hidden for DiT families). A dense DiT base precision
+  // (bf16/int8/fp8) requires bf16 compute, and every DiT family trains in bf16, so reset
+  // precision to bf16 on a change to a DiT family. Without this, an fp16/no value left from SDXL
+  // rides along in the DiT start payload and the backend rejects it (dense modes need
+  // mixed_precision=bf16). Kept in its own effect so it doesn't re-trigger the reseed above.
   useEffect(() => {
     if (isDiT) setPrecision("bf16");
   }, [isDiT]);
 
-  // The base actually used everywhere (request, deploy, select value). baseChoice can
-  // briefly hold another family's repo between a family switch and the reseed effect
-  // (or if that effect is skipped); a raw <select value> would then DISPLAY the first
-  // option while the request still carried the stale repo -- the user saw FLUX's gated
-  // error while another family looked selected. Clamp to the current family's repos.
+  // The base actually used everywhere (request, deploy, select value). baseChoice can briefly
+  // hold another family's repo between a family switch and the reseed effect (or if it's
+  // skipped); a raw <select value> would then DISPLAY the first option while the request carried
+  // the stale repo -- the user saw FLUX's gated error while another family looked selected. Clamp
+  // to the current family's repos.
   const effectiveBase =
     baseChoice === CUSTOM_BASE || (family?.base_repos ?? []).includes(baseChoice)
       ? baseChoice
@@ -476,12 +485,11 @@ export function DiffusionTrainPanel({
       !(terminalStatuses.includes(status.status) && status.job_id === dismissedJobId),
   );
 
-  // Notify the parent exactly once per run that produced an adapter (full completion or
-  // stop-and-save) so it rescans the LoRA picker. The flag is re-armed both here (when a
-  // new run is observed as "running") and in onStart (the moment a start is requested), so
-  // a second run still notifies even if the poll never catches the intermediate "running"
-  // state; onStart also guards the double-fire when the poll re-observes the same terminal
-  // status before the new run has begun.
+  // Notify the parent once per run that produced an adapter (full completion or stop-and-save)
+  // so it rescans the LoRA picker. The flag is re-armed both here (when a new run is seen
+  // "running") and in onStart (when a start is requested), so a second run still notifies even if
+  // the poll never catches the intermediate "running" state; onStart also guards the double-fire
+  // when the poll re-observes the same terminal status before the new run begins.
   const notifiedComplete = useRef(false);
   useEffect(() => {
     const producedAdapter =
@@ -739,11 +747,11 @@ export function DiffusionTrainPanel({
     [poll],
   );
 
-  // Resolve the repo an adapter should be PREVIEWED on. Krea (and any family that trains on
-  // one checkpoint but runs adapters on another) declares a deploy_base: preview the adapter
-  // there instead of the training checkpoint, so the default Krea train-on-Raw flow does not
-  // load the adapter on Raw's non-distilled recipe. Only a recognised training base is
-  // overridden; a custom repo the user typed is respected as-is.
+  // Resolve the repo an adapter should be PREVIEWED on. Krea (and any family that trains on one
+  // checkpoint but runs adapters on another) declares a deploy_base: preview the adapter there
+  // instead of the training checkpoint, so the default Krea train-on-Raw flow doesn't load the
+  // adapter on Raw's non-distilled recipe. Only a recognised training base is overridden; a
+  // custom typed repo is respected as-is.
   const deployBaseFor = useCallback(
     (trainedBase: string, famName: string): string => {
       const rec = info?.families?.find((f) => f.name === famName);
@@ -911,6 +919,7 @@ export function DiffusionTrainPanel({
               }}
               className={selectClass}
               aria-label="Base precision"
+              disabled={familyUntrainable}
             >
               {precisionModes.map((m) => (
                 <option
@@ -923,10 +932,18 @@ export function DiffusionTrainPanel({
               ))}
             </select>
             <p className="text-[11px] leading-snug text-muted-foreground">
-              How the base model is stored while training. Auto picks the best fit for
-              your GPU.
-              {basePrequantized && (
-                <> This base is already 4-bit, so only nf4/auto apply.</>
+              {familyUntrainable ? (
+                // The reason itself (the backend's bf16-preflight text) already shows in
+                // the family picker's vram_note line above.
+                <>This GPU cannot train this model family.</>
+              ) : (
+                <>
+                  How the base model is stored while training. Auto picks the best fit
+                  for your GPU.
+                  {basePrequantized && (
+                    <> This base is already 4-bit, so only nf4/auto apply.</>
+                  )}
+                </>
               )}
             </p>
           </div>
@@ -1184,9 +1201,15 @@ export function DiffusionTrainPanel({
             type="button"
             className="w-full"
             onClick={onStart}
-            disabled={starting || uploading || running}
+            disabled={starting || uploading || running || familyUntrainable}
           >
-            {starting ? "Starting..." : running ? "Training in progress" : "Start training"}
+            {starting
+              ? "Starting..."
+              : running
+                ? "Training in progress"
+                : familyUntrainable
+                  ? "Not supported on this GPU"
+                  : "Start training"}
           </Button>
         </div>
       </div>

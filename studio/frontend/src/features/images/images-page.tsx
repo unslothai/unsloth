@@ -82,11 +82,10 @@ import {
 } from "./api";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
 
-// Curated models come from the shared catalog: one canonical group per model,
-// its artifacts (GGUF / FP8 / bnb-4bit / BF16) as data, and the load kind per
-// artifact via loadSpecFor (replacing the old SAFETENSORS_MODELS table). The
-// picker renders groups with a format second level and routes bare clicks to
-// the best artifact for the device.
+// Curated models come from the shared catalog: one canonical group per model, its artifacts
+// (GGUF / FP8 / bnb-4bit / BF16) as data, and the load kind per artifact via loadSpecFor
+// (replacing the old SAFETENSORS_MODELS table). The picker renders groups with a format
+// second level and routes bare clicks to the best artifact for the device.
 const MODELS: ModelOption[] = catalogToModelOptions(IMAGE_CATALOG);
 
 // Workflow tabs. `requires` is the backend workflow id (status.workflows) that must
@@ -429,10 +428,9 @@ function SliderField({
           min={min}
           max={max}
           step={step}
-          // The slider is the primary control, so the native number spinners are
-          // redundant — and on this narrow field their up/down arrows overlapped and
-          // covered the value. Remove them on every engine: appearance:textfield for
-          // Firefox, and zero out the webkit inner/outer spin buttons.
+          // The slider is the primary control, so the native number spinners are redundant --
+          // and on this narrow field their arrows overlapped the value. Remove them on every
+          // engine: appearance:textfield for Firefox, zeroed webkit inner/outer spin buttons.
           className="w-14 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [appearance:textfield] [&::-webkit-outer-spin-button]:m-0 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:m-0 [&::-webkit-inner-spin-button]:appearance-none"
         />
       </div>
@@ -627,12 +625,11 @@ function ImageDropzone({
   );
 }
 
-// A brush-based mask editor for inpainting. Shows the source image with a paintable
-// overlay and exports a grayscale PNG mask at the image's NATIVE resolution, following
-// the diffusers inpaint convention (white = repaint, black = keep). Strokes are drawn to
-// both a visible tinted overlay (feedback) and an offscreen mask canvas kept in lockstep,
-// so the exported mask always matches what the user sees. `brushPct` sizes the brush as a
-// fraction of the image's shorter side, so it stays consistent across resolutions.
+// A brush-based mask editor for inpainting. Shows the source image with a paintable overlay
+// and exports a grayscale PNG mask at the image's NATIVE resolution (diffusers convention:
+// white = repaint, black = keep). Strokes draw to both a visible tinted overlay (feedback)
+// and an offscreen mask canvas in lockstep, so the exported mask matches what the user sees.
+// `brushPct` sizes the brush as a fraction of the shorter side, so it's resolution-consistent.
 function MaskCanvas({
   image,
   brushPct,
@@ -782,10 +779,10 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 // Which sides to grow when outpainting.
 type ExtendSides = { left: boolean; right: boolean; top: boolean; bottom: boolean };
 
-// Build the (image, mask) pair for outpaint by reusing the inpaint backend: grow the
-// canvas by `pct` of each dimension on the selected sides, edge-bleed the original pixels
-// into the new bands (so the VAE encodes plausible content), and mask the new bands white
-// (= repaint) with a small overlap into the original on each grown side so the seam blends.
+// Build the (image, mask) pair for outpaint by reusing the inpaint backend: grow the canvas
+// by `pct` per dimension on the selected sides, edge-bleed the original pixels into the new
+// bands (so the VAE encodes plausible content), and mask the new bands white (= repaint) with
+// a small overlap into the original on each grown side so the seam blends.
 async function buildOutpaint(
   src: string,
   sides: ExtendSides,
@@ -834,10 +831,10 @@ async function buildOutpaint(
   mctx.fillStyle = "#000000"; // ...except the kept original (inset by the seam overlap).
   mctx.fillRect(l + ol, t + ot, w - ol - or, h - ot - ob);
 
-  // The grown canvas can exceed the backend's 4096px-per-side decode limit (e.g. a
-  // 2048px source at 100% on both sides -> 6144px), which would 400 the load. Scale the
-  // built pair down proportionally to fit, so Extend still returns an outpaint instead
-  // of failing. The backend also rounds to /16, so exact dims here are not required.
+  // The grown canvas can exceed the backend's 4096px-per-side decode limit (e.g. a 2048px
+  // source at 100% on both sides -> 6144px), which would 400 the load. Scale the built pair
+  // down proportionally to fit so Extend still returns an outpaint. The backend rounds to /16,
+  // so exact dims aren't required.
   const MAX_SIDE = 4096;
   const longest = Math.max(nw, nh);
   if (longest > MAX_SIDE) {
@@ -1034,6 +1031,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
     null,
   );
+  // Render-safe mirror of "lastLoad.current was set by a user-initiated load": a resident
+  // GGUF/single_file model discovered by refresh carries no checkpoint filename in status, so
+  // lastLoad stays null and Reapply would be dead. Set only from event handlers; the
+  // resident-pipeline case is derived from status at render time (mirrors the video page).
+  const [canReapply, setCanReapply] = useState(false);
   // Repo id whose defaults we've already seeded from a discovered resident model, so
   // we seed the sliders once per resident model and never clobber a later manual edit.
   const seededResident = useRef<string | null>(null);
@@ -1075,11 +1077,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const loadToastId = useRef<string | number | null>(null);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
   const lastLoadSig = useRef<string | null>(null);
-  // The quant to restore if the current optimistic swap fails. A same-repo quant
-  // change sets `quant` immediately for picker feedback; if the load then fails
-  // AFTER starting (an error/eviction during download), the old pipeline stays
-  // loaded, so the poll must roll the label back rather than advertise the failed
-  // quant. `{ prev }` distinguishes "revert to null" from "nothing pending".
+  // The quant to restore if the optimistic swap fails. A same-repo quant change sets `quant`
+  // immediately for picker feedback; if the load then fails AFTER starting (error/eviction
+  // during download) the old pipeline stays loaded, so the poll rolls the label back rather
+  // than advertise the failed quant. `{ prev }` distinguishes "revert to null" from "nothing pending".
   const quantRevert = useRef<{ prev: string | null } | null>(null);
   // A trained adapter awaiting deployment: after Deploy loads the base, the LoRA discovery
   // effect applies this once the model is loaded + LoRA-capable for the matching family.
@@ -1098,15 +1099,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     galleryCache.quant = quant;
   }, [images, hasMore, selectedId, quant]);
 
-  // Refresh the LoRA picker's suggestions when the loaded model (family) changes. A LoRA is
-  // trained for a specific base family, so a real model SWAP invalidates the current selection
-  // -- clear it then (the user re-adds a suggestion or types a Hub repo id for the new family).
-  // But do NOT clear on the first load or an unload: a user can restore a saved recipe (which
-  // sets loras) BEFORE the model finishes loading, and clearing on that load->capable
-  // transition would silently drop the restored adapters. We track the previously-loaded
-  // family in a ref and clear only when it changes to a different loaded family. We also do
-  // NOT filter the selection against the discovered catalog: a valid pick can be a free-text
-  // Hugging Face repo id that is not in the (often empty) curated list.
+  // Refresh the LoRA picker's suggestions when the loaded family changes. A LoRA is trained
+  // for a specific base family, so a real model SWAP invalidates the selection -- clear it then.
+  // But do NOT clear on the first load or an unload: a user can restore a saved recipe (setting
+  // loras) BEFORE the model finishes loading, and clearing on that load->capable transition
+  // would drop the restored adapters. We track the previous family in a ref and clear only on a
+  // change to a different loaded family. We also do NOT filter the selection against the catalog:
+  // a valid pick can be a free-text HF repo id absent from the (often empty) curated list.
   const loraCapable = Boolean(status?.loaded && status?.supports_lora);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
@@ -1144,12 +1143,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         if (!cancelled) setAvailableLoras(list);
       })
       .catch(() => {
-        // Clear only the OPTIONS on a failed catalog refresh. Unlike the catalog-only
-        // picker below the stack, this free-text picker holds selections (bare HF repo
-        // ids) that are valid without being in the catalog; a transient refresh failure
-        // must not wipe them. Stale cross-family selections are already cleared by the
-        // family-swap check above, and hidden LoRAs are never sent (handleGenerate is
-        // gated on loraCapable).
+        // Clear only the OPTIONS on a failed catalog refresh. Unlike the catalog-only picker
+        // below, this free-text picker holds selections (bare HF repo ids) valid without being
+        // in the catalog; a transient refresh failure must not wipe them. Stale cross-family
+        // selections are already cleared by the family-swap check above, and hidden LoRAs are
+        // never sent (handleGenerate is gated on loraCapable).
         if (!cancelled) setAvailableLoras([]);
       });
     return () => {
@@ -1308,10 +1306,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     const m = matchAspect(image.width, image.height);
     setAspect(m.key);
     setPortrait(m.portrait);
-    // Restore selected LoRA adapters from the recipe ("id:weight" strings); split on the
-    // LAST colon so an id that itself contains ':' is preserved. Unparseable entries are
-    // skipped, and a recipe with no LoRAs clears the current selection so the restore
-    // reproduces the image faithfully rather than leaking a stale form selection.
+    // Restore selected LoRA adapters from the recipe ("id:weight" strings); split on the LAST
+    // colon so an id containing ':' is preserved. Unparseable entries are skipped, and a recipe
+    // with no LoRAs clears the selection so the restore reproduces the image faithfully rather
+    // than leaking a stale form selection.
     const restoredLoras: LoraSpecInput[] = [];
     for (const entry of image.loras ?? []) {
       const idx = entry.lastIndexOf(":");
@@ -1363,11 +1361,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
-  // Track mount so a long generate run stops issuing GPU work when the page is
-  // truly unmounted (app close / chat-only eject). The page now stays mounted
-  // across tab switches (RootLayout keeps it alive like chat), so a switch no
-  // longer breaks the loop -- a batch keeps generating off-tab. The mount-time
-  // refreshStatus and timer/toast cleanup live in the load-resume effect below,
+  // Track mount so a long generate run stops issuing GPU work only on a true unmount (app
+  // close / chat-only eject). The page stays mounted across tab switches (RootLayout keeps it
+  // alive like chat), so a switch doesn't break the loop -- a batch keeps generating off-tab.
+  // The mount-time refreshStatus and timer/toast cleanup live in the load-resume effect below,
   // so this one carries only the mount flag.
   useEffect(() => {
     isMounted.current = true;
@@ -1386,10 +1383,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     })();
   }, [active, refreshStatus]);
 
-  // Collapse the body-ported popovers when leaving the tab. Their open state is
-  // controlled and force-closed via `active && open` while off-tab, but the
-  // underlying flag stays set, so returning to /images would otherwise pop them
-  // back open unprompted. Reset it so the page comes back in a neutral state.
+  // Collapse the body-ported popovers when leaving the tab. Their open state is controlled
+  // and force-closed via `active && open` while off-tab, but the underlying flag stays set, so
+  // returning to /images would pop them back open. Reset it so the page returns neutral.
   useEffect(() => {
     if (active) return;
     setSelectorOpen(false);
@@ -1428,10 +1424,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         return;
       }
       if (p.phase === null) {
-        // No load in flight and nothing loaded: the load was cancelled or
-        // evicted (e.g. a chat load took the GPU) and the backend cleared its
-        // state. Terminal — otherwise this loop would spin forever and leave
-        // busy stuck on "loading", deadening the picker and Generate button.
+        // No load in flight and nothing loaded: the load was cancelled or evicted (e.g. a chat
+        // load took the GPU) and the backend cleared its state. Terminal -- else this loop
+        // spins forever and leaves busy stuck on "loading", deadening the picker and Generate.
         dismissLoadToast();
         setBusy(null);
         // Same optimistic-quant rollback as the error path: the swap did not take.
@@ -1455,13 +1450,62 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
   }, [dismissLoadToast, refreshStatus]);
 
+  // Re-enter the per-step generation poll for a run already in flight on the backend --
+  // one this page did not start (another client called /images/generate, or this browser
+  // reloaded mid-generate). The backend runs generations under a serialising lock and keeps
+  // reporting progress, so track it here instead of showing a stale idle view. The images
+  // generate-progress carries only per-step progress (no terminal record), so on completion
+  // refresh the gallery to merge any image saved after the mount fetch. Kept separate from
+  // handleGenerate's own loop, which prepends its synchronous results directly.
+  const resumeGeneratePoll = useCallback(() => {
+    if (genPollTimer.current) clearInterval(genPollTimer.current);
+    if (genVisibilityListener.current)
+      document.removeEventListener("visibilitychange", genVisibilityListener.current);
+    let pollInFlight = false;
+    const pollGenerateOnce = async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
+      try {
+        const p = await getGenerateProgress();
+        if (!p.active) {
+          if (genPollTimer.current) clearInterval(genPollTimer.current);
+          genPollTimer.current = null;
+          if (genVisibilityListener.current) {
+            document.removeEventListener("visibilitychange", genVisibilityListener.current);
+            genVisibilityListener.current = null;
+          }
+          if (!isMounted.current) return;
+          setBusy(null);
+          setGenStep(null);
+          // The finished run saved its image(s) to the backend gallery; re-fetch the first
+          // page to merge them (a full replace, so deduped) and resync status.
+          void loadGallery();
+          void refreshStatus();
+          return;
+        }
+        setGenStep((prev) => {
+          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
+          return p;
+        });
+      } catch {
+        // transient; keep polling
+      } finally {
+        pollInFlight = false;
+      }
+    };
+    genVisibilityListener.current = () => {
+      if (document.visibilityState === "visible") void pollGenerateOnce();
+    };
+    document.addEventListener("visibilitychange", genVisibilityListener.current);
+    genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
+  }, [loadGallery, refreshStatus]);
+
   useEffect(() => {
     void (async () => {
       await refreshStatus();
-      // A load runs on the backend as a daemon thread that survives navigation.
-      // On (re)mount, resume tracking one that's still in flight so the page
-      // shows progress and updates on completion, instead of a stale view that
-      // never polls (no toast, and no refresh when the load finishes).
+      // A load runs on the backend as a daemon thread that survives navigation. On (re)mount,
+      // resume tracking one still in flight so the page shows progress and updates on
+      // completion, instead of a stale view that never polls.
       try {
         const p = await getDiffusionLoadProgress();
         if (p.phase === "downloading" || p.phase === "finalizing") {
@@ -1470,6 +1514,21 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           lastLoadSig.current = null;
           loadToastId.current = toast(null, loadToastArgs(p));
           void pollLoadProgress();
+        }
+      } catch {
+        // Resume is best-effort; a failed probe just leaves the idle view.
+      }
+      // A generation started elsewhere -- another client, or this browser before a reload --
+      // keeps running on the backend under a serialising lock. Resume tracking it so the page
+      // reflects the in-flight run (progress bar + disabled Generate) instead of a stale idle
+      // view, then refreshes the gallery when it finishes to pick up an image saved after the
+      // mount fetch. Mirrors the video page's mount resume.
+      try {
+        const g = await getGenerateProgress();
+        if (g.active) {
+          setBusy("generating");
+          setGenStep(g);
+          resumeGeneratePoll();
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
@@ -1487,36 +1546,39 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       }
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress]);
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress, resumeGeneratePoll]);
 
-  // Seed the generation sliders to a resident model's recipe when the page discovers
-  // one it did not load itself -- a model left loaded by a prior session or another
-  // route. refreshStatus() only sets `status`; without this the sliders keep the
-  // unrecognised-model fallback (few-step / no-CFG), so a resident full model (e.g.
-  // flux.1-dev) would generate at 9 steps / guidance 0 and produce garbage until the
-  // user re-picked it. Guarded by lastLoad.current === null (a user-initiated load
-  // already seeds its own defaults via handleModelSelect) and a per-repo ref, so a
-  // manual slider edit after the one-shot seed is never clobbered.
+  // Seed the generation sliders to a resident model's recipe when the page discovers one it
+  // did not load itself (left loaded by a prior session or another route). refreshStatus() only
+  // sets `status`; without this the sliders keep the unrecognised-model fallback (few-step /
+  // no-CFG), so a resident full model (e.g. flux.1-dev) generates at 9 steps / guidance 0 and
+  // produces garbage until re-picked. Guarded by lastLoad.current === null (a user-initiated
+  // load seeds its own defaults) and a per-repo ref, so a manual edit after the seed is never
+  // clobbered.
   useEffect(() => {
     const repoId = status?.loaded ? status.repo_id : null;
     if (!repoId) return;
     if (lastLoad.current) return;
     if (seededResident.current === repoId) return;
     seededResident.current = repoId;
-    const d = defaultsFor(repoId);
+    // Seed from the resolved base_repo, not repo_id: a GGUF/single_file resident (or one
+    // loaded from a bare local path like /models/checkpoint.safetensors) carries a repo_id
+    // with no family substring, so defaultsFor(repoId) would fall back to the distilled
+    // few-step/no-CFG recipe and the first resident generation would run with wrong defaults.
+    // base_repo is the resolved diffusers base (it holds the family), so prefer it when set.
+    const d = defaultsFor(status?.base_repo ?? repoId);
     setSteps(d.steps);
     setGuidance(d.guidance);
-    // Wire "Reapply" to the resident model too, so an advanced-option reload works
-    // without re-picking it from the dropdown. Only a full pipeline load needs no
-    // checkpoint filename; a resident GGUF *and* single_file carry no filename in status,
-    // and the backend rejects a gguf/single_file load without one (400 before it evicts),
-    // so leave lastLoad null for those (Reapply stays a no-op) rather than wire a reload
-    // that can never complete.
+    // Wire "Reapply" to the resident model too, so an advanced-option reload works without
+    // re-picking from the dropdown. Only a full pipeline load needs no checkpoint filename; a
+    // resident GGUF/single_file carries no filename in status and the backend rejects such a
+    // load without one (400 before it evicts), so leave lastLoad null for those (Reapply stays
+    // hidden) rather than wire a reload that can never complete.
     const kind = status?.model_kind;
     if (kind === "pipeline") {
       lastLoad.current = { repoId, kind };
     }
-  }, [status?.loaded, status?.repo_id, status?.model_kind]);
+  }, [status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
 
   const handleLoad = useCallback(
     // Resolves true when the background load STARTED (callers may revert
@@ -1535,15 +1597,19 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       dismissLoadToast();
       lastLoadSig.current = null;
       loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS));
-      // Remember what was loaded so "Reapply" can reload it with new advanced options.
+      // Remember what was loaded so "Reapply" can reload it with new advanced options. Snapshot
+      // the prior target first: a load that fails to START (validation, gated repo, training
+      // guard) leaves the previous model resident, so Reapply and the resident-default seeding
+      // must keep pointing at it, not the failed pick.
+      const prevLastLoad = lastLoad.current;
       lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
+      setCanReapply(true);
       try {
-        // Returns immediately — the load runs in the background; we poll for it.
-        // The backend infers the family + base diffusers repo from the repo id.
-        // Forward the saved HF token so gated bases (FLUX dev/klein) can download.
-        // A pipeline load carries no filename (the repo IS the pipeline); the
-        // single-file kinds send the GGUF / safetensors filename. Advanced options map
-        // sentinels ("auto"/"off"/"none") to omitted so the backend uses its defaults.
+        // Returns immediately -- the load runs in the background; we poll for it. The backend
+        // infers the family + base diffusers repo from the id. Forward the saved HF token so
+        // gated bases (FLUX dev/klein) download. A pipeline load carries no filename (the repo
+        // IS the pipeline); single-file kinds send the GGUF / safetensors filename. Advanced
+        // sentinels ("auto"/"off"/"none") map to omitted so the backend uses its defaults.
         await loadDiffusionModel({
           model_path: repoId,
           model_kind: opts.kind,
@@ -1557,6 +1623,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
         });
       } catch (err) {
+        lastLoad.current = prevLastLoad;
+        setCanReapply(prevLastLoad != null);
         dismissLoadToast();
         toast.error(err instanceof Error ? err.message : "Failed to start load");
         setBusy(null);
@@ -1612,12 +1680,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         void handleLoad(id, { kind: spec.kind, filename: spec.filename });
         return;
       }
-      // GGUF quant pick from the variant expander. Optimistic for instant picker
-      // feedback, but revert if the load fails to START (400/409/network) or LATER
-      // during the poll (download/preflight error/eviction) -- in both cases the old
-      // pipeline stays loaded, so the selector must not advertise the failed quant.
-      // The poll owns the after-start revert via quantRevert; here we only handle
-      // the never-started case.
+      // GGUF quant pick from the variant expander. Optimistic for instant picker feedback, but
+      // revert if the load fails to START (400/409/network) or LATER in the poll (download/
+      // preflight error/eviction) -- in both cases the old pipeline stays loaded, so don't
+      // advertise the failed quant. The poll owns the after-start revert via quantRevert; here
+      // we only handle the never-started case.
       if (meta.ggufVariant && meta.ggufFilename) {
         const prevQuant = quant;
         quantRevert.current = { prev: prevQuant };
@@ -1660,10 +1727,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         });
         return;
       }
-      // A direct local single-file .safetensors pick (custom folder / on-device file)
-      // must load via from_single_file: the pipeline route rejects a bare file (no
-      // model_index.json) and only after evicting the resident model. Split into
-      // (parent dir, basename) exactly like the local GGUF branch above.
+      // A direct local single-file .safetensors pick (custom folder / on-device file) must
+      // load via from_single_file: the pipeline route rejects a bare file (no model_index.json)
+      // and only after evicting the resident model. Split into (parent dir, basename) like the
+      // local GGUF branch above.
       if (meta.source === "local" && id.toLowerCase().endsWith(".safetensors")) {
         const norm = id.replace(/\\/g, "/");
         const slash = norm.lastIndexOf("/");
@@ -1738,10 +1805,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   );
 
   const handleUnload = useCallback(async () => {
-    // Ejecting cancels any in-flight replacement load on the backend, so tear
-    // down its client-side tracking too: the load poll reschedules on phase
-    // null and the persistent toast never resolves, so both would otherwise
-    // leak forever after the unload.
+    // Ejecting cancels any in-flight replacement load on the backend, so tear down its
+    // client-side tracking too: the load poll reschedules on phase null and the persistent
+    // toast never resolves, so both would otherwise leak forever after the unload.
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = null;
     dismissLoadToast();
@@ -1862,10 +1928,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     const runs = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
     if (runs !== count) setCount(runs);
 
-    // An explicit seed near the 2**53-1 backend cap can overflow once the per-run
-    // offset (base + i*batchSize) and the engine's in-batch +j offsets are added,
-    // 422ing a later run AFTER earlier images already generated. Fail before any
-    // GPU work. Subtraction keeps the comparison exact where the sum would round.
+    // An explicit seed near the 2**53-1 backend cap can overflow once the per-run offset
+    // (base + i*batchSize) and the engine's in-batch +j offsets are added, 422ing a later run
+    // AFTER earlier images generated. Fail before any GPU work. Subtraction keeps the comparison
+    // exact where the sum would round.
     if (baseSeed > Number.MAX_SAFE_INTEGER - (runs * batchSize - 1)) {
       toast.error("Seed too large for this run count and batch size; use a smaller seed");
       return;
@@ -1874,10 +1940,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
-    // Poll the backend's per-step progress across the whole run (all sequential
-    // generations), so the bar tracks the live denoising steps. A named poll body
-    // (guarded against overlap) also serves the visibilitychange listener: a
-    // background tab's throttled interval catches up the moment the tab is visible.
+    // Poll the backend's per-step progress across the whole run (all sequential generations)
+    // so the bar tracks live denoising steps. A named poll body (guarded against overlap) also
+    // serves the visibilitychange listener: a background tab's throttled interval catches up the
+    // moment the tab is visible.
     let pollInFlight = false;
     const pollGenerateOnce = async () => {
       if (pollInFlight) return;
@@ -1930,11 +1996,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           strength: condStrength,
           upscale: condUpscale,
           reference_images: condRefImages,
-          // Drop empty (no id typed yet) and zero-weight rows, and trim hand-typed repo ids,
-          // so the recipe records only adapters that actually applied. Empty -> omit entirely.
-          // Gate on loraCapable: a restore can leave adapters in state while the loaded model
-          // does not support LoRA (picker hidden), and sending them would fail generation with
-          // no visible row to remove.
+          // Drop empty (no id yet) and zero-weight rows, and trim hand-typed repo ids, so the
+          // recipe records only adapters that applied. Gate on loraCapable: a restore can leave
+          // adapters in state while the loaded model doesn't support LoRA (picker hidden), and
+          // sending them would fail generation with no visible row to remove.
           loras: (() => {
             if (!loraCapable) return undefined;
             const active = loras
@@ -1979,7 +2044,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       setGenDone(null);
       setGenStep(null);
     }
-  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, refreshStatus]);
+  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, refreshStatus]);
 
   // Keep the active workflow valid for the loaded model: an edit-only model (Qwen-Image-
   // Edit) has no Create/Transform tabs, a base model has no Edit tab. Snap to the first
@@ -2089,7 +2154,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         </span>
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>
-      {status?.loaded && (
+      {/* A resident full pipeline is reloadable by repo id alone (the resident effect
+          wires lastLoad for it), so it keeps Reapply even before any user-initiated
+          load; GGUF/single_file residents have no reload target and hide the button. */}
+      {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
         <Button
           variant="secondary"
           size="sm"
@@ -2200,10 +2268,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           <div className="flex gap-1 rounded-xl bg-muted/50 p-1">
             {WORKFLOW_TABS.map((t) => {
               const wf = status?.workflows ?? [];
-              // Create (requires null) needs txt2img once a model is loaded -- an
-              // edit-only model (workflows: ["edit"]) has no text-to-image mode, so its
-              // Create tab is disabled and Edit is the only enabled one. With nothing
-              // loaded, Create stays available so the user can pick a model.
+              // Create (requires null) needs txt2img once a model is loaded -- an edit-only
+              // model (workflows: ["edit"]) has no text-to-image mode, so its Create tab is
+              // disabled and Edit is the only enabled one. With nothing loaded, Create stays
+              // available so the user can pick a model.
               const enabled =
                 t.requires === null
                   ? !status?.loaded || wf.includes("txt2img")

@@ -1,16 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Single-GPU arbiter for Studio's two heavy GPU consumers.
+"""Single-GPU arbiter for Studio's heavy GPU consumers.
 
-The chat backends (llama-server + the Unsloth subprocess) and the diffusion
-backend share one GPU. Before either takes the GPU it calls ``acquire_for(owner)``,
-which evicts the current *other* owner so two large models never sit in VRAM at
-once. The arbiter only sequences ownership; the actual freeing is delegated to
-each backend's existing teardown.
-
-Eviction runs under the arbiter lock, so an ownership transfer is atomic with
-respect to other acquires.
+The chat backends, diffusion, and video share one GPU. Before taking it each calls
+``acquire_for(owner)``, which evicts the current other owner so two large models never sit in VRAM
+at once. The arbiter only sequences ownership (freeing is each backend's teardown); eviction runs
+under the lock, so a transfer is atomic vs other acquires.
 """
 
 from __future__ import annotations
@@ -37,21 +33,17 @@ def _evict_chat() -> None:
     from routes.inference import get_llama_cpp_backend
 
     llama = get_llama_cpp_backend()
-    # is_active (process exists), not is_loaded (process exists AND healthy): a
-    # chat model still starting up holds/keeps allocating VRAM but isn't healthy
-    # yet, so gating on is_loaded would skip it and let the load race the
-    # diffusion pipeline. unload_model() sets _cancel_event and kills the process.
+    # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting
+    # up holds VRAM but isn't healthy, so is_loaded would skip it and let the load race diffusion.
     if llama.is_active:
         llama.unload_model()
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
         orchestrator.unload_model(orchestrator.active_model_name)
-    # Kill the subprocess too, not just the model: its base CUDA context holds
-    # VRAM the diffusion pipeline needs.
+    # Kill the subprocess too: its base CUDA context holds VRAM diffusion needs.
     orchestrator._shutdown_subprocess(timeout = 5.0)
-    # The driver reclaims the killed process's VRAM asynchronously; wait for free
-    # memory to settle before the diffusion pipeline allocates, mirroring the chat
-    # reload path — otherwise a warm chat→diffusion handoff can transiently OOM.
+    # The driver reclaims the killed VRAM asynchronously; wait for it to settle before diffusion
+    # allocates, else a warm chat->diffusion handoff can transiently OOM.
     llama._wait_for_vram_settle(since_kill = time.monotonic())
 
 
@@ -67,10 +59,8 @@ def _evict_video() -> None:
     get_video_backend().unload()
 
 
-# Patchable in tests via monkeypatch.setitem. Ownership is exclusive -- only one
-# owner holds the GPU at a time -- so acquire_for's evict-the-current-owner
-# already generalises to any number of registered owners (chat / image / video
-# all evict whichever of the others currently holds the GPU).
+# Patchable in tests via monkeypatch.setitem. Ownership is exclusive, so acquire_for's
+# evict-the-current-owner generalises to any number of registered owners.
 _EVICTORS = {CHAT: _evict_chat, DIFFUSION: _evict_diffusion, VIDEO: _evict_video}
 
 

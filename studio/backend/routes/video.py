@@ -59,9 +59,8 @@ def _guard_video_load_against_training() -> None:
         diffusion_active = get_diffusion_training_service().is_active()
     except Exception:  # noqa: BLE001
         diffusion_active = False
-    # An SDXL LoRA trainer runs in its own subprocess on the same GPU, so a video
-    # load must be refused while one is active too -- otherwise the resident pipeline
-    # competes with the trainer for VRAM. Symmetric with the image-load interlock.
+    # An SDXL LoRA trainer runs in its own subprocess on the same GPU, so refuse a video
+    # load while one is active too (VRAM competition). Symmetric with the image-load interlock.
     if not llm_active and not diffusion_active:
         return
     raise HTTPException(
@@ -78,36 +77,44 @@ def _guard_video_load_against_training() -> None:
 async def load_video_model(
     request: VideoLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
+    from core.inference.diffusion import resolve_local_single_file
     from core.inference.diffusion_device import resolve_diffusion_device_target
     from core.inference.gpu_arbiter import VIDEO, acquire_for, release
-    from core.inference.video import get_video_backend
+    from core.inference.video import get_video_backend, resolve_video_model_kind
     from utils.native_path_leases import redact_native_paths
 
     backend = get_video_backend()
     try:
-        # Validate cheaply BEFORE touching the GPU: an unloadable pick (bad family,
-        # missing local checkpoint, a non-trusted non-GGUF repo) must not evict a
-        # working chat model and then 400.
+        # Resolve the load kind once (gguf / single_file / pipeline) so validation and the
+        # load agree; a bad explicit kind raises here -> 400.
+        kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
+        # A local On-Device pick can be a bare single-file .safetensors directory (no
+        # model_index.json): the scanner advertises it as a text-to-video model, but the
+        # local picker starts it as a pipeline with no filename, so a pipeline load would
+        # 400 on the missing model_index.json and the advertised model is unusable. If the
+        # directory holds exactly one checkpoint, reinterpret the pick as a single_file load
+        # of it, so validation and the load agree. Mirrors the image load route.
+        if kind == "pipeline" and not request.gguf_filename:
+            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            if sole is not None:
+                request.gguf_filename = sole
+                kind = resolve_video_model_kind(sole, None)
+        # Validate cheaply BEFORE touching the GPU so an unloadable pick can't evict chat then 400.
         await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
-            model_kind = request.model_kind,
+            model_kind = kind,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
             vae_quant = request.vae_quant,
         )
-        # Refuse while training is running: a multi-GB video pipeline would compete
-        # with the training subprocess for VRAM. Mirrors the image-load guard.
+        # Refuse while training is running (VRAM competition). Mirrors the image-load guard.
         _guard_video_load_against_training()
-        # Take the GPU from the chat backend only when this load will actually use it,
-        # which is exactly the resolved device being non-CPU. A CPU-only load never
-        # touches GPU memory, so keying off the device (not the load) avoids wrongly
-        # evicting a resident chat model. Release any stale VIDEO ownership on a CPU
-        # load -- release() is owner-guarded, so it is a no-op when video never owned
-        # the GPU.
+        # Take the GPU from chat only for a non-CPU load; a CPU load never touches GPU memory,
+        # so key off the device. Release stale VIDEO ownership on a CPU load (owner-guarded no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
         if device != "cpu":
             await asyncio.to_thread(acquire_for, VIDEO)
@@ -130,7 +137,7 @@ async def load_video_model(
             text_encoder_quant = request.text_encoder_quant,
             vae_quant = request.vae_quant,
             cfg_parallel = request.cfg_parallel,
-            model_kind = request.model_kind,
+            model_kind = kind,
         )
         return VideoStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:
@@ -177,9 +184,8 @@ async def generate_video(
         # Bad client input -- a 400 with the reason, not a generic 500.
         raise HTTPException(status_code = 400, detail = str(exc))
     except RuntimeError as exc:
-        # Only "no model loaded" / "already generating" are client-state (409).
-        # Match the sentinels exactly, not as a substring, so an unrelated failure
-        # can't misroute to 409 and leak its message.
+        # Only the not-loaded / busy sentinels are client-state (409); match exactly so an
+        # unrelated failure can't misroute and leak its message.
         msg = str(exc)
         if msg in (VIDEO_NOT_LOADED_MSG, VIDEO_GENERATION_BUSY_MSG):
             raise HTTPException(status_code = 409, detail = msg)
@@ -216,11 +222,8 @@ async def unload_video_model(current_subject: str = Depends(get_current_subject)
     backend = get_video_backend()
     status_dict = await asyncio.to_thread(backend.unload)
     # Drop VIDEO ownership only if nothing is resident AND no new load is in flight: a concurrent
-    # /video/load that re-acquired VIDEO while this (slow) unload ran must keep ownership, or a
-    # later chat/image load would see no owner, skip eviction, and OOM against the newly resident
-    # (or still in-flight) video pipeline. release() is owner-guarded and identity-less, so an
-    # unconditional release here would clear the newer load's claim. Mirrors the images-route
-    # guard (inference.py), plus the in-flight check the committed-loaded state cannot cover.
+    # /video/load that re-acquired VIDEO must keep ownership (release() is owner-guarded but
+    # identity-less, so an unconditional release would clear the newer claim). Mirrors the images route.
     if not backend.loading_repo_ids() and not backend.status()["loaded"]:
         release(VIDEO)
     return VideoStatusResponse(**status_dict)
@@ -239,10 +242,8 @@ async def list_gallery_videos(
     # Fetch one extra to learn whether more remain, without a second scan.
     records = await asyncio.to_thread(video_gallery.list_videos, limit + 1, offset)
     has_more = len(records) > limit
-    # Build the response per record and drop any that fail schema validation: a
-    # sidecar with all required keys but a wrong value type (a hand-dropped or
-    # older-schema file) passes the presence-only read but would raise inside
-    # GalleryVideo(**r). Skipping it keeps one bad file from 500-ing the listing.
+    # Build per record, dropping any that fail schema validation, so one bad sidecar
+    # (wrong value type) doesn't 500 the whole listing.
     videos = []
     for r in records[:limit]:
         try:
@@ -263,9 +264,8 @@ async def get_gallery_video_file(
         raise HTTPException(status_code = 404, detail = "Video not found.")
     from fastapi.responses import FileResponse
 
-    # FileResponse streams from disk (no whole-clip buffering per request) and
-    # serves HTTP range requests so a direct URL can seek without a full fetch.
-    # Immutable content (id is unique per video), so let the browser cache it.
+    # FileResponse streams from disk and serves range requests (seek without a full fetch).
+    # Immutable per id, so let the browser cache it.
     return FileResponse(
         path,
         media_type = "video/mp4",

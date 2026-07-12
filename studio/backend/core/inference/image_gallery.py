@@ -3,14 +3,12 @@
 
 """Disk-backed persistence for generated images.
 
-Each image is a PNG under ``studio_root()/images`` with its full generation
-recipe embedded as PNG text chunks: a structured ``unsloth`` JSON blob (the
-source of truth the gallery reads back) plus an Automatic1111-style
-``parameters`` string for interop with other tools. Because the recipe lives
-inside the file, a downloaded PNG carries its own settings.
+Each image is a PNG under ``studio_root()/images`` with its full recipe embedded as PNG text
+chunks: a structured ``unsloth`` JSON blob (the source of truth) plus an Automatic1111-style
+``parameters`` string for interop. So a downloaded PNG carries its own settings.
 
-The gallery is intentionally dumb storage: the route owns the metadata schema
-and passes a plain dict; this module only writes/reads/sorts files.
+Dumb storage: the route owns the metadata schema and passes a plain dict; this only reads/writes/
+sorts files.
 """
 
 from __future__ import annotations
@@ -29,8 +27,7 @@ logger = get_logger(__name__)
 
 # PNG text-chunk key holding our structured recipe JSON.
 _META_KEY = "unsloth"
-# Image ids are file stems; restrict to filename-safe chars so a crafted id
-# can't escape the gallery directory.
+# Image ids are file stems; restrict to safe chars so a crafted id can't escape the directory.
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
@@ -100,9 +97,8 @@ def image_b64(image_id: str) -> Optional[str]:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-# Recipe keys a gallery record must carry (the required GalleryImage fields, minus
-# id/url which _record adds). A PNG missing any is treated as foreign and skipped,
-# so a hand-dropped or older-schema file can't 500 the whole listing.
+# Required recipe keys (GalleryImage fields minus id/url). A PNG missing any is skipped as
+# foreign, so a hand-dropped or older-schema file can't 500 the listing.
 _REQUIRED_META = ("prompt", "width", "height", "steps", "guidance", "seed", "created_at")
 
 
@@ -135,27 +131,24 @@ def _mtime(path: Path) -> float:
 def list_images(limit: Optional[int] = None, offset: int = 0) -> list[dict[str, Any]]:
     """A newest-first window of images for infinite scroll.
 
-    Ordered by file mtime (a cheap stat, ~= generation order) so a months-old
-    gallery isn't opened in full just to sort it; only the window's recipes are
-    read. limit=None returns everything from ``offset`` on."""
+    Ordered by file mtime (a cheap stat ~= generation order), so a large gallery isn't opened in
+    full just to sort; only the window's recipes are read. limit=None returns everything from
+    ``offset`` on."""
     try:
         paths = list(gallery_dir().glob("*.png"))
     except OSError:
         return []
     paths.sort(key = _mtime, reverse = True)
-    # Page over READABLE records, not raw files: filtering a foreign/corrupt PNG out of an
-    # already-sliced window would drop valid images that sort after it and make the route's
-    # has_more wrong. Read only as far as needed to fill the requested window.
-    # Known Phase-1 limit: this re-reads headers from the newest down to `offset+limit` on
-    # every page, so a deep infinite-scroll over a very large gallery (thousands of images,
-    # e.g. a long uncapped batch) is O(offset) header-opens per page. PIL opens are lazy
-    # (header only) and this runs off the event loop, so it's not a freeze; a later phase can
-    # switch to cursor-based paging (resume after the last-seen record) if it starts to bite.
+    # Page over READABLE records, not raw files: filtering a foreign PNG out of an already-sliced
+    # window would drop valid images and make has_more wrong. Read only as far as needed.
+    # Known limit: this re-reads headers from newest down to `offset+limit` per page, so a deep
+    # scroll is O(offset) header-opens. PIL opens are lazy (header only) and off the event loop, so
+    # no freeze; a later phase can switch to cursor-based paging if it bites.
     want = None if limit is None else offset + limit
     records = []
     for path in paths:
         meta = _read_meta(path)
-        if meta is None:  # not one of ours (no recipe chunk) — skip
+        if meta is None:  # not one of ours (no recipe chunk)
             continue
         records.append(_record(path.stem, meta))
         if want is not None and len(records) >= want:

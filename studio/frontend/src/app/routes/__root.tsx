@@ -93,10 +93,9 @@ const CHAT_ONLY_ALLOWED = new Set([
 function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/")) return true;
-  // Images runs on CPU/MPS via the native sd.cpp engine, which is exactly the
-  // no-GPU (chat-only) setup it was added for. The generic chat-only flag is about
-  // training/export needing a GPU, so it must not redirect /images away here or the
-  // native image path is unreachable on the hosts that need it.
+  // Images runs on CPU/MPS via the native sd.cpp engine, exactly the no-GPU (chat-only) setup it
+  // was added for. The chat-only flag is about training/export needing a GPU, so it must not
+  // redirect /images away here or the native image path is unreachable where it's needed.
   if (pathname === "/images" || pathname.startsWith("/images/")) return true;
   return false;
 }
@@ -185,12 +184,11 @@ function RootLayout() {
     setVideoMounted(true);
   }
   const shouldMountVideo = isVideoRoute || videoMounted;
-  // Chat, Images and Video all render their own full-height shell (a fixed top rail + an
-  // internally-scrolling body), so all three want the chat-style layout: no outer pt-14
-  // inset and no outer scroll. Keying the layout off isChatRoute alone gave /images and
-  // /video the non-chat pt-14 + outer overflow, pushing the picker down and clipping the
-  // bottom gallery. Treat them the same for the container padding/overflow only; the
-  // keep-alive mounts below stay keyed to each specific route.
+  // Chat, Images and Video all render their own full-height shell (fixed top rail +
+  // internally-scrolling body), so all three want the chat-style layout: no outer pt-14 inset, no
+  // outer scroll. Keying off isChatRoute alone gave /images and /video the non-chat pt-14 + outer
+  // overflow, pushing the picker down and clipping the gallery. Treat them the same for container
+  // padding/overflow only; the keep-alive mounts below stay keyed to each route.
   const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;
 
   useTrainingUnloadGuard();

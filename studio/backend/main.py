@@ -727,10 +727,10 @@ from utils.upload_limits import (  # noqa: E402
 )
 
 _BODY_PROTECTED_PREFIXES = (
-    # Blanket-protect the whole OpenAI-compatible /v1 surface, like /api/inference below: every
-    # /v1 POST route (chat/completions, completions, images/generations, audio, embeddings,
-    # responses, messages, ...) buffers a JSON body and none is a multipart-upload passthrough,
-    # so a single prefix caps them all -- an enumerated list silently left new routes uncapped.
+    # Blanket-protect the whole /v1 surface, like /api/inference below: every /v1 POST route
+    # (chat/completions, images/generations, audio, embeddings, responses, ...) buffers a JSON
+    # body and none is a multipart passthrough, so one prefix caps them all -- an enumerated
+    # list would silently leave new routes uncapped.
     "/v1",
     "/p/",
     "/api/inference",
@@ -746,14 +746,13 @@ _DATASET_UPLOAD_PASSTHROUGH_PREFIX = "/api/datasets/upload"
 _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
     "/api/data-recipe/seed/upload-unstructured-file"
 )
-# The diffusion dataset upload route (POST /api/train/diffusion/dataset) is a multipart
-# image upload under the protected /api/train prefix. Like /api/datasets/upload it enforces
-# its own get_upload_limit_bytes() cap, so it must bypass the default body cap here or the
-# middleware would 413 near-limit batches (and ignore a raised max_upload_size_mb) before the
-# handler runs. Matched as an EXACT path (not a prefix): its JSON sub-routes
-# (PUT .../{name}/caption/{filename}, POST .../import-example) live under the same prefix but
-# must keep the normal small-JSON cap, or a large caption/import body would be buffered and
-# parsed up to the far larger upload limit before the route-level length checks run.
+# The diffusion dataset upload route (POST /api/train/diffusion/dataset) is a multipart image
+# upload under the protected /api/train prefix. Like /api/datasets/upload it enforces its own
+# get_upload_limit_bytes() cap, so it must bypass the default body cap here or the middleware
+# would 413 near-limit batches (ignoring a raised max_upload_size_mb) before the handler runs.
+# Matched as an EXACT path (not a prefix): its JSON sub-routes (.../caption/{filename},
+# .../import-example) share the prefix but must keep the small-JSON cap, or a large
+# caption/import body would be buffered up to the far larger upload limit.
 _DIFFUSION_DATASET_UPLOAD_PATH = "/api/train/diffusion/dataset"
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     _DATASET_UPLOAD_PASSTHROUGH_PREFIX,
@@ -767,11 +766,10 @@ _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (_DIFFUSION_DATASET_UPLOAD_PATH,)
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.startswith(_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX):
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
-    # The trailing-slash variant (/api/train/diffusion/dataset/) reaches this middleware
-    # BEFORE the router's redirect_slashes 307, so it must resolve to the same upload cap
-    # as the canonical path or a large upload 413s on the default /api/train body cap.
-    # Stripping slashes cannot promote a JSON sub-route: those all keep extra path
-    # components after normalization and still miss the exact match.
+    # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
+    # 307, so it must resolve to the same upload cap as the canonical path or a large upload
+    # 413s on the default /api/train cap. Stripping slashes can't promote a JSON sub-route:
+    # those keep extra path components after normalization and still miss the exact match.
     if (
         path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIX)
         or path.rstrip("/") == _DIFFUSION_DATASET_UPLOAD_PATH
@@ -836,9 +834,9 @@ class MaxBodyMiddleware:
         self.upload_passthrough_exact_paths = upload_passthrough_exact_paths
 
     def _is_upload_passthrough(self, path: str) -> bool:
-        # Exact paths also match their trailing-slash variant: the middleware runs
-        # before the router's redirect_slashes 307, and a JSON sub-route can never
-        # normalize down to the exact path (it keeps extra components).
+        # Exact paths also match their trailing-slash variant: the middleware runs before the
+        # router's redirect_slashes 307, and a JSON sub-route can never normalize to the exact
+        # path (it keeps extra components).
         return path.rstrip("/") in self.upload_passthrough_exact_paths or any(
             path.startswith(p) for p in self.upload_passthrough_prefixes
         )

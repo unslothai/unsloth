@@ -3,13 +3,10 @@
 
 """Device + dtype policy for the local diffusion backend.
 
-torch is imported lazily inside each function so this module stays importable in
-a no-torch runtime (mirrors ``diffusion.py`` / ``diffusion_families.py``).
-
-Studio's hardware layer reports product backends (CUDA, XPU, MLX, CPU); diffusers
-runs on PyTorch devices, so Apple Silicon maps to MPS and ROCm maps to PyTorch's
-``cuda`` device type. This module centralises that mapping plus the per-backend
-dtype choice and the capability flags the backend keys optimisation paths off.
+torch imported lazily so this stays importable in a no-torch runtime. Studio's hardware layer
+reports product backends (CUDA, XPU, MLX, CPU); diffusers runs on PyTorch devices, so Apple
+Silicon maps to MPS and ROCm to ``cuda``. Centralises that mapping plus the per-backend dtype and
+the capability flags optimisation paths key off.
 """
 
 from __future__ import annotations
@@ -56,15 +53,10 @@ def _studio_device_is(studio_device: Any, device_type: Any, name: str) -> bool:
 def resolve_diffusion_device_target() -> DiffusionDeviceTarget:
     """Resolve the torch device + dtype + capability flags for diffusion.
 
-    Prefers Studio's hardware layer when importable, else probes torch directly
-    (CUDA -> XPU -> MPS -> CPU). On Apple Silicon Studio reports MLX/CPU when its
-    product backend is gated on the ``mlx`` package, but diffusers runs on
-    PyTorch's MPS backend, so those cases still fall through to the MPS probe.
-
-    Torch is optional here: on a CPU-only install without PyTorch the native
-    stable-diffusion.cpp engine still runs (it shells out to sd-cli), so a missing
-    torch reports a torch-free CPU target instead of crashing the whole
-    ``/images/load`` before the engine router can select the native backend.
+    Prefers Studio's hardware layer, else probes torch (CUDA -> XPU -> MPS -> CPU). On Apple
+    Silicon Studio may report MLX/CPU, but diffusers uses MPS, so those fall through to the MPS
+    probe. Torch is optional: without it the native sd.cpp engine still runs, so a missing torch
+    reports a torch-free CPU target instead of crashing ``/images/load`` before engine selection.
     """
     try:
         import torch
@@ -97,8 +89,7 @@ def resolve_diffusion_device_target() -> DiffusionDeviceTarget:
             return _cpu_target(torch)
         if _studio_device_is(studio_device, DeviceType, "XPU"):
             return _xpu_target(torch)
-        # MLX / CPU / anything else: diffusers uses MPS (not MLX), so fall
-        # through to the torch probe below, which prefers MPS over CPU.
+        # MLX / CPU / else: diffusers uses MPS, so fall through to the torch probe (MPS over CPU).
 
     if torch.cuda.is_available():
         return _cuda_or_rocm_target(torch, is_rocm = is_rocm)
@@ -117,11 +108,8 @@ def resolve_diffusion_device_target() -> DiffusionDeviceTarget:
 def diffusion_device_target_from_torch_device(
     torch_device: str, dtype: Any
 ) -> DiffusionDeviceTarget:
-    """Reconstruct a target from a (device, dtype) pair.
-
-    Keeps the ``_pick_device_and_dtype`` shim / monkeypatch path working: a caller
-    that overrides the (device, dtype) tuple can still recover the capability flags.
-    """
+    """Reconstruct a target from a (device, dtype) pair, so a caller overriding the tuple (the
+    ``_pick_device_and_dtype`` shim / monkeypatch path) can still recover the capability flags."""
     device = str(torch_device).split(":", 1)[0]
     if device == "cuda":
         try:
@@ -163,17 +151,16 @@ def diffusion_device_target_from_torch_device(
 
 def _cuda_or_rocm_target(torch: Any, *, is_rocm: bool) -> DiffusionDeviceTarget:
     if is_rocm:
-        # ROCm (AMD) does not have NVIDIA's pre-Ampere bf16-emulation quirk, so
-        # is_bf16_supported() is trustworthy here; bf16 only when it proves it.
+        # ROCm lacks NVIDIA's pre-Ampere bf16-emulation quirk, so is_bf16_supported() is
+        # trustworthy; bf16 only when it proves it.
         try:
             bf16_ok = bool(torch.cuda.is_bf16_supported())
         except Exception:
             bf16_ok = False
         dtype = torch.bfloat16 if bf16_ok else torch.float16
     else:
-        # NVIDIA: bf16 needs Ampere+ (capability major >= 8). Checked by
-        # capability, NOT is_bf16_supported() -- pre-Ampere cards emulate bf16
-        # and report it supported, but it is slow / unwanted (the #6658 fix).
+        # NVIDIA: bf16 needs Ampere+ (major >= 8), by capability NOT is_bf16_supported()
+        # (pre-Ampere cards emulate bf16 slowly but report it supported; the #6658 fix).
         try:
             major = torch.cuda.get_device_capability()[0]
         except Exception:
@@ -209,12 +196,8 @@ def _xpu_target(torch: Any) -> DiffusionDeviceTarget:
 
 
 def _mps_supports_bfloat16(torch: Any) -> bool:
-    """Runtime probe for usable MPS bfloat16.
-
-    PyTorch only supports bfloat16 on MPS on macOS 14+; on older macOS a bfloat16
-    op raises. Probe with a tiny compute forced to evaluate (device->host sync)
-    rather than guessing from the macOS / chip version.
-    """
+    """Runtime probe for usable MPS bfloat16 (only on macOS 14+; older macOS raises). Probes with
+    a tiny forced compute rather than guessing from the macOS / chip version."""
     try:
         x = torch.ones(2, dtype = torch.bfloat16, device = "mps")
         return bool(torch.isfinite((x + x).float()).all().item())
@@ -235,17 +218,13 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
         mps_available = False
 
     if mps_available:
-        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, at the first MPS allocation
-        # (the bfloat16 probe below), so it must be relaxed before that. Otherwise the
-        # allocator caps the process at ~1.7x recommendedMaxWorkingSetSize and can OOM a
-        # model that would otherwise fit in unified RAM. setdefault respects an override.
+        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, at the first MPS allocation (the probe
+        # below), so relax it before that or the allocator caps at ~1.7x recommendedMaxWorkingSet
+        # and can OOM a model that would fit in unified RAM. setdefault respects an override.
         os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
-        # Prefer bfloat16; otherwise fall back to float32, NEVER silent float16.
-        # Modern diffusion transformers (Z-Image, FLUX.2, ...) produce activations
-        # far outside float16's finite range (~6.5e4) -- Z-Image's MLP
-        # down-projections peak near 9e5, overflowing to inf -> NaN -> a black
-        # image. bfloat16 (macOS 14+) shares float32's exponent range; on older
-        # macOS the probe fails and float32 keeps output correct (if slower).
+        # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far
+        # outside fp16's range (Z-Image MLP peaks near 9e5 -> inf -> NaN -> black image). bf16
+        # (macOS 14+) shares fp32's exponent range; on older macOS float32 keeps output correct.
         dtype = torch.bfloat16 if _mps_supports_bfloat16(torch) else torch.float32
         return DiffusionDeviceTarget(
             device = "mps",
@@ -260,8 +239,8 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
 
 
 def _cpu_target(torch: Any, dtype: Any = None) -> DiffusionDeviceTarget:
-    # torch is None on the no-torch CPU fallback; leave dtype=None then (matching the
-    # no-torch DiffusionDeviceTarget elsewhere) rather than crashing on torch.float32.
+    # torch is None on the no-torch CPU fallback; leave dtype=None then rather than crash on
+    # torch.float32.
     if dtype is None and torch is not None:
         dtype = torch.float32
     return DiffusionDeviceTarget(

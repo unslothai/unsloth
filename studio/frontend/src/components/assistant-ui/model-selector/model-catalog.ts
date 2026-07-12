@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One canonical name per diffusion model, with its published artifacts (GGUF
-// quants, prequant FP8 / bnb-4bit repos, official BF16 pipelines) as a second
-// level, plus a deterministic router that picks the best artifact for the
-// device. Pure helpers -- no React/DOM deps so they are easy to test (see
-// model-catalog.check.ts, run via `npm run catalog:check`).
+// One canonical name per diffusion model, with its published artifacts (GGUF quants, prequant
+// FP8 / bnb-4bit repos, official BF16 pipelines) as a second level, plus a deterministic router
+// picking the best artifact for the device. Pure helpers -- no React/DOM deps, so easy to test
+// (see model-catalog.check.ts, run via `npm run catalog:check`).
 
 import type { ModelOption } from "./types";
 
@@ -129,9 +128,9 @@ const bf16Single = (
 });
 
 // ── curated catalogs ────────────────────────────────────────────────────────────
-// Sizes are steady resident estimates (GB) used only for routing; a missing size
-// means "never auto-pick unless downloaded". GGUF entries carry no size -- the
-// quant ladder (pickDefaultQuant) sizes the individual .gguf files.
+// Sizes are steady resident estimates (GB) used only for routing; a missing size means "never
+// auto-pick unless downloaded". GGUF entries carry no size -- the quant ladder
+// (pickDefaultQuant) sizes the individual .gguf files.
 
 export const IMAGE_CATALOG: CatalogGroup[] = [
   {
@@ -278,12 +277,10 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
 
 export const VIDEO_CATALOG: CatalogGroup[] = [
   {
-    // The distilled 2.3 release: Lightricks' own bf16/fp8 single-file DiT
-    // checkpoints (loaded against the LTX-2 base for the VAE / Gemma3 text
-    // encoder, both repos already on the backend trust list) plus the GGUF
-    // quants. The single-file checkpoints keep the ~50 GB Gemma3-27B encoder in
-    // bf16, so their resident footprint is datacenter-scale; consumer GPUs route
-    // to GGUF, which offloads.
+    // The distilled 2.3 release: Lightricks' own bf16/fp8 single-file DiT checkpoints (loaded
+    // against the LTX-2 base for the VAE / Gemma3 text encoder, both already trusted) plus the GGUF
+    // quants. The single-file checkpoints keep the ~50 GB Gemma3-27B encoder in bf16, so their
+    // resident footprint is datacenter-scale; consumer GPUs route to GGUF, which offloads.
     canonicalId: "unsloth/LTX-2.3",
     displayName: "LTX 2.3 distilled",
     description: "Text-to-video with audio",
@@ -327,10 +324,10 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     description: "Text-to-video",
     scope: "video",
     artifacts: [
-      // Highest-quality first: pickDefaultArtifact only sorts by FORMAT, so among these two bf16
-      // artifacts it keeps catalog order and the fit loop returns the FIRST that fits the budget.
-      // The 720p (52 GB) must precede the 480p (40 GB) so a bare click on a GPU where 720p fits
-      // (e.g. 80 GB, 0.7*budget=56) picks 720p, falling back to 480p only on smaller cards.
+      // Highest-quality first: pickDefaultArtifact sorts only by FORMAT, so among these two bf16
+      // artifacts it keeps catalog order and the fit loop returns the FIRST that fits. The 720p (52
+      // GB) must precede the 480p (40 GB) so a bare click on a GPU where 720p fits (e.g. 80 GB,
+      // 0.7*budget=56) picks 720p, falling back to 480p only on smaller cards.
       bf16Pipeline("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v", 52, {
         label: "BF16 - 720p",
         keywords: ["bf16", "720p"],

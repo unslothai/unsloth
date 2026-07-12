@@ -3,38 +3,21 @@
 
 """Per-architecture eager fusions for the diffusion DiT blocks.
 
-The shared patches in ``diffusion_eager_patches.py`` cover what diffusers factors into
-SHARED classes (``RMSNorm``, the ``AdaLayerNorm*`` modulation classes -- the latter only
-used by flux.1). The remaining fusible ops -- the gated residual ``x = x + gate * out`` and
-the inline modulation ``norm * (1 + scale) + shift`` -- are written longhand in each
-family's PER-MODEL block ``forward`` (flux.2 / qwen / z-image), so they need per-arch
-patches. This module supplies them, in the ``unsloth_zoo.temporary_patches`` style: one
-small patch function per target, applied through the shared, fingerprint-checked,
-reversible backend (``diffusion_patch_backend`` -> ``patch_function`` / ``restore_original``).
+``diffusion_eager_patches.py`` covers the SHARED classes (RMSNorm, AdaLayerNorm*). The remaining
+fusible ops -- the gated residual ``x = x + gate * out`` and the inline modulation
+``norm * (1 + scale) + shift`` -- are written longhand in each family's PER-MODEL block forward,
+so they need per-arch patches. One small patch function per target, applied through the shared,
+reversible backend.
 
-The single actionable fused op is ``torch.addcmul(a, b, c) == a + b * c`` (one FMA kernel,
-1-ULP vs mul+add, MORE accurate). Two forms exist:
-  * out-of-place ``torch.addcmul(...)`` -- COMPILE-SAFE: lowers to plain ops, no aliasing,
-    neutral under ``torch.compile``. Used here for ALL non-``off`` tiers. It captures the
-    real eager win (fewer kernel launches); it does NOT save the output allocation.
-  * in-place ``x.addcmul_(...)`` -- would also save the allocation, but the allocation part
-    measured NEUTRAL on this stack (CUDA caching allocator already recycles; cf. the GGUF
-    weight-buffer result), and in-place residual mutation is compile-unsafe + aliasing-risky.
-    So it is deliberately NOT used; the out-of-place form is the whole, safe win.
+The fused op is ``torch.addcmul(a, b, c) == a + b * c`` (one FMA kernel, 1-ULP, MORE accurate).
+Only the out-of-place form is used: COMPILE-SAFE (lowers to plain ops, neutral under
+torch.compile), it captures the eager win (fewer launches) but not the output allocation. The
+in-place ``addcmul_`` would save the allocation, but that measured NEUTRAL here (CUDA allocator
+recycles) and is compile-unsafe + aliasing-risky.
 
-Each patch is guarded TWICE: ``can_safely_patch`` checks the forward SIGNATURE, and a local
-source-body check (``_body_has``) confirms the exact lines we rewrite are still present, so a
-future diffusers that changed the block body simply leaves the block UNPATCHED (correctness
-first) rather than running a stale copy. Kill-switch: ``UNSLOTH_DIFFUSION_ARCH_PATCHES=0``.
-
-Implemented for all five families (extend by adding entries to ``_SPECS``):
-  * qwen-image  ``QwenImageTransformerBlock._modulate`` -- modulation addcmul (all 4 sites).
-  * z-image     ``ZImageTransformerBlock.forward``      -- the 2 gated-residual addcmuls.
-  * flux.1      ``FluxTransformerBlock.forward`` (inline norm2 modulation + 4 gated residuals)
-                + ``FluxSingleTransformerBlock.forward`` (residual + gate*proj_out).
-  * flux.2-klein ``Flux2TransformerBlock.forward`` (4 inline modulations + 4 gated residuals)
-                + ``Flux2SingleTransformerBlock.forward`` (inline modulation + gated residual).
-  * krea-2      ``Krea2TransformerBlock.forward`` (2 inline modulations + 2 gated residuals).
+Each patch is guarded TWICE: ``can_safely_patch`` checks the SIGNATURE, and ``_body_has`` confirms
+the exact rewritten lines are still present, so a changed diffusers block is left UNPATCHED.
+Kill-switch: ``UNSLOTH_DIFFUSION_ARCH_PATCHES=0``. Implemented for all five families (see ``_SPECS``).
 """
 
 from __future__ import annotations
@@ -58,8 +41,8 @@ def _patches_enabled() -> bool:
 
 
 def _body_has(fn: Callable, *needles: str) -> bool:
-    """True iff every ``needle`` appears in ``fn``'s source -- a body-drift guard so a patch
-    self-disables if diffusers changed the lines it rewrites."""
+    """True iff every ``needle`` is in ``fn``'s source -- a body-drift guard that self-disables the
+    patch if diffusers changed the rewritten lines."""
     try:
         src = inspect.getsource(fn)
     except (OSError, TypeError):
@@ -76,9 +59,8 @@ def _qwen_modulate(
     mod_params,
     index = None,
 ):
-    """diffusers 0.38 ``QwenImageTransformerBlock._modulate`` with the final
-    ``x*(1+scale)+shift`` fused to ``torch.addcmul`` (covers both the global and the
-    per-token ``index`` branches, since both end in that same expression)."""
+    """``QwenImageTransformerBlock._modulate`` with the final ``x*(1+scale)+shift`` fused to
+    ``torch.addcmul`` (both the global and per-token ``index`` branches end in it)."""
     shift, scale, gate = mod_params.chunk(3, dim = -1)
 
     if index is not None:
@@ -131,9 +113,9 @@ def _zimage_forward(
     adaln_noisy: torch.Tensor | None = None,
     adaln_clean: torch.Tensor | None = None,
 ):
-    """diffusers 0.38 ``ZImageTransformerBlock.forward`` with the two gated residuals
-    ``x = x + gate * sublayer`` fused to ``torch.addcmul`` (out-of-place). The shift-free
-    ``*scale`` modulation and the non-gated (``else``) residuals are left as-is."""
+    """``ZImageTransformerBlock.forward`` with the two gated residuals ``x = x + gate * sublayer``
+    fused to ``torch.addcmul``. The shift-free ``*scale`` modulation and non-gated residuals are
+    left as-is."""
     from diffusers.models.transformers.transformer_z_image import select_per_token
 
     if self.modulation:
@@ -203,8 +185,8 @@ def _spec_zimage_forward():
 
 # =====================================================================================
 # flux.1: FluxTransformerBlock / FluxSingleTransformerBlock
-# (block modulation goes through AdaLayerNormZero -- already handled by the shared patch;
-#  here we fuse the inline norm2 modulation + the gated residual adds.)
+# (block modulation goes through AdaLayerNormZero, handled by the shared patch; here we fuse the
+#  inline norm2 modulation + the gated residual adds.)
 # =====================================================================================
 def _flux_double_forward(
     self,
@@ -333,8 +315,8 @@ def _spec_flux_single():
 
 # =====================================================================================
 # flux.2-klein: Flux2TransformerBlock / Flux2SingleTransformerBlock
-# (modulation is INLINE here -- not via AdaLayerNorm -- so we fuse both the modulation and
-#  the gated residuals; scale/shift/gate are [B,1,dim] so no [:, None] is needed.)
+# (modulation is INLINE, so we fuse both modulation and gated residuals; scale/shift/gate are
+#  [B,1,dim] so no [:, None].)
 # =====================================================================================
 def _flux2_double_forward(
     self,
@@ -479,11 +461,9 @@ def _krea2_block_forward(
     image_rotary_emb,
     attention_mask = None,
 ):
-    """diffusers 0.39 ``Krea2TransformerBlock.forward`` with the two inline modulations
-    ``(1 + scale) * norm(x) + shift`` and the two gated residuals ``x + gate * out`` each
-    fused to one ``torch.addcmul``."""
-    # temb: (B, 1, 6 * hidden_size), shared across all blocks; each block only learns an
-    # additive table.
+    """``Krea2TransformerBlock.forward`` with the two inline modulations
+    ``(1 + scale) * norm(x) + shift`` and the two gated residuals each fused to ``torch.addcmul``."""
+    # temb: (B, 1, 6 * hidden_size), shared across blocks; each block learns an additive table.
     modulation = temb.unflatten(-1, (6, -1)) + self.scale_shift_table
     prescale, preshift, pregate, postscale, postshift, postgate = modulation.unbind(-2)
 
@@ -519,8 +499,7 @@ def _spec_krea2_forward():
 # =====================================================================================
 # registry + lifecycle
 # =====================================================================================
-# Each entry is a zero-arg resolver returning (cls, attr, new_fn) or None (target absent /
-# body drifted). All entries here are COMPILE-SAFE (out-of-place addcmul).
+# Each entry is a zero-arg resolver returning (cls, attr, new_fn) or None. All COMPILE-SAFE.
 _SPECS: tuple[Callable[[], Optional[tuple]], ...] = (
     _spec_qwen_modulate,
     _spec_zimage_forward,
@@ -536,10 +515,8 @@ _patched: list[tuple] = []
 
 
 def install_arch_patches() -> int:
-    """Install the per-arch compile-safe fusions (idempotent). Returns the count applied.
-
-    Safe for every non-``off`` tier: the fusions lower to plain ops and are neutral under
-    ``torch.compile`` (so they also help the ``max`` regionally-compiled blocks)."""
+    """Install the per-arch compile-safe fusions (idempotent). Returns the count applied. Safe for
+    every non-``off`` tier: they lower to plain ops and are neutral under ``torch.compile``."""
     if not _patches_enabled():
         uninstall_arch_patches()
         return 0

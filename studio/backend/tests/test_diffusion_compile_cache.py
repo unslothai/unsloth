@@ -190,13 +190,81 @@ def test_save_then_load_roundtrip(monkeypatch, tmp_path, fake_megacache):
     assert ctx2.key == ctx.key
 
 
-def test_no_save_in_auto_mode(monkeypatch, tmp_path, fake_megacache):
+def test_auto_mode_saves_by_default(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_MODE, "auto")
     monkeypatch.delenv(cc._ENV_SAVE, raising = False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
-    assert cc.save(ctx) is False  # auto without SAVE opt-in does not write
+    assert cc.save(ctx) is True  # first-run warm: auto saves the bundle
+    assert ctx.bundle.exists() and ctx.manifest_path.exists()
+
+    # The next load with the same fingerprint hits the just-saved bundle...
+    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert ctx2.hit is True
+    # ...and does NOT rewrite it under auto (the artifacts on disk are the ones loaded).
+    before = ctx2.bundle.stat().st_mtime_ns
+    assert cc.save(ctx2) is False
+    assert ctx2.bundle.stat().st_mtime_ns == before
+
+
+def test_save_env_zero_disables_auto_save(monkeypatch, tmp_path, fake_megacache):
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.setenv(cc._ENV_SAVE, "0")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert cc.save(ctx) is False  # explicit load-only override
     assert not ctx.bundle.exists()
+
+
+def test_on_mode_resaves_after_hit(monkeypatch, tmp_path, fake_megacache):
+    monkeypatch.setenv(cc._ENV_MODE, "on")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert cc.save(ctx) is True
+    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert ctx2.hit is True
+    # Distributor mode refreshes the bundle even on a hit (new variants get captured).
+    assert cc.save(ctx2) is True
+
+
+def test_new_static_shape_redirties_a_hit(monkeypatch, tmp_path, fake_megacache):
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.delenv(cc._ENV_SAVE, raising = False)
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+
+    # Cold session at 1024: the save records the shape coverage in the manifest.
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    cc.register_shape(ctx, (1024, 1024, 1), static = True)
+    assert cc.save(ctx) is True
+    manifest = json.loads(ctx.manifest_path.read_text())
+    assert manifest["shapes"] == [[1024, 1024, 1]]
+
+    # Warm session: the covered shape does not dirty the context...
+    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert ctx2.hit is True and ctx2.saved is True
+    assert ctx2.shapes == {(1024, 1024, 1)}
+    cc.register_shape(ctx2, (1024, 1024, 1), static = True)
+    assert cc.save(ctx2) is False
+    # ...but a NEW static shape (its compile just produced new artifacts) does, and the
+    # rewritten manifest covers both.
+    cc.register_shape(ctx2, (768, 768, 1), static = True)
+    assert ctx2.saved is False
+    assert cc.save(ctx2) is True
+    manifest = json.loads(ctx2.manifest_path.read_text())
+    assert manifest["shapes"] == [[768, 768, 1], [1024, 1024, 1]]
+
+
+def test_dynamic_compile_never_dirties(monkeypatch, tmp_path, fake_megacache):
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    cc.save(ctx)
+    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert ctx2.hit is True
+    # A dynamic-shape compile reuses one artifact across shapes: no re-save.
+    cc.register_shape(ctx2, (768, 768, 1), static = False)
+    assert cc.save(ctx2) is False
+    cc.register_shape(None, (768, 768, 1), static = True)  # no context: no-op
 
 
 def test_fingerprint_mismatch_falls_back(monkeypatch, tmp_path, fake_megacache):

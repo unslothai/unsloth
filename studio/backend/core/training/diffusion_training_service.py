@@ -27,8 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-# Spawn (not fork): a fresh interpreter, matching the LLM training worker, so CUDA/torch
-# state from the parent never leaks into the trainer.
+# Spawn (not fork): a fresh interpreter so parent CUDA/torch state never leaks into the trainer.
 _CTX = mp.get_context("spawn")
 
 # Terminal event types after which the pump stops.
@@ -57,30 +56,22 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
 
 def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
-    # First thing in the spawned child (before torch is imported): bind to the parent's
-    # death on Linux and scrub the native path lease secret, exactly like the inference /
-    # export / LLM-training workers. multiprocessing children cannot be given a
-    # parent-set preexec_fn, so the child must self-bind; otherwise a Studio crash or
-    # kill leaves this trainer holding the GPU. Tests inject their own target, so this
-    # binding only runs for the real production spawn.
+    # First thing in the child (before torch): self-bind to parent death and scrub the native
+    # path secret, like the other workers (multiprocessing children can't be given a preexec_fn).
     from utils.native_path_leases import run_without_native_path_secret
     run_without_native_path_secret(
         _run_diffusion_child, event_queue = event_queue, stop_queue = stop_queue, config = config
     )
 
 
-# Cap on retained metric points. When exceeded, the arrays are decimated (every other
-# point dropped) so a long run stays bounded in memory while the live loss chart keeps a
-# faithful shape. 4000 points comfortably covers a typical run at full resolution.
+# Cap on retained metric points; over it, arrays are decimated (every other point) so a
+# long run stays bounded while the loss chart keeps its shape.
 _METRIC_CAP = 4000
 
 
 # ── persisted run history ──────────────────────────────────────────────────────
-# Every terminal run (completed / stopped / error) is recorded as one JSON file --
-# summary + scrubbed config + the full bounded metric logs -- so the Train tab can show
-# previous runs like the LLM trainer's history. JSON files (not the LLM sqlite tables)
-# keep diffusion runs out of the LLM Runs page, whose resume/inspect actions assume an
-# LLM-shaped run.
+# Every terminal run is recorded as one JSON file (summary + scrubbed config + metric logs)
+# so the Train tab can show history. JSON (not LLM sqlite) keeps diffusion runs off the LLM Runs page.
 def _runs_dir() -> Path:
     from utils.paths.storage_roots import studio_root
 
@@ -102,10 +93,8 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
             rec = json.loads(p.read_text(encoding = "utf-8"))
         except Exception:  # noqa: BLE001 -- a corrupt record never breaks the listing
             continue
-        # A valid-JSON file with the wrong shape (an old or hand-edited record that is not a
-        # dict, or is missing the required string job_id / status) would later blow up the
-        # route's DiffusionTrainingRunSummary(**r); skip it here so one bad record can never
-        # take down the whole Previous runs panel.
+        # Skip a wrong-shape record (not a dict, or missing string job_id/status) so one bad
+        # file can't blow up the route's DiffusionTrainingRunSummary(**r) or the whole panel.
         if not isinstance(rec, dict):
             continue
         if not (isinstance(rec.get("job_id"), str) and isinstance(rec.get("status"), str)):
@@ -118,8 +107,7 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
 
 def get_diffusion_run(job_id: str) -> Optional[dict]:
     """The full persisted record for one run (summary + config + metric logs)."""
-    # Records are keyed by the uuid4 hex job id; reject anything else so a crafted id
-    # can never traverse out of the runs directory.
+    # Keyed by uuid4 hex; reject anything else so a crafted id can't traverse out of the dir.
     if not re.fullmatch(r"[0-9a-f]{32}", str(job_id or "")):
         return None
     p = _runs_dir() / f"{job_id}.json"
@@ -182,11 +170,9 @@ def _append_metric(
     if istep <= 0 or loss is None:
         return
     floss = _finite_or_none(loss)
-    if floss is None:  # non-numeric or non-finite (NaN/Inf): skip, keep the curve JSON-safe
+    if floss is None:  # non-numeric or non-finite: skip, keep the curve JSON-safe
         return
-    # lr / grad_norm may be None (sparse series) or non-finite; non-finite values are
-    # nulled, not dropped, so a bad point never taints the (loss-driven) history while the
-    # arrays stay index-aligned with steps.
+    # lr / grad_norm may be None or non-finite; non-finite is nulled (not dropped) to stay index-aligned.
     flr = _finite_or_none(lr)
     fgn = _finite_or_none(grad_norm)
     steps = state["metric_steps"]
@@ -222,10 +208,8 @@ class DiffusionTrainingService:
         self._ctx = ctx if ctx is not None else _CTX
         self._target = target if target is not None else _default_target
         self._lock = threading.Lock()
-        # Set True by reserve() while a start is in flight, BEFORE the route frees resident GPU
-        # models, so the image/video load guards (which read is_active) refuse a concurrent load
-        # during the free-then-spawn window rather than double-allocate the GPU. Cleared by
-        # unreserve() once the proc is live (or the start failed).
+        # Set by reserve() while a start is in flight (before the route frees GPU models) so the
+        # load guards refuse a concurrent load during the free-then-spawn window. Cleared by unreserve().
         self._reserved = False
         self._proc: Any = None
         self._stop_queue: Any = None
@@ -274,10 +258,8 @@ class DiffusionTrainingService:
 
         _config_from_dict(config).normalized()
 
-        # Join a finished job's pump OUTSIDE the lock: its final state writes take this
-        # lock (via _apply_event / the exit handler), so joining under it would stall
-        # the start for the whole timeout and then let the stale pump overwrite the new
-        # job's state once the lock was released.
+        # Join a finished job's pump OUTSIDE the lock: its final state writes take this lock, so
+        # joining under it would stall the start and let the stale pump overwrite the new state.
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
                 raise RuntimeError("A diffusion training job is already running.")
@@ -337,8 +319,7 @@ class DiffusionTrainingService:
             if self._proc is None or not self._proc.is_alive() or self._stop_queue is None:
                 return False
             try:
-                # Bare True keeps the wire format older trainers expect; the dict form
-                # carries the no-save cancel flag the trainer's _check_stop understands.
+                # Bare True = older wire format; the dict form carries the no-save cancel flag.
                 self._stop_queue.put(True if save else {"save": False})
             except Exception:  # noqa: BLE001
                 return False
@@ -459,9 +440,8 @@ class DiffusionTrainingService:
             elif etype == "model_load_completed":
                 s.update(in_model_load = False, message = "Training...")
             elif etype == "preparing":
-                # A long precompute phase (e.g. the VAE latent cache) between model load and
-                # the first step; surfaced so the UI shows visible progress instead of a
-                # silent "Loading base model..." stall.
+                # A long precompute phase (e.g. VAE latent cache) before the first step; surfaced
+                # so the UI shows progress instead of a silent "Loading base model..." stall.
                 done, total = ev.get("done"), ev.get("total")
                 stage = str(ev.get("stage", "prepare")).replace("_", " ")
                 s.update(
@@ -474,13 +454,11 @@ class DiffusionTrainingService:
                     ),
                 )
             elif etype == "warning":
-                # Non-fatal trainer notes (e.g. torch.compile falling back to eager); keep
-                # training state, surface the text.
+                # Non-fatal trainer notes; keep training state, surface the text.
                 s["message"] = str(ev.get("message", "warning"))
             elif etype == "progress":
-                # Null any non-finite float (NaN/Inf from a divergent step or an inf grad
-                # norm) so the JSON status stays strict-parseable; a missing key keeps the
-                # last value, a present-but-non-finite one becomes None.
+                # Null any non-finite float so the JSON stays strict-parseable; a missing key
+                # keeps the last value, a present-but-non-finite one becomes None.
                 loss = _finite_or_none(ev["loss"]) if "loss" in ev else s["loss"]
                 avg_loss = _finite_or_none(ev["avg_loss"]) if "avg_loss" in ev else s["avg_loss"]
                 learning_rate = (
@@ -501,8 +479,7 @@ class DiffusionTrainingService:
                     grad_norm = grad_norm,
                     message = "Training...",
                 )
-                # Fold optional perf fields (emitted by the trainers) so the UI can show
-                # throughput + peak VRAM without a separate channel.
+                # Fold optional perf fields so the UI shows throughput + peak VRAM.
                 if ev.get("samples_per_second") is not None:
                     s["samples_per_second"] = ev.get("samples_per_second")
                 if ev.get("peak_memory_gb") is not None:
@@ -516,9 +493,8 @@ class DiffusionTrainingService:
                     ev.get("grad_norm"),
                 )
             elif etype == "complete":
-                # Reset in_model_load: a stop during model load emits complete without a
-                # preceding model_load_completed, which would otherwise leave a stale
-                # loading indicator after the job ended.
+                # Reset in_model_load: a stop during model load emits complete with no preceding
+                # model_load_completed, which would otherwise leave a stale loading indicator.
                 s.update(
                     active = False,
                     in_model_load = False,
@@ -540,8 +516,7 @@ class DiffusionTrainingService:
                 if ev.get("base_model") is not None:
                     s["base_model"] = ev.get("base_model")
             elif etype == "error":
-                # Reset in_model_load too: an error raised during model loading has no
-                # model_load_completed, so the terminal state must clear it explicitly.
+                # Reset in_model_load too: an error during model loading has no model_load_completed.
                 s.update(
                     active = False,
                     in_model_load = False,

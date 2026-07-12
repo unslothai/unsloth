@@ -3,21 +3,12 @@
 
 """Native stable-diffusion.cpp (``sd-cli``) engine for the diffusion backend.
 
-This mirrors the chat backend's llama.cpp shell-out: locate a prebuilt / built
-binary, then run it as a one-shot subprocess. It is the CPU / Apple-Silicon
-(and low-VRAM) tier of the two-engine strategy -- the diffusers path stays the
-default on CUDA / ROCm / XPU, this covers the hardware diffusers serves poorly.
-
-Kept deliberately thin:
-  * ``find_sd_cpp_binary()`` -- env override -> ``~/.unsloth/stable-diffusion.cpp``
-    build layouts -> in-tree build -> PATH. Same precedence as the llama finder.
-  * ``SdCppEngine`` -- ``is_available`` / ``version`` probe + a ``generate`` that
-    builds the argv (``sd_cpp_args``), runs ``sd-cli``, and returns the PNG path.
-  * ``select_diffusion_engine(...)`` -- the routing decision (which backend gets
-    diffusers vs. sd.cpp), a pure function so the device layer can call it.
-
-Everything heavy (the subprocess, the binary) is reached only inside ``generate``
-/ ``version`` so importing this module is free and unit tests stay hermetic.
+Mirrors the chat backend's llama.cpp shell-out: locate a prebuilt / built binary, run it as a
+one-shot subprocess. The CPU / Apple-Silicon / low-VRAM tier; diffusers stays the default on
+CUDA / ROCm / XPU. Thin: ``find_sd_cpp_binary()`` (env -> install layouts -> in-tree -> PATH),
+``SdCppEngine`` (``is_available`` / ``version`` + a ``generate`` that builds argv, runs sd-cli,
+returns the PNG path), and the pure ``select_diffusion_engine(...)`` routing decision. Everything
+heavy is reached only inside ``generate`` / ``version``, so import is free and tests stay hermetic.
 """
 
 from __future__ import annotations
@@ -47,25 +38,21 @@ from core.inference.sd_cpp_args import (
 
 logger = logging.getLogger(__name__)
 
-# Binary name: sd-cli (sd-cli.exe on Windows). The stable-diffusion.cpp CMake
-# target is ``sd-cli``; older builds shipped ``sd`` -- both are probed on PATH.
+# sd-cli (sd-cli.exe on Windows); older builds shipped ``sd`` -- both probed on PATH.
 _BINARY_STEM = "sd-cli"
 _LEGACY_STEM = "sd"
-# The persistent HTTP server target (stable-diffusion.cpp ``examples/server``). It
-# ships next to ``sd-cli`` in both the prebuilt archives and the cmake build tree.
+# The persistent HTTP server target, shipped next to sd-cli in both prebuilt and cmake builds.
 _SERVER_STEM = "sd-server"
 
 
 class SdCppCancelled(RuntimeError):
-    """A generation was cancelled via its ``cancel_event`` (unload / superseding load
-    / arbiter eviction). Distinct from a generation *failure* so the caller can keep
-    cancellation semantics (no diffusers fallback, no error surfaced as a crash)."""
+    """A generation cancelled via its ``cancel_event`` (unload / superseding load / arbiter
+    eviction). Distinct from a *failure* so the caller keeps cancellation semantics."""
 
 
 def _terminate(proc: "subprocess.Popen") -> None:
-    """Hard-stop an sd-cli process (and any children). On POSIX the process is its
-    own session leader (``start_new_session``), so kill the whole group; otherwise
-    fall back to killing just the process."""
+    """Hard-stop an sd-cli process (and children). On POSIX it's a session leader, so kill the
+    whole group; else kill just the process."""
     if proc.poll() is not None:
         return
     try:
@@ -78,10 +65,8 @@ def _terminate(proc: "subprocess.Popen") -> None:
             proc.kill()
         except Exception:  # noqa: BLE001 -- best-effort teardown
             pass
-    # Reap the killed child so it does not linger as a zombie until the next Popen
-    # cleanup / interpreter exit. Callers raise immediately after _terminate (the
-    # cancellation and timeout paths), so without this a burst of image cancellations
-    # leaks process-table entries. SIGKILL is prompt, so a short bounded wait suffices.
+    # Reap the killed child so it doesn't linger as a zombie: callers raise right after
+    # _terminate, so without this a burst of cancellations leaks process-table entries.
     try:
         proc.wait(timeout = 5)
     except Exception:  # noqa: BLE001 -- best-effort reap; never block teardown
@@ -104,15 +89,10 @@ def _lib_path_var() -> str:
 def runtime_env(binary: str, base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     """Environment that lets ``binary`` find its bundled shared libraries.
 
-    The prebuilt archives ship ``libstable-diffusion.so`` (/ ``.dylib`` / DLLs)
-    next to ``sd-cli``, so prepend the binary's own directory to the platform
-    library path. A locally-built binary that is already linked finds its libs
-    regardless, so this is harmless there.
-
-    Every ``sd-cli`` launch (version probe + generate/upscale) funnels through here,
-    so this is also the chokepoint that strips the native-path lease secret from the
-    child env -- the sd-cli binary is an external process that must not be able to
-    mint/verify native-path grants, matching the other subprocess launchers.
+    The prebuilt archives ship the shared libs next to ``sd-cli``, so prepend the binary's own dir
+    to the platform library path (harmless for an already-linked local build). Every sd-cli launch
+    funnels through here, so it's also the chokepoint that strips the native-path lease secret from
+    the child env (an external process must not mint/verify native-path grants).
     """
     env = child_env_without_native_path_secret(os.environ if base_env is None else base_env)
     var = _lib_path_var()
@@ -123,11 +103,8 @@ def runtime_env(binary: str, base_env: Optional[dict[str, str]] = None) -> dict[
 
 
 def _layout_candidates(root: Path, stem: str = _BINARY_STEM) -> list[Path]:
-    """``stem`` locations under a stable-diffusion.cpp checkout/install ``root``,
-    highest priority first: the cmake ``build/bin`` tree, then a Windows Release
-    subdir, then the root itself, then the prebuilt archive's versioned subdir.
-
-    The prebuilt lands in its own versioned subdir rather than flattening into ``root``."""
+    """``stem`` locations under a stable-diffusion.cpp ``root``, highest priority first: the cmake
+    ``build/bin`` tree, a Windows Release subdir, the root, then the prebuilt's versioned subdir."""
     name = _binary_name(stem)
     cands = [
         root / "build" / "bin" / name,
@@ -135,7 +112,7 @@ def _layout_candidates(root: Path, stem: str = _BINARY_STEM) -> list[Path]:
         root / "bin" / name,
         root / name,
     ]
-    # Newest install first, by mtime -- tag strings don't sort numerically.
+    # Newest install first, by mtime (tag strings don't sort numerically).
     try:
         subdirs = [p for p in root.iterdir() if p.is_dir()]
         subdirs.sort(key = lambda p: p.stat().st_mtime, reverse = True)
@@ -160,16 +137,11 @@ def _first_file(paths: list[Path]) -> Optional[str]:
 def _find_binary(
     *, direct_env: str, path_stems: tuple[str, ...], layout_stem: str
 ) -> Optional[str]:
-    """Shared finder for the stable-diffusion.cpp binaries.
+    """Shared finder for the stable-diffusion.cpp binaries (mirrors the llama.cpp finder).
 
-    Search order (mirrors the llama.cpp finder so a Studio install lands where every
-    binary is looked for):
-      1. ``direct_env`` -- a direct path to the binary.
-      2. ``UNSLOTH_SD_CPP_PATH`` env -- a stable-diffusion.cpp install dir.
-      3. The default install root build layouts (the installer target); honors
-         ``UNSLOTH_STUDIO_HOME`` / ``STUDIO_HOME``, else ``~/.unsloth/stable-diffusion.cpp``.
-      4. ``./stable-diffusion.cpp`` in-tree build (developer checkout).
-      5. ``path_stems`` on PATH (in order).
+    Order: (1) ``direct_env`` binary path; (2) ``UNSLOTH_SD_CPP_PATH`` install dir; (3) the default
+    install root (honors ``UNSLOTH_STUDIO_HOME`` / ``STUDIO_HOME``, else ``~/.unsloth/...``);
+    (4) ``./stable-diffusion.cpp`` in-tree build; (5) ``path_stems`` on PATH.
     """
     # 1. Direct binary path.
     env_bin = os.environ.get(direct_env)
@@ -183,10 +155,8 @@ def _find_binary(
         if hit:
             return hit
 
-    # 3. Default install root. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME the same way
-    #    the installer's default_install_dir does (base = the Studio home's parent), so
-    #    a binary installed under a custom Studio root is discovered and side-by-side
-    #    Studios stay isolated; falls back to the sibling of ~/.unsloth/llama.cpp.
+    # 3. Default install root. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer (base =
+    #    the Studio home's parent), so side-by-side Studios stay isolated; else ~/.unsloth/....
     studio_home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
     default_root = (
         Path(studio_home).parent / "stable-diffusion.cpp"
@@ -215,11 +185,8 @@ def _find_binary(
 
 
 def find_sd_cpp_binary() -> Optional[str]:
-    """Locate the one-shot ``sd-cli`` binary (env ``SD_CLI_PATH``), or None.
-
-    Probes ``sd-cli`` then legacy ``sd`` on PATH. This is the fallback engine once the
-    persistent ``sd-server`` exists; it also still backs the ESRGAN upscale mode.
-    """
+    """Locate the one-shot ``sd-cli`` binary (env ``SD_CLI_PATH``), or None. Probes ``sd-cli`` then
+    legacy ``sd``. The fallback engine once ``sd-server`` exists; also backs ESRGAN upscale."""
     return _find_binary(
         direct_env = "SD_CLI_PATH",
         path_stems = (_BINARY_STEM, _LEGACY_STEM),
@@ -228,13 +195,9 @@ def find_sd_cpp_binary() -> Optional[str]:
 
 
 def find_sd_server_binary() -> Optional[str]:
-    """Locate the persistent ``sd-server`` binary (env ``SD_SERVER_PATH``), or None.
-
-    Same precedence as ``find_sd_cpp_binary`` but keyed to the ``sd-server`` stem, so
-    a Studio install (prebuilt archive or cmake build, both of which ship ``sd-server``
-    next to ``sd-cli``) is found in the same places. Preferred over the one-shot CLI:
-    it loads the model once and serves many generations without reloading from disk.
-    """
+    """Locate the persistent ``sd-server`` binary (env ``SD_SERVER_PATH``), or None. Same precedence
+    as ``find_sd_cpp_binary`` keyed to the ``sd-server`` stem. Preferred over the one-shot CLI: it
+    loads the model once and serves many generations without reloading."""
     return _find_binary(
         direct_env = "SD_SERVER_PATH",
         path_stems = (_SERVER_STEM,),
@@ -243,12 +206,8 @@ def find_sd_server_binary() -> Optional[str]:
 
 
 class SdCppEngine:
-    """A thin handle over a located ``sd-cli`` binary.
-
-    Construct it (cheap -- just resolves the path), check ``is_available``, then
-    call ``generate``. Holds no process: each generation is an independent
-    one-shot ``sd-cli`` run, so there is nothing to leak or clean up.
-    """
+    """A thin handle over a located ``sd-cli`` binary. Holds no process: each generation is an
+    independent one-shot run, so there is nothing to leak or clean up."""
 
     def __init__(self, binary: Optional[str] = None) -> None:
         self.binary = binary or find_sd_cpp_binary()
@@ -258,10 +217,9 @@ class SdCppEngine:
         return bool(self.binary) and Path(self.binary).is_file()
 
     def version(self, *, timeout: float = 10.0) -> Optional[str]:
-        """First line of ``sd-cli --version``, cached on success. ``None`` when the
-        binary is absent OR present-but-unrunnable (exec error / nonzero exit, e.g.
-        missing shared libraries / bad permissions), so callers can fail a load early
-        instead of committing a "ready" state that crashes on first generation."""
+        """First line of ``sd-cli --version``, cached on success. ``None`` when the binary is absent
+        OR present-but-unrunnable (missing libs / bad permissions), so callers fail a load early
+        instead of a "ready" state that crashes on first generation."""
         if not self.is_available():
             return None
         if self._version is not None:
@@ -302,13 +260,10 @@ class SdCppEngine:
     ) -> Path:
         """Run one ``sd-cli`` generation; return the written image path.
 
-        ``native_speed`` ("default"/"max") adds sd.cpp's own speed flags
-        (``--diffusion-fa`` etc.), de-duplicated against the offload flags that may
-        already include them. Raises ``RuntimeError`` if the binary is missing, the
-        process exits nonzero, or no output file is produced. ``on_log`` (if given)
-        receives each line of sd-cli's progress output as it arrives. ``cancel_event``
-        (if given) is polled while the child runs; when set, the process tree is
-        killed and ``SdCppCancelled`` is raised.
+        ``native_speed`` ("default"/"max") adds sd.cpp's speed flags, de-duplicated against the
+        offload flags. Raises ``RuntimeError`` on a missing binary, nonzero exit, or no output.
+        ``on_log`` receives each progress line; ``cancel_event`` is polled and, when set, kills the
+        process tree and raises ``SdCppCancelled``.
         """
         offload = list(offload or [])
         speed = [f for f in native_speed_flags(native_speed) if f not in offload]
@@ -375,8 +330,7 @@ class SdCppEngine:
     def _prepare_out(output_path: str) -> Path:
         out = Path(output_path)
         out.parent.mkdir(parents = True, exist_ok = True)
-        # Drop a stale file at the target so the post-run is_file() check proves THIS
-        # run produced the image, not a leftover from an earlier run at the same path.
+        # Drop a stale file so the post-run is_file() check proves THIS run produced the image.
         out.unlink(missing_ok = True)
         return out
 
@@ -390,11 +344,8 @@ class SdCppEngine:
         on_log: Optional[Callable[[str], None]],
         cancel_event: Optional[threading.Event] = None,
     ) -> Path:
-        """Run an sd-cli argv, stream output, and return the produced image path.
-
-        Raises ``RuntimeError`` on nonzero exit, timeout, or a missing output, and
-        ``SdCppCancelled`` when ``cancel_event`` fires. Shared by ``generate`` and
-        ``upscale``.
+        """Run an sd-cli argv, stream output, return the image path. Raises ``RuntimeError`` on
+        nonzero exit / timeout / missing output, ``SdCppCancelled`` on cancel. Shared by generate/upscale.
         """
         out = Path(output_path)
         base = dict(os.environ)
@@ -411,19 +362,15 @@ class SdCppEngine:
             text = True,
             errors = "replace",
             env = run_env,
-            # Own session/process group so cancellation/timeout can kill the whole
-            # tree, not just the parent (POSIX only; harmless flag elsewhere).
+            # Own session/process group so cancellation/timeout kills the whole tree (POSIX).
             start_new_session = (os.name == "posix"),
-            # Bind the child to the parent's lifetime (Linux PR_SET_PDEATHSIG), so a
-            # hard parent crash mid-generation can't orphan sd-cli holding VRAM/RAM --
-            # matching every llama.cpp Popen site. Composes with start_new_session.
+            # Bind the child to the parent's lifetime (PR_SET_PDEATHSIG) so a parent crash can't
+            # orphan sd-cli holding VRAM/RAM. Composes with start_new_session.
             **child_popen_kwargs(),
         )
-        # Drain stdout on a reader thread so the timeout is enforced even when the
-        # child hangs WITHOUT printing (e.g. stuck in model load / GPU init): a plain
-        # `for line in proc.stdout` blocks until EOF, so proc.wait(timeout) would
-        # never be reached. The reader pushes lines (then a None sentinel at EOF) to a
-        # queue the main loop polls against a wall-clock deadline.
+        # Drain stdout on a reader thread so the timeout holds even when the child hangs WITHOUT
+        # printing (a plain `for line in proc.stdout` blocks until EOF). The reader pushes lines
+        # (then a None sentinel) to a queue the main loop polls against a wall-clock deadline.
         tail: list[str] = []
         line_q: "queue.Queue[Optional[str]]" = queue.Queue()
 
@@ -442,8 +389,7 @@ class SdCppEngine:
         stdout_done = False
         try:
             while True:
-                # Cancellation (unload / superseding load / arbiter eviction): kill the
-                # process tree and signal the caller it was cancelled, not a failure.
+                # Cancellation: kill the process tree and signal cancelled, not failure.
                 if cancel_event is not None and cancel_event.is_set() and proc.poll() is None:
                     _terminate(proc)
                     raise SdCppCancelled("sd-cli generation was cancelled.")
@@ -487,8 +433,7 @@ class SdCppEngine:
 ENGINE_DIFFUSERS = "diffusers"
 ENGINE_SD_CPP = "sd_cpp"
 
-# Backends diffusers serves well with GPU acceleration. Everything else (CPU,
-# Apple MPS) is where the native engine earns its place.
+# Backends diffusers serves well with GPU acceleration; everything else is native-engine territory.
 _GPU_BACKENDS = frozenset({"cuda", "rocm", "xpu"})
 
 
@@ -500,11 +445,8 @@ def select_diffusion_engine(
 ) -> str:
     """Choose the engine for a resolved device ``backend``.
 
-    - ``prefer_native`` + an available binary always wins (a user can force the
-      native engine even on a CUDA box, e.g. to fit a tiny VRAM budget).
-    - CPU / MPS route to sd.cpp when the binary is available, else fall back to
-      diffusers (which still runs there, just slowly).
-    - CUDA / ROCm / XPU stay on diffusers.
+    ``prefer_native`` + an available binary always wins (force native even on CUDA). CPU / MPS route
+    to sd.cpp when the binary is available, else diffusers. CUDA / ROCm / XPU stay on diffusers.
     """
     if prefer_native and native_available:
         return ENGINE_SD_CPP

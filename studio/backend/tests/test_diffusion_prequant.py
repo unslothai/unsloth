@@ -75,6 +75,52 @@ def test_local_prequant_path_ready(tmp_path, monkeypatch):
     assert pq.local_prequant_path_ready(str(ckpt)) is False
 
 
+# ── usable_prequant_source ───────────────────────────────────────────────────────
+def test_usable_source_missing_path_is_none(tmp_path, monkeypatch):
+    # An allowlisted but ABSENT request-supplied path must not count as a prequant
+    # source: load_prequantized_transformer would find no file and fall back to the
+    # dense bf16 build after the resident pipeline was already evicted, so the memory
+    # planner must run the dense fit checks up front instead.
+    import os
+
+    monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
+    fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
+    missing = str(tmp_path / "missing.pt")
+    assert pq.usable_prequant_source(fam, "fp8", path_override = missing) is None
+
+
+def test_usable_source_disallowed_path_is_none(tmp_path, monkeypatch):
+    # A path OUTSIDE the UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH allowlist (including the
+    # default empty allowlist) is refused by the loader, so it must resolve to None
+    # here even when the file exists.
+    ckpt = tmp_path / "model.pt"
+    ckpt.write_bytes(b"x")
+    monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [])
+    fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
+    assert pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt)) is None
+
+
+def test_usable_source_allowed_present_path_wins(tmp_path, monkeypatch):
+    # Allowlisted AND present: the override is usable and takes priority over the
+    # hosted repo, exactly like resolve_prequant_source.
+    import os
+
+    ckpt = tmp_path / "model.pt"
+    ckpt.write_bytes(b"x")
+    monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
+    fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
+    src = pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt))
+    assert src == PrequantSource(kind = "path", location = str(ckpt), filename = None)
+
+
+def test_usable_source_repo_unaffected_by_allowlist(monkeypatch):
+    # Hosted-repo sources are first-party and keep resolving with no allowlist at all.
+    monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [])
+    fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
+    src = pq.usable_prequant_source(fam, "fp8")
+    assert src is not None and src.kind == "repo" and src.location == "org/hosted-fp8"
+
+
 # ── load_prequantized_transformer ────────────────────────────────────────────────
 class _FakeTransformer:
     calls: dict = {}

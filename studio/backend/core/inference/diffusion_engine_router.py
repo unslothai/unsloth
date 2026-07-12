@@ -3,18 +3,15 @@
 
 """Selects the diffusion engine (diffusers vs native sd.cpp) for the live route.
 
-The image routes drive one engine at a time. On a CUDA/ROCm/XPU GPU that engine is
-the diffusers ``DiffusionBackend`` (the default, and the only path with the torchao
-fast-quant / compile stack). With no usable GPU (CPU, or Apple MPS when explicitly
-enabled) it is the native ``SdCppDiffusionBackend``, which is faster and far lighter
-on RAM there. The choice is made once at load time and remembered, so ``generate`` /
-``unload`` / ``status`` / progress all act on the same engine the load committed to.
+One engine at a time. On a CUDA/ROCm/XPU GPU it is the diffusers ``DiffusionBackend`` (the default,
+the only path with the torchao fast-quant / compile stack); with no usable GPU (CPU, or MPS when
+enabled) the native ``SdCppDiffusionBackend`` (faster, lighter on RAM there). Chosen once at load
+and remembered, so ``generate`` / ``unload`` / ``status`` / progress all act on the same engine.
 
-Selection is centralised here and built on the existing pure ``select_diffusion_engine``
-decision; this module adds the policy around it (env opt-out, MPS gating, per-family
-native-asset support, lazy binary availability) and records why a fallback happened.
+Built on the pure ``select_diffusion_engine`` decision; this module adds the policy (env opt-out,
+MPS gating, per-family native-asset support, lazy binary availability) and records fallbacks.
 
-Env knobs (one canonical interpretation each):
+Env knobs:
   UNSLOTH_DIFFUSION_ENGINE=auto|diffusers|sd_cpp   force an engine (auto = decide)
   UNSLOTH_DIFFUSION_SD_CPP=auto|0|1                 enable/disable the native route
   UNSLOTH_DIFFUSION_SD_CPP_MPS=0|1                  allow native on Apple MPS (default off)
@@ -48,12 +45,10 @@ logger = get_logger(__name__)
 _DISABLE_TOKENS = frozenset({"0", "off", "false", "no"})
 _ENABLE_TOKENS = frozenset({"1", "on", "true", "yes"})
 
-# Resolved device backend -> the prebuilt sd-cli accelerator to install. Only used
-# when a *force-native* load on a GPU host has to install the binary: without this the
-# installer defaults to "cpu" and downloads the plain build, so an sd_cpp generation
-# forced on a ROCm/Intel box would silently run on CPU. Unknown/GPU-less backends fall
-# back to "auto" (the CPU/Metal plain build), matching the installer's own default.
-# (install_sd_cpp_prebuilt has no CUDA-Linux asset, so "cuda" only differs on Windows.)
+# Resolved device backend -> the prebuilt sd-cli accelerator to install. Used only for a
+# force-native load on a GPU host: without it the installer defaults to "cpu" and a forced
+# ROCm/Intel sd_cpp generation would silently run on CPU. Unknown backends -> "auto" (CPU/Metal),
+# matching the installer default. (No CUDA-Linux asset, so "cuda" only differs on Windows.)
 _INSTALL_ACCELERATOR = {"rocm": "rocm", "cuda": "cuda", "xpu": "vulkan"}
 
 
@@ -61,8 +56,8 @@ def _install_accelerator_for(backend: str) -> str:
     return _INSTALL_ACCELERATOR.get(backend, "auto")
 
 
-# The engine the current (or most recent) load committed to, and why a non-native
-# choice was made. Mutated only under _lock during selection.
+# The engine the current load committed to, and why a non-native choice was made. Mutated only
+# under _lock during selection.
 _lock = threading.Lock()
 _active_engine_name: str = ENGINE_DIFFUSERS
 _fallback_reason: Optional[str] = None
@@ -91,12 +86,10 @@ def active_engine_name() -> str:
 
 def _activate(name: str, reason: Optional[str]) -> Any:
     global _active_engine_name, _fallback_reason
-    # Switching engines: unload the one being deactivated first, or its model
-    # stays resident but unreachable (the arbiter evictor only targets the active
-    # engine), leaking 10+ GB and defeating the chat<->diffusion handoff. The unload
-    # itself (freeing 10+ GB / syncing CUDA) is slow, so resolve the engine under the
-    # lock but run unload() OUTSIDE it -- holding _lock across a slow unload would
-    # block every other selection caller.
+    # Switching engines: unload the deactivated one first, else its model stays resident but
+    # unreachable (the evictor only targets the active engine), leaking 10+ GB. The unload is slow,
+    # so resolve the engine under _lock but run unload() OUTSIDE it (holding _lock across it would
+    # block every other selection caller).
     engine_to_unload = None
     old_name = None
     with _lock:
@@ -107,14 +100,11 @@ def _activate(name: str, reason: Optional[str]) -> Any:
             # No engine change: publish the (possibly refreshed) fallback reason now.
             _fallback_reason = reason if name == ENGINE_DIFFUSERS else None
     if engine_to_unload is not None:
-        # Publish the new engine only AFTER the old one has finished unloading. The
-        # arbiter's diffusion evictor unloads get_active_diffusion_engine(), so flipping
-        # _active_engine_name to the new (empty) engine first would let a concurrent
-        # chat/video acquire_for evict that empty engine and take the GPU while the old
-        # model is still freeing VRAM in this thread -- two large models briefly resident.
-        # Keeping the OLD engine published as the evict target means a concurrent evict
-        # serializes on its unload() (idempotent under the backend's _lock/_generate_lock)
-        # and the GPU is granted only once its VRAM is freed.
+        # Publish the new engine only AFTER the old one unloads. The evictor unloads
+        # get_active_diffusion_engine(), so flipping the name first would let a concurrent
+        # acquire_for evict the new (empty) engine and take the GPU while the old model is still
+        # freeing VRAM -- two large models briefly resident. Keeping the OLD engine as the evict
+        # target serializes a concurrent evict on its unload(), granting the GPU only once freed.
         try:
             engine_to_unload.unload()
         except Exception as exc:  # noqa: BLE001 -- best-effort; never block the switch
@@ -137,14 +127,11 @@ def select_and_activate_engine(
 ) -> Any:
     """Pick + activate the engine for loading ``fam`` on this host; return the engine.
 
-    Falls back to diffusers (recording a reason) whenever the native route is
-    disabled, the device has a usable GPU, MPS is not enabled, the family has no
-    native asset mapping, or the sd-cli binary is unavailable -- always BEFORE the
-    slow load begins, so a fallback never strands a half-native load.
+    Falls back to diffusers (recording a reason) when the native route is disabled, the device has
+    a usable GPU, MPS is not enabled, the family has no native asset, or the binary is unavailable
+    -- always BEFORE the slow load, so a fallback never strands a half-native load.
     """
-    # Non-GGUF loads (a single-file safetensors transformer, or a full diffusers
-    # pipeline) only run on diffusers: the native sd.cpp engine consumes single-file
-    # GGUF checkpoints only, so force diffusers before the device/native checks below.
+    # Non-GGUF loads run on diffusers only (the native engine consumes single-file GGUF only).
     if model_kind and model_kind != "gguf":
         return _activate(ENGINE_DIFFUSERS, f"non-GGUF load ({model_kind}) requires diffusers")
 
@@ -159,19 +146,16 @@ def select_and_activate_engine(
 
     target = resolve_diffusion_device_target()
     backend = target.backend
-    # Policy: CPU is always native-eligible; MPS only when explicitly enabled; a GPU
-    # backend (cuda/rocm/xpu) never is, unless the user force-selects sd_cpp.
+    # Policy: CPU always native-eligible; MPS only when enabled; a GPU backend never, unless forced.
     policy_eligible = backend == "cpu" or (backend == "mps" and mps_enabled) or prefer_native
     fam_ok = family_sd_cpp_supported(fam)
 
     binary = None
     server_binary = None
     if policy_eligible and fam_ok:
-        # Probe the resident sd-server FIRST: the backend PREFERS it, and an sd-server-only
-        # install (no sd-cli) must still route to native rather than silently falling back to
-        # diffusers. Checking it before the sd-cli install also means a server-only host does
-        # not pay an avoidable sd-cli download. Install the accelerator-matched build (ROCm /
-        # Vulkan / CUDA) so a forced-native GPU load gets the GPU server, not the CPU one.
+        # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must
+        # still route to native, and a server-only host shouldn't pay an sd-cli download. Install
+        # the accelerator-matched build so a forced-native GPU load gets the GPU server.
         server_binary = ensure_sd_server_binary(
             allow_install = _install_allowed(),
             accelerator = _install_accelerator_for(backend),
@@ -181,12 +165,9 @@ def select_and_activate_engine(
                 "sd-server at %s is present but not runnable; not using it", server_binary
             )
             server_binary = None
-        # sd-cli is the one-shot fallback. Always LOCATE an existing binary, but only
-        # auto-INSTALL it when there is no usable server, so a server-only install is not
-        # forced to also download a CLI it will never use. Probe runnability before
-        # committing native: a present but non-runnable binary (wrong arch, missing shared
-        # libs, no execute bit) would otherwise pass as available and only fail inside the
-        # background load, instead of falling back to diffusers now.
+        # sd-cli is the one-shot fallback. Always LOCATE an existing binary, but auto-INSTALL only
+        # when there is no usable server. Probe runnability before committing native: a present but
+        # non-runnable binary would otherwise pass as available and fail inside the background load.
         binary = ensure_sd_cpp_binary(
             allow_install = _install_allowed() and server_binary is None,
             accelerator = _install_accelerator_for(backend),

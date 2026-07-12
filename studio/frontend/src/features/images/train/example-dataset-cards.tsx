@@ -12,10 +12,10 @@ import {
   importDiffusionDatasetExample,
 } from "../api";
 
-// Best-effort preview thumbnails pulled from the public HF datasets-server. Cached per repo
-// (module-level) so re-renders and re-mounts do not refetch. A repo that the server cannot
-// serve (e.g. diffusers/dog-example) resolves to an empty list and the card renders without
-// previews - the import still works.
+// Best-effort preview thumbnails from the public HF datasets-server. Cached per repo
+// (module-level) so re-renders/re-mounts don't refetch. A repo the server can't serve (e.g.
+// diffusers/dog-example) resolves to an empty list and the card renders without previews -- the
+// import still works.
 const _previewCache = new Map<string, Promise<string[]>>();
 
 async function fetchPreviews(repo: string): Promise<string[]> {
@@ -74,10 +74,9 @@ function ExamplePreviews({ repo }: { repo: string }) {
   );
 }
 
-// One-click example-dataset importers. Each card shows the license so users see the terms
-// before importing, plus a few preview thumbnails so the set is visible before download. On
-// success the parent refreshes its dataset list and selects the imported folder (and can
-// seed the trigger prompt from suggested_trigger).
+// One-click example-dataset importers. Each card shows the license (terms before import) plus a
+// few preview thumbnails. On success the parent refreshes its dataset list and selects the
+// imported folder (and can seed the trigger prompt from suggested_trigger).
 //
 // Layout: one card per row (the config column is narrow, so a two-column grid wrapped titles
 // one word per line and let the long license text overrun into the next card).

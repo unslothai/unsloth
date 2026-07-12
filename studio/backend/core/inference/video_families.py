@@ -21,8 +21,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-# Runtime->route contract, mirroring the diffusion sentinels: the routes match
-# these EXACTLY to return 409 (client-recoverable) instead of a sanitized 500.
+# Runtime->route contract: routes match these EXACTLY for a 409 instead of a 500.
 VIDEO_NOT_LOADED_MSG = "No video model is loaded."
 VIDEO_CANCELLED_MSG = "Video generation was cancelled."
 VIDEO_GENERATION_BUSY_MSG = "A video generation is already in progress."
@@ -40,26 +39,19 @@ class VideoFamily:
     denoiser_attr: str = "transformer"
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
     aliases: tuple[str, ...] = field(default_factory = tuple)
-    # True when the pipeline returns synchronized audio alongside frames (LTX-2):
-    # export must mux the audio track into the MP4 and size estimates must count
-    # the audio VAE + vocoder companions.
+    # True when the pipeline returns synchronized audio (LTX-2): export muxes the track
+    # and size estimates count the audio VAE + vocoder.
     has_audio: bool = False
-    # Wan2.2-A14B style dual-expert MoE: a second DiT (``transformer_2``) handles
-    # the low-noise steps, with its own guidance kwarg. None/False for single-DiT
-    # families. Declared now so adding the A14B family later does not churn the
-    # schema every module already imports.
+    # Wan2.2-A14B dual-expert MoE: a second DiT (transformer_2) handles the low-noise
+    # steps with its own guidance kwarg. None/False for single-DiT.
     transformer2_class: Optional[str] = None
     is_moe: bool = False
     cfg2_kwarg: Optional[str] = None
-    # HunyuanVideo-1.5 style guidance: the pipeline __call__ takes NO guidance
-    # kwarg at all; CFG lives on a ``guider`` component (ClassifierFreeGuidance)
-    # whose ``guidance_scale`` is a plain attribute set per request. When True,
-    # generate() writes the scale onto ``pipe.guider`` instead of passing
-    # ``cfg_kwarg`` (which the pipeline would reject as an unexpected argument).
+    # HunyuanVideo-1.5 guidance: __call__ takes NO guidance kwarg; CFG lives on a ``guider``
+    # component whose guidance_scale is set per request. When True, generate() writes pipe.guider.
     guidance_via_guider: bool = False
-    # Generation defaults + shape constraints. ``frame_step`` is the temporal
-    # compression: a valid frame count is k * frame_step + 1 (the +1 is the
-    # anchor frame), so requests are snapped BEFORE latents are allocated.
+    # Generation defaults + shape. ``frame_step`` is the temporal compression: a valid frame
+    # count is k*frame_step + 1, so requests are snapped BEFORE latents are allocated.
     default_steps: int = 40
     default_guidance: float = 4.0
     default_num_frames: int = 121
@@ -67,15 +59,12 @@ class VideoFamily:
     frame_step: int = 8
     # Width/height must be divisible by this (LTX-2's pipeline rejects non-/32).
     resolution_multiple: int = 32
-    # (width, height) presets the UI offers, landscape first, including a vertical
-    # option. The first preset is the default.
+    # (width, height) UI presets, landscape first; the first is the default.
     resolution_presets: tuple[tuple[int, int], ...] = ((768, 512),)
-    # Component bf16-RESIDENT sizes in decimal GB (denoiser(s), text encoder,
-    # VAE + audio companions), the video analogue of the image auto-policy table.
-    # These are what sits on device after the dtype cast, not the download size.
+    # Component bf16-RESIDENT sizes in decimal GB (denoiser(s), text encoder, VAE + audio
+    # companions): what sits on device after the dtype cast, not the download size.
     bf16_components_gb: Optional[tuple[float, float, float]] = None
-    # True when the family's DiT compiles cleanly with regional torch.compile
-    # (Wan/LTX-2 declare _repeated_blocks; set False until verified per family).
+    # True when the DiT compiles cleanly with regional torch.compile (declares _repeated_blocks).
     supports_torch_compile: bool = True
     # True when the post-load compile prewarm (a tiny throwaway generation absorbing the
     # first-generation compile hitch) may run for this family. Only consulted when the
@@ -85,24 +74,17 @@ class VideoFamily:
     # float32. Video DiTs are bf16-native, so this defaults True (fp16 is never
     # the right resolution for them; bf16 or float32 only).
     fp16_incompatible: bool = True
-    # Wan's VAE decodes in float32: diffusers loads AutoencoderKLWan at torch.float32 while the
-    # pipe runs bf16 (WanPipeline docstring). Loading the VAE bf16 like the other components
-    # degrades every clip (banding / black frames), so when True the loader pins the VAE back to
-    # fp32 after building the pipe. The bf16_components_gb VAE term is already its fp32 size, so
-    # the memory plan stays consistent.
+    # Wan's VAE decodes in float32 (loading it bf16 causes banding / black frames), so when True
+    # the loader pins it back to fp32. Its bf16_components_gb term is already the fp32 size.
     vae_force_fp32: bool = False
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
 
 
 _FAMILIES: tuple[VideoFamily, ...] = (
-    # LTX-2 (diffusers >= 0.39): a ~19B single-stream video DiT generating
-    # synchronized audio + video in one pass (audio VAE + vocoder + text
-    # connectors ride the base repo; the classes are vendored inside
-    # diffusers.pipelines.ltx2). The Gemma3-27B text encoder is the memory
-    # heavyweight: ~50 GB bf16-resident, more than the DiT itself. The diffusers
-    # base repo carries the dev-style config (40 steps, CFG 4); the distilled
-    # single-file/GGUF checkpoints run few-step (see default_video_generation_params).
+    # LTX-2 (diffusers >= 0.39): ~19B single-stream video DiT generating synchronized audio +
+    # video in one pass. The Gemma3-27B text encoder is the memory heavyweight (~50 GB bf16,
+    # more than the DiT). Base repo carries the dev config (40 steps, CFG 4); distilled runs few-step.
     VideoFamily(
         name = "ltx-2",
         pipeline_class = "LTX2Pipeline",
@@ -116,70 +98,47 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_fps = 24,
         frame_step = 8,
         resolution_multiple = 32,
-        # The pipeline's native default is 768x512; 1216x704 is the model card's
-        # quality target; 704x1216 is the vertical variant.
+        # 768x512 native default; 1216x704 the card's quality target; 704x1216 vertical.
         resolution_presets = ((768, 512), (1216, 704), (704, 1216), (512, 768)),
-        # transformer 37.8 stored bf16; Gemma3-27B TE ~50.4; video VAE 2.4 +
-        # connectors 2.9 + audio VAE/vocoder 0.2 (sibling metadata, duplicates
-        # removed -- the repo ships the TE twice under two shard namings).
+        # transformer 37.8 bf16; Gemma3-27B TE ~50.4; VAE 2.4 + connectors 2.9 + audio 0.2.
         bf16_components_gb = (37.8, 50.4, 5.5),
         gguf_repo = "unsloth/LTX-2.3-GGUF",
     ),
-    # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): a ~5B single-stream
-    # video DiT (WanPipeline + WanTransformer3DModel + AutoencoderKLWan + a UMT5
-    # text encoder). No audio, no second expert -- its model_index.json ships
-    # ``boundary_ratio: null`` and ``transformer_2: [null, null]``, so it is a
-    # plain single-DiT family (is_moe left False). The Wan VAE has a temporal
-    # compression of 4, so valid frame counts are 4k+1 (frame_step = 4), which
-    # matches the pipeline's own ``num_frames % vae_scale_factor_temporal == 1``
-    # check (pipeline_wan.py:493). The pipeline defaults to 50 steps / CFG 5, but
-    # the 5B TI2V card ships the 720p-class few-step recipe, so the picker default
-    # (see _VIDEO_GENERATION_DEFAULTS) uses the pipeline's 50/5 while the UI presets
-    # target 720p at 24 fps (the model card's playback rate).
+    # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream video DiT (UMT5
+    # text encoder). No audio, no second expert (boundary_ratio null, transformer_2 null), so
+    # single-DiT. Wan VAE temporal compression 4 -> valid frame counts 4k+1. Pipeline defaults
+    # 50 steps / CFG 5; UI presets target 720p at 24 fps.
     VideoFamily(
         name = "wan2.2-ti2v-5b",
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-        # "wan2.2-5b" and "wan-ti2v" are the short ids the picker / GGUF filenames
-        # use; "wan2.2-ti2v" catches the diffusers repo stem without the "-5b".
+        # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem.
         aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
         has_audio = False,
         default_steps = 50,
         default_guidance = 5.0,
-        # 121 frames at 24 fps is ~5s, the model card's headline clip length; on the
-        # 4k+1 lattice (121 = 4*30 + 1) it needs no snapping.
+        # 121 frames at 24 fps ~5s; on the 4k+1 lattice (121 = 4*30 + 1) it needs no snapping.
         default_num_frames = 121,
         default_fps = 24,
-        # Wan VAE temporal factor is 4 (autoencoder_kl_wan.py scale_factor_temporal),
-        # so valid counts are 4k+1, unlike LTX-2's 8k+1.
+        # Wan VAE temporal factor 4, so valid counts are 4k+1.
         frame_step = 4,
-        # TI2V-5B's VAE is 16x spatial (vae/config.json scale_factor_spatial=16), and the
-        # transformer patch is 2, so WanPipeline floors H/W to 16*2 = 32 (pipeline_wan.py:505,
-        # silently, with a warning). Snap to 32 so the recorded size matches the generated clip;
-        # a /16-but-not-/32 request (e.g. 720) would otherwise be recorded but rendered at 704.
+        # TI2V-5B VAE is 16x spatial + patch 2, so WanPipeline floors H/W to 32; snap to 32 so
+        # the recorded size matches the rendered clip (a /16-not-/32 request would render at 704).
         resolution_multiple = 32,
-        # 720p-class presets (all /32): 1280x704 landscape (the card's target), its vertical
-        # variant, and a square. The first preset is the default the loader plans memory against.
+        # 720p-class presets (all /32); first is the default the loader plans against.
         resolution_presets = ((1280, 704), (704, 1280), (960, 960), (832, 480)),
-        # bf16-RESIDENT sizes. The transformer + VAE ship FP32 on disk (safetensors headers are
-        # F32; transformer index = 20.0 GB = 5B params x 4), so bf16-resident transformer is half
-        # (~10.0); the UMT5 text encoder ships bf16 (11.4). The VAE runs fp32 (vae_force_fp32), so
-        # its term is the fp32 size (2.8).
+        # bf16-RESIDENT. transformer + VAE ship FP32 on disk (index 20.0 GB = 5B x 4), so
+        # bf16 transformer ~10.0; UMT5 TE ships bf16 (11.4); VAE runs fp32 (2.8).
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
         gguf_repo = "QuantStack/Wan2.2-TI2V-5B-GGUF",
     ),
-    # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE.
-    # Its model_index.json lists BOTH ``transformer`` and ``transformer_2`` as
-    # WanTransformer3DModel and sets ``boundary_ratio: 0.875``; the pipeline routes
-    # the high-noise steps (timestep >= boundary) through ``transformer`` at
-    # guidance_scale and the low-noise steps through ``transformer_2`` at
-    # guidance_scale_2 (pipeline_wan.py:584-603). ``guidance_scale_2`` exists in
-    # 0.39 (pipeline_wan.py:392) and is only accepted when boundary_ratio is set
-    # (its check_inputs raises otherwise, pipeline_wan.py:322), so cfg2_kwarg is
-    # threaded ONLY for this family. boundary_ratio itself lives in the pipeline
-    # config (loaded from model_index.json), so no per-generation plumbing is needed.
+    # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE. Both
+    # transformer + transformer_2 are WanTransformer3DModel with boundary_ratio 0.875; the pipeline
+    # routes high-noise steps through transformer (guidance_scale) and low-noise through
+    # transformer_2 (guidance_scale_2, accepted only when boundary_ratio is set), so cfg2_kwarg is
+    # threaded ONLY here. boundary_ratio lives in the pipeline config, so no per-generation plumbing.
     VideoFamily(
         name = "wan2.2-t2v-a14b",
         pipeline_class = "WanPipeline",
@@ -187,82 +146,57 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
         aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,
-        # The second expert is the same class; is_moe drives the dual-DiT optimisation
-        # layers (speed / attention / cache / quant apply to BOTH transformers), and
-        # cfg2_kwarg names the pipeline kwarg carrying transformer_2's guidance.
+        # is_moe drives the dual-DiT optimisation layers (speed/attention/cache/quant on BOTH);
+        # cfg2_kwarg names the pipeline kwarg for transformer_2's guidance.
         transformer2_class = "WanTransformer3DModel",
         is_moe = True,
         cfg2_kwarg = "guidance_scale_2",
         default_steps = 50,
         default_guidance = 5.0,
-        # 81 frames at 16 fps is ~5s (81 = 4*20 + 1), the A14B card's default clip.
+        # 81 frames at 16 fps ~5s (81 = 4*20 + 1), the A14B card's default clip.
         default_num_frames = 81,
-        # The A14B card runs at 16 fps (vs the 5B TI2V's 24), per its model_index /
-        # model card; export uses this rate.
-        default_fps = 16,
+        default_fps = 16,  # A14B runs at 16 fps (vs TI2V-5B's 24)
         frame_step = 4,
         resolution_multiple = 16,
-        # 480p and 720p presets (landscape + vertical), the two resolutions the A14B card
-        # documents. 832x480 is the native 480p; 1280x720 the native 720p (true 16:9). A14B's
-        # VAE is 8x so resolution_multiple is 16 and 720 (= 45*16) renders exactly -- the 704
-        # value belongs to TI2V-5B, whose 16x VAE floors 720 to 704 (multiple 32).
+        # 480p + 720p presets (landscape + vertical). A14B's VAE is 8x so multiple 16 renders
+        # 720 (=45*16) exactly (unlike TI2V-5B's 16x VAE, which floors 720 to 704).
         resolution_presets = ((1280, 720), (832, 480), (480, 832), (720, 1280)),
-        # bf16-RESIDENT sizes. Each expert ships FP32 on disk (safetensors headers are F32;
-        # transformer index = 57.15 GB = 14.3B params x 4), so bf16-resident is ~28.6 each ->
-        # ~57.2 for BOTH experts (the memory headline before offload), NOT the 114.3 fp32
-        # on-disk sum. UMT5 text encoder ships bf16 (11.4); the VAE runs fp32 (vae_force_fp32),
-        # so its term is the fp32 size (0.5).
+        # bf16-RESIDENT. Each expert ships FP32 (index 57.15 GB = 14.3B x 4) -> ~28.6 bf16 each ->
+        # ~57.2 for BOTH (the headline before offload), NOT the 114.3 fp32 sum. UMT5 TE bf16 (11.4); VAE fp32 (0.5).
         bf16_components_gb = (57.2, 11.4, 0.5),
         vae_force_fp32 = True,
-        # No gguf_repo: community GGUFs ship the two experts as separate files, and a
-        # single-file load covers only one (validate_load_request refuses it).
+        # No gguf_repo: community GGUFs split the experts, and a single-file load covers only one.
     ),
-    # HunyuanVideo-1.5 (diffusers >= 0.39): an 8.3B video DiT with a Qwen2.5-VL
-    # text encoder plus a ByT5 glyph encoder. Three quirks, all verified against
-    # the installed pipeline source (pipeline_hunyuan_video1_5.py):
-    #   1. __call__ takes NO guidance kwarg; CFG lives on the ``guider`` component
-    #      (ClassifierFreeGuidance; the 480p t2v repo ships guidance_scale = 6.0),
-    #      hence guidance_via_guider.
-    #   2. __call__ has NO callback_on_step_end; generate() falls back to the
-    #      scheduler.step progress wrapper automatically (capability-detected).
-    #   3. The tencent/HunyuanVideo-1.5 repo is the ORIGINAL layout (config.json,
-    #      no model_index.json); only the hunyuanvideo-community Diffusers repacks
-    #      load through HunyuanVideo15Pipeline, so those are the trusted repos.
-    # The transformer declares _repeated_blocks and inherits CacheMixin, so the
-    # regional compile profile and First-Block-Cache both apply.
+    # HunyuanVideo-1.5 (diffusers >= 0.39): 8.3B DiT, Qwen2.5-VL text encoder + ByT5 glyph
+    # encoder. Three quirks: (1) __call__ has NO guidance kwarg; CFG on the ``guider``
+    # (guidance_via_guider); (2) NO callback_on_step_end (generate() uses the scheduler.step
+    # wrapper); (3) tencent's repo is the original layout (no model_index.json), so only the
+    # community Diffusers repacks load. The transformer declares _repeated_blocks + CacheMixin.
     VideoFamily(
         name = "hunyuanvideo-1.5",
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
-        # No bare "hunyuanvideo" alias: it would also claim the incompatible 1.0
-        # repos (HunyuanVideoPipeline), which this family cannot load.
+        # No bare "hunyuanvideo" alias: it would also claim the incompatible 1.0 repos.
         aliases = ("hunyuanvideo-1-5", "hunyuanvideo1.5", "hunyuanvideo1-5", "hv15"),
         has_audio = False,
         guidance_via_guider = True,
         default_steps = 50,
         default_guidance = 6.0,
-        # 121 frames at 24 fps is ~5s, the pipeline's own num_frames default.
+        # 121 frames at 24 fps ~5s, the pipeline's own default.
         default_num_frames = 121,
         default_fps = 24,
-        # The HV15 VAE compresses 16x spatial / 4x temporal (vae config:
-        # spatial_compression_ratio 16, temporal_compression_ratio 4) with a
-        # patch-1 transformer, so sizes snap to /16 and frames to 4k+1.
+        # HV15 VAE compresses 16x spatial / 4x temporal, patch-1, so sizes snap /16, frames 4k+1.
         frame_step = 4,
         resolution_multiple = 16,
-        # 480p-class presets (the base repo is the 480p t2v variant): landscape,
-        # vertical, square.
+        # 480p-class presets (the base is the 480p variant): landscape, vertical, square.
         resolution_presets = ((832, 480), (480, 832), (624, 624)),
-        # Disk shards are fp32 for the DiT (32.0 GB -> 16.6 bf16-resident) and the
-        # VAE (4.7 -> 2.4); the Qwen2.5-VL TE is stored bf16 (14.0) plus ByT5 0.8.
+        # DiT fp32 on disk (32.0 -> 16.6 bf16); VAE (4.7 -> 2.4); Qwen2.5-VL TE bf16 14.0 + ByT5 0.8.
         bf16_components_gb = (16.6, 14.8, 2.4),
     ),
-    # The 720p t2v repack: same architecture, pipeline quirks, guider config
-    # (guidance 6.0) and shard footprint as the 480p entry above; only the
-    # trained resolution class differs. Kept as its OWN family so a 720p load
-    # defaults to 720p-class sizes instead of silently rendering at 832x480.
-    # The repo-id alias is the full path segment, so it out-lengths (and thus
-    # outranks) the generic "hunyuanvideo-1.5" token for this repo only.
+    # The 720p t2v repack: same architecture/quirks/footprint as the 480p entry; only the
+    # trained resolution differs. Own family so a 720p load defaults to 720p sizes. Its full-path
+    # alias out-lengths (and outranks) the generic "hunyuanvideo-1.5" token for this repo only.
     VideoFamily(
         name = "hunyuanvideo-1.5-720p",
         pipeline_class = "HunyuanVideo15Pipeline",
@@ -340,21 +274,14 @@ def snap_video_size(fam: VideoFamily, width: int, height: int) -> tuple[int, int
     return snap(width), snap(height)
 
 
-# Default (steps, guidance) per checkpoint variant, matched by substring against
-# the picked id (then the base repo), most specific first: the distilled LTX-2.3
-# checkpoints run few-step with CFG off, while the dev-config base repo wants the
-# full 40-step CFG schedule. Mirrors default_generation_params on the image side.
+# Default (steps, guidance) per checkpoint variant, matched by substring (picked id then base
+# repo), most specific first: distilled LTX-2.3 runs few-step CFG-off, the dev base wants 40/4.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("distilled", 8, 1.0),
     ("ltx", 40, 4.0),
-    # Wan2.2 pipelines default to 50 steps at CFG 5.0 (WanPipeline.__call__:
-    # num_inference_steps = 50, guidance_scale = 5.0, verified in diffusers 0.39).
-    # Both TI2V-5B and A14B share these; the substring "wan" catches the picked id
-    # and the base repo. A future distilled Wan GGUF is caught by the "distilled"
-    # row above (listed first), exactly as the LTX-2.3 distilled checkpoints are.
+    # Wan2.2 pipelines default to 50 steps / CFG 5.0; both TI2V-5B and A14B share these.
     ("wan", 50, 5.0),
-    # HunyuanVideo-1.5 runs the pipeline's 50 steps with the guider's shipped
-    # CFG 6.0 (guider_config.json in the community Diffusers repacks).
+    # HunyuanVideo-1.5: 50 steps with the guider's shipped CFG 6.0.
     ("hunyuanvideo", 50, 6.0),
 )
 
@@ -370,11 +297,8 @@ def default_video_generation_params(
     for identifier in identifiers:
         needle = (identifier or "").lower()
         for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
-            # Match the key as a name segment, not a raw substring: reject a
-            # preceding ASCII letter so an opaque path/repo like "user/swan-video"
-            # or "taiwan-clips" does not false-match "wan" and silently apply Wan's
-            # 50-step/CFG-5 schedule to a non-Wan model. Trailing chars stay free so
-            # "wan2.2-ti2v", "ltxv-2.3" and "...-distilled-..." still match.
+            # Match the key as a name segment: reject a preceding ASCII letter so "swan-video"
+            # or "taiwan-clips" doesn't false-match "wan". Trailing chars stay free.
             if re.search(r"(?<![a-z])" + re.escape(key), needle):
                 return steps, guidance
     return fallback

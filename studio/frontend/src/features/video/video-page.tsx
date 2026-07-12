@@ -73,12 +73,11 @@ import {
   unloadVideoModel,
 } from "./api";
 
-// Curated models come from the shared catalog: one canonical group per model
-// with its artifacts as data (the HunyuanVideo group carries both the 480p and
-// 720p repacks), and the load kind per artifact via loadSpecFor (replacing the
-// old PIPELINE_MODELS table). The picker renders groups with a format second
-// level -- which also finally surfaces LTX-2.3 in Recommended (its HF
-// pipeline_tag is image-to-video, so the live text-to-video listing missed it).
+// Curated models come from the shared catalog: one canonical group per model with its
+// artifacts as data (the HunyuanVideo group carries both the 480p and 720p repacks), and the
+// load kind per artifact via loadSpecFor (replacing the old PIPELINE_MODELS table). The picker
+// renders groups with a format second level -- which also surfaces LTX-2.3 in Recommended (its
+// HF pipeline_tag is image-to-video, so the live text-to-video listing missed it).
 const VIDEO_MODELS: ModelOption[] = catalogToModelOptions(VIDEO_CATALOG);
 
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most
@@ -536,9 +535,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
     null,
   );
-  // Whether this session holds a reapply descriptor (set only by our own loads). On a mount/refresh
-  // with a model already resident, status.loaded is true but lastLoad is null, so Reapply would
-  // silently do nothing -- hide the button in that case rather than offer a dead control.
+  // Whether this session holds a reapply descriptor (set only by our own loads). On a
+  // mount/refresh with a model already resident, status.loaded is true but lastLoad is null, so
+  // Reapply would do nothing -- hide the button rather than offer a dead control.
   const [canReapply, setCanReapply] = useState(false);
 
   const [busy, setBusy] = useState<Busy>(null);
@@ -656,13 +655,13 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     });
   }, [durationOptions, loadedFamily, familyDefaultFrames]);
 
-  // Seed steps/guidance from the loaded model's backend-authoritative defaults. On mount with a
-  // model already loaded (browser refresh, or a load from another client) only refreshStatus runs
-  // -- handleModelSelect never fires -- so the controls otherwise stick at the pre-load DEFAULT_GEN
-  // (8/1) and a base checkpoint that wants 40/4 silently generates a degraded clip. Key on the repo
-  // id so it fires once per newly-loaded model (a distilled vs base checkpoint of the same family
-  // has different defaults); a later user edit is not clobbered because the key only changes when
-  // the loaded model changes, and a gallery restore (which keeps the same repo) is left untouched.
+  // Seed steps/guidance from the loaded model's backend defaults. On mount with a model already
+  // loaded (browser refresh, or a load from another client) only refreshStatus runs --
+  // handleModelSelect never fires -- so the controls otherwise stick at the pre-load DEFAULT_GEN
+  // (8/1) and a base checkpoint wanting 40/4 generates a degraded clip. Key on the repo id so it
+  // fires once per newly-loaded model (distilled vs base of the same family differ); a later user
+  // edit isn't clobbered (the key changes only on model change), and a gallery restore (same
+  // repo) is left untouched.
   const loadedModelKey = status?.loaded ? status.repo_id : null;
   const defaultSteps = status?.defaults?.steps;
   const defaultGuidance = status?.defaults?.guidance;
@@ -897,6 +896,71 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
   }, [dismissLoadToast, refreshStatus]);
 
+  // Stops the generation poll and its visibilitychange catch-up listener.
+  const stopGenPoll = useCallback(() => {
+    if (genPollTimer.current) clearInterval(genPollTimer.current);
+    genPollTimer.current = null;
+    if (genVisibilityListener.current) {
+      document.removeEventListener("visibilitychange", genVisibilityListener.current);
+      genVisibilityListener.current = null;
+    }
+  }, []);
+
+  // Poll the backend's per-step progress so the bar tracks live denoising steps and the encode
+  // phase, and drive completion off the terminal phase: "completed" carries the saved gallery
+  // record, "failed" the client-safe error. A named poll body (guarded against overlap) also
+  // serves the visibilitychange listener: a background tab's throttled interval catches up when
+  // visible. Shared by handleGenerate and the mount-time resume of an in-flight job.
+  const startGenPoll = useCallback(() => {
+    stopGenPoll();
+    let pollInFlight = false;
+    const pollGenerateOnce = async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
+      try {
+        const p = await getVideoGenerateProgress();
+        if (p.phase === "completed" || p.phase === "failed") {
+          stopGenPoll();
+          if (!isMounted.current) return;
+          setBusy(null);
+          setGenStep(null);
+          if (p.phase === "completed" && p.video) {
+            // Prepend the new clip (newest first) and load its blob.
+            const clip = p.video;
+            setVideos((prev) => [clip, ...prev.filter((v) => v.id !== clip.id)]);
+            setSelectedId(clip.id);
+            void ensureSrc(clip);
+          } else if (p.phase === "failed") {
+            const msg = p.error || "Video generation failed";
+            // The user's own Cancel surfaces as the backend's cancelled sentinel; not an error.
+            if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
+          }
+          return;
+        }
+        setGenStep((prev) => {
+          if (!p.active) return null;
+          if (
+            prev &&
+            prev.step === p.step &&
+            prev.phase === p.phase &&
+            prev.eta_seconds === p.eta_seconds
+          )
+            return prev;
+          return p;
+        });
+      } catch {
+        // transient; keep polling
+      } finally {
+        pollInFlight = false;
+      }
+    };
+    genVisibilityListener.current = () => {
+      if (document.visibilityState === "visible") void pollGenerateOnce();
+    };
+    document.addEventListener("visibilitychange", genVisibilityListener.current);
+    genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
+  }, [ensureSrc, stopGenPoll]);
+
   useEffect(() => {
     void (async () => {
       await refreshStatus();
@@ -915,17 +979,33 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      // A generation also runs on a backend daemon thread, so a reload while a clip
+      // denoises must re-enter the same poll loop (progress label + completion handling)
+      // instead of an idle page that never shows the finished clip until a manual refresh.
+      try {
+        const g = await getVideoGenerateProgress();
+        if (g.active) {
+          setBusy("generating");
+          setGenStep(g.phase === "queued" ? null : g);
+          startGenPoll();
+        } else if (g.phase === "completed" && g.video) {
+          // The job finished while no page was mounted. The terminal record persists on the
+          // backend until the next job, and the mount gallery fetch usually already has the clip;
+          // merging here (deduped) covers the race where the job completed after that fetch.
+          const clip = g.video;
+          setVideos((prev) => (prev.some((v) => v.id === clip.id) ? prev : [clip, ...prev]));
+          void ensureSrc(clip);
+        }
+      } catch {
+        // Resume is best-effort; a failed probe just leaves the idle view.
+      }
     })();
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
-      if (genPollTimer.current) clearInterval(genPollTimer.current);
-      if (genVisibilityListener.current) {
-        document.removeEventListener("visibilitychange", genVisibilityListener.current);
-        genVisibilityListener.current = null;
-      }
+      stopGenPoll();
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress]);
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc]);
 
   const handleLoad = useCallback(
     // Resolves true when the background load STARTED (callers may revert optimistic picker
@@ -942,6 +1022,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       dismissLoadToast();
       lastLoadSig.current = null;
       loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS));
+      // Snapshot the prior Reapply target first: a load that fails to START (validation,
+      // gated repo, training guard) leaves the previous model resident, so Reapply must
+      // keep pointing at it, not at the failed pick.
+      const prevLastLoad = lastLoad.current;
+      const prevCanReapply = canReapply;
       lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
       setCanReapply(true);
       try {
@@ -962,6 +1047,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           cfg_parallel: cfgParallel === "auto" ? undefined : cfgParallel,
         });
       } catch (err) {
+        lastLoad.current = prevLastLoad;
+        setCanReapply(prevCanReapply);
         dismissLoadToast();
         toast.error(err instanceof Error ? err.message : "Failed to start load");
         setBusy(null);
@@ -975,6 +1062,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       pollLoadProgress,
       refreshStatus,
       dismissLoadToast,
+      canReapply,
       memoryMode,
       speedMode,
       attentionBackend,
@@ -1003,10 +1091,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       if (spec && spec.kind !== "gguf") {
         setQuant(null);
         // The distilled variant lives in the single-file checkpoint name
-        // (ltx-2.3-...-distilled...), not the repo id, so include the filename when
-        // seeding defaults -- mirroring the GGUF branch below. Without it these
-        // distilled BF16/FP8 entries fall through to the generic LTX 40-step/CFG-4
-        // defaults instead of the distilled 8-step/guidance-1 schedule.
+        // (ltx-2.3-...-distilled...), not the repo id, so include the filename when seeding
+        // defaults (mirroring the GGUF branch below). Without it these distilled BF16/FP8
+        // entries fall through to the generic LTX 40-step/CFG-4 defaults instead of the
+        // distilled 8-step/guidance-1 schedule.
         const d = defaultsFor(spec.filename ? `${id}/${spec.filename}` : id);
         setSteps(d.steps);
         setGuidance(d.guidance);
@@ -1054,10 +1142,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         });
         return;
       }
-      // A direct local single-file .safetensors pick must load via from_single_file:
-      // the pipeline route rejects a bare file (no model_index.json) and only after
-      // evicting the resident model. Split into (parent dir, basename) exactly like
-      // the local GGUF branch above.
+      // A direct local single-file .safetensors pick must load via from_single_file: the
+      // pipeline route rejects a bare file (no model_index.json) and only after evicting the
+      // resident model. Split into (parent dir, basename) like the local GGUF branch above.
       if (meta.source === "local" && id.toLowerCase().endsWith(".safetensors")) {
         const norm = id.replace(/\\/g, "/");
         const slash = norm.lastIndexOf("/");
@@ -1143,10 +1230,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
 
     setBusy("generating");
     setGenStep(null);
-    // The POST only STARTS the job and returns at once (a clip takes minutes, and
-    // secure mode's tunnel caps responses near 100s, so completion cannot ride the
-    // POST). A synchronous rejection (no model / already generating / bad input)
-    // still surfaces here; everything after acceptance arrives via the poll.
+    // The POST only STARTS the job and returns at once (a clip takes minutes, and secure mode's
+    // tunnel caps responses near 100s, so completion can't ride the POST). A synchronous
+    // rejection (no model / already generating / bad input) still surfaces here; everything
+    // after acceptance arrives via the poll.
     try {
       await generateVideo({
         prompt: prompt.trim(),
@@ -1168,67 +1255,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       setGenStep(null);
       return;
     }
-    // Poll the backend's per-step progress so the bar tracks the live denoising steps
-    // and the encode phase, and drive completion off the terminal phase: "completed"
-    // carries the saved gallery record, "failed" the client-safe error. A named poll
-    // body (guarded against overlap) also serves the visibilitychange listener: a
-    // background tab's throttled interval catches up the moment the tab is visible.
-    let pollInFlight = false;
-    const stopGenPoll = () => {
-      if (genPollTimer.current) clearInterval(genPollTimer.current);
-      genPollTimer.current = null;
-      if (genVisibilityListener.current) {
-        document.removeEventListener("visibilitychange", genVisibilityListener.current);
-        genVisibilityListener.current = null;
-      }
-    };
-    const pollGenerateOnce = async () => {
-      if (pollInFlight) return;
-      pollInFlight = true;
-      try {
-        const p = await getVideoGenerateProgress();
-        if (p.phase === "completed" || p.phase === "failed") {
-          stopGenPoll();
-          if (!isMounted.current) return;
-          setBusy(null);
-          setGenStep(null);
-          if (p.phase === "completed" && p.video) {
-            // Prepend the new clip (newest first) and load its blob.
-            const clip = p.video;
-            setVideos((prev) => [clip, ...prev.filter((v) => v.id !== clip.id)]);
-            setSelectedId(clip.id);
-            void ensureSrc(clip);
-          } else if (p.phase === "failed") {
-            const msg = p.error || "Video generation failed";
-            // The user's own Cancel surfaces as the backend's cancelled sentinel; not an error.
-            if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
-          }
-          return;
-        }
-        setGenStep((prev) => {
-          if (!p.active) return null;
-          if (
-            prev &&
-            prev.step === p.step &&
-            prev.phase === p.phase &&
-            prev.eta_seconds === p.eta_seconds
-          )
-            return prev;
-          return p;
-        });
-      } catch {
-        // transient; keep polling
-      } finally {
-        pollInFlight = false;
-      }
-    };
-    if (genVisibilityListener.current)
-      document.removeEventListener("visibilitychange", genVisibilityListener.current);
-    genVisibilityListener.current = () => {
-      if (document.visibilityState === "visible") void pollGenerateOnce();
-    };
-    document.addEventListener("visibilitychange", genVisibilityListener.current);
-    genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
+    // Track the live progress + terminal outcome via the shared poll loop (also used by
+    // the mount-time resume of a job that survived a reload).
+    startGenPoll();
   }, [
     prompt,
     negativePrompt,
@@ -1239,7 +1268,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     numFrames,
     fps,
     steps,
-    ensureSrc,
+    startGenPoll,
   ]);
 
   // The Advanced (load-time) tuning controls, rendered in the right-docked panel below.

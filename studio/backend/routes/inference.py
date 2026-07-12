@@ -28,6 +28,16 @@ import re as _re
 from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body
+from core.inference.llama_admission import (
+    LlamaAdmissionCancelled,
+    LlamaAdmissionConfig,
+    LlamaAdmissionLease,
+    LlamaAdmissionQueueFull,
+    LlamaAdmissionReservation,
+    LlamaAdmissionTimeout,
+    get_llama_admission_queue,
+    llama_admission_config_from_env,
+)
 
 
 def _positive_int_or_none(value: Any) -> Optional[int]:
@@ -1072,6 +1082,270 @@ _STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
 _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
+_OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
+
+
+def _openai_llama_admission_capacity(request: Optional[Request], llama_backend = None) -> int:
+    """Serving slots available for one local llama-server backend.
+
+    The loaded backend is the source of truth because it may have reduced
+    ``--parallel`` at load time to keep the model on GPU. The app state is a
+    launch-intent fallback for tests and for the short window before a backend
+    reports its committed runtime slots.
+    """
+    slots = _positive_int_or_none(getattr(llama_backend, "effective_parallel_slots", None))
+    if slots is not None:
+        return slots
+    try:
+        slots = getattr(request.app.state, "llama_parallel_slots", None)
+    except Exception:
+        slots = None
+    return _positive_int_or_none(slots) or 1
+
+
+def _openai_llama_admission_reserve(
+    *, request: Optional[Request], llama_backend
+) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
+    config = llama_admission_config_from_env()
+    capacity = _openai_llama_admission_capacity(request, llama_backend)
+    key = str(getattr(llama_backend, "base_url", "llama-server"))
+    reservation = get_llama_admission_queue(key).reserve(
+        capacity = capacity,
+        config = config,
+    )
+    return reservation, config
+
+
+def _openai_admission_request_path(request: Optional[Request]) -> Optional[str]:
+    try:
+        return str(request.url.path) if request is not None else None
+    except Exception:
+        return None
+
+
+def _openai_admission_log(
+    event: str,
+    reservation: Optional[LlamaAdmissionReservation] = None,
+    *,
+    snapshot = None,
+    request: Optional[Request],
+    mode: str,
+    wait_started_at: Optional[float] = None,
+    completion_id: Optional[str] = None,
+    level: str = "debug",
+) -> None:
+    if snapshot is None and reservation is not None:
+        snapshot = reservation.snapshot_now()
+    wait_ms = None
+    if wait_started_at is not None:
+        wait_ms = int(max(0.0, time.monotonic() - wait_started_at) * 1000)
+    log = getattr(logger, level, logger.debug)
+    log(
+        "openai admission %s: mode=%s path=%s completion_id=%s capacity=%s active=%s queued=%s wait_ms=%s",
+        event,
+        mode,
+        _openai_admission_request_path(request),
+        completion_id,
+        getattr(snapshot, "capacity", None),
+        getattr(snapshot, "active", None),
+        getattr(snapshot, "queued", None),
+        wait_ms,
+    )
+
+
+def _openai_admission_error_body(exc: Exception, *, status_code: int) -> dict:
+    snapshot = getattr(exc, "snapshot", None)
+    message = str(exc)
+    if snapshot is not None:
+        message = (
+            f"{message} "
+            f"(active={snapshot.active}, queued={snapshot.queued}, capacity={snapshot.capacity})"
+        )
+    return openai_error_body(message, status = status_code)
+
+
+def _openai_admission_http_exception(exc: Exception, *, status_code: int) -> HTTPException:
+    return HTTPException(
+        status_code = status_code,
+        detail = _openai_admission_error_body(exc, status_code = status_code),
+    )
+
+
+def _openai_admission_timeout_error(
+    reservation: LlamaAdmissionReservation,
+) -> LlamaAdmissionTimeout:
+    return LlamaAdmissionTimeout(
+        "Timed out waiting for an available local llama-server generation slot",
+        snapshot = reservation.snapshot_now(),
+    )
+
+
+def _openai_admission_cancelled_error(
+    reservation: LlamaAdmissionReservation,
+) -> LlamaAdmissionCancelled:
+    return LlamaAdmissionCancelled(
+        "Client disconnected before an upstream llama-server generation slot was available",
+        snapshot = reservation.snapshot_now(),
+    )
+
+
+async def _raise_if_openai_admission_cancelled(
+    reservation: LlamaAdmissionReservation, *, request: Optional[Request], cancel_event
+) -> None:
+    if reservation.is_cancelled:
+        raise _openai_admission_cancelled_error(reservation)
+    if await _preheader_cancelled(cancel_event, request):
+        reservation.cancel()
+        raise _openai_admission_cancelled_error(reservation)
+
+
+async def _wait_for_openai_admission_non_streaming(
+    reservation: LlamaAdmissionReservation,
+    config: LlamaAdmissionConfig,
+    *,
+    request: Optional[Request],
+    cancel_event,
+) -> LlamaAdmissionLease:
+    lease = reservation.lease_nowait()
+    if lease is not None:
+        try:
+            await _raise_if_openai_admission_cancelled(
+                reservation,
+                request = request,
+                cancel_event = cancel_event,
+            )
+        except asyncio.CancelledError:
+            lease.release()
+            raise
+        except LlamaAdmissionCancelled:
+            lease.release()
+            raise
+        return lease
+    await _raise_if_openai_admission_cancelled(
+        reservation,
+        request = request,
+        cancel_event = cancel_event,
+    )
+    deadline = None if config.queue_timeout_s is None else time.monotonic() + config.queue_timeout_s
+    try:
+        while True:
+            await _raise_if_openai_admission_cancelled(
+                reservation,
+                request = request,
+                cancel_event = cancel_event,
+            )
+            lease = reservation.lease_nowait()
+            if lease is not None:
+                try:
+                    await _raise_if_openai_admission_cancelled(
+                        reservation,
+                        request = request,
+                        cancel_event = cancel_event,
+                    )
+                except asyncio.CancelledError:
+                    lease.release()
+                    raise
+                except LlamaAdmissionCancelled:
+                    lease.release()
+                    raise
+                return lease
+            wait_s = _OPENAI_LLAMA_ADMISSION_POLL_S
+            if deadline is not None:
+                remaining_s = deadline - time.monotonic()
+                if remaining_s <= 0:
+                    reservation.cancel()
+                    raise _openai_admission_timeout_error(reservation)
+                wait_s = min(wait_s, max(remaining_s, 0.001))
+            try:
+                lease = await reservation.wait(wait_s)
+            except asyncio.TimeoutError:
+                continue
+            if lease is not None:
+                return lease
+            await _raise_if_openai_admission_cancelled(
+                reservation,
+                request = request,
+                cancel_event = cancel_event,
+            )
+    except asyncio.CancelledError:
+        reservation.cancel()
+        raise
+
+
+async def _openai_admission_wait_stream_chunks(
+    reservation: LlamaAdmissionReservation,
+    config: LlamaAdmissionConfig,
+    *,
+    request: Optional[Request],
+    cancel_event,
+):
+    lease = reservation.lease_nowait()
+    if lease is not None:
+        yield lease
+        return
+
+    await _raise_if_openai_admission_cancelled(
+        reservation,
+        request = request,
+        cancel_event = cancel_event,
+    )
+    deadline = None if config.queue_timeout_s is None else time.monotonic() + config.queue_timeout_s
+    keepalive_interval_s = max(0.001, config.keepalive_interval_s)
+    next_keepalive_at = time.monotonic() + keepalive_interval_s
+    try:
+        while True:
+            await _raise_if_openai_admission_cancelled(
+                reservation,
+                request = request,
+                cancel_event = cancel_event,
+            )
+            lease = reservation.lease_nowait()
+            if lease is not None:
+                yield lease
+                return
+
+            now = time.monotonic()
+            wait_s = min(_OPENAI_LLAMA_ADMISSION_POLL_S, max(next_keepalive_at - now, 0.001))
+            if deadline is not None:
+                remaining_s = deadline - now
+                if remaining_s <= 0:
+                    reservation.cancel()
+                    raise _openai_admission_timeout_error(reservation)
+                wait_s = min(wait_s, max(remaining_s, 0.001))
+            try:
+                lease = await reservation.wait(wait_s)
+            except asyncio.TimeoutError:
+                lease = None
+            if lease is not None:
+                yield lease
+                return
+            await _raise_if_openai_admission_cancelled(
+                reservation,
+                request = request,
+                cancel_event = cancel_event,
+            )
+            now = time.monotonic()
+            if now >= next_keepalive_at:
+                next_keepalive_at = now + keepalive_interval_s
+                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+    except asyncio.CancelledError:
+        reservation.cancel()
+        raise
+
+
+async def _close_openai_admitted_stream_iterator(iterator, *, cancelled: bool) -> None:
+    if iterator is None:
+        return
+    if cancelled:
+        athrow = getattr(iterator, "athrow", None)
+        if athrow is not None:
+            try:
+                await athrow(asyncio.CancelledError())
+            except (asyncio.CancelledError, StopAsyncIteration, RuntimeError):
+                return
+    aclose = getattr(iterator, "aclose", None)
+    if aclose is not None:
+        await aclose()
 
 
 def _openai_compat_stream_stall_timeout():
@@ -3082,6 +3356,21 @@ def _automatic_model_load_may_run() -> bool:
     return get_openai_auto_switch_enabled() or get_auto_unload_idle_seconds() > 0
 
 
+def _no_model_loaded_detail(base: str) -> str:
+    """Append a pointer to the opt-in auto-switch toggle to a "no model loaded"
+    error, but only when it's off. Auto-switch (default off) cold-loads a
+    requested downloaded GGUF, so an off toggle is the usual reason a request
+    naming a listed model still 400/503s; surface the fix. With it on the name
+    simply didn't resolve to a local GGUF, so the hint would mislead and is omitted."""
+    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+
+    if get_openai_auto_switch_enabled():
+        return base
+    return base + (
+        " Or enable Model auto-switch (Settings > API) to load a requested model automatically."
+    )
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -3467,8 +3756,8 @@ def _guard_chat_load_against_training(
 
     if not llm_active:
         # An SDXL LoRA trainer runs in its own subprocess and its VRAM can't be cheaply
-        # fit-checked here, so refuse the chat load outright while one is active rather
-        # than risk OOMing the run. Symmetric with the image-load guard.
+        # fit-checked here, so refuse the chat load while one is active rather than risk
+        # OOMing the run. Symmetric with the image-load guard.
         if _diffusion_training_active():
             raise HTTPException(
                 status_code = 409,
@@ -3624,9 +3913,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         # Reclaim the GPU for chat (evicting a resident Images/Video pipeline) only once the
         # load is known viable: the already-loaded fast paths below re-assert CHAT ownership
         # themselves, and the real handoff is deferred past identifier / gpu_ids / training-memory
-        # validation so a doomed chat load (bad id, unsupported gpu_ids on GGUF, or a training
-        # 409) can't evict a working image/video model and then error. Mirrors the image/video
-        # loaders, which validate before acquire_for.
+        # validation so a doomed load (bad id, unsupported gpu_ids on GGUF, training 409) can't
+        # evict a working image/video model and then error. Mirrors the image/video loaders,
+        # which validate before acquire_for.
         from core.inference.gpu_arbiter import acquire_for, CHAT
 
         # ── Already-loaded check: skip reload if the exact model is active ──
@@ -3662,9 +3951,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
 
                 _gguf_audio = getattr(llama_backend, "_audio_type", None)
                 _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
-                # The requested GGUF chat model is already resident: assert CHAT ownership (a
-                # no-op when it already holds it) so a drifted arbiter owner is corrected. This
-                # is a guaranteed-success path, not a doomed load, so evicting here is correct.
+                # Requested GGUF chat model already resident: assert CHAT ownership (no-op when
+                # held) to correct a drifted arbiter owner. Guaranteed-success path, so evicting
+                # here is correct.
                 await asyncio.to_thread(acquire_for, CHAT)
                 return LoadResponse(
                     status = "already_loaded",
@@ -3718,9 +4007,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 _sf_flags = _detect_safetensors_features(backend, _chat_template)
                 _sf_supports_reasoning = _sf_flags["supports_reasoning"]
                 _sf_reasoning_style = _sf_flags["reasoning_style"]
-                # The requested chat model is already resident: assert CHAT ownership (no-op when
-                # it already holds it) to correct a drifted arbiter owner. Guaranteed-success
-                # path, not a doomed load, so evicting here is correct.
+                # Requested chat model already resident: assert CHAT ownership (no-op when held)
+                # to correct a drifted arbiter owner. Guaranteed-success path, so evicting here
+                # is correct.
                 await asyncio.to_thread(acquire_for, CHAT)
                 return LoadResponse(
                     status = "already_loaded",
@@ -3805,11 +4094,10 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
         )
 
-        # The load is now known viable (valid identifier, gpu_ids ok, fits alongside any active
+        # Load now known viable (valid identifier, gpu_ids ok, fits alongside any active
         # training): reclaim the GPU for chat, evicting a resident Images/Video pipeline. Doing
-        # this only here -- not before the validation above -- is what keeps a doomed chat load
-        # from evicting a working image/video model and then erroring. No-op when chat already
-        # owns the GPU.
+        # this only here -- not before the validation above -- keeps a doomed load from evicting
+        # a working image/video model and then erroring. No-op when chat already owns the GPU.
         await asyncio.to_thread(acquire_for, CHAT)
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -6226,7 +6514,7 @@ async def openai_chat_completions(
         if not backend.active_model_name:
             raise HTTPException(
                 status_code = 400,
-                detail = "No model loaded. Call POST /inference/load first.",
+                detail = _no_model_loaded_detail("No model loaded. Call POST /inference/load first."),
             )
         # Clean public id so the response never echoes a local path; the audio
         # branch below receives this sanitized label too.
@@ -6698,6 +6986,24 @@ async def openai_chat_completions(
                     bypass_permissions = bool(payload.bypass_permissions),
                 )
 
+            _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
+            try:
+                reservation, admission_config = _openai_llama_admission_reserve(
+                    request = request,
+                    llama_backend = llama_backend,
+                )
+            except LlamaAdmissionQueueFull as exc:
+                _openai_admission_log(
+                    "queue-full",
+                    snapshot = exc.snapshot,
+                    request = request,
+                    mode = _tool_admission_mode,
+                    completion_id = completion_id,
+                    level = "warning",
+                )
+                api_monitor.fail(monitor_id, str(exc))
+                raise _openai_admission_http_exception(exc, status_code = 429)
+
             _tool_sentinel = object()
 
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
@@ -6706,6 +7012,8 @@ async def openai_chat_completions(
 
             async def gguf_tool_stream():
                 gen = None
+                next_task = None
+                stream_completed = False
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_cancel(request, cancel_event)
                 )
@@ -6743,7 +7051,14 @@ async def openai_chat_completions(
                             api_monitor.finish(monitor_id, "cancelled")
                             return
 
-                        event = await asyncio.to_thread(next, gen, _tool_sentinel)
+                        next_task = asyncio.create_task(
+                            asyncio.to_thread(next, gen, _tool_sentinel)
+                        )
+                        try:
+                            event = await asyncio.shield(next_task)
+                        finally:
+                            if next_task.done():
+                                next_task = None
                         if event is _tool_sentinel:
                             break
 
@@ -6842,6 +7157,7 @@ async def openai_chat_completions(
                     api_monitor.finish(
                         monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                     )
+                    stream_completed = True
                     yield "data: [DONE]\n\n"
 
                 except asyncio.CancelledError:
@@ -6856,18 +7172,155 @@ async def openai_chat_completions(
                     error_chunk = _openai_stream_error_chunk(e)
                     yield _openai_stream_error_sse(error_chunk)
                 finally:
-                    await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-                    if gen is not None:
-                        try:
-                            gen.close()
-                        except (RuntimeError, ValueError):
-                            pass
-                    _tracker.__exit__(None, None, None)
+                    try:
+                        if not stream_completed:
+                            cancel_event.set()
+                        task_to_drain = next_task
+                        next_task = None
+                        while task_to_drain is not None and not task_to_drain.done():
+                            try:
+                                await asyncio.shield(task_to_drain)
+                            except asyncio.CancelledError:
+                                cancel_event.set()
+                                continue
+                            except Exception:
+                                break
+                        if task_to_drain is not None and task_to_drain.done():
+                            try:
+                                task_to_drain.exception()
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                        if gen is not None and not stream_completed:
+                            try:
+                                await asyncio.to_thread(gen.close)
+                            except (RuntimeError, ValueError):
+                                pass
+                            except Exception:
+                                logger.debug(
+                                    "Error closing GGUF tool stream generator during cleanup",
+                                    exc_info = True,
+                                )
+                        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                    finally:
+                        _tracker.__exit__(None, None, None)
 
             if payload.stream:
+                stream_lease = reservation.lease_nowait()
+                admission_wait_started_at = None
+                if stream_lease is None:
+                    admission_wait_started_at = time.monotonic()
+                    _openai_admission_log(
+                        "queued",
+                        reservation,
+                        request = request,
+                        mode = _tool_admission_mode,
+                        completion_id = completion_id,
+                        level = "debug",
+                    )
+
+                async def admitted_gguf_tool_stream():
+                    lease = stream_lease
+                    stream_started = False
+                    stream_cancelled = False
+                    try:
+                        if lease is None:
+                            async for wait_item in _openai_admission_wait_stream_chunks(
+                                reservation,
+                                admission_config,
+                                request = request,
+                                cancel_event = cancel_event,
+                            ):
+                                if isinstance(wait_item, str):
+                                    yield wait_item
+                                    continue
+                                lease = wait_item
+                                _openai_admission_log(
+                                    "granted-after-wait",
+                                    reservation,
+                                    request = request,
+                                    mode = _tool_admission_mode,
+                                    wait_started_at = admission_wait_started_at,
+                                    completion_id = completion_id,
+                                    level = "debug",
+                                )
+                                break
+                        if lease is None:
+                            return
+                        await _raise_if_openai_admission_cancelled(
+                            reservation,
+                            request = request,
+                            cancel_event = cancel_event,
+                        )
+                        iterator = gguf_tool_stream()
+                        stream_started = True
+                        try:
+                            async for chunk in iterator:
+                                yield chunk
+                        except asyncio.CancelledError:
+                            stream_cancelled = True
+                            raise
+                        finally:
+                            await _close_openai_admitted_stream_iterator(
+                                iterator,
+                                cancelled = stream_cancelled,
+                            )
+                    except LlamaAdmissionTimeout as exc:
+                        _openai_admission_log(
+                            "timeout",
+                            reservation,
+                            request = request,
+                            mode = _tool_admission_mode,
+                            wait_started_at = admission_wait_started_at,
+                            completion_id = completion_id,
+                            level = "warning",
+                        )
+                        api_monitor.fail(monitor_id, str(exc))
+                        yield _openai_stream_error_sse(
+                            _openai_admission_error_body(exc, status_code = 503)
+                        )
+                    except LlamaAdmissionCancelled:
+                        _openai_admission_log(
+                            "cancelled-before-upstream",
+                            reservation,
+                            request = request,
+                            mode = _tool_admission_mode,
+                            wait_started_at = admission_wait_started_at,
+                            completion_id = completion_id,
+                            level = "debug",
+                        )
+                        api_monitor.finish(monitor_id, "cancelled")
+                        return
+                    except asyncio.CancelledError:
+                        api_monitor.finish(monitor_id, "cancelled")
+                        raise
+                    except HTTPException as exc:
+                        status_code = getattr(exc, "status_code", 500) or 500
+                        detail = exc.detail
+                        error = (
+                            detail
+                            if isinstance(detail, dict) and "error" in detail
+                            else openai_error_body(str(detail), status = status_code)
+                        )
+                        api_monitor.fail(monitor_id, str(detail))
+                        yield _openai_stream_error_sse(error)
+                    finally:
+                        if lease is not None:
+                            lease.release()
+                        if not stream_started:
+                            api_monitor.finish(monitor_id, "cancelled")
+                            reservation.cancel()
+                            _tracker.__exit__(None, None, None)
+
+                async def _gguf_tool_admission_unstarted_cleanup() -> None:
+                    api_monitor.finish(monitor_id, "cancelled")
+                    if stream_lease is not None:
+                        stream_lease.release()
+                    reservation.cancel()
+                    _tracker.__exit__(None, None, None)
+
                 return _SameTaskStreamingResponse(
-                    gguf_tool_stream(),
-                    unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
+                    admitted_gguf_tool_stream(),
+                    unstarted_cleanup = _gguf_tool_admission_unstarted_cleanup,
                     media_type = "text/event-stream",
                     headers = {
                         "Cache-Control": "no-cache",
@@ -6913,10 +7366,61 @@ async def openai_chat_completions(
                     except (RuntimeError, ValueError):
                         pass
 
+            drain_task = None
+
+            async def _drain_cancelled_gguf_tool_task():
+                if drain_task is None:
+                    return
+                while not drain_task.done():
+                    try:
+                        await asyncio.shield(drain_task)
+                    except asyncio.CancelledError:
+                        cancel_event.set()
+                        continue
+                    except Exception:
+                        break
+                if drain_task.done():
+                    try:
+                        drain_task.exception()
+                    except (asyncio.CancelledError, Exception):
+                        pass
+
+            admission_lease = None
+            admission_wait_started_at = None
             try:
-                full_text, completion_usage, completion_finish = await asyncio.to_thread(
-                    _drain_gguf_tool_loop
+                if reservation.lease_nowait() is None:
+                    admission_wait_started_at = time.monotonic()
+                    _openai_admission_log(
+                        "queued",
+                        reservation,
+                        request = request,
+                        mode = _tool_admission_mode,
+                        completion_id = completion_id,
+                        level = "debug",
+                    )
+                admission_lease = await _wait_for_openai_admission_non_streaming(
+                    reservation,
+                    admission_config,
+                    request = request,
+                    cancel_event = cancel_event,
                 )
+                if admission_wait_started_at is not None:
+                    _openai_admission_log(
+                        "granted-after-wait",
+                        reservation,
+                        request = request,
+                        mode = _tool_admission_mode,
+                        wait_started_at = admission_wait_started_at,
+                        completion_id = completion_id,
+                        level = "debug",
+                    )
+                await _raise_if_openai_admission_cancelled(
+                    reservation,
+                    request = request,
+                    cancel_event = cancel_event,
+                )
+                drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_tool_loop))
+                full_text, completion_usage, completion_finish = await asyncio.shield(drain_task)
                 reasoning_text, visible_text = _extract_responses_reasoning(
                     full_text,
                     parse_think_markers = _responses_should_parse_think_markers(
@@ -6962,6 +7466,48 @@ async def openai_chat_completions(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                 )
                 return _model_json_response(response)
+            except asyncio.CancelledError:
+                cancel_event.set()
+                await _drain_cancelled_gguf_tool_task()
+                api_monitor.finish(monitor_id, "cancelled")
+                reservation.cancel()
+                if admission_lease is not None:
+                    admission_lease.release()
+                _tracker.__exit__(None, None, None)
+                raise
+            except LlamaAdmissionTimeout as exc:
+                _openai_admission_log(
+                    "timeout",
+                    reservation,
+                    request = request,
+                    mode = _tool_admission_mode,
+                    wait_started_at = admission_wait_started_at,
+                    completion_id = completion_id,
+                    level = "warning",
+                )
+                api_monitor.fail(monitor_id, str(exc))
+                if admission_lease is not None:
+                    admission_lease.release()
+                _tracker.__exit__(None, None, None)
+                raise _openai_admission_http_exception(exc, status_code = 503)
+            except LlamaAdmissionCancelled as exc:
+                _openai_admission_log(
+                    "cancelled-before-upstream",
+                    reservation,
+                    request = request,
+                    mode = _tool_admission_mode,
+                    wait_started_at = admission_wait_started_at,
+                    completion_id = completion_id,
+                    level = "debug",
+                )
+                api_monitor.finish(monitor_id, "cancelled")
+                if admission_lease is not None:
+                    admission_lease.release()
+                _tracker.__exit__(None, None, None)
+                raise HTTPException(
+                    status_code = 499,
+                    detail = _openai_admission_error_body(exc, status_code = 499),
+                )
             except Exception as e:
                 logger.error(f"Error during GGUF tool completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
@@ -6982,6 +7528,8 @@ async def openai_chat_completions(
                     )
                 raise HTTPException(status_code = 500, detail = safe_error_detail(e))
             finally:
+                if admission_lease is not None:
+                    admission_lease.release()
                 _tracker.__exit__(None, None, None)
 
         # ── Standard GGUF path (no tools) ─────────────────────
@@ -7016,6 +7564,23 @@ async def openai_chat_completions(
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
             _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
             _tracker.__enter__()
+            try:
+                reservation, admission_config = _openai_llama_admission_reserve(
+                    request = request,
+                    llama_backend = llama_backend,
+                )
+            except LlamaAdmissionQueueFull as exc:
+                _tracker.__exit__(None, None, None)
+                _openai_admission_log(
+                    "queue-full",
+                    snapshot = exc.snapshot,
+                    request = request,
+                    mode = "chat_standard_stream",
+                    completion_id = completion_id,
+                    level = "warning",
+                )
+                api_monitor.fail(monitor_id, str(exc))
+                raise _openai_admission_http_exception(exc, status_code = 429)
 
             async def gguf_stream_chunks():
                 disconnect_watcher = asyncio.create_task(
@@ -7163,9 +7728,122 @@ async def openai_chat_completions(
                     finally:
                         _tracker.__exit__(None, None, None)
 
+            stream_lease = reservation.lease_nowait()
+            admission_wait_started_at = None
+            if stream_lease is None:
+                admission_wait_started_at = time.monotonic()
+                _openai_admission_log(
+                    "queued",
+                    reservation,
+                    request = request,
+                    mode = "chat_standard_stream",
+                    completion_id = completion_id,
+                    level = "debug",
+                )
+
+            async def admitted_gguf_stream_chunks():
+                lease = stream_lease
+                stream_started = False
+                stream_cancelled = False
+                try:
+                    if lease is None:
+                        async for wait_item in _openai_admission_wait_stream_chunks(
+                            reservation,
+                            admission_config,
+                            request = request,
+                            cancel_event = cancel_event,
+                        ):
+                            if isinstance(wait_item, str):
+                                yield wait_item
+                                continue
+                            lease = wait_item
+                            _openai_admission_log(
+                                "granted-after-wait",
+                                reservation,
+                                request = request,
+                                mode = "chat_standard_stream",
+                                wait_started_at = admission_wait_started_at,
+                                completion_id = completion_id,
+                                level = "debug",
+                            )
+                            break
+                    if lease is None:
+                        return
+                    await _raise_if_openai_admission_cancelled(
+                        reservation,
+                        request = request,
+                        cancel_event = cancel_event,
+                    )
+                    iterator = gguf_stream_chunks()
+                    stream_started = True
+                    try:
+                        async for chunk in iterator:
+                            yield chunk
+                    except asyncio.CancelledError:
+                        stream_cancelled = True
+                        raise
+                    finally:
+                        await _close_openai_admitted_stream_iterator(
+                            iterator,
+                            cancelled = stream_cancelled,
+                        )
+                except LlamaAdmissionTimeout as exc:
+                    _openai_admission_log(
+                        "timeout",
+                        reservation,
+                        request = request,
+                        mode = "chat_standard_stream",
+                        wait_started_at = admission_wait_started_at,
+                        completion_id = completion_id,
+                        level = "warning",
+                    )
+                    api_monitor.fail(monitor_id, str(exc))
+                    yield _openai_stream_error_sse(
+                        _openai_admission_error_body(exc, status_code = 503)
+                    )
+                except LlamaAdmissionCancelled:
+                    _openai_admission_log(
+                        "cancelled-before-upstream",
+                        reservation,
+                        request = request,
+                        mode = "chat_standard_stream",
+                        wait_started_at = admission_wait_started_at,
+                        completion_id = completion_id,
+                        level = "debug",
+                    )
+                    api_monitor.finish(monitor_id, "cancelled")
+                    return
+                except asyncio.CancelledError:
+                    api_monitor.finish(monitor_id, "cancelled")
+                    raise
+                except HTTPException as exc:
+                    status_code = getattr(exc, "status_code", 500) or 500
+                    detail = exc.detail
+                    error = (
+                        detail
+                        if isinstance(detail, dict) and "error" in detail
+                        else openai_error_body(str(detail), status = status_code)
+                    )
+                    api_monitor.fail(monitor_id, str(detail))
+                    yield _openai_stream_error_sse(error)
+                finally:
+                    if lease is not None:
+                        lease.release()
+                    if not stream_started:
+                        api_monitor.finish(monitor_id, "cancelled")
+                        reservation.cancel()
+                        _tracker.__exit__(None, None, None)
+
+            async def _gguf_admission_unstarted_cleanup() -> None:
+                api_monitor.finish(monitor_id, "cancelled")
+                if stream_lease is not None:
+                    stream_lease.release()
+                reservation.cancel()
+                _tracker.__exit__(None, None, None)
+
             return _SameTaskStreamingResponse(
-                gguf_stream_chunks(),
-                unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
+                admitted_gguf_stream_chunks(),
+                unstarted_cleanup = _gguf_admission_unstarted_cleanup,
                 media_type = "text/event-stream",
                 headers = {
                     "Cache-Control": "no-cache",
@@ -7174,6 +7852,101 @@ async def openai_chat_completions(
                 },
             )
         else:
+            try:
+                reservation, admission_config = _openai_llama_admission_reserve(
+                    request = request,
+                    llama_backend = llama_backend,
+                )
+            except LlamaAdmissionQueueFull as exc:
+                _openai_admission_log(
+                    "queue-full",
+                    snapshot = exc.snapshot,
+                    request = request,
+                    mode = "chat_standard_nonstream",
+                    completion_id = completion_id,
+                    level = "warning",
+                )
+                api_monitor.fail(monitor_id, str(exc))
+                raise _openai_admission_http_exception(exc, status_code = 429)
+
+            _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+            _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+            _tracker.__enter__()
+            admission_lease = None
+            admission_wait_started_at = None
+            try:
+                if reservation.lease_nowait() is None:
+                    admission_wait_started_at = time.monotonic()
+                    _openai_admission_log(
+                        "queued",
+                        reservation,
+                        request = request,
+                        mode = "chat_standard_nonstream",
+                        completion_id = completion_id,
+                        level = "debug",
+                    )
+                admission_lease = await _wait_for_openai_admission_non_streaming(
+                    reservation,
+                    admission_config,
+                    request = request,
+                    cancel_event = cancel_event,
+                )
+                if admission_wait_started_at is not None:
+                    _openai_admission_log(
+                        "granted-after-wait",
+                        reservation,
+                        request = request,
+                        mode = "chat_standard_nonstream",
+                        wait_started_at = admission_wait_started_at,
+                        completion_id = completion_id,
+                        level = "debug",
+                    )
+                await _raise_if_openai_admission_cancelled(
+                    reservation,
+                    request = request,
+                    cancel_event = cancel_event,
+                )
+            except asyncio.CancelledError:
+                api_monitor.finish(monitor_id, "cancelled")
+                reservation.cancel()
+                if admission_lease is not None:
+                    admission_lease.release()
+                _tracker.__exit__(None, None, None)
+                raise
+            except LlamaAdmissionTimeout as exc:
+                _openai_admission_log(
+                    "timeout",
+                    reservation,
+                    request = request,
+                    mode = "chat_standard_nonstream",
+                    wait_started_at = admission_wait_started_at,
+                    completion_id = completion_id,
+                    level = "warning",
+                )
+                api_monitor.fail(monitor_id, str(exc))
+                if admission_lease is not None:
+                    admission_lease.release()
+                _tracker.__exit__(None, None, None)
+                raise _openai_admission_http_exception(exc, status_code = 503)
+            except LlamaAdmissionCancelled as exc:
+                _openai_admission_log(
+                    "cancelled-before-upstream",
+                    reservation,
+                    request = request,
+                    mode = "chat_standard_nonstream",
+                    wait_started_at = admission_wait_started_at,
+                    completion_id = completion_id,
+                    level = "debug",
+                )
+                api_monitor.finish(monitor_id, "cancelled")
+                if admission_lease is not None:
+                    admission_lease.release()
+                _tracker.__exit__(None, None, None)
+                raise HTTPException(
+                    status_code = 499,
+                    detail = _openai_admission_error_body(exc, status_code = 499),
+                )
+
             try:
                 # ``n`` requests several independent completions; the single
                 # decode slot yields one at a time, so loop sequentially.
@@ -7317,6 +8090,10 @@ async def openai_chat_completions(
                         ),
                     )
                 raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+            finally:
+                if admission_lease is not None:
+                    admission_lease.release()
+                _tracker.__exit__(None, None, None)
     # ── Standard Unsloth path ─────────────────────────────────
 
     # Decode image (from content parts OR legacy field)
@@ -8470,7 +9247,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
-            detail = "No GGUF model loaded. Load a GGUF model first.",
+            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
         )
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
@@ -8686,7 +9463,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
-            detail = "No GGUF model loaded. Load a GGUF model first.",
+            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
         )
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
@@ -9426,7 +10203,7 @@ async def _responses_stream(
         # so the client sees a useful error instead of a dangling stream.
         raise HTTPException(
             status_code = 400,
-            detail = (
+            detail = _no_model_loaded_detail(
                 "Streaming /v1/responses requires a GGUF model loaded via "
                 "llama-server. Use non-streaming /v1/responses, "
                 "/v1/chat/completions, or load a GGUF model."
@@ -9448,6 +10225,52 @@ async def _responses_stream(
     )
     body["stream_options"] = {"include_usage": True}
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
+    try:
+        reservation, admission_config = _openai_llama_admission_reserve(
+            request = request,
+            llama_backend = llama_backend,
+        )
+    except LlamaAdmissionQueueFull as exc:
+        _openai_admission_log(
+            "queue-full",
+            snapshot = exc.snapshot,
+            request = request,
+            mode = "responses_stream",
+            completion_id = resp_id,
+            level = "warning",
+        )
+        api_monitor.fail(monitor_id, str(exc))
+        raise _openai_admission_http_exception(exc, status_code = 429)
+
+    def _responses_admission_failed_sse(exc: Exception, *, status_code: int) -> str:
+        return (
+            "event: response.failed\n"
+            "data: "
+            + json.dumps(
+                {
+                    "type": "response.failed",
+                    "response": {
+                        "id": resp_id,
+                        "object": "response",
+                        "created_at": created_at,
+                        "status": "failed",
+                        "model": _llama_public_model_id(llama_backend, payload.model)
+                        or payload.model,
+                        "output": [],
+                        "usage": {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 0,
+                        },
+                        "error": {
+                            "code": status_code,
+                            "message": str(exc),
+                        },
+                    },
+                }
+            )
+            + "\n\n"
+        )
 
     async def event_generator():
         # Clean public id for every response envelope. Prefer the loaded model's
@@ -10257,14 +11080,111 @@ async def _responses_stream(
         api_monitor.finish(monitor_id)
         yield _sse("response.completed", completed_response)
 
+    async def admitted_event_generator():
+        lease = reservation.lease_nowait()
+        admission_wait_started_at = None
+        stream_started = False
+        stream_cancelled = False
+        iterator = None
+        try:
+            if lease is None:
+                admission_wait_started_at = time.monotonic()
+                _openai_admission_log(
+                    "queued",
+                    reservation,
+                    request = request,
+                    mode = "responses_stream",
+                    completion_id = resp_id,
+                    level = "debug",
+                )
+                async for wait_item in _openai_admission_wait_stream_chunks(
+                    reservation,
+                    admission_config,
+                    request = request,
+                    cancel_event = None,
+                ):
+                    if isinstance(wait_item, str):
+                        yield wait_item
+                        continue
+                    lease = wait_item
+                    _openai_admission_log(
+                        "granted-after-wait",
+                        reservation,
+                        request = request,
+                        mode = "responses_stream",
+                        wait_started_at = admission_wait_started_at,
+                        completion_id = resp_id,
+                        level = "debug",
+                    )
+                    break
+            if lease is None:
+                return
+            await _raise_if_openai_admission_cancelled(
+                reservation,
+                request = request,
+                cancel_event = None,
+            )
+            iterator = event_generator()
+            stream_started = True
+            try:
+                async for chunk in iterator:
+                    yield chunk
+            except asyncio.CancelledError:
+                stream_cancelled = True
+                api_monitor.finish(monitor_id, "cancelled")
+                raise
+            finally:
+                await _close_openai_admitted_stream_iterator(
+                    iterator,
+                    cancelled = stream_cancelled,
+                )
+        except LlamaAdmissionTimeout as exc:
+            _openai_admission_log(
+                "timeout",
+                reservation,
+                request = request,
+                mode = "responses_stream",
+                wait_started_at = admission_wait_started_at,
+                completion_id = resp_id,
+                level = "warning",
+            )
+            api_monitor.fail(monitor_id, str(exc))
+            yield _responses_admission_failed_sse(exc, status_code = 503)
+        except LlamaAdmissionCancelled:
+            _openai_admission_log(
+                "cancelled-before-upstream",
+                reservation,
+                request = request,
+                mode = "responses_stream",
+                wait_started_at = admission_wait_started_at,
+                completion_id = resp_id,
+                level = "debug",
+            )
+            api_monitor.finish(monitor_id, "cancelled")
+            return
+        except asyncio.CancelledError:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
+        finally:
+            if lease is not None:
+                lease.release()
+            if not stream_started:
+                api_monitor.finish(monitor_id, "cancelled")
+                reservation.cancel()
+
+    async def _responses_admission_unstarted_cleanup() -> None:
+        api_monitor.finish(monitor_id, "cancelled")
+        reservation.cancel()
+
     return _SameTaskStreamingResponse(
-        event_generator(),
+        admitted_event_generator(),
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
             "Connection": "close",
             "X-Accel-Buffering": "no",
         },
+        unstarted_cleanup = _responses_admission_unstarted_cleanup,
     )
 
 
@@ -10522,7 +11442,7 @@ async def anthropic_count_tokens(
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
-            detail = "No GGUF model loaded. Load a GGUF model first.",
+            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
         )
 
     # Same Anthropic → OpenAI translation as anthropic_messages: system is
@@ -10595,7 +11515,7 @@ async def anthropic_messages(
     if not llama_backend.is_loaded and not _automatic_model_load_may_run():
         raise HTTPException(
             status_code = 503,
-            detail = "No GGUF model loaded. Load a GGUF model first.",
+            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
         )
 
     # max_tokens is a required field on the Anthropic Messages API; real Anthropic
@@ -10646,7 +11566,7 @@ async def anthropic_messages(
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
-            detail = "No GGUF model loaded. Load a GGUF model first.",
+            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
         )
 
     # Advertised repo id after an auto-switch load, else a clean public id, never
@@ -12108,7 +13028,202 @@ async def _openai_passthrough_stream(
     completion_id,
     monitor_id: Optional[str] = None,
 ):
-    """Streaming client-side pass-through for /v1/chat/completions.
+    _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+    _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+    _tracker.__enter__()
+    try:
+        reservation, admission_config = _openai_llama_admission_reserve(
+            request = request,
+            llama_backend = llama_backend,
+        )
+    except LlamaAdmissionQueueFull as exc:
+        _tracker.__exit__(None, None, None)
+        _openai_admission_log(
+            "queue-full",
+            snapshot = exc.snapshot,
+            request = request,
+            mode = "chat_passthrough_stream",
+            completion_id = completion_id,
+            level = "warning",
+        )
+        api_monitor.fail(monitor_id, str(exc))
+        raise _openai_admission_http_exception(exc, status_code = 429)
+
+    lease = reservation.lease_nowait()
+    if lease is not None:
+        try:
+            await _raise_if_openai_admission_cancelled(
+                reservation,
+                request = request,
+                cancel_event = cancel_event,
+            )
+        except asyncio.CancelledError:
+            api_monitor.finish(monitor_id, "cancelled")
+            lease.release()
+            _tracker.__exit__(None, None, None)
+            raise
+        except LlamaAdmissionCancelled as exc:
+            lease.release()
+            _tracker.__exit__(None, None, None)
+            api_monitor.finish(monitor_id, "cancelled")
+            raise HTTPException(
+                status_code = 499,
+                detail = _openai_admission_error_body(exc, status_code = 499),
+            )
+        return await _openai_passthrough_stream_admitted(
+            request,
+            cancel_event,
+            llama_backend,
+            payload,
+            model_name,
+            completion_id,
+            monitor_id = monitor_id,
+            admission_lease = lease,
+            tracker = _tracker,
+        )
+
+    admission_wait_started_at = time.monotonic()
+    _openai_admission_log(
+        "queued",
+        reservation,
+        request = request,
+        mode = "chat_passthrough_stream",
+        completion_id = completion_id,
+        level = "debug",
+    )
+
+    async def _queued_stream():
+        admitted_started = False
+        admitted_body_owns_cleanup = False
+        admitted_response = None
+        admitted_body_cancelled = False
+        try:
+            async for wait_item in _openai_admission_wait_stream_chunks(
+                reservation,
+                admission_config,
+                request = request,
+                cancel_event = cancel_event,
+            ):
+                if isinstance(wait_item, str):
+                    yield wait_item
+                    continue
+                _openai_admission_log(
+                    "granted-after-wait",
+                    reservation,
+                    request = request,
+                    mode = "chat_passthrough_stream",
+                    wait_started_at = admission_wait_started_at,
+                    completion_id = completion_id,
+                    level = "debug",
+                )
+                await _raise_if_openai_admission_cancelled(
+                    reservation,
+                    request = request,
+                    cancel_event = cancel_event,
+                )
+                admitted_response = await _openai_passthrough_stream_admitted(
+                    request,
+                    cancel_event,
+                    llama_backend,
+                    payload,
+                    model_name,
+                    completion_id,
+                    monitor_id = monitor_id,
+                    admission_lease = wait_item,
+                    tracker = _tracker,
+                )
+                admitted_started = True
+                iterator = admitted_response.body_iterator
+                admitted_body_owns_cleanup = True
+                try:
+                    async for chunk in iterator:
+                        yield chunk
+                except asyncio.CancelledError:
+                    admitted_body_cancelled = True
+                    raise
+                finally:
+                    await _close_openai_admitted_stream_iterator(
+                        iterator,
+                        cancelled = admitted_body_cancelled,
+                    )
+                    if not admitted_body_owns_cleanup:
+                        cleanup = getattr(admitted_response, "_unstarted_cleanup", None)
+                        if cleanup is not None:
+                            await cleanup()
+                return
+        except LlamaAdmissionTimeout as exc:
+            _openai_admission_log(
+                "timeout",
+                reservation,
+                request = request,
+                mode = "chat_passthrough_stream",
+                wait_started_at = admission_wait_started_at,
+                completion_id = completion_id,
+                level = "warning",
+            )
+            api_monitor.fail(monitor_id, str(exc))
+            yield _openai_stream_error_sse(_openai_admission_error_body(exc, status_code = 503))
+        except LlamaAdmissionCancelled:
+            _openai_admission_log(
+                "cancelled-before-upstream",
+                reservation,
+                request = request,
+                mode = "chat_passthrough_stream",
+                wait_started_at = admission_wait_started_at,
+                completion_id = completion_id,
+                level = "debug",
+            )
+            api_monitor.finish(monitor_id, "cancelled")
+            return
+        except asyncio.CancelledError:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
+        except HTTPException as exc:
+            status_code = getattr(exc, "status_code", 500) or 500
+            detail = exc.detail
+            error = (
+                detail
+                if isinstance(detail, dict) and "error" in detail
+                else openai_error_body(str(detail), status = status_code)
+            )
+            api_monitor.fail(monitor_id, str(detail))
+            yield _openai_stream_error_sse(error)
+        finally:
+            if not admitted_started:
+                api_monitor.finish(monitor_id, "cancelled")
+                reservation.cancel()
+                _tracker.__exit__(None, None, None)
+
+    async def _queued_unstarted_cleanup() -> None:
+        api_monitor.finish(monitor_id, "cancelled")
+        reservation.cancel()
+        _tracker.__exit__(None, None, None)
+
+    return _SameTaskStreamingResponse(
+        _queued_stream(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "close",
+            "X-Accel-Buffering": "no",
+        },
+        unstarted_cleanup = _queued_unstarted_cleanup,
+    )
+
+
+async def _openai_passthrough_stream_admitted(
+    request,
+    cancel_event,
+    llama_backend,
+    payload,
+    model_name,
+    completion_id,
+    monitor_id: Optional[str] = None,
+    *,
+    admission_lease: LlamaAdmissionLease,
+    tracker,
+):
+    """Streaming client-side pass-through after Studio granted an upstream slot.
 
     Forwards the client's OpenAI function-calling request to llama-server and
     relays the SSE stream back with minimal normalization (reasoning-only
@@ -12122,9 +13237,7 @@ async def _openai_passthrough_stream(
     --reasoning-format auto``), so ``delta.content`` carries no raw markup and is
     deliberately not re-parsed locally, unlike the ``/completion`` paths.
     """
-    _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-    _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
-    _tracker.__enter__()
+    _tracker = tracker
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
 
@@ -12215,7 +13328,10 @@ async def _openai_passthrough_stream(
                     await _aclose_send_task(send_task)
                     await _aclose_stream_resources(client = client)
                 finally:
-                    _tracker.__exit__(None, None, None)
+                    try:
+                        admission_lease.release()
+                    finally:
+                        _tracker.__exit__(None, None, None)
                 return _SameTaskStreamingResponse(
                     iter(()),
                     media_type = "text/event-stream",
@@ -12761,7 +13877,10 @@ async def _openai_passthrough_stream(
                         client = client,
                     )
                 finally:
-                    _tracker.__exit__(None, None, None)
+                    try:
+                        admission_lease.release()
+                    finally:
+                        _tracker.__exit__(None, None, None)
 
         async def _unstarted_cleanup() -> None:
             # Client disconnected before the body stream started, so _stream()'s
@@ -12772,7 +13891,10 @@ async def _openai_passthrough_stream(
                 await _aclose_send_task(send_task)
                 await _aclose_stream_resources(resp = resp, client = client)
             finally:
-                _tracker.__exit__(None, None, None)
+                try:
+                    admission_lease.release()
+                finally:
+                    _tracker.__exit__(None, None, None)
 
         return _SameTaskStreamingResponse(
             _stream(),
@@ -12796,11 +13918,114 @@ async def _openai_passthrough_stream(
             await _aclose_send_task(send_task)
             await _aclose_stream_resources(resp = resp, client = client)
         finally:
-            _tracker.__exit__(None, None, None)
+            try:
+                admission_lease.release()
+            finally:
+                _tracker.__exit__(None, None, None)
         raise
 
 
 async def _openai_passthrough_non_streaming(
+    llama_backend,
+    payload,
+    model_name,
+    monitor_id: Optional[str] = None,
+    *,
+    request: Optional[Request] = None,
+    cancel_event = None,
+):
+    """Non-streaming pass-through guarded by local llama-server admission."""
+    try:
+        reservation, admission_config = _openai_llama_admission_reserve(
+            request = request,
+            llama_backend = llama_backend,
+        )
+    except LlamaAdmissionQueueFull as exc:
+        _openai_admission_log(
+            "queue-full",
+            snapshot = exc.snapshot,
+            request = request,
+            mode = "chat_passthrough_nonstream",
+            level = "warning",
+        )
+        api_monitor.fail(monitor_id, str(exc))
+        raise _openai_admission_http_exception(exc, status_code = 429)
+
+    lease = None
+    admission_wait_started_at = None
+    try:
+        if reservation.lease_nowait() is None:
+            admission_wait_started_at = time.monotonic()
+            _openai_admission_log(
+                "queued",
+                reservation,
+                request = request,
+                mode = "chat_passthrough_nonstream",
+                level = "debug",
+            )
+        lease = await _wait_for_openai_admission_non_streaming(
+            reservation,
+            admission_config,
+            request = request,
+            cancel_event = cancel_event,
+        )
+        if admission_wait_started_at is not None:
+            _openai_admission_log(
+                "granted-after-wait",
+                reservation,
+                request = request,
+                mode = "chat_passthrough_nonstream",
+                wait_started_at = admission_wait_started_at,
+                level = "debug",
+            )
+        await _raise_if_openai_admission_cancelled(
+            reservation,
+            request = request,
+            cancel_event = cancel_event,
+        )
+        return await _openai_passthrough_non_streaming_upstream(
+            llama_backend,
+            payload,
+            model_name,
+            monitor_id = monitor_id,
+            request = request,
+            cancel_event = cancel_event,
+        )
+    except LlamaAdmissionTimeout as exc:
+        _openai_admission_log(
+            "timeout",
+            reservation,
+            request = request,
+            mode = "chat_passthrough_nonstream",
+            wait_started_at = admission_wait_started_at,
+            level = "warning",
+        )
+        api_monitor.fail(monitor_id, str(exc))
+        raise _openai_admission_http_exception(exc, status_code = 503)
+    except LlamaAdmissionCancelled as exc:
+        _openai_admission_log(
+            "cancelled-before-upstream",
+            reservation,
+            request = request,
+            mode = "chat_passthrough_nonstream",
+            wait_started_at = admission_wait_started_at,
+            level = "debug",
+        )
+        api_monitor.finish(monitor_id, "cancelled")
+        raise HTTPException(
+            status_code = 499,
+            detail = _openai_admission_error_body(exc, status_code = 499),
+        )
+    except asyncio.CancelledError:
+        api_monitor.finish(monitor_id, "cancelled")
+        reservation.cancel()
+        raise
+    finally:
+        if lease is not None:
+            lease.release()
+
+
+async def _openai_passthrough_non_streaming_upstream(
     llama_backend,
     payload,
     model_name,
@@ -13010,10 +14235,9 @@ async def _openai_passthrough_non_streaming(
 # ──────────────────────────────────────────────────────────────────────────
 # Diffusion (local text-to-image)
 #
-# Studio-only routes (studio_router is not mounted under /v1). The diffusion
-# backend runs in-process and is synchronous, so the blocking load/generate/
-# unload calls are offloaded with asyncio.to_thread to keep the event loop free.
-# This is the single error boundary: backend methods raise, we map to HTTP here.
+# Studio-only routes (studio_router is not mounted under /v1). The diffusion backend
+# runs in-process and synchronously, so blocking load/generate/unload calls are
+# offloaded with asyncio.to_thread. Single error boundary: backend raises, we map to HTTP.
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -13039,9 +14263,9 @@ def _guard_diffusion_load_against_training() -> None:
     except Exception as e:
         logger.warning("Could not check training state for image-load guard: %s", e)
         return
-    # An SDXL LoRA trainer runs in its own subprocess on the same GPU, so an image
-    # load must be refused while one is active too -- otherwise the resident pipeline
-    # competes with the trainer for VRAM. Symmetric with the diffusion-start interlock.
+    # An SDXL LoRA trainer runs in its own subprocess on the same GPU, so an image load
+    # must be refused while one is active too, or the pipeline contends with the trainer
+    # for VRAM. Symmetric with the diffusion-start interlock.
     if not llm_active and not _diffusion_training_active():
         return
     raise HTTPException(
@@ -13077,19 +14301,18 @@ async def load_diffusion_model(
         # engine selection, and the load all agree. A bad explicit kind raises here -> 400.
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # A local On-Device pick can be a bare single-file .safetensors directory (no
-        # model_index.json): the scanner advertises it as a text-to-image model, but the local
-        # picker starts it as a pipeline with no filename, so a pipeline load would 400 on the
-        # missing model_index.json and the advertised model is unusable. If the directory holds
-        # exactly one checkpoint, reinterpret the pick as a single_file load of it (the only
-        # loadable shape for that dir), so validation, engine selection, and the load all agree.
+        # model_index.json): the scanner advertises it as text-to-image, but the picker starts
+        # it as a pipeline with no filename, so a pipeline load would 400 on the missing
+        # model_index.json. If the directory holds exactly one checkpoint, reinterpret the pick
+        # as a single_file load of it (its only loadable shape), so all three paths agree.
         if kind == "pipeline" and not request.gguf_filename:
             sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
-        # Validate cheaply BEFORE touching the GPU: an unloadable pick (bad family,
-        # missing local GGUF, a non-unsloth non-GGUF repo) must not evict a working chat
-        # model and then 400. The validated family also drives engine selection below.
+        # Validate cheaply BEFORE touching the GPU: an unloadable pick (bad family, missing
+        # local GGUF, non-unsloth non-GGUF repo) must not evict a working chat model and then
+        # 400. The validated family also drives engine selection below.
         fam = await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
@@ -13103,18 +14326,16 @@ async def load_diffusion_model(
         # same via _guard_chat_load_against_training; this is its image sibling.
         _guard_diffusion_load_against_training()
         # Pick the engine for this host (diffusers on GPU, native sd.cpp with no GPU),
-        # installing the sd-cli binary if needed -- all BEFORE evicting chat, so a
-        # native fallback never strands a half-loaded state. Non-GGUF kinds force diffusers.
+        # installing the sd-cli binary if needed -- all BEFORE evicting chat, so a native
+        # fallback never strands a half-loaded state. Non-GGUF kinds force diffusers.
         engine = await asyncio.to_thread(
             select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind
         )
-        # Take the GPU from the chat backend only when this load will actually use it,
-        # which is exactly the resolved device being non-CPU. diffusers on an accelerator
-        # and a force-native sd.cpp load on CUDA/XPU/MPS both resolve to that device; a
-        # native sd.cpp load on a pure-CPU host does not. Crucially, a CPU-only host with
-        # no usable sd-cli falls back to diffusers ON CPU -- that also never touches GPU
-        # memory, so keying off the engine name (not the device) would wrongly evict a
-        # resident chat model for a load that cannot use the GPU. Gate on the device.
+        # Take the GPU from chat only when this load will actually use it, i.e. the resolved
+        # device is non-CPU. diffusers on an accelerator and a force-native sd.cpp load on
+        # CUDA/XPU/MPS both resolve to a device; a native sd.cpp load on a pure-CPU host, and a
+        # CPU-only host falling back to diffusers ON CPU, do not. So gate on the device, not the
+        # engine name -- else we'd evict a resident chat model for a load that can't use the GPU.
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
         needs_gpu = device != "cpu"
         if needs_gpu:
@@ -13124,10 +14345,9 @@ async def load_diffusion_model(
         else:
             # A CPU-only native load never touches the GPU, so it neither acquires nor is
             # tracked by the arbiter. But switching here FROM a previous diffusers/GPU load
-            # (select_and_activate_engine unloaded it above) leaves DIFFUSION still marked
-            # as the arbiter owner; a later chat acquire would then "evict" this CPU model
-            # for no reason. Release that stale ownership -- release() is owner-guarded, so
-            # it is a no-op when diffusion never owned the GPU.
+            # leaves DIFFUSION still marked as arbiter owner, so a later chat acquire would
+            # "evict" this CPU model for no reason. Release that stale ownership -- release()
+            # is owner-guarded, so it's a no-op when diffusion never owned the GPU.
             await asyncio.to_thread(release, DIFFUSION)
         status_dict = await asyncio.to_thread(
             engine.begin_load,
@@ -13204,13 +14424,11 @@ async def generate_diffusion_image(
         # doesn't support) — a 400 with the reason, not a generic 500.
         raise HTTPException(status_code = 400, detail = str(exc))
     except RuntimeError as exc:
-        # Only "no model loaded" / user-cancelled are client-state (409); both engines
-        # raise these two EXACT messages. The native sd.cpp engine also raises
-        # RuntimeError for execution failures (nonzero exit, timeout, missing output)
-        # whose text can embed the raw sd-cli tail (local paths / argv) -- those are
-        # server errors (500) returned as a fixed literal, never echoed. Match the
-        # sentinels exactly, not as a substring, so an sd-cli failure that merely
-        # contains "cancelled" can't misroute to 409 and leak that output.
+        # Only "no model loaded" / user-cancelled are client-state (409); both engines raise
+        # these two EXACT messages. The native sd.cpp engine also raises RuntimeError for
+        # execution failures whose text can embed the raw sd-cli tail (local paths / argv) --
+        # those are 500s returned as a fixed literal, never echoed. Match the sentinels exactly
+        # (not as substrings) so an sd-cli failure containing "cancelled" can't misroute to 409.
         msg = str(exc)
         if msg in (DIFFUSION_NOT_LOADED_MSG, DIFFUSION_CANCELLED_MSG):
             raise HTTPException(status_code = 409, detail = msg)
@@ -13220,9 +14438,9 @@ async def generate_diffusion_image(
         logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
-    # Persist each image with its full recipe embedded. The diffusers batch shares
-    # one seed (drawn sequentially from one generator); the native sd.cpp batch uses a
-    # distinct seed per image and returns them in ``seeds`` so each is reproducible.
+    # Persist each image with its full recipe embedded. The diffusers batch shares one seed
+    # (drawn sequentially from one generator); the native sd.cpp batch uses a distinct seed
+    # per image, returned in ``seeds`` so each is reproducible.
     created_at = time.time()
     per_image_seeds = result.get("seeds")
 
@@ -13240,21 +14458,20 @@ async def generate_diffusion_image(
                     {
                         "prompt": request.prompt,
                         "negative_prompt": request.negative_prompt,
-                        # Persist the ACTUAL output size, not the request sliders: Transform/
-                        # Inpaint/Edit derive it from the uploaded image, Extend grows the
-                        # canvas, and Upscale resizes it, so request.width/height would record
-                        # (and later restore) the wrong dimensions for those workflows. For
-                        # plain txt2img the image size equals the sliders anyway.
+                        # Persist the ACTUAL output size, not the request sliders:
+                        # Transform/Inpaint/Edit derive it from the uploaded image, Extend grows
+                        # the canvas, Upscale resizes it, so request.width/height would record the
+                        # wrong dims. For plain txt2img the size equals the sliders anyway.
                         "width": getattr(image, "width", None) or request.width,
                         "height": getattr(image, "height", None) or request.height,
                         "steps": request.steps,
                         "guidance": request.guidance,
                         "seed": seed,
-                        # Position within the batch: shared timestamp, so the export
-                        # filename needs this to stay unique.
+                        # Position within the batch (shared timestamp), so the export filename
+                        # stays unique.
                         "batch_index": index,
-                        # The batch shares one seed, so reproducing image batch_index>0
-                        # needs the original batch_size: persist it so restore can replay.
+                        # The batch shares one seed, so reproducing a batch_index>0 image needs
+                        # the original batch_size: persist it so restore can replay.
                         "batch_size": request.batch_size,
                         "model": result.get("repo_id"),
                         "loras": (
@@ -13263,9 +14480,8 @@ async def generate_diffusion_image(
                         "controlnet": (
                             f"{request.controlnet.id}:{request.controlnet.control_type}:"
                             f"{request.controlnet.strength:g}"
-                            # strength 0 is treated as disabled and skipped before loading /
-                            # conditioning, so the image is unconditioned; don't claim a
-                            # ControlNet was applied in the recipe/metadata.
+                            # strength 0 is disabled and skipped before loading/conditioning,
+                            # so don't claim a ControlNet was applied in the recipe/metadata.
                             if request.controlnet and request.controlnet.strength > 0
                             else None
                         ),
@@ -13299,11 +14515,9 @@ async def list_gallery_images(
     # Fetch one extra to learn whether more remain, without a second scan.
     records = await asyncio.to_thread(image_gallery.list_images, limit + 1, offset)
     has_more = len(records) > limit
-    # Build the response per record and drop any that fail schema validation: a PNG
-    # whose recipe chunk has all required keys but a wrong value type (e.g. a
-    # hand-dropped or corrupted file) passes the presence-only read but would raise
-    # inside GalleryImage(**r). Skipping it keeps one bad file from 500-ing the whole
-    # gallery listing.
+    # Drop records that fail schema validation: a PNG whose recipe chunk has all keys but a
+    # wrong value type (hand-dropped or corrupted) passes the presence-only read yet raises
+    # inside GalleryImage(**r). Skipping it keeps one bad file from 500-ing the listing.
     images = []
     for r in records[:limit]:
         try:
@@ -13356,11 +14570,10 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
     status_dict = await asyncio.to_thread(get_active_diffusion_engine().unload)
     # Drop DIFFUSION ownership only if nothing is resident AND no new load is in flight: a
     # concurrent /images/load that re-acquired DIFFUSION while this (slow) unload ran must keep
-    # ownership, or a later chat load would see no owner, skip eviction, and OOM against the newly
+    # ownership, or a later chat load would see no owner, skip eviction, and OOM the newly
     # resident pipeline. An in-flight load has is_loaded False for its whole download/finalize
-    # window, so gate on loading_repo_ids() too (both engines expose it), not just the committed
-    # state. release() is owner-guarded and identity-less, so an unconditional release here would
-    # clear the newer load's claim.
+    # window, so gate on loading_repo_ids() too, not just committed state. release() is
+    # owner-guarded and identity-less, so an unconditional release would clear the newer claim.
     engine = get_active_diffusion_engine()
     if not engine.loading_repo_ids() and not engine.is_loaded:
         release(DIFFUSION)
@@ -13398,20 +14611,17 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
 # ──────────────────────────────────────────────────────────────────────────
 # OpenAI-compatible images API (POST /v1/images/generations)
 #
-# The inference router is mounted at both /api/inference and /v1, so this also
-# answers /v1/images/generations for off-the-shelf OpenAI clients. It maps
-# OpenAI's CreateImageRequest onto the in-process diffusion backend and returns
-# an ImagesResponse. Studio's own Image tab uses the richer /images/generate
-# route above; this is the spec-shaped surface, and the single error boundary
-# mapping backend exceptions to OpenAI error envelopes (the global /v1 handler
-# wraps HTTPException detail into the envelope).
+# The inference router is mounted at both /api/inference and /v1, so this also answers
+# /v1/images/generations for off-the-shelf OpenAI clients, mapping CreateImageRequest onto
+# the in-process diffusion backend. Studio's Image tab uses the richer /images/generate
+# above; this is the spec-shaped surface and the single error boundary mapping backend
+# exceptions to OpenAI error envelopes (the global /v1 handler wraps HTTPException detail).
 # ──────────────────────────────────────────────────────────────────────────
 
 
-# Diffusion dims must land in [256, 2048] on a multiple of 16 (8x VAE downsample
-# x 2x patch); the named OpenAI sizes (1024x1024, 1536x1024, 256x256, ...) all
-# satisfy this. Mirrors DiffusionGenerateRequest's width/height bounds so both
-# generate paths accept the same geometry.
+# Diffusion dims must land in [256, 2048] on a multiple of 16 (8x VAE downsample x 2x patch);
+# the named OpenAI sizes (1024x1024, 1536x1024, 256x256, ...) all satisfy this. Mirrors
+# DiffusionGenerateRequest's width/height bounds so both generate paths accept the same geometry.
 _IMAGE_SIZE_RE = _re.compile(r"^(\d{1,5})\s*x\s*(\d{1,5})$")
 _IMAGE_DIM_MIN, _IMAGE_DIM_MAX = 256, 2048
 # Sanitized 503 detail shared by the pre-check and the unload-race branch, so both
@@ -13477,9 +14687,8 @@ async def openai_image_generations(
             status_code = 400, detail = openai_error_body(str(exc), status = 400, param = "size")
         )
 
-    # Use the active engine (diffusers OR native sd.cpp on a no-GPU host), the same
-    # accessor /images/generate uses, so a model loaded on the native engine isn't
-    # wrongly reported unloaded here.
+    # Use the active engine (diffusers OR native sd.cpp on a no-GPU host), the same accessor
+    # /images/generate uses, so a native-engine model isn't wrongly reported unloaded here.
     backend = get_active_diffusion_engine()
     status = backend.status()
     if not status.get("loaded"):
@@ -13487,9 +14696,8 @@ async def openai_image_generations(
         # isn't loaded; the global handler turns this into the OpenAI envelope.
         raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
 
-    # An edit-only model (Qwen-Image-Edit, FLUX Kontext) needs an input image this API
-    # cannot supply; refuse up front with a 400 instead of letting the backend's
-    # ValueError surface as a sanitized 500.
+    # An edit-only model (Qwen-Image-Edit, FLUX Kontext) needs an input image this API can't
+    # supply; refuse up front with a 400 rather than let the backend ValueError become a 500.
     workflows = status.get("workflows") or []
     if workflows and "txt2img" not in workflows:
         raise HTTPException(
@@ -13516,10 +14724,9 @@ async def openai_image_generations(
             batch_size = body.n,
         )
     except Exception as exc:  # noqa: BLE001 (single boundary, sanitized envelope)
-        # A RuntimeError with the model now unloaded means it was evicted/unloaded
-        # between the readiness check above and the call (a transient race): 503.
-        # Every other failure (CUDA OOM, a diffusers shape/device error, both also
-        # RuntimeError) is a real 500, and its raw message must not reach the client.
+        # A RuntimeError with the model now unloaded means it was evicted between the readiness
+        # check and the call (a transient race): 503. Every other failure (CUDA OOM, a diffusers
+        # shape/device error) is a real 500 whose raw message must not reach the client.
         if isinstance(exc, RuntimeError) and not backend.is_loaded:
             raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
         logger.error("openai_images.generate_failed: %s", exc)
@@ -13527,8 +14734,8 @@ async def openai_image_generations(
 
     created = int(time.time())
     want_b64 = body.response_format == "b64_json"
-    # Persist each image with its full recipe embedded, like /images/generate, so
-    # the response_format=url links resolve and the images show up in the gallery.
+    # Persist each image with its full recipe, like /images/generate, so response_format=url
+    # links resolve and the images show up in the gallery.
     recipe = {
         "prompt": body.prompt,
         "negative_prompt": None,
@@ -13537,14 +14744,14 @@ async def openai_image_generations(
         "steps": steps,
         "guidance": guidance,
         # The batch shares one base seed, so restoring a batch_index>0 sibling needs the
-        # original batch_size to replay it (same as /images/generate); persist it.
+        # original batch_size to replay (same as /images/generate); persist it.
         "batch_size": body.n,
         "model": result.get("repo_id"),
         "created_at": float(created),
     }
-    # The diffusers batch shares one seed; the native sd.cpp batch uses a distinct seed
-    # per image (returned in ``seeds``), so record each image's own seed, like
-    # /images/generate, or a native batch_index>0 image shows the wrong seed.
+    # The diffusers batch shares one seed; the native sd.cpp batch uses a distinct seed per
+    # image (returned in ``seeds``), so record each image's own seed like /images/generate,
+    # or a native batch_index>0 image shows the wrong seed.
     per_image_seeds = result.get("seeds")
 
     def _persist() -> list[ImageGenerationData]:

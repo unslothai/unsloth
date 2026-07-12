@@ -63,9 +63,9 @@ def _run(fast_accum, steps, res, seed, mf):
         if m > stats["max_abs"]:
             stats["max_abs"] = m
 
-    # Hook the quantised linears (where an fp8-accumulation overflow would surface).
-    # Run EAGER: forward hooks don't trace through torch.compile, and the fp8 fast-accum
-    # accumulation is identical compiled or eager -- compile only changes scheduling.
+    # Hook the quantised linears (where an fp8-accumulation overflow would surface). Run EAGER:
+    # forward hooks don't trace through torch.compile, and the fp8 fast-accum accumulation is
+    # identical compiled or eager -- compile only changes scheduling.
     for m in pipe.transformer.modules():
         if isinstance(m, nn.Linear):
             m.register_forward_hook(hook)

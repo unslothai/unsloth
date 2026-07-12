@@ -67,9 +67,9 @@ def _to_rgb(path_or_img: Any) -> Any:
     return np.asarray(img.convert("RGB"), dtype = np.float64)
 
 
-# Finite PSNR (dB) a perfect (inf) sample is capped to when averaged with imperfect ones,
-# so a lossless render counts as excellent without hiding diverged samples. Well above the
-# ~37 dB compile and ~21 dB quant noise floors this harness reports.
+# Finite PSNR (dB) a perfect (inf) sample is capped to when averaged with imperfect ones, so a
+# lossless render counts as excellent without hiding diverged samples. Well above the ~37 dB
+# compile and ~21 dB quant noise floors this harness reports.
 _PERFECT_MATCH_PSNR = 100.0
 
 
@@ -287,10 +287,9 @@ def _compare(
 
     def _mean(xs: list[float]) -> Optional[float]:
         # +inf marks an identical render (reference vs itself, or a lossless quant/offload)
-        # scoring PSNR=inf -- the case this harness verifies. Report inf ONLY when every
-        # sample is inf; a mix of inf and finite means some renders diverged, so a bare inf
-        # would mask those bad samples. Cap the perfect ones to a high finite PSNR and
-        # average so the drift still shows. (Only PSNR is ever inf; SSIM/CLIP stay finite.)
+        # scoring PSNR=inf -- the case this harness verifies. Report inf ONLY when every sample is
+        # inf; a mix means some renders diverged, so a bare inf would mask them. Cap the perfect
+        # ones to a high finite PSNR and average so the drift still shows. (Only PSNR is ever inf.)
         if not xs:
             return None
         if all(x == math.inf for x in xs):

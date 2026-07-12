@@ -975,9 +975,8 @@ def test_ltx23_split_and_variant(tmp_path):
 
 
 def test_ltx23_scaled_fp8_refused(monkeypatch, tmp_path):
-    # The Lightricks fp8 files carry .weight_scale/.input_scale companions; a
-    # plain dtype cast would silently corrupt them, so the loader must refuse
-    # with a pointer to the supported GGUF path.
+    # The Lightricks fp8 files carry .weight_scale/.input_scale companions; a plain dtype cast
+    # would corrupt them, so the loader must refuse with a pointer to the supported GGUF path.
     from core.inference import video_ltx2
 
     # Stub the module tree so this also runs under the CI sim, which blocks the
@@ -1057,16 +1056,16 @@ def test_hv15_cancel_unwinds_scheduler_loop(fake_runtime):
     assert pipe.scheduler.calls == 1
     # The wrapper must restore scheduler.step even on the exception path.
     assert pipe.scheduler.step.__func__ is _FakeHV15Scheduler.step
-    # The exception unwound pipe.__call__ before its own end-of-call cleanup, so
-    # generate() must have freed the offload hooks itself (VRAM would otherwise
-    # stay onloaded until the next request).
+    # The exception unwound pipe.__call__ before its own end-of-call cleanup, so generate() must
+    # have freed the offload hooks itself (VRAM would otherwise stay onloaded until the next
+    # request).
     assert pipe.hooks_freed == 1
 
 
 def test_cancel_during_export_discards_clip(fake_runtime, monkeypatch):
-    # A cancel that lands during the (blocking, uncancellable) export/mux must still discard
-    # the clip: cancel_generate() already reported success for it, so generate() must raise
-    # the cancelled sentinel rather than return the clip to be persisted to the gallery.
+    # A cancel landing during the (blocking, uncancellable) export/mux must still discard the
+    # clip: cancel_generate() already reported success, so generate() must raise the cancelled
+    # sentinel rather than return the clip to be persisted to the gallery.
     backend = VideoBackend()
     backend.load_pipeline(
         "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
@@ -1105,9 +1104,9 @@ def test_load_wan_ti2v_5b_pipeline(fake_runtime):
 
 
 def test_video_dense_speed_defaults_to_compile_profile(fake_runtime):
-    # A clip denoise amortises the one-time compile within a single run, so an
-    # UNSET speed on a dense (pipeline) load resolves to `default` -- never `max`,
-    # never `off`. Explicit "off" is still honored verbatim.
+    # A clip denoise amortises the one-time compile within a single run, so an UNSET speed on a
+    # dense (pipeline) load resolves to `default` -- never `max`, never `off`. Explicit "off" is
+    # still honored verbatim.
     backend = VideoBackend()
     status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     assert status["speed_mode"] == "default"
@@ -1258,9 +1257,8 @@ def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
 
 
 def test_video_step_cache_auto_toggles_on_actual_steps(fake_runtime):
-    # The AUTO decision follows the ACTUAL step count of each generation: a
-    # few-step request drops the load-time cache, a many-step request restores
-    # it. An explicit "off" never toggles.
+    # The AUTO decision follows the ACTUAL step count of each generation: a few-step request drops
+    # the load-time cache, a many-step request restores it. An explicit "off" never toggles.
     backend = VideoBackend()
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     assert backend.status()["transformer_cache"] == "magcache"
@@ -1352,9 +1350,9 @@ def test_wan_ti2v_defaults_applied(fake_runtime):
 
 
 def test_wan_ti2v_does_not_thread_cfg2(fake_runtime):
-    # The single-DiT TI2V pipeline has no guidance_scale_2 in its signature, so a
-    # request value must NOT be threaded (WanPipeline raises on it when boundary_ratio
-    # is None), even if the caller passes guidance_2.
+    # The single-DiT TI2V pipeline has no guidance_scale_2 in its signature, so a request value
+    # must NOT be threaded (WanPipeline raises on it when boundary_ratio is None), even if the
+    # caller passes guidance_2.
     backend = VideoBackend()
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     backend.generate(prompt = "a sloth", guidance_2 = 3.5)
@@ -1403,9 +1401,9 @@ def test_wan_a14b_step_cache_applies_to_both_dits(fake_runtime):
 
 
 def test_wan_a14b_attention_applies_to_both_dits(fake_runtime, monkeypatch):
-    # An explicit attention backend must be set on both experts. The fake runtime is a
-    # CPU target, where the NVIDIA gate correctly drops explicit kernels; pin the gate
-    # open so the explicit-set path itself is what this test exercises.
+    # An explicit attention backend must be set on both experts. The fake runtime is a CPU target,
+    # where the NVIDIA gate drops explicit kernels; pin the gate open so the explicit-set path is
+    # what this test exercises.
     from core.inference import diffusion_attention as attn_mod
 
     monkeypatch.setattr(attn_mod, "_is_cuda_nvidia", lambda target: True)
@@ -1492,9 +1490,9 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
         return "int8"
 
     monkeypatch.setattr(video_mod, "quantize_transformer", _fake_quant)
-    # The CPU fake target never plans an offload, so force one at the plan seam
-    # (frozen dataclass -> dataclasses.replace) and stub the apply step, which
-    # would otherwise call offload hooks the fake pipe does not have.
+    # The CPU fake target never plans an offload, so force one at the plan seam (frozen dataclass
+    # -> dataclasses.replace) and stub the apply step, which would else call offload hooks the fake
+    # pipe lacks.
     import dataclasses
 
     real_plan = video_mod.plan_diffusion_memory
@@ -1594,9 +1592,9 @@ def test_wan_validate_trusted_repos(fake_runtime):
 
 
 def test_wan_a14b_refuses_single_file_loads(fake_runtime):
-    # A single gguf/safetensors checkpoint carries only one of the A14B's two experts;
-    # the pipeline would pull the other dense bf16 from the base repo outside the
-    # memory plan, so validate refuses it up front (before any download).
+    # A single gguf/safetensors checkpoint carries only one of the A14B's two experts; the
+    # pipeline would pull the other dense bf16 from the base repo outside the memory plan, so
+    # validate refuses it up front (before any download).
     backend = VideoBackend()
     with pytest.raises(ValueError, match = "dual-expert"):
         backend.validate_load_request(
@@ -1612,9 +1610,9 @@ def test_wan_a14b_refuses_single_file_loads(fake_runtime):
 
 
 def test_second_dit_view_write_through():
-    # Attribute writes on the proxy must land on the real pipe (a helper's side
-    # effect would otherwise vanish with the temporary view); a ``transformer``
-    # write mirrors the read property onto the second expert.
+    # Attribute writes on the proxy must land on the real pipe (a helper's side effect would else
+    # vanish with the temporary view); a ``transformer`` write mirrors the read property onto the
+    # second expert.
     from core.inference.video import _SecondDiTView
 
     pipe = types.SimpleNamespace(transformer = "t1", transformer_2 = "t2", flag = None)
@@ -1771,9 +1769,9 @@ def test_predownload_base_honors_cancel_between_files(monkeypatch):
 
 
 def test_detect_load_family_arch_fallback_for_local_gguf(tmp_path, monkeypatch):
-    # A local GGUF is admitted to the Video picker by its general.architecture, but its path
-    # name may carry no whole-segment family token (a renamed "model.gguf"). The loader must
-    # resolve the same family the picker offered by reading the arch, not only the name.
+    # A local GGUF is admitted to the Video picker by its general.architecture, but its path name
+    # may carry no whole-segment family token (a renamed "model.gguf"). The loader must resolve the
+    # same family the picker offered by reading the arch, not only the name.
     from core.inference import video as vid
     from core.inference.video_families import detect_video_family
 

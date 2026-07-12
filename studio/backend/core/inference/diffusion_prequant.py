@@ -3,25 +3,20 @@
 
 """Load a *pre-quantized* transformer instead of quantising a dense one on the GPU.
 
-The opt-in fast transformer_quant path (see ``diffusion_transformer_quant.py``) loads
-the dense bf16 transformer and torchao-``quantize_``s it in place. That materialises the
-full bf16 weights on the GPU before quantising, so the load peak is ~2x the GGUF's and it
-pulls the full bf16 download. When a transformer has already been quantised once and saved
-(``scripts/build_prequant_checkpoint.py``), this module loads those weights directly:
+The runtime transformer_quant path loads the dense bf16 transformer and ``quantize_``s it
+in place, materialising the full bf16 weights on the GPU first (~2x the GGUF peak, plus the
+full bf16 download). When a transformer was already quantised and saved
+(``scripts/build_prequant_checkpoint.py``), this loads those weights directly: build the
+skeleton on ``meta`` (``init_empty_weights`` + ``from_config``), ``load_state_dict
+(assign=True)`` the quantized state dict (subclass tensors assigned, not copied, so dense
+bf16 never touches the GPU), then move to device.
 
-  1. build the transformer skeleton on the ``meta`` device (no storage) via
-     ``accelerate.init_empty_weights`` + ``from_config``;
-  2. ``load_state_dict(assign=True)`` the quantized state dict (the torchao weight subclass
-     tensors are assigned in, not copied), so the dense bf16 never touches the GPU;
-  3. move to the device.
+Measured (B200, Z-Image fp8): GPU load peak 12.9 -> 6.3 GB, download 12 -> 6.28 GB, output
+bit-identical (LPIPS 0.0). The checkpoint carries the same scheme + ``min_features`` as the
+runtime path, so the result matches quantising on the fly.
 
-Measured (B200, Z-Image fp8): transformer GPU load peak 12.9 -> 6.3 GB, download 12 ->
-6.28 GB, output bit-identical (LPIPS 0.0). The checkpoint carries the exact same scheme +
-``min_features`` as the runtime path, so the result is identical to quantising on the fly.
-
-Best-effort and lazily imported throughout: a missing / mismatched / unreadable checkpoint
-returns None and the caller falls back to the dense-quantise path (and then to GGUF). All
-behaviour is gated on a configured source -- with nothing configured this module is inert.
+Best-effort and lazily imported: a missing / mismatched / unreadable checkpoint returns None
+and the caller falls back to dense-quantise (then GGUF). Inert with nothing configured.
 """
 
 from __future__ import annotations
@@ -29,19 +24,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-# torch.save dict layout this module reads (and the build script writes). Bumped if the
-# on-disk structure changes so an old/foreign artifact is rejected rather than mis-loaded.
+# torch.save dict layout tag; bump on an on-disk change so old/foreign artifacts are rejected.
 PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 
-# Loading a checkpoint ends in ``torch.load(weights_only=False)``, which executes arbitrary
-# code embedded in the pickle. A hosted family *repo* checkpoint is first-party and trusted,
-# but a ``source.kind == "path"`` can originate from the ``transformer_prequant_path`` field
-# of a load request -- i.e. an authenticated API caller naming an arbitrary local file.
-# Unpickling that is remote code execution, so a request-supplied path is unpickled ONLY when
-# it resolves inside an operator-configured ALLOWLIST of directories. A bare on/off toggle is
-# deliberately NOT accepted as a wildcard: enabling local checkpoints for one trusted
-# directory must never also permit unpickling any other path a request happens to name. The
-# trusted hosted-repo path is unaffected.
+# Loading ends in ``torch.load(weights_only=False)``, which executes pickle code. A hosted
+# repo checkpoint is first-party; a ``kind == "path"`` can come from a request's
+# ``transformer_prequant_path``, so unpickling it is RCE. A request-supplied path is
+# unpickled ONLY when it resolves inside an operator-configured ALLOWLIST of directories; a
+# bare on/off toggle is never a wildcard. The hosted-repo path is unaffected.
 ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
 
 _PREQUANT_TOGGLE_TOKENS = {"1", "true", "yes", "on", "0", "false", "no", "off"}
@@ -50,9 +40,8 @@ _PREQUANT_TOGGLE_TOKENS = {"1", "true", "yes", "on", "0", "false", "no", "off"}
 def _allowed_prequant_roots() -> list:
     """Operator-allowlisted directories whose pre-quant checkpoints may be unpickled.
 
-    Set ``UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH`` to one or more directories (separated by
-    ``os.pathsep``). A bare truthy/falsey toggle is ignored on purpose -- it must name a
-    directory, so there is no "allow everything" mode."""
+    ``UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH`` = one or more dirs (``os.pathsep``-separated). A
+    bare truthy/falsey toggle is ignored: it must name a directory, so no "allow all" mode."""
     import os
 
     raw = (os.environ.get(ALLOW_LOCAL_PREQUANT_PATH_ENV) or "").strip()
@@ -62,7 +51,7 @@ def _allowed_prequant_roots() -> list:
     for part in raw.split(os.pathsep):
         part = part.strip()
         if not part or part.lower() in _PREQUANT_TOGGLE_TOKENS:
-            continue  # a bare on/off value is not a directory -> never a wildcard allow
+            continue  # a bare on/off value is not a directory
         try:
             roots.append(os.path.realpath(os.path.expanduser(part)))
         except Exception:  # noqa: BLE001 — a bad entry is simply not allowlisted
@@ -71,9 +60,8 @@ def _allowed_prequant_roots() -> list:
 
 
 def _local_prequant_path_allowed(path: str) -> bool:
-    """True only when ``path`` resolves inside an operator-allowlisted directory; an
-    arbitrary request-supplied path is never unpickled. ``realpath`` first so a symlink
-    cannot point an allowlisted name at a file outside the allowed roots."""
+    """True only when ``path`` resolves inside an allowlisted directory. ``realpath`` first
+    so a symlink cannot point an allowlisted name at a file outside the allowed roots."""
     import os
 
     roots = _allowed_prequant_roots()
@@ -87,11 +75,11 @@ def _local_prequant_path_allowed(path: str) -> bool:
 
 
 def local_prequant_path_ready(path: str) -> bool:
-    """True only when a request-supplied local pre-quant path would actually load: it is
-    inside an allowlisted root AND the checkpoint file is present. The auto-policy planner
-    uses this before budgeting the small prequant plan, so it never skips the dense shards
-    for a path ``load_prequantized_transformer`` will refuse -- which would otherwise evict
-    the resident pipeline and then rebuild dense under an undersized plan (OOM)."""
+    """True only when a local pre-quant path would actually load: inside an allowlisted root
+    AND the file is present. The auto-policy planner checks this before budgeting the small
+    prequant plan, so it never skips the dense shards for a path the loader will refuse
+    (which would evict the resident pipeline then rebuild dense under an undersized plan ->
+    OOM)."""
     import os
 
     if not _local_prequant_path_allowed(path):
@@ -101,8 +89,8 @@ def local_prequant_path_ready(path: str) -> bool:
 
 @dataclass(frozen = True)
 class PrequantSource:
-    """Where a pre-quantized transformer checkpoint lives. ``kind`` is "path" (a local
-    file) or "repo" (a Hub repo id in ``location`` + ``filename`` inside it)."""
+    """Where a pre-quantized checkpoint lives. ``kind`` is "path" (a local file) or "repo"
+    (Hub repo id in ``location`` + ``filename``)."""
 
     kind: str
     location: str
@@ -120,11 +108,10 @@ def resolve_prequant_source(
     *,
     path_override: Optional[str] = None,
 ) -> Optional[PrequantSource]:
-    """Resolve where the pre-quantized checkpoint for ``(fam, scheme)`` should come from.
+    """Resolve where the checkpoint for ``(fam, scheme)`` comes from.
 
-    Priority: (1) an explicit local ``path_override`` (testing / power users); (2) the
-    family's hosted repo for ``scheme``; (3) None -> no pre-quant, caller quantises dense.
-    Pure: no IO, no torch -- it only decides the source, the loader fetches it.
+    Priority: (1) explicit local ``path_override``; (2) the family's hosted repo for
+    ``scheme``; (3) None -> no pre-quant, caller quantises dense. Pure: no IO, no torch.
     """
     override = (path_override or "").strip()
     if override:
@@ -137,6 +124,23 @@ def resolve_prequant_source(
     if repo_id:
         return PrequantSource(kind = "repo", location = repo_id, filename = prequant_filename(scheme))
     return None
+
+
+def usable_prequant_source(
+    fam: Any,
+    scheme: str,
+    *,
+    path_override: Optional[str] = None,
+) -> Optional[PrequantSource]:
+    """``resolve_prequant_source``, but a local path counts only when the loader would
+    accept it: inside the allowlist AND present on disk. Otherwise resolves to None so
+    memory planning falls back to dense-fit checks up front, instead of the loader refusing
+    the path only after the resident pipeline was evicted and dense bf16 materialises under
+    a plan that never budgeted for it (evict-then-OOM). Hosted-repo sources are unaffected."""
+    src = resolve_prequant_source(fam, scheme, path_override = path_override)
+    if src is not None and src.kind == "path" and not local_prequant_path_ready(src.location):
+        return None
+    return src
 
 
 def load_prequantized_transformer(
@@ -154,15 +158,13 @@ def load_prequantized_transformer(
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
 
-    Returns the placed, already-quantized transformer, or None on any problem (missing /
-    mismatched / unreadable checkpoint, or a meta-init the class does not support) so the
-    caller falls back to the dense-quantise path. Best-effort: never raises for an
-    ordinary unavailable artifact.
+    Returns the placed transformer, or None on any problem (missing / mismatched /
+    unreadable checkpoint, or unsupported meta-init) so the caller falls back to
+    dense-quantise. Best-effort: never raises for an unavailable artifact.
     """
     try:
-        # weights_only=False (required below) executes pickle code, so a caller-supplied
-        # local path is unpickled ONLY when it resolves inside an operator-allowlisted
-        # directory. The hosted family repo is first-party and always allowed.
+        # weights_only=False executes pickle code, so a local path is unpickled ONLY when
+        # allowlisted. The hosted family repo is first-party and always allowed.
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
                 logger,
@@ -181,9 +183,9 @@ def load_prequantized_transformer(
 
         import torch
 
-        # torchao weight subclasses are not safetensors-serializable, so the checkpoint is
-        # a torch.save pickle. weights_only=False is required to rebuild those subclasses.
-        # The local-path branch is gated above; the repo branch is a first-party artifact.
+        # torchao weight subclasses aren't safetensors-serializable, so the checkpoint is a
+        # torch.save pickle; weights_only=False rebuilds those subclasses. Local path gated
+        # above; repo branch is first-party.
         ckpt = torch.load(path, weights_only = False, map_location = "cpu")
         if not _validate_checkpoint(
             ckpt, scheme, base, logger, min_features = min_features, fast_accum = fast_accum
@@ -196,24 +198,21 @@ def load_prequantized_transformer(
 
         with init_empty_weights():
             transformer = transformer_cls.from_config(config)
-        # assign=True swaps in the loaded (quantized) tensors rather than copying into the
-        # meta tensors (a copy into meta is a no-op); strict=True since the saved state
-        # dict is the full state dict of the same class (non-persistent buffers excluded).
+        # assign=True swaps in the loaded tensors rather than copying into meta (a copy into
+        # meta is a no-op); strict=True since the saved dict is the full state dict of the
+        # same class.
         transformer.load_state_dict(state_dict, strict = True, assign = True)
         if _has_meta_tensors(transformer):
-            # A class with non-persistent buffers (computed in __init__, absent from the
-            # state dict) leaves those on meta. Rebuild on CPU so the buffers hold their
-            # real values, then re-assign the quantized weights. The dense bf16 lives in
-            # CPU RAM only -- the GPU still receives just the quantized footprint.
+            # Non-persistent buffers (built in __init__, absent from the state dict) stay on
+            # meta. Rebuild on CPU so they hold real values, then re-assign the quantized
+            # weights; dense bf16 lives in CPU RAM only, the GPU gets just the quant footprint.
             transformer = transformer_cls.from_config(config)
             transformer.load_state_dict(state_dict, strict = True, assign = True)
 
         transformer = transformer.to(device)
-        # Built via from_config (not from_pretrained), so it starts in TRAIN mode; the
-        # dense and GGUF paths load through from_pretrained, which diffusers documents as
-        # returning an eval()'d module. Match that here so any train/eval-sensitive layer
-        # (e.g. dropout) can't make prequant inference nondeterministic or diverge from
-        # the other load paths.
+        # from_config starts in TRAIN mode; the dense/GGUF paths use from_pretrained, which
+        # returns an eval()'d module. Match that so train/eval-sensitive layers (e.g.
+        # dropout) can't make prequant inference diverge from the other paths.
         try:
             transformer.eval()
         except Exception:  # noqa: BLE001 — eval() is best-effort
@@ -240,9 +239,7 @@ def _resolve_checkpoint_path(source: PrequantSource, hf_token: Optional[str]) ->
     if source.kind == "path":
         import os
 
-        # Expand ~ once: the allowlist gate (_local_prequant_path_allowed) already
-        # expands it, so a "~/..." path that passed the gate must be expanded here too
-        # or os.path.isfile() sees the literal "~" and silently skips a real checkpoint.
+        # Expand ~ (the allowlist gate already did), else os.path.isfile sees a literal "~".
         expanded = os.path.expanduser(source.location)
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
@@ -261,16 +258,13 @@ def _validate_checkpoint(
 ) -> bool:
     """Reject a checkpoint that is the wrong format / scheme / base model / filter.
 
-    ``min_features`` (when given) is the runtime Linear-feature threshold: a checkpoint
-    built with a different ``--min-features`` quantises a different set of Linear layers,
-    so ``load_state_dict(assign=True)`` would silently install a model that does not match
-    what the dense path produces while status still reports the requested scheme. Reject it.
+    ``min_features`` (when given) is the runtime Linear-feature threshold: a different
+    ``--min-features`` quantises a different set of Linears, so assign=True would silently
+    install a mismatched model while status still reports the scheme. Reject it.
 
-    ``fast_accum`` (fp8 only) is the runtime accumulate choice: when the caller forces it
-    explicitly (not None) and the checkpoint recorded a different baked value, the loaded
-    fp8 kernels would ignore the request while status still reports fp8, so reject and let
-    the dense path honor it. A checkpoint that predates the metadata (field absent) is
-    accepted unchanged for backward compatibility."""
+    ``fast_accum`` (fp8 only): when the caller forces it and the checkpoint baked a different
+    value, the loaded kernels would ignore the request, so reject and let the dense path
+    honor it. A checkpoint predating a metadata field (absent) is accepted for back-compat."""
     if not isinstance(ckpt, dict) or ckpt.get("format") != PREQUANT_FORMAT:
         _warn(logger, scheme, ValueError("unrecognised pre-quant checkpoint format"))
         return False
@@ -281,10 +275,9 @@ def _validate_checkpoint(
     if meta.get("scheme") != scheme:
         _warn(logger, scheme, ValueError(f"checkpoint scheme {meta.get('scheme')!r} != {scheme!r}"))
         return False
-    # fp8 REQUIRES per-row granularity (per-tensor collapses outlier-heavy DiTs to noise). A
-    # checkpoint built before that fix carries the old per-tensor layout and either omits
-    # ``fp8_granularity`` or records something other than per-row; reject it so the loader
-    # falls back to rebuilding/re-quantising instead of installing a broken fp8 transformer.
+    # fp8 REQUIRES per-row granularity (per-tensor collapses outlier-heavy DiTs to noise). An
+    # old checkpoint omits ``fp8_granularity`` or records non-per-row; reject so the loader
+    # re-quantises instead of installing a broken fp8 transformer.
     from .diffusion_transformer_quant import FP8_GRANULARITY, TQ_FP8
 
     if scheme == TQ_FP8 and meta.get("fp8_granularity") != FP8_GRANULARITY:
@@ -299,10 +292,9 @@ def _validate_checkpoint(
         return False
     ckpt_base = meta.get("base_model_id")
     if base:
-        # A checkpoint whose keys happen to match a different base can load strict=True and
-        # then generate from the wrong weights while status reports the requested scheme.
-        # Our builder always records base_model_id, so a checkpoint that omits it against a
-        # requested base is untrustworthy -- refuse rather than silently accept it.
+        # Keys matching a different base can load strict=True and generate from the wrong
+        # weights. Our builder always records base_model_id, so one that omits it against a
+        # requested base is untrustworthy -- refuse it.
         if not ckpt_base:
             _warn(
                 logger,
@@ -324,11 +316,9 @@ def _validate_checkpoint(
                 ValueError(f"checkpoint min_features {ckpt_min!r} != runtime {min_features!r}"),
             )
             return False
-    # The int8 exclusion set (M=1 modulation / conditioning-embedder projections) is derived
-    # from the scheme, but a future change to that token list would leave older checkpoints
-    # with a stale baked set that still passes scheme+min_features and then crashes at the
-    # first denoise step. When the checkpoint records the set, reject a mismatch; absent
-    # (older artifact) is accepted since scheme+min_features already pin today's filter.
+    # The int8 exclusion set is scheme-derived, but a future change to the token list would
+    # leave old checkpoints with a stale baked set that passes scheme+min_features then
+    # crashes at the first denoise. Reject a recorded mismatch; absent is accepted.
     ckpt_excludes = meta.get("exclude_name_tokens")
     if ckpt_excludes is not None:
         from .diffusion_transformer_quant import exclude_tokens_for_scheme
@@ -346,12 +336,9 @@ def _validate_checkpoint(
                 ),
             )
             return False
-    # require_bf16 (skip non-bf16 Linears) is the bf16-weight gate, pinned by the scheme (fp8 and
-    # mxfp8 assert a bf16 weight; nvfp4 / int8 quantise fp32 fine). Like exclude_name_tokens it is
-    # pinned by the scheme today, but recording and verifying it guards against a future
-    # _REQUIRE_BF16_SCHEMES change silently loading a checkpoint built under the old filter (it would
-    # carry a different quantised layer set). Absent (older artifact) is accepted since scheme already
-    # pins today's gate.
+    # require_bf16 (skip non-bf16 Linears) is scheme-pinned (fp8/mxfp8 need bf16; nvfp4/int8
+    # take fp32). Recording and verifying it guards against a future _REQUIRE_BF16_SCHEMES
+    # change loading an old-filter checkpoint (different quantised layer set). Absent accepted.
     ckpt_require_bf16 = meta.get("require_bf16")
     if ckpt_require_bf16 is not None:
         from .diffusion_transformer_quant import _REQUIRE_BF16_SCHEMES
@@ -379,8 +366,7 @@ def _validate_checkpoint(
 
 
 def _same_base_model(a: str, b: str) -> bool:
-    """Tolerant compare of two base-model ids: an exact match, or the same final
-    path/repo segment (so a local path or a fork id matches the canonical repo, e.g.
+    """Tolerant base-model id compare: exact, or same final path/repo segment (e.g.
     ``/models/Z-Image-Turbo`` vs ``Tongyi-MAI/Z-Image-Turbo``)."""
 
     def _tail(x: str) -> str:

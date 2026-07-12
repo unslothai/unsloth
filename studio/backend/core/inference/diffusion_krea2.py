@@ -3,33 +3,24 @@
 
 """Krea 2 pipeline loader: assembles ``Krea2Pipeline`` from per-component loads.
 
-Why not ``Krea2Pipeline.from_pretrained``: the ``krea/Krea-2-Turbo`` repo was exported
-with transformers 5.2, and two of its configs use 5.x-only conventions that the 4.x
-line cannot parse:
+Why not ``from_pretrained``: the ``krea/Krea-2-Turbo`` repo was exported with transformers 5.2 and
+two configs use 5.x-only conventions 4.x can't parse:
 
-- ``tokenizer/tokenizer_config.json`` declares ``Qwen2Tokenizer`` (slow -- 5.x unified
-  slow/fast under the plain name) but ships only ``tokenizer.json``. 4.x's slow class
-  needs vocab.json/merges.txt (absent), and its fast class trips over
-  ``extra_special_tokens`` stored as a LIST (4.x expects a dict). Loading the fast
-  class with an explicit ``extra_special_tokens = {}`` override is id-identical: every
-  listed token is already registered as an added special token inside tokenizer.json,
-  and the pipeline templates prompts manually (it never uses a chat template).
-- ``text_encoder/config.json`` keeps the rope settings under ``rope_parameters`` (the
-  5.x name). 4.x reads ``rope_scaling`` + a top-level ``rope_theta`` and crashes on the
-  missing key (``NoneType.get``). The values are copied across verbatim -- and they
-  equal 4.x's Qwen3-VL defaults (theta 5e6, mrope_section [24, 20, 20], interleaved
-  mrope applied unconditionally), so the rotary embedding is numerically identical.
-  The state dict itself round-trips 1:1 (checkpoint keys == 4.x module keys).
+- ``tokenizer_config.json`` declares slow ``Qwen2Tokenizer`` but ships only ``tokenizer.json``.
+  4.x's slow class needs vocab.json/merges.txt (absent), and its fast class trips over
+  ``extra_special_tokens`` stored as a LIST. Loading the fast class with ``extra_special_tokens={}``
+  is id-identical (every token is already an added special token, and the pipeline templates prompts
+  manually).
+- ``text_encoder/config.json`` keeps rope under ``rope_parameters`` (5.x); 4.x reads
+  ``rope_scaling`` + ``rope_theta`` and crashes. The values are copied verbatim and equal 4.x's
+  Qwen3-VL defaults, so the rotary embedding is numerically identical.
 
-``from_pretrained`` additionally type-checks a passed ``tokenizer`` against the
-declared SLOW class (a fast tokenizer does not subclass it), so the pipeline is built
-through its constructor instead, forwarding the ``is_distilled`` /
-``text_encoder_select_layers`` / ``patch_size`` init config from model_index.json --
-Turbo's fixed mu=1.15 timestep shift rides on ``is_distilled = True``, so dropping it
-would silently degrade the schedule.
+``from_pretrained`` also type-checks a passed ``tokenizer`` against the SLOW class, so the pipeline
+is built through its constructor, forwarding the ``is_distilled`` / ``text_encoder_select_layers`` /
+``patch_size`` init config (Turbo's mu=1.15 shift rides on ``is_distilled``).
 
-Both workarounds are self-disabling on a transformers 5.x runtime: the plain tokenizer
-load succeeds (no fallback taken) and ``rope_scaling`` parses non-None (no patch).
+Both workarounds self-disable on transformers 5.x (the plain tokenizer load succeeds, rope_scaling
+parses non-None).
 """
 
 from __future__ import annotations
@@ -60,9 +51,8 @@ def load_krea2_tokenizer(repo_id: str, hf_token: Optional[str] = None):
 
 
 def remap_rope_parameters(text_config) -> None:
-    """Copy 5.x ``rope_parameters`` onto the 4.x ``rope_scaling`` / ``rope_theta`` slots
-    in place. A no-op when ``rope_scaling`` already parsed non-None (a 5.x runtime) or
-    the config carries no ``rope_parameters`` dict."""
+    """Copy 5.x ``rope_parameters`` onto the 4.x ``rope_scaling`` / ``rope_theta`` slots in place.
+    No-op on a 5.x runtime (rope_scaling already non-None) or when there is no ``rope_parameters``."""
     rope_parameters = getattr(text_config, "rope_parameters", None)
     if getattr(text_config, "rope_scaling", None) is None and isinstance(rope_parameters, dict):
         text_config.rope_scaling = {k: v for k, v in rope_parameters.items() if k != "rope_theta"}
