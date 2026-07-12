@@ -2666,9 +2666,9 @@ class TestLatestTierForces16Bit:
         assert body.index("check_upgrade_for_model") < body.index(
             "_guard_chat_load_against_training"
         ), "the upgrade check must run before the training guard"
-        assert "supported_in_pypi" in body.split("_guard_chat_load_against_training")[0], (
-            "an installable upgrade must force 16-bit sizing for the guard"
-        )
+        assert (
+            "supported_in_pypi" in body.split("_guard_chat_load_against_training")[0]
+        ), "an installable upgrade must force 16-bit sizing for the guard"
 
     def test_install_route_guards_active_latest_workers(self):
         # Stage-and-swap replaces .venv_t5_latest in place; a live worker with the

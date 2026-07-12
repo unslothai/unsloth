@@ -4651,7 +4651,6 @@ async def validate_model(
         # the worker force this same model to 16-bit.
         if effective_load_in_4bit and not is_gguf:
             from utils.transformers_version import latest_tier_active_for
-
             if (
                 transformers_upgrade is not None
                 and transformers_upgrade.supported_in_pypi
