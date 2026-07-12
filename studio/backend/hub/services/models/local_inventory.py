@@ -108,9 +108,10 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
 def _is_scan_leaf_dir(path: Path, *, entry_limit: int | None) -> bool:
     if _is_model_directory_for_scan(path, entry_limit = entry_limit):
         return True
+    probe = entry_limit if entry_limit is not None else _MODEL_SIGNAL_PROBE_LIMIT
     try:
         for index, entry in enumerate(path.iterdir(), start = 1):
-            if index > _MODEL_SIGNAL_PROBE_LIMIT:
+            if index > probe:
                 break
             try:
                 if (
@@ -133,19 +134,32 @@ def scan_result_within_folder(path: str, folder_path: Path) -> bool:
     try:
         if not candidate.is_dir():
             return True
-        # Validate every immediate weight file, not just the first probe window:
-        # the loader reads all of them, so a single symlink escaping the folder
-        # is enough to reject the row. This runs only on classified model dirs.
+        # Loaders may read any file in a model directory (weights, companion
+        # GGUFs such as mmproj, configs, tokenizers), so reject the row if any
+        # immediate entry is a symlink resolving outside the registered folder.
+        # Non-symlink entries are physically inside and need no check. This
+        # runs only on classified model directories, so it stays cheap.
         for entry in candidate.iterdir():
             try:
-                if entry.is_file() and _is_immediate_model_weight_file(entry):
-                    if not path_is_same_or_child(entry, folder_path):
-                        return False
+                if entry.is_symlink() and not path_is_same_or_child(entry, folder_path):
+                    return False
             except OSError:
                 continue
     except OSError:
         return False
     return True
+
+
+def _dir_has_loadable_weights(path: Path) -> bool:
+    try:
+        if path.is_file():
+            suffix = path.suffix.lower()
+            if suffix == ".gguf":
+                return _is_main_gguf_filename(path.name)
+            return suffix in (".safetensors", ".bin")
+        return _has_immediate_model_weight(path, probe_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
+    except OSError:
+        return False
 
 
 def _resolve_hf_cache_dir() -> Path:
@@ -649,7 +663,11 @@ def _scan_custom_folder(folder_path: Path, recursive: bool = False) -> List[Loca
                 )
             ):
                 key = (m.path, m.model_format, m.format_variant)
-                if key in seen or not scan_result_within_folder(m.path, folder_path):
+                if (
+                    key in seen
+                    or not scan_result_within_folder(m.path, folder_path)
+                    or not _dir_has_loadable_weights(Path(m.path))
+                ):
                     continue
                 seen.add(key)
                 generic.append(m)
