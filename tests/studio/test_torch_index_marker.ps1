@@ -39,12 +39,14 @@ function Check($name, $cond) {
 }
 
 Write-Host "Get-NormalizedIndexUrl (trim / strip trailing slash / lowercase leaf)"
-Check "trailing slashes + leaf lowered" `
-    ((Get-NormalizedIndexUrl "https://repo.amd.com/rocm/whl/gfx120X-all///") -eq "https://repo.amd.com/rocm/whl/gfx120x-all")
+# -ceq: PowerShell -eq is case-INsensitive for strings, which would make these
+# case-normalization checks vacuous (any casing would pass).
+Check "trailing slashes + known family leaf lowered" `
+    ((Get-NormalizedIndexUrl "https://repo.amd.com/rocm/whl/gfx120X-all///") -ceq "https://repo.amd.com/rocm/whl/gfx120x-all")
 Check "whitespace trimmed" `
-    ((Get-NormalizedIndexUrl "  https://download.pytorch.org/whl/cu128  ") -eq "https://download.pytorch.org/whl/cu128")
-Check "host case preserved, leaf lowered" `
-    ((Get-NormalizedIndexUrl "https://Mirror.Local/Simple/") -eq "https://Mirror.Local/simple")
+    ((Get-NormalizedIndexUrl "  https://download.pytorch.org/whl/cu128  ") -ceq "https://download.pytorch.org/whl/cu128")
+Check "host case preserved, unknown custom leaf keeps case" `
+    ((Get-NormalizedIndexUrl "https://Mirror.Local/Simple/") -ceq "https://Mirror.Local/Simple")
 Check "gfx120X-all == gfx120x-all after normalize" `
     ((Get-NormalizedIndexUrl "https://repo.amd.com/rocm/whl/gfx120X-all") -eq (Get-NormalizedIndexUrl "https://repo.amd.com/rocm/whl/gfx120x-all"))
 Check "empty -> null" ($null -eq (Get-NormalizedIndexUrl "   "))

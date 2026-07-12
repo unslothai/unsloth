@@ -3168,10 +3168,15 @@ if ($TorchIndexPinned -and -not $ROCmIndexUrl -and $PinnedTorchIndexUrl) {
         $ROCmVisionSpec = "torchvision>=0.26.0,<0.27.0"
         $ROCmAudioSpec  = "torchaudio>=2.11.0,<2.12.0"
         substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchSpec" "Cyan"
-    } elseif ($_pinLeaf -like 'gfx*' -or $_pinLeaf -like 'rocm*') {
+    } elseif ($_pinLeaf -like 'gfx*' -or $_pinLeaf -match '^rocm\d') {
         # Other gfx per-arch indexes and older rocm (<=7.1) ship torch <2.11;
         # route via the ROCm path with bare specs (matches the automatic path's
         # bare floor for these arches).
+        # Require a DIGIT after rocm (rocm7.1, not rocm-rel-7.2.1 / rocm-current):
+        # only rocm<digit> and gfx* are pip --index-url (PEP 503) families; a
+        # rocm-<nondigit> leaf is a custom/find-links URL that must stay on the
+        # verbatim unknown-pin path. Mirrors install.ps1 and
+        # install_python_stack.py's _is_pip_rocm_family_leaf (^rocm\d).
         $ROCmIndexUrl   = $PinnedTorchIndexUrl
         $ROCmTorchSpec  = "torch"
         $ROCmVisionSpec = "torchvision"

@@ -54,6 +54,24 @@ class TestBuildUvCmdTorchBackend:
             a.startswith("--torch-backend") for a in cmd
         ), f"Empty UV_TORCH_BACKEND should not add flag, got: {cmd}"
 
+    def test_uv_torch_backend_skipped_for_pinned_index(self):
+        """A pinned-index command must NOT get --torch-backend: uv's torch backend
+        redirects torch resolution to its own per-backend index even when
+        --index-url is given (verified: cu128 pin + backend cpu installs
+        torch+cpu), defeating the pin."""
+        for pin_flag in ("--index-url", "--default-index"):
+            with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": "cpu"}):
+                cmd = self._call(("torch", pin_flag, "https://download.pytorch.org/whl/cu128"))
+            assert not any(
+                a.startswith("--torch-backend") for a in cmd
+            ), f"{pin_flag} command must not carry --torch-backend, got: {cmd}"
+
+    def test_uv_torch_backend_kept_for_unpinned(self):
+        """Non-pinned commands still honour UV_TORCH_BACKEND."""
+        with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": "cpu"}):
+            cmd = self._call(("somepackage",))
+        assert "--torch-backend=cpu" in cmd
+
 
 class TestUvSafePath:
     """_uv_safe_path hands uv a space-free `-c`/`-r` path (issue #6503)."""
@@ -216,3 +234,10 @@ class TestPinnedIndexClearsUvEnv:
             env = ips._install_env_for_cmd(cmd)
         assert env is not None
         assert env.get("PATH_SENTINEL_XYZ") == "keepme", "only uv index vars are removed"
+
+    def test_pinned_cmd_strips_uv_torch_backend(self):
+        """UV_TORCH_BACKEND is stripped for pinned commands so uv cannot read it
+        from the environment and reroute torch off the pinned index."""
+        with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": "cpu"}):
+            env = ips._install_env_for_cmd(["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"])
+        assert env is not None and "UV_TORCH_BACKEND" not in env

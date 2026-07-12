@@ -2560,9 +2560,13 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     cmd.extend(_translate_pip_args_for_uv(args))
     # Torch is pre-installed by install.sh/setup.ps1. Do not add
     # --torch-backend by default -- it can cause solver dead-ends on CPU-only
-    # machines. Callers that need it can set UV_TORCH_BACKEND.
+    # machines. Callers that need it can set UV_TORCH_BACKEND. Never add it to a
+    # pinned-index command: uv's torch backend redirects torch resolution to its
+    # own per-backend index (verified: --index-url .../cu128 with UV_TORCH_BACKEND
+    # =cpu resolves torch+cpu), which would defeat the explicit pin exactly like
+    # the index env vars _install_env_for_cmd() strips.
     _tb = os.environ.get("UV_TORCH_BACKEND", "")
-    if _tb:
+    if _tb and not _is_pinned_index_cmd(cmd):
         cmd.append(f"--torch-backend={_tb}")
     return cmd
 
@@ -2576,7 +2580,22 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
 # actually used. install.sh (run_install_cmd, #6898), install.ps1 and setup.ps1
 # already neutralise these vars for their pinned installs; do the same here so the
 # pin wins on every platform. Non-pinned installs (no --index-url) keep the mirror.
-_UV_INDEX_ENV_VARS = ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL")
+# UV_TORCH_BACKEND is stripped too: uv's torch backend redirects torch resolution
+# to its own per-backend index even when a --index-url is given, so it defeats a
+# pin the same way ( _build_uv_cmd also refuses to turn it into a --torch-backend
+# flag for pinned commands; this covers uv reading the env var directly).
+_UV_INDEX_ENV_VARS = (
+    "UV_DEFAULT_INDEX",
+    "UV_INDEX_URL",
+    "UV_INDEX",
+    "UV_EXTRA_INDEX_URL",
+    "UV_TORCH_BACKEND",
+)
+
+
+def _is_pinned_index_cmd(cmd: "list[str] | tuple[str, ...]") -> bool:
+    """True when the command pins an index via --index-url / --default-index."""
+    return any(arg in ("--index-url", "--default-index") for arg in cmd)
 
 
 def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
@@ -2585,11 +2604,12 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     Returns None (inherit the caller's environment unchanged) when the command
     does NOT pin an index, so ordinary installs still honour a user's UV_INDEX /
     UV_EXTRA_INDEX_URL mirror. When the command passes --index-url / --default-index
-    (the torch repair paths), the four uv index env vars are removed so the pinned
-    index is not overridden by an inherited mirror (uv treats the default index as
-    lowest priority). Mirrors install.sh's run_install_cmd gate (#6898).
+    (the torch repair paths), the uv index env vars (and UV_TORCH_BACKEND) are
+    removed so the pinned index is not overridden by an inherited mirror or torch
+    backend (uv treats the default index as lowest priority). Mirrors install.sh's
+    run_install_cmd gate (#6898).
     """
-    if not any(arg in ("--index-url", "--default-index") for arg in cmd):
+    if not _is_pinned_index_cmd(cmd):
         return None
     env = os.environ.copy()
     for name in _UV_INDEX_ENV_VARS:
