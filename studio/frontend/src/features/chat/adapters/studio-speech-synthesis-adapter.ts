@@ -96,7 +96,12 @@ export function curateSystemVoices(
     wantedLangs.add(langBase(dictationLanguage));
   }
 
+  // WebKit and Linux engines report voices with empty or duplicate voiceURIs;
+  // drop them so the Radix Select never gets an empty or colliding value.
+  const seenVoiceURIs = new Set<string>();
   const kept = voices.filter((voice) => {
+    if (!voice.voiceURI || seenVoiceURIs.has(voice.voiceURI)) return false;
+    seenVoiceURIs.add(voice.voiceURI);
     if (LOW_QUALITY_VOICE_NAMES.has(voiceBaseName(voice))) return false;
     return wantedLangs.has(langBase(voice.lang));
   });
