@@ -852,21 +852,6 @@ class TrainingBackend:
         else:
             defer_auto_selection = True
 
-        # Synchronous validation passed -> free VRAM (export + chat) now, before
-        # auto-selection and the spawn, so placement sees the freed memory.
-        if before_spawn is not None:
-            try:
-                before_spawn()
-            except Exception:
-                logger.warning("before_spawn hook failed; continuing", exc_info = True)
-
-        if defer_auto_selection:
-            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(None, **gpu_selection_kwargs)
-            config["resolved_gpu_ids"] = resolved_gpu_ids
-            config["gpu_selection"] = gpu_selection
-
-        from .worker import run_training_process
-
         # Handshake with the sidecar install route: mark the spawn in progress
         # BEFORE rechecking the reservation, so any interleaving is safe. Either
         # this recheck sees the install and aborts, or the install route's
@@ -880,6 +865,29 @@ class TrainingBackend:
                 "A transformers installation is replacing the latest sidecar; "
                 "retry when it completes."
             )
+
+        # Synchronous validation passed -> free VRAM (export + chat) now, before
+        # auto-selection and the spawn, so placement sees the freed memory. Runs
+        # AFTER the handshake above: losing the race to an install must not tear
+        # down the user's chat/export workloads for a training run that never spawns.
+        if before_spawn is not None:
+            try:
+                before_spawn()
+            except Exception:
+                logger.warning("before_spawn hook failed; continuing", exc_info = True)
+
+        if defer_auto_selection:
+            try:
+                resolved_gpu_ids, gpu_selection = prepare_gpu_selection(None, **gpu_selection_kwargs)
+            except Exception:
+                # The spawn-in-progress flag is already raised; a failed GPU
+                # selection must not leave is_training_active stuck True.
+                self._spawn_in_progress = False
+                raise
+            config["resolved_gpu_ids"] = resolved_gpu_ids
+            config["gpu_selection"] = gpu_selection
+
+        from .worker import run_training_process
 
         try:
             with native_path_secret_removed_for_child_start():
@@ -1054,18 +1062,21 @@ class TrainingBackend:
 
         from .worker import run_training_process
 
-        # Handshake with the sidecar install route: mark the spawn in progress
-        # BEFORE rechecking the reservation, so any interleaving is safe. Either
-        # this recheck sees the install and aborts, or the install route's
-        # is_training_active() sees this flag (or the recorded proc) and refuses.
+        # This run is active, so an install route request will 409 rather than
+        # proceed: a reservation observed here is transient (an install about to
+        # abort, or a short lazy repair). Wait it out instead of stranding the
+        # stalled run; only a wedged reservation fails the respawn.
         from utils.transformers_version import sidecar_swap_in_progress
 
         self._spawn_in_progress = True
+        _swap_wait_deadline = time.time() + 120
+        while sidecar_swap_in_progress() and time.time() < _swap_wait_deadline:
+            time.sleep(1)
         if sidecar_swap_in_progress():
             self._spawn_in_progress = False
             raise RuntimeError(
                 "A transformers installation is replacing the latest sidecar; "
-                "retry when it completes."
+                "cannot respawn the training worker."
             )
 
         try:

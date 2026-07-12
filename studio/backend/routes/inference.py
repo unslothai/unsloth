@@ -4901,6 +4901,22 @@ async def install_latest_transformers_route(
             # cancelled POST unwinding out of an `async with` here would release
             # the only guard /load honors while the installer thread still runs.
             async with inference_lifecycle_gate():
+                # Recheck under the gate: new streams increment their in-flight
+                # count while holding this gate, so once it is held nothing can
+                # slip past this count (the pre-gate check is only a fast path,
+                # and a wait on a long /load can outlast it).
+                if other_inference_request_count(
+                    current_request_counted = False, include_pending = False
+                ) > 0:
+                    end_sidecar_swap()
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = (
+                            "Another inference request is in progress. Wait for "
+                            "it to finish before installing a new transformers "
+                            "version."
+                        ),
+                    )
                 return await asyncio.to_thread(_run_install)
 
         install_task = asyncio.ensure_future(_gated_install())

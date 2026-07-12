@@ -2715,8 +2715,12 @@ class TestLatestTierForces16Bit:
         # request cancellation, so a cancelled POST cannot unlock a live swap.
         assert "asyncio.shield" in body and "end_sidecar_swap()" in body
         # In-flight generation streams predate the gate; the route must refuse
-        # rather than kill their responses via the before_swap unload.
+        # rather than kill their responses via the before_swap unload. The count
+        # is rechecked UNDER the gate: a wait on a long /load outlasts the
+        # pre-gate fast path, and streams start by taking this same gate.
         assert "other_inference_request_count" in body
+        gated_task = body.split("async def _gated_install", 1)[1]
+        assert "other_inference_request_count" in gated_task
 
     def test_start_routes_refuse_during_install(self):
         # A worker spawned mid-swap could activate a half-replaced sidecar.
@@ -2755,6 +2759,14 @@ class TestLatestTierForces16Bit:
         # lost race against an install keeps the loaded checkpoint (no bare 500).
         loadck = export.split("def load_checkpoint", 1)[1].split("\n    def ", 1)[0]
         assert loadck.index("sidecar_swap_in_progress()") < loadck.index("_shutdown_subprocess()")
+        # The training handshake precedes the VRAM-freeing before_spawn hook, so
+        # losing the race never tears down chat/export for a run that won't spawn.
+        assert training.index("self._spawn_in_progress = True") < training.index(
+            "before_spawn()"
+        )
+        # The spawn-time export check is op-aware: inside an active op the install
+        # is the side that aborts, so a transient reservation must not kill the op.
+        assert "sidecar_swap_in_progress() and not self._export_active" in spawn
 
 
 class TestSidecarSwapReservation:

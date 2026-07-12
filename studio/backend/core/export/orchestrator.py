@@ -209,11 +209,14 @@ class ExportOrchestrator:
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new export subprocess."""
-        # Recheck right before the spawn: the route-level guard is one-shot and
-        # a sidecar install may have started while this op was validating.
+        # Last-resort recheck for spawns outside an active op. Inside an op,
+        # _export_active is already set and load_checkpoint's early recheck ran,
+        # so any reservation seen here belongs to an install that is about to
+        # observe is_export_active() and abort; raising would kill this export
+        # (after the old worker was torn down) for an install that never proceeds.
         from utils.transformers_version import sidecar_swap_in_progress
 
-        if sidecar_swap_in_progress():
+        if sidecar_swap_in_progress() and not self._export_active:
             raise RuntimeError(
                 "A transformers installation is replacing the latest sidecar; "
                 "retry when it completes."
