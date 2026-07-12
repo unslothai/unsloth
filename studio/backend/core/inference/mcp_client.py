@@ -120,6 +120,18 @@ def join_stdio_command(parts: list[str]) -> str:
     return shlex.join(parts)
 
 
+def _stdio_log_id(url: str) -> str:
+    """A non-secret label for logs. stdio commands can embed credentials in argv
+    (e.g. ``npx server --token sk-...``), so never log the raw command; use the
+    executable basename plus a short digest of the full command instead."""
+    try:
+        parts = parse_stdio_command(url)
+        exe = os.path.basename(parts[0]) if parts else "<empty>"
+    except Exception:  # noqa: BLE001
+        exe = "<invalid>"
+    return f"{exe}#{hashlib.sha256(url.encode()).hexdigest()[:12]}"
+
+
 def stdio_mcp_enabled() -> bool:
     """stdio MCP servers spawn local processes as the backend user (bypassing the
     sandbox), so allowed only when the host is the user's own machine. On startup
@@ -251,6 +263,50 @@ _STDIO_SESSION_REAP_INTERVAL = 30.0
 _STDIO_CONNECT_TIMEOUT = 60.0  # allows first-run `npx -y ...` package download
 _STDIO_CLOSE_TIMEOUT = 10.0
 _STDIO_WEDGE_MARGIN = 15.0
+# Cap concurrent persistent sessions: each owns a subprocess + loop thread, and
+# the scope includes a caller-supplied thread_id, so an unbounded cache is a
+# resource-exhaustion surface. Overridable via env for large deployments.
+try:
+    _STDIO_MAX_SESSIONS = max(1, int(os.environ.get("UNSLOTH_STUDIO_MAX_STDIO_MCP_SESSIONS", "32")))
+except ValueError:
+    _STDIO_MAX_SESSIONS = 32
+
+
+def _is_tool_error(exc: BaseException) -> bool:
+    """A tool-level failure (the tool ran and errored) leaves the transport alive,
+    so the session is kept; fastmcp raises ToolError for these. Anything else from
+    call_tool is transport-level. Version-safe (fastmcp 3.0.2 has no dead probe)."""
+    try:
+        from fastmcp.exceptions import ToolError
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(exc, ToolError)
+
+
+def _transport_dead(session) -> bool:
+    """Best-effort, version-adaptive liveness probe for a cached stdio client.
+    ``Client.is_connected()`` only checks a session object exists, not that the
+    subprocess is alive, so it is never used here. Returns True only when the
+    transport is positively gone; unknown returns False (the call surfaces it)."""
+    client = getattr(session, "client", None)
+    if client is None:
+        return True
+    transport = getattr(client, "transport", None)
+    probe = getattr(transport, "_is_session_dead", None)
+    if callable(probe):
+        try:
+            if probe():
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+    connect_task = getattr(transport, "_connect_task", None)
+    if connect_task is not None:
+        try:
+            if connect_task.done():
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+    return False
 
 
 class _SessionWedged(Exception):
@@ -281,7 +337,13 @@ class _StdioSession:
         self.call_lock = threading.Lock()  # serializes tool calls on this session
         self.last_used = time.monotonic()
         self.in_flight = 0  # guarded by _stdio_sessions_lock
-        self.loop = asyncio.new_event_loop()
+        # On Windows a bare new_event_loop() can be a SelectorEventLoop (if any
+        # component set that policy), which cannot spawn subprocesses natively;
+        # force a ProactorEventLoop so the stdio transport always works.
+        if sys.platform == "win32":
+            self.loop = asyncio.ProactorEventLoop()
+        else:
+            self.loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
             target = self._run_loop, name = "mcp-stdio-session", daemon = True
         )
@@ -305,8 +367,10 @@ class _StdioSession:
             return client
 
         future = asyncio.run_coroutine_threadsafe(_open(), self.loop)
-        window = _STDIO_CONNECT_TIMEOUT if timeout is None else min(timeout, _STDIO_CONNECT_TIMEOUT)
-        deadline = time.monotonic() + window
+        # timeout=None means unlimited (no connect deadline); a finite caller
+        # timeout still bounds connect by min(timeout, _STDIO_CONNECT_TIMEOUT).
+        window = None if timeout is None else min(timeout, _STDIO_CONNECT_TIMEOUT)
+        deadline = None if window is None else time.monotonic() + window
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 _abort_future(future)
@@ -317,7 +381,7 @@ class _StdioSession:
             except (concurrent.futures.TimeoutError, asyncio.TimeoutError):
                 if future.done():
                     raise  # the connect itself failed fast; don't wait out the window
-                if time.monotonic() >= deadline:
+                if deadline is not None and time.monotonic() >= deadline:
                     _abort_future(future)
                     raise asyncio.TimeoutError
 
@@ -385,7 +449,9 @@ class _StdioSession:
                 asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(_STDIO_CLOSE_TIMEOUT)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "MCP stdio session close failed for %r: %s", getattr(self, "url", ""), exc
+                    "MCP stdio session close failed for %s: %s",
+                    _stdio_log_id(getattr(self, "url", "")),
+                    exc,
                 )
             try:
                 loop.call_soon_threadsafe(loop.stop)
@@ -499,14 +565,13 @@ def _get_stdio_session(
         # same-scope call must not block uncancellably behind another caller's
         # slow startup (e.g. a first-run npx download).
         remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-        window = (
-            _STDIO_CONNECT_TIMEOUT if remaining is None else min(remaining, _STDIO_CONNECT_TIMEOUT)
-        )
-        lock_deadline = time.monotonic() + window
+        # timeout=None means no key-lock deadline (only cancel unblocks it).
+        window = None if remaining is None else min(remaining, _STDIO_CONNECT_TIMEOUT)
+        lock_deadline = None if window is None else time.monotonic() + window
         while not key_lock.lock.acquire(timeout = 0.05):
             if cancel_event is not None and cancel_event.is_set():
                 raise _MCPCancelled
-            if time.monotonic() >= lock_deadline:
+            if lock_deadline is not None and time.monotonic() >= lock_deadline:
                 raise asyncio.TimeoutError
         try:
             stale = None
@@ -540,10 +605,12 @@ def _get_stdio_session(
                 if not current:
                     session.close()
                     raise RuntimeError("MCP server was updated or removed while connecting")
+            evicted: list = []
             with _stdio_sessions_lock:
                 closed_while_connecting = _stdio_close_generation(url, headers) != generation
                 if not closed_while_connecting:
                     session.in_flight = 1
+                    evicted = _evict_stdio_lru_locked()  # bound the cache (LRU idle)
                     _stdio_sessions[key] = session
                     if not _stdio_reaper_started:
                         _stdio_reaper_started = True
@@ -551,6 +618,9 @@ def _get_stdio_session(
                             target = _stdio_session_reaper, name = "mcp-stdio-reaper", daemon = True
                         ).start()
                         atexit.register(close_stdio_sessions)
+            for victim in evicted:
+                logger.info("Evicting LRU idle stdio MCP session: %s", _stdio_log_id(victim.url))
+                victim.close()
             if closed_while_connecting:
                 session.close()
                 raise RuntimeError("MCP server was updated or removed while connecting")
@@ -588,6 +658,22 @@ def _drop_stdio_session(key: tuple, session: _StdioSession) -> None:
             _stdio_sessions.pop(key)
         _discard_stdio_key_lock(key)
     _retire_stdio_session(session)
+
+
+def _evict_stdio_lru_locked() -> list:
+    """Caller holds _stdio_sessions_lock. Evict least-recently-used *idle*
+    sessions until the cache is under the cap. Returns the evicted sessions so
+    the caller can close them OUTSIDE the lock. If every session is busy the
+    cache may transiently overshoot rather than kill an in-flight call."""
+    victims: list = []
+    while len(_stdio_sessions) >= _STDIO_MAX_SESSIONS:
+        idle = [(s.last_used, k) for k, s in _stdio_sessions.items() if s.in_flight == 0]
+        if not idle:
+            break
+        _, oldest = min(idle, key = lambda item: item[0])
+        victims.append(_stdio_sessions.pop(oldest))
+        _discard_stdio_key_lock(oldest)
+    return victims
 
 
 def close_stdio_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> None:
@@ -630,7 +716,7 @@ def _reap_idle_stdio_sessions(now: Optional[float] = None) -> None:
         for key in expired:
             _discard_stdio_key_lock(key)
     for session in sessions:
-        logger.info("Closing idle stdio MCP session: %s", session.url)
+        logger.info("Closing idle stdio MCP session: %s", _stdio_log_id(session.url))
         session.close()
 
 
@@ -777,11 +863,21 @@ def _call_stdio_tool(
     # behavior: no browser/cookie/tool state can leak into another request.
     # Use an ephemeral key (and close it below) rather than the shared empty
     # scope that the persistent-session cache used previously.
+    def _config_ok() -> bool:
+        if config_check is None:
+            return True
+        try:
+            return bool(config_check())
+        except Exception:  # noqa: BLE001
+            return False
+
     ephemeral = not scope
     if ephemeral:
         scope = f"request-{uuid.uuid4().hex}"
     key = _session_key(url, headers, scope)
-    for fresh in (False, True):
+    # attempt 0 may find the cached session stale/dead *before* dispatch and
+    # reconnect once (safe); attempt 1 is a freshly connected session.
+    for attempt in (0, 1):
         session = _get_stdio_session(url, headers, scope, deadline, cancel_event, config_check)
         try:
             # Serialize calls per session: overlapping same-scope calls must
@@ -799,10 +895,39 @@ def _call_stdio_tool(
                 _drop_stdio_session(key, session)
             raise
         discard_session = ephemeral
+        retry = False
         try:
-            rem = _remaining()
-            coro = _race_tool_call(session.client.call_tool(name, args), rem, cancel_event)
-            return session.run(coro, rem)
+            # We may have waited on the call lock while another caller's timeout
+            # retired this session, a server update/delete invalidated it, or a
+            # reused subprocess died. Re-check all three before dispatch so we
+            # never run on a retired/dead client or a stale config.
+            if session.closed.is_set():
+                # Intentional close (server update/delete/shutdown): don't retry
+                # on the stale config.
+                discard_session = True
+                raise RuntimeError("MCP server was updated or removed during the call")
+            elif session.defunct:
+                # A concurrent same-scope caller's timeout retired this session;
+                # move to a fresh one instead of reusing the retired client.
+                discard_session = True
+                if attempt == 0:
+                    retry = True
+                else:
+                    raise RuntimeError("MCP server session was retired during the call")
+            elif not _config_ok():
+                discard_session = True
+                raise RuntimeError("MCP server was updated or removed during the call")
+            elif _transport_dead(session):
+                # Dead BEFORE dispatch: no request was sent, so reconnect + retry.
+                discard_session = True
+                if attempt == 0:
+                    retry = True
+                else:
+                    raise RuntimeError("MCP server connection is not available")
+            else:
+                rem = _remaining()
+                coro = _race_tool_call(session.client.call_tool(name, args), rem, cancel_event)
+                return session.run(coro, rem)
         except (_MCPCancelled, asyncio.TimeoutError):
             # _race_tool_call cancels the pending call but cancellation is
             # cooperative. Never return this client to the cache while the
@@ -817,23 +942,30 @@ def _call_stdio_tool(
             # update/delete/shutdown); don't retry on the stale config.
             discard_session = True
             raise RuntimeError("MCP server was updated or removed during the call")
-        except Exception:
+        except Exception as exc:
             if session.closed.is_set():
                 # An intentional close (server update/delete) can surface as a
                 # plain transport error or AttributeError instead of
-                # _SessionClosed; don't mistake it for a crash and retry.
+                # _SessionClosed; don't mistake it for a crash.
                 discard_session = True
                 raise RuntimeError("MCP server was updated or removed during the call")
-            # A dead subprocess surfaces as a transport error; retry once on a
-            # fresh session. Tool-level failures leave the session connected.
-            if fresh or session.is_connected():
-                raise
-            _drop_stdio_session(key, session)
+            # ToolError leaves the transport alive -> keep the session so its state
+            # survives. Any other exception is transport-level (dead subprocess,
+            # broken pipe): evict so it can't poison the scope, but DO NOT replay
+            # (the tool may already have run); the next call opens a fresh session.
+            if not _is_tool_error(exc):
+                discard_session = True
+            raise
         finally:
-            session.call_lock.release()
+            # Set defunct + remove from the cache BEFORE releasing the call lock,
+            # so a queued same-scope borrower observes the retirement and opens a
+            # fresh session instead of reusing this one.
             _release_stdio_session(session)
             if discard_session:
                 _drop_stdio_session(key, session)
+            session.call_lock.release()
+        if not retry:
+            break
     raise RuntimeError("unreachable")
 
 

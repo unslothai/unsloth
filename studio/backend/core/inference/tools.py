@@ -1006,12 +1006,17 @@ def execute_tool(
             return f"Error: MCP server '{server_id}' is disabled"
         if is_stdio(server["url"]) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{server_id}' is disabled on this host"
-        # session_id (the sandbox id) is shared by all threads in a project;
-        # fold in thread_id so stdio sessions stay per-conversation. Quote the
-        # parts so IDs containing ":" can't collide into one scope.
-        mcp_scope = (
-            ":".join(urllib.parse.quote(p, safe = "") for p in (session_id, thread_id) if p) or None
-        )
+        # Persist a stateful stdio session only per conversation (thread_id).
+        # session_id is the project-wide sandbox id, so scoping by it alone leaks
+        # browser/DB/REPL state across conversations; fall back to one-shot. Tag +
+        # percent-quote the parts so ids can't collide or ":" merge conversations.
+        if thread_id:
+            mcp_scope = "s={}:t={}".format(
+                urllib.parse.quote(session_id or "", safe = ""),
+                urllib.parse.quote(thread_id, safe = ""),
+            )
+        else:
+            mcp_scope = None
         headers = parse_server_headers(server)
         url = server["url"]
 

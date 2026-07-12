@@ -42,6 +42,10 @@ class FakeClient:
         self.connected = False
         self.fail_next = False
         self.call_delay = 0.0
+        # Models a dead stdio transport: real Client.is_connected() stays True
+        # after the subprocess dies, so liveness is probed via the transport.
+        self.dead = False
+        self.transport = SimpleNamespace(_is_session_dead=lambda: self.dead)
         FakeClient.instances.append(self)
 
     async def __aenter__(self):
@@ -104,18 +108,21 @@ def test_stdio_sessions_scoped_per_chat(fake_clients):
 
 def test_dead_stdio_session_recovers(fake_clients):
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-1"
-    # Subprocess dies between calls: next call reconnects instead of failing.
-    fake_clients[0].fail_next = True
+    # Subprocess dies between calls: the dead transport is detected before the
+    # next dispatch, so the call reconnects on a fresh session instead of failing.
+    fake_clients[0].dead = True
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-1"
     assert len(fake_clients) == 2
     assert fake_clients[0].exited == 1
 
 
 def test_tool_error_does_not_recycle_session(fake_clients, monkeypatch):
+    from fastmcp.exceptions import ToolError
+
     class ToolFailure(FakeClient):
         async def call_tool(self, name, args):
             if name == "boom":
-                raise RuntimeError("tool exploded")  # session stays connected
+                raise ToolError("tool exploded")  # tool-level: session stays connected
             return await super().call_tool(name, args)
 
     monkeypatch.setattr(
@@ -526,11 +533,17 @@ def test_execute_tool_mcp_scope_is_per_thread(tmp_path, monkeypatch):
     tools_mod.execute_tool("mcp__s1__t", {}, session_id = "project-p1", thread_id = "thread-b")
     tools_mod.execute_tool("mcp__s1__t", {}, session_id = "sess-only")
     tools_mod.execute_tool("mcp__s1__t", {}, thread_id = "thread-a")
-    assert scopes == ["project-p1:thread-a", "project-p1:thread-b", "sess-only", "thread-a"]
-    # IDs containing ":" must not collapse distinct conversations into one scope.
+    # Persist only with a thread_id; session_id alone stays one-shot (None) so a
+    # project-wide id can't leak state across conversations. Fields are tagged.
+    assert scopes == ["s=project-p1:t=thread-a", "s=project-p1:t=thread-b", None, "s=:t=thread-a"]
+    # IDs containing ":" must not collapse distinct conversations into one scope,
+    # and a session-only id must never collide with a thread-only id.
     tools_mod.execute_tool("mcp__s1__t", {}, session_id = "a:b", thread_id = "c")
     tools_mod.execute_tool("mcp__s1__t", {}, session_id = "a", thread_id = "b:c")
     assert scopes[-2] != scopes[-1]
+    tools_mod.execute_tool("mcp__s1__t", {}, session_id = "same")
+    tools_mod.execute_tool("mcp__s1__t", {}, thread_id = "same")
+    assert scopes[-2] != scopes[-1]  # session-only "same" != thread-only "same"
 
 
 def test_execute_tool_config_check_tracks_row(tmp_path, monkeypatch):
