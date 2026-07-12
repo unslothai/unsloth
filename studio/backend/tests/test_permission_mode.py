@@ -171,6 +171,11 @@ def _clear_pending():
         ("g=e??; cat /$g/passwd", True),  # glob assembled through an assignment
         ("g=abc; cat /$g/readme", False),  # benign assigned path stays safe
         ("cat /etc/pass[[:lower:]]d", True),  # POSIX class glob builds /etc/passwd
+        ("x=passwd; p=x; cat /etc/${!p}", True),  # indirect expansion builds path
+        ("x=notes; p=x; cat /home/${!p}", False),  # benign indirect expansion stays safe
+        ("cat </dev/tcp/example.com/80", True),  # bash /dev/tcp opens a socket
+        ("cat < /dev/udp/1.2.3.4/53", True),  # bash /dev/udp opens a socket
+        ("cat /dev/null", False),  # ordinary /dev file stays safe
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -267,6 +272,34 @@ def test_terminal_classifier(command, unsafe):
         ),  # bare imported save_file writer
         ("st.save_file(sd, 'o.safetensors')", True),  # safetensors save_file method
         ("print(model.state_dict())", False),  # non-persisting call stays safe
+        (
+            "from pathlib import Path\nopen(next(Path('/etc').glob('passw?'))).read()",
+            True,
+        ),  # pathlib glob receiver+pattern resolves to /etc/passwd
+        (
+            "from pathlib import Path\nfor f in Path('data').glob('*.py'):\n    print(f)",
+            False,
+        ),  # benign pathlib glob stays safe
+        (
+            "import os\nbase = os.path.abspath('/etc')\nopen(base + '/passwd').read()",
+            True,
+        ),  # abspath keeps the sensitive root
+        (
+            "from pathlib import Path\n(Path('/etc').resolve() / 'passwd').read_text()",
+            True,
+        ),  # Path.resolve keeps the sensitive root
+        (
+            "import os\nbase = os.path.abspath('data')\nopen(base + '/x.txt').read()",
+            False,
+        ),  # benign normalizer stays safe
+        ("import torch\ntorch.load('model.pt')", True),  # pickle-backed loader
+        ("import joblib\njoblib.load('x.pkl')", True),  # joblib loader
+        ("import pandas as pd\npd.read_pickle('x.pkl')", True),  # pandas pickle reader
+        ("import json\nprint(json.load(open('x.json')))", False),  # json.load stays safe
+        (
+            "import types\nc = compile('x=1', '', 'exec')\nf = types.FunctionType(c, globals())\nf()",
+            True,
+        ),  # compiled code wrapped into a callable
         ("cfg = d['k']\nprint(cfg)", False),  # subscript result not called stays safe
         ("open('/etc/{}'.format('passwd')).read()", True),  # str.format sensitive path
         ("open('/etc/{}'.format(name)).read()", True),  # format dynamic /etc segment

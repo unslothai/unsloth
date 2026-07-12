@@ -555,8 +555,15 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "fchdir",
         "run_path",
         "run_module",
+        # types.FunctionType wraps a compiled code object into a callable, a
+        # dynamic-execution vector; pandas read_pickle deserializes (runs code).
+        "FunctionType",
+        "read_pickle",
     }
 )
+# Pickle-backed loaders that can execute code embedded in the file; gated by
+# receiver module (torch.load, joblib.load) since bare `load` is too common.
+_AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle"})
 # Writer methods that persist to disk without going through open() (numpy.save,
 # Image.save, plt.savefig, DataFrame.to_csv, json.dump). Gated as method calls
 # only, so a bare attribute reference is not mistaken for a write.
@@ -604,6 +611,9 @@ _SENSITIVE_PATH_RE = re.compile(
     r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
     r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
     r"|credentials|/etc/(?:passwd|shadow|sudoers)"
+    # Bash opens /dev/tcp/host/port and /dev/udp/host/port as network sockets,
+    # so a redirection to one reaches the network without the confirm prompt.
+    r"|/dev/(?:tcp|udp)/"
     # Docker/Kubernetes secret mounts hold injected credentials.
     r"|/(?:var/)?run/secrets(?:[/\\]|$)"
     # procfs leaks a (possibly parent) process env/args/memory to a read,
@@ -637,6 +647,9 @@ _SHELL_PARAM_REPL_RE = re.compile(r"\$\{(\w+)/(/)?([^/{}]*)/([^{}]*)\}")
 # Case modification (${p^^} upper, ${p,,} lower, ${p^}/${p,} first char) also
 # transforms the value, so p=PASSWD; cat /etc/${p,,} builds /etc/passwd.
 _SHELL_PARAM_CASE_RE = re.compile(r"\$\{(\w+)(\^\^|,,|\^|,)\}")
+# Indirect expansion ${!p} yields the value of the variable *named* by $p, so
+# x=passwd; p=x; cat /etc/${!p} builds /etc/passwd.
+_SHELL_PARAM_INDIRECT_RE = re.compile(r"\$\{!(\w+)\}")
 _SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]+)")
 # Bash ANSI-C quoting ($'\x77' -> 'w') is expanded after this classifier, so
 # decode $'...' bodies before the sensitive-path scan.
@@ -783,6 +796,12 @@ def _expand_shell_assignments(command: str) -> str:
             return v[:1].lower() + v[1:]
         return v[:1].upper() + v[1:]
 
+    def repl_indirect(m):
+        # ${!p} -> value of the variable named by $p (env[env[p]]).
+        pointed = env.get(m.group(1))
+        return env.get(pointed, m.group(0)) if pointed is not None else m.group(0)
+
+    command = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, command)
     command = _SHELL_PARAM_REPL_RE.sub(repl_pattern, command)
     command = _SHELL_PARAM_CASE_RE.sub(repl_case, command)
     return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command)
@@ -911,6 +930,12 @@ def _attr_open_writes(node) -> bool:
 
 
 _PATH_CTORS = ("Path", "PurePath", "PurePosixPath")
+# Deterministic path pass-through/normalizer calls that return the same location
+# (os.path.abspath('/etc') -> /etc, Path('/etc').resolve() -> /etc), so folding
+# through them keeps a sensitive root visible to the scan.
+_PATH_PASSTHROUGH_ATTRS = frozenset(
+    {"abspath", "normpath", "realpath", "expanduser", "expandvars", "resolve", "absolute"}
+)
 
 
 def _folded_path(
@@ -991,6 +1016,17 @@ def _folded_path(
                 parts = [base if base is not None else "\x00"]
                 parts += [(fold(a) or "\x00") for a in node.args]
                 return "/".join(parts)
+            if isinstance(func, ast.Attribute) and func.attr in ("glob", "rglob", "iglob"):
+                # Path('/etc').glob('passw?') -> the receiver dir joined with the
+                # glob pattern; _glob_token_sensitive then tests /etc/passw?.
+                base = fold(func.value)
+                pattern = fold(node.args[0]) if node.args else "\x00"
+                return (base if base is not None else "\x00") + "/" + (pattern or "\x00")
+            if isinstance(func, ast.Attribute) and func.attr in _PATH_PASSTHROUGH_ATTRS:
+                # Deterministic normalizers keep the same path: os.path.abspath(
+                # '/etc') -> /etc, Path('/etc').resolve() -> /etc. When called with
+                # a path arg fold it, else fold the receiver (Path method form).
+                return fold(node.args[0]) if node.args else fold(func.value)
             if isinstance(func, ast.Attribute) and func.attr == "join":
                 # str.join has the separator as the receiver and the pieces in
                 # one iterable arg ("".join(['/etc', '/passwd']) -> /etc/passwd);
@@ -1200,8 +1236,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     dynamic_aliases = set()
     # Names bound to a dynamic-code builtin, including aliased ones
     # (from builtins import eval as e; e = builtins.exec), so a call or
-    # reference through the alias fails closed too.
-    code_exec_aliases = {"exec", "eval", "__import__", "breakpoint"}
+    # reference through the alias fails closed too. compile() builds a code
+    # object that FunctionType/exec can then run.
+    code_exec_aliases = {"exec", "eval", "__import__", "breakpoint", "compile"}
     # Names bound to a string literal (base = '/etc'), so a sensitive path
     # split through a variable (base + '/passwd') folds and is caught.
     literal_str_vars: "dict[str, str]" = {}
@@ -1214,6 +1251,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Module names bound to os/posix (import os as o), so o.open(...) is still
     # recognized as the low-level create/write that os.open is.
     os_aliases = {"os", "posix"}
+    # Module names bound to a pickle-backed loader (import torch as t), so
+    # t.load(...) is still gated as a code-executing deserialize.
+    load_module_aliases = set(_AUTO_UNSAFE_PY_LOAD_MODULES)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -1221,6 +1261,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     builtins_aliases.add(alias.asname or "builtins")
                 elif alias.name in ("os", "posix"):
                     os_aliases.add(alias.asname or alias.name)
+                elif alias.name in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    load_module_aliases.add(alias.asname or alias.name)
         elif isinstance(node, ast.ImportFrom):
             if node.module == "builtins":
                 for alias in node.names:
@@ -1377,6 +1419,14 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         func.attr == "open"
                         and isinstance(func.value, ast.Name)
                         and func.value.id in os_aliases
+                    ):
+                        return True
+                    # A pickle-backed loader (torch.load, joblib.load) can execute
+                    # code embedded in the file it deserializes.
+                    if (
+                        func.attr == "load"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in load_module_aliases
                     ):
                         return True
                     if func.attr == "open" and _attr_open_writes(node):
