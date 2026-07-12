@@ -127,7 +127,12 @@ def test_call_tool_sync_passes_raise_on_error_false_and_keeps_error_images(monke
     seen = {}
 
     class _FakeClient:
-        async def call_tool(self, name, args, raise_on_error = True):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             seen["raise_on_error"] = raise_on_error
             return _result(_text("boom"), _image(), is_error = True)
 
