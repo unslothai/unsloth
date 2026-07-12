@@ -594,8 +594,9 @@ _SENSITIVE_PATH_RE = re.compile(
     r"|credentials|/etc/(?:passwd|shadow|sudoers)"
     # Docker/Kubernetes secret mounts hold injected credentials.
     r"|/(?:var/)?run/secrets(?:[/\\]|$)"
-    # procfs leaks a (possibly parent) process env/args/memory to a read.
-    r"|/proc/[^/\s'\"]+/(?:environ|cmdline|mem|maps)\b"
+    # procfs leaks a (possibly parent) process env/args/memory to a read,
+    # including the per-thread aliases under /proc/<pid>/task/<tid>/.
+    r"|/proc/[^/\s'\"]+/(?:task/[^/\s'\"]+/)?(?:environ|cmdline|mem|maps)\b"
     # A .pem/.key file (basename before the extension), not a bare ".key"
     # (e.g. a jq '.key' filter).
     r"|\w[\w.-]*\.(?:pem|key)(?:$|[\s'\"])",
@@ -618,6 +619,9 @@ _REDUNDANT_SLASH_RE = re.compile(r"/\.?(?=/)")
 # reference `name`; substituting the assigned value catches paths hidden behind
 # a substring expansion (p=passwd; cat /etc/${p:0:6}).
 _SHELL_VAR_RE = re.compile(r"\$\{(\w+)(?::[^{}]*)?\}|\$(\w+)")
+# Pattern replacement (${p/X/w}, global ${p//X/w}) transforms the value before
+# the path is used; apply it so p=passXd; cat /etc/${p/X/w} is scanned.
+_SHELL_PARAM_REPL_RE = re.compile(r"\$\{(\w+)/(/)?([^/{}]*)/([^{}]*)\}")
 _SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]+)")
 # Bash ANSI-C quoting ($'\x77' -> 'w') is expanded after this classifier, so
 # decode $'...' bodies before the sensitive-path scan.
@@ -702,34 +706,50 @@ def _pattern_matches_dir(pattern: str, target: str) -> bool:
     return all(fnmatch.fnmatch(tseg, pseg) for pseg, tseg in zip(p, t))
 
 
+def _glob_token_sensitive(token: str) -> bool:
+    """True if a single ? / * / [..] glob token could expand to a sensitive file
+    or a file under a secret/credential directory. Shared by the terminal scan
+    and the Python glob check (glob.glob('/e??/passwd'))."""
+    token = _REDIR_PREFIX_RE.sub("", _SHELL_QUOTE_RE.sub("", token))
+    if not any(c in token for c in "?*["):
+        return False
+    if any(fnmatch.fnmatch(target, token) for target in _SENSITIVE_GLOB_TARGETS):
+        return True
+    # A globbed directory that resolves into a secret/credential dir makes every
+    # file below it sensitive (cat /r?n/secrets/hf_token).
+    head = token.rsplit("/", 1)[0] if "/" in token else token
+    return any(
+        _pattern_matches_dir(token, d) or _pattern_matches_dir(head, d)
+        for d in _SENSITIVE_GLOB_DIRS
+    )
+
+
 def _glob_hits_sensitive(command: str) -> bool:
-    """True if a ? / * / [..] glob token could expand to a sensitive file or a
-    file under a secret/credential directory, so `cat /e??/passwd` and
-    `cat /r?n/secrets/hf_token` ask even without a literal sensitive path."""
-    for token in command.replace(";", " ").replace("|", " ").split():
-        token = _REDIR_PREFIX_RE.sub("", _SHELL_QUOTE_RE.sub("", token))
-        if not any(c in token for c in "?*["):
-            continue
-        if any(fnmatch.fnmatch(target, token) for target in _SENSITIVE_GLOB_TARGETS):
-            return True
-        # A globbed directory that resolves into a secret/credential dir makes
-        # every file below it sensitive (cat /r?n/secrets/hf_token).
-        head = token.rsplit("/", 1)[0] if "/" in token else token
-        if any(
-            _pattern_matches_dir(token, d) or _pattern_matches_dir(head, d)
-            for d in _SENSITIVE_GLOB_DIRS
-        ):
-            return True
-    return False
+    """True if any glob token in a command could expand to a sensitive file, so
+    `cat /e??/passwd` and `cat /r?n/secrets/hf_token` ask even without a literal
+    sensitive path."""
+    return any(
+        _glob_token_sensitive(token)
+        for token in command.replace(";", " ").replace("|", " ").split()
+    )
 
 
 def _expand_shell_assignments(command: str) -> str:
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path
     split across an assignment and an argument (p=/etc; cat $p/passwd) is still
-    visible to the sensitive-path scan. Fail-open: only adds detections."""
+    visible to the sensitive-path scan. Also applies pattern replacement
+    (p=passXd; cat /etc/${p/X/w}). Fail-open: only adds detections."""
     env = dict(_SHELL_ASSIGN_RE.findall(command))
     if not env:
         return command
+
+    def repl_pattern(m):
+        var, is_global, pat, rep = m.group(1), m.group(2), m.group(3), m.group(4)
+        if var not in env or not pat:
+            return m.group(0)
+        return env[var].replace(pat, rep) if is_global else env[var].replace(pat, rep, 1)
+
+    command = _SHELL_PARAM_REPL_RE.sub(repl_pattern, command)
     return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command)
 
 
@@ -871,6 +891,15 @@ def _folded_path(node, literals = None) -> "str | None":
         )
     if isinstance(node, ast.Name):
         return literals.get(node.id)
+    if isinstance(node, ast.Attribute) and node.attr in ("parent", "parents"):
+        # A pathlib .parent/.parents walks above the current dir, escaping the
+        # per-session workdir without a literal '..'; mark it so a read folds
+        # to unsafe (\x02 is a non-slash escape sentinel).
+        return "\x02"
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) and (
+        node.value.attr == "parents"
+    ):
+        return "\x02"  # Path(...).parents[1]
     if isinstance(node, ast.JoinedStr):
         return "".join(
             v.value
@@ -952,12 +981,15 @@ def _folded_path(node, literals = None) -> "str | None":
 
 
 def _folded_is_sensitive(folded) -> bool:
-    """A folded path is sensitive if it names a credential file, or has a
-    dynamic segment (NUL) directly under a sensitive directory (/etc/NUL)."""
+    """A folded path is sensitive if it names a credential file, has a dynamic
+    segment (NUL) directly under a sensitive directory (/etc/NUL), or walks out
+    of the sandbox via a pathlib .parent/.parents escape (\\x02)."""
     if not folded:
         return False
-    return _references_sensitive_path(folded) or (
-        "\x00" in folded and bool(_SENSITIVE_DIR_RE.search(folded))
+    return (
+        "\x02" in folded
+        or _references_sensitive_path(folded)
+        or ("\x00" in folded and bool(_SENSITIVE_DIR_RE.search(folded)))
     )
 
 
@@ -998,10 +1030,10 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         tokens = list(lexer)
     except ValueError:
         return True
-    # A root can also hide behind an assignment (p=/; grep -R TOKEN $p); re-lex
-    # the assignment-expanded command so the find/fd and recursive-search scans
-    # below see the resolved token too.
-    expanded_command = _expand_shell_assignments(command)
+    # A root can also hide behind an assignment (p=/; grep -R TOKEN $p) or a
+    # default parameter (grep -R TOKEN ${root:-/home}); re-lex the fully expanded
+    # command so the find/fd and recursive-search scans see the resolved token.
+    expanded_command = _expand_shell_assignments(_expand_param_defaults(command))
     if expanded_command != command:
         try:
             elexer = shlex.shlex(expanded_command, posix = True, punctuation_chars = ";&|()")
@@ -1217,11 +1249,14 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     return True
             elif isinstance(node, ast.Constant):
                 # Credential paths / parent traversal in a string or bytes
-                # literal (open('/etc/passwd') and open(b'/etc/passwd')).
+                # literal (open('/etc/passwd') and open(b'/etc/passwd')), or a
+                # glob that resolves to one (glob.glob('/e??/passwd')).
                 val = node.value
                 if isinstance(val, bytes):
                     val = val.decode("latin-1", "ignore")
-                if isinstance(val, str) and _references_sensitive_path(val):
+                if isinstance(val, str) and (
+                    _references_sensitive_path(val) or _glob_token_sensitive(val)
+                ):
                     return True
             elif isinstance(node, (ast.BinOp, ast.JoinedStr)):
                 # A sensitive path concatenated from literals ('/etc'+'/passwd'),

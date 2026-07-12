@@ -156,6 +156,13 @@ def _clear_pending():
         ("cat /home/*/.az?re/msal_token_cache.json", True),  # azure token glob
         ("cat /home/*/.config/g?/hosts.yml", True),  # gh config glob
         ("cat /home/*/projects/readme", False),  # benign home glob stays safe
+        ("cat /proc/$PPID/task/$PPID/environ", True),  # per-thread proc env alias
+        ("cat /proc/cpuinfo", False),  # non-sensitive proc read stays safe
+        ("grep -R TOKEN ${root:-/home}", True),  # default-param recursive root
+        ("grep -R TOKEN ${root:-src}", False),  # relative default root stays safe
+        ("p=passXd; cat /etc/${p/X/w}", True),  # pattern replacement builds path
+        ("p=passXd; cat /etc/${p//X/w}", True),  # global pattern replacement
+        ("p=hello; cat notes/${p/l/L}", False),  # benign replacement stays safe
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -282,6 +289,16 @@ def test_terminal_classifier(command, unsafe):
         ),  # relative joinpath stays safe
         ("open(b'/etc/passwd').read()", True),  # bytes path literal
         ("open(b'data.txt').read()", False),  # benign bytes literal stays safe
+        (
+            "from pathlib import Path\n(Path.cwd().parent / 'other' / 'notes').read_text()",
+            True,
+        ),  # pathlib parent escapes the sandbox
+        (
+            "from pathlib import Path\n(Path('data') / 'notes').read_text()",
+            False,
+        ),  # in-sandbox pathlib read stays safe
+        ("import glob\nopen(glob.glob('/e??/passwd')[0]).read()", True),  # python glob to secret
+        ("import glob\nfor f in glob.glob('*.py'):\n    print(f)", False),  # benign glob stays safe
     ],
 )
 def test_python_classifier(code, unsafe):
