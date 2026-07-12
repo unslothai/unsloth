@@ -492,9 +492,9 @@ class TestPinnedRocmLeafDigitParity:
             "-like 'rocm*' glob) so custom find-links leaves stay on the verbatim path"
         )
         pinned_block = text[text.find("$_pinGfx211 = Test-RocmGfx211Leaf") :][:2000]
-        assert "-like 'rocm*'" not in pinned_block, (
-            "setup.ps1 pinned reroute must not route on a bare -like 'rocm*' glob"
-        )
+        assert (
+            "-like 'rocm*'" not in pinned_block
+        ), "setup.ps1 pinned reroute must not route on a bare -like 'rocm*' glob"
 
     def test_install_sh_repairable_requires_rocm_digit(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")

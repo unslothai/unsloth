@@ -239,5 +239,7 @@ class TestPinnedIndexClearsUvEnv:
         """UV_TORCH_BACKEND is stripped for pinned commands so uv cannot read it
         from the environment and reroute torch off the pinned index."""
         with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": "cpu"}):
-            env = ips._install_env_for_cmd(["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"])
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
         assert env is not None and "UV_TORCH_BACKEND" not in env
