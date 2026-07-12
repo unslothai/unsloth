@@ -155,9 +155,21 @@ _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # utility. LD_*/DYLD_* and any *PATH are covered by the prefix/suffix check.
 _AUTO_UNSAFE_ENV_ASSIGN = frozenset(
     {
-        "IFS", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "GLOBIGNORE",
-        "PROMPT_COMMAND", "PS4", "PYTHONSTARTUP", "PYTHONHOME", "NODE_OPTIONS",
-        "PERL5OPT", "PERL5LIB", "RUBYOPT", "RUBYLIB",
+        "IFS",
+        "BASH_ENV",
+        "ENV",
+        "SHELLOPTS",
+        "BASHOPTS",
+        "GLOBIGNORE",
+        "PROMPT_COMMAND",
+        "PS4",
+        "PYTHONSTARTUP",
+        "PYTHONHOME",
+        "NODE_OPTIONS",
+        "PERL5OPT",
+        "PERL5LIB",
+        "RUBYOPT",
+        "RUBYLIB",
     }
 )
 
@@ -639,9 +651,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
             flag_head = token.split("=", 1)[0]
             cluster = token[1:] if token[:2] != "--" and "=" not in token else ""
             for uf in _AUTO_UNSAFE_COMMAND_FLAGS.get(current_command, ()):
-                if flag_head == uf or (
-                    len(uf) == 2 and (token.startswith(uf) or uf[1] in cluster)
-                ):
+                if flag_head == uf or (len(uf) == 2 and (token.startswith(uf) or uf[1] in cluster)):
                     return True
             if not prefix_pending:
                 expect_command = False
