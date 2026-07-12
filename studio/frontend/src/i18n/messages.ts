@@ -15,7 +15,8 @@ import { de } from "./locales/de";
 import { ko } from "./locales/ko";
 import type { InterpolationValues, MessageKey } from "./types";
 
-// dir drives document.documentElement.dir so RTL locales mirror the layout.
+// dir sets document.documentElement.dir. Arabic stays ltr until the app's
+// physical-direction CSS is converted; its text still renders rtl via bidi.
 export const LOCALES = {
   en: { label: "English", nativeLabel: "English", dir: "ltr" },
   "zh-CN": { label: "Chinese (Simplified)", nativeLabel: "简体中文", dir: "ltr" },
@@ -27,7 +28,7 @@ export const LOCALES = {
   de: { label: "German", nativeLabel: "Deutsch", dir: "ltr" },
   ru: { label: "Russian", nativeLabel: "Русский", dir: "ltr" },
   hi: { label: "Hindi", nativeLabel: "हिन्दी", dir: "ltr" },
-  ar: { label: "Arabic", nativeLabel: "العربية", dir: "rtl" },
+  ar: { label: "Arabic", nativeLabel: "العربية", dir: "ltr" },
 } as const;
 
 export type Locale = keyof typeof LOCALES;
