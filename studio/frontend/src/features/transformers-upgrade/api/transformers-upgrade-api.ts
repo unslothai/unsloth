@@ -8,6 +8,9 @@ interface InstallLatestTransformersResponse {
   success: boolean;
   version: string;
   message: string;
+  /** The server unloaded the active chat model before the swap (set even on a
+   *  structured failure, so callers can restore their model state). */
+  model_unloaded?: boolean;
 }
 
 /** Consented install of the latest transformers into the sidecar; synchronous, can take minutes. */

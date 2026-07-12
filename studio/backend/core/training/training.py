@@ -860,7 +860,9 @@ class TrainingBackend:
         self._spawn_in_progress = True
         if sidecar_swap_in_progress():
             self._spawn_in_progress = False
-            raise RuntimeError(
+            from utils.transformers_version import SidecarSwapInProgress
+
+            raise SidecarSwapInProgress(
                 "A transformers installation is replacing the latest sidecar; "
                 "retry when it completes."
             )
@@ -1072,7 +1074,9 @@ class TrainingBackend:
             time.sleep(1)
         if sidecar_swap_in_progress():
             self._spawn_in_progress = False
-            raise RuntimeError(
+            from utils.transformers_version import SidecarSwapInProgress
+
+            raise SidecarSwapInProgress(
                 "A transformers installation is replacing the latest sidecar; "
                 "cannot respawn the training worker."
             )

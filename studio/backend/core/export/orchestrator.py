@@ -215,7 +215,9 @@ class ExportOrchestrator:
         from utils.transformers_version import sidecar_swap_in_progress
 
         if sidecar_swap_in_progress() and not self._export_active:
-            raise RuntimeError(
+            from utils.transformers_version import SidecarSwapInProgress
+
+            raise SidecarSwapInProgress(
                 "A transformers installation is replacing the latest sidecar; "
                 "retry when it completes."
             )

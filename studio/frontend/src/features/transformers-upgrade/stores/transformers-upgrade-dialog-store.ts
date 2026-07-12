@@ -22,6 +22,10 @@ interface TransformersUpgradeDialogStore {
    *  model before swapping, so the caller must treat it as already unloaded; the
    *  custom-code fallback resolves true without installing and leaves it loaded. */
   installRan: boolean;
+  /** True when the server unloaded the active chat model during this consent,
+   *  including a swap that failed AFTER the unload: callers must then treat
+   *  their previous model as gone and roll back on any later cancel. */
+  serverUnloadedChat: boolean;
   /** Open the dialog for a paused load; resolves true on install success or custom-code fallback. */
   requestConsent: (
     modelName: string,
@@ -42,6 +46,7 @@ export const useTransformersUpgradeDialogStore =
     errorMessage: null,
     trustRemoteCodeFallback: false,
     installRan: false,
+    serverUnloadedChat: false,
     requestConsent: (modelName, upgrade, options) =>
       new Promise<boolean>((resolve) => {
         pendingResolver?.(false);
@@ -54,6 +59,7 @@ export const useTransformersUpgradeDialogStore =
           errorMessage: null,
           trustRemoteCodeFallback: Boolean(options?.trustRemoteCodeFallback),
           installRan: false,
+          serverUnloadedChat: false,
         });
       }),
     install: async () => {
@@ -62,8 +68,9 @@ export const useTransformersUpgradeDialogStore =
       if (!version || phase === "installing") return;
       const requestResolver = pendingResolver;
       set({ phase: "installing", errorMessage: null });
+      let result: Awaited<ReturnType<typeof installLatestTransformers>>;
       try {
-        await installLatestTransformers(version);
+        result = await installLatestTransformers(version);
       } catch (error) {
         // Ignore the failure if a newer request superseded this consent.
         if (pendingResolver === requestResolver) {
@@ -78,8 +85,19 @@ export const useTransformersUpgradeDialogStore =
         return;
       }
       if (pendingResolver === requestResolver) {
-        set({ installRan: true });
-        get().resolve(true);
+        if (result.success) {
+          set({ installRan: true, serverUnloadedChat: Boolean(result.model_unloaded) });
+          get().resolve(true);
+          return;
+        }
+        // Structured failure: the swap failed but may have already unloaded the
+        // chat model; record that so a later cancel still rolls the caller back.
+        set({
+          phase: "error",
+          errorMessage: result.message || "Failed to install transformers.",
+          serverUnloadedChat:
+            get().serverUnloadedChat || Boolean(result.model_unloaded),
+        });
       }
     },
     resolve: (installed) => {

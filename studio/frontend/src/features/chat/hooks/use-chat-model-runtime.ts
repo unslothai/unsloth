@@ -610,17 +610,17 @@ export function useChatModelRuntime() {
                 // No installable release: custom-code models may fall back to the trust_remote_code gate below.
                 trustRemoteCodeFallback: validation.requires_trust_remote_code,
               });
-              if (!upgraded) {
-                throw new Error(getTransformersUpgradeRequiredMessage(displayName));
-              }
-              // The install unloads the previous model before the swap, so a later
-              // gate cancelling this load must still roll back. installRan is false
-              // for the custom-code fallback, which resolves without installing.
+              // The install unloads the previous model before the swap (even when
+              // the swap then fails), so any exit after this point must roll back.
+              // False for the custom-code fallback, which resolves without installing.
               if (
                 currentCheckpoint
-                && useTransformersUpgradeDialogStore.getState().installRan
+                && useTransformersUpgradeDialogStore.getState().serverUnloadedChat
               ) {
                 previousWasUnloaded = true;
+              }
+              if (!upgraded) {
+                throw new Error(getTransformersUpgradeRequiredMessage(displayName));
               }
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");

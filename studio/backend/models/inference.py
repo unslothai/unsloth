@@ -220,6 +220,11 @@ class InstallLatestTransformersResponse(BaseModel):
     success: bool = Field(..., description = "Whether the sidecar was provisioned")
     version: str = Field(..., description = "The requested transformers version")
     message: str = Field(..., description = "Human-readable result")
+    model_unloaded: bool = Field(
+        False,
+        description = "Whether the active chat model was unloaded before the swap "
+        "(reported even on failure, so the client can restore its state)",
+    )
 
 
 class GenerateRequest(BaseModel):

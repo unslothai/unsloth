@@ -436,9 +436,16 @@ async def start_training(
                 logger.warning("Chat/training VRAM coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
-        success = backend.start_training(
-            job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
-        )
+        from utils.transformers_version import SidecarSwapInProgress
+
+        try:
+            success = backend.start_training(
+                job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
+            )
+        except SidecarSwapInProgress as exc:
+            # Expected loss of the race against a sidecar install: a retryable
+            # 409 matching the route-entry guard, not an internal error.
+            raise HTTPException(status_code = 409, detail = str(exc))
 
         if not success:
             progress_error = backend.trainer.training_progress.error

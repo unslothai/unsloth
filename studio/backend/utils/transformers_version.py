@@ -1909,6 +1909,10 @@ def _swap_lock_is_stale(path: Path) -> bool:
         return False
 
 
+class SidecarSwapInProgress(RuntimeError):
+    """A worker start lost the race to a .venv_t5_latest install/repair; retryable."""
+
+
 def try_begin_sidecar_swap() -> bool:
     """Reserve the sidecar swap window; False when one is already reserved
     (in this process or, via the lock file, in any worker subprocess)."""

@@ -3839,6 +3839,18 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
+    # A sidecar install that has reserved the swap but not yet won this gate must
+    # not lose to a load that then gets unloaded by the pre-swap teardown.
+    from utils.transformers_version import sidecar_swap_in_progress
+
+    if sidecar_swap_in_progress():
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "A transformers installation is in progress. "
+                "Retry when it completes."
+            ),
+        )
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
@@ -4846,6 +4858,8 @@ async def install_latest_transformers_route(
         backend = get_inference_backend()
         export_backend = get_export_backend()
 
+        unloaded_chat = {"v": False}
+
         def _unload_before_swap() -> None:
             # Runs on the install thread, inside the gate held by _gated_install. Any
             # failure raises so the previous sidecar stays untouched (a worker that did
@@ -4862,6 +4876,7 @@ async def install_latest_transformers_route(
                 if not backend.unload_model(active):
                     raise RuntimeError(f"Could not unload '{active}' before the transformers swap")
                 note_model_unloaded()
+                unloaded_chat["v"] = True
                 logger.info(
                     "Unloaded '%s' before swapping in transformers %s",
                     active,
@@ -4916,8 +4931,13 @@ async def install_latest_transformers_route(
         if owns_reservation:
             end_sidecar_swap()
     if not result["success"]:
+        if unloaded_chat["v"]:
+            # The chat model is already gone even though the swap failed; return a
+            # structured failure (not a bare 400) so the client can restore its
+            # model state instead of pointing at an unloaded model.
+            return InstallLatestTransformersResponse(**result, model_unloaded = True)
         raise HTTPException(status_code = 400, detail = result["message"])
-    return InstallLatestTransformersResponse(**result)
+    return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
 
 
 @router.post("/unload", response_model = UnloadResponse)

@@ -107,6 +107,11 @@ async def load_checkpoint(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error loading checkpoint: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
