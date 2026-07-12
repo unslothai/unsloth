@@ -101,20 +101,33 @@ function ensureActiveModelInStoreList(
   checkpointId: string,
 ): void {
   const store = useChatRuntimeStore.getState();
-  if (store.models.some((model) => model.id === checkpointId)) {
-    return;
-  }
-  const summary: ChatModelSummary = {
-    id: checkpointId,
-    name: status.active_model ?? checkpointId,
+  // Live capability flags from /api/inference/status. The catalog entry from
+  // /api/models/list omits fields like has_audio_input, so an existing entry
+  // must be refreshed too -- otherwise a CLI model adopted on the empty-
+  // checkpoint send path (which does not run refresh()'s syncModelCapabilities
+  // step) keeps stale flags and AudioAttachmentAdapter rejects audio inputs
+  // until a later refresh.
+  const capabilities = {
     isVision: status.is_vision ?? false,
-    isLora: false,
     isGguf: status.is_gguf ?? false,
     isAudio: status.is_audio ?? false,
     audioType: status.audio_type ?? null,
     hasAudioInput: status.has_audio_input ?? false,
   };
-  store.setModels([...store.models, summary]);
+  const idx = store.models.findIndex((model) => model.id === checkpointId);
+  if (idx === -1) {
+    const summary: ChatModelSummary = {
+      id: checkpointId,
+      name: status.active_model ?? checkpointId,
+      isLora: false,
+      ...capabilities,
+    };
+    store.setModels([...store.models, summary]);
+    return;
+  }
+  const next = [...store.models];
+  next[idx] = { ...next[idx], ...capabilities };
+  store.setModels(next);
 }
 
 export type ApplyInferenceStatusOptions = {
@@ -275,6 +288,9 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
   if (store.params.checkpoint) {
     return true;
   }
+  if (store.modelLoading) {
+    return false;
+  }
 
   let status: InferenceStatusResponse;
   try {
@@ -292,10 +308,12 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
     return false;
   }
 
-  // Re-check after the await: keep a checkpoint the user picked meanwhile.
-  const previousCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
-  if (previousCheckpoint) {
-    return true;
+  // Re-check after the await: keep a checkpoint the user picked meanwhile, and
+  // do not adopt a server model while a UI-initiated load is in flight.
+  const latest = useChatRuntimeStore.getState();
+  const previousCheckpoint = latest.params.checkpoint;
+  if (previousCheckpoint || latest.modelLoading) {
+    return !!previousCheckpoint;
   }
   store.setCheckpoint(checkpointId, status.gguf_variant);
   applyActiveModelStatusToStore(status, { previousCheckpoint });

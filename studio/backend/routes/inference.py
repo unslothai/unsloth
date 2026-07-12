@@ -987,6 +987,7 @@ try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
         LlamaCppBackend,
+        LlamaServerNotFoundError,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
@@ -1024,6 +1025,7 @@ except ImportError:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
         LlamaCppBackend,
+        LlamaServerNotFoundError,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
@@ -1054,6 +1056,12 @@ except ImportError:
         redact_native_paths,
         verify_native_path_lease,
     )
+
+
+def _is_llama_server_not_found(exc: BaseException) -> bool:
+    # importlib-loaded route modules can see a different class object than the
+    # test/runtime copy when llama_cpp was reloaded; match by name + base type.
+    return isinstance(exc, RuntimeError) and type(exc).__name__ == "LlamaServerNotFoundError"
 
 
 def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
@@ -4470,6 +4478,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
+        if _is_llama_server_not_found(e):
+            logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
+            raise HTTPException(status_code = 400, detail = str(e))
         # Friendlier message for models Unsloth cannot load.
         if native_grant_backed:
             redacted_msg = redact_native_paths(str(e))
@@ -4568,8 +4579,6 @@ async def validate_model(
     Checks that ModelConfig.from_identifier() can resolve model_path, but does
     NOT load model weights into GPU memory.
     """
-    from core.inference.llama_cpp import LlamaServerNotFoundError
-
     native_grant_backed = False
     model_log_label = request.model_path
     try:
@@ -5026,6 +5035,27 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         _stale = bool(_freshness.get("stale"))
         _installed_tag = _freshness.get("installed_tag")
         _latest_tag = _freshness.get("latest_tag")
+
+        # GGUF load in flight (HF download, subprocess warm-up, health wait).
+        # _serial_load_lock is threading.RLock (not Lock), which has no
+        # .locked() method. Use a non-blocking acquire: returns False only
+        # when another thread already holds the lock.
+        _lock_acquired = llama_backend._serial_load_lock.acquire(blocking = False)
+        if _lock_acquired:
+            llama_backend._serial_load_lock.release()
+        if not _lock_acquired and not llama_backend.is_loaded:
+            _loading_id = llama_backend._model_identifier or ""
+            return InferenceStatusResponse(
+                active_model = None,
+                model_identifier = None,
+                is_gguf = True,
+                loading = [_loading_id] if _loading_id else ["(loading)"],
+                loaded = [],
+                llama_cpp_supports_mtp = _supports_mtp,
+                llama_cpp_prebuilt_stale = _stale,
+                llama_cpp_installed_tag = _installed_tag,
+                llama_cpp_latest_tag = _latest_tag,
+            )
 
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:

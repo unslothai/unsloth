@@ -47,6 +47,7 @@ import {
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import {
   isMultimodalResponse,
+  type InferenceStatusResponse,
 } from "../types/api";
 import { isExternalModelId } from "../external-providers";
 import { cancelStagedModelDownload } from "@/features/hub";
@@ -103,6 +104,17 @@ const MODEL_LOADED_TOAST_CLASSNAMES = {
 } as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
+
+/** Baseline mount poll when the server reports no in-flight CLI load. */
+const CLI_LOAD_POLL_IDLE_MS = 60_000;
+/** Safety cap so a wedged poll cannot run forever. */
+const CLI_LOAD_POLL_MAX_MS = 600_000;
+
+function inferenceStatusShowsLoadInFlight(
+  status: InferenceStatusResponse | null,
+): boolean {
+  return (status?.loading?.length ?? 0) > 0;
+}
 
 function parseTrailingEpoch(input: string): number | undefined {
   const match = input.match(LORA_SUFFIX_RE);
@@ -314,6 +326,7 @@ export function useChatModelRuntime() {
   );
 
   const refresh = useCallback(async (options?: {
+    pollUntilActiveModel?: boolean;
     signal?: AbortSignal;
     includeLoras?: boolean;
   }) => {
@@ -321,35 +334,85 @@ export function useChatModelRuntime() {
     const includeLoras = options?.includeLoras ?? true;
     setModelsError(null);
     try {
-      const [listRes, statusRes, lorasRes] = await Promise.all([
+      const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
+      const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
+      const shouldPollForCliLoad =
+        options?.pollUntilActiveModel &&
+        !selectedCheckpoint &&
+        !isExternalSelectionActive;
+
+      // Populate the model/lora lists immediately so the selector is not
+      // blocked by the CLI-load poll below. Loras are skipped on the fast
+      // initial mount refresh (includeLoras: false) and fetched deferred.
+      const [listRes, lorasRes] = await Promise.all([
         listModels(),
-        getInferenceStatus(),
         includeLoras ? listLoras() : Promise.resolve(null),
       ]);
-
-      // Cancellation can land while the requests above are in flight. Bail
-      // before writing backend state back -- cancelLoading already cleared it.
       if (signal?.aborted) return;
-
       setModels(listRes.models.map(toChatModelSummary));
       if (lorasRes) {
         setLoras(lorasRes.loras.map(toLoraSummary));
       }
 
-      const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
-      const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
-      if (statusRes.active_model && !isExternalSelectionActive) {
+      let polledStatus: InferenceStatusResponse | null = shouldPollForCliLoad
+        ? await getInferenceStatus().catch(() => null)
+        : null;
+
+      if (shouldPollForCliLoad) {
+        const started = Date.now();
+        while (
+          !signal?.aborted &&
+          !polledStatus?.active_model &&
+          // Stop early if the user picks a model while we are polling.
+          !useChatRuntimeStore.getState().params.checkpoint &&
+          Date.now() - started < CLI_LOAD_POLL_MAX_MS
+        ) {
+          const elapsed = Date.now() - started;
+          const inFlight = inferenceStatusShowsLoadInFlight(polledStatus);
+          if (elapsed >= CLI_LOAD_POLL_IDLE_MS && !inFlight) {
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          try {
+            polledStatus = await getInferenceStatus();
+          } catch {
+            // Keep polling through transient status errors.
+          }
+        }
+      }
+
+      const statusRes: InferenceStatusResponse =
+        polledStatus ?? (await getInferenceStatus());
+
+      // Cancellation can land while the requests above are in flight (e.g. the
+      // user cancels a load during this refresh). Bail before writing any
+      // backend state back into the store -- cancelLoading already cleared it.
+      if (signal?.aborted) return;
+
+      const checkpointAfterPoll =
+        useChatRuntimeStore.getState().params.checkpoint;
+      const isExternalAfterPoll = isExternalModelId(checkpointAfterPoll);
+      // If the user selected or started loading a model while the CLI-load poll
+      // was running, a late status response must not clobber that pick. A
+      // UI-initiated load sets modelLoading immediately but only writes
+      // params.checkpoint once it completes, so gate on both -- mirrors
+      // yieldToUserModelLoad in chat-adapter.ts.
+      const userSelectedDuringPoll =
+        shouldPollForCliLoad &&
+        (!!checkpointAfterPoll ||
+          useChatRuntimeStore.getState().modelLoading);
+      if (statusRes.active_model && !isExternalAfterPoll && !userSelectedDuringPoll) {
         const checkpointId = resolveInferenceCheckpointId(statusRes);
         if (checkpointId) {
           setCheckpoint(checkpointId, statusRes.gguf_variant);
           applyActiveModelStatusToStore(statusRes, {
-            previousCheckpoint: selectedCheckpoint,
+            previousCheckpoint: checkpointAfterPoll,
           });
           // setModels(listRes...) above used catalog data, which omits audio
           // capability. Re-apply live status so attach gates survive a refresh.
           syncModelCapabilities(checkpointId, statusRes);
         }
-      } else if (!statusRes.active_model && !isExternalSelectionActive) {
+      } else if (!statusRes.active_model && !checkpointAfterPoll) {
         useChatRuntimeStore.setState({
           modelRequiresTrustRemoteCode: false,
           loadedIsMultimodal: false,
@@ -365,7 +428,7 @@ export function useChatModelRuntime() {
         description: message,
       });
     }
-  }, [setCheckpoint, setLoras, setModels, setModelsError, setParams]);
+  }, [setCheckpoint, setLoras, setModels, setModelsError]);
 
   const cancelLoading = useCallback(() => {
     const model = loadingModelRef.current;

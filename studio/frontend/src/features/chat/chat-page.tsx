@@ -2271,13 +2271,26 @@ export function ChatPage({
 
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
-    void refresh({ includeLoras: false });
+    // On a fresh mount with no checkpoint, poll for a CLI-loaded model
+    // (studio run -m) so the UI adopts it instead of auto-loading another.
+    const pollUntilActiveModel = !useChatRuntimeStore.getState().params.checkpoint;
+    // Abort the CLI-load poll on unmount so it cannot keep polling in the
+    // background (the poll otherwise runs up to CLI_LOAD_POLL_MAX_MS).
+    const controller = new AbortController();
+    void refresh({
+      includeLoras: false,
+      signal: controller.signal,
+      ...(pollUntilActiveModel ? { pollUntilActiveModel: true } : {}),
+    });
     const timeoutId = window.setTimeout(() => {
       if (!inventoryRefreshStartedRef.current) {
         refreshDeferredModelInventories();
       }
     }, 1200);
-    return () => window.clearTimeout(timeoutId);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeoutId);
+    };
   }, [refresh, refreshDeferredModelInventories]);
 
   useEffect(() => {
