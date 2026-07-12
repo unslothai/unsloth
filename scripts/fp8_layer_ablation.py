@@ -4,29 +4,24 @@
 """Per-layer fp8 ablation probe for video DiTs (Wan / Hunyuan): find which layers -- if any --
 break under production per-row fp8 (torch._scaled_mm), or prove the failure is systemic.
 
-Motivation: the dense video default auto-quantises the DiT; on Blackwell the auto ladder leads
-with fp8. On Wan2.2 and HunyuanVideo-1.5 that renders every frame BLACK (int8 is clean); the
-shipped fix denies fp8 for those families -> int8. The question this probe answers: is the black
-frame caused by a small, nameable set of outlier layers (so we could keep fp8 on the rest, mixed),
-or is it systemic to the _scaled_mm path (activation dynamic-quant overflow / accumulate) -- in
-which case per-layer exclusion cannot help and int8 stays the right call?
+Motivation: on Blackwell the auto ladder leads with fp8, but on Wan2.2 and HunyuanVideo-1.5 that
+renders every frame BLACK (int8 is clean), so the shipped fix denies fp8 -> int8. Is the black
+frame a small nameable set of outlier layers (keep fp8 on the rest), or systemic to _scaled_mm
+(so per-layer exclusion can't help and int8 stays right)?
 
-Method (single-forward proxy; cheap): run one bf16 generation, capture a REAL mid-schedule DiT
-input tuple via a forward_pre_hook, then compare the dense bf16 DiT output on that tuple to the
-output after quantising layer SUBSETS with the production fp8 config. Because it reuses
-``_make_quant_config`` / ``make_filter_fn`` from diffusion_transformer_quant, the GEMM path is
-byte-identical to production (no MSLK).
+Method (single-forward proxy): run one bf16 generation, capture a REAL mid-schedule DiT input
+via a forward_pre_hook, then compare the dense output to the output after quantising layer
+SUBSETS with the production fp8 config. Reuses ``_make_quant_config`` / ``make_filter_fn``, so
+the GEMM path is byte-identical to production.
 
-Phase 0 (this file's default) is the gate:
-  0a proxy-validity : fp8-ALL must reproduce the black signal in one forward (cosine collapse or
-                      non-finite output). If fp8-ALL is CLEAN in one forward, the black frame is
-                      multi-step / cache compounding -> single-forward bisection cannot localise it
-                      -> STOP, keep int8.
-  0b mechanism      : (i) per-Linear finiteness hooks locate the first inf/NaN (a localisable
-                      overflow layer); (ii) flip use_fast_accum True/False -- if it flips
-                      black->clean the fix is a one-line accumulate flag, no per-layer work.
-It also records per-Linear input outlier stats (within-token spread + amax) on the bf16 forward,
-ready for the Phase 2 outlier ranking if a bucket localises.
+Phase 0 (default) is the gate:
+  0a proxy-validity : fp8-ALL must reproduce the black signal in one forward. If it's CLEAN, the
+                      black frame is multi-step / cache compounding -> single-forward bisection
+                      can't localise it -> STOP, keep int8.
+  0b mechanism      : (i) per-Linear finiteness hooks locate the first inf/NaN; (ii) flip
+                      use_fast_accum -- if it flips black->clean the fix is a one-line accumulate
+                      flag.
+Also records per-Linear input outlier stats on the bf16 forward for the Phase 2 ranking.
 
 Example:
     CUDA_VISIBLE_DEVICES=1 python scripts/fp8_layer_ablation.py --family wan2.2-ti2v-5b --phase 0
@@ -324,10 +319,9 @@ def _ablate(
 
 # ── bf16 reference + input outlier stats (for Phase 2 ranking) ───────────────────
 # ── Phase 1 buckets (fqn substring tokens), keyed by DiT kind ────────────────────
-# Grounded in Phase 0: on Wan the inf originates in the layers whose ROW dimension is the
-# padded text sequence (condition_embedder.text_embedder + cross-attn K/V that project
-# encoder_hidden_states); the video self-attention (attn1) + attn2.to_q (video query) + FFN
-# stay finite. "textpath" is the hypothesised minimal exclude set.
+# Grounded in Phase 0: on Wan the inf originates in layers whose ROW dimension is the padded
+# text sequence (condition_embedder.text_embedder + cross-attn K/V); the video attn1 + attn2.to_q
+# + FFN stay finite. "textpath" is the hypothesised minimal exclude set.
 _BUCKETS: dict[str, dict[str, tuple[str, ...]]] = {
     "wan": {
         "textpath": ("text_embedder", "attn2.to_k", "attn2.to_v", "attn2.add_k", "attn2.add_v"),
@@ -338,9 +332,8 @@ _BUCKETS: dict[str, dict[str, tuple[str, ...]]] = {
         "ffn": ("ffn.",),
     },
     "hunyuan": {
-        # candidate fix: the three input embedders consuming zero-padded / zero conditioning
-        # (image_embeds all-zero for T2V, encoder_hidden_states_2 ByT5 all-zero, pooled
-        # time_text_embed). "context_embedder" substring also matches "context_embedder_2".
+        # candidate fix: the input embedders consuming zero-padded conditioning (all-zero T2V
+        # image_embeds, all-zero ByT5). "context_embedder" also matches "context_embedder_2".
         "embedders": ("context_embedder", "image_embedder"),
         "context_embedder": ("context_embedder",),  # text refiner + context_embedder_2
         "image_embedder": ("image_embedder",),
@@ -356,9 +349,8 @@ def _dit_kind(family: str) -> str:
 
 
 def _zero_row_diag(tup: dict) -> dict:
-    """Directly test the divide-by-zero hypothesis: fraction of near-zero (padding) rows in
-    the captured tensors. A per-row fp8 activation scale = row_amax / 448, so a row_amax of 0
-    yields scale 0 -> x/0 = inf. Padded text sequences (encoder_hidden_states) are the suspect."""
+    """Test the divide-by-zero hypothesis: fraction of near-zero (padding) rows. A per-row fp8
+    scale = row_amax / 448, so row_amax 0 -> scale 0 -> x/0 = inf. Padded text is the suspect."""
     import torch
 
     diag = {}
@@ -378,9 +370,8 @@ def _zero_row_diag(tup: dict) -> dict:
 
 
 def _bf16_reference_and_stats(dense_gpu, tup, *, min_features):
-    """Reference output + per-Linear input outlier stats on the bf16 forward. ``spread`` =
-    mean over tokens of (per-token channel amax / per-token channel median-abs): PR#150's
-    outlier proxy. Only linears the fp8 filter would quantise are recorded."""
+    """Reference output + per-Linear input outlier stats on the bf16 forward. ``spread`` = mean
+    over tokens of (channel amax / channel median-abs). Only fp8-quantised linears are recorded."""
     import torch
 
     keep = _fp8_filter(min_features)  # which linears fp8 would touch
@@ -610,8 +601,8 @@ def main(argv = None) -> int:
         report["phase2"] = {"only": only, "exclude": exclude, **sc, "verdict": _verdict(sc)}
         print(f"[2 only={only} exclude={exclude}] {sc} -> {_verdict(sc)}", flush = True)
         if records:
-            # first non-finite linears in execution order, with their input amax: an in_amax of
-            # ~0 at the first-broken layer confirms a zero-amax (padding) input row -> scale 0 -> inf.
+            # first non-finite linears in execution order: an in_amax ~0 at the first-broken
+            # layer confirms a zero-amax padding row -> scale 0 -> inf.
             nonfinite = [r for r in records if not r["out_finite"]]
             report["phase2_first_nonfinite"] = nonfinite[:15]
             report["phase2_n_nonfinite"] = len(nonfinite)

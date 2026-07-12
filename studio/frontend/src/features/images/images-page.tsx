@@ -2495,9 +2495,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 {loras.map((sel, i) => (
                   <div
                     // Stable key={i}: sel.id is the editable repo-id input, so keying on it would
-                    // change the key on the first character typed, remounting the row and dropping
-                    // input focus. The list is index-addressed (mutations below use j === i) and
-                    // rows are removed explicitly via the button, so the index is the stable key.
+                    // remount the row on the first keystroke and drop input focus. The list is
+                    // index-addressed (mutations use j === i) and rows removed explicitly.
                     key={i}
                     className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-2"
                   >

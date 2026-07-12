@@ -333,10 +333,9 @@ def _validate_checkpoint(
     if ckpt_excludes is not None:
         from .diffusion_transformer_quant import exclude_tokens_for_scheme
 
-        # The exclude set is derived from scheme AND family (fp8 keeps a family's padded-conditioning
-        # embedder bf16); use the checkpoint's recorded family so an artifact baked under an older
-        # token list (e.g. a Wan fp8 checkpoint built before the condition_embedder exclude) is
-        # rejected and re-quantised rather than loaded with a stale, black-framing layer set.
+        # The exclude set derives from scheme AND family; use the recorded family so an artifact
+        # baked under an older token list (e.g. a Wan fp8 checkpoint from before the
+        # condition_embedder exclude) is rejected and re-quantised, not loaded black-framing.
         expected = tuple(exclude_tokens_for_scheme(scheme, meta.get("family")))
         if tuple(ckpt_excludes) != expected:
             _warn(

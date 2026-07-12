@@ -77,10 +77,9 @@ class VideoFamily:
     # True when the family's DiT compiles cleanly with regional torch.compile
     # (Wan/LTX-2 declare _repeated_blocks; set False until verified per family).
     supports_torch_compile: bool = True
-    # True when the post-load background compile prewarm (a tiny throwaway
-    # generation that absorbs the first-generation compile/trace hitch, the
-    # vLLM/SGLang "compile before serving" pattern) may run for this family.
-    # Only consulted when the load actually engaged the regional compile.
+    # True when the post-load compile prewarm (a tiny throwaway generation absorbing the
+    # first-generation compile hitch) may run for this family. Only consulted when the
+    # load engaged the regional compile.
     supports_compile_prewarm: bool = True
     # Families whose activations overflow float16 -> the loader promotes fp16 to
     # float32. Video DiTs are bf16-native, so this defaults True (fp16 is never

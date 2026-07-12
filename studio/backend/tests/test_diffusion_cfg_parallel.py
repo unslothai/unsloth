@@ -225,9 +225,8 @@ def test_gate_disabled_by_request(monkeypatch):
 
 
 def test_gate_auto_respects_speed_off(monkeypatch):
-    # Speed=off is the reference contract: auto must not reserve a second GPU for a
-    # speed lever. Only an explicit cfg_parallel=on overrides (covered by the
-    # install-failure test below, which runs speed_active=False with requested="on").
+    # Speed=off is the reference contract: auto must not reserve a second GPU. Only an explicit
+    # cfg_parallel=on overrides (covered by the install-failure test below).
     proxy, reason = _gate(monkeypatch, _CtxPipe(_FakeDiT()), _fam(), speed_active = False)
     assert proxy is None and "speed=off" in reason
 
@@ -478,9 +477,8 @@ def test_plan_parallel_on_eager_settles_to_thread(monkeypatch):
 
 
 def test_plan_sequential_for_compiled_stack_even_with_cache(monkeypatch):
-    # Compiled per-device artifacts drift regardless of the cache state (its computed
-    # steps run the per-device compiled inners): auto stays sequential, an explicit
-    # "on" accepts the fp-noise divergence.
+    # Compiled per-device artifacts drift regardless of cache state: auto stays sequential,
+    # an explicit "on" accepts the fp-noise divergence.
     proxy, _, _, _ = _make_proxy(monkeypatch, compiled = True)
     for cache_engaged in (True, False):
         plan = proxy.plan_generation(
@@ -531,10 +529,9 @@ def test_cancelled_generation_stays_inline(monkeypatch):
 
 
 def test_disabled_run_does_not_settle_thread_dispatch(monkeypatch):
-    # guidance ~1 (num_conditions <= 1) disables the overlap, so that run never
-    # routes -- or compiles -- the replica. Its completed key must NOT unlock thread
-    # dispatch: the next CFG-enabled run at the same shape still needs the inline
-    # pass that serializes the replica's first compile with the primary's.
+    # guidance ~1 (num_conditions <= 1) disables the overlap, so that run never routes or
+    # compiles the replica. Its completed key must NOT unlock thread dispatch: the next
+    # CFG-enabled run at the same shape still needs the inline pass.
     proxy, _, _, guider = _make_proxy(monkeypatch)
     guider.num_conditions = 1
     plan = proxy.plan_generation(cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33)
@@ -550,9 +547,8 @@ def test_disabled_run_does_not_settle_thread_dispatch(monkeypatch):
 
 
 def test_install_failure_after_cudnn_patch_restores_it(monkeypatch):
-    # A failure between the process-global cuDNN patch and the proxy commit (here: no
-    # patchable guider) has no committed proxy for _teardown_state to reach, so the
-    # install path itself must restore the patch before falling back single-device.
+    # A failure between the cuDNN patch and the proxy commit (here: no patchable guider) has
+    # no committed proxy for _teardown_state to reach, so the install path must restore it.
     import core.inference.diffusion_cfg_parallel as cp
 
     _stub_torch(monkeypatch)

@@ -3,57 +3,45 @@
 
 """Dual-GPU CFG branch parallelism for guider-driven video pipelines.
 
-A CFG denoise step runs the SAME DiT twice -- once per guidance branch -- and the
-diffusers modular pipelines (HunyuanVideo-1.5) run those branches sequentially:
-``for guider_state_batch in guider_state: ... self.transformer(...)``, with both noise
-predictions only consumed AFTER the loop in ``self.guider(guider_state)``. On a
-multi-GPU host the second GPU is idle the whole time, so routing one branch to a full
-DiT replica there almost halves the denoise wall time: measured on 2x B200
-(HunyuanVideo-1.5-720p, 1280x720/33f/30 steps, trim + cuDNN + regional compile)
-1.77x end-to-end uncached and 1.72x with the family's auto MagCache -- where the
-output is BIT-IDENTICAL to the single-GPU run (final-latent max abs diff 0.0,
-byte-identical frames), because the replica runs the identical checkpoint with
-identical kernels on an identical device and only the branch's placement changes.
+A CFG denoise step runs the SAME DiT twice (once per guidance branch) and the diffusers
+modular pipelines (HunyuanVideo-1.5) run those branches sequentially, consuming both
+predictions only after the loop in ``self.guider(...)``. On a multi-GPU host the second
+GPU is idle, so routing one branch to a full DiT replica there almost halves the denoise
+wall time: measured on 2x B200 (HunyuanVideo-1.5-720p, 1280x720/33f/30 steps, trim + cuDNN
++ regional compile) 1.77x e2e uncached and 1.72x with the auto MagCache -- and the output
+is BIT-IDENTICAL to the single-GPU run (final-latent max abs diff 0.0, byte-identical
+frames), because the replica runs the identical checkpoint/kernels on an identical device.
 
-Mechanism (no pipeline fork): a proxy object replaces ``pipe.transformer``. The
-pipeline opens ``transformer.cache_context(name)`` before each branch, which tells the
-proxy WHICH branch is being dispatched; the first branch (``pred_cond``) runs on the
-replica via a persistent worker thread (the call returns a placeholder immediately),
-the second runs on the primary from the pipeline's own thread, and a patched
-``guider.forward`` resolves the placeholder -- joining the worker and issuing the
-replica -> primary copy only after BOTH branches' kernels are queued, so the copy is
-the only cross-device sync. Thread dispatch (not plain async CUDA) is required
-because the MagCache hooks' ``.item()`` skip decisions block the CPU mid-branch.
+Mechanism (no pipeline fork): a proxy replaces ``pipe.transformer``. The pipeline opens
+``transformer.cache_context(name)`` before each branch, telling the proxy WHICH branch is
+dispatched; ``pred_cond`` runs on the replica via a persistent worker thread (returning a
+placeholder immediately), the other runs on the primary, and a patched ``guider.forward``
+resolves the placeholder -- issuing the replica -> primary copy only after BOTH branches'
+kernels are queued, so the copy is the only cross-device sync. Thread dispatch (not async
+CUDA) is required because the MagCache hooks' ``.item()`` skip decisions block the CPU.
 
-Accuracy policy: parallel output is BIT-IDENTICAL only when both branches run the
-same kernels -- i.e. the EAGER (uncompiled) stack, where it was verified to the byte
-(with and without the step cache; cudnn.benchmark on or off). Under regional compile
-the two devices' separately compiled inductor artifacts differ by ~1 bf16 ulp per
-step (a reduction kernel with a different summation order; invariant to trace order,
-cudnn.benchmark and the deterministic flags), and a 30-step trajectory amplifies
-that chaotically (measured: mean ~12/255 per-pixel delta, composition and luma
-preserved) -- the same class as the compile-vs-eager divergence this branch's
-emulate_precision_casts work just eliminated. So the AUTO policy engages only on an
-eager-tier load, where notably eager+parallel (~0.85 s/step both branches) even
-beats the compiled sequential default (~1.09 s/step) at the eager tier's better
-accuracy; the compiled stack requires an explicit "on" that accepts the fp-noise
-divergence for the 1.72x. Generations that may (re)compile either module (first run
-after load, a cache toggle, a shape change) are dispatched inline: dynamo
-compilation patches ``Module.__call__`` process-wide, so a replica compile
-concurrent with primary execution corrupts numerics or crashes.
+Accuracy policy: output is BIT-IDENTICAL only when both branches run the same kernels --
+the EAGER stack, verified to the byte (cache on or off; cudnn.benchmark either way). Under
+regional compile the two devices' separately compiled artifacts differ by ~1 bf16 ulp/step
+(a reduction kernel with a different summation order), and a 30-step trajectory amplifies
+it chaotically (mean ~12/255 per-pixel delta, composition/luma preserved). So AUTO engages
+only on an eager-tier load, where eager+parallel (~0.85 s/step) even beats the compiled
+sequential default (~1.09 s/step) at better accuracy; the compiled stack needs an explicit
+"on" accepting the fp-noise divergence for the 1.72x. Generations that may (re)compile
+either module (first run, cache toggle, shape change) are dispatched inline: dynamo patches
+``Module.__call__`` process-wide, so a concurrent replica compile corrupts or crashes.
 
 Two process-global thread-safety landmines this module also handles:
-- diffusers' ``_native_cudnn`` attention backend enters the process-global
-  ``torch.nn.attention.sdpa_kernel(...)`` context per call; two threads racing its
-  save/restore can leave the process stuck cudnn-only (the VAE's mask-carrying SDPA
-  then dies with "No available kernel"). While engaged, the backend is swapped for a
-  direct ``aten._scaled_dot_product_cudnn_attention`` call -- the exact kernel the
-  composite dispatches to, so numerics are unchanged -- and restored on teardown.
-- see the inline-dispatch compile serialization above.
+- diffusers' ``_native_cudnn`` backend enters the process-global ``sdpa_kernel(...)``
+  context per call; two threads racing its save/restore can leave the process stuck
+  cudnn-only (the VAE's mask-carrying SDPA then dies "No available kernel"). While engaged,
+  the backend is swapped for a direct ``aten._scaled_dot_product_cudnn_attention`` call
+  (the exact kernel the composite dispatches to, so numerics are unchanged), restored on
+  teardown.
+- the inline-dispatch compile serialization above.
 
-Best-effort throughout: any gate or build failure leaves the pipe exactly as loaded
-(single device), reported through the resolved record. torch / diffusers imported
-lazily.
+Best-effort throughout: any gate/build failure leaves the pipe single-device, reported in
+the resolved record. torch / diffusers imported lazily.
 """
 
 from __future__ import annotations
@@ -68,22 +56,20 @@ CFG_PARALLEL_AUTO = "auto"
 CFG_PARALLEL_ON = "on"
 CFG_PARALLEL_MODES = (CFG_PARALLEL_OFF, CFG_PARALLEL_AUTO, CFG_PARALLEL_ON)
 
-# Families the AUTO policy may engage on (keyed like diffusion_cache's family tables):
-# the guider-driven HunyuanVideo-1.5 pipelines, where bit-identity and the 1.7x win
-# were measured. An explicit "on" skips this list (the mechanical gates still apply).
+# Families the AUTO policy may engage on: the guider-driven HunyuanVideo-1.5 pipelines,
+# where bit-identity and the 1.7x win were measured. An explicit "on" skips this list.
 _CFG_PARALLEL_FAMILY_ALLOW = frozenset({"hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"})
 
-# Secondary-device VRAM bar: the replica's weight bytes plus activation/workspace
-# headroom (measured replica-device peak 17.4 GB for the 15.6 GB bf16 HV15 DiT at
-# 720p/33f -- ~1.8 GB activations; the margin also absorbs the CUDA context and
-# cudnn workspaces). A co-tenant process can grab the GPU between the check and the
-# load, so the build stays best-effort regardless.
+# Secondary-device VRAM bar: replica weight bytes plus activation/workspace headroom
+# (measured replica-device peak 17.4 GB for the 15.6 GB bf16 HV15 DiT at 720p/33f, ~1.8 GB
+# activations; the margin also covers the CUDA context + cudnn workspaces). A co-tenant can
+# grab the GPU between check and load, so the build stays best-effort regardless.
 _REPLICA_HEADROOM_BYTES = int(4.5 * (1 << 30))
 
 
 def normalize_cfg_parallel(value: Optional[str]) -> str:
     """Lower/strip a requested cfg_parallel mode; None / "" -> auto (the gate decides).
-    Raises ValueError for an unsupported value so a bad request is rejected cheaply."""
+    Raises ValueError for an unsupported value."""
     if value is None:
         return CFG_PARALLEL_AUTO
     normalized = str(value).strip().lower()
@@ -99,12 +85,11 @@ def normalize_cfg_parallel(value: Optional[str]) -> str:
 
 
 class _PendingPred:
-    """Placeholder for a branch prediction still being produced by the worker thread.
-    The pipeline stores ``self.transformer(...)[0]`` per branch and only reads it in
-    the guider combine, so returning ``(pending,)`` satisfies the unwrap; the patched
-    guider forward resolves it -- joining the worker, then issuing the cross-device
-    copy from the MAIN thread so it is stream-ordered after the other branch's
-    kernels."""
+    """Placeholder for a branch prediction still being produced by the worker thread. The
+    pipeline stores ``self.transformer(...)[0]`` per branch and reads it only in the guider
+    combine, so ``(pending,)`` satisfies the unwrap; the patched guider forward resolves it,
+    issuing the cross-device copy from the MAIN thread so it is stream-ordered after the
+    other branch's kernels."""
 
     def __init__(self) -> None:
         self.event = threading.Event()
@@ -120,10 +105,9 @@ class _PendingPred:
 
 
 class _ReplicaView:
-    """Present the replica as ``pipe.transformer`` to the production lever helpers
-    (trim installer / attention backend / regional compile), exactly like video.py's
-    ``_SecondDiTView`` presents an MoE second expert. Everything else reads through
-    to the real pipe."""
+    """Present the replica as ``pipe.transformer`` to the lever helpers (trim / attention
+    backend / regional compile), like video.py's ``_SecondDiTView`` for an MoE second
+    expert. Everything else reads through to the real pipe."""
 
     def __init__(self, pipe: Any, replica: Any) -> None:
         object.__setattr__(self, "_pipe", pipe)
@@ -134,14 +118,13 @@ class _ReplicaView:
 
 
 class CFGParallelProxy:
-    """Stands in for ``pipe.transformer``: routes the ``pred_cond`` branch to the
-    replica DiT on the secondary device while the other branch runs on the primary;
-    every other attribute delegates to the primary. Cache mutations fan out to BOTH
-    modules so the per-branch cache state matches the single-GPU run exactly.
+    """Stands in for ``pipe.transformer``: routes ``pred_cond`` to the replica DiT on the
+    secondary device while the other branch runs on the primary; every other attribute
+    delegates to the primary. Cache mutations fan out to BOTH modules so per-branch cache
+    state matches the single-GPU run.
 
-    ``enabled`` / ``dispatch`` are resolved per generation by ``plan_generation``
-    (see the module note's accuracy policy); with ``enabled`` False the proxy is a
-    pure passthrough, i.e. exactly the sequential path."""
+    ``enabled`` / ``dispatch`` are resolved per generation by ``plan_generation``; with
+    ``enabled`` False the proxy is a pure passthrough (the sequential path)."""
 
     def __init__(
         self,
@@ -162,19 +145,19 @@ class CFGParallelProxy:
         self._logger = logger
         self._compiled = bool(compiled)
         self._explicit_on = bool(explicit_on)
-        # False when the replica sits on a DIFFERENT GPU model/arch than the primary
-        # (explicit-on only; auto declines the mismatch at the gate): eager kernels
-        # differ across archs, so lossless must never be reported for the pair.
+        # False when the replica sits on a DIFFERENT GPU arch than the primary (explicit-on
+        # only; auto declines at the gate): eager kernels differ across archs, so lossless
+        # must never be reported for the pair.
         self._device_match = bool(device_match)
         self._ctx: Optional[str] = None
         self.enabled = False
         self.dispatch = "inline"
-        # Replica cache state fell out of sync (an enable/disable half-failed): stop
-        # routing to it -- the sequential passthrough is always correct.
+        # Replica cache state fell out of sync (an enable/disable half-failed): stop routing
+        # to it -- the sequential passthrough is always correct.
         self._broken = False
-        # A generation only "settles" a (shape, steps, cache) key once it COMPLETES;
-        # until then every dispatch stays inline so a (re)compile of either module is
-        # serialized (dynamo patches Module.__call__ process-wide during tracing).
+        # A generation only "settles" its (shape, steps, cache) key once it COMPLETES; until
+        # then every dispatch stays inline so a (re)compile of either module is serialized
+        # (dynamo patches Module.__call__ process-wide during tracing).
         self._settled_key: Optional[tuple] = None
         self._pending_key: Optional[tuple] = None
         # id-keyed cache for constant-per-generation inputs (text embeds are ~200 MB;
@@ -187,9 +170,9 @@ class CFGParallelProxy:
             target = self._worker_loop, daemon = True, name = "cfg-parallel-replica"
         )
         self._worker.start()
-        # The guider combines the branch predictions on the primary device; resolving
-        # the replica's pending branch THERE puts the replica -> primary copy after
-        # both branches' queued kernels (the only cross-device sync per step).
+        # The guider combines on the primary device; resolving the replica's pending
+        # branch THERE puts the replica -> primary copy after both branches' queued
+        # kernels (the only cross-device sync per step).
         self._orig_guider_forward = guider.forward
         p_dev = self._p_dev
 
@@ -219,10 +202,9 @@ class CFGParallelProxy:
         return getattr(primary, name)
 
     def modules(self) -> list:
-        """Both modules' submodules, so helpers that walk ``transformer.modules()``
-        (the cache-hook inner arming in diffusion_cache) reach the replica's blocks
-        too -- otherwise its computed steps would run eager and the slower branch
-        would erase the parallel win."""
+        """Both modules' submodules, so helpers walking ``transformer.modules()`` (the
+        cache-hook inner arming) reach the replica's blocks too -- otherwise its computed
+        steps run eager and the slower branch erases the parallel win."""
         mods = list(self._primary.modules())
         try:
             mods += list(self._replica.modules())
@@ -232,19 +214,18 @@ class CFGParallelProxy:
 
     # ── cache fan-out (keeps per-branch cache state identical to single-GPU) ──
     def enable_cache(self, config: Any) -> None:
-        # The primary needs no explicit registry invalidation here: the caller
-        # (apply_step_cache) runs _invalidate_child_registry_cache on the object it
-        # enabled, and this proxy's __getattr__ forwards _diffusers_hook to _primary,
-        # so that call nulls the PRIMARY's cached child list. Only the replica is
-        # unreachable through delegation, hence its explicit _invalidate_registry.
+        # The primary needs no explicit invalidation: the caller (apply_step_cache) runs
+        # _invalidate_child_registry_cache on the object it enabled, and __getattr__
+        # forwards _diffusers_hook to _primary. Only the replica is unreachable through
+        # delegation, hence its explicit _invalidate_registry.
         self._primary.enable_cache(config)
         try:
             self._replica.enable_cache(config)
             _invalidate_registry(self._replica)
             self._broken = False
         except Exception:
-            # A half-cached pair would skip differently per branch; re-raise so the
-            # caller's best-effort path disables BOTH (disable_cache below fans out).
+            # A half-cached pair skips differently per branch; re-raise so the caller's
+            # best-effort path disables BOTH (disable_cache fans out).
             self._broken = True
             raise
 
@@ -271,8 +252,8 @@ class CFGParallelProxy:
         self._ctx = name
         try:
             if self.enabled and self.dispatch == "inline":
-                # Thread dispatch enters the replica's context inside the worker
-                # instead, so it stays open across the whole worker-side forward.
+                # Thread dispatch enters the replica's context inside the worker instead,
+                # so it stays open across the whole worker-side forward.
                 with self._primary.cache_context(name), self._replica.cache_context(name):
                     yield
             else:
@@ -285,20 +266,17 @@ class CFGParallelProxy:
     def plan_generation(
         self, *, cache_engaged: bool, steps: int, width: int, height: int, frames: int
     ) -> dict:
-        """Resolve routing + dispatch for the next generation (call AFTER the cache
-        toggle so the engaged state is current). Returns the plan for logging."""
-        # The engaged-cache marker may live on the proxy (a post-install toggle) or on
-        # the primary (pre-install engage); the delegating getattr covers both.
+        """Resolve routing + dispatch for the next generation (call AFTER the cache toggle
+        so the engaged state is current). Returns the plan for logging."""
+        # The engaged-cache marker may live on the proxy (post-install toggle) or the
+        # primary (pre-install engage); the delegating getattr covers both.
         marker = getattr(self, "_unsloth_step_cache", None)
         key = (int(steps), int(width), int(height), int(frames), str(marker))
-        # Bit-identity matrix (measured on 2x B200): the eager stack is byte-identical
-        # (cache on or off; both branches run the same eager kernels), while ANY
-        # compiled stack drifts ~1 ulp/step across the devices' separately compiled
-        # artifacts, amplified over the trajectory -- the cache state does not change
-        # that (its computed steps run the per-device compiled inners), so identity
-        # keys on the KERNELS alone and only an explicit "on" accepts compiled drift.
-        # A replica on a DIFFERENT device model/arch (explicit-on only) runs different
-        # eager kernels too, so it is never lossless either.
+        # Bit-identity (2x B200): the eager stack is byte-identical (cache on or off), while
+        # ANY compiled stack drifts ~1 ulp/step across the devices' separate artifacts,
+        # amplified over the trajectory -- cache state doesn't change that, so identity keys
+        # on the KERNELS alone and only explicit "on" accepts compiled drift. A replica on a
+        # DIFFERENT arch (explicit-on only) runs different eager kernels, never lossless.
         lossless = not self._compiled and self._device_match
         cfg_active = getattr(self._guider, "num_conditions", 2) > 1
         self.enabled = cfg_active and not self._broken and (lossless or self._explicit_on)
@@ -315,12 +293,11 @@ class CFGParallelProxy:
         return plan
 
     def note_generation_done(self) -> None:
-        """Commit the settled key after a COMPLETED generation; a cancelled/failed one
-        keeps the next dispatch inline (its compiles may not have finished). A DISABLED
-        run (guidance near 1 -> num_conditions <= 1) never routed the replica, so its
-        key must not unlock thread dispatch either: the replica's first compile for
-        that shape would otherwise run concurrently with the primary on the next
-        CFG-enabled generation -- the exact race inline dispatch exists to serialize."""
+        """Commit the settled key after a COMPLETED generation; a cancelled/failed one keeps
+        the next dispatch inline (its compiles may not have finished). A DISABLED run
+        (guidance near 1) never routed the replica, so its key must not unlock thread
+        dispatch either -- the replica's first compile for that shape would otherwise run
+        concurrently with the primary next time, the exact race inline dispatch serializes."""
         if self.enabled:
             self._settled_key = self._pending_key
 
@@ -357,8 +334,8 @@ class CFGParallelProxy:
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         if self.enabled and self._ctx == "pred_cond":
-            # Input copies are issued from the MAIN thread: their source-stream event
-            # is recorded BEFORE the other branch's kernels are queued on the primary.
+            # Input copies issued from the MAIN thread: their source-stream event is
+            # recorded BEFORE the other branch's kernels are queued on the primary.
             args = tuple(self._move(a) for a in args)
             kwargs = {k: self._move(v) for k, v in kwargs.items()}
             if self.dispatch == "thread":
@@ -381,8 +358,8 @@ _CUDNN_PATCH_STATE: dict = {}
 
 
 def _install_threadsafe_cudnn_attention(logger: Any = None) -> bool:
-    """Swap diffusers' ``_native_cudnn`` backend for a direct aten call (see module
-    note). Idempotent; returns True when the patch is (already) installed."""
+    """Swap diffusers' ``_native_cudnn`` backend for a direct aten call (see module note).
+    Idempotent; returns True when the patch is (already) installed."""
     if _CUDNN_PATCH_STATE:
         return True
     try:
@@ -403,8 +380,8 @@ def _install_threadsafe_cudnn_attention(logger: Any = None) -> bool:
             return_lse = False,
             _parallel_config = None,
         ):
-            # Fall back to the stock (context-managed) path for the shapes/options the
-            # direct op does not cover; the video DiT hot path never takes them.
+            # Fall back to the stock path for options the direct op doesn't cover; the
+            # video DiT hot path never takes them.
             if _parallel_config is not None or return_lse or enable_gqa or dropout_p:
                 return orig(
                     query,
@@ -455,9 +432,9 @@ def _restore_threadsafe_cudnn_attention() -> None:
 
 # ── gate + build ──────────────────────────────────────────────────────────────────
 def _device_identity(idx: int) -> Optional[tuple]:
-    """(device name, compute capability) for CUDA device ``idx``, or None when the
-    props cannot be queried (a stubbed/old torch): identity is then treated as
-    unknown and the check stays best-effort rather than blocking the engage."""
+    """(device name, compute capability) for CUDA device ``idx``, or None when the props
+    cannot be queried (stubbed/old torch) -- identity is then unknown and the check stays
+    best-effort rather than blocking the engage."""
     import torch
     try:
         return (
@@ -471,12 +448,11 @@ def _device_identity(idx: int) -> Optional[tuple]:
 def _pick_secondary_device(primary_index: int) -> tuple[Optional[int], int, bool]:
     """(secondary CUDA device != primary, its free bytes, identity-match flag).
 
-    The bit-identity contract needs the SAME kernels on both branches, and eager
-    kernel selection is arch-dependent (cuDNN heuristics, SM-count-dependent tiling),
-    so the picker prefers the most-free device whose (name, capability) MATCH the
-    primary's; only when no matching device exists does it fall back to the most-free
-    mismatched one (so an explicit ``on`` can still engage, lossy). An unqueryable
-    identity counts as a match (best-effort, the pre-check behaviour)."""
+    Bit-identity needs the SAME kernels on both branches, and eager kernel selection is
+    arch-dependent, so the picker prefers the most-free device whose (name, capability)
+    MATCH the primary's; only if none matches does it fall back to the most-free mismatched
+    one (so explicit ``on`` can still engage, lossy). An unqueryable identity counts as a
+    match (best-effort)."""
     import torch
 
     primary_id = _device_identity(primary_index)
@@ -512,25 +488,24 @@ def maybe_enable_cfg_parallel(
     logger: Any = None,
 ) -> tuple[Optional[CFGParallelProxy], str]:
     """Gate, build and install the CFG-parallel proxy on ``pipe``. Returns
-    ``(proxy, reason)`` when engaged or ``(None, reason)`` explaining which gate
-    failed. Best-effort: never raises; a miss leaves the pipe untouched."""
+    ``(proxy, reason)`` when engaged or ``(None, reason)`` naming the failed gate.
+    Best-effort: never raises; a miss leaves the pipe untouched."""
     mode = normalize_cfg_parallel(requested)
     if mode == CFG_PARALLEL_OFF:
         return None, "disabled by request"
     explicit_on = mode == CFG_PARALLEL_ON
     if not explicit_on and not speed_active:
-        # Speed=off is the reference contract: every auto speed lever resolves off (the
-        # loader pins the quant tri-states to "off" the same way), and CFG parallel both
-        # reserves a second GPU and is a speed lever. Auto therefore never engages it;
+        # Speed=off is the reference contract: every auto speed lever resolves off, and CFG
+        # parallel is a speed lever (and reserves a second GPU). So auto never engages it;
         # an explicit cfg_parallel=on stays honored as a deliberate override.
         return None, "speed=off keeps auto CFG parallel off; request cfg_parallel=on to override"
     fam_name = str(getattr(fam, "name", "") or "").strip().lower()
     if not explicit_on and fam_name not in _CFG_PARALLEL_FAMILY_ALLOW:
         return None, "family not in the measured allowlist"
     if not explicit_on and compiled:
-        # Cross-device compiled artifacts differ by ~1 ulp/step and the trajectory
-        # amplifies it (see module note): only the eager tier is bit-identical, so
-        # auto refuses to spend a replica's VRAM on a stack it would never route.
+        # Cross-device compiled artifacts differ by ~1 ulp/step, amplified over the
+        # trajectory: only the eager tier is bit-identical, so auto won't spend a replica's
+        # VRAM on a stack it would never route.
         return None, (
             "compiled stack diverges across devices (~1 ulp/step, amplified over the "
             "trajectory); auto parallelises only the eager tier -- request "
@@ -553,7 +528,7 @@ def maybe_enable_cfg_parallel(
     primary = getattr(pipe, "transformer", None)
     if primary is None:
         return None, "pipe has no transformer"
-    # The branch routing keys off the pipeline's per-branch cache_context calls.
+    # Branch routing keys off the pipeline's per-branch cache_context calls.
     from .diffusion_cache import _ensure_block_metadata_registered, _pipeline_opens_cache_context
 
     if not _pipeline_opens_cache_context(pipe):
@@ -569,11 +544,9 @@ def maybe_enable_cfg_parallel(
         if secondary is None:
             return None, "no queryable secondary CUDA device"
         if not device_match:
-            # A different GPU model/arch runs different eager kernels (cuDNN
-            # heuristics, SM-count-dependent tiling), so the byte-identity the AUTO
-            # policy promises cannot hold across the pair. Auto declines; an explicit
-            # "on" proceeds but is downgraded to lossy (plan_generation reports
-            # lossless=False) with a warning.
+            # A different GPU arch runs different eager kernels, so the byte-identity AUTO
+            # promises cannot hold. Auto declines; explicit "on" proceeds but is downgraded
+            # to lossy (plan_generation reports lossless=False) with a warning.
             primary_name = (_device_identity(primary_index) or ("unknown",))[0]
             secondary_name = (_device_identity(secondary) or ("unknown",))[0]
             if not explicit_on:
@@ -628,13 +601,13 @@ def maybe_enable_cfg_parallel(
         if compiled:
             from .diffusion_speed import _compile_repeated_blocks
 
-            # Same tier the primary got (the video default tier); a cache may engage
-            # or toggle on this DiT, so fullgraph stays off exactly like the loader.
+            # Same tier the primary got; a cache may engage/toggle on this DiT, so
+            # fullgraph stays off like the loader.
             _compile_repeated_blocks(view, logger, cache_active = True)
         if not _install_threadsafe_cudnn_attention(logger):
             raise RuntimeError("thread-safe attention patch failed")
-        # The proxy's class name hides the transformer's from the cache metadata
-        # registration probe, so register while the real class is still visible.
+        # The proxy's class name hides the transformer's from the metadata probe, so
+        # register while the real class is still visible.
         _ensure_block_metadata_registered(primary, logger)
         guider = getattr(pipe, "guider", None)
         if guider is None or not callable(getattr(guider, "forward", None)):
@@ -656,10 +629,10 @@ def maybe_enable_cfg_parallel(
             torch.cuda.empty_cache()
         except Exception:  # noqa: BLE001
             pass
-        # No proxy was committed, so _teardown_state will never run for this install:
-        # a failure AFTER the process-global cuDNN patch landed (e.g. no patchable
-        # guider) must undo it here or every later single-device generation keeps
-        # running the direct aten replacement. No-op when the patch never installed.
+        # No proxy was committed, so _teardown_state never runs for this install: a
+        # failure AFTER the cuDNN patch landed (e.g. no patchable guider) must undo it
+        # here or every later single-device generation keeps the direct aten replacement.
+        # No-op when the patch never installed.
         _restore_threadsafe_cudnn_attention()
         return None, "replica install failed"
     if logger is not None:

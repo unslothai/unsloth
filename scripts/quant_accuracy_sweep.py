@@ -3,23 +3,17 @@
 
 """Decoded-image accuracy sweep for the auto VAE (and end-to-end) quantisation.
 
-The VAE is the most quality-sensitive stage of a diffusion pipeline: it turns the DiT
-latent into RGB pixels, so a coarse fp8 grid on its convs can BAND the output. The new
-default on fp8-GEMM silicon casts the VAE to torchao PerTensor ``fp8_dynamic`` (Conv2d /
-Conv3d) or diffusers layerwise ``fp8``. This harness measures exactly what ships: it
-loads a family's VAE, decodes a FIXED seeded latent set through the dense bf16 VAE
-(reference) and through the same VAE quantised by the repo's own casters
-(``core.inference.diffusion_vae_quant.quantize_vae``), then reports decoded-image
-LPIPS(AlexNet) / PSNR / SSIM of quantised vs dense. A (family, scheme) that exceeds the
-bar (LPIPS <= 0.05, SSIM >= 0.95) belongs in ``_VAE_FAMILY_SCHEME_DENY``.
+The VAE turns the DiT latent into RGB, so a coarse fp8 grid on its convs can BAND the
+output. Loads a family's VAE, decodes a FIXED seeded latent set through the dense bf16 VAE
+(reference) and through the same VAE quantised by the repo's own ``quantize_vae``, then
+reports decoded-image LPIPS(AlexNet) / PSNR / SSIM. A (family, scheme) over the bar
+(LPIPS <= 0.05, SSIM >= 0.95) belongs in ``_VAE_FAMILY_SCHEME_DENY``.
 
-``--mode e2e`` instead runs a full pipeline generate dense-bf16 vs everything-auto
-(auto transformer + auto text encoder + auto VAE) and reports mean LPIPS over a prompt
-set, the PyTorch-blog "nearly indistinguishable" (~0.1) composed-defaults check.
+``--mode e2e`` instead runs a full pipeline dense-bf16 vs everything-auto (transformer +
+text encoder + VAE) and reports mean LPIPS, the "nearly indistinguishable" (~0.1) check.
 
-The LPIPS AlexNet net is kept on CPU (or a separate --lpips-device) so it never holds
-memory on the measured GPU. torch / torchao / diffusers / lpips are imported lazily so
-``--help`` works on a host without them.
+The LPIPS net is kept off the measured GPU. torch / torchao / diffusers / lpips imported
+lazily so ``--help`` works without them.
 
 Examples:
     python scripts/quant_accuracy_sweep.py --family sdxl flux.1 qwen-image
@@ -39,8 +33,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 # ── env: the ancient bitsandbytes in this venv cannot build for CUDA 13 and hard-raises when
-# diffusers lazily imports its bnb quantiser. We never use bnb here (quant is torchao / layerwise),
-# so tell diffusers bnb is unavailable BEFORE any VAE class import, and silence the bnb welcome.
+# We never use bnb here (quant is torchao / layerwise), so mark it unavailable BEFORE any VAE
+# import and silence the welcome.
 os.environ.setdefault("BITSANDBYTES_NOWELCOME", "1")
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -56,8 +50,8 @@ SSIM_BAR = 0.95
 # End-to-end composed-defaults bar (PyTorch blog "nearly indistinguishable").
 E2E_LPIPS_BAR = 0.10
 
-# family -> the diffusers base repo whose ``vae`` subfolder we decode with. Only the VAE
-# subfolder is fetched; the class is resolved from its config by diffusers AutoModel.
+# family -> the diffusers base repo whose ``vae`` subfolder we decode with (only the VAE
+# subfolder is fetched; the class is resolved from its config by AutoModel).
 _VAE_FAMILIES: dict[str, dict[str, Any]] = {
     "sdxl": {"repo": "stabilityai/stable-diffusion-xl-base-1.0"},
     "flux.1": {"repo": "black-forest-labs/FLUX.1-schnell"},

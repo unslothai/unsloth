@@ -197,15 +197,12 @@ _INSTALL_ATTEMPTED: set[str] = set()
 
 
 def _kernels_hub_compatible(logger: Any = None) -> bool:
-    """Whether installing the ``kernels`` package is SAFE next to the resident
-    huggingface_hub. Every current ``kernels`` release (>= 0.13) builds its dependency
-    tables with huggingface_hub >= 1.0's strict-dataclass API, and with an older hub
-    the breakage is NOT contained to the backend: ``import kernels`` raises at module
-    scope, and diffusers imports ``kernels`` whenever it is installed -- so EVERY later
-    pipeline import in every process crashes until the package is uninstalled
-    (measured: hub 0.36 + kernels 0.13/0.16 both brick the HunyuanVideo-1.5 pipeline
-    import). transformers/diffusers stacks pinned to hub < 1.0 therefore must not
-    auto-install it; the requested hub backend falls back to native instead. An
+    """Whether installing the ``kernels`` package is SAFE next to the resident huggingface_hub.
+    Every ``kernels`` release (>= 0.13) needs hub >= 1.0's strict-dataclass API, and with an older
+    hub the breakage is NOT contained: ``import kernels`` raises at module scope and diffusers
+    imports ``kernels`` whenever installed, so EVERY later pipeline import crashes until it is
+    uninstalled (measured: hub 0.36 + kernels 0.13/0.16 both brick the HunyuanVideo-1.5 import).
+    So hub < 1.0 stacks must not auto-install it; the hub backend falls back to native. An
     undeterminable hub version allows the install (previous behaviour)."""
     try:
         from importlib.metadata import version
@@ -427,24 +424,22 @@ def _warn(logger: Any, what: str, exc: Exception) -> None:
 # --------------------------------------------------------------------------------------
 # HunyuanVideo-1.5 joint-attention padding trim (accuracy-exact speed win)
 #
-# HunyuanVideo15AttnProcessor2_0 runs a JOINT [video ; text] self-attention and, on EVERY
-# block, EVERY step, materialises a dense [B,1,N,N] boolean mask (N = N_video + N_text) so
-# the video never attends to the padded text tokens. But a dense bool attn_mask DISABLES
-# every fused SDPA kernel (flash rejects it outright; cuDNN/efficient fall back), forcing the
-# slow math-style path: measured on a B200 at the production shape (N~=50k, 121 frames 480p)
-# the SAME attention is 421 ms WITH the dense mask vs 19 ms with attn_mask=None -- a ~22x tax
-# paid purely to mask out padding. And the text is ~99.5% padding: a t2v prompt fills only ~9
-# of ~1985 text slots (image 729 + byt5 256 + mllm 1000 tokens, almost all zero-padded).
+# HunyuanVideo15AttnProcessor2_0 runs a JOINT [video ; text] self-attention and, on EVERY block
+# and step, materialises a dense [B,1,N,N] boolean mask so the video never attends to padded text.
+# But a dense bool attn_mask DISABLES every fused SDPA kernel (flash rejects it; cuDNN/efficient
+# fall back) and forces the slow math path: on a B200 at the production shape (N~=50k, 121 frames
+# 480p) the SAME attention is 421 ms WITH the dense mask vs 19 ms with attn_mask=None -- a ~22x tax
+# purely to mask padding. And the text is ~99.5% padding: a t2v prompt fills only ~9 of ~1985 slots
+# (image 729 + byt5 256 + mllm 1000, almost all zero-padded).
 #
-# The fix is exact, not approximate: the model already zero-fills + masks the padded text and
-# DISCARDS its attention output (only the video split feeds proj_out), so removing the padded
-# tokens before attention changes nothing for the video. We do it in an eager forward pre-hook
-# (outside the regionally-compiled blocks): drop the all-zero image stream (t2v), trim the
-# mllm/byt5 streams to their globally-valid columns, and -- when nothing partially-padded
-# remains (the common batch-1 / per-guidance-branch call) -- flag the DiT so the attention
-# processor skips the dense mask and runs the fused (cuDNN/flash) path. The only numeric change
-# is the SDPA kernel (masked fallback -> fused), a rounding-level difference on par with the
-# already-shipped cuDNN backend swap. Mixed-padding batches fall back to the stock dense mask.
+# The fix is exact: the model already masks the padded text and DISCARDS its attention output (only
+# the video split feeds proj_out), so removing the padded tokens before attention changes nothing
+# for the video. Done in an eager forward pre-hook (outside the compiled blocks): drop the all-zero
+# image stream (t2v), trim the mllm/byt5 streams to their globally-valid columns, and -- when
+# nothing partially-padded remains (the common batch-1 / per-branch call) -- flag the DiT so the
+# processor skips the dense mask and runs the fused path. The only numeric change is the SDPA kernel
+# (masked -> fused), on par with the shipped cuDNN backend swap. Mixed-padding batches fall back to
+# the stock dense mask.
 _HUNYUAN15_TRANSFORMER_CLS = "HunyuanVideo15Transformer3DModel"
 _HUNYUAN15_PROCESSOR_CLS = "HunyuanVideo15AttnProcessor2_0"
 _NULL_ATTN_FLAG = "_unsloth_null_attn_mask"
@@ -453,10 +448,10 @@ _NULL_PROCESSOR_CACHE: dict = {}
 
 
 def _null_mask_processor_cls():
-    """Build (once, lazily) a HunyuanVideo15AttnProcessor2_0 subclass whose ``__call__`` skips
-    the dense-mask construction and runs attn_mask=None when the DiT is flagged (padding already
-    removed by the pre-hook); otherwise it delegates to the stock processor unchanged, so a
-    mixed-padding batch and any future diffusers change to the base processor stay correct."""
+    """Build (once, lazily) a HunyuanVideo15AttnProcessor2_0 subclass whose ``__call__`` runs
+    attn_mask=None when the DiT is flagged (padding already removed by the pre-hook); otherwise it
+    delegates to the stock processor, so a mixed-padding batch and future diffusers changes stay
+    correct."""
     cached = _NULL_PROCESSOR_CACHE.get("cls")
     if cached is not None:
         return cached
@@ -569,8 +564,8 @@ def _trim_stream(states, mask):
         states = states[:, keep]
         mask = mask[:, keep]
         mb = mb[:, keep]
-    # all remaining slots valid for every element (vacuously True for a 0-length stream, which
-    # is fine for a secondary stream e.g. an unused byt5 in t2v -- it contributes no tokens)
+    # All remaining slots valid for every element (vacuously True for a 0-length stream, fine
+    # for an unused secondary stream e.g. byt5 in t2v).
     all_valid = bool(mb.all().item())
     return states, mask, all_valid
 
@@ -584,13 +579,13 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
       partially-padded remains (the batch-1 / per-guidance-branch case); otherwise leave the
       flag False and the stock dense-mask path handles the residual padding correctly.
 
-    This hook is the correctness choke point: the null-mask flag is only valid because the padding
-    was removed HERE, on the same call. It fires on ``module(...)`` (``__call__``) -- the diffusers
-    pipeline, guider, cache_context and regional compile all go through ``__call__``. Do NOT invoke
-    a hooked DiT via ``module.forward(...)`` directly: that skips pre-hooks, so a stale True flag
-    would null the mask over un-trimmed padding and corrupt the output.
+    This hook is the correctness choke point: the null-mask flag is valid only because the padding
+    was removed HERE, on the same call. It fires on ``module(...)`` (``__call__``), which the
+    pipeline/guider/cache_context/compile all use. Do NOT invoke a hooked DiT via
+    ``module.forward(...)`` directly: that skips pre-hooks, so a stale True flag would null the mask
+    over un-trimmed padding and corrupt the output.
 
-    Best-effort: any anomaly leaves the inputs untouched and the flag False (stock behaviour)."""
+    Best-effort: any anomaly leaves the inputs untouched and the flag False."""
     import torch
 
     original = dict(kwargs)
@@ -599,20 +594,17 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
 
         image = kwargs.get("image_embeds")
         if image is not None and image.numel() > 0 and bool(torch.all(image == 0).item()):
-            # All-zero image == "no image" (t2v). Emptying the token axis removes the 729 always
-            # -padded image tokens; is_t2v stays True inside forward (all() of empty is vacuously
-            # True), so the model still runs its text-to-video path.
+            # All-zero image == "no image" (t2v). Emptying the token axis removes the 729 padded
+            # image tokens; is_t2v stays True in forward (all() of empty is vacuously True).
             kwargs["image_embeds"] = image[:, :0]
 
         for skey, mkey, required in (
             ("encoder_hidden_states", "encoder_attention_mask", True),
             ("encoder_hidden_states_2", "encoder_attention_mask_2", False),
         ):
-            # Only touch streams passed by keyword (the diffusers pipeline always does). Never write
-            # a key back that was absent -- a positionally-passed encoder_hidden_states would then
-            # collide ("got multiple values for argument"). If the REQUIRED primary stream is absent
-            # we cannot vouch for the mask, so drop the fast path; an absent optional byt5 just
-            # contributes nothing and is fine.
+            # Only touch streams passed by keyword (the pipeline always does); never write back an
+            # absent key (a positional encoder_hidden_states would collide). An absent REQUIRED
+            # primary stream drops the fast path; an absent optional byt5 is fine.
             if skey not in kwargs:
                 null_ok = null_ok and not required
                 continue
@@ -621,9 +613,8 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
             kwargs[mkey] = mask
             null_ok = null_ok and all_valid
 
-        # The primary text stream (mllm) flows through the TokenRefiner's own attention; never
-        # hand it a 0-length sequence (pathological empty prompt). Revert everything and take the
-        # stock dense-mask path in that rare case.
+        # The primary mllm stream flows through the TokenRefiner's own attention; never hand it a
+        # 0-length sequence (pathological empty prompt). Revert and take the stock dense-mask path.
         primary = kwargs.get("encoder_hidden_states")
         if primary is not None and primary.dim() == 3 and primary.shape[1] == 0:
             kwargs.clear()
@@ -637,9 +628,8 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
 
         return args, kwargs
     except Exception:  # noqa: BLE001 — optimisation only; never break the forward
-        # We may have trimmed some kwargs (image_embeds / a text stream) before failing. Restore the
-        # caller's untrimmed inputs so the stock dense-mask path (flag False below) runs on exactly
-        # what it expects -- the same restore the empty-prompt guard above does.
+        # We may have trimmed some kwargs before failing. Restore the caller's untrimmed inputs so
+        # the stock dense-mask path (flag False) runs on exactly what it expects.
         kwargs.clear()
         kwargs.update(original)
         for blk in getattr(module, "transformer_blocks", []):
@@ -651,8 +641,8 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
 
 def _install_null_processors(dit: Any, logger: Any) -> bool:
     """Swap every stock block attention processor on ``dit`` for the null-mask subclass. Only
-    touches blocks whose processor is exactly the stock class, so a diffusers change (or an
-    already-installed run) is a no-op. Preserves any attention backend already pinned."""
+    touches blocks whose processor is exactly the stock class (so a diffusers change or an
+    already-installed run is a no-op). Preserves any pinned attention backend."""
     try:
         cls = _null_mask_processor_cls()
     except Exception as exc:  # noqa: BLE001 — diffusers moved / unavailable -> skip
@@ -689,13 +679,11 @@ def install_hunyuan_attention_trim(
 ) -> bool:
     """HunyuanVideo-1.5 only: make the joint attention skip padded text tokens (see module note).
 
-    Installs a null-mask processor on every denoiser DiT block plus an eager pre-hook that trims
-    the padded text/image streams each forward. Bit-exact for the video output; the fused-vs-
-    masked SDPA kernel swap is the only numeric change. Returns True when engaged. No-op (False)
-    for any other family, an unexpected transformer/processor class, or on any failure -- the
-    stock dense-mask path stays in place, so correctness never depends on this optimisation.
-
-    Call BEFORE apply_attention_backend so the requested kernel is pinned onto the new processor."""
+    Installs a null-mask processor on every denoiser DiT block plus an eager pre-hook that trims the
+    padded text/image streams each forward. Bit-exact for the video output (the fused-vs-masked SDPA
+    swap is the only numeric change). Returns True when engaged; No-op (False) for any other family,
+    an unexpected class, or any failure -- the stock dense-mask path stays, so correctness never
+    depends on this. Call BEFORE apply_attention_backend so the kernel pins onto the new processor."""
     if getattr(family, "transformer_class", None) != _HUNYUAN15_TRANSFORMER_CLS:
         return False
     engaged = False

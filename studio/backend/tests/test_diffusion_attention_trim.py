@@ -159,9 +159,8 @@ def test_trim_pre_hook_never_raises_sets_flag_false():
 
 
 def test_trim_pre_hook_restores_inputs_on_midtrim_failure():
-    # A later stream trips the trim AFTER earlier inputs were already mutated (image emptied, mllm
-    # trimmed). The fallback must restore the caller's ORIGINAL kwargs so the stock dense-mask path
-    # (flag False) runs on exactly what it expects -- never a half-trimmed mix.
+    # A later stream trips the trim AFTER earlier inputs were mutated. The fallback must restore
+    # the ORIGINAL kwargs so the stock dense-mask path runs on them, never a half-trimmed mix.
     dit = _fake_dit()
     img = torch.zeros(1, 5, 3)
     mllm = torch.arange(4.0).reshape(1, 4, 1)
@@ -184,9 +183,8 @@ def test_trim_pre_hook_restores_inputs_on_midtrim_failure():
 
 
 def test_trim_pre_hook_absent_stream_not_written_back():
-    # If encoder_hidden_states is absent from kwargs (a caller passing it positionally), the hook
-    # must NOT write it back as None (that would collide: "got multiple values for argument") and
-    # must drop the fast path (flag False) rather than null a mask it never verified.
+    # If encoder_hidden_states is absent (passed positionally), the hook must NOT write it back
+    # (would collide) and must drop the fast path rather than null a mask it never verified.
     dit = _fake_dit()
     kwargs = {"image_embeds": torch.zeros(1, 4, 3)}  # no encoder_hidden_states key
     _, out = att._hunyuan_trim_pre_hook(dit, (torch.ones(1, 5, 1),), kwargs)

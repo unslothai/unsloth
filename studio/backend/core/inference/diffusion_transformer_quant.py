@@ -83,18 +83,15 @@ _INT8_EXCLUDE_NAME_TOKENS = (
 )
 
 # int8 PER-FAMILY name exclusions, on top of _INT8_EXCLUDE_NAME_TOKENS. The attention trim
-# (diffusion_attention's pre-hook) shrinks HunyuanVideo-1.5's text streams from their padded
-# lengths to the VALID token counts, so every text-stream Linear runs at a tiny M the int8
-# dynamic path cannot handle (both failures measured on B200):
-#   - M = 0 (the t2v byt5 / image streams trim to zero tokens): torchao returns the input
-#     UNPROJECTED (a quantized 1472->2048 Linear maps [1, 0, 1472] to [1, 0, 1472]), so the
-#     2048-wide cond-type add crashes -> context_embedder_2 / image_embedder;
-#   - M <= 16 (a short prompt, or the empty negative prompt's ~6 tokens): torch._int_mm
-#     requires M > 16 and raises -> the TokenRefiner (context_embedder.*) and every block's
-#     context-stream projections (add_q/k/v_proj, to_add_out, ff_context).
-# All of these run at M = text tokens (tens) vs the video stream's M ~ 32k+, so keeping
-# them bf16 costs nothing measurable; the attention/FFN video-stream linears keep the full
-# int8 coverage. "context_embedder" also matches "context_embedder_2" (substring check).
+# shrinks HunyuanVideo-1.5's text streams to the VALID token counts, so every text-stream
+# Linear runs at a tiny M the int8 dynamic path can't handle (both measured on B200):
+#   - M = 0 (t2v byt5 / image streams trim to zero tokens): torchao returns the input
+#     UNPROJECTED, so the 2048-wide cond-type add crashes (context_embedder_2 / image_embedder);
+#   - M <= 16 (short prompt, or the ~6-token empty negative prompt): torch._int_mm needs M > 16
+#     and raises (TokenRefiner + every block's context-stream projections).
+# All run at M = tens vs the video stream's M ~ 32k+, so keeping them bf16 costs nothing;
+# the video-stream linears keep full int8 coverage. "context_embedder" also matches
+# "context_embedder_2" (substring check).
 _HUNYUAN15_INT8_EXCLUDES = (
     "context_embedder",
     "image_embedder",
@@ -111,23 +108,19 @@ _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
 
 
 # fp8 (and the other per-row scaled_mm schemes) PER-FAMILY name exclusions. Per-row fp8 scales
-# each activation ROW by row_amax / 448; a row whose amax is 0 -- a PADDING token in a
-# zero-padded conditioning sequence -- yields scale 0 and x / 0 = inf, collapsing the DiT to
-# black frames (measured on B200 with the production torch._scaled_mm path via
-# scripts/fp8_layer_ablation.py). The fix is to keep the specific Linear that first consumes the
-# raw zero-padded sequence in bf16; its bias makes every downstream row non-zero, so the rest of
-# the DiT is fp8-clean. This is family-specific because the offending layer's name is:
-#   wan2.2 (WanTransformer3DModel): condition_embedder.text_embedder reads the raw 512-token text
-#     (~all padding for a short prompt). Excluding the whole condition_embedder (a handful of
-#     one-off M=1/M=seq embedders, negligible FLOPs + memory) leaves the entire 30-block
-#     attn1/attn2/ffn stack on fp8 -- measured fp8-except-condition_embedder cosine 0.99975 vs bf16,
-#     0 non-finite, vs fp8-everywhere = 100% non-finite. int8 (per-token; a zero row rounds to 0,
-#     no divide) needs no exclusion, which is why it was always clean and is the fallback.
-# HunyuanVideo-1.5 is deliberately absent: its MMDiT masks the padding text tokens to zero INSIDE
-# every block, so the per-block context stream (add_*_proj / to_add_out / ff_context) regenerates
-# zero rows in every layer -- no small exclude set exists, so it stays fp8-denied -> int8 (see
-# _FAMILY_SCHEME_DENY). Applies to every per-row scaled_mm scheme (fp8 today; mxfp8 / nvfp4 inherit
-# it if ever un-denied for these families), never to int8.
+# each activation ROW by row_amax / 448; a row whose amax is 0 (a PADDING token in a zero-padded
+# conditioning sequence) yields scale 0 and x / 0 = inf, collapsing the DiT to black frames
+# (measured on B200 via scripts/fp8_layer_ablation.py). The fix: keep the Linear that first
+# consumes the raw zero-padded sequence in bf16; its bias makes every downstream row non-zero, so
+# the rest of the DiT is fp8-clean. Family-specific because the offending layer's name is:
+#   wan2.2 (WanTransformer3DModel): condition_embedder.text_embedder reads the raw 512-token text.
+#     Excluding the whole condition_embedder (a few one-off embedders, negligible FLOPs) leaves the
+#     entire 30-block stack on fp8 -- fp8-except-condition_embedder cosine 0.99975 vs bf16, 0
+#     non-finite, vs fp8-everywhere = 100% non-finite. int8 (per-token) needs no exclusion.
+# HunyuanVideo-1.5 is deliberately absent: its MMDiT masks padding text tokens to zero INSIDE every
+# block, so the per-block context stream regenerates zero rows layer after layer -- no small exclude
+# set exists, so it stays fp8-denied -> int8 (see _FAMILY_SCHEME_DENY). Applies to every per-row
+# scaled_mm scheme (fp8 today; mxfp8 / nvfp4 inherit it), never to int8.
 _FP8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "wan2.2-ti2v-5b": ("condition_embedder",),
     "wan2.2-t2v-a14b": ("condition_embedder",),  # same DiT class + padded-text conditioning
@@ -137,17 +130,14 @@ _FP8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
 def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
     """Name tokens to exclude from quantisation for ``scheme`` (optionally family-specific).
 
-    int8 (torch._int_mm, M>16) skips the M=1 modulation / conditioning-embedder projections (see
-    _INT8_EXCLUDE_NAME_TOKENS) on every family, plus the per-family zero-token embedders whose
-    M=0 input torchao passes through unprojected (_INT8_FAMILY_EXCLUDE_NAME_TOKENS, HunyuanVideo
-    -1.5 under the attention trim). The per-row scaled_mm schemes (fp8 / mxfp8 / nvfp4)
-    exclude nothing by default, but on families whose zero-padded conditioning sequence would divide
-    by a zero row scale they skip the offending input embedder (see _FP8_FAMILY_EXCLUDE_NAME_TOKENS).
-    ``family=None`` preserves the historical behaviour (int8 tokens, or () otherwise). Shared by the
-    runtime quantise path and the offline prequant-checkpoint builder so the two never drift -- a
-    checkpoint built offline must skip exactly the layers the runtime path skips, or it bakes a layer
-    that then crashes (int8 M=1 -> _int_mm) or infs (fp8 padding row -> scaled_mm) at the first
-    denoise step."""
+    int8 (M>16) skips the M=1 modulation / conditioning-embedder projections
+    (_INT8_EXCLUDE_NAME_TOKENS) plus per-family zero-token embedders torchao passes through
+    unprojected (_INT8_FAMILY_EXCLUDE_NAME_TOKENS). The per-row scaled_mm schemes (fp8 / mxfp8 /
+    nvfp4) exclude nothing by default, but on families whose zero-padded conditioning would divide
+    by a zero row scale they skip the offending input embedder (_FP8_FAMILY_EXCLUDE_NAME_TOKENS).
+    ``family=None`` preserves the historical behaviour. Shared by the runtime path and the offline
+    prequant-checkpoint builder so they never drift -- else a baked layer crashes (int8 M=1) or
+    infs (fp8 padding row) at the first denoise step."""
     if scheme == TQ_INT8:
         return _INT8_EXCLUDE_NAME_TOKENS + _INT8_FAMILY_EXCLUDE_NAME_TOKENS.get(
             str(family or "").strip().lower(), ()
@@ -155,87 +145,61 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     return _FP8_FAMILY_EXCLUDE_NAME_TOKENS.get(str(family or "").strip().lower(), ())
 
 
-# Per-architecture preference order for ``auto`` -- best (fastest, in-bar) first, with
-# the lower-precision schemes listed as fallbacks for that arch tier. On Blackwell, fp8
-# leads: measured on a B200, plain fp8 dynamic is both faster AND more accurate than the
-# alternatives for the DiT's shapes. mxfp8's block scaling adds overhead without a speed
-# win, so it sits below fp8. nvfp4 is intentionally DISABLED in the auto ladder (opt-in only;
-# see the TODO on the Blackwell tier below): the FP4 tensor-core
-# GEMM is real once torch>=2.11 + torchao's CUTLASS FP4 kernel is present (verified: a
-# 16384^3 GEMM hits ~3826 TFLOPS, 1.37x fp8), but it only beats fp8 on very large GEMMs.
-# At the DiT's actual shapes (hidden ~3072, MLP ~12288, M~4096) it is *slower* than fp8
-# (0.81x end-to-end on Z-Image 1024px) AND notably less accurate (LPIPS 0.166 vs fp8's
-# 0.044), because FP4's per-forward quant overhead is not amortised and the format is
-# coarser. So nvfp4 is kept as an explicit opt-in, never the auto pick for diffusion.
+# Per-architecture preference order for ``auto`` -- best (fastest, in-bar) first, lower-precision
+# schemes as fallbacks. On Blackwell fp8 leads: on a B200 plain fp8 dynamic is faster AND more
+# accurate than the alternatives for the DiT's shapes. mxfp8's block scaling adds overhead with no
+# speed win, so it sits below fp8. nvfp4 is DISABLED in the auto ladder (opt-in only; see the TODO
+# below): the FP4 GEMM is real (a 16384^3 GEMM hits ~3826 TFLOPS, 1.37x fp8) but only beats fp8 on
+# very large GEMMs. At the DiT's shapes (hidden ~3072, MLP ~12288, M~4096) it is *slower* than fp8
+# (0.81x e2e on Z-Image 1024px) AND less accurate (LPIPS 0.166 vs fp8's 0.044), so it stays an
+# explicit opt-in.
 #
-# This order is the DATA-CENTER preference. On a consumer / workstation GPU it is reordered
-# to put int8 first (see ``_prefer_consumer_scheme``): consumer cards halve fp8/fp16 FP32-
-# accumulate throughput, while int8 runs full-rate (int32 accumulate is not nerfed), so int8
-# is as fast or faster than fp8 on every consumer NVIDIA / AMD / Intel part.
+# This is the DATA-CENTER order. On a consumer / workstation GPU it is reordered to put int8 first
+# (``_prefer_consumer_scheme``): consumer cards halve fp8/fp16 FP32-accumulate throughput while int8
+# runs full-rate, so int8 is as fast or faster on every consumer NVIDIA / AMD / Intel part.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
-    # TODO(nvfp4): NVFP4 is disabled in the auto ladder for now. Re-enable it by restoring the
-    # commented line below (nvfp4 between fp8 and mxfp8) once the FP4 tensor-core GEMM wins at
-    # the DiT's real shapes (hidden ~3072, MLP ~12288, M~4096); today it is slower (0.81x
-    # end-to-end on Z-Image 1024px) AND less accurate (LPIPS 0.166 vs fp8's 0.044). nvfp4 stays
-    # an explicit opt-in (transformer_quant="nvfp4"); a future MSLK-equipped box may flip the
-    # tradeoff. See commit 3a21f12500.
+    # TODO(nvfp4): disabled in the auto ladder. Re-enable by restoring the commented line below
+    # (nvfp4 between fp8 and mxfp8) once the FP4 GEMM wins at the DiT's shapes (hidden ~3072, MLP
+    # ~12288, M~4096); today it is slower (0.81x e2e on Z-Image 1024px) AND less accurate (LPIPS
+    # 0.166 vs fp8's 0.044). Stays an explicit opt-in. See commit 3a21f12500.
     ((10, 0), (TQ_FP8, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+ (nvfp4 disabled; see TODO)
     # ((10, 0), (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8)),  # restore to re-enable nvfp4 in auto
     ((8, 9), (TQ_FP8, TQ_INT8)),  # Ada sm_89 / Hopper sm_90
     ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
 )
 
-# Families whose activation ranges break specific dense-quant schemes at the MODEL
-# level. The kernel smoke probe below cannot see this (it only proves the GEMM runs);
-# these were measured with the 28-pair prequant accuracy gate on a B200
-# (scripts/prequant_accuracy_gate.py) and reproduced with on-the-fly quantisation:
-#   qwen-image + fp8   -> every frame black (mean luma 0.0000, SSIM 0.016 vs bf16). The
-#                         same per-row fp8 that matches bf16 on Z-Image / FLUX: Qwen's
-#                         activation outliers exceed even per-row fp8's dynamic range.
-#   qwen-image + mxfp8 -> real semantic damage at 1024px (CLIP delta mean 0.0146, worst
-#                         cases 0.064 / 0.102 -- 2x the per-case bound).
+# Families whose activation ranges break specific dense-quant schemes at the MODEL level. The
+# kernel smoke probe below can't see this (it only proves the GEMM runs); measured with the
+# 28-pair prequant accuracy gate on a B200 and reproduced on-the-fly:
+#   qwen-image + fp8   -> every frame black (mean luma 0.0000, SSIM 0.016 vs bf16): Qwen's outliers
+#                         exceed per-row fp8's range (the same fp8 that matches bf16 on Z-Image/FLUX).
+#   qwen-image + mxfp8 -> semantic damage at 1024px (CLIP delta mean 0.0146, worst 0.064 / 0.102).
 #   qwen-image + nvfp4 -> LPIPS mean 0.51 vs bf16: unusable.
-#   wan2.2 / hunyuanvideo-1.5 + fp8 -> every frame black (mean luma 0.0000, LPIPS ~0.80-0.82
-#                         vs bf16), reproduced on B200 with the production torch._scaled_mm
-#                         per-row fp8 path (no MSLK): the DiT's activation outliers exceed
-#                         per-row fp8's range, the same failure mode as qwen-image. int8
-#                         dynamic (per-token) is clean on both (non-black, correct contrast;
-#                         First-Block-Cache engages normally instead of over-caching the
-#                         degenerate black activations).
-# NOTE this is NOT universal across video: ltx-2 + fp8 renders clean (mean 153.7, non-black) on
-# the same stack, so it is deliberately NOT denied -- the deny is measured per family, not a
-# blanket video rule. int8 dynamic (per-token) is excellent on Qwen (LPIPS mean 0.069 / SSIM
-# 0.958) and clean on Wan / Hunyuan, so the auto ladder falls through to it there. mxfp8 / nvfp4
-# are denied alongside fp8 on the black-frame families conservatively (the same per-block
-# scaled_mm family as the confirmed-black fp8, and mxfp8 is a prototype) so auto lands on the
-# battle-tested int8; they can be re-enabled per family once separately validated in-bar, like
-# the nvfp4 auto-ladder TODO. The deny also applies to an EXPLICIT request: a scheme that renders
-# black frames has no legitimate use, and returning None gives the caller the same fallback
+#   wan2.2 / hunyuanvideo-1.5 + fp8 -> every frame black (LPIPS ~0.80-0.82), same outlier failure
+#                         mode. int8 (per-token) is clean on both.
+# NOT universal across video: ltx-2 + fp8 renders clean (mean 153.7), so it is deliberately NOT
+# denied -- the deny is per-family. int8 is excellent on Qwen (LPIPS 0.069 / SSIM 0.958) and clean
+# on Wan / Hunyuan, so auto falls through to it. mxfp8 / nvfp4 are denied alongside fp8 on the
+# black-frame families conservatively (same per-block scaled_mm family, mxfp8 a prototype). The
+# deny also applies to an EXPLICIT request: returning None gives the caller the same fallback
 # contract as an unsupported scheme (GGUF build).
 _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
     "qwen-image-edit": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),  # same DiT + activations
-    # Wan2.2 video DiTs (WanTransformer3DModel): plain fp8 rendered black frames, but the failure
-    # is a SINGLE input embedder (condition_embedder) dividing by a zero padding-token row -- the
-    # 30-block compute stack is fp8-clean. fp8 is therefore allowed here and made safe by the
-    # per-family exclude (_FP8_FAMILY_EXCLUDE_NAME_TOKENS keeps condition_embedder bf16). mxfp8 /
-    # nvfp4 remain denied (same per-row scaled_mm family, not separately validated) so auto still
-    # skips them; both the 5B TI2V and the A14B MoE share the DiT class + activation profile.
+    # Wan2.2 video DiTs: fp8 rendered black frames, but the failure is a SINGLE input embedder
+    # (condition_embedder) dividing by a zero padding-token row -- the 30-block stack is fp8-clean.
+    # So fp8 is allowed, made safe by _FP8_FAMILY_EXCLUDE_NAME_TOKENS. mxfp8 / nvfp4 stay denied
+    # (same scaled_mm family, not separately validated). 5B TI2V and A14B share the DiT + profile.
     "wan2.2-ti2v-5b": frozenset({TQ_MXFP8, TQ_NVFP4}),
     "wan2.2-t2v-a14b": frozenset({TQ_MXFP8, TQ_NVFP4}),
-    # HunyuanVideo-1.5 DiT (HunyuanVideo15Transformer3DModel): fp8 renders black frames (measured,
-    # LPIPS 0.82) and -- unlike Wan -- the failure is NOT confinable to an input embedder: its MMDiT
-    # masks padding text tokens to zero inside every block, so the per-block context stream
-    # (add_*_proj / to_add_out / ff_context) regenerates zero rows layer after layer (measured: fp8
-    # on only the main blocks is still 100% non-finite). No small exclude set exists, so fp8 stays
-    # denied and auto lands on int8 (clean, per-token). The 480p and 720p repacks share the DiT +
-    # activations, so both deny. (ltx-2 fp8 measures clean on the same stack, so it is absent.)
-    # mxfp8 was ALSO separately measured here (B200, 720p/33f, Blackwell-blog selective recipe:
-    # block-32 MX, min(K,N) >= 1024, text-stream linears excluded, 434/784 Linears quantized):
-    # block scaling does fix the zero-row collapse (no black frames, all finite), but it is exactly
-    # latency-neutral (1.00x e2e at 30 AND 50 steps; only the FFN up-proj GEMM wins, 1.66x, and it
-    # is too small a share of the trimmed forward) at LPIPS 0.37-0.38 vs the same dense stack --
-    # fails both ship bars (>= 1.1x, <= 0.05), so the deny stays on measurement, not association.
+    # HunyuanVideo-1.5 DiT: fp8 renders black frames (LPIPS 0.82) and -- unlike Wan -- the failure
+    # is NOT confinable to an input embedder: its MMDiT masks padding text tokens to zero inside
+    # every block, so the context stream regenerates zero rows layer after layer (fp8 on only the
+    # main blocks is still 100% non-finite). No small exclude exists, so fp8 stays denied and auto
+    # lands on int8. 480p and 720p repacks share the DiT, so both deny. (ltx-2 fp8 is clean, absent.)
+    # mxfp8 was ALSO measured here (B200, 720p/33f, selective recipe): block scaling fixes the
+    # zero-row collapse (all finite) but is latency-neutral (1.00x e2e at 30 AND 50 steps) at LPIPS
+    # 0.37-0.38 -- fails both ship bars (>= 1.1x, <= 0.05), so the deny is measured, not association.
     "hunyuanvideo-1.5": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
     "hunyuanvideo-1.5-720p": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
 }
@@ -382,16 +346,15 @@ def select_transformer_quant_scheme(
 
 
 def is_int8_memory_fallback(target: Any, family: Optional[str] = None) -> bool:
-    """Whether AUTO DiT quant would land on int8 only as a black-frame / denied FALLBACK on a
-    data-center, fp8-capable GPU -- i.e. fp8 would be the arch's pick but is denied/unavailable for
-    this family (e.g. HunyuanVideo-1.5). In that case int8 is a MEMORY lever, not a speed win:
-    measured on a B200 it is ~7% slower AND less accurate than the dense bf16 + regional-compile
-    path, so the loader prefers dense when the DiT fits resident (quantising only when memory-
-    constrained). Returns False where int8 is a legitimate accelerator and must be kept:
-      - consumer / workstation GPUs (fp8 FP32-accumulate is halved, so int8 is as fast or faster);
-      - pre-Ada data-center (sm < 8.9) with no fp8 tensor cores at all (int8 is the only quant);
-      - families whose auto scheme is fp8 (Wan / LTX) -- not int8, so nothing to prefer away from.
-    Best-effort: any probe failure returns False (keep today's behaviour)."""
+    """Whether AUTO DiT quant lands on int8 only as a denied FALLBACK on a data-center,
+    fp8-capable GPU (fp8 would be the arch's pick but is denied for this family, e.g.
+    HunyuanVideo-1.5). Then int8 is a MEMORY lever, not a speed win: on a B200 it is ~7% slower
+    AND less accurate than dense bf16 + regional compile, so the loader prefers dense when the DiT
+    fits resident. Returns False where int8 is a legitimate accelerator:
+      - consumer / workstation GPUs (halved fp8 FP32-accumulate, so int8 is as fast or faster);
+      - pre-Ada data-center (sm < 8.9, no fp8 tensor cores; int8 is the only quant);
+      - families whose auto scheme is fp8 (Wan / LTX).
+    Best-effort: any probe failure returns False."""
     try:
         if _is_consumer_gpu(getattr(target, "device", None)):
             return False
@@ -577,15 +540,11 @@ def make_filter_fn(
 def torchao_quantized_param_fqns(module: Any) -> list[str]:
     """FQNs of ``module`` parameters whose tensors are torchao subclasses.
 
-    torchao's ``quantize_`` mutates the module in place, swapping Linear/Conv weights
-    to tensor subclasses one submodule at a time -- so an exception mid-pass (OOM on a
-    14B DiT, a layer a kernel rejects) leaves the EARLIER layers quantized. A module in
-    that state must fail the load: it cannot run as the dense module the caller would
-    otherwise report (offload's ``Module.to()`` hard-crashes on torchao tensors, and
-    mixed dense/quant weights are an unvalidated numeric state). Detection keys on the
-    tensor class's module path ("torchao" in ``type(t).__module__``), which covers every
-    torchao subclass family (affine / float8 / nvfp4 / mx) without importing torchao.
-    Best-effort: an unscannable module reports no leftovers (the pre-check behaviour)."""
+    ``quantize_`` swaps weights to tensor subclasses one submodule at a time, so an exception
+    mid-pass leaves the EARLIER layers quantized. That state must fail the load: it can't run as
+    dense (offload's ``Module.to()`` crashes on torchao tensors; mixed weights are unvalidated).
+    Detection keys on "torchao" in ``type(t).__module__``, covering every torchao subclass family
+    without importing torchao. Best-effort: an unscannable module reports no leftovers."""
     names: list[str] = []
     named = getattr(module, "named_parameters", None)
     if not callable(named):
@@ -604,11 +563,9 @@ def torchao_quantized_param_fqns(module: Any) -> list[str]:
 
 
 def raise_if_partially_quantized(module: Any, *, what: str, exc: Exception) -> None:
-    """After an in-place ``quantize_``/caster failure: if ``module`` was left PARTIALLY
-    quantized (some torchao tensor-subclass params present), raise so the load fails
-    with a clear error instead of the caller reporting a dense fallback and running a
-    half-quantized module. A clean failure (no torchao params) returns, keeping the
-    best-effort dense-fallback contract."""
+    """After an in-place ``quantize_``/caster failure: if ``module`` was left PARTIALLY quantized
+    (torchao params present), raise so the load fails clearly instead of reporting a dense fallback
+    and running a half-quantized module. A clean failure returns (best-effort dense fallback)."""
     leftover = torchao_quantized_param_fqns(module)
     if not leftover:
         return
@@ -645,13 +602,11 @@ def quantize_transformer(
     try:
         from torchao.quantization import quantize_
 
-        # int8 (torch._int_mm, M>16) skips the M=1 modulation / conditioning-embedder projections;
-        # fp8 / fp4 / mx (scaled_mm) have no M limit but, on a family whose zero-padded conditioning
-        # sequence would divide a per-row activation scale by a zero row, skip that one input
-        # embedder (Wan's condition_embedder -> _FP8_FAMILY_EXCLUDE_NAME_TOKENS). fp8 and mxfp8 also
-        # assert a bf16 weight, so on a mixed-precision DiT (Wan / Hunyuan keep some fp32 linears)
-        # they must skip the non-bf16 ones or the whole pass raises and no-ops. nvfp4 quantises fp32
-        # weights fine, so it is not gated (see _REQUIRE_BF16_SCHEMES).
+        # int8 (M>16) skips the M=1 modulation / conditioning-embedder projections; fp8 / fp4 / mx
+        # (scaled_mm) have no M limit but skip the one input embedder whose zero-padded conditioning
+        # would divide a per-row scale by a zero row (_FP8_FAMILY_EXCLUDE_NAME_TOKENS). fp8 and mxfp8
+        # also assert a bf16 weight, so on a mixed-precision DiT (Wan / Hunyuan) they skip non-bf16
+        # linears or the pass raises. nvfp4 handles fp32, so it is not gated (_REQUIRE_BF16_SCHEMES).
         exclude = exclude_tokens_for_scheme(scheme, family)
         quantize_(
             transformer,
@@ -670,10 +625,8 @@ def quantize_transformer(
             pass
         return scheme
     except Exception as exc:  # noqa: BLE001 — leave the transformer dense -> GGUF fallback
-        # quantize_ swaps weights module-by-module, so a mid-pass failure may have left
-        # some layers quantized: that state cannot run as dense (offload's Module.to()
-        # crashes on torchao tensors; mixed precision is unvalidated), so fail the load
-        # instead of reporting a dense fallback. A clean miss stays best-effort dense.
+        # A mid-pass failure may have left some layers quantized (can't run as dense), so
+        # fail the load instead of a dense fallback. A clean miss stays best-effort dense.
         raise_if_partially_quantized(transformer, what = f"transformer_quant {scheme}", exc = exc)
         _warn(logger, scheme, exc)
         return None

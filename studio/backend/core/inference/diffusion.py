@@ -389,9 +389,9 @@ class _LoadState:
     backend_flags_before: Optional[dict] = None
     # Text-encoder quantisation actually engaged: "fp8" | "nvfp4" | None (Phase 2B/2C).
     text_encoder_quant: Optional[str] = None
-    # VAE quantisation actually engaged: "fp8" (layerwise storage) | "fp8_dynamic" (torchao
-    # conv compute) | None. When set, the resident VAE holds fp8 tensor subclasses, so the
-    # img2img/inpaint _align_vae_dtype re-cast must be skipped (it would corrupt them).
+    # VAE quant engaged: "fp8" (layerwise storage) | "fp8_dynamic" (torchao conv) | None. When set,
+    # the VAE holds fp8 tensor subclasses, so the img2img/inpaint _align_vae_dtype re-cast is
+    # skipped (it would corrupt them).
     vae_quant: Optional[str] = None
     # Transformer quant actually engaged on the opt-in dense fast path: "int8" | "fp8"
     # | "nvfp4" | "mxfp8" | None. None means the default GGUF transformer was loaded.
@@ -1217,22 +1217,18 @@ class DiffusionBackend:
         normalize_transformer_cache(transformer_cache)
         normalize_te_quant(text_encoder_quant)
         normalize_vae_quant(vae_quant)
-        # An explicit Speed="off" (bit-exact reference) load pins the companions dense too, mirroring
-        # the transformer_quant default below (load_pipeline): promoting an UNSET or explicit-"auto"
-        # TE/VAE to auto-quant here would silently fp8/int8 the text encoder + VAE and break the
-        # bit-exact request -- an auto choice overriding the EXPLICIT off control. auto is backend
-        # -owned (same as transformer_quant), so both the UNSET default and an explicit "auto" go
-        # dense under off; only an explicit CONCRETE scheme still forces quant under off.
+        # An explicit Speed="off" (bit-exact) load pins the companions dense too: promoting an
+        # UNSET or "auto" TE/VAE to auto-quant would silently fp8/int8 them and break the request.
+        # auto is backend-owned, so both UNSET and "auto" go dense under off; only an explicit
+        # CONCRETE scheme still forces quant under off.
         speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
-        # text_encoder_quant tri-state, mirroring transformer_quant: UNSET (None / "") or "auto" ->
-        # auto, which picks the best accurate TE scheme for this GPU + family (fp8_dynamic / int8 /
-        # layerwise fp8) or stays dense when none qualifies. An explicit "none"/"off" pins the
-        # encoder dense; an explicit scheme forces it. So the shipped default is auto (dense under off).
+        # text_encoder_quant tri-state (mirrors transformer_quant): UNSET ("" / None) or "auto" ->
+        # auto (best accurate TE scheme, else dense); "none"/"off" -> dense; a concrete scheme forces
+        # it. Default is auto (dense under off).
         if text_encoder_quant is None or str(text_encoder_quant).strip().lower() in ("", "auto"):
             text_encoder_quant = "off" if speed_off else TE_QUANT_AUTO
-        # vae_quant tri-state, same contract: UNSET or "auto" -> auto (layerwise fp8 where the
-        # family qualifies, else dense; fp8_dynamic is an explicit opt-in, never picked by auto);
-        # none/off -> dense; an explicit scheme forces it. Also pinned dense under Speed="off".
+        # vae_quant tri-state, same contract: auto -> layerwise fp8 where the family qualifies, else
+        # dense (fp8_dynamic is explicit-only); none/off -> dense. Also dense under Speed="off".
         if vae_quant is None or str(vae_quant).strip().lower() in ("", "auto"):
             vae_quant = "off" if speed_off else VAE_QUANT_AUTO
         # For a full pipeline the repo itself supplies every component, so it is its
@@ -1753,8 +1749,8 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     # Quantise the dense VAE (opt-in fp8 layerwise / fp8_dynamic torchao conv),
-                    # also before placement so the offload hooks move the smaller weights. The
-                    # image families do not force-fp32 their VAE; auto skips torchao under offload.
+                    # before placement so offload moves the smaller weights. Image families never
+                    # force-fp32 their VAE; auto skips torchao under offload.
                     vae_quant_engaged = quantize_vae(
                         pipe,
                         target,
@@ -2288,10 +2284,9 @@ class DiffusionBackend:
         as needed. ``denoiser_attr`` is ``pipe.transformer`` for DiT families and
         ``pipe.unet`` for SDXL. Best-effort; a no-op when already aligned.
 
-        Skipped when ``vae_quant`` engaged: a quantised VAE holds fp8 tensor subclasses
-        that mishandle ``.to(dtype=...)`` (torchao rejects it), so the re-cast would
-        corrupt the weights. The VAE already runs at the compute dtype under fp8, so the
-        alignment is unnecessary there anyway."""
+        Skipped when ``vae_quant`` engaged: the fp8 tensor subclasses mishandle
+        ``.to(dtype=...)`` (torchao rejects it), and the VAE already runs at the compute
+        dtype under fp8, so the re-align is both harmful and unnecessary."""
         if vae_quant is not None:
             return
         denoiser = getattr(pipe, denoiser_attr, None)
@@ -2776,10 +2771,9 @@ class DiffusionBackend:
                         from PIL import Image as _PILImage
                         mask_pil = mask_pil.resize(init_pil.size, _PILImage.NEAREST)
                 if init_pil is not None:
-                    # Keep the VAE encode dtype consistent with the input image.
-                    # state.family is always a DiffusionFamily, which defines denoiser_attr.
-                    # A quantised VAE (fp8 tensor subclasses) must NOT be re-cast, so pass the
-                    # engaged scheme through to skip the re-align in that case.
+                    # Keep the VAE encode dtype consistent with the input image. Pass the
+                    # engaged vae_quant so a quantised (fp8) VAE skips the re-align (must not
+                    # be re-cast).
                     self._align_vae_dtype(pipe, state.family.denoiser_attr, state.vae_quant)
 
                 # Pipelines vary in which kwargs they accept (img2img derives size from the

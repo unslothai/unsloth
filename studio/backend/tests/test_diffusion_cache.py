@@ -144,10 +144,9 @@ def test_explicit_threshold_overrides_quant(monkeypatch):
 
 
 def test_a14b_balanced_pins_quant_threshold(monkeypatch):
-    # Wan2.2-A14B's effective default is quant-active (unset precision auto-promotes to
-    # fp8 on reference hardware), and the generic 0.08 -> 0.12 promotion violates the
-    # family's <= 0.08 quality gate (fb@0.12 measured pairwise LPIPS 0.128) -- so the
-    # balanced preset pins 0.08 with quant active too. Other families keep the table.
+    # Wan2.2-A14B's effective default is quant-active (unset precision auto-promotes to fp8), and
+    # the generic 0.08 -> 0.12 promotion violates its <= 0.08 gate (fb@0.12 LPIPS 0.128), so
+    # balanced pins 0.08 even with quant active. Other families keep the table.
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
     apply_step_cache(_pipe(t), mode = "fbcache", quant_active = True, family = "wan2.2-t2v-a14b")
@@ -158,9 +157,8 @@ def test_a14b_balanced_pins_quant_threshold(monkeypatch):
 
 
 def test_a14b_pin_scope_is_balanced_only(monkeypatch):
-    # The pin is (family, balanced)-scoped: an explicit threshold still wins, and the
-    # explicit "fast" preset keeps the generic quant table (the 2.9x point stays one
-    # request away).
+    # The pin is (family, balanced)-scoped: an explicit threshold still wins, and the "fast"
+    # preset keeps the generic quant table.
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
     apply_step_cache(
@@ -186,9 +184,8 @@ def test_non_cachemixin_runs_uncached(monkeypatch):
 
 def test_pipeline_without_cache_context_runs_uncached(monkeypatch):
     # A CacheMixin transformer whose PIPELINE never opens a cache_context (Flux Kontext /
-    # img2img / inpaint / controlnet reuse the CacheMixin FluxTransformer2DModel) must run
-    # uncached -- otherwise the First-Block-Cache hook raises "No context is set" on the
-    # first forward, crashing every default generation.
+    # img2img / inpaint / controlnet) must run uncached, else the hook raises "No context is
+    # set" on the first forward.
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
     assert apply_step_cache(_NoCtxPipe(t), mode = "fbcache") is None
@@ -232,9 +229,8 @@ def test_missing_transformer_is_none(monkeypatch):
 
 
 def test_diffusers_unavailable_runs_uncached(monkeypatch):
-    # no diffusers import -> best-effort returns None, load proceeds uncached. Block the
-    # hooks module too: the config import falls back to diffusers.hooks, which a REAL
-    # earlier import in the test session may have left cached in sys.modules.
+    # no diffusers import -> best-effort returns None, uncached. Block the hooks module too:
+    # the config import falls back to diffusers.hooks, which an earlier test may have cached.
     monkeypatch.setitem(sys.modules, "diffusers", None)
     monkeypatch.setitem(sys.modules, "diffusers.hooks", None)
     t = _MixinTransformer()
@@ -259,9 +255,8 @@ def test_effective_steps_txt2img_is_full_count():
 
 
 def test_effective_steps_low_strength_shrinks_below_the_bar():
-    # A 28-step upscale at strength 0.35 denoises int(9.8) = 9 steps (diffusers get_timesteps
-    # floors the product), which is below FBCACHE_MIN_STEPS -> the auto policy must NOT engage
-    # FBCache there.
+    # A 28-step upscale at strength 0.35 denoises int(9.8) = 9 steps, below FBCACHE_MIN_STEPS
+    # -> auto must NOT engage FBCache.
     eff = effective_denoise_steps(28, 0.35)
     assert eff == 9
     assert eff < FBCACHE_MIN_STEPS
@@ -275,9 +270,8 @@ def test_effective_request_strength_uses_pipe_default_when_omitted():
     assert effective_request_strength(0.5, True, False, None) is None
     # img2img with an explicit strength -> that value.
     assert effective_request_strength(0.2, True, True, 0.6) == 0.2
-    # img2img with an OMITTED strength -> the pipe's own signature default (< 1), so the auto
-    # policy keys on the real (short) trajectory, not the full step count. This is the fix:
-    # int(28 * 0.6) = 16 real steps, not 28.
+    # img2img with an OMITTED strength -> the pipe's signature default (< 1), so auto keys on the
+    # real short trajectory (int(28 * 0.6) = 16 steps), not the full 28.
     s = effective_request_strength(None, True, True, 0.6)
     assert s == 0.6
     assert effective_denoise_steps(28, s) == 16
@@ -480,10 +474,9 @@ def test_registration_failure_is_swallowed(monkeypatch):
 
 # ── stale child-registry invalidation after enable_cache ───────────────────────────
 def test_invalidate_child_registry_cache_clears_stale_list():
-    # An UNCACHED generation's cache_context call froze an EMPTY child list on the
-    # transformer's HookRegistry; enable_cache installs block hooks _set_context would
-    # then never reach ("No context is set" on the first cached forward). The helper
-    # drops the stale cache so the next cache_context rebuilds it over the new hooks.
+    # An UNCACHED generation froze an EMPTY child list on the HookRegistry; enable_cache then
+    # installs hooks _set_context never reaches ("No context is set"). The helper drops the stale
+    # cache so the next cache_context rebuilds it.
     t = _MixinTransformer()
     t._diffusers_hook = types.SimpleNamespace(_child_registries_cache = [])
     _invalidate_child_registry_cache(t)
@@ -542,15 +535,11 @@ def test_normalize_accepts_magcache():
 
 
 def test_auto_cache_mode_per_family():
-    # HunyuanVideo-1.5: FBCache free-runs (no cap / no error budget) and derails the
-    # trajectory (measured LPIPS 0.54 at its default threshold), so auto engages the
-    # bounded MagCache there. Wan2.2-TI2V-5B: both modes hold composition, but MagCache
-    # dominates the accuracy/speed frontier (1.65x at pairwise LPIPS 0.034 vs FBCache's
-    # 1.49x at 0.031; 1.73x/0.044 vs 1.71x/0.083 at the fast points), so auto engages
-    # MagCache with its calibrated curve. Wan2.2-A14B measured the OTHER way (FBCache
-    # 0.12 at 2.88x/0.128 dominates balanced MagCache's 1.80x/0.145; the 16-step
-    # high-noise expert starves MagCache's budget), so the MoE stays on FBCache. Every
-    # other family keeps the measured FBCache default.
+    # HunyuanVideo-1.5: FBCache derails the trajectory (LPIPS 0.54), so auto engages MagCache.
+    # Wan2.2-TI2V-5B: both hold composition but MagCache dominates (1.65x/0.034 vs FBCache
+    # 1.49x/0.031; 1.73x/0.044 vs 1.71x/0.083 at fast). Wan2.2-A14B measured the OTHER way
+    # (FBCache 0.12 at 2.88x/0.128 dominates MagCache 1.80x/0.145; the 16-step high-noise expert
+    # starves MagCache's budget), so the MoE stays on FBCache. Others keep FBCache.
     assert auto_cache_mode("hunyuanvideo-1.5") == TC_MAGCACHE
     assert auto_cache_mode("hunyuanvideo-1.5-720p") == TC_MAGCACHE
     assert auto_cache_mode("HunyuanVideo-1.5-720p") == TC_MAGCACHE
@@ -687,10 +676,9 @@ def test_magcache_expert_resolves_its_own_curve(monkeypatch):
 
 
 def test_magcache_expert_subcurve_scales_step_count(monkeypatch):
-    # An expert sub-curve covers only that expert's slice of the calibration schedule
-    # (the hook counts the expert's OWN forwards from 0), so the configured step count
-    # scales by steps / calibration-steps: a 35-of-50 sub-curve at a 30-step request
-    # configures round(35 * 30 / 50) = 21 steps -- NOT the full 30.
+    # An expert sub-curve covers only that expert's slice, so the configured step count scales
+    # by steps / calibration-steps: a 35-of-50 sub-curve at 30 steps configures round(35*30/50)
+    # = 21, NOT the full 30.
     _stub_diffusers_with_magcache(monkeypatch)
     from core.inference import diffusion_cache as dc_mod
 
@@ -1102,9 +1090,9 @@ def test_enable_failure_restores_inners_before_partial_disable(monkeypatch):
 
 
 def test_enable_invalidates_stale_child_registry_cache(monkeypatch):
-    # diffusers 0.39 caches the child-registry list on first cache_context use; an
-    # UNCACHED generation already populates it (empty), so a later toggle-time
-    # enable_cache would install hooks the context never reaches ("No context is set").
+    # diffusers 0.39 caches the child-registry list on first cache_context use; an UNCACHED
+    # generation populates it (empty), so a later enable_cache installs hooks the context never
+    # reaches ("No context is set").
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
     t._diffusers_hook = types.SimpleNamespace(_child_registries_cache = ["stale"])

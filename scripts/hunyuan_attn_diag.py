@@ -24,9 +24,8 @@ import torch.nn.functional as F
 
 
 def _import_diffusers():
-    # diffusers eagerly imports bitsandbytes through its quantizers; the bnb build here is
-    # mismatched (cuda130), so disable the availability flag before importing (same trick as
-    # scripts/video_speedmem_bench.py).
+    # The bnb build here is mismatched (cuda130), so disable the availability flag before
+    # importing diffusers.
     import diffusers.utils.import_utils as iu
 
     iu._bitsandbytes_available = False

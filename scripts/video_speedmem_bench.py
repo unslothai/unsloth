@@ -3,24 +3,17 @@
 
 """Speed + memory lever benchmark for the VIDEO diffusion backend (B200).
 
-The video default path already stacks several optimisations (verified in video.py): TE
-auto-quant, DiT auto-quant when it fits resident, VAE auto (skipped for the fp32-VAE Wan
-families), regional torch.compile (speed_mode "default"), cuDNN fused attention, and
-First-Block-Cache auto-engaged at >= 20 steps. This benchmark drives the SAME real lever
-functions the loader calls -- ``quantize_text_encoders`` / ``quantize_vae`` /
-``quantize_transformer`` / ``apply_speed_optims`` / ``apply_attention_backend`` /
-``apply_step_cache`` + ``maybe_toggle_step_cache`` -- with the loader's own default
-arguments, so each measured configuration reflects a real load, not a synthetic one.
+Drives the SAME lever functions the loader calls (``quantize_text_encoders`` / ``quantize_vae``
+/ ``quantize_transformer`` / ``apply_speed_optims`` / ``apply_attention_backend`` /
+``apply_step_cache`` + ``maybe_toggle_step_cache``) with the loader's own default arguments, so
+each configuration reflects a real load.
 
-For each configuration it loads the full pipeline fresh (quant/compile mutate irreversibly),
-warms up (to pay the one-time compile), then measures a short clip generation: total latency,
-median per-step ms, peak resident GB, steady weight GB, and per-frame LPIPS(AlexNet) averaged
-against the bit-exact reference config (everything off/dense/native). This isolates each
-lever's contribution and answers: how much does the shipped default win, and do ``max``
-compile / flash4 attention leave speed on the table for video.
+Per config it loads the pipeline fresh (quant/compile mutate irreversibly), warms up, then
+measures a short clip: total latency, median per-step ms, peak resident GB, steady weight GB, and
+per-frame LPIPS(AlexNet) vs the bit-exact reference (everything off/dense/native). Isolates each
+lever's contribution and whether ``max`` compile / flash4 leave speed on the table.
 
-Memory/timing idiom lifted from scripts/quant_speedmem_bench.py (reset_peak -> load ->
-memory_allocated / max_memory_allocated with synchronize + perf_counter).
+Memory/timing idiom lifted from scripts/quant_speedmem_bench.py.
 
 Example:
     CUDA_VISIBLE_DEVICES=0 python scripts/video_speedmem_bench.py --family wan2.2-ti2v-5b \\
@@ -210,9 +203,9 @@ def _target():
 
 
 # ── config matrix ──────────────────────────────────────────────────────────────
-# Each config names the lever settings applied to a fresh pipe. Built UP from the
-# bit-exact reference so each successive config isolates one lever's contribution;
-# `shipped` is the current default; `speedmax`/`flash4` probe untapped headroom.
+# Each config names the lever settings for a fresh pipe, built UP from the bit-exact
+# reference so each isolates one lever. `shipped` is the default; `speedmax`/`flash4`
+# probe untapped headroom.
 _CONFIGS: dict[str, dict[str, Any]] = {
     #                te      vae     dit     speed      attn      cache
     "reference": dict(te = "none", vae = "none", dit = "none", speed = "off", attn = "native", cache = "off"),
@@ -250,10 +243,9 @@ _CONFIGS: dict[str, dict[str, Any]] = {
     "te_fbcache": dict(
         te = "auto", vae = "none", dit = "none", speed = "default", attn = "auto", cache = "auto"
     ),
-    # Companion-quant accuracy isolation vs the bit-exact reference (uncached, so the cache
-    # cannot mask it): TE-only and VAE-only on top of the trim+cudnn+compile stack. With the
-    # compile rounding fixed (emulate_precision_casts), the companions are the next-largest
-    # divergence source, and only one of them should pay for it.
+    # Companion-quant accuracy isolation vs the reference (uncached): TE-only and VAE-only on
+    # the trim+cudnn+compile stack. With compile rounding fixed, the companions are the
+    # next-largest divergence source.
     "diag_te_nocache": dict(
         te = "auto", vae = "none", dit = "none", speed = "default", attn = "auto", cache = "off"
     ),
@@ -266,9 +258,8 @@ _CONFIGS: dict[str, dict[str, Any]] = {
     "ditint8_fbcache_prod": dict(
         te = "none", vae = "none", dit = "int8", speed = "default", attn = "auto", cache = "auto"
     ),
-    # mixed-fp8 vs int8 head-to-head (Phase 3): the DiT-quant accuracy comparison on Wan/Hunyuan.
-    # fp8 here goes through the production quantize_transformer family exclude (input embedders
-    # kept bf16), so it is only non-black if the mixed-fp8 wiring is live. cache on AND off.
+    # mixed-fp8 vs int8 head-to-head on Wan/Hunyuan. fp8 goes through the production family
+    # exclude (input embedders kept bf16), so it is only non-black if that wiring is live.
     "ditfp8mixed_nocache": dict(
         te = "none", vae = "none", dit = "fp8", speed = "default", attn = "native", cache = "off"
     ),
@@ -278,9 +269,8 @@ _CONFIGS: dict[str, dict[str, Any]] = {
     "ditint8_nocache": dict(
         te = "none", vae = "none", dit = "int8", speed = "default", attn = "native", cache = "off"
     ),
-    # Hunyuan padded-text trim isolation: "cudnn" above is the same stack WITH the trim
-    # (it auto-engages under any active speed tier), so trim_off isolates its win. The
-    # trim key defaults True everywhere else; only this row forces it off.
+    # Hunyuan trim isolation: "cudnn" above is the same stack WITH the trim (auto-engaged
+    # under any speed tier), so trim_off isolates its win. Only this row forces trim off.
     "trim_off": dict(
         te = "none",
         vae = "none",
@@ -290,23 +280,21 @@ _CONFIGS: dict[str, dict[str, Any]] = {
         cache = "off",
         trim = False,
     ),
-    # Compile isolation at matched attention/trim: eager tier (channels_last + cudnn
-    # benchmark, NO compile) vs the "cudnn" row (default tier = regional compile).
+    # Compile isolation at matched attention/trim: eager tier (no compile) vs "cudnn"
+    # (default tier = regional compile).
     "eager_trim": dict(te = "none", vae = "none", dit = "none", speed = "eager", attn = "auto", cache = "off"),
     # int8 DiT baseline at the production attention stack (cudnn + trim), cache off,
-    # directly comparable to the "cudnn" dense row.
+    # comparable to the "cudnn" dense row.
     "int8_cudnn": dict(
         te = "none", vae = "none", dit = "int8", speed = "default", attn = "auto", cache = "off"
     ),
-    # The full companion-quant stack WITHOUT step caching: te/vae auto + dit auto (dense
-    # -fit skip on Hunyuan) + compile + cudnn + trim. The stacked-best candidate default
-    # when the family's auto cache policy stays off.
+    # The full companion-quant stack WITHOUT step caching (te/vae auto + dit auto + compile
+    # + cudnn + trim): the stacked-best default when the family's auto cache stays off.
     "shipped_nocache": dict(
         te = "auto", vae = "auto", dit = "auto", speed = "default", attn = "auto", cache = "off"
     ),
-    # Compile-parity isolation: the same compiled stack as "cudnn" but with inductor's
-    # emulate_precision_casts turned back OFF after the speed layer set it, so the row
-    # measures the numeric + speed effect of the round-2 parity flag per family.
+    # Compile-parity isolation: the "cudnn" compiled stack but with inductor's
+    # emulate_precision_casts turned back OFF, to measure that parity flag's effect.
     "epc_off": dict(
         te = "none",
         vae = "none",
@@ -316,8 +304,8 @@ _CONFIGS: dict[str, dict[str, Any]] = {
         cache = "off",
         epc = False,
     ),
-    # Explicit cache modes at the dense compiled stack (bypass the family AUTO policy),
-    # for FBCache-vs-MagCache head-to-head rows at identical settings.
+    # Explicit cache modes at the dense compiled stack (bypass AUTO), for FBCache-vs-MagCache
+    # head-to-head rows at identical settings.
     "fbcache_explicit": dict(
         te = "none", vae = "none", dit = "none", speed = "default", attn = "auto", cache = "fbcache"
     ),
@@ -345,29 +333,25 @@ def _build_pipe(repo: str, force_fp32_vae: bool):
     import torch
 
     diffusers = _import_diffusers()
-    # Wan-style VAEs decode in fp32 for numerical stability (the loader pins this via
-    # vae_force_fp32). A scalar bf16 torch_dtype truncates the fp32-stored VAE weights at
-    # load, and a later .to(float32) only widens the already-lossy values (banding), so the
-    # bench would measure a decode path production never runs. Pin the VAE fp32 per-component
-    # exactly like the production loader (video.py: {"vae": fp32, "default": bf16}).
+    # Wan-style VAEs decode in fp32 (the loader pins this via vae_force_fp32). A scalar bf16
+    # dtype truncates the fp32 VAE weights at load and a later .to(float32) only widens the
+    # lossy values (banding), so pin the VAE fp32 per-component like the loader.
     torch_dtype = torch.bfloat16
     if force_fp32_vae:
         torch_dtype = {"vae": torch.float32, "default": torch.bfloat16}
     pipe = diffusers.DiffusionPipeline.from_pretrained(repo, torch_dtype = torch_dtype)
-    # Stays on CPU: the caller applies the configured levers FIRST and only then places on
-    # CUDA, mirroring the loader (video.py quantizes before apply_memory_plan). Placing the
-    # dense pipeline first would OOM configs whose quantized form fits but whose dense form
-    # does not, and would record a dense load peak for a quantized row.
+    # Stays on CPU: the caller applies levers FIRST, then places on CUDA (like the loader).
+    # Placing the dense pipeline first would OOM configs whose quantized form fits, and
+    # record a dense load peak for a quantized row.
     if force_fp32_vae and getattr(pipe, "vae", None) is not None:
         pipe.vae.to(torch.float32)  # belt-and-suspenders; a no-op on the primary path above
     return pipe
 
 
 class _SecondExpertView:
-    """Present ``pipe.transformer_2`` as ``.transformer`` so the single-DiT lever functions run on
-    the second expert of a dual-expert MoE (Wan2.2-A14B) unforked -- mirrors the loader's
-    _SecondDiTView (video.py). Attribute reads delegate to the real pipe except ``transformer``,
-    and a ``transformer`` write (e.g. torch.compile reassigning it) is routed to ``transformer_2``."""
+    """Present ``pipe.transformer_2`` as ``.transformer`` so single-DiT lever functions run on an
+    MoE second expert (Wan2.2-A14B), like the loader's _SecondDiTView. Reads delegate to the pipe
+    except ``transformer``; a ``transformer`` write is routed to ``transformer_2``."""
 
     def __init__(self, pipe):
         object.__setattr__(self, "_pipe", pipe)
@@ -435,23 +419,18 @@ def _apply_levers(
     if getattr(pipe, "transformer_2", None) is not None:
         views.append(_SecondExpertView(pipe))
 
-    # DiT quant (pipeline kind, resident): mutates each expert's transformer in place. Mirror the
-    # loader's dense-fit skip: for an AUTO request on an int8-fallback family (HunyuanVideo-1.5, where
-    # fp8 is black-framed so auto lands on int8, a memory-only lever ~7% slower AND less accurate than
-    # dense+compile), run the dense DiT instead when it fits resident -- and the benchmark always
-    # loads resident (no offload). Explicit int8/fp8 configs are honored (the whole point of the
-    # sweep). Without this the "shipped"/"ditquant" auto rows would measure int8 where the loader runs
-    # dense, overstating the shipped cost on Hunyuan.
+    # DiT quant (resident): mutates each expert's transformer in place. Mirror the loader's
+    # dense-fit skip: for an AUTO request on an int8-fallback family (HunyuanVideo-1.5), run dense
+    # when it fits resident (the bench always loads resident). Explicit int8/fp8 configs are
+    # honored. Without this the auto rows would measure int8 where the loader runs dense.
     dense_fit_skip = cfg["dit"] == "auto" and is_int8_memory_fallback(tgt, fam_name)
     if cfg["dit"] not in ("none", "off") and not dense_fit_skip:
         schemes = [
             quantize_transformer(v, tgt, mode = cfg["dit"], family = fam_name, logger = logger)
             for v in views
         ]
-        # All-or-none across experts, mirroring the production loader (video.py): the first
-        # expert is mutated in place, so a second-expert miss cannot fall back to dense and
-        # the loader fails that load. Rejecting here keeps the benchmark from publishing a
-        # dit_scheme + timings for a mixed quantized/dense pipeline users cannot actually load.
+        # All-or-none across experts, like the loader: a second-expert miss can't fall back to
+        # dense, so reject here rather than publish timings for a pipeline users can't load.
         n_engaged = sum(1 for s in schemes if s is not None)
         if 0 < n_engaged < len(views):
             raise RuntimeError(
@@ -484,10 +463,9 @@ def _apply_levers(
         _empty()
 
     # ── optimisation layers ──
-    # Process-wide flags (cudnn.benchmark, TF32/fp16 accumulation,
-    # emulate_precision_casts): snapshotted here and restored by _run_config after
-    # the row completes, like the production unload path. Without the restore a
-    # speed-enabled row would poison a later reference/off row in the same process.
+    # Process-wide flags (cudnn.benchmark, TF32/fp16 accumulation, emulate_precision_casts):
+    # snapshotted here and restored by _run_config after the row, like the unload path -- else
+    # a speed-enabled row poisons a later reference row in the same process.
     engaged["_flags_snapshot"] = snapshot_backend_flags()
     speed = cfg["speed"]
     speed_active = speed != "off"
@@ -500,9 +478,8 @@ def _apply_levers(
     # Step cache FIRST (compile keys fullgraph off an active cache); per expert.
     cache_active = False
     if cfg["cache"] in ("auto", "fbcache", "magcache"):
-        # Per-family auto mode, exactly like the loader (video.py): MagCache for the
-        # HunyuanVideo-1.5 families, FBCache elsewhere. An explicit "fbcache"/"magcache"
-        # config value bypasses the auto policy (the head-to-head rows).
+        # Per-family auto mode like the loader: MagCache for HunyuanVideo-1.5, FBCache
+        # elsewhere. An explicit "fbcache"/"magcache" config bypasses the auto policy.
         if cfg["cache"] == "auto":
             cache_request = (
                 auto_cache_mode(fam_name) if default_steps >= FBCACHE_MIN_STEPS else None
@@ -510,10 +487,8 @@ def _apply_levers(
         else:
             cache_request = cfg["cache"]
         if cache_request is not None:
-            # Quality preset resolution, exactly like the loader (video.py): an unset
-            # request takes the family's measured auto default. Expert names zip with
-            # the views (the loader's expert-view iteration contract) so a dual-expert
-            # MoE resolves per-expert MagCache curves.
+            # Quality preset like the loader: an unset request takes the family's auto default.
+            # Expert names zip with the views so a dual-expert MoE resolves per-expert curves.
             quality = normalize_cache_quality(cache_quality) or auto_cache_quality(fam_name)
             experts = ("transformer", "transformer_2")
             for v, expert in zip(views, experts):
@@ -530,10 +505,9 @@ def _apply_levers(
                 )
             cache_active = engaged["cache"] not in (None, "off")
 
-    # HunyuanVideo-1.5 joint-attention trim (per expert), BEFORE the backend set so the requested
-    # kernel pins onto the new processors -- exactly the loader's order. Drops the ~99% zero-padded
-    # text tokens so the fused SDPA kernel runs (~18x/DiT-forward, cosine ~1.0). A speed lever, so
-    # gated on an active tier like the loader; no-op for every non-Hunyuan family.
+    # HunyuanVideo-1.5 joint-attention trim (per expert), BEFORE the backend set like the loader.
+    # Drops the ~99% zero-padded text tokens so the fused SDPA runs (~18x/DiT-forward, cosine ~1.0).
+    # Gated on an active tier; no-op for non-Hunyuan families.
     trim_engaged = False
     if speed_active and cfg.get("trim", True):
         for v in views:
@@ -559,9 +533,8 @@ def _apply_levers(
                 logger = logger,
             )
     engaged["_effective_speed"] = speed
-    # emulate_precision_casts A/B: the speed layer sets the flag True inside
-    # _compile_repeated_blocks; compile is lazy (first forward), so flipping it back off
-    # here gives the pre-round-2 inductor numerics for the whole run ("epc_off" config).
+    # emulate_precision_casts A/B: the speed layer sets it True; compile is lazy, so flipping
+    # it back off here gives the pre-round-2 inductor numerics for the run ("epc_off" config).
     if not cfg.get("epc", True):
         try:
             import torch
@@ -603,10 +576,8 @@ def _timed_video(
         normalize_cache_quality,
     )
 
-    # Toggle on EVERY expert view, exactly like the loader's per-view recheck
-    # (video.py iterates _views_for): toggling only the primary pipe would disable
-    # FBCache on pipe.transformer while transformer_2 stays cached, measuring a
-    # mixed cache state production never runs on a dual-expert MoE.
+    # Toggle on EVERY expert view like the loader's per-view recheck: toggling only the
+    # primary pipe would leave transformer_2 cached, a mixed state the MoE never runs.
     views = [pipe]
     if getattr(pipe, "transformer_2", None) is not None:
         views.append(_SecondExpertView(pipe))
@@ -627,12 +598,9 @@ def _timed_video(
             except Exception:
                 pass
     elif cache_mode == "magcache":
-        # An explicit magcache row never toggles off, but production re-engages it
-        # when the actual step count differs from the configured one (video.py: the
-        # marker carries "#s{steps}"; endswith, not substring, so "#s5" cannot match
-        # inside "#s50"). _apply_levers installed the cache at default_steps, so a
-        # --steps override would otherwise time a stale curve/skip budget users
-        # never run.
+        # An explicit magcache never toggles off, but production re-engages it when the step
+        # count differs (marker carries "#s{steps}"; endswith, not substring). _apply_levers
+        # installed at default_steps, so a --steps override would else time a stale curve.
         for v, expert in zip(views, ("transformer", "transformer_2")):
             transformer = getattr(v, "transformer", None)
             marker = getattr(transformer, "_unsloth_step_cache", None)
@@ -658,11 +626,9 @@ def _timed_video(
             except Exception:
                 pass
 
-    # Clear step-cache residuals before EVERY generation, mirroring production
-    # (VideoBackend.generate calls _reset_step_cache before each run): diffusers keys
-    # the residuals on the long-lived transformer, so the measured iterations after a
-    # warmup at identical shape/seed would otherwise start against the previous clip's
-    # cache state -- a behavior users never get. Best-effort, uncached is a no-op.
+    # Clear step-cache residuals before EVERY generation, like production: diffusers keys
+    # them on the long-lived transformer, so measured iterations would otherwise start
+    # against the previous clip's cache state. Best-effort, uncached is a no-op.
     for name in ("transformer", "transformer_2"):
         module = getattr(pipe, name, None)
         reset = getattr(module, "_reset_stateful_cache", None) or getattr(
@@ -696,8 +662,8 @@ def _timed_video(
     )
     restore_step = None
     if guidance_via_guider:
-        # HunyuanVideo-1.5: CFG lives on a guider component and __call__ takes no
-        # guidance_scale / callback_on_step_end (the loader writes the scale onto pipe.guider).
+        # HunyuanVideo-1.5: CFG lives on a guider component; __call__ takes no guidance_scale
+        # (the loader writes the scale onto pipe.guider).
         guider = getattr(pipe, "guider", None)
         if guider is not None and hasattr(guider, "guidance_scale"):
             try:
@@ -705,9 +671,8 @@ def _timed_video(
             except Exception:
                 pass
         # __call__ ignores callback_on_step_end here, so the _cb step timer never fires and
-        # step_ts would stay empty -> per_step_ms published as 0.0 for every Hunyuan row despite a
-        # non-zero total latency. Time the denoise via a scheduler.step wrapper instead (the same
-        # inter-step delta the callback records elsewhere), restored after generation.
+        # per_step_ms would publish 0.0 for every Hunyuan row. Time the denoise via a
+        # scheduler.step wrapper instead, restored after generation.
         sched = getattr(pipe, "scheduler", None)
         orig_step = getattr(sched, "step", None)
         if callable(orig_step):
@@ -767,17 +732,14 @@ def _run_config(
 
     _empty()
     _reset_peak()
-    # Fresh dynamo state per config so a prior config's compiled graphs cannot leak into this one
-    # (each config builds a fresh pipe; without this, later configs in a multi-config run can be
-    # measured against a dirty compile cache).
+    # Fresh dynamo state per config so a prior config's compiled graphs can't leak in.
     try:
         import torch
         torch._dynamo.reset()
     except Exception:
         pass
-    # Loader order (video.py): build on CPU, apply quant/optim levers, THEN place on CUDA.
-    # Placing dense first would OOM configs whose quantized form fits but dense does not, and
-    # load_peak_gb would record the dense placement instead of the measured config.
+    # Loader order: build on CPU, apply levers, THEN place on CUDA. Placing dense first would
+    # OOM configs whose quantized form fits, and misrecord load_peak_gb.
     pipe = _build_pipe(repo, force_fp32)
     engaged = _apply_levers(
         pipe,
@@ -869,8 +831,8 @@ def _run_config(
             )
         except Exception:
             pass
-    # Persist EVERY config's frames too, so a row generated before the reference exists
-    # (parallel per-GPU processes) can be LPIPS-rescored offline instead of publishing null.
+    # Persist EVERY config's frames too, so a row generated before the reference exists can
+    # be LPIPS-rescored offline instead of publishing null.
     if arrs:
         try:
             import numpy as _np
@@ -878,11 +840,9 @@ def _run_config(
         except Exception:
             pass
 
-    # Report the GENERATION-time cache state, not the load-time one: the per-generation
-    # recheck in _timed_video can toggle an auto cache off (steps below the threshold) or
-    # re-size an explicit magcache, and production status reports the post-toggle state.
-    # The marker is "{mode}@{threshold}[#s{steps}]", written by apply_step_cache and
-    # cleared by _disengage_step_cache, so its mode prefix IS the live state.
+    # Report the GENERATION-time cache state, not the load-time one: the per-generation recheck
+    # can toggle an auto cache off or re-size a magcache. The marker's mode prefix IS the live
+    # state.
     cache_marker = getattr(getattr(pipe, "transformer", None), "_unsloth_step_cache", None)
     row = {
         "config": name,
@@ -912,13 +872,8 @@ def _run_config(
     }
     del pipe
     _empty()
-    # Restore the process-wide backend flags this config's speed layer mutated
-    # (snapshot captured in _apply_levers before any mutation), mirroring the
-    # production unload path, so a later config in the same --configs run starts
-    # from clean flags instead of inheriting cudnn.benchmark / TF32 /
-    # emulate_precision_casts from this row. An exception skips this, but the main
-    # loop does not continue past a failed config, so no row can run with leaked
-    # flags.
+    # Restore the process-wide backend flags this config's speed layer mutated (snapshot from
+    # _apply_levers), like the unload path, so a later config starts from clean flags.
     try:
         from core.inference.diffusion_speed import restore_backend_flags
         restore_backend_flags(engaged.get("_flags_snapshot"))
@@ -1020,9 +975,8 @@ def main(argv = None) -> int:
             flush = True,
         )
 
-    # --configs accepts an arbitrary order, so rows finalized BEFORE the reference clip was
-    # generated (e.g. --configs shipped,reference) scored lpips_vs_reference as None; rescore
-    # them now that the reference frames exist instead of silently publishing null.
+    # Rows finalized BEFORE the reference clip was generated scored lpips_vs_reference as None;
+    # rescore them now that the reference frames exist.
     if ref_arrs is not None:
         for r, arrs in zip(rows, row_arrs):
             if r["lpips_vs_reference"] is None:

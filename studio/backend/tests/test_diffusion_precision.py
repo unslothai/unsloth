@@ -51,9 +51,8 @@ def _stub_torch(
     torch.float16 = "float16"
     if with_fp8:
         torch.float8_e4m3fn = "float8_e4m3fn"
-    # _cast_fp8 skips nn.Embedding tables (skip_modules_classes) to keep prompt
-    # tokens full precision, and _keep_bf16_block_fqns walks for nn.ModuleList block
-    # stacks, so the stub torch must expose both.
+    # _cast_fp8 skips nn.Embedding tables and _keep_bf16_block_fqns walks nn.ModuleList, so the
+    # stub torch must expose both.
     torch.nn = types.SimpleNamespace(
         Embedding = type("Embedding", (), {}),
         ModuleList = type("ModuleList", (list,), {}),
@@ -262,9 +261,9 @@ def test_quantize_fp8_dynamic_uses_compute_caster(monkeypatch):
 
 
 def test_quantize_explicit_torchao_probes_kernel(monkeypatch):
-    # An EXPLICIT torchao TE mode (int8 / fp8_dynamic / nvfp4) clears the capability gate but must
-    # still run the real GEMM smoke test the auto ladder uses: on a build where quantize_ wraps the
-    # encoder yet the kernel is broken, report dense (None) instead of crashing on the first forward.
+    # An EXPLICIT torchao TE mode clears the capability gate but must still run the auto ladder's
+    # GEMM smoke test: on a build where quantize_ wraps the encoder yet the kernel is broken,
+    # report dense (None) instead of crashing on the first forward.
     _stub_torch(monkeypatch, cc = (10, 0))
     monkeypatch.setattr(dp, "_te_scheme_probe", lambda scheme, device: False)
     monkeypatch.setattr(
@@ -281,9 +280,8 @@ def test_quantize_explicit_torchao_probes_kernel(monkeypatch):
 
 
 def test_te_scheme_probe_bypasses_layerwise_fp8():
-    # Layerwise fp8 has no torchao GEMM (not in _TE_SMOKE_SCHEME), so the probe is a no-op (True)
-    # for it and never vetoes it -- this is why the explicit-torchao veto above leaves plain fp8
-    # casting untouched. The torchao schemes DO carry a smoke scheme.
+    # Layerwise fp8 has no torchao GEMM, so the probe is a no-op (True) and never vetoes it (why
+    # the veto above leaves plain fp8 untouched). The torchao schemes DO carry a smoke scheme.
     assert dp._te_scheme_probe(TE_QUANT_FP8, "cuda") is True
     assert TE_QUANT_FP8 not in dp._TE_SMOKE_SCHEME
     for scheme in (TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_NVFP4):
@@ -291,10 +289,9 @@ def test_te_scheme_probe_bypasses_layerwise_fp8():
 
 
 def test_te_scheme_probe_nvfp4_uses_weightonly_kernel(monkeypatch):
-    # nvfp4 TE casts weight-only (_cast_nvfp4 -> NVFP4WeightOnlyConfig), a different torchao kernel
-    # from the transformer's dynamic-activation NVFP4 probe. On a build where the dynamic FP4 GEMM
-    # is unavailable but weight-only FP4 works, the nvfp4 TE probe must consult its own weight-only
-    # probe, not the transformer dynamic one, or an explicit request would falsely stay dense.
+    # nvfp4 TE casts weight-only, a different kernel from the transformer's dynamic NVFP4 probe.
+    # On a build where the dynamic GEMM is unavailable but weight-only works, the nvfp4 TE probe
+    # must consult its own weight-only probe, or an explicit request would falsely stay dense.
     dp._TE_NVFP4_PROBE_CACHE.clear()
     dtq = types.ModuleType("core.inference.diffusion_transformer_quant")
     dtq._smoke_probe = lambda scheme, device: False  # every dynamic-activation GEMM "unavailable"
@@ -308,9 +305,8 @@ def test_te_scheme_probe_nvfp4_uses_weightonly_kernel(monkeypatch):
 
 
 def test_quantize_explicit_denied_scheme_stays_dense(monkeypatch):
-    # _TE_FAMILY_SCHEME_DENY's contract: a denied scheme is refused even when requested
-    # explicitly (mirroring the VAE module), gating the FINAL concrete mode so an
-    # int8 -> fp8 fallback is re-checked too.
+    # A denied scheme is refused even when requested explicitly, gating the FINAL concrete mode
+    # so an int8 -> fp8 fallback is re-checked too.
     _stub_torch(monkeypatch, cc = (10, 0))
     recorder: list = []
     _stub_casters(monkeypatch, recorder)
@@ -329,10 +325,9 @@ def test_quantize_int8_unsupported_hw_is_noop(monkeypatch):
 
 
 def test_quantize_te_skips_torchao_modes_under_offload(monkeypatch):
-    # The torchao modes (int8-with-schedule / fp8_dynamic / nvfp4) produce tensor subclasses that
-    # reject Module.to(), which an offload hook uses, so they must be skipped under offload (the DiT
-    # path skips torchao quant for the same reason). Hardware supports every mode here, so a None
-    # result proves the offload skip, not a capability gate; the casters fail if wrongly invoked.
+    # The torchao modes produce tensors that reject Module.to(), so they must be skipped under
+    # offload. Hardware supports every mode here, so a None result proves the offload skip, not a
+    # capability gate; the casters fail if wrongly invoked.
     _stub_torch(monkeypatch, cc = (10, 0))
     monkeypatch.setattr(
         dp, "_cast_fp8_dynamic", lambda *a: pytest.fail("torchao caster must not run")
@@ -445,10 +440,9 @@ def test_int8_filter_keeps_blocks_and_towers_dense(monkeypatch):
 
 
 def test_nvfp4_filter_keeps_vision_tower_dense(monkeypatch):
-    # Weight-only NVFP4 on a text encoder must exclude the VLM vision tower / lm_head / T5 "wo"
-    # like the int8 / fp8 torchao TE modes -- 4-bit-ing a qwen-image(-edit) Qwen2.5-VL image tower
-    # degrades the edit/image conditioning the sibling schemes deliberately protect. Before the fix
-    # _cast_nvfp4 quantised every nn.Linear (no filter_fn), so the tower was silently 4-bit.
+    # Weight-only NVFP4 must exclude the VLM vision tower / lm_head / T5 "wo" like the int8 / fp8
+    # TE modes -- 4-bit-ing a Qwen2.5-VL image tower degrades the edit conditioning. Before the
+    # fix _cast_nvfp4 quantised every nn.Linear, so the tower was silently 4-bit.
     _stub_torch(monkeypatch)
     captured: dict = {}
     _stub_transformer_quant(monkeypatch, captured)
@@ -580,10 +574,9 @@ def test_quantize_text_encoders_auto_resolves_and_applies(monkeypatch):
 
 
 def test_select_te_auto_resolves_dense_for_hunyuanvideo15(monkeypatch):
-    # HunyuanVideo-1.5 (both repacks): TE quant perturbs the conditioning and the video
-    # trajectory amplifies it chaotically (measured LPIPS 0.236 vs bit-exact from TE
-    # fp8_dynamic ALONE, vs 0.052 for the rest of the stack) at zero speed win, so the
-    # AUTO default keeps the encoder dense on ANY hardware.
+    # HunyuanVideo-1.5 (both repacks): TE quant perturbs the conditioning and the trajectory
+    # amplifies it (LPIPS 0.236 vs bit-exact from TE fp8_dynamic ALONE, vs 0.052 for the rest of
+    # the stack) at zero speed win, so AUTO keeps the encoder dense on ANY hardware.
     _stub_tq_select(monkeypatch, cc = (10, 0), consumer = False)
     _allow_te(monkeypatch, {TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8})
     assert select_te_quant_scheme(_target(), "auto", family = "hunyuanvideo-1.5") is None
@@ -593,11 +586,10 @@ def test_select_te_auto_resolves_dense_for_hunyuanvideo15(monkeypatch):
 
 
 def test_select_te_auto_resolves_dense_for_wan_a14b_but_not_wan_5b(monkeypatch):
-    # Wan2.2-A14B: TE fp8_dynamic alone costs pairwise LPIPS 0.1195 vs the dense-TE
-    # stack for a 1.03x once-per-generation encode (146.7 -> 142.7 s e2e), so AUTO
-    # keeps the encoder dense. Wan2.2-TI2V-5B shares the UMT5 encoder but measured
-    # in-bar (0.0396 pairwise) at a real 1.09x on its far faster DiT, so it keeps the
-    # normal ladder.
+    # Wan2.2-A14B: TE fp8_dynamic alone costs LPIPS 0.1195 vs the dense-TE stack for a 1.03x
+    # once-per-generation encode (146.7 -> 142.7 s e2e), so AUTO keeps the encoder dense.
+    # Wan2.2-TI2V-5B shares the UMT5 encoder but measured in-bar (0.0396) at 1.09x on its faster
+    # DiT, so it keeps the normal ladder.
     _stub_tq_select(monkeypatch, cc = (10, 0), consumer = False)
     _allow_te(monkeypatch, {TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8})
     assert select_te_quant_scheme(_target(), "auto", family = "wan2.2-t2v-a14b") is None
@@ -624,11 +616,9 @@ def test_select_te_explicit_scheme_still_honored_for_hunyuanvideo15(monkeypatch)
 
 
 def test_select_te_auto_ltx2_denies_fp8_dynamic_falls_to_layerwise_fp8(monkeypatch):
-    # LTX-2's Gemma3-27B encoder BLACK-FRAMES the whole clip under torchao per-row
-    # compute fp8 (measured pairwise vs the dense encoder: mean luma 137.9 -> 0.0,
-    # LPIPS 0.78), while layerwise fp8 is near-lossless (0.0043) at the same shrink --
-    # so the family deny drops fp8_dynamic and auto falls through (int8 has no ltx-2
-    # keep-bf16 schedule) to layerwise fp8.
+    # LTX-2's Gemma3-27B encoder BLACK-FRAMES the clip under compute fp8 (mean luma 137.9 -> 0.0,
+    # LPIPS 0.78), while layerwise fp8 is near-lossless (0.0043) at the same shrink -- so the deny
+    # drops fp8_dynamic and auto falls through (int8 has no ltx-2 schedule) to layerwise fp8.
     _stub_tq_select(monkeypatch, cc = (10, 0), consumer = False)
     _allow_te(monkeypatch, {TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8})
     assert select_te_quant_scheme(_target(), "auto", family = "ltx-2") == TE_QUANT_FP8
@@ -684,9 +674,9 @@ class _FakeWeight:
 
 
 def test_weight_zero_output_row_detection():
-    # A dead output row NaNs torchao's per-row fp8 (scale 0 -> 0/0); SDXL's
-    # text_encoder_2 (OpenCLIP bigG) really ships one in layers.2.self_attn.out_proj --
-    # measured: every fp8_dynamic SDXL render was black until the row is kept dense.
+    # A dead output row NaNs per-row fp8 (scale 0 -> 0/0); SDXL's text_encoder_2 (OpenCLIP bigG)
+    # ships one in layers.2.self_attn.out_proj -- every fp8_dynamic SDXL render was black until
+    # the row is kept dense.
     zero_row = types.SimpleNamespace(weight = _FakeWeight([[0.1, 0.2], [0.0, 0.0]]))
     dense = types.SimpleNamespace(weight = _FakeWeight([[0.1, 0.2], [0.3, 0.0]]))
     assert dp._weight_has_zero_output_row(zero_row) is True
@@ -742,9 +732,8 @@ class _PartiallyCastEncoder:
 
 
 def test_quantize_partial_cast_failure_fails_load(monkeypatch):
-    # The caster mutates the encoder in place module-by-module: a mid-pass failure
-    # that left torchao params behind must raise (the encoder cannot run as the dense
-    # module a best-effort fallback would report), unlike the clean failure above.
+    # A mid-pass caster failure that left torchao params behind must raise (the encoder can't
+    # run as dense), unlike the clean failure above.
     _stub_torch(monkeypatch)
     hooks = types.ModuleType("diffusers.hooks")
     casting = types.ModuleType("diffusers.hooks.layerwise_casting")

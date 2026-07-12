@@ -159,9 +159,8 @@ def test_vae_quant_supported_fp8_dynamic_requires_sm89(monkeypatch):
 
 
 def test_select_datacenter_uses_layerwise_fp8(monkeypatch):
-    # ``auto`` engages layerwise fp8 ONLY -- the accuracy sweep keeps fp8_dynamic out of the
-    # auto ladder (only in-bar on a couple of VAEs). Even on data-center fp8-GEMM silicon it
-    # resolves to fp8, and the fp8_dynamic conv probe is never consulted for auto.
+    # ``auto`` engages layerwise fp8 ONLY (fp8_dynamic is out of the auto ladder). Even on
+    # fp8-GEMM silicon it resolves to fp8, and the fp8_dynamic conv probe is never consulted.
     _stub_capability(monkeypatch, (10, 0))
     _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
     monkeypatch.setattr(
@@ -512,9 +511,8 @@ def test_vae_conv_ndims(monkeypatch):
 
 
 def test_quantize_vae_fp8_dynamic_probes_conv3d_for_video_vae(monkeypatch):
-    # A Conv3d (video) VAE must pass the 3D conv probe: a torchao build whose Conv2d fp8 path
-    # works but whose Conv3d path is broken would otherwise report the VAE quantised and crash
-    # at the first video decode. Probe ok for 2D but not 3D -> the request stays dense.
+    # A Conv3d (video) VAE must pass the 3D conv probe: a build whose Conv2d path works but
+    # Conv3d is broken would else crash at the first decode. Probe ok for 2D but not 3D -> dense.
     torch = _stub_torch(monkeypatch, cc = (10, 0))
     _allow_vae(monkeypatch, {VAE_QUANT_FP8_DYNAMIC, VAE_QUANT_FP8})
     probed: list = []
@@ -561,9 +559,8 @@ class _PartiallyQuantizedVae:
 
 
 def test_quantize_vae_partial_cast_failure_fails_load(monkeypatch):
-    # fp8_dynamic's quantize_ swaps conv/linear weights module-by-module: a mid-pass
-    # failure that left torchao params behind must raise instead of reporting a dense
-    # fallback (mixed weights are unvalidated; offload's Module.to() crashes on them).
+    # fp8_dynamic's quantize_ swaps weights module-by-module: a mid-pass failure that left
+    # torchao params behind must raise instead of reporting a dense fallback.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow_vae(monkeypatch, {VAE_QUANT_FP8})
 

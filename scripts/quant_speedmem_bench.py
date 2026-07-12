@@ -3,25 +3,19 @@
 
 """Speed + memory benchmark for the text-encoder auto-quant and VAE quant casters.
 
-The companion accuracy sweep (``quant_accuracy_sweep.py``) proved the two new quantisers do not
-hurt quality; this measures the other half: the memory they save and their latency impact. It
-drives the REAL casters -- ``quantize_text_encoders`` (``core.inference.diffusion_precision``) and
-``quantize_vae`` (``core.inference.diffusion_vae_quant``) -- exactly as the loader does, but on the
-components in isolation so the numbers are not drowned by the dominant DiT (a separate, already
-shipped quant feature that is held constant here).
+The accuracy half is ``quant_accuracy_sweep.py``; this measures memory saved + latency impact.
+Drives the REAL casters (``quantize_text_encoders`` / ``quantize_vae``) exactly as the loader
+does, on the components in isolation so the numbers aren't drowned by the DiT (held constant).
 
 Three modes:
-  --mode te    load ONLY the text_encoder subfolder(s), measure steady weight memory + an encode
-               forward latency, dense vs ``quantize_text_encoders(mode="auto")``.
-  --mode vae   load ONLY the vae subfolder, measure weight memory + a decode latency, dense vs
-               ``quantize_vae(mode="auto")`` (layerwise fp8); for flux.2 also explicit fp8_dynamic.
-  --mode e2e   load the full pipeline (DiT dense in both runs) and measure load-peak / gen-peak
-               resident memory + generation latency, dense TE+VAE vs auto TE+VAE.
+  --mode te    load ONLY the text_encoder subfolder(s), measure weight memory + encode latency,
+               dense vs ``quantize_text_encoders(mode="auto")``.
+  --mode vae   load ONLY the vae subfolder, measure weight memory + decode latency, dense vs
+               ``quantize_vae(mode="auto")``; for flux.2 also explicit fp8_dynamic.
+  --mode e2e   load the full pipeline (DiT dense) and measure load-peak / gen-peak memory +
+               generation latency, dense TE+VAE vs auto TE+VAE.
 
-Memory idiom is lifted from scripts/diffusion_bench.py + scripts/quant_probe.py:
-``reset_peak_memory_stats`` -> load -> ``memory_allocated`` (steady weights) / ``max_memory_allocated``
-(peak) with ``synchronize`` + ``perf_counter`` around timed sections. torch / torchao / diffusers are
-imported lazily so ``--help`` works without them.
+torch / torchao / diffusers imported lazily so ``--help`` works without them.
 
 Example:
     CUDA_VISIBLE_DEVICES=4 python scripts/quant_speedmem_bench.py --family qwen-image --mode te \\
@@ -49,18 +43,16 @@ for _p in (str(_BACKEND_ROOT), str(_REPO_ROOT / "scripts")):
 
 PROMPT = "A photograph of an astronaut riding a horse on the surface of the moon, detailed, 8k"
 
-# base diffusers repos (all cached). flux.2 uses the cached FLUX.2-dev repo whose vae/text_encoder
-# subfolders are the same architecture as klein; it is included to exercise the explicit VAE
-# fp8_dynamic opt-in path (the only image family where fp8_dynamic is measured in-bar).
+# base diffusers repos (cached). flux.2 exercises the explicit VAE fp8_dynamic opt-in path (the
+# only image family where fp8_dynamic is measured in-bar).
 _FAMILIES: dict[str, dict[str, Any]] = {
     "qwen-image": {"repo": "Qwen/Qwen-Image"},
     "flux.1": {"repo": "black-forest-labs/FLUX.1-dev"},
     "sdxl": {"repo": "stabilityai/stable-diffusion-xl-base-1.0"},
     "flux.2": {"repo": "black-forest-labs/FLUX.2-dev"},
-    # video families -- Conv3d VAEs, which is where the VAE actually holds real memory.
-    # They are here for the ISOLATED te/vae modes only: the pipeline-level modes (dit,
-    # e2e) drive the image __call__ interface (.images[0], no frame kwargs), so those
-    # modes reject them and point at scripts/video_speedmem_bench.py instead.
+    # video families -- Conv3d VAEs (where the VAE holds real memory). Here for the ISOLATED
+    # te/vae modes only; the dit/e2e modes drive the image __call__ interface and reject them,
+    # pointing at scripts/video_speedmem_bench.py.
     "ltx-2": {"repo": "Lightricks/LTX-2", "video": True},
     "hunyuanvideo-1.5": {
         "repo": "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
@@ -297,11 +289,9 @@ def _te_hidden_refs(bag, toks, device):
 
 
 def _te_param_sig(te) -> tuple:
-    """Weight-storage fingerprint (per-param impl class + dtype). It changes iff a caster
-    actually rewrote this encoder's weights: layerwise fp8 restores float8 storage, the
-    torchao modes swap in tensor subclasses. quantize_text_encoders returns ONE scheme for
-    the whole bag even when a per-encoder cast failed, so this is how a bench tells which
-    encoders really engaged."""
+    """Weight-storage fingerprint (per-param class + dtype). Changes iff a caster rewrote this
+    encoder's weights. quantize_text_encoders returns ONE scheme for the whole bag even when a
+    per-encoder cast failed, so this is how the bench tells which encoders really engaged."""
     return tuple((type(p).__name__, str(p.dtype)) for p in te.parameters())
 
 
@@ -338,10 +328,8 @@ def measure_te_accuracy(
         }
         engaged = quantize_text_encoders(bag, _target(), mode = scheme, family = family, logger = logger)
         if engaged is None:
-            # The scheme was skipped (unsupported GPU / build, family deny, or a failed kernel
-            # probe), so the encoder is still dense. Comparing it against the dense reference would
-            # score ~1.0 and falsely certify a scheme that never ran, so record it NOT engaged and
-            # move on rather than collecting accuracy metrics on a no-op.
+            # The scheme was skipped, so the encoder is still dense. Comparing it against the
+            # dense reference would score ~1.0 and falsely certify a no-op; record NOT engaged.
             rows.append(
                 {
                     "family": family,
@@ -359,10 +347,9 @@ def measure_te_accuracy(
             continue
         cur = _te_hidden_refs(bag, toks, device)
         for attr, ref_vecs in refs.items():
-            # The caster is best-effort PER encoder (a failure leaves that one dense), yet
-            # the returned scheme covers the whole bag. Scoring a still-dense encoder against
-            # the dense reference would read ~1.0 and falsely certify the scheme for it, so
-            # record any encoder whose weight storage did not change as NOT engaged instead.
+            # The caster is best-effort per encoder, yet the returned scheme covers the whole
+            # bag. Record any encoder whose weight storage didn't change as NOT engaged, else a
+            # still-dense encoder scores ~1.0 and falsely certifies the scheme.
             if _te_param_sig(getattr(bag, attr)) == dense_sigs.get(attr):
                 rows.append(
                     {
@@ -433,9 +420,8 @@ def _load_vae(
     import torch
 
     diffusers = _import_diffusers()
-    # vae_force_fp32 families (Wan) store AND run the VAE in fp32 in production (the loader
-    # pins a per-component dtype), and quantize_vae stays dense for them regardless. Loading
-    # bf16 here would measure the memory/latency of a truncated VAE production never runs.
+    # vae_force_fp32 families (Wan) store AND run the VAE in fp32, and quantize_vae stays dense
+    # for them; loading bf16 here would measure a truncated VAE production never runs.
     dtype = torch.float32 if force_fp32 else torch.bfloat16
     vae = diffusers.AutoModel.from_pretrained(repo, subfolder = "vae", torch_dtype = dtype)
     return vae.to(device).eval()
@@ -485,8 +471,8 @@ def _make_latent(vae, device: str):
     g = torch.Generator().manual_seed(1234)
     shape = (1, channels, 3, 32, 32) if is_3d else (1, channels, 64, 64)
     z = torch.randn(shape, generator = g, dtype = torch.float32)
-    # Match the VAE's parameter dtype (fp32 for the vae_force_fp32 families, bf16 otherwise),
-    # like the pipelines do before decode; an fp32 conv rejects a bf16 latent outright.
+    # Match the VAE's parameter dtype (fp32 for vae_force_fp32 families, bf16 otherwise);
+    # an fp32 conv rejects a bf16 latent.
     dtype = next(vae.parameters()).dtype
     return z.to(device = device, dtype = dtype)
 
@@ -637,7 +623,7 @@ def measure_vae(
     repo = _FAMILIES[family]["repo"]
     rows = [_measure_vae_scheme(family, repo, "auto", warmup = warmup, iters = iters, logger = logger)]
     if family == "flux.2":
-        # the one image family where the explicit fp8_dynamic conv opt-in is measured in-bar.
+        # the one image family where explicit fp8_dynamic conv is measured in-bar.
         rows.append(
             _measure_vae_scheme(
                 family, repo, "fp8_dynamic", warmup = warmup, iters = iters, logger = logger
@@ -666,11 +652,8 @@ def _e2e_run(
     diffusers = _import_diffusers()
     _empty()
     _reset_peak()
-    # Mirror the production loader's ordering: companion quantization applies to the
-    # CPU-built pipeline BEFORE placement (the loader quantizes ahead of
-    # apply_memory_plan), so the auto row loads like production for models whose
-    # dense companions do not fit, and load_peak_gb records the placement of the
-    # measured (quantized) configuration rather than the dense one.
+    # Mirror the loader order: quantize the CPU-built pipeline BEFORE placement, so the auto
+    # row loads like production and load_peak_gb records the quantized config, not the dense one.
     pipe = diffusers.DiffusionPipeline.from_pretrained(repo, torch_dtype = torch.bfloat16)
     te_scheme = vae_scheme = None
     if quant:
@@ -724,9 +707,8 @@ def _e2e_run(
     return {
         "variant": "auto" if quant else "dense",
         # te_scheme / vae_scheme are the ACTUAL engaged modes: quantize_* returns None when the
-        # component stays dense (unsupported HW, a failed kernel probe, or the VAE size gate on
-        # small image VAEs), so report "dense" then, NOT the requested "auto" -- otherwise a no-op
-        # default is mislabelled as an auto-quantised run and the latency/memory row looks quantised.
+        # component stays dense, so report "dense" then, NOT the requested "auto", else a no-op is
+        # mislabelled as an auto-quantised run.
         "te_scheme": te_scheme or "dense",
         "vae_scheme": vae_scheme or "dense",
         "load_peak_gb": round(load_peak, 2),
@@ -749,9 +731,8 @@ def measure_e2e(
     logger = None,
 ) -> list[dict]:
     repo = _FAMILIES[family]["repo"]
-    # "both" runs dense then auto in one process (fast, but the 2nd run is on a hotter GPU / a
-    # fragmented allocator). "dense"/"auto" run a single variant in a fresh process so an
-    # interleaved dense/auto/dense sequence separates a real quant effect from GPU thermal drift.
+    # "both" runs dense then auto in one process (fast, but the 2nd run is on a hotter GPU).
+    # "dense"/"auto" run a single variant per process to separate a real effect from thermal drift.
     variants = {"both": (False, True), "dense": (False,), "auto": (True,)}[variant]
     rows = []
     for quant in variants:
@@ -776,8 +757,8 @@ def measure_e2e(
 
 # ── mode: dit (transformer quant, the real speed lever) ───────────────────────
 def _compile_blocks(transformer) -> bool:
-    """Regional block compile (the real feature path); torchao dynamic quant is ~30x slower eager,
-    so both dense and quant variants are compiled for a fair speedup comparison."""
+    """Regional block compile (the real feature path); both dense and quant variants are compiled
+    (torchao dynamic quant is ~30x slower eager) for a fair speedup comparison."""
     fn = getattr(transformer, "compile_repeated_blocks", None)
     if not callable(fn):
         return False
@@ -802,9 +783,8 @@ def _dit_run(
     compile_blocks: bool = True,
     logger = None,
 ):
-    """Load the full pipeline dense, quantise ONLY the transformer (TE + VAE stay dense to isolate
-    the DiT), regional-compile it (the real feature path), then measure per-step + total latency and
-    peak resident memory. Returns row + image."""
+    """Load the full pipeline dense, quantise ONLY the transformer (TE + VAE stay dense),
+    regional-compile it, then measure per-step + total latency and peak memory. Returns row + image."""
     import torch
 
     from core.inference.diffusion_transformer_quant import quantize_transformer
@@ -857,8 +837,8 @@ def measure_dit(
     out: Path,
     logger = None,
 ):
-    """Dense reference + each DiT scheme (auto/fp8/int8/mxfp8), reporting speedup, peak-memory drop,
-    and LPIPS(AlexNet) vs the dense render (the whole-image accuracy metric)."""
+    """Dense reference + each DiT scheme (auto/fp8/int8/mxfp8), reporting speedup, peak-memory
+    drop, and LPIPS(AlexNet) vs the dense render."""
     import numpy as np
 
     repo = _FAMILIES[family]["repo"]

@@ -40,22 +40,22 @@ DEFAULT_FBCACHE_THRESHOLD = 0.08
 QUANT_FBCACHE_THRESHOLD = 0.12
 
 # MagCache (diffusers >= 0.39): skips whole steps from a PRE-CALIBRATED residual-magnitude
-# curve with an accumulated-error budget, a consecutive-skip cap, and a no-skip retention
-# window over the early steps -- so unlike FBCache the divergence from the uncached
-# trajectory is bounded. Measured on HunyuanVideo-1.5-720p (B200, 50 steps, 720p clip):
-# threshold 0.12 = 1.5x end-to-end at LPIPS 0.147 vs the same uncached stack with the SAME
-# composition (FBCache at its 0.08 default reached 2.4x but LPIPS 0.54: a brighter,
-# visibly different clip -- why the fbcache auto policy excludes this family).
+# curve with an accumulated-error budget, a skip cap, and an early-step no-skip retention
+# window -- so unlike FBCache the divergence from the uncached trajectory is bounded.
+# Measured (HunyuanVideo-1.5-720p, B200, 50 steps): threshold 0.12 = 1.5x e2e at LPIPS
+# 0.147 vs the same uncached stack with the SAME composition (FBCache at its 0.08 default
+# reached 2.4x but LPIPS 0.54: a brighter, different clip -- why the fbcache auto policy
+# excludes this family).
 DEFAULT_MAGCACHE_THRESHOLD = 0.12
 MAGCACHE_MAX_SKIP_STEPS = 3
 MAGCACHE_RETENTION_RATIO = 0.2
 
 # ── cache quality presets ──────────────────────────────────────────────────────────
-# A user-facing speed/accuracy knob over the step cache's internals (threshold, skip cap,
-# retention window). "balanced" is exactly the pre-knob shipped behaviour; "quality"
-# trades most of the cache speedup for a near-lossless clip; "fast" skips more
-# aggressively. An explicit transformer_cache_threshold always overrides the preset's
-# threshold (the preset still supplies the magcache skip cap / retention window).
+# User-facing speed/accuracy knob over the cache internals (threshold, skip cap, retention
+# window). "balanced" = the pre-knob shipped behaviour; "quality" trades most of the
+# speedup for a near-lossless clip; "fast" skips more aggressively. An explicit
+# transformer_cache_threshold always overrides the preset threshold (the preset still
+# supplies the magcache skip cap / retention window).
 CQ_QUALITY = "quality"
 CQ_BALANCED = "balanced"
 CQ_FAST = "fast"
@@ -63,22 +63,19 @@ CACHE_QUALITY_LEVELS = (CQ_QUALITY, CQ_BALANCED, CQ_FAST)
 
 # MagCache preset -> (threshold, max_skip_steps, retention_ratio). Calibrated on
 # HunyuanVideo-1.5-720p (B200, 1280x720, 33 frames, 50 steps, pairwise LPIPS vs the same
-# uncached trim+cudnn+compile stack, WITH the compiled hook inners below): quality
-# (0.06, 2, 0.3) = 1.64x at LPIPS 0.050 (30 steps: 1.63x at 0.093) vs balanced
-# (0.12, 3, 0.2) = 2.17x at LPIPS 0.129 (30 steps: 2.02x at 0.201). Skip counts bind on
-# the cap + retention window below threshold ~0.12, which is why quality tightens all
-# three rather than just the threshold. Re-measured at the production 121-frame default
-# (same protocol): quality = 1.69x at 0.042 (720p) / 1.66x at 0.018 (480p) -- the
-# 33-frame operating points transfer (see the ratio-curve note below).
+# uncached trim+cudnn+compile stack): quality (0.06, 2, 0.3) = 1.64x at LPIPS 0.050 (30
+# steps: 1.63x/0.093) vs balanced (0.12, 3, 0.2) = 2.17x at 0.129 (30 steps: 2.02x/0.201).
+# Skip counts bind on the cap + retention window below threshold ~0.12, so quality tightens
+# all three. Re-measured at the production 121-frame default (same protocol): quality =
+# 1.69x/0.042 (720p) / 1.66x/0.018 (480p) -- the 33-frame operating points transfer.
 _MAGCACHE_QUALITY_PRESETS: dict[str, tuple[float, int, float]] = {
     CQ_QUALITY: (0.06, 2, 0.3),
     CQ_BALANCED: (DEFAULT_MAGCACHE_THRESHOLD, MAGCACHE_MAX_SKIP_STEPS, MAGCACHE_RETENTION_RATIO),
     CQ_FAST: (0.24, MAGCACHE_MAX_SKIP_STEPS, MAGCACHE_RETENTION_RATIO),
 }
 
-# FBCache preset -> threshold (dense, quant-active). "balanced" keeps the measured
-# defaults (0.08 dense / 0.12 quantised); "quality" halves the trigger so the cache only
-# reuses when the first-block residual is nearly static; "fast" uses the quantised
+# FBCache preset -> threshold (dense, quant-active). "balanced" keeps the measured defaults
+# (0.08 dense / 0.12 quantised); "quality" halves the trigger; "fast" uses the quantised
 # threshold everywhere.
 _FBCACHE_QUALITY_THRESHOLDS: dict[str, tuple[float, float]] = {
     CQ_QUALITY: (0.04, 0.06),
@@ -87,28 +84,23 @@ _FBCACHE_QUALITY_THRESHOLDS: dict[str, tuple[float, float]] = {
 }
 
 # Per-family FBCache threshold overrides: (family, preset) -> (dense, quant-active).
-# Wan2.2-A14B: on reference hardware the UNSET precision auto-promotes to fp8, which
-# made the generic quant-active promotion (0.08 -> 0.12) the family's EFFECTIVE
-# default -- but fb@0.12 measures pairwise LPIPS 0.128 (2.88x, dense probe, B200,
-# 1280x720/33f/50 steps), far over the <= 0.08 quality gate the balanced preset is
-# held to, and the round-3 adjudication that kept FBCache as the auto mode assumed
-# the 0.08 point (1.28x/0.098). No compliant faster point exists (fb@0.04 is SLOWER
-# than uncached at 0.016; MagCache was measured worse), so balanced pins 0.08 with
-# quant active too: quality first, the fast points stay one explicit preset away.
-# Operating point with the shipped quant actually engaged (fp8 DiTs, production
-# shape 1280x720/81f/50 steps, pairwise vs the same fp8 uncached load, B200):
-# fb@0.08 = 1.08x at LPIPS 0.129, vs the old effective default fb@0.12 = 2.58x at
-# 0.181 -- fp8's residual noise makes the quantised cache trip the quality gate at
-# ANY speedup, so 0.08 is the least-drift cache-on point, not a compliant one.
+# Wan2.2-A14B: UNSET precision auto-promotes to fp8, so the generic quant promotion
+# (0.08 -> 0.12) was the EFFECTIVE default -- but fb@0.12 measures LPIPS 0.128 (2.88x,
+# dense probe, B200, 1280x720/33f/50 steps), far over the <= 0.08 quality gate balanced is
+# held to (adjudication assumed the 0.08 point, 1.28x/0.098). No compliant faster point
+# exists (fb@0.04 is SLOWER than uncached at 0.016; MagCache measured worse), so balanced
+# pins 0.08 even with quant active. With the shipped fp8 quant engaged (production
+# 1280x720/81f/50 steps, pairwise vs the same fp8 uncached load): fb@0.08 = 1.08x/0.129 vs
+# the old fb@0.12 = 2.58x/0.181 -- fp8's residual noise trips the gate at ANY speedup, so
+# 0.08 is the least-drift cache-on point, not a compliant one.
 _FAMILY_FBCACHE_THRESHOLDS: dict[tuple[str, str], tuple[float, float]] = {
     ("wan2.2-t2v-a14b", CQ_BALANCED): (DEFAULT_FBCACHE_THRESHOLD, DEFAULT_FBCACHE_THRESHOLD),
 }
 
 
 def normalize_cache_quality(value: Optional[str]) -> Optional[str]:
-    """Lower/strip a requested cache quality; None / "" / "auto" -> None (the loader
-    resolves it per family via ``auto_cache_quality``). Raises ValueError for an
-    unsupported value."""
+    """Lower/strip a requested cache quality; None / "" / "auto" -> None (loader resolves
+    per family via ``auto_cache_quality``). Raises ValueError for an unsupported value."""
     if value is None:
         return None
     normalized = str(value).strip().lower()
@@ -123,12 +115,9 @@ def normalize_cache_quality(value: Optional[str]) -> Optional[str]:
 
 
 # Families whose UNSET cache quality resolves to the near-lossless "quality" preset
-# instead of "balanced". HunyuanVideo-1.5 (both repacks) measured with the compiled
-# cache inners (see _compile_hooked_block_inners): quality = 1.63-1.64x at pairwise
-# LPIPS 0.05 (50 steps) / 0.09 (30 steps) vs balanced's 2.02-2.17x at 0.13-0.20 --
-# the accuracy-first default keeps most of the speedup at under half the drift, and
-# balanced / fast stay one explicit request away. Families without a measured quality
-# point keep balanced (their pre-knob behaviour).
+# instead of "balanced". HunyuanVideo-1.5 (both repacks): quality = 1.63-1.64x at LPIPS
+# 0.05 (50 steps) / 0.09 (30 steps) vs balanced's 2.02-2.17x at 0.13-0.20 -- most of the
+# speedup at under half the drift. Families without a measured quality point keep balanced.
 _FAMILY_AUTO_CACHE_QUALITY: dict[str, str] = {
     "hunyuanvideo-1.5": CQ_QUALITY,
     "hunyuanvideo-1.5-720p": CQ_QUALITY,
@@ -148,21 +137,17 @@ FBCACHE_MIN_STEPS = 20
 
 # Per-family MagCache magnitude-ratio curves (MagCacheConfig.mag_ratios), calibrated with
 # diffusers' calibrate mode on the family base checkpoints at the default 50-step schedule
-# (720p clip, B200). The curve is checkpoint-dependent but highly stable where it matters:
-# the CFG cond/uncond branches differ by <= 0.014 and a 30-step calibration matches the
-# 50-step curve within 0.027 after nearest-interpolation, so ONE curve per family is
-# enough -- diffusers interpolates it to the actual step count. Conditional-branch curve
-# per the MagCache calibration guidance.
+# (720p clip, B200). Stable where it matters: the CFG cond/uncond branches differ by <=
+# 0.014 and a 30-step calibration matches the 50-step curve within 0.027, so ONE
+# (conditional) curve per family is enough -- diffusers interpolates it to the step count.
 #
-# Frame-count transfer VALIDATED at the production default (121 frames): these curves
-# were calibrated on 33-frame clips, and recalibrating each family at its production
-# shape (121f / 50 steps / default resolution, B200) moves the curve by <= 0.024 max
-# abs entry diff (hv720 0.019, hv480 0.021, wan5b 0.024) -- small enough that the auto
-# preset's skip schedule is UNCHANGED: the 33f-curve and fresh-121f-curve runs produced
-# byte-identical frames on every family, so the 33f curves ship as-is. Measured at 121f
-# with the shipped curves (pairwise LPIPS vs the same-load uncached compiled stack):
-# hv720 quality 1.69x at 0.042, hv480 quality 1.66x at 0.018, wan5b balanced 1.74x at
-# 0.026 -- each inside the gate its 33f adjudication was held to.
+# Frame-count transfer VALIDATED at the production default (121 frames): the curves were
+# calibrated on 33-frame clips, and recalibrating each family at 121f / 50 steps moves the
+# curve by <= 0.024 max abs entry diff (hv720 0.019, hv480 0.021, wan5b 0.024) -- small
+# enough that the skip schedule is UNCHANGED (33f-curve and fresh-121f-curve runs produced
+# byte-identical frames), so the 33f curves ship as-is. Measured at 121f with the shipped
+# curves (pairwise LPIPS vs the same-load uncached compiled stack): hv720 quality
+# 1.69x/0.042, hv480 quality 1.66x/0.018, wan5b balanced 1.74x/0.026 -- each inside its gate.
 _MAGCACHE_720P_RATIOS = (
     1.0,
     1.0226,
@@ -267,9 +252,8 @@ _MAGCACHE_480P_RATIOS = (
     0.8967,
     0.8382,
 )
-# Wan2.2-TI2V-5B, calibrated at 1280x704 / 33 frames / 50 steps on the family base
-# checkpoint (B200, trim-less compiled stack). Cond/uncond branches agree within
-# 0.0008, so one (conditional) curve serves both CFG contexts.
+# Wan2.2-TI2V-5B, calibrated at 1280x704 / 33 frames / 50 steps (B200). Cond/uncond
+# branches agree within 0.0008, so one (conditional) curve serves both CFG contexts.
 _MAGCACHE_WAN5B_RATIOS = (
     1.0,
     0.9906,
@@ -323,14 +307,13 @@ _MAGCACHE_WAN5B_RATIOS = (
     0.9208,
 )
 
-# All curves are calibrated at the family's default 50-step schedule. A single-DiT
-# curve therefore has 50 entries and MagCacheConfig interpolates it to the actual step
-# count. A dual-expert MoE (Wan2.2-A14B) runs each expert on a SLICE of the schedule
-# (the boundary_ratio split) and the MagCache hook counts each expert's OWN forwards
-# from 0, so each expert carries its own curve, keyed "family::transformer_2" for the
-# second expert, whose length is the number of steps that expert ran during the 50-step
-# calibration; engage-time scales it proportionally to the requested step count (the
-# boundary split is a fixed fraction of the schedule for a given checkpoint).
+# All curves are calibrated at the 50-step schedule, so a single-DiT curve has 50 entries
+# and MagCacheConfig interpolates it to the actual step count. A dual-expert MoE
+# (Wan2.2-A14B) runs each expert on a SLICE of the schedule and the hook counts each
+# expert's OWN forwards from 0, so each expert carries its own curve (keyed
+# "family::transformer_2" for the second), sized to that expert's steps in the 50-step
+# calibration; engage-time scales it by the requested step count (the boundary split is a
+# fixed fraction of the schedule).
 _MAGCACHE_CALIBRATION_STEPS = 50
 
 _MAGCACHE_FAMILY_RATIOS: dict[str, tuple[float, ...]] = {
@@ -351,21 +334,16 @@ def _magcache_ratio_key(family: Optional[str], expert: Optional[str]) -> str:
 
 
 # Families whose AUTO step-cache decision engages MagCache instead of FBCache. On
-# HunyuanVideo-1.5 FBCache free-runs (no skip cap, no error budget) and derails the
-# trajectory (LPIPS 0.54 + a luma shift at its default threshold), while MagCache holds
-# the same composition at 1.5x -- see the constants above. On Wan2.2-TI2V-5B both modes
-# stay composition-true, but MagCache dominates the accuracy/speed frontier (B200,
-# 1280x704/33f/50 steps, pairwise LPIPS vs the same uncached compiled stack): balanced
-# MagCache 1.65x at 0.034 vs FBCache 0.08 at 1.49x/0.031, and at the fast points 1.73x
-# at 0.044 vs 1.71x at 0.083 -- FBCache's error grows unboundedly past its threshold
-# while MagCache's budget caps it. On Wan2.2-A14B (dual-expert MoE) the OPPOSITE holds
-# (B200, 1280x720/33f/50 steps, per-expert calibrated curves, same pairwise protocol):
-# FBCache 0.12 at 2.88x/0.128 dominates balanced MagCache (1.80x/0.145) and FBCache
-# 0.08 sits at 1.28x/0.098 vs MagCache quality's 1.14x/0.074 -- the 16-step high-noise
-# expert leaves MagCache too few forwards to skip within its error budget -- so the
-# family keeps the FBCache default and no calibrated curve ships (an explicit magcache
-# request runs uncached with a warning rather than engaging a measured-worse mode).
-# Every other family keeps the measured FBCache default. An EXPLICIT
+# HunyuanVideo-1.5 FBCache free-runs and derails the trajectory (LPIPS 0.54 + a luma shift
+# at its default), while MagCache holds the same composition at 1.5x. On Wan2.2-TI2V-5B
+# both stay composition-true but MagCache dominates (B200, 1280x704/33f/50 steps, pairwise
+# LPIPS): balanced MagCache 1.65x/0.034 vs FBCache 0.08 at 1.49x/0.031, fast points
+# 1.73x/0.044 vs 1.71x/0.083. On Wan2.2-A14B (dual-expert MoE) the OPPOSITE holds (B200,
+# 1280x720/33f/50 steps, per-expert curves): FBCache 0.12 at 2.88x/0.128 dominates balanced
+# MagCache (1.80x/0.145), and FBCache 0.08 at 1.28x/0.098 beats MagCache quality's
+# 1.14x/0.074 -- the 16-step high-noise expert leaves MagCache too few forwards to skip
+# within its budget -- so it keeps FBCache and ships no curve (an explicit magcache request
+# runs uncached with a warning). Every other family keeps FBCache. An EXPLICIT
 # "fbcache"/"magcache" request always wins.
 _FAMILY_AUTO_CACHE_MODE: dict[str, str] = {
     "hunyuanvideo-1.5": TC_MAGCACHE,
@@ -375,10 +353,9 @@ _FAMILY_AUTO_CACHE_MODE: dict[str, str] = {
 
 
 def auto_cache_mode(family: Optional[str]) -> str:
-    """The cache mode the AUTO policy engages for ``family`` (mode only; the step-count
-    bar and the engage call are the caller's job). MagCache additionally needs a
-    calibrated ratio curve: a family routed here without one runs uncached (the
-    apply_step_cache magcache branch checks), never silently falls back to FBCache."""
+    """The cache mode the AUTO policy engages for ``family`` (mode only; the step-count bar
+    and the engage call are the caller's job). MagCache also needs a calibrated curve: a
+    family routed here without one runs uncached, never silently falls back to FBCache."""
     return _FAMILY_AUTO_CACHE_MODE.get(str(family or "").strip().lower(), TC_FBCACHE)
 
 
@@ -402,29 +379,21 @@ def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
-# Transformer block classes whose FBCache metadata is missing from the installed
-# diffusers. The First-Block-Cache hook reads each block's (hidden_states,
-# encoder_hidden_states) return layout from TransformerBlockRegistry; diffusers 0.39
-# registers the HunyuanVideo 1.0 blocks but not the 1.5 ones, so enable_cache raises
-# "Model class HunyuanVideo15TransformerBlock not registered" on a DiT that is
-# otherwise fully cache-compatible: CacheMixin, one homogeneous ``transformer_blocks``
-# list of residual-additive dual-stream blocks returning (hidden_states,
-# encoder_hidden_states) -- the exact layout of the registered 1.0 block. Keyed by the
-# TRANSFORMER class name so only a family that needs the patch pays for it, and probed
-# via TransformerBlockRegistry.get first so a diffusers release that ships the
-# registration natively makes this a no-op.
+# Transformer block classes whose FBCache metadata is missing from the installed diffusers.
+# The hook reads each block's (hidden_states, encoder_hidden_states) return layout from
+# TransformerBlockRegistry; diffusers 0.39 registers HunyuanVideo 1.0 but not 1.5, so
+# enable_cache raises "not registered" on a DiT that is otherwise fully cache-compatible
+# (CacheMixin, homogeneous residual-additive dual-stream blocks with the 1.0 return
+# layout). Keyed by TRANSFORMER class name so only a family that needs it pays, and probed
+# via TransformerBlockRegistry.get first so a newer diffusers makes this a no-op.
 #   transformer class -> ((block module, block class, hs index, ehs index), ...)
 #
-# LTX-2 is DELIBERATELY absent: its LTX2VideoTransformerBlock is also unregistered in
-# diffusers 0.39, but it returns (hidden_states, audio_hidden_states) -- a JOINT
-# video+audio stream -- while both cache hook families cache/skip only the single
-# ``hidden_states`` stream and, on a skipped step, fetch the parameter literally named
-# ``encoder_hidden_states`` (the TEXT embeddings) for the second return slot. A naive
-# registration would therefore feed text embeddings into the next block's audio input
-# on every skipped step. Step caching for LTX-2 needs a dual-stream cache
-# implementation, not a metadata entry; until then the family runs uncached (verified:
-# enable_cache raises "not registered" and the load proceeds uncached, and the
-# distilled LTX-2.3 checkpoints run 8-step schedules below FBCACHE_MIN_STEPS anyway).
+# LTX-2 is DELIBERATELY absent: its block is also unregistered but returns (hidden_states,
+# audio_hidden_states) -- a JOINT video+audio stream -- while the cache hooks skip only
+# ``hidden_states`` and, on a skipped step, feed ``encoder_hidden_states`` (TEXT) into the
+# second slot. A naive registration would feed text into the next block's audio input.
+# LTX-2 needs a dual-stream cache, not a metadata entry; until then it runs uncached (and
+# the distilled LTX-2.3 checkpoints run 8-step schedules below FBCACHE_MIN_STEPS anyway).
 _EXTRA_BLOCK_METADATA: dict[str, tuple[tuple[str, str, int, Optional[int]], ...]] = {
     "HunyuanVideo15Transformer3DModel": (
         (
@@ -439,8 +408,8 @@ _EXTRA_BLOCK_METADATA: dict[str, tuple[tuple[str, str, int, Optional[int]], ...]
 
 def _ensure_block_metadata_registered(transformer: Any, logger: Any = None) -> None:
     """Register the missing FBCache block metadata for ``transformer``'s family (see
-    ``_EXTRA_BLOCK_METADATA``). Best-effort: a failure just leaves enable_cache to raise
-    its own error and the load runs uncached, exactly as before this patch."""
+    ``_EXTRA_BLOCK_METADATA``). Best-effort: a failure leaves enable_cache to raise and
+    the load runs uncached."""
     specs = _EXTRA_BLOCK_METADATA.get(type(transformer).__name__)
     if not specs:
         return
@@ -621,18 +590,14 @@ def apply_step_cache(
     expert: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[str]:
-    """Engage step caching on ``pipe.transformer``. Returns the mode actually engaged, or
-    None when disabled / unsupported (the load then runs uncached). ``threshold`` overrides
-    the default; ``quant_active`` raises the FBCache default so the cache still triggers on
-    a quantised transformer. ``quality`` picks the preset parameter set (threshold + the
-    magcache skip cap / retention window); an explicit ``threshold`` still wins over the
-    preset's threshold. The magcache mode additionally needs ``family`` (to look up the
-    calibrated ratio curve) and ``steps`` (MagCache interpolates that curve over the
-    configured step count and sizes its no-skip retention window from it); a dual-expert
-    MoE caller passes ``expert`` (the pipe attribute the view exposes, e.g.
-    "transformer_2") so each expert gets ITS OWN calibrated curve -- the experts split
-    the schedule at the boundary timestep, and the hook counts each expert's own
-    forwards from 0, so one shared full-schedule curve would be misaligned for both.
+    """Engage step caching on ``pipe.transformer``. Returns the engaged mode, or None when
+    disabled / unsupported (load runs uncached). ``threshold`` overrides the default;
+    ``quant_active`` raises the FBCache default so the cache still triggers on a quantised
+    transformer. ``quality`` picks the preset (threshold + magcache skip cap / retention
+    window); an explicit ``threshold`` still wins. Magcache also needs ``family`` (the
+    calibrated curve) and ``steps`` (interpolated over the step count); a dual-expert MoE
+    passes ``expert`` (e.g. "transformer_2") so each expert gets ITS OWN curve -- the hook
+    counts each expert's forwards from 0, so one shared curve would misalign both.
     Best-effort: never raises for an incompatible model."""
     mode = normalize_transformer_cache(mode)
     if mode is None or mode == TC_AUTO:
@@ -673,9 +638,8 @@ def apply_step_cache(
             logger, mode, RuntimeError("pipeline __call__ opens no cache_context; running uncached")
         )
         return None
-    # Some cache-compatible block classes are missing from the installed diffusers'
-    # FBCache metadata registry (HunyuanVideo-1.5); register them before enable_cache.
-    # Both hook families (FBCache / MagCache) read the same block metadata.
+    # Some cache-compatible block classes are missing from diffusers' metadata registry
+    # (HunyuanVideo-1.5); register them before enable_cache. FBCache and MagCache share it.
     _ensure_block_metadata_registered(transformer, logger)
     try:
         if mode == TC_MAGCACHE:
@@ -695,12 +659,10 @@ def apply_step_cache(
                 return None
             from diffusers.hooks import MagCacheConfig
 
-            # A full-schedule curve (one entry per calibration step) interpolates to the
-            # requested step count directly. An expert SUB-curve (dual-expert MoE) covers
-            # only that expert's slice of the calibration schedule, and the hook indexes
-            # it by the expert's own forward count, so scale its configured step count by
-            # the same steps/calibration ratio: the boundary split is a fixed fraction of
-            # the schedule, so the expert runs ~len(ratios) * steps / 50 forwards.
+            # A full-schedule curve interpolates to the requested step count directly. An
+            # expert SUB-curve (MoE) covers only that expert's slice and the hook indexes it
+            # by the expert's own forward count, so scale its step count by the same
+            # steps/calibration ratio (the expert runs ~len(ratios) * steps / 50 forwards).
             num_steps = int(steps)
             if len(ratios) != _MAGCACHE_CALIBRATION_STEPS:
                 num_steps = max(1, round(len(ratios) * int(steps) / _MAGCACHE_CALIBRATION_STEPS))
@@ -723,9 +685,9 @@ def apply_step_cache(
             config = FirstBlockCacheConfig(threshold = thr)
             marker = f"{mode}@{thr}"
         enable_cache(config)
-        # A prior uncached generation may have frozen an empty child-registry list on
-        # the transformer's HookRegistry; the block hooks just installed would then
-        # never receive the cache context. Must follow every enable_cache.
+        # A prior uncached generation may have frozen an empty child-registry list, so the
+        # block hooks just installed would never receive the cache context. Must follow
+        # every enable_cache.
         _invalidate_child_registry_cache(transformer)
         # If the blocks are already regionally compiled (the generation-time toggle
         # path: compile ran at load), re-point the fresh hooks' compute branch at
@@ -804,8 +766,8 @@ def _disengage_step_cache(
     if not callable(disable_cache):
         return False
     try:
-        # Before remove_hook splices fn_ref.original_forward back into module.forward:
-        # the compiled inner wrappers must not leak onto the uncached path.
+        # Restore before remove_hook splices original_forward back, so the compiled
+        # inner wrappers don't leak onto the uncached path.
         _restore_hooked_block_inners(transformer)
         disable_cache()
         transformer._unsloth_step_cache = None
@@ -829,13 +791,11 @@ def maybe_toggle_step_cache(
     expert: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[str]:
-    """Generation-time enable/disable for an AUTO cache decision, keyed on the actual
-    step count: engage ``mode`` (the family's auto cache mode) at ``FBCACHE_MIN_STEPS``
-    or more, run uncached below it. Idempotent (the ``_unsloth_step_cache`` marker tracks
-    the engaged state), so calling it on every generation is cheap -- except a magcache
-    step-count change, which re-engages so the ratio curve is re-interpolated over the
-    actual schedule. Only the loader's auto path calls this; an explicit user choice is
-    never toggled. Returns the mode now active (or None when uncached)."""
+    """Generation-time enable/disable for an AUTO cache decision, keyed on the actual step
+    count: engage ``mode`` at ``FBCACHE_MIN_STEPS`` or more, uncached below it. Idempotent
+    via the ``_unsloth_step_cache`` marker, except a magcache step-count change, which
+    re-engages to re-interpolate the ratio curve. Only the loader's auto path calls this.
+    Returns the mode now active (or None when uncached)."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return None
