@@ -648,6 +648,12 @@ type ChatRuntimeStore = {
    *  toolCallId. Transient (never persisted): appended by tool_output SSE
    *  events, cleared when the tool's tool_end arrives or the run finishes. */
   toolLiveOutput: Record<string, string>;
+  /** Full live-streamed output of FINISHED tools whose final result was
+   *  truncated for the model, keyed by toolCallId. Session-transient (never
+   *  persisted): the finished python/terminal cards prefer this over the
+   *  truncated result text so the user keeps seeing everything the tool
+   *  printed. Set from tool_end handling in the chat adapter. */
+  toolFullOutput: Record<string, string>;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
   nudgeToolCalls: boolean;
@@ -785,6 +791,8 @@ type ChatRuntimeStore = {
   appendToolLiveOutput: (toolCallId: string, text: string) => void;
   /** Clear one tool's live output, or all when no id is given. */
   clearToolLiveOutput: (toolCallId?: string) => void;
+  /** Preserve a finished tool's full live-streamed output for display. */
+  setToolFullOutput: (toolCallId: string, text: string) => void;
   setGeneratingStatus: (status: string | null) => void;
   setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
@@ -1112,6 +1120,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ragCaptionFigures: loadBool(CHAT_RAG_CAPTION_KEY, DEFAULT_RAG_CAPTION),
   toolStatus: null,
   toolLiveOutput: {},
+  toolFullOutput: {},
   generatingStatus: null,
   activeDiffusionCanvas: null,
   autoHealToolCalls: true,
@@ -1362,6 +1371,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ragEnabled: false,
       toolStatus: null,
       toolLiveOutput: {},
+      toolFullOutput: {},
       activeDiffusionCanvas: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
@@ -1551,6 +1561,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolLiveOutput: {
         ...state.toolLiveOutput,
         [toolCallId]: (state.toolLiveOutput[toolCallId] ?? "") + text,
+      },
+    })),
+  setToolFullOutput: (toolCallId, text) =>
+    set((state) => ({
+      toolFullOutput: {
+        ...state.toolFullOutput,
+        [toolCallId]: text,
       },
     })),
   clearToolLiveOutput: (toolCallId) =>

@@ -3316,7 +3316,22 @@ export function createOpenAIStreamAdapter(
                     toolConfirmationIdsByBackendId.delete(backendToolCallId);
                   }
                   useChatRuntimeStore.getState().clearToolConfirmation(id);
-                  // The final result replaces the transient live output.
+                  // The final result replaces the transient live output, but
+                  // when the live stream captured MORE than the final result
+                  // (the model-visible result is truncated to protect the
+                  // context window), preserve the full stream so the finished
+                  // card keeps showing everything the tool printed.
+                  const liveOutput =
+                    useChatRuntimeStore.getState().toolLiveOutput[id] ?? "";
+                  if (
+                    id &&
+                    liveOutput.length >
+                      ((toolEvent.result as string) ?? "").length
+                  ) {
+                    useChatRuntimeStore
+                      .getState()
+                      .setToolFullOutput(id, liveOutput);
+                  }
                   useChatRuntimeStore.getState().clearToolLiveOutput(id);
                   liveArgsTextById.delete(id);
                   const idx = toolCallParts.findIndex(

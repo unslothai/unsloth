@@ -294,11 +294,16 @@ class TestSandboxEnvIsolation:
             "LANG",
             "TERM",
             "PYTHONIOENCODING",
+            "PYTHONPATH",
             "VIRTUAL_ENV",
             "SystemRoot",
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
+        # PYTHONPATH is whitelist-built, never inherited: it carries only the
+        # sandbox sitecustomize shim directory (code-interpreter path remap).
+        assert env["PYTHONPATH"].endswith("sandbox_site")
+        assert "leak-me" not in env["PYTHONPATH"]
 
     def test_home_points_at_sandbox_workdir(self, tmp_path):
         from core.inference.tools import _build_safe_env

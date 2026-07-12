@@ -72,7 +72,22 @@ if sys.platform != "win32":
 # Raster-image allowlist for sandbox file serving.
 # No .svg (XSS via embedded scripts), no .html, no .pdf.
 _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
-_MAX_OUTPUT_CHARS = 8000  # truncate long output
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an int env override; fall back to ``default`` on unset/garbage."""
+    try:
+        value = int(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+# Model-visible cap on python/terminal tool results (protects the context
+# window from a runaway stdout). The live UI stream is capped separately
+# (tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS) and much higher, so the
+# user still sees the full output even when the model's copy is truncated.
+_MAX_OUTPUT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000)
 _BLOCKED_COMMANDS_COMMON = frozenset(
     {
         "rm",
@@ -272,13 +287,20 @@ def _find_blocked_commands(command: str) -> set[str]:
     return blocked
 
 
+# Directory holding the sandbox ``sitecustomize.py`` shim (code-interpreter
+# path remap); placed on the sandboxed child's PYTHONPATH in _build_safe_env.
+_SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
+
+
 def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
     Whitelist-built from scratch (parent env NOT inherited): only PATH/HOME/
-    TMPDIR/LANG/TERM/PYTHONIOENCODING (+VIRTUAL_ENV or Windows SystemRoot) reach
-    the child; all credential vars (HF_TOKEN, AWS_*, etc.) are absent. HOME
-    points at the sandbox workdir so SDKs can't read the operator's cached creds.
+    TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows
+    SystemRoot) reach the child; all credential vars (HF_TOKEN, AWS_*, etc.)
+    are absent. HOME points at the sandbox workdir so SDKs can't read the
+    operator's cached creds. PYTHONPATH carries only the sandbox sitecustomize
+    shim directory.
     """
     # Start from the running interpreter's dir so 'python'/'pip' resolve to the
     # same environment the Studio server runs in.
@@ -308,6 +330,11 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
+        # sitecustomize shim: remaps ChatGPT code-interpreter paths
+        # (/mnt/data etc.) onto the sandbox CWD for open()/os.makedirs().
+        # Applies to the python tool and to Python launched from the terminal
+        # tool alike (env inheritance); see sandbox_site/sitecustomize.py.
+        "PYTHONPATH": _SANDBOX_SITE_DIR,
     }
     if venv:
         env["VIRTUAL_ENV"] = venv
@@ -733,11 +760,21 @@ WEB_SEARCH_TOOL = {
     },
 }
 
+# Appended to the python/terminal descriptions: models trained on ChatGPT
+# code-interpreter transcripts habitually write to /mnt/data, which does not
+# exist here. Kept to one sentence (tool descriptions cost tokens per request).
+_SANDBOX_PATHS_NOTE = (
+    " Read and write files using relative paths in the current working "
+    "directory, which persists for this conversation; absolute paths like "
+    "/mnt/data or /tmp/outputs do not exist."
+)
+
 PYTHON_TOOL = {
     "type": "function",
     "function": {
         "name": "python",
-        "description": "Execute Python code in a sandbox and return stdout/stderr.",
+        "description": "Execute Python code in a sandbox and return stdout/stderr."
+        + _SANDBOX_PATHS_NOTE,
         "parameters": {
             "type": "object",
             "properties": {
@@ -755,7 +792,7 @@ TERMINAL_TOOL = {
     "type": "function",
     "function": {
         "name": "terminal",
-        "description": "Execute a terminal command and return stdout/stderr.",
+        "description": "Execute a terminal command and return stdout/stderr." + _SANDBOX_PATHS_NOTE,
         "parameters": {
             "type": "object",
             "properties": {
@@ -2736,8 +2773,33 @@ def _cancel_watcher(
 
 def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
     if len(text) > limit:
-        return text[:limit] + f"\n\n... (truncated, {len(text)} chars total)"
+        return text[:limit] + (
+            f"\n\n... (truncated, {len(text)} chars total; the user was shown "
+            "the full output, and any files the code wrote persist in the "
+            "working directory)"
+        )
     return text
+
+
+# ChatGPT code-interpreter path conventions models write out of habit; none of
+# them exist in the Studio sandbox (its CWD is a per-thread persistent dir).
+_MISSING_PATH_PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
+
+
+def _missing_path_hint(output: str) -> str:
+    """Model-visible healing when an execution fails on a code-interpreter
+    convention path (e.g. ``open('/mnt/data/x.html', 'w')``). Detected on the
+    full pre-truncation output; identical with and without streaming because
+    the output itself is."""
+    if "FileNotFoundError" not in output and "No such file or directory" not in output:
+        return ""
+    if not any(prefix in output for prefix in _MISSING_PATH_PREFIXES):
+        return ""
+    return (
+        "\nHint: that absolute path does not exist in this sandbox. The current "
+        "working directory is writable and persists for this conversation; retry "
+        "with a relative path (for example 'output.html', not '/mnt/data/output.html')."
+    )
 
 
 def _drain_process_output(
@@ -2917,7 +2979,12 @@ def _python_exec(
         result = output or ""
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
+        # Detect the missing-path pattern on the full output (the error
+        # traceback trails the output, so truncation could hide it), then
+        # append the hint after truncation so it always survives.
+        hint = _missing_path_hint(result)
         result = _truncate(result) if result.strip() else "(no output)"
+        result += hint
 
         # Detect new/overwritten images and append sentinel for the frontend
         if session_id and os.path.isdir(workdir):
@@ -3025,7 +3092,11 @@ def _bash_exec(
         result = output or ""
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
-        return _truncate(result) if result.strip() else "(no output)"
+        # Same missing-path healing as _python_exec: detect on the full
+        # output, append after truncation so the hint always survives.
+        hint = _missing_path_hint(result)
+        result = _truncate(result) if result.strip() else "(no output)"
+        return result + hint
 
     except Exception as e:
         return f"Execution error: {e}"

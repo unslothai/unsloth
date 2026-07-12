@@ -17,15 +17,10 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 import { ToolLiveOutput } from "./tool-live-output";
+import { ToolResultOutput } from "./tool-result-output";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
-const MAX_DISPLAY = 10_000;
 const COPY_RESET_MS = 2000;
-
-function truncate(text: string): string {
-  return text.length <= MAX_DISPLAY
-    ? text
-    : `${text.slice(0, MAX_DISPLAY)}\n... (truncated)`;
-}
 
 function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -85,6 +80,15 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         ? JSON.stringify(result, null, 2)
         : "";
 
+  // When the live stream captured more than the (model-visible, truncated)
+  // final result, show the full stream instead. Session-transient: after a
+  // reload only the truncated result remains.
+  const fullOutput = useChatRuntimeStore(
+    (s) => s.toolFullOutput[toolCallId] ?? "",
+  );
+  const displayOutput =
+    fullOutput.length > output.length ? fullOutput : output;
+
   return (
     // Mounted mid-run (tool_start) the card opens so live output is visible;
     // mounted from history (not running) it stays collapsed as before.
@@ -105,15 +109,13 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
               {/* Live stdout streamed via tool_output SSE events. */}
               <ToolLiveOutput toolCallId={toolCallId} />
             </>
-          ) : output ? (
+          ) : displayOutput ? (
             <div>
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-muted-foreground">output</span>
-                <CopyBtn text={output} />
+                <CopyBtn text={displayOutput} />
               </div>
-              <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">
-                {truncate(output)}
-              </pre>
+              <ToolResultOutput text={displayOutput} />
             </div>
           ) : null}
         </div>

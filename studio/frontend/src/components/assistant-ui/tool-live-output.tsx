@@ -4,7 +4,8 @@
 "use client";
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import { tailText } from "./tool-result-output";
 
 /**
  * Live-scrolling stdout/stderr pane for a running server-side tool.
@@ -21,12 +22,17 @@ export function ToolLiveOutput({ toolCallId }: { toolCallId: string }) {
   );
   const scrollRef = useRef<HTMLPreElement>(null);
 
+  // The stream can grow to hundreds of KB; render only the tail while it is
+  // live (the pane follows the tail anyway). The finished card offers the
+  // full text with a "Show all" control.
+  const visible = useMemo(() => tailText(output).visible, [output]);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (el) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [output]);
+  }, [visible]);
 
   if (!output) {
     return null;
@@ -39,7 +45,7 @@ export function ToolLiveOutput({ toolCallId }: { toolCallId: string }) {
         ref={scrollRef}
         className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-xs"
       >
-        {output}
+        {visible}
       </pre>
     </div>
   );

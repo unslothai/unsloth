@@ -20,6 +20,8 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 import { ToolLiveOutput } from "./tool-live-output";
+import { ToolResultOutput } from "./tool-result-output";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
 interface StructuredResult {
   text: string;
@@ -136,6 +138,15 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     output = "";
   }
 
+  // When the live stream captured more than the (model-visible, truncated)
+  // final result, show the full stream instead. Session-transient: after a
+  // reload only the truncated result remains.
+  const fullOutput = useChatRuntimeStore(
+    (s) => s.toolFullOutput[toolCallId] ?? "",
+  );
+  const displayOutput =
+    fullOutput.length > output.length ? fullOutput : output;
+
   const authToken = getAuthToken();
 
   return (
@@ -167,15 +178,13 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
               {/* Live stdout streamed via tool_output SSE events. */}
               <ToolLiveOutput toolCallId={toolCallId} />
             </>
-          ) : output ? (
+          ) : displayOutput ? (
             <div className="mt-2 border-t border-dashed pt-2">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-muted-foreground">output</span>
-                <CopyBtn text={output} />
+                <CopyBtn text={displayOutput} />
               </div>
-              <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">
-                {truncate(output)}
-              </pre>
+              <ToolResultOutput text={displayOutput} />
             </div>
           ) : null}
 

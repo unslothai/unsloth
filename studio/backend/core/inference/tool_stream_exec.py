@@ -39,7 +39,12 @@ _POLL_INTERVAL_S = 0.25
 # Cap on total streamed live-output characters per tool call. The final
 # result is truncated separately (tools._MAX_OUTPUT_CHARS); this only bounds
 # the transient UI stream so a tight print loop cannot flood the SSE channel.
-TOOL_OUTPUT_STREAM_MAX_CHARS = 16000
+# Deliberately much higher than the model-visible result cap: when the final
+# result is truncated, the UI keeps the accumulated live stream as the
+# displayed output, so this is the ceiling on what the user can see. Chunks
+# are batched per poll interval (~4 events/s), so a large cap stays cheap on
+# the SSE channel.
+TOOL_OUTPUT_STREAM_MAX_CHARS = 400_000
 
 _STREAM_CAPPED_NOTICE = "\n... (further live output not streamed)\n"
 

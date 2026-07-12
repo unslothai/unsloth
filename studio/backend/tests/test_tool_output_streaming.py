@@ -344,3 +344,123 @@ def test_gguf_loop_plain_tool_yields_no_tool_output(monkeypatch):
 
     events, _payloads = _run_gguf_tool_turn(monkeypatch, plain_tool)
     assert [e for e in events if e["type"] == "tool_output"] == []
+
+
+# ── result truncation notice, env cap, missing-path healing ──────
+
+import os as _os
+import uuid as _uuid
+
+from core.inference.tools import (
+    PYTHON_TOOL,
+    TERMINAL_TOOL,
+    _env_int,
+    _missing_path_hint,
+    _truncate,
+    get_sandbox_workdir,
+)
+
+
+def test_truncate_notice_mentions_user_and_workdir():
+    out = _truncate("y" * 50, limit = 10)
+    assert out.startswith("y" * 10)
+    assert "truncated, 50 chars total" in out
+    assert "the user was shown the full output" in out
+    assert "persist in the working directory" in out
+    # Under the limit: untouched.
+    assert _truncate("short", limit = 10) == "short"
+
+
+def test_result_cap_env_override(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_TOOL_RESULT_MAX_CHARS", raising = False)
+    assert _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000) == 16000
+    monkeypatch.setenv("UNSLOTH_TOOL_RESULT_MAX_CHARS", "50000")
+    assert _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000) == 50000
+    # Garbage and non-positive values fall back to the default.
+    monkeypatch.setenv("UNSLOTH_TOOL_RESULT_MAX_CHARS", "lots")
+    assert _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000) == 16000
+    monkeypatch.setenv("UNSLOTH_TOOL_RESULT_MAX_CHARS", "-5")
+    assert _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000) == 16000
+
+
+def test_missing_path_hint_detection():
+    err = "FileNotFoundError: [Errno 2] No such file or directory: '/mnt/data/x.html'"
+    hint = _missing_path_hint(err)
+    assert "working directory is writable" in hint
+    assert "relative path" in hint
+    # A failure on a local path gets no hint.
+    assert _missing_path_hint("FileNotFoundError: 'local.txt'") == ""
+    # Mentioning /mnt/data without a file error gets no hint.
+    assert _missing_path_hint("saved to /mnt/data, all good") == ""
+    assert _missing_path_hint("") == ""
+
+
+def test_code_tool_descriptions_mention_relative_paths():
+    for tool in (PYTHON_TOOL, TERMINAL_TOOL):
+        description = tool["function"]["description"]
+        assert "relative paths" in description
+        assert "/mnt/data" in description
+
+
+def test_python_exec_mnt_data_open_is_remapped_into_workdir():
+    # The sitecustomize shim remaps open()/os.makedirs() on /mnt/data into the
+    # sandbox CWD and prints a one-line stderr notice, identically with and
+    # without streaming.
+    fname = f"remap_{_uuid.uuid4().hex}.txt"
+    code = (
+        "import os\n"
+        "os.makedirs('/mnt/data', exist_ok=True)\n"
+        f"with open('/mnt/data/{fname}', 'w') as f:\n"
+        "    f.write('hello remap')\n"
+        f"print(open('/mnt/data/{fname}').read())\n"
+    )
+    target = _os.path.join(get_sandbox_workdir(), fname)
+    try:
+        baseline = _python_exec(code, timeout = 60)
+        assert _os.path.isfile(target), baseline
+        with open(target) as f:
+            assert f.read() == "hello remap"
+        assert "hello remap" in baseline
+        assert "/mnt/data does not exist in this sandbox" in baseline
+        _os.remove(target)
+        streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
+        assert streamed == baseline
+        assert _os.path.isfile(target)
+    finally:
+        if _os.path.exists(target):
+            _os.remove(target)
+
+
+def test_python_exec_unremapped_mnt_data_failure_gets_hint():
+    # os.listdir is deliberately not remapped: the failure must carry the
+    # model-visible retry hint instead, identically with and without streaming.
+    import re as _re
+
+    code = "import os\nos.listdir('/mnt/data/nonexistent_dir_xyz')\n"
+    baseline = _python_exec(code, timeout = 60)
+    assert "FileNotFoundError" in baseline
+    assert "working directory is writable" in baseline
+    streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
+
+    # The traceback embeds each run's random temp filename; normalize it (the
+    # byte-identity invariant is per-execution, and these are two executions).
+    def normalize(text: str) -> str:
+        return _re.sub(r"studio_exec_\w+\.py", "studio_exec.py", text)
+
+    assert normalize(streamed) == normalize(baseline)
+
+
+def test_bash_exec_missing_path_hint():
+    baseline = _bash_exec("cat /mnt/data/definitely_missing.txt", timeout = 60)
+    assert "No such file or directory" in baseline
+    assert "working directory is writable" in baseline
+    streamed = _bash_exec(
+        "cat /mnt/data/definitely_missing.txt", timeout = 60, output_callback = lambda _t: None
+    )
+    assert streamed == baseline
+
+
+def test_bash_exec_local_failure_gets_no_hint():
+    result = _bash_exec("cat definitely_missing_local_file.txt", timeout = 60)
+    assert "No such file or directory" in result
+    assert "working directory is writable" not in result
