@@ -890,6 +890,14 @@ html[data-chat-font] .aui-root {
 		margin-right: 0 !important;
 	}
 
+	/* Firefox makes scrollable containers keyboard focusable; swap the 3px
+	   UA outline for the app's soft 1px indicator. :where keeps specificity
+	   at zero so interactive components keep their own focus styles. */
+	:where(div, main, section, aside, ul, ol):focus-visible {
+		outline: 1px solid var(--ring-soft);
+		outline-offset: -1px;
+	}
+
 	/* Number fields use the shared grey stepper instead of native spinners. */
 	input[type="number"] {
 		appearance: textfield;

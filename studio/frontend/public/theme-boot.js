@@ -6,7 +6,14 @@
 // blocks parsing, like an inline script) because the backend CSP only
 // allows script-src 'self'.
 try {
-  var theme = localStorage.getItem("theme") || "system";
+  // Storage reads get their own guards so a blocked localStorage (private
+  // browsing) still resolves a mode from the OS preference.
+  var theme = "system";
+  var palette = null;
+  try {
+    theme = localStorage.getItem("theme") || "system";
+    palette = localStorage.getItem("palette");
+  } catch (e) {}
   var dark =
     theme === "dark" ||
     (theme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
@@ -14,7 +21,6 @@ try {
   root.classList.toggle("dark", dark);
   root.classList.toggle("light", !dark);
   root.style.colorScheme = dark ? "dark" : "light";
-  var palette = localStorage.getItem("palette");
   if (palette === "classic" || palette === "minimal") {
     root.setAttribute("data-palette", palette);
   }
