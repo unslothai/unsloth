@@ -1518,9 +1518,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                                 getattr_aliases.add(tid)
                             elif isinstance(val_el, ast.Name) and val_el.id in partial_aliases:
                                 partial_aliases.add(tid)
-                            elif isinstance(val_el, ast.Constant) and isinstance(
-                                val_el.value, str
-                            ):
+                            elif isinstance(val_el, ast.Constant) and isinstance(val_el.value, str):
                                 literal_str_vars[tid] = (
                                     "\x02" if tid in multi_assigned_names else val_el.value
                                 )
