@@ -179,6 +179,15 @@ def _clear_pending():
         ("cat /etc/ssh/ssh_host_ed25519_key", True),  # ssh host private key read
         ("cat /etc/ssh/sshd_config", True),  # whole /etc/ssh dir is sensitive
         ("cat /etc/hostname", False),  # non-key /etc read stays safe
+        ("sort --out=/tmp/o in", True),  # abbreviated --output writes a file
+        ("env --ch=/ cat etc/passwd", True),  # abbreviated --chdir escapes workdir
+        ("sort --check in", False),  # benign abbreviation-free long flag stays safe
+        ("printf -v PATH %s .; ls", True),  # printf -v rewrites PATH then runs ./ls
+        ("printf 'hello %s' world", False),  # ordinary printf stays safe
+        ("fd --base-directory=/ passwd etc", True),  # fd root move escapes workdir
+        ("fd --search-path=/etc passwd", True),  # fd search-path escapes workdir
+        ("fd --base-dir=/ passwd etc", True),  # abbreviated fd root flag too
+        ("fd passwd", False),  # in-workdir fd search stays safe
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -439,6 +448,13 @@ def test_unknown_tools_fail_closed():
         ("prepend_line", True),
         ("get_and_upsert_row", True),  # upsert/assign are mutating
         ("list_and_assign_issue", True),
+        ("read_and_copy_file", True),  # copy-style verbs create/overwrite state
+        ("get_and_copy_resource", True),
+        ("read_and_duplicate_entry", True),
+        ("fetch_and_download_asset", True),  # download writes local state
+        ("list_and_export_data", True),  # import/export/backup/restore/snapshot
+        ("get_and_snapshot_volume", True),
+        ("read_report", False),  # plain read stays safe
     ],
 )
 def test_mcp_classifier(tool, unsafe):

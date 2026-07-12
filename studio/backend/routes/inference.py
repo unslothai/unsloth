@@ -11752,8 +11752,15 @@ async def anthropic_messages(
             )
         # ask/auto need the confirmation gate, which this passthrough has no
         # channel for (same limitation as confirm_tool_calls above). Reject
-        # them rather than silently running tools unprompted. off/full are fine.
-        if getattr(payload, "permission_mode", None) in ("ask", "auto"):
+        # them rather than silently running tools unprompted. An omitted mode
+        # documents as "ask", so it falls into the same rejection unless the
+        # caller already opted out of confirmation with confirm_tool_calls=False
+        # (the legacy equivalent of "off"). off/full are fine.
+        _perm_mode = getattr(payload, "permission_mode", None)
+        _defaults_to_ask = (
+            _perm_mode is None and getattr(payload, "confirm_tool_calls", None) is not False
+        )
+        if _perm_mode in ("ask", "auto") or _defaults_to_ask:
             api_monitor.fail(
                 monitor_id,
                 "permission_mode ask/auto is not supported for Anthropic Messages server tools.",
@@ -11761,8 +11768,8 @@ async def anthropic_messages(
             raise HTTPException(
                 status_code = 400,
                 detail = anthropic_error_body(
-                    "permission_mode 'ask'/'auto' is not supported for Anthropic Messages "
-                    "server tools; use 'off' or 'full'.",
+                    "permission_mode 'ask'/'auto' (the default when omitted) is not supported "
+                    "for Anthropic Messages server tools; set 'off' or 'full'.",
                     status = 400,
                     err_type = "invalid_request_error",
                 ),

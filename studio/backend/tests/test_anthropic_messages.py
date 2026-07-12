@@ -1584,6 +1584,7 @@ class TestAnthropicMessagesToolRouting:
         payload = _basic_payload(
             enable_tools = True,
             tools = [{"type": "web_search_20250305", "name": "web_search"}],
+            permission_mode = "off",
         )
 
         response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
@@ -1739,10 +1740,13 @@ class TestAnthropicMessagesToolRouting:
         assert backend.calls[0][0] == "plain"
 
     def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch):
-        # Mirror of the previous test for the default (None) policy.
+        # Mirror of the previous test for the default (None) policy. permission_mode
+        # is set explicitly ("off") because an omitted mode defaults to "ask", which
+        # this channel-less server-tool path rejects.
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"type": "web_search_20250305", "name": "web_search"}],
+            permission_mode = "off",
         )
 
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
@@ -1760,6 +1764,41 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "confirm_tool_calls is not supported" in exc.value.detail["error"]["message"]
         assert backend.calls == []
+
+    def test_permission_mode_ask_auto_and_omitted_rejected_for_server_tools(self, monkeypatch):
+        # ask/auto need a confirmation gate this passthrough has no channel for,
+        # and an omitted mode documents as "ask", so it is rejected the same way
+        # (rather than silently running server tools unprompted). off/full and an
+        # explicit confirm_tool_calls=False opt-out are accepted.
+        server_tools = [{"type": "web_search_20250305", "name": "web_search"}]
+        for mode in ("ask", "auto"):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(tools = server_tools, permission_mode = mode)
+            with pytest.raises(HTTPException) as exc:
+                _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert exc.value.status_code == 400
+            assert "not supported" in exc.value.detail["error"]["message"]
+            assert backend.calls == []
+
+        # Omitted mode (defaults to ask) with no confirm opt-out is also rejected.
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(tools = server_tools)
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "omitted" in exc.value.detail["error"]["message"]
+        assert backend.calls == []
+
+        # off, full, and a legacy confirm_tool_calls=False opt-out all run.
+        for extra in (
+            {"permission_mode": "off"},
+            {"permission_mode": "full"},
+            {"confirm_tool_calls": False},
+        ):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(tools = server_tools, **extra)
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert backend.calls[0][0] == "tools"
 
     def test_per_request_enable_tools_false_blocks_server_tool_alias(self, monkeypatch):
         backend = _mock_backend(monkeypatch)

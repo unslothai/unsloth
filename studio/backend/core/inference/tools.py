@@ -412,6 +412,9 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
     # env -C/--chdir escapes the session workdir; -S/--split-string can build
     # a fresh command line. (env is a wrapper, so its flags precede the target.)
     "env": frozenset({"-C", "--chdir", "-S", "--split-string"}),
+    # printf -v NAME assigns its output to a shell variable (help printf), so
+    # `printf -v PATH %s .; ls` rewrites PATH and runs ./ls from the workdir.
+    "printf": frozenset({"-v"}),
     "find": frozenset(
         {
             "-exec",
@@ -425,8 +428,12 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
             "-fls",
         }
     ),
-    # fd runs a command per result with -x/--exec and -X/--exec-batch.
-    "fd": frozenset({"-x", "--exec", "-X", "--exec-batch"}),
+    # fd runs a command per result with -x/--exec and -X/--exec-batch, and
+    # --base-directory/--search-path move the search root outside the workdir
+    # without any positional "/" token (fdfind --help).
+    "fd": frozenset(
+        {"-x", "--exec", "-X", "--exec-batch", "--base-directory", "--search-path"}
+    ),
 }
 # find/fd expressions group with (...) which resets command context, so scan
 # every token for these once find/fd is seen anywhere in the command.
@@ -457,6 +464,7 @@ _AUTO_UNSAFE_MCP_VERB_RE = re.compile(
     r"trigger|enable|disable|install|uninstall|restart|stop|start|"
     r"save|archive|submit|commit|push|sync|register|"
     r"clone|checkout|comment|fork|tag|invite|share|append|prepend|"
+    r"copy|duplicate|import|export|download|backup|restore|snapshot|mirror|"
     r"upsert|assign)(?:[_\-]|$)",
     re.IGNORECASE,
 )
@@ -1183,8 +1191,14 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
             # option bundled in a cluster (sort -uo out => -u -o).
             flag_head = token.split("=", 1)[0]
             cluster = token[1:] if token[:2] != "--" and "=" not in token else ""
+            # GNU tools accept unambiguous abbreviations of a long option, so
+            # `sort --out=` reaches --output and `env --ch=/` reaches --chdir;
+            # a "--x" prefix of an unsafe long flag fails closed.
+            is_long_abbrev = flag_head.startswith("--") and len(flag_head) > 2
             for uf in _AUTO_UNSAFE_COMMAND_FLAGS.get(current_command, ()):
                 if flag_head == uf or (len(uf) == 2 and (token.startswith(uf) or uf[1] in cluster)):
+                    return True
+                if is_long_abbrev and uf.startswith("--") and uf.startswith(flag_head):
                     return True
             if not prefix_pending:
                 expect_command = False
