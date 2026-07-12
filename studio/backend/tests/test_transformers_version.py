@@ -2724,6 +2724,7 @@ class TestSidecarSwapReservation:
     def _repair_setup(self, monkeypatch, tmp_path):
         import utils.transformers_version as tv
 
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
         monkeypatch.setattr(
             tv,
             "_latest_pin_data",
@@ -2752,6 +2753,29 @@ class TestSidecarSwapReservation:
         assert tv._ensure_venv_t5_latest_exists() is True
         assert seen["active_during_swap"] is True
         assert tv.sidecar_swap_in_progress() is False
+
+    def test_foreign_process_lock_file_visible(self, monkeypatch, tmp_path):
+        """A repair in a worker subprocess is seen (via the lock file) by this process."""
+        import os
+        import time
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
+        lock = tv._swap_lock_path()
+        lock.parent.mkdir(parents = True, exist_ok = True)
+        lock.write_text('{"pid": 999999}')
+        assert tv.sidecar_swap_in_progress() is True
+        assert tv.try_begin_sidecar_swap() is False
+        # A stale lock (crashed owner) is broken and the reservation re-acquired.
+        old_ts = time.time() - 3 * 60 * 60
+        os.utime(lock, (old_ts, old_ts))
+        assert tv.sidecar_swap_in_progress() is False
+        assert tv.try_begin_sidecar_swap() is True
+        try:
+            assert lock.is_file()
+        finally:
+            tv.end_sidecar_swap()
+        assert not lock.exists()
 
     def test_repair_refused_while_install_holds_reservation(self, monkeypatch, tmp_path):
         tv = self._repair_setup(monkeypatch, tmp_path)

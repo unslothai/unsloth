@@ -115,6 +115,9 @@ def _isolated_caches(tmp_path: Path, monkeypatch):
     """Fresh in-memory + on-disk caches per test; no accidental real studio_root writes."""
     tl.clear_caches()
     monkeypatch.setattr(tl, "_cache_file", lambda: tmp_path / "transformers_latest_check.json")
+    # The sidecar swap reservation writes a lock file next to the venv dir;
+    # point it at tmp so tests never touch the real studio root.
+    monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
     monkeypatch.delenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", raising = False)
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)

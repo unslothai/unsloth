@@ -39,6 +39,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -1890,16 +1891,61 @@ def _venv_t5_latest_packages(version: str, extra_packages: tuple[str, ...] = ())
 # Single reservation for ANY .venv_t5_latest replacement (consented install or lazy
 # repair). Training and export starts check it so a worker never spawns mid-swap;
 # the install route raises it BEFORE waiting on the inference lifecycle gate.
+# Backed by a lock FILE next to the sidecar, not just a module flag: the lazy
+# repair runs inside worker subprocesses (activation), where a process-local flag
+# would be invisible to the parent's route checks. The in-process flag remains the
+# ownership marker (only the owner deletes the file).
 _sidecar_swap_lock = threading.Lock()
 _sidecar_swap_active = False
+# An install is minutes; a lock this old is a crashed owner, not a live swap.
+_SWAP_LOCK_STALE_SECS = 2 * 60 * 60
+
+
+def _swap_lock_path() -> Path:
+    return Path(_VENV_T5_LATEST_DIR + ".swaplock")
+
+
+def _swap_lock_is_stale(path: Path) -> bool:
+    try:
+        return (time.time() - path.stat().st_mtime) > _SWAP_LOCK_STALE_SECS
+    except OSError:
+        return False
 
 
 def try_begin_sidecar_swap() -> bool:
-    """Reserve the sidecar swap window; False when one is already reserved."""
+    """Reserve the sidecar swap window; False when one is already reserved
+    (in this process or, via the lock file, in any worker subprocess)."""
     global _sidecar_swap_active
     with _sidecar_swap_lock:
         if _sidecar_swap_active:
             return False
+        path = _swap_lock_path()
+        try:
+            path.parent.mkdir(parents = True, exist_ok = True)
+        except OSError:
+            pass
+        for attempt in range(2):
+            try:
+                fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                if attempt or not _swap_lock_is_stale(path):
+                    return False
+                try:
+                    path.unlink()
+                except OSError:
+                    return False
+            except OSError:
+                # Lock file not creatable (odd filesystem): keep the process-local
+                # reservation rather than blocking installs entirely.
+                fd = None
+                break
+        if fd is not None:
+            try:
+                with os.fdopen(fd, "w") as f:
+                    f.write(json.dumps({"pid": os.getpid(), "at": time.time()}))
+            except OSError:
+                pass
         _sidecar_swap_active = True
         return True
 
@@ -1908,13 +1954,26 @@ def end_sidecar_swap() -> None:
     """Release the reservation taken by :func:`try_begin_sidecar_swap`."""
     global _sidecar_swap_active
     with _sidecar_swap_lock:
+        if _sidecar_swap_active:
+            # Only the owner removes the file; a foreign process's live lock stays.
+            try:
+                _swap_lock_path().unlink()
+            except OSError:
+                pass
         _sidecar_swap_active = False
 
 
 def sidecar_swap_in_progress() -> bool:
-    """True while a .venv_t5_latest install or repair holds the reservation."""
+    """True while a .venv_t5_latest install or repair holds the reservation,
+    in this process or any other Studio process (lock file)."""
     with _sidecar_swap_lock:
-        return _sidecar_swap_active
+        if _sidecar_swap_active:
+            return True
+    path = _swap_lock_path()
+    try:
+        return path.is_file() and not _swap_lock_is_stale(path)
+    except OSError:
+        return False
 
 
 def _stage_and_swap_latest_venv(
