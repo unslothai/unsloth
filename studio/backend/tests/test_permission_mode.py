@@ -251,7 +251,10 @@ def test_terminal_classifier(command, unsafe):
         ("import urllib3\nurllib3.PoolManager().request('GET', 'http://x')", True),  # network
         ("import dbm\ndbm.open('cache', 'c')", True),  # dbm create flag writes
         ("import dbm\ndbm.open('cache')", True),  # dbm import itself signals writes
-        ("import sqlite3\nsqlite3.connect('results.db').execute('create table t(x)')", True),  # sqlite3 db write
+        (
+            "import sqlite3\nsqlite3.connect('results.db').execute('create table t(x)')",
+            True,
+        ),  # sqlite3 db write
         ("import sqlite3\nsqlite3.connect('data.db')", True),  # sqlite3 connect creates the file
         ("cfg = d['k']\nprint(cfg)", False),  # subscript result not called stays safe
         ("open('/etc/{}'.format('passwd')).read()", True),  # str.format sensitive path
@@ -558,7 +561,11 @@ def test_ask_auto_self_enable_confirm_on_chat_request():
     # legacy confirm flag must still hit the confirmation gate when Studio's own
     # tool loop is requested (enable_tools / enabled_tools / mcp_enabled).
     for mode in ("ask", "auto"):
-        for loop in ({"enable_tools": True}, {"enabled_tools": ["terminal"]}, {"mcp_enabled": True}):
+        for loop in (
+            {"enable_tools": True},
+            {"enabled_tools": ["terminal"]},
+            {"mcp_enabled": True},
+        ):
             req = ChatCompletionRequest(
                 messages = [{"role": "user", "content": "hi"}],
                 permission_mode = mode,

@@ -1064,11 +1064,7 @@ class ChatCompletionRequest(BaseModel):
         elif (
             self.permission_mode in ("ask", "auto")
             and not (self.provider_id or self.provider_type)
-            and (
-                self.enable_tools is True
-                or bool(self.enabled_tools)
-                or bool(self.mcp_enabled)
-            )
+            and (self.enable_tools is True or bool(self.enabled_tools) or bool(self.mcp_enabled))
         ):
             # These modes gate on their own; a direct API caller that omits the
             # legacy confirm flag must still hit the confirmation gate for
