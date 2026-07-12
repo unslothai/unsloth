@@ -6,7 +6,7 @@ import { Moon, Sun } from "lucide-react"
 import { flushSync } from "react-dom"
 
 import { cn } from "@/lib/utils"
-import { setTheme } from "@/features/settings/stores/theme-store"
+import { prefersReducedMotion, setTheme } from "@/features/settings"
 
 interface AnimatedThemeTogglerProps extends React.ComponentPropsWithoutRef<"button"> {
   duration?: number
@@ -46,7 +46,9 @@ export function useAnimatedThemeToggle(duration = 400) {
       })
     }
 
-    if (!document.startViewTransition) {
+    // Skip the view transition (its clip-path runs via the Web Animations API,
+    // which CSS force-reduced-motion cannot reach) when reduced motion is set.
+    if (!document.startViewTransition || prefersReducedMotion()) {
       applyTheme()
       return
     }

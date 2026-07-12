@@ -26,6 +26,8 @@ export type Personalization = {
   appearance: PersonalizationAppearance;
   // Distinguishes server hydrate from first local migration.
   saved: boolean;
+  // False when the stored record predates the customization field (legacy).
+  customizationSaved: boolean;
 };
 
 export async function loadPersonalization(): Promise<Personalization> {
@@ -39,7 +41,7 @@ export async function loadPersonalization(): Promise<Personalization> {
 }
 
 export async function savePersonalization(
-  data: Omit<Personalization, "saved">,
+  data: Omit<Personalization, "saved" | "customizationSaved">,
 ): Promise<void> {
   const res = await authFetch("/api/settings/personalization", {
     method: "PUT",

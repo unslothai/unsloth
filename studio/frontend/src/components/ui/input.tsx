@@ -20,11 +20,26 @@ function stepNumberInput(input: HTMLInputElement, direction: 1 | -1): void {
   // An empty field steps from its placeholder (the effective default).
   const current =
     input.value === "" ? Number(input.placeholder) : Number(input.value);
-  // Stepping an empty, non-numeric field starts from the minimum, matching
-  // the native spinner.
-  let next = Number.isFinite(current)
-    ? current + direction * step
-    : (min ?? direction * step);
+  let next: number;
+  if (Number.isFinite(current)) {
+    // Snap to the step grid (anchored at min, like the native spinner) rather
+    // than adding step to an off-grid typed value, which would leave a
+    // step-invalid result. Mirrors HTMLInputElement.stepUp/stepDown.
+    const base = min ?? 0;
+    const pos = (current - base) / step;
+    const rounded = Math.round(pos);
+    const onGrid = Math.abs(pos - rounded) < 1e-9;
+    const nextPos = onGrid
+      ? rounded + direction
+      : direction === 1
+        ? Math.ceil(pos)
+        : Math.floor(pos);
+    next = base + nextPos * step;
+  } else {
+    // Stepping an empty, non-numeric field starts from the minimum, matching
+    // the native spinner.
+    next = min ?? direction * step;
+  }
   if (min !== null) {
     next = Math.max(min, next);
   }
@@ -99,8 +114,13 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
     <span
       data-slot="number-input"
       className={cn(
-        "group/number relative inline-flex items-center",
-        /(?:^|\s)w-full(?:\s|$)/.test(className ?? "") ? "w-full" : "w-fit",
+        // The wrapper is now the flex/grid item, so mirror the field's width:
+        // default to the full width the bare input used, and let an explicit
+        // w-*/max-w-* from the caller win so the stepper stays on the field edge.
+        "group/number relative inline-flex items-center w-full min-w-0",
+        (className ?? "")
+          .split(/\s+/)
+          .filter((c) => /^(?:min-w|max-w|w)-/.test(c)),
       )}
     >
       {field}

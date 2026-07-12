@@ -17,6 +17,7 @@ export {
   DEFAULT_CUSTOMIZATION,
   applyCustomizationToDocument,
   isDefaultCustomization,
+  prefersReducedMotion,
   sanitizeCustomization,
   useAppearanceCustomStore,
 } from "./stores/appearance-custom-store";

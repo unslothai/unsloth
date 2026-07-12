@@ -2182,14 +2182,15 @@ html[data-chat-font] .aui-root {
 		margin-bottom: 0 !important;
 	}
 
-	/* Keep monospace for code fences and inline code (not KaTeX). */
+	/* Keep monospace for code fences and inline code (not KaTeX). The custom
+	   Code font (--custom-code-font) overrides when set, else Fira Code. */
 	.aui-thread-root [data-streamdown="code-block"] pre,
 	.aui-thread-root [data-streamdown="code-block"] code {
-		font-family: "Fira Code", ui-monospace, monospace;
+		font-family: var(--custom-code-font, "Fira Code", ui-monospace, monospace);
 	}
 
 	.aui-thread-root :where(p, li, td, th, blockquote, h1, h2, h3, h4, h5, h6) code {
-		font-family: "Fira Code", ui-monospace, monospace;
+		font-family: var(--custom-code-font, "Fira Code", ui-monospace, monospace);
 	}
 
 	/* Align fenced code blocks with the main chat column even when nested in lists. */

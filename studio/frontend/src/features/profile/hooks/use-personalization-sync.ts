@@ -227,9 +227,20 @@ export function usePersonalizationSync(enabled: boolean): void {
           const nextPalette = isPalette(remote.appearance.palette)
             ? remote.appearance.palette
             : latestPaletteRef.current;
-          const nextCustomization = sanitizeCustomization(
+          const remoteCustomization = sanitizeCustomization(
             remote.appearance.customization,
           );
+          // A record saved before the customization field existed reports
+          // customizationSaved=false with the field server-defaulted. Keep local
+          // overrides (and re-push them below) instead of wiping them; an
+          // explicit remote reset reports customizationSaved=true and still wins.
+          const localCustomization = latestCustomizationRef.current;
+          const keepLocalCustomization =
+            remote.customizationSaved === false &&
+            !isDefaultCustomization(localCustomization);
+          const nextCustomization = keepLocalCustomization
+            ? localCustomization
+            : remoteCustomization;
           const nextLanguage = isSupportedLocale(remote.appearance.language)
             ? remote.appearance.language
             : latestLanguageRef.current;
@@ -237,8 +248,9 @@ export function usePersonalizationSync(enabled: boolean): void {
           if (nextTheme !== latestThemeRef.current) setTheme(nextTheme);
           if (nextPalette !== latestPaletteRef.current) setPalette(nextPalette);
           if (
+            !keepLocalCustomization &&
             JSON.stringify(nextCustomization) !==
-            JSON.stringify(latestCustomizationRef.current)
+              JSON.stringify(latestCustomizationRef.current)
           ) {
             useAppearanceCustomStore.getState().replaceAll(nextCustomization);
           }
@@ -249,7 +261,9 @@ export function usePersonalizationSync(enabled: boolean): void {
               nextProfile,
               nextTheme,
               nextPalette,
-              nextCustomization,
+              // Record what the server actually has so the debounced push
+              // re-uploads any preserved local customization.
+              remoteCustomization,
               nextLanguage,
             ),
           );

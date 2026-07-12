@@ -391,5 +391,26 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
     assert saved.status_code == 200
     body = saved.json()
     assert body["saved"] is True
+    assert body["customizationSaved"] is True
     assert body["profile"] == payload["profile"]
     assert body["appearance"] == payload["appearance"]
+
+
+def test_personalization_get_flags_legacy_customization(monkeypatch):
+    # A record written before the customization field existed must report
+    # customizationSaved=False so the client keeps local overrides.
+    store: dict = {
+        pers.PERSONALIZATION_SETTING_KEY: {
+            "version": 1,
+            "profile": {"displayName": "Mike"},
+            "appearance": {"theme": "dark", "palette": "classic"},
+        }
+    }
+    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
+
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(settings_routes.router, prefix = "/api/settings")
+    body = TestClient(app).get("/api/settings/personalization").json()
+    assert body["saved"] is True
+    assert body["customizationSaved"] is False

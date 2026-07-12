@@ -71,6 +71,8 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 const PREFS_KEYS: string[] = [
   // Appearance
   "theme",
+  "palette",
+  "unsloth_appearance_customization",
   LOCALE_STORAGE_KEY,
   // UI state
   "sidebar_pinned",

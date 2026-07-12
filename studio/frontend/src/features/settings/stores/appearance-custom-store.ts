@@ -364,10 +364,10 @@ function readableForeground(hex: string): string {
 }
 
 /**
- * FontFaces registered for imported fonts, keyed by family name. Kept so a
- * removed import can be unregistered from document.fonts.
+ * FontFaces registered for imported fonts, keyed by family name. The dataUrl is
+ * tracked too so a re-import under the same name (new bytes) replaces the face.
  */
-const registeredFontFaces = new Map<string, FontFace>();
+const registeredFontFaces = new Map<string, { face: FontFace; dataUrl: string }>();
 
 function syncImportedFonts(fonts: ImportedFont[]): void {
   if (typeof document === "undefined" || !("fonts" in document)) return;
@@ -376,9 +376,12 @@ function syncImportedFonts(fonts: ImportedFont[]): void {
   const wanted = new Map(
     (Array.isArray(fonts) ? fonts : []).map((f) => [f.name, f.dataUrl]),
   );
-  for (const [name, face] of registeredFontFaces) {
-    if (!wanted.has(name)) {
-      document.fonts.delete(face);
+  // Drop faces whose name is gone OR whose bytes changed: document.fonts is a
+  // set of FontFace objects, not keyed by family, so a stale face must be
+  // deleted before the new bytes are added.
+  for (const [name, entry] of registeredFontFaces) {
+    if (wanted.get(name) !== entry.dataUrl) {
+      document.fonts.delete(entry.face);
       registeredFontFaces.delete(name);
     }
   }
@@ -386,7 +389,7 @@ function syncImportedFonts(fonts: ImportedFont[]): void {
     if (registeredFontFaces.has(name)) continue;
     try {
       const face = new FontFace(name, `url(${dataUrl})`);
-      registeredFontFaces.set(name, face);
+      registeredFontFaces.set(name, { face, dataUrl });
       document.fonts.add(face);
       face.load().catch(() => {
         document.fonts.delete(face);
@@ -456,6 +459,12 @@ export function applyCustomizationToDocument(
     "--font-mono",
     c.codeFont ? `"${c.codeFont}", ${DEFAULT_MONO_STACK}` : null,
   );
+  // Chat code fences/inline code default to Fira Code (index.css), not
+  // --font-mono; route a dedicated token so the Code font reaches them too.
+  setVar(
+    "--custom-code-font",
+    c.codeFont ? `"${c.codeFont}", "Fira Code", ui-monospace, monospace` : null,
+  );
 
   if (c.chatFont) {
     el.setAttribute("data-chat-font", "");
@@ -504,4 +513,19 @@ export function applyCustomizationToDocument(
   // Off swaps the scroll-edge dissolves for thin divider lines (index.css
   // and hub.css key their fade rules off this class).
   el.classList.toggle("no-edge-fades", !c.edgeFades);
+}
+
+/**
+ * Resolved reduce-motion decision: the in-app setting wins ("on"/"off"),
+ * otherwise fall back to the OS preference. For imperative motion
+ * (canvas-confetti, view transitions) that CSS/MotionConfig cannot reach.
+ */
+export function prefersReducedMotion(): boolean {
+  const setting = useAppearanceCustomStore.getState().customization.reduceMotion;
+  if (setting === "on") return true;
+  if (setting === "off") return false;
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true
+  );
 }
