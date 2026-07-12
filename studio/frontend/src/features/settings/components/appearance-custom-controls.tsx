@@ -305,7 +305,13 @@ function FontSelect({
       data-checked={value === font}
       className="cursor-pointer rounded-[11px]"
     >
-      <span className="min-w-0 truncate">{font}</span>
+      {/* Preview each entry in its own typeface. */}
+      <span
+        className="min-w-0 truncate"
+        style={{ fontFamily: `"${font}", var(--font-sans)` }}
+      >
+        {font}
+      </span>
     </CommandItem>
   );
 
@@ -318,7 +324,12 @@ function FontSelect({
           aria-expanded={open}
           className="flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-xs outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
         >
-          <span className="min-w-0 truncate">{value ?? defaultLabel}</span>
+          <span
+            className="min-w-0 truncate"
+            style={{ fontFamily: `"${value ?? defaultFont}", var(--font-sans)` }}
+          >
+            {value ?? defaultLabel}
+          </span>
           <HugeiconsIcon
             icon={ChevronDownStandardIcon}
             strokeWidth={2}
@@ -344,7 +355,9 @@ function FontSelect({
               data-checked={value === null}
               className="cursor-pointer rounded-[11px]"
             >
-              <span>{defaultLabel}</span>
+              <span style={{ fontFamily: `"${defaultFont}", var(--font-sans)` }}>
+                {defaultLabel}
+              </span>
             </CommandItem>
             <CommandGroup
               className="p-0"
@@ -365,7 +378,12 @@ function FontSelect({
                     data-checked={value === font.name}
                     className="cursor-pointer rounded-[11px]"
                   >
-                    <span className="min-w-0 truncate">{font.name}</span>
+                    <span
+                      className="min-w-0 truncate"
+                      style={{ fontFamily: `"${font.name}", var(--font-sans)` }}
+                    >
+                      {font.name}
+                    </span>
                     <button
                       type="button"
                       aria-label={`${t("settings.appearance.custom.importFont.remove")}: ${font.name}`}

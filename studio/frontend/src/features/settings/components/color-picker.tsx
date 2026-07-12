@@ -156,7 +156,7 @@ export function ColorPickerSwatch({
           type="button"
           aria-label={label}
           className={cn(
-            "flex h-9 min-w-32 cursor-pointer items-center gap-2 rounded-full border px-3 font-mono text-xs uppercase transition-colors",
+            "flex h-7 min-w-28 cursor-pointer items-center gap-2 rounded-full border px-2.5 font-mono text-xs uppercase transition-colors",
             light
               ? "border-black/10 text-black/80"
               : "border-white/15 text-white",
@@ -165,7 +165,7 @@ export function ColorPickerSwatch({
         >
           <span
             className={cn(
-              "size-4 shrink-0 rounded-full border",
+              "size-3.5 shrink-0 rounded-full border",
               light ? "border-black/20" : "border-white/40",
             )}
           />
