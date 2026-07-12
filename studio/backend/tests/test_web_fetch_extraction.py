@@ -112,7 +112,7 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
 
 
 def test_hidden_attribute_subtree_is_dropped():
-    html = '<body><p>visible</p><div hidden><p>secret error text</p></div><p>after</p></body>'
+    html = "<body><p>visible</p><div hidden><p>secret error text</p></div><p>after</p></body>"
     out = html_to_markdown(html)
     assert "visible" in out
     assert "after" in out
@@ -141,7 +141,7 @@ def test_hidden_recovers_from_omitted_close_tags():
 
 
 def test_nested_hidden_regions():
-    html = '<body><div hidden><div hidden>inner</div>outer</div><p>ok</p></body>'
+    html = "<body><div hidden><div hidden>inner</div>outer</div><p>ok</p></body>"
     out = html_to_markdown(html)
     assert "inner" not in out
     assert "outer" not in out
@@ -204,10 +204,7 @@ def test_tiny_article_stub_does_not_hijack_scope():
 def test_default_conversion_unscoped_and_unstripped():
     # Without main_content the whole document converts (backwards compatible),
     # boilerplate phrases included; only hidden subtrees are dropped.
-    html = (
-        "<body><p>Skip to content</p><div hidden>gone</div>"
-        "<main><p>hello</p></main></body>"
-    )
+    html = "<body><p>Skip to content</p><div hidden>gone</div><main><p>hello</p></main></body>"
     out = html_to_markdown(html)
     assert "Skip to content" in out
     assert "hello" in out
@@ -259,7 +256,11 @@ def test_github_non_repo_urls_are_not_rewritten():
 def test_fetch_page_text_prefers_github_readme(monkeypatch):
     calls = []
 
-    def fake_fetch(url, timeout = 30, extra_headers = None):
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+    ):
         calls.append((url, extra_headers))
         assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
         return None, "# Unsloth\n\nFine-tune LLMs faster.", "text/plain"
@@ -273,7 +274,11 @@ def test_fetch_page_text_prefers_github_readme(monkeypatch):
 
 
 def test_fetch_page_text_falls_back_to_html_when_readme_api_fails(monkeypatch):
-    def fake_fetch(url, timeout = 30, extra_headers = None):
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+    ):
         if url.startswith("https://api.github.com/"):
             return "Failed to fetch URL: HTTP 403 rate limited", "", ""
         return None, _GITHUB_PAGE, "text/html"
@@ -289,7 +294,11 @@ def test_fetch_page_text_falls_back_to_html_when_readme_api_fails(monkeypatch):
 def test_fetch_page_text_non_html_returned_raw(monkeypatch):
     raw = "line one\n    indented code\nline three"
 
-    def fake_fetch(url, timeout = 30, extra_headers = None):
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+    ):
         return None, raw, "text/plain"
 
     monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
@@ -299,7 +308,11 @@ def test_fetch_page_text_non_html_returned_raw(monkeypatch):
 
 
 def test_fetch_page_text_html_conversion(monkeypatch):
-    def fake_fetch(url, timeout = 30, extra_headers = None):
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+    ):
         return None, _GITHUB_PAGE, "text/html"
 
     monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
@@ -309,7 +322,11 @@ def test_fetch_page_text_html_conversion(monkeypatch):
 
 
 def test_fetch_page_text_propagates_fetch_errors(monkeypatch):
-    def fake_fetch(url, timeout = 30, extra_headers = None):
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+    ):
         return "Failed to fetch URL: HTTP 404 Not Found", "", ""
 
     monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)

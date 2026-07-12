@@ -261,7 +261,12 @@ def test_gguf_loop_final_tool_message_unchanged_by_streaming(monkeypatch):
     def plain_tool(name, arguments, **_kwargs):
         return result_text
 
-    def streaming_tool(name, arguments, output_callback = None, **_kwargs):
+    def streaming_tool(
+        name,
+        arguments,
+        output_callback = None,
+        **_kwargs,
+    ):
         if output_callback is not None:
             output_callback("hi\n")
             output_callback("line 2\n")
@@ -272,10 +277,7 @@ def test_gguf_loop_final_tool_message_unchanged_by_streaming(monkeypatch):
 
     def _tool_messages(payloads):
         return [
-            msg
-            for payload in payloads
-            for msg in payload["messages"]
-            if msg.get("role") == "tool"
+            msg for payload in payloads for msg in payload["messages"] if msg.get("role") == "tool"
         ]
 
     # The role=tool message fed to the model is byte-identical: streaming is
@@ -297,7 +299,12 @@ def test_gguf_loop_final_tool_message_unchanged_by_streaming(monkeypatch):
 
 
 def test_gguf_loop_emits_tool_output_between_start_and_end(monkeypatch):
-    def streaming_tool(name, arguments, output_callback = None, **_kwargs):
+    def streaming_tool(
+        name,
+        arguments,
+        output_callback = None,
+        **_kwargs,
+    ):
         if output_callback is not None:
             output_callback("progress 1\n")
             output_callback("progress 2\n")

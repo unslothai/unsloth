@@ -76,6 +76,8 @@ def _is_hidden_element(attr_dict: dict) -> bool:
     if "hidden" in attr_dict and attr_dict.get("hidden") != "false":
         return True
     return (attr_dict.get("aria-hidden") or "").strip().lower() == "true"
+
+
 _BLOCK_TAGS = frozenset(
     {
         "p",
