@@ -41,6 +41,16 @@ _QUIET_POLL_PATHS = {
     "/api/auth/status",
     "/api/inference/status",
     "/api/inference/monitor",
+    # Hub download polls: fire ~2x/s for the whole download; keep a heartbeat.
+    "/api/hub/download-status",
+    "/api/hub/download-progress",
+    "/api/hub/gguf-download-progress",
+    "/api/hub/active-downloads",
+    "/api/hub/transport-status",
+    "/api/hub/datasets/download-status",
+    "/api/hub/datasets/download-progress",
+    "/api/hub/datasets/active-downloads",
+    "/api/hub/datasets/transport-status",
 }
 _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
