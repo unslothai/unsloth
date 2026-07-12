@@ -2368,6 +2368,7 @@ def run(
         cmd,
         stdout = subprocess.PIPE if quiet else None,
         stderr = subprocess.STDOUT if quiet else None,
+        env = _install_env_for_cmd(cmd),
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
@@ -2566,6 +2567,36 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     return cmd
 
 
+# uv resolves the default index (passed as --index-url / --default-index) at the
+# LOWEST priority: an inherited UV_INDEX / UV_EXTRA_INDEX_URL (a corporate or CPU
+# mirror) is searched FIRST and, under uv's default first-index strategy, wins for
+# any package it also serves. So a pinned torch repair (--index-url <cuXXX/rocm/cpu>)
+# could silently resolve torch from that mirror instead of the pinned wheel index,
+# and then _write_torch_index_marker() would record the pinned URL that was never
+# actually used. install.sh (run_install_cmd, #6898), install.ps1 and setup.ps1
+# already neutralise these vars for their pinned installs; do the same here so the
+# pin wins on every platform. Non-pinned installs (no --index-url) keep the mirror.
+_UV_INDEX_ENV_VARS = ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL")
+
+
+def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
+    """Return an env with the uv index vars stripped for a pinned-index install.
+
+    Returns None (inherit the caller's environment unchanged) when the command
+    does NOT pin an index, so ordinary installs still honour a user's UV_INDEX /
+    UV_EXTRA_INDEX_URL mirror. When the command passes --index-url / --default-index
+    (the torch repair paths), the four uv index env vars are removed so the pinned
+    index is not overridden by an inherited mirror (uv treats the default index as
+    lowest priority). Mirrors install.sh's run_install_cmd gate (#6898).
+    """
+    if not any(arg in ("--index-url", "--default-index") for arg in cmd):
+        return None
+    env = os.environ.copy()
+    for name in _UV_INDEX_ENV_VARS:
+        env.pop(name, None)
+    return env
+
+
 def pip_install_try(
     label: str,
     *args: str,
@@ -2592,6 +2623,7 @@ def pip_install_try(
         cmd,
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
+        env = _install_env_for_cmd(cmd),
     )
     if result.returncode == 0:
         return True
@@ -2644,6 +2676,7 @@ def pip_install(
                 uv_cmd,
                 stdout = subprocess.PIPE,
                 stderr = subprocess.STDOUT,
+                env = _install_env_for_cmd(uv_cmd),
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:

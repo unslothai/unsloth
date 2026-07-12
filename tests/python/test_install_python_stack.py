@@ -148,3 +148,65 @@ class TestUvSafePathHardening:
 
         assert " " not in value
         assert Path(value).read_text() == "transformers>=4.57.6\n"
+
+
+class TestPinnedIndexClearsUvEnv:
+    """A pinned torch install (--index-url / --default-index) must neutralise an
+    inherited UV_INDEX / UV_EXTRA_INDEX_URL so the pinned wheel index wins.
+
+    uv treats the default index (--index-url / --default-index) as LOWEST priority,
+    so an inherited UV_INDEX / UV_EXTRA_INDEX_URL (a corporate/CPU mirror) would be
+    searched first and, under uv's default first-index strategy, resolve torch from
+    the wrong mirror -- after which the marker records a wheel index that was never
+    used. install.sh (#6898), install.ps1 and setup.ps1 already clear these for
+    pinned installs; install_python_stack must match (parity across all installers).
+    """
+
+    UV_VARS = ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL")
+
+    def test_pinned_index_url_strips_uv_index_vars(self):
+        cmd = [
+            "uv", "pip", "install", "--force-reinstall",
+            "torch", "torchvision", "torchaudio",
+            "--index-url", "https://download.pytorch.org/whl/cu128",
+        ]
+        with mock.patch.dict(
+            os.environ,
+            {
+                "UV_INDEX": "https://mirror.corp/simple",
+                "UV_EXTRA_INDEX_URL": "https://mirror.corp/extra",
+                "UV_INDEX_URL": "https://mirror.corp/root",
+                "UV_DEFAULT_INDEX": "https://mirror.corp/default",
+            },
+        ):
+            env = ips._install_env_for_cmd(cmd)
+        assert env is not None, "a --index-url install must run with a scrubbed env"
+        for var in self.UV_VARS:
+            assert var not in env, f"{var} must be cleared for a pinned-index install"
+
+    def test_pinned_default_index_strips_uv_index_vars(self):
+        # The uv-native spelling (--default-index) must be gated too, matching
+        # install.sh / install.ps1 which key off --default-index.
+        cmd = ["uv", "pip", "install", "torch", "--default-index", "https://x/cu126"]
+        with mock.patch.dict(os.environ, {"UV_INDEX": "https://mirror.corp/simple"}):
+            env = ips._install_env_for_cmd(cmd)
+        assert env is not None
+        assert "UV_INDEX" not in env
+
+    def test_non_pinned_install_keeps_user_mirror(self):
+        # A plain install (no --index-url) must NOT scrub the env, so a user's
+        # UV_INDEX / UV_EXTRA_INDEX_URL mirror still applies to base packages.
+        cmd = ["uv", "pip", "install", "unsloth", "unsloth-zoo"]
+        with mock.patch.dict(os.environ, {"UV_INDEX": "https://mirror.corp/simple"}):
+            env = ips._install_env_for_cmd(cmd)
+        assert env is None, "non-pinned installs must inherit the caller env unchanged"
+
+    def test_scrubbed_env_preserves_other_vars(self):
+        cmd = ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+        with mock.patch.dict(
+            os.environ,
+            {"UV_INDEX": "https://mirror.corp/simple", "PATH_SENTINEL_XYZ": "keepme"},
+        ):
+            env = ips._install_env_for_cmd(cmd)
+        assert env is not None
+        assert env.get("PATH_SENTINEL_XYZ") == "keepme", "only uv index vars are removed"

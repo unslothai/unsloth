@@ -461,3 +461,75 @@ class TestKnown211SetParity:
             low = path.read_text(encoding = "utf-8").lower()
             for g in gfx:
                 assert g in low, f"{label} missing gfx 2.11 allowlist member {g}"
+
+
+class TestPinnedRocmLeafDigitParity:
+    """A pinned index is a pip ROCm --default-index family only when its leaf is
+    rocm+digit (rocm7.1 / rocm7.2) or gfx*. A bare `rocm*` glob wrongly catches a
+    custom mirror / Radeon find-links leaf (rocm-current / rocm-rel-7.2.1) and routes
+    it through the ROCm install path (which silently falls back to CPU on failure)
+    instead of the verbatim --default-index install. install.sh (_torch_index_repairable)
+    and install_python_stack.py (_is_pip_rocm_family_leaf) already require a digit
+    after rocm; install.ps1's pinned reroute must match."""
+
+    def test_install_ps1_pinned_reroute_requires_rocm_digit(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        # The pinned gfx*/rocm reroute must require a digit after rocm.
+        assert re.search(
+            r"\$_pinLeaf -like 'gfx\*' -or \$_pinLeaf -match '\^rocm\\d'", text
+        ), (
+            "install.ps1 pinned-index reroute must use -match '^rocm\\d' (not a bare "
+            "-like 'rocm*'), so rocm-current / rocm-rel-* fall through to the verbatim "
+            "install instead of the ROCm --default-index path"
+        )
+        # The broad glob must be gone from that reroute.
+        assert "-like 'rocm*'" not in text, (
+            "install.ps1 must not route a pinned index on a bare -like 'rocm*' glob"
+        )
+
+    def test_install_sh_repairable_requires_rocm_digit(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        assert re.search(
+            r"cu\[0-9\]\*\|rocm\[0-9\]\*\|gfx\*", text
+        ), "install.sh _torch_index_repairable must require rocm[0-9]* (a digit after rocm)"
+
+    def test_stack_py_pip_rocm_family_requires_digit(self):
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert re.search(
+            r'r"\^rocm\\d"', text
+        ), "install_python_stack.py _is_pip_rocm_family_leaf must match ^rocm\\d"
+
+
+class TestPinnedIndexClearsUvEnvParity:
+    """Every installer must neutralise the uv index env vars for a pinned torch
+    install (#6898). uv treats the default index (--index-url / --default-index) as
+    lowest priority, so an inherited UV_INDEX / UV_EXTRA_INDEX_URL mirror would win
+    under uv's first-index strategy and pull torch from the wrong index -- after
+    which the torch-index marker records a wheel index that was never used."""
+
+    UV_VARS = ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL")
+
+    def test_install_sh_clears_uv_index_vars(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        assert (
+            "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL" in text
+        ), "install.sh run_install_cmd must clear the uv index vars for --default-index installs"
+
+    def test_install_ps1_clears_uv_index_vars(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        for var in self.UV_VARS:
+            assert var in text, f"install.ps1 must clear {var} for pinned installs"
+
+    def test_setup_ps1_clears_uv_index_vars(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        for var in self.UV_VARS:
+            assert var in text, f"setup.ps1 must clear {var} for pinned installs"
+
+    def test_stack_py_clears_uv_index_vars(self):
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert "_install_env_for_cmd" in text, (
+            "install_python_stack.py must scrub inherited uv index vars for pinned "
+            "installs via _install_env_for_cmd (parity with install.sh #6898)"
+        )
+        for var in self.UV_VARS:
+            assert var in text, f"install_python_stack.py must clear {var} for pinned installs"
