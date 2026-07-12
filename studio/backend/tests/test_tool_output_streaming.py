@@ -195,6 +195,65 @@ def test_heartbeats_continue_while_capped_output_flows():
     assert "post-cap spam" not in streamed  # cap still enforced
 
 
+def test_drain_queue_bounds_the_over_cap_batch():
+    # The batch that first crosses the cap must not join the entire backlog: a
+    # chatty tool can queue far more than the cap before the consumer wakes, and
+    # the surplus is truncated away anyway, so joining it first would defeat the
+    # cap's memory ceiling. _drain_queue stops concatenating once the cap is
+    # first exceeded and discards the rest in place.
+    import queue as _queue
+
+    from core.inference.tool_stream_exec import _drain_queue
+
+    q: _queue.Queue = _queue.Queue()
+    sentinel = object()
+    chunk = "z" * 1000
+    for _ in range(5000):  # 5 MB queued ahead of the drain
+        q.put(chunk)
+    q.put(sentinel)
+    text, hit_sentinel = _drain_queue(q, sentinel, max_chars = 100)
+    assert hit_sentinel is True
+    # At most cap + one chunk is joined, not the full 5 MB backlog.
+    assert len(text) <= 100 + len(chunk)
+    assert q.empty()  # surplus still drained so completion is detected
+
+
+def test_drain_queue_unbounded_joins_everything():
+    # Without a cap the join is complete and ordered (the sub-cap path relies on
+    # this to stream every chunk verbatim).
+    import queue as _queue
+
+    from core.inference.tool_stream_exec import _drain_queue
+
+    q: _queue.Queue = _queue.Queue()
+    sentinel = object()
+    for i in range(3):
+        q.put(f"c{i}")
+    q.put(sentinel)
+    text, hit_sentinel = _drain_queue(q, sentinel, max_chars = None)
+    assert hit_sentinel is True
+    assert text == "c0c1c2"
+
+
+def test_over_cap_crossing_batch_streams_capped_output():
+    # End-to-end: a burst that crosses the cap inside one drain still yields a
+    # correctly capped live stream and an untouched final result.
+    chunk = "z" * 1000
+
+    def tool(callback):
+        for _ in range(3000):  # ~3 MB, well past the cap, in one burst
+            callback(chunk)
+        return "final"
+
+    events, result = _run_stream(tool, tool_name = "python")
+    assert result == "final"
+    streamed = "".join(e["text"] for e in events if e["type"] == "tool_output")
+    assert len(streamed) <= TOOL_OUTPUT_STREAM_MAX_CHARS + len(
+        "\n... (further live output not streamed)\n"
+    )
+    assert "further live output not streamed" in streamed
+
+
 # ── python / terminal executors ──────────────────────────────────
 
 _PY_CODE = "for i in range(5):\n    print('row', i)\n"
@@ -293,6 +352,20 @@ def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     assert "parent-done" in result
     assert "late-grandchild-output" in result
     assert "late-grandchild-output" in "".join(chunks)
+
+
+def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
+    # A backgrounded grandchild inherits stdout, holds the pipe open while it
+    # sleeps past the finite timeout, then would write a sentinel. The parent
+    # shell has already exited by the time the drain gives up, so killing only
+    # the (reaped) parent leaves the grandchild running; the drain must kill the
+    # process group captured before the wait so the grandchild never writes.
+    sentinel = tmp_path / "grandchild_ran"
+    command = f"( sleep 3; touch '{sentinel}' ) & echo parent-done"
+    result = _bash_exec(command, timeout = 1, output_callback = lambda _t: None)
+    assert "timed out" in result
+    time.sleep(4.0)  # past the grandchild's 3s sleep
+    assert not sentinel.exists(), "grandchild survived the timeout process-group kill"
 
 
 # ── GGUF loop regression: model-visible messages unchanged ───────

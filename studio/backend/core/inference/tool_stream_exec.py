@@ -50,6 +50,40 @@ TOOL_OUTPUT_STREAM_MAX_CHARS = 400_000
 _STREAM_CAPPED_NOTICE = "\n... (further live output not streamed)\n"
 
 
+def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> tuple[str, bool]:
+    """Pull every currently-queued item, joining chunks in FIFO order.
+
+    With ``max_chars`` set, stop concatenating once that many characters have
+    been gathered and discard the remaining queued chunks in place instead of
+    building them into the joined string. This bounds peak allocation on the
+    batch that first crosses the live-output cap: a chatty tool (``yes``, a
+    tight print loop) can queue far more than the cap before the consumer
+    wakes, and that surplus would only be truncated away, so joining it first
+    would defeat the memory ceiling the cap exists to enforce. Returns
+    ``(joined_text, hit_sentinel)``; the surplus is still scanned so completion
+    is detected promptly.
+    """
+    parts: list[str] = []
+    total = 0
+    dropping = False
+    hit_sentinel = False
+    while True:
+        try:
+            item = q.get_nowait()
+        except queue.Empty:
+            break
+        if item is sentinel:
+            hit_sentinel = True
+            break
+        if dropping:
+            continue
+        parts.append(item)
+        total += len(item)
+        if max_chars is not None and total > max_chars:
+            dropping = True
+    return "".join(parts), hit_sentinel
+
+
 def stream_tool_execution(
     invoke: Callable[[Callable[[str], None]], str],
     *,
@@ -99,18 +133,12 @@ def stream_tool_execution(
     stream_capped = False
     finished = False
 
-    def _drain_pending() -> str:
+    def _drain_pending(max_chars: int | None = None) -> str:
         nonlocal finished
-        parts: list[str] = []
-        while True:
-            try:
-                item = output_queue.get_nowait()
-            except queue.Empty:
-                return "".join(parts)
-            if item is done_sentinel:
-                finished = True
-                return "".join(parts)
-            parts.append(item)
+        text, hit_sentinel = _drain_queue(output_queue, done_sentinel, max_chars)
+        if hit_sentinel:
+            finished = True
+        return text
 
     def _drain_and_drop() -> None:
         """Discard the current and every queued chunk without concatenating.
@@ -167,7 +195,12 @@ def stream_tool_execution(
                 yield {"type": "heartbeat"}
             continue
 
-        chunk = item + _drain_pending()
+        # Bound the join to the remaining live-output budget so the batch that
+        # first crosses the cap cannot allocate far past it: the surplus is
+        # truncated away below anyway (see _drain_queue). The bound is a prefix
+        # long enough that the truncation stays byte-identical to joining all.
+        budget = TOOL_OUTPUT_STREAM_MAX_CHARS - streamed_chars
+        chunk = item + _drain_pending(max_chars = budget - len(item))
         idle_polls = 0
         if streamed_chars + len(chunk) > TOOL_OUTPUT_STREAM_MAX_CHARS:
             chunk = chunk[: max(0, TOOL_OUTPUT_STREAM_MAX_CHARS - streamed_chars)]

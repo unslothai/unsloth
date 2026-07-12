@@ -2760,6 +2760,22 @@ def _kill_process_tree(proc) -> None:
         pass
 
 
+def _killpg_captured(pgid) -> None:
+    """SIGKILL a process group captured before its leader was waited on.
+
+    ``_kill_process_tree`` short-circuits once ``proc`` has exited, and after
+    the leader is reaped ``os.getpgid(proc.pid)`` fails, so a grandchild that
+    inherited stdout and outlived the parent could not otherwise be signaled.
+    The setsid group id captured before the wait still targets the whole tree.
+    """
+    if pgid is None:
+        return
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def _cancel_watcher(
     proc,
     cancel_event,
@@ -2883,6 +2899,14 @@ def _drain_process_output(
     """
     chunks: list[str] = []
 
+    # Captured before waiting: once the parent is reaped os.getpgid(proc.pid)
+    # fails and _kill_process_tree short-circuits on the exited parent, so a
+    # grandchild that inherited stdout could not otherwise be killed.
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, PermissionError):
+        pgid = None
+
     def _reader() -> None:
         try:
             for line in iter(proc.stdout.readline, ""):
@@ -2918,7 +2942,7 @@ def _drain_process_output(
             reader.join(timeout = remaining)
             if reader.is_alive():
                 timed_out = True
-                _kill_process_tree(proc)
+                _killpg_captured(pgid)
         else:
             # Unlimited timeout: communicate(timeout=None) waits for EOF, so
             # drain until the pipe closes, however long a lingering grandchild
@@ -2926,7 +2950,7 @@ def _drain_process_output(
             # process group so the reader sees EOF.
             while reader.is_alive():
                 if cancel_event is not None and cancel_event.is_set():
-                    _kill_process_tree(proc)
+                    _killpg_captured(pgid)
                     break
                 reader.join(timeout = 0.5)
     reader.join(timeout = 5)
