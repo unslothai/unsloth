@@ -54,4 +54,3 @@ def test_cuda12_torch2110_pins_matching_local_build(cuda: str):
     # xformers must come from the same CUDA index.
     xf = reqs["xformers"]
     assert xf.url and f"/whl/{cuda}/" in xf.url, f"xformers not on the {cuda} index: {xf.url}"
-
