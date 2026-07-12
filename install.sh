@@ -2267,13 +2267,15 @@ _torch_index_repairable() {
 #   <venv_dir>/.unsloth-torch-index   (single line = the resolved index URL)
 _TORCH_INDEX_MARKER_NAME=".unsloth-torch-index"
 
-# Lowercase ONLY a known wheel-family leaf (rocm* / gfx* / cpu / cuXXX); a custom
-# mirror leaf keeps its case so a verbatim URL pin is not falsely matched equal.
+# Lowercase ONLY a known wheel-family leaf (rocm<digit>* / gfx* / cpu / cuXXX); a
+# custom mirror leaf keeps its case so a verbatim URL pin is not falsely matched
+# equal. The rocm prefix is digit-gated: rocm7.2 is a family leaf, but a
+# rocm-rel-7.2.1 / rocm-Current leaf is a verbatim pin whose case must survive.
 # Mirrors _normalize_family_leaf in install_python_stack.py / setup.ps1.
 _normalize_family_leaf() {
     _l_low=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
     case "$_l_low" in
-        rocm*|gfx*|cpu|cu[0-9]*) printf '%s' "$_l_low" ;;
+        rocm[0-9]*|gfx*|cpu|cu[0-9]*) printf '%s' "$_l_low" ;;
         *) printf '%s' "$1" ;;
     esac
 }
@@ -2620,6 +2622,19 @@ case "$_torch_index_leaf" in
     *)          unset UNSLOTH_TORCH_BACKEND ;;
 esac
 
+# Whether TORCH_INDEX_URL names an actual pip ROCm family (rocm<digit>* / gfx*),
+# gating the ROCm-only side effects below: AMD bitsandbytes and the "repair ROCm
+# torch" --default-index reinstall. Digit-gated like _is_pip_rocm_family_leaf so a
+# custom CPU/CUDA/private index whose leaf merely STARTS with "rocm" (e.g.
+# /rocm-current, or a repo.radeon.com/.../rocm-rel-7.2.1 find-links leaf) is NOT
+# force-repaired from the wrong ROCm-only path when torch.version.hip is empty.
+# A bare */rocm* whole-URL glob would misfire on those. gfx* is always a family.
+# _torch_index_leaf is already lowercased above.
+case "$_torch_index_leaf" in
+    rocm[0-9]*|gfx*) _torch_index_is_rocm_family=true ;;
+    *)               _torch_index_is_rocm_family=false ;;
+esac
+
 # rocm7.2 and the AMD per-gfx indexes with the torch._C._grouped_mm bug on <2.11
 # (repo.amd.com/.../gfx120X-all, gfx1151, gfx1150) ship torch 2.11.0 -- raise the
 # constraint to allow it. This also covers a pinned full-URL or family override
@@ -2926,24 +2941,20 @@ if [ "$_MIGRATED" = true ]; then
     # AMD ROCm: install bitsandbytes even in migrated environments so
     # existing ROCm installs gain the AMD bitsandbytes build without a
     # fresh reinstall.
-    if [ "$SKIP_TORCH" = false ]; then
-        case "$TORCH_INDEX_URL" in
-            */rocm*|*/gfx*)
-                _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
-                # Repair ROCm torch if overwritten during migrated install
-                _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
-                if [ -z "$_has_hip" ]; then
-                    substep "repairing ROCm torch (overwritten by dependency resolution)..."
-                    run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
-                        "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
-                        --default-index "$TORCH_INDEX_URL" \
-                        --force-reinstall
-                    # torch was actually reinstalled from $TORCH_INDEX_URL now, so the
-                    # marker should record it (the preserved-torch case above must not).
-                    _TORCH_INSTALLED_THIS_RUN=true
-                fi
-                ;;
-        esac
+    if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
+        _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
+        # Repair ROCm torch if overwritten during migrated install
+        _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
+        if [ -z "$_has_hip" ]; then
+            substep "repairing ROCm torch (overwritten by dependency resolution)..."
+            run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
+                "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
+                --default-index "$TORCH_INDEX_URL" \
+                --force-reinstall
+            # torch was actually reinstalled from $TORCH_INDEX_URL now, so the
+            # marker should record it (the preserved-torch case above must not).
+            _TORCH_INSTALLED_THIS_RUN=true
+        fi
     fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 1 - install torch from explicit index (skip when --no-torch or Intel Mac)
@@ -3114,12 +3125,8 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     # Gate on SKIP_TORCH=false so a user running with --no-torch on a ROCm
     # host stays in GGUF-only mode rather than pulling in bitsandbytes,
     # which is only useful once torch is present for training.
-    if [ "$SKIP_TORCH" = false ]; then
-        case "$TORCH_INDEX_URL" in
-            */rocm*|*/gfx*)
-                _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
-                ;;
-        esac
+    if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
+        _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
     fi
     # Fresh: Step 2 - install unsloth, preserving pre-installed torch
     tauri_log "STEP" "Installing Unsloth"
@@ -3160,26 +3167,22 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     fi
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
-    if [ "$SKIP_TORCH" = false ]; then
-        case "$TORCH_INDEX_URL" in
-            */rocm*|*/gfx*)
-                _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
-                if [ -z "$_has_hip" ]; then
-                    substep "repairing ROCm torch (overwritten by dependency resolution)..."
-                    run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
-                        "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
-                        --default-index "$TORCH_INDEX_URL" \
-                        --force-reinstall
-                    # The repair reinstalled torch from $TORCH_INDEX_URL (the generic
-                    # ROCm index), not the Radeon --find-links repo, so record THAT as
-                    # the marker source. A Radeon --find-links install set
-                    # _TORCH_MARKER_INDEX_URL to its repo.radeon.com base earlier;
-                    # leaving it would make the marker misreport Radeon wheels and let a
-                    # later Radeon pin compare-equal and skip a needed reinstall.
-                    _TORCH_MARKER_INDEX_URL="$TORCH_INDEX_URL"
-                fi
-                ;;
-        esac
+    if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
+        _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
+        if [ -z "$_has_hip" ]; then
+            substep "repairing ROCm torch (overwritten by dependency resolution)..."
+            run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
+                "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
+                --default-index "$TORCH_INDEX_URL" \
+                --force-reinstall
+            # The repair reinstalled torch from $TORCH_INDEX_URL (the generic
+            # ROCm index), not the Radeon --find-links repo, so record THAT as
+            # the marker source. A Radeon --find-links install set
+            # _TORCH_MARKER_INDEX_URL to its repo.radeon.com base earlier;
+            # leaving it would make the marker misreport Radeon wheels and let a
+            # later Radeon pin compare-equal and skip a needed reinstall.
+            _TORCH_MARKER_INDEX_URL="$TORCH_INDEX_URL"
+        fi
     fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch

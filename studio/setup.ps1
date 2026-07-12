@@ -442,7 +442,7 @@ $TorchIndexMarkerName = ".unsloth-torch-index"
 function Get-NormalizedFamilyLeaf {
     param([string]$Leaf)
     $low = $Leaf.ToLowerInvariant()
-    if ($low -match '^(rocm|gfx)' -or $low -eq 'cpu' -or $low -match '^cu[0-9]') { return $low }
+    if ($low -match '^(rocm[0-9]|gfx)' -or $low -eq 'cpu' -or $low -match '^cu[0-9]') { return $low }
     return $Leaf
 }
 
@@ -507,7 +507,10 @@ function Test-MarkerPinMismatch {
     param([string]$VenvDir, [string]$PinUrl)
     $marker = Read-TorchIndexMarker -VenvDir $VenvDir
     if ($null -eq $marker) { return $null }
-    return (Get-NormalizedIndexUrl $PinUrl) -ne (Get-NormalizedIndexUrl $marker)
+    # -cne, not -ne: normalization intentionally preserves unknown-leaf case (URL
+    # paths can be case-sensitive), so a case-only custom-index change (/Simple ->
+    # /simple) must count as a mismatch. PowerShell's -ne is case-insensitive.
+    return (Get-NormalizedIndexUrl $PinUrl) -cne (Get-NormalizedIndexUrl $marker)
 }
 
 # The AMD per-arch index leaves that need the torch 2.11 floor (the _grouped_mm

@@ -508,6 +508,51 @@ class TestPinnedRocmLeafDigitParity:
             r'r"\^rocm\\d"', text
         ), "install_python_stack.py _is_pip_rocm_family_leaf must match ^rocm\\d"
 
+    def test_normalize_family_leaf_digit_gates_rocm(self):
+        """_normalize_family_leaf lowercases only true family leaves. rocm7.2 is a
+        family (lowercased), but rocm-Current / rocm-rel-7.2.1 keep their case so a
+        case-only custom-index change is not falsely matched equal (URL paths can be
+        case-sensitive). All three installers must digit-gate the rocm prefix."""
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        assert re.search(r"rocm\[0-9\]\*\|gfx\*\|cpu\|cu\[0-9\]\*", sh), (
+            "install.sh _normalize_family_leaf must digit-gate rocm (rocm[0-9]*)"
+        )
+        setup = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "-match '^(rocm[0-9]|gfx)'" in setup, (
+            "setup.ps1 Get-NormalizedFamilyLeaf must digit-gate rocm (^(rocm[0-9]|gfx))"
+        )
+        stack = STACK_PY.read_text(encoding = "utf-8")
+        assert re.search(r'r"\^\(rocm\|cu\)\[0-9\]"', stack), (
+            "install_python_stack.py _normalize_family_leaf must digit-gate rocm "
+            "(^(rocm|cu)[0-9])"
+        )
+
+    def test_setup_ps1_marker_compare_is_case_sensitive(self):
+        """Test-MarkerPinMismatch must use -cne, not -ne: normalization preserves
+        unknown-leaf case, so a case-only custom-index change (/Simple -> /simple)
+        is a real mismatch that PowerShell's case-insensitive -ne would miss."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "(Get-NormalizedIndexUrl $PinUrl) -cne (Get-NormalizedIndexUrl $marker)" in text, (
+            "setup.ps1 Test-MarkerPinMismatch must compare normalized URLs with -cne "
+            "(case-sensitive) so a case-only custom-index change triggers reinstall"
+        )
+
+    def test_install_sh_rocm_side_effects_digit_gated(self):
+        """The AMD bitsandbytes + 'repair ROCm torch' side effects must fire only on
+        a real ROCm family (rocm[0-9]*/gfx*), not a bare */rocm* whole-URL glob that
+        catches a custom CPU/CUDA index like /rocm-current and force-repairs it from
+        the wrong --default-index."""
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        assert re.search(
+            r"rocm\[0-9\]\*\|gfx\*\) _torch_index_is_rocm_family=true", text
+        ), "install.sh must set _torch_index_is_rocm_family from a digit-gated leaf"
+        assert (
+            '[ "$_torch_index_is_rocm_family" = true ]' in text
+        ), "install.sh ROCm bnb/repair hooks must gate on _torch_index_is_rocm_family"
+        assert (
+            '*/rocm*|*/gfx*)\n                _install_bnb_rocm' not in text
+        ), "install.sh must not gate _install_bnb_rocm on a bare */rocm* whole-URL glob"
+
 
 class TestPinnedIndexClearsUvEnvParity:
     """Every installer must neutralise the uv index env vars for a pinned torch

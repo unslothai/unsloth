@@ -138,17 +138,19 @@ _TORCH_INDEX_MARKER_NAME = ".unsloth-torch-index"
 
 
 def _normalize_family_leaf(leaf: str) -> str:
-    """Lowercase ONLY a known wheel-family leaf (rocm* / gfx* / cpu / cuXXX).
+    """Lowercase ONLY a known wheel-family leaf (rocm<digit>* / gfx* / cpu / cuXXX).
 
     The canonical gfx120X-all (capital X) must match AMD's lowercase gfx120x-all, so
     known-family leaves are lowercased. A custom mirror leaf (/Current, /simple, ...)
     keeps its case: an unknown-family URL pin is applied verbatim, so /Current and
-    /current must NOT compare equal. Same known-family set as
-    _explicit_unknown_family_torch_index_url. Mirrors the gate in install.sh /
-    setup.ps1. Pure function.
+    /current must NOT compare equal. The rocm prefix is digit-gated like
+    _is_pip_rocm_family_leaf: rocm7.2 is a family leaf, but rocm-rel-7.2.1 /
+    rocm-Current are verbatim pins whose case must survive normalization (URL
+    paths can be case-sensitive). Mirrors the gate in install.sh / setup.ps1.
+    Pure function.
     """
     low = leaf.lower()
-    if low.startswith(("rocm", "gfx")) or low == "cpu" or re.match(r"^cu[0-9]", low):
+    if low.startswith("gfx") or low == "cpu" or re.match(r"^(rocm|cu)[0-9]", low):
         return low
     return leaf
 

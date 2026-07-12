@@ -81,6 +81,17 @@ try {
     Write-TorchIndexMarker -VenvDir $venv -IndexUrl "https://mirror.local/simple"
     Check "custom /simple marker vs /current pin -> mismatch" `
         ((Test-MarkerPinMismatch -VenvDir $venv -PinUrl "https://mirror.local/current") -eq $true)
+    # Case-only custom-index change /Simple -> /simple is a mismatch: normalization
+    # preserves unknown-leaf case (URL paths can be case-sensitive) and the compare
+    # is -cne. A case-insensitive -ne would wrongly skip the needed reinstall.
+    Write-TorchIndexMarker -VenvDir $venv -IndexUrl "https://mirror.local/Simple"
+    Check "custom /Simple marker vs /simple pin -> mismatch (case-sensitive)" `
+        ((Test-MarkerPinMismatch -VenvDir $venv -PinUrl "https://mirror.local/simple") -eq $true)
+    # A genuine family leaf differing only in case is NOT a mismatch (rocm7.2 / gfx
+    # leaves are lowercased by normalization, so gfx120X-all == gfx120x-all).
+    Write-TorchIndexMarker -VenvDir $venv -IndexUrl "https://repo.amd.com/rocm/whl/gfx120X-all"
+    Check "family gfx120X-all marker vs gfx120x-all pin -> no mismatch" `
+        ((Test-MarkerPinMismatch -VenvDir $venv -PinUrl "https://repo.amd.com/rocm/whl/gfx120x-all") -eq $false)
 
     Write-Host "Read-TorchIndexMarker (missing / empty -> null)"
     Remove-Item -LiteralPath (Get-TorchIndexMarkerPath -VenvDir $venv) -Force
