@@ -901,7 +901,12 @@ def _attr_open_writes(node) -> bool:
 _PATH_CTORS = ("Path", "PurePath", "PurePosixPath")
 
 
-def _folded_path(node, literals = None, ctors = None, join_names = None) -> "str | None":
+def _folded_path(
+    node,
+    literals = None,
+    ctors = None,
+    join_names = None,
+) -> "str | None":
     """Best-effort value of a path built from string literals, so a sensitive
     path assembled from pieces (os.path.join('/etc', 'passwd'), '/etc'+'/passwd',
     Path('/etc') / 'passwd', f'/proc/{pid}/environ', f'/etc/{name}') is still
