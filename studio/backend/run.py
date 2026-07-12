@@ -1161,7 +1161,7 @@ def run_server(
     if not silent:
         print(
             "Loading Unsloth Studio, please wait... "
-            "(first launch can take a few minutes while ML libraries load)",
+            "(this can take a few minutes)",
             flush = True,
         )
         print("  - loading PyTorch, Unsloth and Transformers...", flush = True)
@@ -1175,7 +1175,7 @@ def run_server(
         (time.perf_counter() - import_started) * 1000,
     )
     if not silent:
-        print("  - ML libraries loaded; starting server...", flush = True)
+        print("  - Starting server...", flush = True)
     from utils.paths import ensure_studio_directories
 
     # Allow local stdio MCP servers on a loopback bind (the user's own machine),
