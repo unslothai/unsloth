@@ -720,9 +720,8 @@ def _folded_path(node) -> "str | None":
         ctors = ("Path", "PurePath", "PurePosixPath")
         # os.path.join / posixpath.join, or a bare/qualified pathlib constructor
         # (Path(...) or pathlib.Path(...)).
-        if (
-            (isinstance(func, ast.Attribute) and func.attr in ("join", *ctors))
-            or (isinstance(func, ast.Name) and func.id in ctors)
+        if (isinstance(func, ast.Attribute) and func.attr in ("join", *ctors)) or (
+            isinstance(func, ast.Name) and func.id in ctors
         ):
             parts = [(_folded_path(a) or "\x00") for a in node.args]
             return "/".join(parts)
