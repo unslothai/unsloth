@@ -6349,20 +6349,32 @@ async def openai_chat_completions(
         # policy hard-override; mcp_enabled opens the tool loop on its own but still
         # defers to a CLI --disable-tools policy), or an mcp_enabled/policy-forced
         # request would slip past this guard and only 400 after the swap.
+        #
+        # permission_mode only implies the confirm gate for Studio's own local tool
+        # loop (enable_tools / enabled_tools / mcp_enabled). Client-tool passthrough
+        # (payload.tools, code-exec containers) forwards to the provider branch and
+        # the validator intentionally leaves confirm_tool_calls unset there, so only
+        # an explicit confirm_tool_calls=True should force the local-confirm
+        # rejection for those arms, never a bare permission_mode.
         from state.tool_policy import get_tool_policy as _get_confirm_tool_policy
 
         _confirm_cli_policy = _get_confirm_tool_policy()
+        _studio_local_tool_loop = (
+            _effective_enable_tools(payload)
+            or (bool(payload.mcp_enabled) and _confirm_cli_policy is not False)
+            or bool(payload.enabled_tools)
+        )
+        _client_tool_passthrough = (
+            bool(payload.tools)
+            or bool(payload.openai_code_exec_container_id)
+            or bool(payload.anthropic_code_exec_container_id)
+        )
         if (
-            _permission_mode_confirm(payload)
-            and not payload.bypass_permissions
+            not payload.bypass_permissions
             and not payload.stream
             and (
-                _effective_enable_tools(payload)
-                or (bool(payload.mcp_enabled) and _confirm_cli_policy is not False)
-                or bool(payload.enabled_tools)
-                or bool(payload.tools)
-                or bool(payload.openai_code_exec_container_id)
-                or bool(payload.anthropic_code_exec_container_id)
+                (_permission_mode_confirm(payload) and _studio_local_tool_loop)
+                or (payload.confirm_tool_calls is True and _client_tool_passthrough)
             )
         ):
             raise HTTPException(

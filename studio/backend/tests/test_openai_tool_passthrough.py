@@ -706,6 +706,83 @@ class TestChatCompletionRequestToolFields:
         assert entry["status"] == "completed"
         assert monitor.active_count() == 0
 
+    def test_permission_mode_does_not_reject_client_tool_passthrough(self, monkeypatch):
+        # A non-streaming client-tool passthrough (client tools, no Studio tool
+        # loop) that also carries permission_mode "ask"/"auto" must reach the
+        # provider passthrough, not the confirm-without-stream guard: the
+        # validator leaves confirm_tool_calls unset for passthrough, and a bare
+        # permission_mode only gates Studio's own local tool loop. An explicit
+        # confirm_tool_calls=True still forces the local-confirm rejection.
+        # The pre-switch guard only runs when an automatic load may run, so force
+        # that predicate on to exercise it against a resident passthrough backend.
+        import routes.inference as inference_route
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            supports_tool_passthrough = True
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+            base_url = "http://llama.permission-passthrough.test"
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None
+
+            def generate_chat_completion(self, **_kwargs):
+                raise AssertionError("client tools must use passthrough")
+
+            def generate_chat_completion_with_tools(self, **_kwargs):
+                raise AssertionError("Studio tool loop must stay disabled")
+
+        async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
+            inference_route.api_monitor.finish(kwargs.get("monitor_id"))
+            return inference_route.JSONResponse({"ok": True, "model": model_name})
+
+        client_tools = [
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {"type": "object"}},
+            }
+        ]
+
+        def _setup():
+            reset_tool_policy()
+            monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: True)
+            monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 3))
+            monkeypatch.setattr(
+                inference_route, "_openai_passthrough_non_streaming", fake_passthrough
+            )
+            return self._v1_client(monkeypatch, _GGUFBackend())
+
+        for mode in ("ask", "auto"):
+            client = _setup()
+            resp = client.post(
+                "/v1/chat/completions",
+                json = {
+                    "messages": [{"role": "user", "content": "use client tool"}],
+                    "tools": client_tools,
+                    "permission_mode": mode,
+                    "stream": False,
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["ok"] is True
+
+        # An explicit confirm_tool_calls=True with client tools and no stream is
+        # still a confirm-without-stream request and must be rejected up front.
+        client = _setup()
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "use client tool"}],
+                "tools": client_tools,
+                "confirm_tool_calls": True,
+                "stream": False,
+            },
+        )
+        assert resp.status_code == 400
+        assert "requires stream=true" in resp.json()["error"]["message"]
+
     def test_enable_tools_on_non_tool_backend_keeps_client_tools_on_passthrough(self, monkeypatch):
         # DiffusionGemma forces supports_tools off while passthrough stays
         # available (#6851): enable_tools=True must not steal client tools

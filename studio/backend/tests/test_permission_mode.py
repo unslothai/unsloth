@@ -176,6 +176,9 @@ def _clear_pending():
         ("cat </dev/tcp/example.com/80", True),  # bash /dev/tcp opens a socket
         ("cat < /dev/udp/1.2.3.4/53", True),  # bash /dev/udp opens a socket
         ("cat /dev/null", False),  # ordinary /dev file stays safe
+        ("cat /etc/ssh/ssh_host_ed25519_key", True),  # ssh host private key read
+        ("cat /etc/ssh/sshd_config", True),  # whole /etc/ssh dir is sensitive
+        ("cat /etc/hostname", False),  # non-key /etc read stays safe
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -370,6 +373,34 @@ def test_terminal_classifier(command, unsafe):
             "from pathlib import Path as P\n(P('data') / 'x').read_text()",
             False,
         ),  # aliased ctor with a relative path stays safe
+        (
+            "from pathlib import PosixPath\n(PosixPath('/etc') / 'passwd').read_text()",
+            True,
+        ),  # concrete PosixPath constructor is folded too
+        (
+            "import pathlib\n(pathlib.PosixPath('/etc') / 'passwd').read_text()",
+            True,
+        ),  # qualified concrete constructor
+        (
+            "from pathlib import WindowsPath as W\n(W('/etc') / 'passwd').read_text()",
+            True,
+        ),  # aliased concrete Windows constructor
+        (
+            "from pathlib import PosixPath\n(PosixPath('data') / 'x').read_text()",
+            False,
+        ),  # concrete ctor with a relative path stays safe
+        (
+            "base = '/etc'\nopen(base + '/passwd').read()\nbase = 'data'",
+            True,
+        ),  # a later reassignment must not mask the earlier sensitive read
+        (
+            "base = 'data'\nopen(base + '/x').read()\nbase = '/etc'",
+            True,
+        ),  # any reassignment of a path var fails closed
+        (
+            "base = 'data'\nopen(base + '/x').read()",
+            False,
+        ),  # a single benign literal path var stays safe
     ],
 )
 def test_python_classifier(code, unsafe):

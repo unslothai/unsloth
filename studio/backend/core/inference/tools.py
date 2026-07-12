@@ -610,7 +610,9 @@ _SENSITIVE_PATH_RE = re.compile(
     r"(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube|config/gcloud|config/gh)(?:[/\\]|$)"
     r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
     r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
-    r"|credentials|/etc/(?:passwd|shadow|sudoers)"
+    # /etc/ssh holds the host private keys (ssh_host_*_key); the whole dir is
+    # sensitive, not just passwd/shadow/sudoers.
+    r"|credentials|/etc/(?:passwd|shadow|sudoers|ssh(?:[/\\]|$))"
     # Bash opens /dev/tcp/host/port and /dev/udp/host/port as network sockets,
     # so a redirection to one reaches the network without the confirm prompt.
     r"|/dev/(?:tcp|udp)/"
@@ -929,7 +931,14 @@ def _attr_open_writes(node) -> bool:
     return False  # no args: read
 
 
-_PATH_CTORS = ("Path", "PurePath", "PurePosixPath")
+_PATH_CTORS = (
+    "Path",
+    "PurePath",
+    "PurePosixPath",
+    "PureWindowsPath",
+    "PosixPath",
+    "WindowsPath",
+)
 # Deterministic path pass-through/normalizer calls that return the same location
 # (os.path.abspath('/etc') -> /etc, Path('/etc').resolve() -> /etc), so folding
 # through them keeps a sensitive root visible to the scan.
@@ -1254,6 +1263,24 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Module names bound to a pickle-backed loader (import torch as t), so
     # t.load(...) is still gated as a code-executing deserialize.
     load_module_aliases = set(_AUTO_UNSAFE_PY_LOAD_MODULES)
+    # Names bound more than once cannot be folded to a single literal: this scan
+    # visits every assignment before any call is checked, so a later benign
+    # reassignment (base = '/etc'; open(base + '/passwd'); base = 'data') would
+    # otherwise mask the earlier sensitive value and auto-approve. Count every
+    # binding target up front and poison multiply-bound names to the escape
+    # sentinel so any path folded from them fails closed (asks) instead.
+    assign_counts: "dict[str, int]" = {}
+    for node in ast.walk(tree):
+        binding_targets = []
+        if isinstance(node, ast.Assign):
+            binding_targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            binding_targets = [node.target]
+        for target in binding_targets:
+            for sub in ast.walk(target):
+                if isinstance(sub, ast.Name):
+                    assign_counts[sub.id] = assign_counts.get(sub.id, 0) + 1
+    multi_assigned_names = {name for name, count in assign_counts.items() if count > 1}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -1314,16 +1341,17 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             ):
                 dynamic_aliases.update(targets)
             elif isinstance(value, ast.Constant) and isinstance(value.value, str):
-                # base = '/etc' -> resolve base in a later folded path.
+                # base = '/etc' -> resolve base in a later folded path. A name
+                # bound more than once is poisoned (\x02) so it fails closed.
                 for t in targets:
-                    literal_str_vars[t] = value.value
+                    literal_str_vars[t] = "\x02" if t in multi_assigned_names else value.value
             elif isinstance(value, (ast.Call, ast.BinOp, ast.Name, ast.JoinedStr)):
                 # p = Path('/etc'); q = p; r = os.path.join('/etc','x'): record a
                 # fully-literal folded path so a later reuse (p / 'passwd') folds.
                 folded = _folded_path(value, literal_str_vars, path_ctor_aliases, pathjoin_aliases)
                 if folded is not None and "\x00" not in folded and "\x02" not in folded:
                     for t in targets:
-                        literal_str_vars[t] = folded
+                        literal_str_vars[t] = "\x02" if t in multi_assigned_names else folded
             elif isinstance(value, (ast.Tuple, ast.List)):
                 # Destructuring: f, _ = (open, print) -> track f.
                 for target in assign_targets:
