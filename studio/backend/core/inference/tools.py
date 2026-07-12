@@ -462,21 +462,66 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
     }
 )
 _PY_WRITE_MODE_RE = re.compile(r"[wax+]")
+# A file-mode literal ("w", "rb", "a+"): letters/flags only, no path chars.
+# Used to tell a Path.open("w") mode from a ZipFile.open("name.txt") filename.
+_PY_MODE_LITERAL_RE = re.compile(r"^[rwxa][btru+]*$")
+
+# Reading these off the host escapes the intent of "read-only is safe": they
+# hold credentials. Path traversal (../) escapes the per-session workdir.
+_SENSITIVE_PATH_RE = re.compile(
+    r"(?:^|[/\\])\.(?:ssh|aws|gnupg|docker|kube|config/gcloud)(?:[/\\]|$)"
+    r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
+    r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
+    r"|credentials|/etc/(?:passwd|shadow|sudoers)"
+    # A .pem/.key file (basename before the extension), not a bare ".key"
+    # (e.g. a jq '.key' filter).
+    r"|\w[\w.-]*\.(?:pem|key)(?:$|[\s'\"])",
+    re.IGNORECASE,
+)
+_PARENT_TRAVERSAL_RE = re.compile(r"(?:^|[\s/\\'\"=:])\.\.(?:[/\\]|$|[\s'\"])")
 
 
-def _open_call_writes(node) -> bool:
-    """True when an ``open(...)`` AST call requests a write/append mode."""
-    mode = None
-    if len(node.args) >= 2:
-        mode = node.args[1]
+def _references_sensitive_path(text: str) -> bool:
+    """True if a command or string literal reads a credential path or escapes
+    the sandbox workdir via parent traversal."""
+    return bool(
+        _PARENT_TRAVERSAL_RE.search(text) or _SENSITIVE_PATH_RE.search(text)
+    )
+
+
+def _mode_arg_writes(mode_node) -> bool:
+    """True if an AST node used as a file mode requests write/append."""
+    if mode_node is None:
+        return False  # default "r"
+    if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
+        return bool(_PY_WRITE_MODE_RE.search(mode_node.value))
+    return True  # dynamic mode: cannot prove read-only
+
+
+def _builtin_open_writes(node) -> bool:
+    """Write check for builtin ``open(file, mode)`` (mode is the 2nd arg)."""
+    mode = node.args[1] if len(node.args) >= 2 else None
     for kw in node.keywords or []:
         if kw.arg == "mode":
             mode = kw.value
-    if mode is None:
-        return False  # default "r"
-    if isinstance(mode, ast.Constant) and isinstance(mode.value, str):
-        return bool(_PY_WRITE_MODE_RE.search(mode.value))
-    return True  # dynamic mode: cannot prove read-only
+    return _mode_arg_writes(mode)
+
+
+def _attr_open_writes(node) -> bool:
+    """Write check for ``x.open(...)`` (e.g. ``Path.open(mode)`` where mode is
+    the 1st arg). Only a mode-looking string is read as the mode, so a
+    ``ZipFile.open("name.txt")`` read is not mistaken for a write."""
+    for kw in node.keywords or []:
+        if kw.arg == "mode":
+            return _mode_arg_writes(kw.value)
+    if node.args:
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            if _PY_MODE_LITERAL_RE.match(first.value):
+                return bool(_PY_WRITE_MODE_RE.search(first.value))
+            return False  # a filename, not a mode: read
+        return True  # dynamic first arg: cannot prove read-only
+    return False  # no args: read
 
 
 def _terminal_is_potentially_unsafe(command: str) -> bool:
@@ -487,6 +532,10 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     # quoted ">" false-positives into a prompt, which is the safe direction.
     if ">" in command or "`" in command or "$(" in command or "<(" in command:
         return True
+    # Reads that escape the sandbox workdir (../) or hit credential paths are
+    # not "safe" reads; ask before running them.
+    if _references_sensitive_path(command):
+        return True
     # Newlines (and CR) separate commands in a shell but read as plain
     # whitespace to shlex, which would demote "ls\nrm x" to argument position.
     command = command.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
@@ -496,6 +545,16 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         tokens = list(lexer)
     except ValueError:
         return True
+    # find/fd expressions group with (...) which resets command context, so a
+    # trailing -delete/-exec could slip past. When find/fd is used anywhere,
+    # scan every token for its mutating actions.
+    if any(
+        os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd")
+        for t in tokens
+    ):
+        find_flags = _AUTO_UNSAFE_COMMAND_FLAGS["find"]
+        if any(t.split("=", 1)[0] in find_flags for t in tokens):
+            return True
     expect_command = True
     prefix_pending = False
     current_command = ""
@@ -513,10 +572,12 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
             continue
         if token.startswith("-"):
             # A write/exec flag on an otherwise read-only command asks
-            # (sort -o, tree -o, xxd -r, find -exec/-delete/...).
-            flag = token.split("=", 1)[0]
-            if flag in _AUTO_UNSAFE_COMMAND_FLAGS.get(current_command, ()):
-                return True
+            # (sort -o, tree -o, xxd -r, find -exec/-delete/...). Match both
+            # "--output=x" and an attached short option like "-o/tmp/out".
+            flag_head = token.split("=", 1)[0]
+            for uf in _AUTO_UNSAFE_COMMAND_FLAGS.get(current_command, ()):
+                if flag_head == uf or (len(uf) == 2 and token.startswith(uf)):
+                    return True
             if not prefix_pending:
                 expect_command = False
             continue
@@ -553,31 +614,44 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         tree = ast.parse(code)
     except SyntaxError:
         return False  # runs into a normal traceback; nothing to guard
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name.split(".")[0] in _AUTO_UNSAFE_PY_MODULES:
+    try:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in _AUTO_UNSAFE_PY_MODULES:
+                        return True
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and node.module.split(".")[0] in _AUTO_UNSAFE_PY_MODULES:
                     return True
-        elif isinstance(node, ast.ImportFrom):
-            if node.module and node.module.split(".")[0] in _AUTO_UNSAFE_PY_MODULES:
-                return True
-            # from-imports can bind mutating callables to bare names
-            # (from os import remove [as rm]); star imports hide anything.
-            for alias in node.names:
-                if alias.name == "*" or alias.name in _AUTO_UNSAFE_PY_ATTRS:
+                # from-imports can bind mutating callables to bare names
+                # (from os import remove [as rm]); star imports hide anything.
+                for alias in node.names:
+                    if alias.name == "*" or alias.name in _AUTO_UNSAFE_PY_ATTRS:
+                        return True
+            elif isinstance(node, ast.Attribute):
+                # Any reference to a mutating attribute fails closed, even
+                # without an immediate call (rm = os.remove; rm("x")).
+                if node.attr in _AUTO_UNSAFE_PY_ATTRS:
                     return True
-        elif isinstance(node, ast.Call):
-            func = node.func
-            if isinstance(func, ast.Name):
-                if func.id in {"exec", "eval", "__import__", "breakpoint"}:
+            elif isinstance(node, ast.Name):
+                if node.id in {"exec", "eval", "__import__", "breakpoint"}:
                     return True
-                if func.id == "open" and _open_call_writes(node):
+            elif isinstance(node, ast.Constant):
+                # Credential paths / parent traversal in a string literal.
+                if isinstance(node.value, str) and _references_sensitive_path(
+                    node.value
+                ):
                     return True
-            elif isinstance(func, ast.Attribute):
-                if func.attr in _AUTO_UNSAFE_PY_ATTRS:
-                    return True
-                if func.attr == "open" and _open_call_writes(node):
-                    return True
+            elif isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name):
+                    if func.id == "open" and _builtin_open_writes(node):
+                        return True
+                elif isinstance(func, ast.Attribute):
+                    if func.attr == "open" and _attr_open_writes(node):
+                        return True
+    except Exception:
+        return True  # unexpected AST shape: fail closed
     return False
 
 

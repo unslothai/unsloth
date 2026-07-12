@@ -78,6 +78,9 @@ const PREFS_KEYS: string[] = [
   // Chat runtime prefs
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
+  // Legacy confirm key: loadPermissionMode falls back to it, so clear both or
+  // a reset would restore the old level instead of the fresh default.
+  "unsloth_chat_confirm_tool_calls",
   "unsloth_hf_token",
   "unsloth_auto_heal_tool_calls",
   "unsloth_nudge_tool_calls",

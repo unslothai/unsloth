@@ -463,10 +463,15 @@ def run_safetensors_tool_loop(
     elif permission_mode not in ("ask", "auto", "off"):
         permission_mode = "ask"
 
-    # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to web_search.
+    # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to
+    # web_search. Skip only when a retrieval call would actually prompt (ask
+    # mode); auto never gates the safe search_knowledge_base tool.
     from core.inference.tools import build_rag_autoinject
 
-    _auto = None if confirm_tool_calls else build_rag_autoinject(conversation, rag_scope)
+    _skip_autoinject = (
+        confirm_tool_calls and not bypass_permissions and permission_mode != "auto"
+    )
+    _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
     if _auto:
         for _ev in _auto["events"]:
             yield _ev

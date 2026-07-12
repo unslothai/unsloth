@@ -11705,6 +11705,23 @@ async def anthropic_messages(
                     err_type = "invalid_request_error",
                 ),
             )
+        # ask/auto need the confirmation gate, which this passthrough has no
+        # channel for (same limitation as confirm_tool_calls above). Reject
+        # them rather than silently running tools unprompted. off/full are fine.
+        if getattr(payload, "permission_mode", None) in ("ask", "auto"):
+            api_monitor.fail(
+                monitor_id,
+                "permission_mode ask/auto is not supported for Anthropic Messages server tools.",
+            )
+            raise HTTPException(
+                status_code = 400,
+                detail = anthropic_error_body(
+                    "permission_mode 'ask'/'auto' is not supported for Anthropic Messages "
+                    "server tools; use 'off' or 'full'.",
+                    status = 400,
+                    err_type = "invalid_request_error",
+                ),
+            )
         from core.inference.tools import ALL_TOOLS
 
         openai_tools = _select_anthropic_server_tools(

@@ -3673,6 +3673,26 @@ class TestGuardrails:
         assert any(e.get("type") == "content" and e.get("text") == "plain answer" for e in events)
         assert exec_fn.calls == []
 
+    def test_auto_mode_still_runs_rag_autoinject(self, monkeypatch):
+        # "auto" sends confirm_tool_calls=true so unsafe calls gate, but the
+        # safe search_knowledge_base retrieval never gates, so autoinject must
+        # still run (unlike ask mode above).
+        ran = {"called": False}
+
+        def fake_autoinject(*_args, **_kwargs):
+            ran["called"] = True
+            return None
+
+        monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fake_autoinject)
+        loop, _exec_fn = _make_loop(
+            turns = [["plain answer"]],
+            confirm_tool_calls = True,
+            permission_mode = "auto",
+            rag_scope = {"thread_id": "t1"},
+        )
+        _collect_events(loop)
+        assert ran["called"] is True
+
     def test_auto_heal_disabled_preserves_xml_on_final_no_tools_pass(self):
         turns = iter(
             [

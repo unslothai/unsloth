@@ -64,6 +64,12 @@ def _clear_pending():
         ("ls\n\n\nrm x", True),  # blank lines collapse to one separator
         ("ls\npwd", False),  # multi-line stays safe when every line is
         ("ls\n", False),
+        ("sort -o/tmp/out /tmp/in", True),  # attached short output flag
+        ("find . \\( -name x -delete \\)", True),  # -delete inside a group
+        ("cat ../../.ssh/id_rsa", True),  # parent traversal read
+        ("cat ~/.aws/credentials", True),  # credential path
+        ("cat /etc/passwd", True),  # sensitive system file
+        ("cat logs/app.log", False),  # ordinary relative read
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -85,6 +91,13 @@ def test_terminal_classifier(command, unsafe):
         ("from os import remove as rm\nrm('x')", True),
         ("from os import *", True),  # star import hides anything
         ("import os\nprint(os.getcwd())", False),  # read-only os use
+        ("f = os.remove\nf('x')", True),  # indirect reference
+        ("import os\nrm = os.remove\nrm('x')", True),  # alias assignment
+        ("from pathlib import Path\nPath('x').open('w')", True),  # Path.open mode
+        ("from pathlib import Path\nprint(Path('x').open().read())", False),
+        ("import zipfile\nprint(zipfile.ZipFile('a').open('n.txt'))", False),
+        ("print(open('../../.ssh/id_rsa').read())", True),  # traversal read
+        ("print(open('creds.env').read())", True),  # credential file
     ],
 )
 def test_python_classifier(code, unsafe):

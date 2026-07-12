@@ -9003,8 +9003,15 @@ class LlamaCppBackend:
         conversation = list(messages)
 
         # Forced first-pass RAG so a doc question doesn't lose to web_search. Emits
-        # the same tool card + citations a real call would.
-        _auto = None if confirm_tool_calls else build_rag_autoinject(conversation, rag_scope)
+        # the same tool card + citations a real call would. Skip it only when a
+        # retrieval call would actually prompt (ask mode); auto never gates the
+        # safe search_knowledge_base tool, so retrieval must still run there.
+        _skip_autoinject = (
+            confirm_tool_calls
+            and not bypass_permissions
+            and permission_mode != "auto"
+        )
+        _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
                 yield _ev

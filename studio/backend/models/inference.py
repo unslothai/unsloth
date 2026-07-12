@@ -1047,6 +1047,15 @@ class ChatCompletionRequest(BaseModel):
             self.enable_thinking = self.thinking.type == "enabled"
         return self
 
+    @model_validator(mode = "after")
+    def _fold_full_permission_into_bypass(self) -> "ChatCompletionRequest":
+        """permission_mode='full' is the documented equivalent of
+        bypass_permissions=true, so fold it in before any route guard reads
+        the flag (else a full request would trip the confirm-gate rejections)."""
+        if self.permission_mode == "full":
+            self.bypass_permissions = True
+        return self
+
 
 class ToolConfirmRequest(BaseModel):
     session_id: Optional[str] = None
@@ -1742,6 +1751,14 @@ class AnthropicMessagesRequest(BaseModel):
         normalized["messages"] = normalized_messages
         normalized["system"] = _merge_anthropic_system(normalized.get("system"), system_additions)
         return normalized
+
+    @model_validator(mode = "after")
+    def _fold_full_permission_into_bypass(self) -> "AnthropicMessagesRequest":
+        """permission_mode='full' equals bypass_permissions=true (mirrors the
+        Chat Completions request)."""
+        if self.permission_mode == "full":
+            self.bypass_permissions = True
+        return self
 
 
 # ── Response models ────────────────────────────────────────────
