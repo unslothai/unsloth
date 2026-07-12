@@ -452,7 +452,8 @@ _AUTO_UNSAFE_MCP_VERB_RE = re.compile(
     r"transfer|buy|sell|reset|clear|purge|destroy|terminate|revert|rollback|"
     r"trigger|enable|disable|install|uninstall|restart|stop|start|"
     r"save|archive|submit|commit|push|sync|register|"
-    r"clone|checkout|comment|fork|tag|invite|share|append|prepend)(?:[_\-]|$)",
+    r"clone|checkout|comment|fork|tag|invite|share|append|prepend|"
+    r"upsert|assign)(?:[_\-]|$)",
     re.IGNORECASE,
 )
 
@@ -483,6 +484,8 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "marshal",
         "shelve",
         "dill",
+        # dbm.open(file, "c"/"n") creates files; treat the family as writers.
+        "dbm",
         # runpy runs a script/module as code.
         "runpy",
     }
@@ -555,7 +558,7 @@ _PY_MODE_LITERAL_RE = re.compile(r"^[rwxa][btru+]*$")
 # Reading these off the host escapes the intent of "read-only is safe": they
 # hold credentials. Path traversal (../) escapes the per-session workdir.
 _SENSITIVE_PATH_RE = re.compile(
-    r"(?:^|[/\\])\.(?:ssh|aws|gnupg|docker|kube|config/gcloud)(?:[/\\]|$)"
+    r"(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube|config/gcloud|config/gh)(?:[/\\]|$)"
     r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
     r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
     r"|credentials|/etc/(?:passwd|shadow|sudoers)"
@@ -570,7 +573,8 @@ _PARENT_TRAVERSAL_RE = re.compile(r"(?:^|[\s/\\'\"=:])\.\.(?:[/\\]|$|[\s'\"])")
 # A sensitive directory: a dynamic segment under it (open(f"/etc/{name}")) is
 # not provably safe, so fail closed when a folded path has a dynamic piece here.
 _SENSITIVE_DIR_RE = re.compile(
-    r"/etc/|(?:^|[/\\])\.(?:ssh|aws|gnupg|docker|kube)[/\\]|(?:^|[/\\])\.config/gcloud[/\\]",
+    r"/etc/|(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube)[/\\]"
+    r"|(?:^|[/\\])\.config/(?:gcloud|gh)[/\\]",
     re.IGNORECASE,
 )
 # Collapse /./ and repeated slashes so /etc/./passwd and /etc//passwd, which

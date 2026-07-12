@@ -84,6 +84,9 @@ def _clear_pending():
         ("find . \\( -name x -delete \\)", True),  # -delete inside a group
         ("cat ../../.ssh/id_rsa", True),  # parent traversal read
         ("cat ~/.aws/credentials", True),  # credential path
+        ("cat /home/a/.azure/msal_token_cache.json", True),  # azure token store
+        ("cat ~/.config/gh/hosts.yml", True),  # gh cli credentials
+        ("cat ~/.config/app/settings.json", False),  # ordinary config stays safe
         ("cat /etc/passwd", True),  # sensitive system file
         ("cat /proc/self/environ", True),  # procfs env dump
         ("cat /proc/1/cmdline", True),
@@ -195,6 +198,8 @@ def test_terminal_classifier(command, unsafe):
         ("import os\nopen(os.path.join('/etc', name)).read()", True),  # composed dynamic seg
         ("open(f'/tmp/{name}.txt').read()", False),  # dynamic seg under /tmp stays safe
         ("import urllib3\nurllib3.PoolManager().request('GET', 'http://x')", True),  # network
+        ("import dbm\ndbm.open('cache', 'c')", True),  # dbm create flag writes
+        ("import dbm\ndbm.open('cache')", True),  # dbm import itself signals writes
         ("cfg = d['k']\nprint(cfg)", False),  # subscript result not called stays safe
     ],
 )
@@ -232,6 +237,8 @@ def test_unknown_tools_fail_closed():
         ("get_and_checkout_branch", True),
         ("read_and_append_file", True),  # append/prepend are mutating
         ("prepend_line", True),
+        ("get_and_upsert_row", True),  # upsert/assign are mutating
+        ("list_and_assign_issue", True),
     ],
 )
 def test_mcp_classifier(tool, unsafe):
