@@ -15,9 +15,7 @@ import unittest
 
 def _standby_message(module_relpath):
     """Return the string raised by the `unsloth_vllm_standby` guard in a module."""
-    path = os.path.join(
-        os.path.dirname(__file__), os.pardir, "unsloth", "models", module_relpath
-    )
+    path = os.path.join(os.path.dirname(__file__), os.pardir, "unsloth", "models", module_relpath)
     with open(path, encoding = "utf-8") as f:
         tree = ast.parse(f.read())
     for node in ast.walk(tree):
