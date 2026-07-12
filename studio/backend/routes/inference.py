@@ -4618,10 +4618,7 @@ async def validate_model(
         # here or validation would pass a load that /load then rejects with a 409.
         if effective_load_in_4bit and not config.is_gguf:
             from utils.transformers_version import latest_tier_active_for
-
-            if await asyncio.to_thread(
-                latest_tier_active_for, config.identifier, request.hf_token
-            ):
+            if await asyncio.to_thread(latest_tier_active_for, config.identifier, request.hf_token):
                 effective_load_in_4bit = False
         # Off-loop: guard does sync nvidia-smi / HF work.
         await asyncio.to_thread(
