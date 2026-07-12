@@ -251,6 +251,8 @@ def test_terminal_classifier(command, unsafe):
         ("import urllib3\nurllib3.PoolManager().request('GET', 'http://x')", True),  # network
         ("import dbm\ndbm.open('cache', 'c')", True),  # dbm create flag writes
         ("import dbm\ndbm.open('cache')", True),  # dbm import itself signals writes
+        ("import sqlite3\nsqlite3.connect('results.db').execute('create table t(x)')", True),  # sqlite3 db write
+        ("import sqlite3\nsqlite3.connect('data.db')", True),  # sqlite3 connect creates the file
         ("cfg = d['k']\nprint(cfg)", False),  # subscript result not called stays safe
         ("open('/etc/{}'.format('passwd')).read()", True),  # str.format sensitive path
         ("open('/etc/{}'.format(name)).read()", True),  # format dynamic /etc segment
@@ -553,20 +555,38 @@ def test_bypass_permissions_folds_to_full_on_request_models():
 
 def test_ask_auto_self_enable_confirm_on_chat_request():
     # A direct /chat/completions caller that requests ask/auto but omits the
-    # legacy confirm flag must still hit the confirmation gate.
+    # legacy confirm flag must still hit the confirmation gate when Studio's own
+    # tool loop is requested (enable_tools / enabled_tools / mcp_enabled).
     for mode in ("ask", "auto"):
-        req = ChatCompletionRequest(
-            messages = [{"role": "user", "content": "hi"}],
-            permission_mode = mode,
-        )
-        assert req.confirm_tool_calls is True
+        for loop in ({"enable_tools": True}, {"enabled_tools": ["terminal"]}, {"mcp_enabled": True}):
+            req = ChatCompletionRequest(
+                messages = [{"role": "user", "content": "hi"}],
+                permission_mode = mode,
+                **loop,
+            )
+            assert req.confirm_tool_calls is True
     # A contradictory confirm=False is overridden by the explicit mode.
     req = ChatCompletionRequest(
         messages = [{"role": "user", "content": "hi"}],
         permission_mode = "ask",
+        enable_tools = True,
         confirm_tool_calls = False,
     )
     assert req.confirm_tool_calls is True
+    # A plain client-tool passthrough (client-supplied tools that Studio does not
+    # execute) must NOT self-enable confirm, or the route rejects the passthrough.
+    req = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hi"}],
+        permission_mode = "ask",
+        tools = [{"type": "function", "function": {"name": "f"}}],
+    )
+    assert req.confirm_tool_calls is None
+    # ask/auto without any tool request has nothing to gate; confirm stays unset.
+    req = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hi"}],
+        permission_mode = "ask",
+    )
+    assert req.confirm_tool_calls is None
     # Legacy callers with no permission_mode keep their confirm flag untouched.
     req = ChatCompletionRequest(
         messages = [{"role": "user", "content": "hi"}],
@@ -579,6 +599,7 @@ def test_ask_auto_self_enable_confirm_on_chat_request():
         req = ChatCompletionRequest(
             messages = [{"role": "user", "content": "hi"}],
             permission_mode = "ask",
+            enable_tools = True,
             **extra,
         )
         assert req.confirm_tool_calls is None

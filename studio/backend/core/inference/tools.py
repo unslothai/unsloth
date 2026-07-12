@@ -489,6 +489,9 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "dill",
         # dbm.open(file, "c"/"n") creates files; treat the family as writers.
         "dbm",
+        # sqlite3.connect(path) creates/mutates a database file (and runs DDL/DML
+        # without an open()/writer attribute), like dbm.
+        "sqlite3",
         # runpy runs a script/module as code.
         "runpy",
     }
