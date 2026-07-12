@@ -2754,9 +2754,7 @@ class TestLatestTierForces16Bit:
         # Export load-checkpoint refuses BEFORE tearing down the old worker, so a
         # lost race against an install keeps the loaded checkpoint (no bare 500).
         loadck = export.split("def load_checkpoint", 1)[1].split("\n    def ", 1)[0]
-        assert loadck.index("sidecar_swap_in_progress()") < loadck.index(
-            "_shutdown_subprocess()"
-        )
+        assert loadck.index("sidecar_swap_in_progress()") < loadck.index("_shutdown_subprocess()")
 
 
 class TestSidecarSwapReservation:
