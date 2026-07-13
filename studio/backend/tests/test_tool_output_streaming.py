@@ -708,6 +708,28 @@ def test_missing_path_hint_respects_project_workdir():
     assert "working directory is writable" in _missing_path_hint(outside_err, workdir)
 
 
+def test_missing_path_hint_convention_scoped_to_failing_line():
+    # A convention prefix that appears only OUTSIDE the failing-path error line
+    # (a traceback frame under a /workspace project root, or the user's own code
+    # printing /mnt/data) must not trigger the "use a relative path" hint when
+    # the actual miss was a relative / in-workdir path.
+    frame_err = (
+        "Traceback (most recent call last):\n"
+        '  File "/workspace/proj/script.py", line 5, in <module>\n'
+        "    open('data.csv')\n"
+        "FileNotFoundError: [Errno 2] No such file or directory: 'data.csv'"
+    )
+    assert _missing_path_hint(frame_err) == ""
+    printed_err = (
+        "outputs go to /mnt/data normally\n"
+        "FileNotFoundError: [Errno 2] No such file or directory: 'notes.txt'"
+    )
+    assert _missing_path_hint(printed_err) == ""
+    # But a convention path ON the error line still earns the hint.
+    on_line = "FileNotFoundError: [Errno 2] No such file or directory: '/mnt/data/x.html'"
+    assert "'x.html', not '/mnt/data/x.html'" in _missing_path_hint(on_line)
+
+
 def test_code_tool_descriptions_mention_relative_paths():
     for tool in (PYTHON_TOOL, TERMINAL_TOOL):
         description = tool["function"]["description"]

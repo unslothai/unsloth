@@ -52,7 +52,11 @@ import {
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
-import { toolOutputKey, toolPaneScope } from "../tool-output-scope";
+import {
+  shouldPreserveFullOutput,
+  toolOutputKey,
+  toolPaneScope,
+} from "../tool-output-scope";
 import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
@@ -3343,15 +3347,21 @@ export function createOpenAIStreamAdapter(
                   // when the live stream captured MORE than the final result
                   // (the model-visible result is truncated to protect the
                   // context window), preserve the full stream so the finished
-                  // card keeps showing everything the tool printed.
+                  // card keeps showing everything the tool printed. A raw length
+                  // comparison misses the case where the truncated result is
+                  // longer by byte count once its footer / "Exit code N:" /
+                  // __IMAGES__ base64 tail is appended, so defer to the shared
+                  // truncation-aware predicate the read side uses.
                   const liveKey = scopedToolOutputKey(id);
                   const liveOutput =
                     useChatRuntimeStore.getState().toolLiveOutput[liveKey] ??
                     "";
                   if (
                     id &&
-                    liveOutput.length >
-                      ((toolEvent.result as string) ?? "").length
+                    shouldPreserveFullOutput(
+                      liveOutput,
+                      (toolEvent.result as string) ?? "",
+                    )
                   ) {
                     useChatRuntimeStore
                       .getState()

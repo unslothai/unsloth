@@ -12015,12 +12015,6 @@ async def _anthropic_tool_stream(
                     # keeps producing events).
                     yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
-                if drop_until_tool_end:
-                    # disable_parallel_tool_use: a later tool call is being
-                    # dropped - skip every event until (and including) its tool_end.
-                    if etype == "tool_end":
-                        drop_until_tool_end = False
-                    continue
                 if etype in ("tool_output", "tool_args"):
                     # Live tool stdout / argument streaming are Studio-UI
                     # concepts with no Anthropic Messages equivalent; the full
@@ -12034,10 +12028,24 @@ async def _anthropic_tool_stream(
                     # tool (or large streamed tool_args) would leave the SSE
                     # stream silent past an idle-sensitive proxy cap (~100s).
                     # Emit a rate-limited comment keepalive instead of silence.
+                    # Checked BEFORE the drop_until_tool_end skip (like the
+                    # heartbeat branch): under disable_parallel_tool_use a chatty
+                    # SECOND-or-later tool call is dropped whole, and its
+                    # output/args events would otherwise be swallowed by the drop
+                    # branch with no keepalive at all, recreating the very silent
+                    # window this branch exists to prevent.
                     _now = time.monotonic()
                     if _now - _last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
                         _last_drop_keepalive = _now
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
+                if drop_until_tool_end:
+                    # disable_parallel_tool_use: a later tool call is being
+                    # dropped - skip every event until (and including) its
+                    # tool_end (its tool_output / tool_args were keepalive'd and
+                    # dropped just above).
+                    if etype == "tool_end":
+                        drop_until_tool_end = False
                     continue
                 if etype == "metadata":
                     _fr = event.get("finish_reason")

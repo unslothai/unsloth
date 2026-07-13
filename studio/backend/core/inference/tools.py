@@ -2855,11 +2855,21 @@ _BASH_ABS_PATH_RE = re.compile(r"(/[^\s:'\"]+):\s*No such file or directory")
 _SANDBOX_ROOT = os.path.join(os.path.expanduser("~"), "studio_sandbox")
 
 
+def _missing_error_lines(output: str) -> list[str]:
+    """The lines that actually name a missing file (a FileNotFoundError message
+    or a bash "No such file or directory"). Traceback frame lines such as
+    ``File "/workspace/proj/script.py"`` are excluded, so an unrelated absolute
+    path mentioned elsewhere in the output is never treated as the failing one."""
+    return [
+        line
+        for line in output.splitlines()
+        if "No such file or directory" in line or "FileNotFoundError" in line
+    ]
+
+
 def _extract_missing_abs_path(output: str) -> str | None:
     """Pull the absolute path a FileNotFoundError / bash error named, if any."""
-    for line in reversed(output.splitlines()):
-        if "No such file or directory" not in line and "FileNotFoundError" not in line:
-            continue
+    for line in reversed(_missing_error_lines(output)):
         m = _QUOTED_ABS_PATH_RE.search(line)
         if m:
             return m.group(1)
@@ -2894,12 +2904,19 @@ def _missing_path_hint(output: str, workdir: str | None = None) -> str:
     output; identical with and without streaming because the output itself is.
     The hint echoes the actual failing path so the model retries with the right
     relative name."""
-    if "FileNotFoundError" not in output and "No such file or directory" not in output:
+    error_lines = _missing_error_lines(output)
+    if not error_lines:
         return ""
     abs_path = _extract_missing_abs_path(output)
     # Fast path: a known code-interpreter convention prefix is always outside
-    # the sandbox, so hint even if the exact path could not be isolated.
-    convention = any(prefix in output for prefix in _MISSING_PATH_PREFIXES)
+    # the sandbox, so hint even if the exact path could not be isolated. Scoped
+    # to the failing-path error line(s) only -- a convention prefix mentioned
+    # elsewhere (e.g. a traceback frame under a /workspace project root, or the
+    # user's code printing "/mnt/data") must not trigger a misleading
+    # "use a relative path" hint when the actual miss was a local path.
+    convention = any(
+        prefix in line for line in error_lines for prefix in _MISSING_PATH_PREFIXES
+    )
     if not convention:
         # Generalized: only hint when the failing path is an absolute path
         # outside the working directory. A relative miss (a real typo of a

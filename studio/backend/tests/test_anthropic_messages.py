@@ -2117,3 +2117,105 @@ def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
     assert len(keepalives) == n_output
     # The final answer text still reaches the client (drop is transport-only).
     assert any("final answer" in c for c in chunks)
+
+
+def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(monkeypatch):
+    """Under disable_parallel_tool_use a chatty SECOND tool call is dropped
+    whole (drop_until_tool_end). Its tool_output/tool_args events must still emit
+    rate-limited keepalives: the drop window can last minutes with no heartbeats
+    (the wrapper heartbeats only while idle) and no stall keepalive (next(gen)
+    returns promptly), so swallowing them silently would let an idle proxy kill
+    the stream. The keepalive branch is checked before the drop skip so these
+    dropped events stay alive too."""
+    import threading as _threading
+
+    import routes.inference as inf_mod
+    from routes.inference import (
+        _OPENAI_PASSTHROUGH_SSE_KEEPALIVE,
+        _anthropic_tool_stream,
+    )
+
+    # Deterministic clock: jumps past the stall window per call so every dropped
+    # output event crosses the rate-limit threshold (see the sibling test).
+    _real_time = inf_mod.time
+    _tick = {"v": 0.0}
+
+    def _fast_monotonic():
+        _tick["v"] += 100.0
+        return _tick["v"]
+
+    fake_time = SimpleNamespace(
+        monotonic = _fast_monotonic,
+        sleep = _real_time.sleep,
+        time = _real_time.time,
+        perf_counter = _real_time.perf_counter,
+    )
+    monkeypatch.setattr(inf_mod, "time", fake_time)
+
+    n_output = 4
+
+    def run_gen():
+        def gen():
+            # First (kept) call.
+            yield {
+                "type": "tool_start",
+                "tool_name": "python",
+                "tool_call_id": "call_0",
+                "arguments": {},
+            }
+            yield {
+                "type": "tool_end",
+                "tool_name": "python",
+                "tool_call_id": "call_0",
+                "result": "r1",
+            }
+            # Second call the same turn: dropped whole by disable_parallel_tool_use
+            # but still executed server-side, streaming chatty stdout with NO
+            # heartbeats between chunks.
+            yield {
+                "type": "tool_start",
+                "tool_name": "python",
+                "tool_call_id": "call_1",
+                "arguments": {},
+            }
+            for i in range(n_output):
+                yield {
+                    "type": "tool_output",
+                    "tool_name": "python",
+                    "tool_call_id": "call_1",
+                    "text": f"line {i}\n",
+                }
+            yield {
+                "type": "tool_end",
+                "tool_name": "python",
+                "tool_call_id": "call_1",
+                "result": "r2",
+            }
+            yield {"type": "content", "text": "final answer"}
+
+        return gen()
+
+    async def _drive():
+        async def _is_disconnected():
+            return False
+
+        request = SimpleNamespace(is_disconnected = _is_disconnected)
+        resp = await _anthropic_tool_stream(
+            request,
+            _threading.Event(),
+            run_gen,
+            "msg_drop_ka2",
+            "m",
+            disable_parallel_tool_use = True,
+        )
+        return [chunk async for chunk in resp.body_iterator]
+
+    chunks = asyncio.run(_drive())
+    keepalives = [c for c in chunks if c == _OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
+    # Each dropped-call output event kept the stream alive.
+    assert len(keepalives) == n_output
+    # The dropped call must not surface as a second tool_use block.
+    tool_use_starts = [c for c in chunks if "content_block_start" in c and '"tool_use"' in c]
+    assert len(tool_use_starts) == 1
+    # The final answer still reaches the client.
+    assert any("final answer" in c for c in chunks)
