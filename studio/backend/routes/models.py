@@ -3332,7 +3332,24 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
                     return _VIDEO_GEN_TASK
         except Exception:
             pass
-        return "text-to-image"
+        # The Images load path resolves the family via detect_family_for_pick and REJECTS a pick
+        # whose id / name / checkpoint filename carries no supported image-family token
+        # (diffusion.py validate_load_request), 400ing AFTER it has already evicted the GPU owner.
+        # A bare model_index.json directory alone (a generically named on-device pipeline) is not
+        # enough. Tag text-to-image only when that same family detection succeeds, so the picker
+        # never advertises a local pipeline the load will always reject. Detection uses the same
+        # _local_family_needles the video branch does (leaf name / id / sole-file, not the raw
+        # path), so a family token in a parent directory can't spuriously tag it.
+        try:
+            from core.inference.diffusion_families import detect_family
+            for needle in _local_family_needles(model):
+                if detect_family(needle) is not None:
+                    return "text-to-image"
+            return None
+        except Exception:
+            # Detection unavailable (import/exec error): fall back to the prior permissive tag
+            # rather than hiding a possibly-loadable pipeline.
+            return "text-to-image"
     return None
 
 

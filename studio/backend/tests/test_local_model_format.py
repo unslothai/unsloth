@@ -175,13 +175,28 @@ def _local(
     )
 
 
-def test_local_task_tags_diffusers_pipeline_dir(tmp_path):
-    # A local diffusers pipeline (top-level model_index.json) is an image model even
-    # though its model_format is not "gguf": tag it so the Images picker keeps it.
+def test_local_task_tags_family_named_pipeline_dir(tmp_path):
+    # A local diffusers pipeline (top-level model_index.json) whose id resolves to a supported
+    # image family loads fine, so tag it so the Images picker keeps it.
+    d = tmp_path / "flux-pipeline"
+    _touch(d / "model_index.json")
+    _touch(d / "unet" / "diffusion_pytorch_model.safetensors")
+    assert (
+        models_route._local_model_task(_local(d, model_id = "black-forest-labs/FLUX.1-dev"))
+        == "text-to-image"
+    )
+
+
+def test_local_task_none_for_familyless_pipeline_dir(tmp_path):
+    # A generically named on-device pipeline (top-level model_index.json, no family token in its
+    # id / name / filename) is UNLOADABLE: the Images load path resolves no family via
+    # detect_family_for_pick and 400s after evicting the GPU owner. It must stay untagged so the
+    # picker never advertises a row that always fails; model_index.json alone is not enough.
     d = tmp_path / "my-local-pipeline"
     _touch(d / "model_index.json")
     _touch(d / "unet" / "diffusion_pytorch_model.safetensors")
-    assert models_route._local_model_task(_local(d)) == "text-to-image"
+    assert models_route._local_is_diffusers(_local(d)) is True
+    assert models_route._local_model_task(_local(d)) is None
 
 
 def test_local_task_tags_diffusers_by_family_id(tmp_path):

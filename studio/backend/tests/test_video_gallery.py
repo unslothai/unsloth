@@ -34,6 +34,8 @@ def _meta(**over):
         "width": 1024,
         "height": 576,
         "num_frames": 49,
+        "fps": 24,
+        "duration_s": 2.0,
         "steps": 30,
         "guidance": 6.0,
         "seed": 7,
@@ -216,6 +218,30 @@ def test_list_skips_corrupt_sidecar():
     gallery.save(_mp4(), _meta(prompt = "ours"))
     listed = gallery.list_videos()
     assert [r["prompt"] for r in listed] == ["ours"]
+
+
+def test_clear_preserves_mp4_with_present_but_invalid_sidecar():
+    # A hand-dropped MP4 whose sidecar PARSES as JSON but lacks the required recipe keys (e.g. "{}")
+    # is hidden by list_videos (fails the GalleryVideo schema filter), so clear must not destroy it
+    # while removing the owned pair. Regression for the sidecar-validation gap.
+    directory = gallery.gallery_dir()
+    (directory / "foreign.mp4").write_bytes(_mp4())
+    (directory / "foreign.json").write_text("{}", encoding = "utf-8")
+    gallery.save(_mp4(), _meta(prompt = "ours"))
+    assert gallery.clear() == 1
+    assert (directory / "foreign.mp4").exists()
+
+
+def test_delete_refuses_mp4_with_present_but_invalid_sidecar():
+    # A per-id delete of an MP4 whose sidecar parses but is missing required keys must refuse it:
+    # the gallery never surfaced it, so a guessed id must not destroy it.
+    directory = gallery.gallery_dir()
+    (directory / "foreign.mp4").write_bytes(_mp4())
+    (directory / "foreign.json").write_text(
+        json.dumps({"prompt": "x"}), encoding = "utf-8"
+    )  # partial sidecar (no width/seed/...)
+    assert gallery.delete("foreign") is False
+    assert (directory / "foreign.mp4").exists()
 
 
 def test_valid_callback_paginates_over_accepted_records():

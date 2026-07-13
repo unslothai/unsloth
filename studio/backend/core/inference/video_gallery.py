@@ -172,6 +172,26 @@ def _sidecar_path(video_id: str) -> Path:
     return gallery_dir() / f"{video_id}.json"
 
 
+# The sidecar keys a genuine Studio record always carries (save() always writes them). delete() and
+# clear() treat a pair as owned only when its sidecar has all of these, so a hand-dropped MP4 with a
+# parseable-but-empty ("{}") or partial JSON sidecar -- which list_videos already hides via the
+# GalleryVideo schema filter -- is neither counted as ours nor destroyed. Mirrors
+# image_gallery._REQUIRED_META: a key-presence check (the route still owns full schema/value-type
+# validation), aligned with GalleryVideo's required stored fields.
+_REQUIRED_META = (
+    "prompt",
+    "width",
+    "height",
+    "num_frames",
+    "fps",
+    "duration_s",
+    "steps",
+    "guidance",
+    "seed",
+    "created_at",
+)
+
+
 def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
     try:
         raw = sidecar.read_text(encoding = "utf-8")
@@ -181,7 +201,12 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
         meta = json.loads(raw)
     except (ValueError, TypeError):
         return None
-    return meta if isinstance(meta, dict) else None
+    # A parseable dict is not enough to claim ownership: a foreign sidecar (e.g. "{}") or one from a
+    # different schema lacks these keys. Require them so delete()/clear() never destroy a clip the
+    # gallery never surfaced (mirrors image_gallery._read_meta).
+    if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
+        return None
+    return meta
 
 
 def _mtime(path: Path) -> float:
