@@ -176,7 +176,7 @@ export function buildSeedDropProcessor(
       if (!config.drop) {
         return null;
       }
-      cols = loadedCols;
+      cols = loadedCols.length > 0 ? loadedCols : ["chunk_text", "source_file"];
     }
   } else {
     if (selectedDropColumns.length === 0) {
