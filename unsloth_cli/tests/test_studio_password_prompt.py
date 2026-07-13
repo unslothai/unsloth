@@ -150,7 +150,9 @@ def _install_studio_default_reexec(monkeypatch, events):
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
     monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
     monkeypatch.setattr(studio_mod, "_find_run_py", lambda: Path("/fake/studio/run.py"))
-    monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: None)
+    # A built frontend dist is present by default so the public-launch UI check
+    # passes; the no-dist lockout guard has its own dedicated test.
+    monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist"))
     monkeypatch.setattr(sys, "platform", "linux")
 
     def fake_execvp(file, argv):
@@ -165,6 +167,10 @@ def _install_run_reexec(monkeypatch, events):
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
     monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    # A built frontend dist is present by default so the public-launch UI check
+    # passes deterministically (independent of whether the repo dist was built);
+    # the missing-dist lockout guard has its own dedicated test.
+    monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist"))
     fake_bin = fake_venv / "bin" / "unsloth"
     real_is_file = Path.is_file
     monkeypatch.setattr(
@@ -455,6 +461,110 @@ def test_studio_default_missing_venv_exits_before_stripping_bootstrap(monkeypatc
     assert "not set up" in combined.lower()
 
 
+def test_studio_default_missing_frontend_exits_before_stripping_bootstrap(monkeypatch, tmp_path):
+    # Regression (item B): a public UI launch needs a built frontend dist -- the
+    # login page is the ONLY way to change the seeded password. Resolve it BEFORE
+    # the headless gate strips .bootstrap_password, so a missing dist aborts the
+    # launch without stripping (no lockout at must_change_password=1 with nothing
+    # left to log in with).
+    import typer as _typer
+
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+    bootstrap_file = tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    assert bootstrap_file.exists()
+
+    # Launcher present, but no built frontend dist.
+    monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    monkeypatch.setattr(studio_mod, "_find_run_py", lambda: Path("/fake/studio/run.py"))
+    monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: None)
+
+    app = _typer.Typer()
+    app.command()(studio_mod.studio_default)
+    result = CliRunner().invoke(app, ["--secure"], catch_exceptions = True)
+
+    assert result.exit_code == 1, result.output
+    # The seeded file survives: the frontend check failed BEFORE the gate stripped it.
+    assert bootstrap_file.exists()
+    assert _auth_state(studio_mod)["must_change_password"] == 1
+    # The gate never ran (no prompt, no strip, no exec).
+    assert events == [], events
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "frontend is not built" in combined.lower()
+
+
+def test_studio_default_bad_frontend_path_exits_before_stripping_bootstrap(monkeypatch, tmp_path):
+    # Regression (item B / reviewer finding): a user-supplied --frontend that does
+    # not contain index.html must NOT bypass the servable-UI guard. Otherwise the
+    # headless gate strips .bootstrap_password and the child serves no login page
+    # -> lockout. Validate the path BEFORE the gate and abort without stripping.
+    import typer as _typer
+
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+    bootstrap_file = tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    assert bootstrap_file.exists()
+
+    monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    monkeypatch.setattr(studio_mod, "_find_run_py", lambda: Path("/fake/studio/run.py"))
+    # Auto-resolution would find a dist, but the user forced an empty one (no
+    # index.html): the guard must reject it rather than trust it.
+    monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist"))
+    empty_dir = tmp_path / "empty_frontend"
+    empty_dir.mkdir()
+
+    app = _typer.Typer()
+    app.command()(studio_mod.studio_default)
+    result = CliRunner().invoke(app, ["--secure", "--frontend", str(empty_dir)], catch_exceptions = True)
+
+    assert result.exit_code == 1, result.output
+    assert bootstrap_file.exists()  # not stripped
+    assert _auth_state(studio_mod)["must_change_password"] == 1
+    assert events == [], events
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "index.html" in combined.lower()
+
+
+def test_studio_default_missing_frontend_loopback_cloudflare_still_launches(monkeypatch, tmp_path):
+    # The dist guard is scoped to public exposure only. A loopback --cloudflare
+    # (default host) does not tunnel, so a missing dist must NOT abort it -- the
+    # launch proceeds exactly as before.
+    import typer as _typer
+
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    _seed_auth(studio_mod)
+
+    monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
+    monkeypatch.setattr(studio_mod, "_ensure_studio_env_exported", lambda: None)
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    monkeypatch.setattr(studio_mod, "_find_run_py", lambda: Path("/fake/studio/run.py"))
+    monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: None)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def fake_execvp(file, argv):
+        events.append(("exec", list(argv)))
+        raise _ExecCaptured(argv)
+
+    monkeypatch.setattr(studio_mod.os, "execvp", fake_execvp)
+
+    app = _typer.Typer()
+    app.command()(studio_mod.studio_default)
+    result = CliRunner().invoke(app, ["--cloudflare"], catch_exceptions = True)
+
+    kinds = [kind for kind, _ in events]
+    assert kinds == ["exec"], (events, result.output)
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "frontend not built" not in combined.lower()
+
+
 def test_studio_default_query_failure_strips_bootstrap_file(monkeypatch, tmp_path):
     # The DB opens and the admin is seeded + committed (so .bootstrap_password is
     # on disk), but reading must_change_password back fails. Returning here would
@@ -577,6 +687,36 @@ def test_run_non_tty_deletes_bootstrap_password_file(monkeypatch, tmp_path):
     kinds = [kind for kind, _ in events]
     assert kinds == ["exec"], events
     assert _auth_state(studio_mod)["must_change_password"] == 1
+
+
+def test_run_missing_frontend_exits_before_stripping_bootstrap(monkeypatch, tmp_path):
+    # Regression (item B / reviewer finding 4): `unsloth studio run` serves the
+    # same Studio UI and strips the seeded password on a headless public launch,
+    # so a missing frontend dist must abort BEFORE the strip -- the same lockout
+    # guard as `unsloth studio`, not just `studio run`'s model-load residual.
+    import typer as _typer
+
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+    bootstrap_file = tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    assert bootstrap_file.exists()
+
+    _install_run_reexec(monkeypatch, events)
+    monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: None)  # no built dist
+
+    app = _typer.Typer()
+    app.command(
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+    )(studio_mod.run)
+    result = CliRunner().invoke(app, _BASE + ["--secure"], catch_exceptions = True)
+
+    assert result.exit_code == 1, result.output
+    assert bootstrap_file.exists()  # not stripped
+    assert _auth_state(studio_mod)["must_change_password"] == 1
+    assert events == [], events  # no strip, no exec
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "frontend is not built" in combined.lower()
 
 
 def test_run_non_tty_persists_seeded_admin_on_fresh_home(monkeypatch, tmp_path):

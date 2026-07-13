@@ -741,6 +741,60 @@ def _strip_seeded_bootstrap_password_or_exit(*, context: str) -> None:
         raise typer.Exit(1)
 
 
+def _require_servable_frontend_or_exit(
+    *,
+    frontend: Optional[Path],
+    api_only: bool,
+    cloudflare: Optional[bool],
+    host: str,
+    secure: bool,
+) -> Optional[Path]:
+    """Fail closed BEFORE the pre-exposure gate if a public UI launch has no
+    login page to change the seeded password.
+
+    The gate strips the seeded .bootstrap_password on a headless public launch,
+    so if the re-exec'd child then cannot serve the login page the admin is
+    locked out (must_change_password=1, no file, no UI) until `unsloth studio
+    reset-password`. The login page is the ONLY in-band way to change the seeded
+    password, so a public non-api-only launch must have a servable frontend dist
+    before the strip can happen.
+
+    Returns the dist to serve: a user-supplied --frontend (validated to contain
+    index.html, so a bad path cannot silently bypass this check) or the
+    auto-resolved built dist. Returns `frontend` unchanged for non-public or
+    --api-only launches (no UI login page is needed, so nothing is validated).
+    """
+    if api_only or not _should_prompt_password_change(
+        cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
+    ):
+        return frontend
+    if frontend is not None:
+        # A user-supplied dist is not vetted by _find_frontend_dist, so verify it
+        # can actually serve the login page; otherwise `--frontend /bad/path`
+        # would trivially bypass this guard and the strip would still lock out.
+        if (Path(frontend) / "index.html").is_file():
+            return frontend
+        typer.echo(
+            "Error: --frontend points at a directory with no index.html, so a "
+            "public Studio launch would have no login page to change the seeded "
+            "admin password. Point --frontend at a built dist, rebuild it (re-run "
+            "install.sh), or use --api-only.",
+            err = True,
+        )
+        raise typer.Exit(1)
+    # _find_frontend_dist only returns a path that already contains index.html.
+    resolved = _find_frontend_dist()
+    if resolved is not None:
+        return resolved
+    typer.echo(
+        "Error: the Studio frontend is not built, so a public launch would have "
+        "no login page to change the seeded admin password. Build it (re-run "
+        "install.sh), pass --frontend PATH to a built dist, or use --api-only.",
+        err = True,
+    )
+    raise typer.Exit(1)
+
+
 def _enforce_password_change_before_exposure(
     *, cloudflare: Optional[bool], host: str, secure: bool, api_only: bool
 ) -> None:
@@ -1112,12 +1166,29 @@ def studio_default(
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
     studio_python = run_py = None
+    resolved_frontend = frontend
     if not in_studio_venv:
         studio_python = _studio_venv_python()
         run_py = _find_run_py()
         if not (studio_python and run_py):
             typer.echo("Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
+        # A public UI launch must have a servable login page BEFORE the gate can
+        # strip the seeded .bootstrap_password, or the child is left with no way
+        # to change it (lockout until `unsloth studio reset-password`). This also
+        # returns the resolved dist so the child serves a real build regardless
+        # of where its __file__ lands (fixes the shadowed-unsloth silent 404).
+        resolved_frontend = _require_servable_frontend_or_exit(
+            frontend = resolved_frontend,
+            api_only = api_only,
+            cloudflare = cloudflare,
+            host = host,
+            secure = secure,
+        )
+        # Non-public (or api-only) launches skip the validation above but still
+        # forward an explicitly resolved dist for the same silent-404 reason.
+        if resolved_frontend is None and not api_only:
+            resolved_frontend = _find_frontend_dist()
 
     # Public (tunnel) exposure with the seeded default password: force a
     # terminal password change first, before any re-exec or server exists.
@@ -1139,12 +1210,8 @@ def studio_default(
                 "--parallel",
                 str(parallel),
             ]
-            # Resolve frontend explicitly so the spawned run.py uses a real
-            # built dist regardless of where its __file__ lands. Skip in
-            # --api-only (no UI served).
-            resolved_frontend = frontend
-            if resolved_frontend is None and not api_only:
-                resolved_frontend = _find_frontend_dist()
+            # Forward the frontend dist resolved before the gate (skipped in
+            # --api-only, which serves no UI).
             if resolved_frontend is not None:
                 args.extend(["--frontend", str(resolved_frontend)])
             if silent:
@@ -1537,6 +1604,17 @@ def run(
         if not studio_bin.is_file():
             typer.echo("Studio venv missing 'unsloth' entry point. Re-run: unsloth studio setup")
             raise typer.Exit(1)
+        # `run` serves the same Studio UI (unless --api-only); a public launch
+        # must have a servable login page BEFORE the gate strips the seeded
+        # password, or the re-exec'd child is left with no way to change it
+        # (same lockout as `unsloth studio`). Validate here, before the strip.
+        _require_servable_frontend_or_exit(
+            frontend = frontend,
+            api_only = api_only,
+            cloudflare = cloudflare,
+            host = host,
+            secure = secure,
+        )
 
     # Public (tunnel) exposure with the seeded default password: force a
     # terminal password change first, before any re-exec or server exists.
