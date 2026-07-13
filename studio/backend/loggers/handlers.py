@@ -84,6 +84,10 @@ _QUIET_SUCCESS_PATHS = {
     "/api/hub/datasets/active-downloads",
     "/api/hub/datasets/transport-status",
 }
+# Chat thread/project CRUD prefixes. Their 2xx line is covered by the generation,
+# tool-call, and stats events. On first load these also fire before the initial
+# token refresh and 401 until /api/auth/refresh runs, so drop that transient
+# pre-auth 401 too; real auth failures still surface via /api/auth/*.
 _QUIET_SUCCESS_PREFIXES = (
     "/api/chat/threads",
     "/api/chat/projects",
@@ -91,9 +95,9 @@ _QUIET_SUCCESS_PREFIXES = (
 
 
 def _is_quiet_success(path: str, status_code: int) -> bool:
-    return 200 <= status_code < 300 and (
-        path in _QUIET_SUCCESS_PATHS or path.startswith(_QUIET_SUCCESS_PREFIXES)
-    )
+    if 200 <= status_code < 300:
+        return path in _QUIET_SUCCESS_PATHS or path.startswith(_QUIET_SUCCESS_PREFIXES)
+    return status_code == 401 and path.startswith(_QUIET_SUCCESS_PREFIXES)
 
 
 class LoggingMiddleware:
