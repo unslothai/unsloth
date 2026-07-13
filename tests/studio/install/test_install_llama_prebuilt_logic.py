@@ -212,7 +212,10 @@ def test_remove_agent_instruction_files_does_not_follow_links(tmp_path: Path):
     external.mkdir()
     (managed / "AGENTS.md").write_text("managed root", encoding = "utf-8")
     (nested / "AGENTS.md").write_text("managed nested", encoding = "utf-8")
+    (managed / "CLAUDE.md").write_text("managed Claude root", encoding = "utf-8")
+    (nested / "CLAUDE.md").write_text("managed Claude nested", encoding = "utf-8")
     (external / "AGENTS.md").write_text("user owned", encoding = "utf-8")
+    (external / "CLAUDE.md").write_text("user-owned Claude", encoding = "utf-8")
     try:
         (managed / "external-link").symlink_to(external, target_is_directory = True)
         linked_root = tmp_path / "linked-root"
@@ -220,12 +223,15 @@ def test_remove_agent_instruction_files_does_not_follow_links(tmp_path: Path):
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
 
-    assert remove_agent_instruction_files(managed) == 2
+    assert remove_agent_instruction_files(managed) == 4
     assert not list(managed.rglob("AGENTS.md"))
+    assert not list(managed.rglob("CLAUDE.md"))
     assert (external / "AGENTS.md").read_text(encoding = "utf-8") == "user owned"
+    assert (external / "CLAUDE.md").read_text(encoding = "utf-8") == "user-owned Claude"
 
     assert remove_agent_instruction_files(linked_root) == 0
     assert (external / "AGENTS.md").exists()
+    assert (external / "CLAUDE.md").exists()
 
 
 def test_hydrate_source_tree_extracts_upstream_archive_contents(
@@ -259,6 +265,16 @@ def test_hydrate_source_tree_extracts_upstream_archive_contents(
             f"llama.cpp-{upstream_tag}/examples/AGENTS.md",
             b"nested contributor instructions\n",
         )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/CLAUDE.md",
+            b"Claude contributor instructions\n",
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/examples/CLAUDE.md",
+            b"nested Claude contributor instructions\n",
+        )
 
     source_urls = set(INSTALL_LLAMA_PREBUILT.upstream_source_archive_urls(upstream_tag))
 
@@ -280,6 +296,7 @@ def test_hydrate_source_tree_extracts_upstream_archive_contents(
     assert (install_dir / "gguf-py" / "gguf" / "__init__.py").exists()
     assert not (install_dir / f"llama.cpp-{upstream_tag}").exists()
     assert not list(install_dir.rglob("AGENTS.md"))
+    assert not list(install_dir.rglob("CLAUDE.md"))
 
 
 def test_release_asset_download_url():
@@ -2047,6 +2064,10 @@ def test_install_prebuilt_skips_download_when_existing_install_matches(
     nested_agents = install_dir / "examples" / "AGENTS.md"
     nested_agents.parent.mkdir()
     nested_agents.write_text("old nested instructions", encoding = "utf-8")
+    (install_dir / "CLAUDE.md").write_text("old Claude instructions", encoding = "utf-8")
+    (nested_agents.parent / "CLAUDE.md").write_text(
+        "old nested Claude instructions", encoding = "utf-8"
+    )
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
@@ -2067,6 +2088,7 @@ def test_install_prebuilt_skips_download_when_existing_install_matches(
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
     assert not list(install_dir.rglob("AGENTS.md"))
+    assert not list(install_dir.rglob("CLAUDE.md"))
 
 
 def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
@@ -2075,8 +2097,10 @@ def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
 
     assert '_remove_agent_instruction_files "$SCRIPT_DIR/frontend" "$_OXC_DIR"' in setup_sh
     assert '_remove_agent_instruction_files "$LLAMA_CPP_DIR"' in setup_sh
+    assert "-name 'CLAUDE.md'" in setup_sh
     assert 'if [ "${_LOCAL_LLAMA_CPP_LINKED:-false}" != true ]; then' in setup_sh
     assert "Remove-AgentInstructionFiles -Roots @($FrontendDir, $OxcValidatorDir)" in setup_ps1
+    assert '"CLAUDE.md"' in setup_ps1
     assert "if (-not $LocalLlamaCppLinked)" in setup_ps1
     assert not (PACKAGE_ROOT / "studio" / "frontend" / "src" / "i18n" / "AGENTS.md").exists()
     assert (PACKAGE_ROOT / "studio" / "frontend" / "src" / "i18n" / "README.md").is_file()

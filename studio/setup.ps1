@@ -203,8 +203,8 @@ function New-UnslothTemporaryFile {
     return Get-Item -LiteralPath $tempPath
 }
 
-# AGENTS.md files are contributor/agent instructions, not Studio runtime data.
-# Do not traverse a linked root because --with-llama-cpp-dir points at a
+# AGENTS.md and CLAUDE.md are contributor/agent instructions, not Studio runtime
+# data. Do not traverse a linked root because --with-llama-cpp-dir points at a
 # user-owned checkout.
 function Remove-AgentInstructionFiles {
     param([string[]]$Roots)
@@ -214,7 +214,7 @@ function Remove-AgentInstructionFiles {
         $item = Get-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
         if (-not $item -or -not $item.PSIsContainer) { continue }
         if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
-        Get-ChildItem -LiteralPath $root -Filter "AGENTS.md" -File -Recurse -Force `
+        Get-ChildItem -LiteralPath $root -Include "AGENTS.md", "CLAUDE.md" -File -Recurse -Force `
             -ErrorAction SilentlyContinue |
             Remove-Item -Force -ErrorAction SilentlyContinue
     }

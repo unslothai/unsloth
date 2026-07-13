@@ -4386,17 +4386,16 @@ def copy_directory_contents(source_dir: Path, destination: Path) -> None:
 
 
 def remove_agent_instruction_files(root: Path) -> int:
-    """Remove contributor-only AGENTS.md files without following linked roots."""
+    """Remove contributor-only agent instructions without following linked roots."""
     if root.is_symlink() or not root.is_dir():
         return 0
 
     removed = 0
     for current_dir, _, filenames in os.walk(root, followlinks = False):
-        if "AGENTS.md" not in filenames:
-            continue
-        candidate = Path(current_dir) / "AGENTS.md"
-        candidate.unlink()
-        removed += 1
+        for filename in sorted({"AGENTS.md", "CLAUDE.md"}.intersection(filenames)):
+            candidate = Path(current_dir) / filename
+            candidate.unlink()
+            removed += 1
     return removed
 
 
@@ -4464,7 +4463,7 @@ def hydrate_source_tree(
         copy_directory_contents(source_root, install_dir)
         removed = remove_agent_instruction_files(install_dir)
         if removed:
-            log(f"removed {removed} contributor-only AGENTS.md file(s) from staged source")
+            log(f"removed {removed} contributor-only agent instruction file(s) from staged source")
     except PrebuiltFallback:
         raise
     except Exception as exc:
@@ -6862,7 +6861,7 @@ def install_prebuilt(
             if (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
                 removed = remove_agent_instruction_files(install_dir)
                 if removed:
-                    log(f"removed {removed} contributor-only AGENTS.md file(s) from install")
+                    log(f"removed {removed} contributor-only agent instruction file(s) from install")
             if install_dir.exists():
                 log(
                     f"existing llama.cpp install detected at {install_dir}; validating staged prebuilt update before replacement"
