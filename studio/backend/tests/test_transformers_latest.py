@@ -781,9 +781,11 @@ class TestCompatPlan:
         extras, blockers = tl.compat_plan("5.99.0")
         assert blockers == ["huggingface-hub>=2.1"]
 
-    def test_unfetchable_requires_dist_is_empty_plan(self, monkeypatch):
+    def test_unfetchable_requires_dist_blocks_install(self, monkeypatch):
+        # Proceeding unverified could pin a sidecar whose imports crash workers.
         monkeypatch.setattr(tl, "_fetch_requires_dist", lambda v: None)
-        assert tl.compat_plan("5.13.0") == ((), [])
+        extras, blockers = tl.compat_plan("5.13.0")
+        assert extras == () and len(blockers) == 1 and "retry" in blockers[0]
 
     def test_extra_marker_requirements_skipped(self, monkeypatch):
         self._patch_env(

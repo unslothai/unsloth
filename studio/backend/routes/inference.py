@@ -4498,6 +4498,11 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Lost the spawn-time race to a sidecar install/repair: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         # Friendlier message for models Unsloth cannot load.
         if native_grant_backed:
             redacted_msg = redact_native_paths(str(e))

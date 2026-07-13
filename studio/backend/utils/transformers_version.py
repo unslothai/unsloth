@@ -35,6 +35,7 @@ import json
 import structlog
 from loggers import get_logger
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1861,6 +1862,22 @@ def _is_valid_version_string(version: str) -> bool:
     return isinstance(version, str) and re.fullmatch(_LATEST_VERSION_RE, version) is not None
 
 
+# Only the sidecar recipe's own packages, as plain (optionally ==pinned) specs, may
+# come from the on-disk pin marker; anything else (URLs, extras, options) is rebuilt.
+_PIN_SPEC_RE = re.compile(r"^[A-Za-z0-9_.-]+(==[A-Za-z0-9_.+-]+)?$")
+_PIN_ALLOWED_NAMES = frozenset(
+    {"transformers", "huggingface_hub", "huggingface-hub", "hf_xet", "hf-xet",
+     "tiktoken", "tokenizers", "safetensors"}
+)
+
+
+def _is_safe_pin_spec(spec: str) -> bool:
+    if not _PIN_SPEC_RE.match(spec):
+        return False
+    name = spec.split("==", 1)[0].lower().replace("_", "-")
+    return name in {n.replace("_", "-") for n in _PIN_ALLOWED_NAMES}
+
+
 def _latest_pin_data() -> dict | None:
     """Parsed pin marker: {"version": str, "packages": [specs...]}, or None.
 
@@ -1888,7 +1905,13 @@ def _latest_pin_data() -> dict | None:
     if not _is_valid_version_string(version):
         return None
     packages = data.get("packages")
-    if not (isinstance(packages, list) and all(isinstance(p, str) for p in packages)):
+    if not (
+        isinstance(packages, list)
+        and packages
+        and all(isinstance(p, str) and _is_safe_pin_spec(p) for p in packages)
+    ):
+        # Malformed or unexpected specs (the pin is user-writable on disk) never
+        # reach pip: rebuild the canonical set for the pinned version instead.
         packages = list(_venv_t5_latest_packages(version))
     return {"version": version, "packages": packages}
 

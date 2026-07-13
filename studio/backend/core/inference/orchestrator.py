@@ -174,6 +174,20 @@ class InferenceOrchestrator:
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new inference subprocess."""
+        # Same recheck as the training/export spawns: a sidecar install or lazy
+        # repair that reserved after the route-level guards must not have this
+        # worker activate a mid-swap .venv_t5_latest. Also covers the OpenAI
+        # auto-switch path, which enters _load_model_impl without route guards.
+        from utils.transformers_version import (
+            SidecarSwapInProgress,
+            sidecar_swap_in_progress,
+        )
+
+        if sidecar_swap_in_progress():
+            raise SidecarSwapInProgress(
+                "A transformers installation is replacing the latest sidecar; "
+                "retry when it completes."
+            )
         from utils.native_path_leases import (
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,

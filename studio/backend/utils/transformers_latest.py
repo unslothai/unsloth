@@ -179,7 +179,8 @@ def _load_snapshot_file() -> dict | None:
     if not isinstance(data.get("pypi_version"), str):
         return None
     for key in ("pypi_model_types", "main_model_types"):
-        if not isinstance(data.get(key), list):
+        value = data.get(key)
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
             return None
     return data
 
@@ -439,12 +440,15 @@ def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
     Compares the release's core requires_dist against the running base env (the env the
     workers overlay the sidecar onto). A requirement the base env satisfies needs nothing;
     an unsatisfied shadowable dep becomes an exact pin inside the sidecar; any other
-    unsatisfied requirement is a blocker. An unavailable requires_dist yields an empty
-    plan (proceed exactly like the fixed sidecars do today).
+    unsatisfied requirement is a blocker. An unavailable requires_dist BLOCKS the
+    install: proceeding unverified could pin a sidecar whose imports then crash the
+    workers, and the caller just reached PyPI for the version check so a retry is cheap.
     """
     reqs = _fetch_requires_dist(version)
     if reqs is None:
-        return (), []
+        return (), [
+            "dependency metadata for this release (could not be fetched from PyPI; retry)"
+        ]
     try:
         from importlib.metadata import PackageNotFoundError
         from importlib.metadata import version as _installed_version
