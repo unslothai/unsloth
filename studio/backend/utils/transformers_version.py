@@ -1966,7 +1966,6 @@ def _pid_alive(pid) -> bool:
         return False
     try:
         import psutil
-
         return psutil.pid_exists(pid)
     except Exception:
         pass
@@ -2200,7 +2199,6 @@ def _ensure_venv_t5_latest_exists() -> bool:
     # self-heal (guarded below) performs the actual repair.
     try:
         import multiprocessing as _mp
-
         if _mp.parent_process() is not None:
             logger.warning(
                 ".venv_t5_latest is incomplete; repairs run in the parent process. "
