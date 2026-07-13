@@ -350,6 +350,22 @@ class _FailingSelectConn:
         return getattr(self._inner, name)
 
 
+class _FailingCommitConn:
+    """Wrap a real auth connection but raise on commit(), so a fresh install's
+    seeded admin INSERT rolls back on close() -- the seed-committed guarantee the
+    gate depends on is not met, even though _ensure_cli_default_admin already
+    wrote the .bootstrap_password file."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def commit(self):
+        raise sqlite3.OperationalError("database is locked")
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 def test_studio_default_connect_failure_strips_bootstrap_file(monkeypatch, tmp_path):
     # If the auth DB cannot even be opened (transient lock / unwritable home) we
     # cannot confirm the password was changed, but a seeded .bootstrap_password
@@ -412,6 +428,34 @@ def test_studio_default_connect_failure_fails_closed_when_strip_fails(monkeypatc
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
     assert "refusing to publish" in combined.lower()
     assert bootstrap_file.exists()
+
+
+def test_studio_default_seed_commit_failure_fails_closed(monkeypatch, tmp_path):
+    # Fresh install: the gate's own _ensure_cli_default_admin does the INSERT and
+    # writes .bootstrap_password, but the commit fails (write lock held past
+    # busy_timeout). The uncommitted admin rolls back on close, so a re-exec'd old
+    # child would find no admin and regenerate + serve a fresh default credential;
+    # stripping cannot stop a regeneration. The gate must fail closed.
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    # Deliberately NO _seed_auth(): the gate seeds the fresh DB itself, then commit fails.
+    real_connect = studio_mod._connect_auth_db
+    monkeypatch.setattr(studio_mod, "_connect_auth_db", lambda: _FailingCommitConn(real_connect()))
+
+    result = _invoke_studio_default(monkeypatch, events, ["--secure"])
+
+    kinds = [kind for kind, _ in events]
+    assert "exec" not in kinds, events
+    assert result.exit_code == 1, result.output
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "refusing to publish" in combined.lower()
+    # The half-written seed file is stripped, and no admin row was committed.
+    assert not (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).exists()
+    verify = sqlite3.connect(_auth_db(tmp_path))
+    try:
+        assert verify.execute("SELECT COUNT(*) FROM auth_user").fetchone()[0] == 0
+    finally:
+        verify.close()
 
 
 def test_studio_default_query_failure_strips_bootstrap_file(monkeypatch, tmp_path):

@@ -758,19 +758,20 @@ def _enforce_password_change_before_exposure(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     ):
         return
-    # Inspection failures (unwritable STUDIO_HOME, locked DB) do not kill the
-    # launch on their own -- the backend still enforces auth and its shutdown
-    # timer -- but they defensively strip any seeded bootstrap password first so
-    # a re-exec'd old child cannot serve it (failing closed only if that strip
-    # fails). A failure AFTER the user typed a new password stays fatal, below.
+    # Before public exposure we must not serve the seeded default credential.
+    # If the auth DB will not open, optimistically strip any seeded file and fall
+    # back to the backend auth + shutdown timer: an admin committed by a prior run
+    # means an old child finds it and won't regenerate. But if the DB opens and we
+    # then cannot SEED+COMMIT a fresh admin (below), no admin is committed, so an
+    # old child would regenerate and serve a fresh default credential -- stripping
+    # cannot stop that, so that case fails closed. A failure AFTER the user typed a
+    # new password also stays fatal, below.
     try:
         conn = _connect_auth_db()
     except (OSError, sqlite3.Error) as exc:
-        # Cannot confirm whether the password was changed. A seeded
-        # .bootstrap_password may already be on disk from a prior run; re-exec'ing
-        # without removing it would let an old studio-venv child serve it on the
-        # public page. Strip it defensively (fail closed if we cannot), then fall
-        # back to the backend auth + bootstrap shutdown timer.
+        # A seeded .bootstrap_password may be on disk from a prior run; strip it so
+        # a re-exec'd old child cannot serve it (fail closed if we cannot), then
+        # fall back to the backend auth + bootstrap shutdown timer.
         typer.echo(
             f"Warning: could not inspect the Studio auth database ({exc}); "
             "removing any seeded bootstrap password before public exposure.",
@@ -781,25 +782,44 @@ def _enforce_password_change_before_exposure(
     try:
         try:
             _ensure_cli_default_admin(conn)
-            # Persist a freshly seeded admin before we might re-exec. The INSERT
-            # in _ensure_cli_default_admin is otherwise uncommitted and rolls
-            # back on conn.close(): a re-exec'd child (especially an OLD
-            # studio-venv one) would then find no admin, regenerate a fresh
-            # bootstrap password + file, and inject THAT into the public page,
-            # defeating the deletion below.
+            # Persist a freshly seeded admin before we might re-exec: the INSERT in
+            # _ensure_cli_default_admin is otherwise uncommitted and rolls back on
+            # conn.close(). If the seed or this commit fails (e.g. a write lock held
+            # past busy_timeout), no admin is committed, so a re-exec'd OLD child
+            # finds none, regenerates a fresh bootstrap password + file, and serves
+            # THAT publicly -- stripping cannot stop a regeneration. We cannot prove
+            # a committed admin, so fail closed.
             conn.commit()
+        except (OSError, sqlite3.Error) as exc:
+            # Best-effort remove any half-written seed file (its admin row rolled
+            # back); the launch is refused regardless.
+            try:
+                (STUDIO_HOME / "auth" / BOOTSTRAP_PASSWORD_FILE).unlink(missing_ok = True)
+            except OSError:
+                pass
+            typer.echo(
+                "Error: refusing to publish Studio on a public Cloudflare URL: could "
+                f"not initialize the admin account ({exc}), so a re-exec'd Studio "
+                "child could regenerate and serve a default credential. Retry (a "
+                "transient database lock clears), or change the password first (run "
+                "`unsloth studio` locally with a terminal attached, or `unsloth "
+                "studio reset-password`).",
+                err = True,
+            )
+            raise typer.Exit(1)
+        try:
             row = conn.execute(
                 "SELECT password_salt, password_hash, must_change_password "
                 "FROM auth_user WHERE username = ?",
                 (DEFAULT_ADMIN_USERNAME,),
             ).fetchone()
         except (OSError, sqlite3.Error) as exc:
-            # The seeded admin was already committed above, so .bootstrap_password
-            # is on disk; we just could not read must_change_password back. Strip
-            # the seeded file so no re-exec'd child serves it (the DB flag and the
-            # shutdown timer still force a change), failing closed if we cannot.
+            # The admin is committed above, so an old child finds it and will NOT
+            # regenerate; we just could not read must_change_password back. Strip
+            # the seeded file so nothing serves it (the DB flag and shutdown timer
+            # still force a change), failing closed if the strip itself fails.
             typer.echo(
-                f"Warning: could not inspect the Studio auth database ({exc}); "
+                f"Warning: could not read the Studio admin state back ({exc}); "
                 "removing the seeded bootstrap password before public exposure.",
                 err = True,
             )
