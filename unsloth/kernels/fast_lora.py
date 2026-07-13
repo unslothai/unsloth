@@ -182,12 +182,16 @@ class LoRA_MLP(torch.autograd.Function):
         d_downA.addmm_(h.t(), dY @ downB.t(), alpha = downS, beta = 0)
         d_downB.addmm_(downA.t() @ h.t(), dY, alpha = downS, beta = 0)
 
+        # df @ upB.t() and de @ gateB.t() each feed both a weight grad and dX; compute once.
+        up_dB = df @ upB.t()
+        gate_dB = de @ gateB.t()
+
         # Up projection LoRA weights
         # d_upA   = X.t() @ (df @ upB.t())
         # d_upB   = (upA.t() @ X.t()) @ df
         # d_upA  *= upS
         # d_upB  *= upS
-        d_upA.addmm_(X.t(), df @ upB.t(), alpha = upS, beta = 0)
+        d_upA.addmm_(X.t(), up_dB, alpha = upS, beta = 0)
         d_upB.addmm_(upA.t() @ X.t(), df, alpha = upS, beta = 0)
 
         # Gate projection LoRA weights
@@ -195,7 +199,7 @@ class LoRA_MLP(torch.autograd.Function):
         # d_gateB = (gateA.t() @ X.t()) @ de
         # d_gateA *= gateS
         # d_gateB *= gateS
-        d_gateA.addmm_(X.t(), de @ gateB.t(), alpha = gateS, beta = 0)
+        d_gateA.addmm_(X.t(), gate_dB, alpha = gateS, beta = 0)
         d_gateB.addmm_(gateA.t() @ X.t(), de, alpha = gateS, beta = 0)
 
         # dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
@@ -204,14 +208,14 @@ class LoRA_MLP(torch.autograd.Function):
         dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
         del upW
         # dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
-        dX.addmm_(df @ upB.t(), upA.t(), alpha = upS)
+        dX.addmm_(up_dB, upA.t(), alpha = upS)
 
         gateW = fast_dequantize(gateW.t(), gateW_quant)
         # dX += de @ gateW.t()
         dX.addmm_(de, gateW.t())
         del gateW
         # dX += de @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
-        dX.addmm_(de @ gateB.t(), gateA.t(), alpha = gateS)
+        dX.addmm_(gate_dB, gateA.t(), alpha = gateS)
 
         # gateW, gateW_quant, gateA, gateB, gateS,
         #  upW,    upW_quant,   upA,   upB,   upS,
@@ -494,12 +498,17 @@ class LoRA_QKV(torch.autograd.Function):
         d_VA = torch.empty_like(VA)
         d_VB = torch.empty_like(VB)
 
+        # d<Q|K|V> @ <Q|K|V>B.t() each feed both a weight grad and dX; compute once.
+        q_dB = dQ @ QB.t()
+        k_dB = dK @ KB.t()
+        v_dB = dV @ VB.t()
+
         # Q Projection
         # d_QA = X.t() @ (dQ @ QB.t())
         # d_QB = (QA.t() @ X.t()) @ dQ
         # d_QA *= QS
         # d_QB *= QS
-        d_QA.addmm_(X.t(), dQ @ QB.t(), alpha = QS, beta = 0)
+        d_QA.addmm_(X.t(), q_dB, alpha = QS, beta = 0)
         d_QB.addmm_(QA.t() @ X.t(), dQ, alpha = QS, beta = 0)
 
         # K Projection
@@ -507,7 +516,7 @@ class LoRA_QKV(torch.autograd.Function):
         # d_KB = (KA.t() @ X.t()) @ dK
         # d_KA *= KS
         # d_KB *= KS
-        d_KA.addmm_(X.t(), dK @ KB.t(), alpha = KS, beta = 0)
+        d_KA.addmm_(X.t(), k_dB, alpha = KS, beta = 0)
         d_KB.addmm_(KA.t() @ X.t(), dK, alpha = KS, beta = 0)
 
         # V Projection
@@ -515,7 +524,7 @@ class LoRA_QKV(torch.autograd.Function):
         # d_VB = (VA.t() @ X.t()) @ dV
         # d_VA *= VS
         # d_VB *= VS
-        d_VA.addmm_(X.t(), dV @ VB.t(), alpha = VS, beta = 0)
+        d_VA.addmm_(X.t(), v_dB, alpha = VS, beta = 0)
         d_VB.addmm_(VA.t() @ X.t(), dV, alpha = VS, beta = 0)
 
         # Combine derivatives to find dX
@@ -524,7 +533,7 @@ class LoRA_QKV(torch.autograd.Function):
         dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
         del QW
         # dX += (dQ @ QB.to(dtype).t() @ (QS * QA.to(dtype).t()))
-        dX.addmm_(dQ @ QB.t(), QA.t(), alpha = QS)
+        dX.addmm_(q_dB, QA.t(), alpha = QS)
 
         # dK
         KW = fast_dequantize(KW.t(), KW_quant)
@@ -532,7 +541,7 @@ class LoRA_QKV(torch.autograd.Function):
         dX.addmm_(dK, KW.t())
         del KW
         # dX += dK @ KB.to(dtype).t() @ (KS * KA.to(dtype).t())
-        dX.addmm_(dK @ KB.t(), KA.t(), alpha = KS)
+        dX.addmm_(k_dB, KA.t(), alpha = KS)
 
         # dV
         VW = fast_dequantize(VW.t(), VW_quant)
@@ -540,7 +549,7 @@ class LoRA_QKV(torch.autograd.Function):
         dX.addmm_(dV, VW.t())
         del VW
         # dX += dV @ VB.to(dtype).t() @ (VS * VA.to(dtype).t())
-        dX.addmm_(dV @ VB.t(), VA.t(), alpha = VS)
+        dX.addmm_(v_dB, VA.t(), alpha = VS)
 
         # QW, QW_quant, QA, QB, QS,
         # KW, KW_quant, KA, KB, KS,
@@ -667,13 +676,16 @@ class LoRA_W(torch.autograd.Function):
         d_A = torch.empty_like(A)
         d_B = torch.empty_like(B)
 
+        # dY @ B.t() feeds both the d_A weight grad and dX; compute once.
+        y_dB = dY @ B.t()
+
         ### Weight projection LoRA weights
         # Weight projection
         # d_A = X.t() @ (dY @ B.t())
         # d_B = (A.t() @ X.t()) @ dY
         # d_A *= S
         # d_B *= S
-        d_A.addmm_(X.t(), dY @ B.t(), alpha = S, beta = 0)
+        d_A.addmm_(X.t(), y_dB, alpha = S, beta = 0)
         d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
 
         # Get derivative for dX
@@ -681,7 +693,7 @@ class LoRA_W(torch.autograd.Function):
         dX = dY @ W.t()
         del W
         # dX += dY @ B.to(dtype).t() @ (S * A.to(dtype).t())
-        dX.addmm_(dY @ B.t(), A.t(), alpha = S)
+        dX.addmm_(y_dB, A.t(), alpha = S)
 
         # W, W_quant, A, B, S
         dX = dX.view(batch, seq_len, hd)
