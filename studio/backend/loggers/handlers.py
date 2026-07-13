@@ -77,6 +77,7 @@ _EXCLUDED_SUFFIXES = (
 # and stats events.
 _QUIET_SUCCESS_PATHS = {
     "/api/inference/load-progress",
+    "/api/llama/update-status",
     "/api/models/download-progress",
     "/api/models/gguf-download-progress",
     "/api/datasets/download-progress",
