@@ -85,7 +85,9 @@ def main():
         with os.fdopen(fd, "w") as f:
             json.dump(nb, f)
         tmp_files.append(src_path)
-        fd, publish_from = tempfile.mkstemp(prefix = ".unsloth-run-out-", suffix = ".ipynb", dir = out_dir)
+        fd, publish_from = tempfile.mkstemp(
+            prefix = ".unsloth-run-out-", suffix = ".ipynb", dir = out_dir
+        )
         os.close(fd)
         tmp_files.append(publish_from)
     elif args.notebook.startswith(("http://", "https://")):
@@ -128,7 +130,10 @@ def main():
         "--output-dir",
         os.path.dirname(os.path.abspath(nbconvert_out)) or ".",
     ]
-    print("[unsloth-run] executing:", os.path.basename(args.notebook.split("?")[0]) if args.out else os.path.basename(src_path))
+    print(
+        "[unsloth-run] executing:",
+        os.path.basename(args.notebook.split("?")[0]) if args.out else os.path.basename(src_path),
+    )
     try:
         rc = subprocess.call(cmd, env = env)
         if rc == 0 and publish_from is not None:
