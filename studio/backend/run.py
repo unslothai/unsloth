@@ -1156,6 +1156,15 @@ def run_server(
     from threading import Thread, Event
     import uvicorn
 
+    # `from main import app` below loads torch/unsloth/transformers (~2 min cold,
+    # silent), so print a flushed heads-up (piped stdout is block-buffered).
+    if not silent:
+        print(
+            "Loading Unsloth Studio, please wait... (this can take a few minutes)",
+            flush = True,
+        )
+        print("  - loading PyTorch, Unsloth and Transformers...", flush = True)
+
     import_started = time.perf_counter()
 
     from main import app, setup_frontend, _IS_COLAB
@@ -1164,6 +1173,8 @@ def run_server(
         "Imported FastAPI app in %.1fms",
         (time.perf_counter() - import_started) * 1000,
     )
+    if not silent:
+        print("  - Starting server...", flush = True)
     from utils.paths import ensure_studio_directories
 
     # Allow local stdio MCP servers on a loopback bind (the user's own machine),
