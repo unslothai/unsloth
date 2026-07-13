@@ -95,7 +95,9 @@ def _chat_template_from_tokenizer_config(config: dict) -> Optional[str]:
     return None
 
 
-def _chat_template_from_jinja_file(dir_path: Path, allow_roots: Optional[list[Path]] = None) -> Optional[str]:
+def _chat_template_from_jinja_file(
+    dir_path: Path, allow_roots: Optional[list[Path]] = None
+) -> Optional[str]:
     for rel in _JINJA_TEMPLATE_PATHS:
         template_file = dir_path / rel
         if not template_file.exists() or not _leaf_inside_allowlist(template_file, allow_roots):
@@ -109,7 +111,9 @@ def _chat_template_from_jinja_file(dir_path: Path, allow_roots: Optional[list[Pa
     return None
 
 
-def _chat_template_from_processor_json(dir_path: Path, allow_roots: Optional[list[Path]] = None) -> Optional[str]:
+def _chat_template_from_processor_json(
+    dir_path: Path, allow_roots: Optional[list[Path]] = None
+) -> Optional[str]:
     for rel in _PROCESSOR_TEMPLATE_PATHS:
         config_file = dir_path / rel
         if not config_file.exists() or not _leaf_inside_allowlist(config_file, allow_roots):
@@ -124,7 +128,9 @@ def _chat_template_from_processor_json(dir_path: Path, allow_roots: Optional[lis
     return None
 
 
-def _chat_template_from_tokenizer_dir(dir_path: Path, allow_roots: Optional[list[Path]] = None) -> Optional[str]:
+def _chat_template_from_tokenizer_dir(
+    dir_path: Path, allow_roots: Optional[list[Path]] = None
+) -> Optional[str]:
     jinja = _chat_template_from_jinja_file(dir_path, allow_roots)
     if jinja:
         return jinja
@@ -208,7 +214,9 @@ def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[P
 
 
 def _chat_template_from_dir(
-    dir_path: Path, gguf_variant: Optional[str] = None, allow_roots: Optional[list[Path]] = None
+    dir_path: Path,
+    gguf_variant: Optional[str] = None,
+    allow_roots: Optional[list[Path]] = None,
 ) -> Optional[str]:
     def from_gguf() -> Optional[str]:
         gguf = _find_gguf_in_dir(dir_path, gguf_variant)
