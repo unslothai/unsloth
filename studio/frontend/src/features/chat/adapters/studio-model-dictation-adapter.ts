@@ -14,11 +14,15 @@ import {
   isMissingDeviceError,
 } from "./studio-web-speech-dictation-adapter";
 
-// MediaRecorder emits a chunk this often; the growing buffer is re-transcribed
-// for a live preview so text appears while the user is still speaking.
-const STREAM_TIMESLICE_MS = 700;
-// Do not start a new interim pass more often than this, and only one at a time.
-const MIN_INTERIM_INTERVAL_MS = 700;
+// Dictation is recorded in short, independent clips. Each clip is transcribed
+// once and appended, so text appears while speaking without re-transcribing a
+// growing buffer (which gets slower and slower and can stall the backend).
+// The first clip is shorter so the first words show up sooner.
+const SEGMENT_MS = 4000;
+const FIRST_SEGMENT_MS = 2000;
+// Safety net: stop always ends the session within this window, even if a
+// transcription stalls, so the stop button can never get stuck.
+const STOP_TIMEOUT_MS = 6000;
 
 // Prefer Opus (small, widely supported); fall back to whatever the browser
 // records. The backend decodes any of these with PyAV.
@@ -56,7 +60,6 @@ async function blobToBase64(blob: Blob): Promise<string> {
 export async function transcribeAudioBlob(
   blob: Blob,
   signal?: AbortSignal,
-  interim = false,
 ): Promise<string> {
   const { sttModel, dictationLanguage } = useVoiceSettingsStore.getState();
   const audio = await blobToBase64(blob);
@@ -67,7 +70,6 @@ export async function transcribeAudioBlob(
       audio,
       model: sttModel,
       language: dictationLanguage,
-      interim,
     }),
     signal,
   });
@@ -149,49 +151,147 @@ export class StudioModelDictationAdapter implements DictationAdapter {
 
     let stream: MediaStream | null = null;
     let recorder: MediaRecorder | null = null;
-    const chunks: Blob[] = [];
+    let segmentTimer: ReturnType<typeof setTimeout> | null = null;
+    let stopTimer: ReturnType<typeof setTimeout> | null = null;
+    let segmentCount = 0;
+    const queue: Blob[] = [];
+    let transcribing = false;
+    // Full dictation so far, for Recent dictations.
+    let committed = "";
     let ended = false;
     let cancelled = false;
-    // Final transcription: aborted only when the whole session is cancelled.
-    const abortController = new AbortController();
-    // Live-preview transcriptions: also aborted when recording stops.
-    const interimAbort = new AbortController();
-    let interimBusy = false;
-    let lastInterimAt = 0;
-    // The most recent live transcript; committed instantly on stop so the
-    // session ends without waiting on another network round trip.
-    let lastInterimTranscript = "";
-    // True once stop is finalizing, so a second stop click is a no-op instead
-    // of ending the session early and dropping the result.
     let finalizing = false;
+    const abortController = new AbortController();
+    const mimeType = pickMimeType();
     let resolveEnded: (() => void) | null = null;
     const endedPromise = new Promise<void>((resolve) => {
       resolveEnded = resolve;
     });
 
+    const clearTimers = () => {
+      if (segmentTimer) clearTimeout(segmentTimer);
+      if (stopTimer) clearTimeout(stopTimer);
+      segmentTimer = null;
+      stopTimer = null;
+    };
+
+    const finishSession = (reason: "stopped" | "cancelled" | "error") => {
+      if (ended) return;
+      ended = true;
+      clearTimers();
+      session.status = { type: "ended", reason };
+      stopStream(stream);
+      stream = null;
+      if (reason !== "cancelled") {
+        for (const callback of speechEndCallbacks) {
+          callback({ transcript: committed });
+        }
+        if (committed) recordRecentDictation(committed);
+      }
+      for (const callback of endCallbacks) callback();
+      resolveEnded?.();
+    };
+
+    // Finish once the last recorded segment has been transcribed.
+    const maybeFinish = () => {
+      if (
+        finalizing &&
+        !ended &&
+        !transcribing &&
+        queue.length === 0 &&
+        (!recorder || recorder.state === "inactive")
+      ) {
+        finishSession("stopped");
+      }
+    };
+
+    // Transcribe queued segments one at a time and append each result. One in
+    // flight at a time keeps the backend from being flooded.
+    const processQueue = () => {
+      if (transcribing || ended) return;
+      const blob = queue.shift();
+      if (!blob) {
+        maybeFinish();
+        return;
+      }
+      transcribing = true;
+      void (async () => {
+        try {
+          const text = await transcribeAudioBlob(blob, abortController.signal);
+          if (!cancelled && text) {
+            const corrected = applyDictationDictionary(text);
+            committed = committed ? `${committed} ${corrected}` : corrected;
+            for (const callback of speechCallbacks) {
+              callback({ transcript: corrected, isFinal: true });
+            }
+          }
+        } catch {
+          // Drop a failed segment rather than stalling the whole session.
+        } finally {
+          transcribing = false;
+          processQueue();
+        }
+      })();
+    };
+
+    // Record one clip, then chain the next until the user stops.
+    const startSegment = () => {
+      if (ended || cancelled || finalizing || !stream) return;
+      const parts: Blob[] = [];
+      const rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      recorder = rec;
+      rec.addEventListener("dataavailable", (event) => {
+        if (event.data.size > 0) parts.push(event.data);
+      });
+      rec.addEventListener("stop", () => {
+        if (parts.length > 0) {
+          queue.push(new Blob(parts, { type: rec.mimeType || "audio/webm" }));
+          processQueue();
+        }
+        if (!ended && !cancelled && !finalizing && stream) {
+          startSegment();
+        } else {
+          maybeFinish();
+        }
+      });
+      rec.start();
+      const duration = segmentCount === 0 ? FIRST_SEGMENT_MS : SEGMENT_MS;
+      segmentCount += 1;
+      segmentTimer = setTimeout(() => {
+        if (rec.state !== "inactive") rec.stop();
+      }, duration);
+    };
+
     const session: StudioDictationSession = {
       status: { type: "starting" },
       stop: async () => {
         if (!ended && !finalizing) {
+          finalizing = true;
+          if (segmentTimer) clearTimeout(segmentTimer);
+          segmentTimer = null;
+          // Never let stop hang: end the session even if a segment stalls.
+          stopTimer = setTimeout(() => finishSession("stopped"), STOP_TIMEOUT_MS);
           if (recorder && recorder.state !== "inactive") {
             recorder.stop();
           } else {
-            finish("stopped");
+            maybeFinish();
           }
         }
-        // A second stop while finalizing just waits for the result.
         await endedPromise;
       },
       cancel: () => {
+        if (ended) return;
         cancelled = true;
-        // Abort any in-flight transcription so a late response is discarded.
-        interimAbort.abort();
+        finalizing = true;
         abortController.abort();
-        if (!ended && recorder && recorder.state !== "inactive") {
-          recorder.stop();
-        } else if (!ended) {
-          finish("cancelled");
+        if (recorder && recorder.state !== "inactive") {
+          try {
+            recorder.stop();
+          } catch {
+            // ignore
+          }
         }
+        finishSession("cancelled");
       },
       onSpeechStart: (callback) => {
         speechStartCallbacks.add(callback);
@@ -219,106 +319,6 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       },
     };
 
-    const finish = (reason: "stopped" | "cancelled" | "error") => {
-      if (ended) return;
-      ended = true;
-      session.status = { type: "ended", reason };
-      stopStream(stream);
-      stream = null;
-      for (const callback of endCallbacks) callback();
-      resolveEnded?.();
-    };
-
-    const emitTranscript = (transcript: string) => {
-      const corrected = applyDictationDictionary(transcript);
-      if (!corrected) return;
-      for (const callback of speechCallbacks) {
-        callback({ transcript: corrected, isFinal: true });
-      }
-      for (const callback of speechEndCallbacks) {
-        callback({ transcript: corrected });
-      }
-      recordRecentDictation(corrected);
-    };
-
-    // Re-transcribe the audio so far (fast pass) and emit it as a live preview.
-    // Partial recordings decode fine; Whisper refines earlier words as more
-    // audio arrives, and the final pass replaces the preview on stop.
-    const runInterim = () => {
-      if (ended || cancelled || interimBusy || chunks.length === 0) return;
-      const now = Date.now();
-      if (now - lastInterimAt < MIN_INTERIM_INTERVAL_MS) return;
-      interimBusy = true;
-      lastInterimAt = now;
-      const type = recorder?.mimeType || "audio/webm";
-      const blob = new Blob(chunks, { type });
-      void (async () => {
-        try {
-          const transcript = await transcribeAudioBlob(
-            blob,
-            interimAbort.signal,
-            true,
-          );
-          if (ended || cancelled || !transcript) return;
-          lastInterimTranscript = transcript;
-          const corrected = applyDictationDictionary(transcript);
-          for (const callback of speechCallbacks) {
-            callback({ transcript: corrected, isFinal: false });
-          }
-        } catch {
-          // Interim failures (aborts, blips) are ignored; the final pass runs.
-        } finally {
-          interimBusy = false;
-        }
-      })();
-    };
-
-    const handleRecorderStop = () => {
-      // Stop live previews and release the mic immediately so recording ends
-      // the instant the user hits stop.
-      finalizing = true;
-      interimAbort.abort();
-      stopStream(stream);
-      stream = null;
-      if (cancelled) {
-        finish("cancelled");
-        return;
-      }
-      // The live preview already showed text; commit it as the final result so
-      // stopping is instant, with no extra network round trip.
-      if (lastInterimTranscript) {
-        emitTranscript(lastInterimTranscript);
-        finish("stopped");
-        return;
-      }
-      // Too short for a preview to have run: do a single transcription pass.
-      const type = recorder?.mimeType || "audio/webm";
-      const blob = new Blob(chunks, { type });
-      if (blob.size === 0) {
-        finish("stopped");
-        return;
-      }
-      void (async () => {
-        try {
-          const transcript = await transcribeAudioBlob(
-            blob,
-            abortController.signal,
-          );
-          if (cancelled) return;
-          if (transcript) emitTranscript(transcript);
-          finish("stopped");
-        } catch (error) {
-          // A cancel aborts the fetch; swallow that without an error toast.
-          if (cancelled || abortController.signal.aborted) return;
-          const message =
-            error instanceof Error ? error.message : "Transcription failed.";
-          console.error("STT transcription error:", error);
-          toast.error(message);
-          finish("error");
-        }
-      })();
-    };
-
     void (async () => {
       try {
         const { micDeviceId } = useVoiceSettingsStore.getState();
@@ -343,32 +343,21 @@ export class StudioModelDictationAdapter implements DictationAdapter {
             throw error;
           }
         }
-        if (ended) {
+        if (ended || cancelled) {
           stopStream(stream);
           stream = null;
           return;
         }
-        const mimeType = pickMimeType();
-        recorder = new MediaRecorder(
-          stream,
-          mimeType ? { mimeType } : undefined,
-        );
-        recorder.addEventListener("dataavailable", (event) => {
-          if (event.data.size > 0) chunks.push(event.data);
-          runInterim();
-        });
-        recorder.addEventListener("stop", handleRecorderStop);
-        // Timeslice so chunks arrive during recording, enabling live previews.
-        recorder.start(STREAM_TIMESLICE_MS);
         session.status = { type: "running" };
         for (const callback of speechStartCallbacks) callback();
+        startSegment();
       } catch (error) {
         const message = isMissingDeviceError(error)
           ? "No microphone was found for dictation."
           : "Dictation could not access the microphone.";
         console.error("STT microphone error:", error);
         toast.error(message);
-        finish("error");
+        finishSession("error");
       }
     })();
 

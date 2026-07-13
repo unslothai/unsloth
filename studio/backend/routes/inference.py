@@ -5366,7 +5366,7 @@ async def transcribe_audio(
     sidecar = get_stt_sidecar()
     try:
         result = await asyncio.to_thread(
-            sidecar.transcribe, raw, payload.model, payload.language, payload.interim
+            sidecar.transcribe, raw, payload.model, payload.language
         )
     except SttUnavailableError as e:
         raise HTTPException(status_code = 501, detail = str(e))
