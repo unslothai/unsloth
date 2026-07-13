@@ -742,12 +742,7 @@ def _strip_seeded_bootstrap_password_or_exit(*, context: str) -> None:
 
 
 def _require_servable_frontend_or_exit(
-    *,
-    frontend: Optional[Path],
-    api_only: bool,
-    cloudflare: Optional[bool],
-    host: str,
-    secure: bool,
+    *, frontend: Optional[Path], api_only: bool, cloudflare: Optional[bool], host: str, secure: bool
 ) -> Optional[Path]:
     """Fail closed BEFORE the pre-exposure gate if a public UI launch has no
     login page to change the seeded password.

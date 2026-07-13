@@ -71,7 +71,9 @@ def _install_run_reexec_capture(monkeypatch, *, platform = "linux"):
     monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
     # A built frontend dist is present so the public-launch UI check passes
     # deterministically (independent of whether the repo dist was built).
-    monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist"))
+    monkeypatch.setattr(
+        studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
+    )
     fake_bin = fake_venv / "bin" / "unsloth"
     real_is_file = Path.is_file
     monkeypatch.setattr(
@@ -151,7 +153,9 @@ def _invoke_studio_default(
     monkeypatch.setattr(studio_mod, "_find_run_py", lambda: Path("/fake/studio/run.py"))
     # A built frontend dist is present so the public-launch UI check passes; this
     # suite exercises flag forwarding, not the missing-dist lockout guard.
-    monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist"))
+    monkeypatch.setattr(
+        studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
+    )
     monkeypatch.setattr(sys, "platform", platform)
 
     def fake_execvp(file, argv):

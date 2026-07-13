@@ -152,7 +152,9 @@ def _install_studio_default_reexec(monkeypatch, events):
     monkeypatch.setattr(studio_mod, "_find_run_py", lambda: Path("/fake/studio/run.py"))
     # A built frontend dist is present by default so the public-launch UI check
     # passes; the no-dist lockout guard has its own dedicated test.
-    monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist"))
+    monkeypatch.setattr(
+        studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
+    )
     monkeypatch.setattr(sys, "platform", "linux")
 
     def fake_execvp(file, argv):
@@ -170,7 +172,9 @@ def _install_run_reexec(monkeypatch, events):
     # A built frontend dist is present by default so the public-launch UI check
     # passes deterministically (independent of whether the repo dist was built);
     # the missing-dist lockout guard has its own dedicated test.
-    monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist"))
+    monkeypatch.setattr(
+        studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
+    )
     fake_bin = fake_venv / "bin" / "unsloth"
     real_is_file = Path.is_file
     monkeypatch.setattr(
@@ -515,13 +519,17 @@ def test_studio_default_bad_frontend_path_exits_before_stripping_bootstrap(monke
     monkeypatch.setattr(studio_mod, "_find_run_py", lambda: Path("/fake/studio/run.py"))
     # Auto-resolution would find a dist, but the user forced an empty one (no
     # index.html): the guard must reject it rather than trust it.
-    monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist"))
+    monkeypatch.setattr(
+        studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
+    )
     empty_dir = tmp_path / "empty_frontend"
     empty_dir.mkdir()
 
     app = _typer.Typer()
     app.command()(studio_mod.studio_default)
-    result = CliRunner().invoke(app, ["--secure", "--frontend", str(empty_dir)], catch_exceptions = True)
+    result = CliRunner().invoke(
+        app, ["--secure", "--frontend", str(empty_dir)], catch_exceptions = True
+    )
 
     assert result.exit_code == 1, result.output
     assert bootstrap_file.exists()  # not stripped
