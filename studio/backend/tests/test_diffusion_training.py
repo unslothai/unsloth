@@ -1045,9 +1045,7 @@ def test_diffusion_info_tolerates_non_object_jsonl(client, dataset_roots):
         b"null\n"
         b'"just a string"\n'
         b"123\n"
-        b"{not json\n"
-        + json.dumps({"file_name": "a.png", "text": "cap a"}).encode("utf-8")
-        + b"\n"
+        b"{not json\n" + json.dumps({"file_name": "a.png", "text": "cap a"}).encode("utf-8") + b"\n"
     )
     r = client.get("/api/train/diffusion/info")
     assert r.status_code == 200, r.text
@@ -1082,9 +1080,7 @@ def test_diffusion_dataset_mutations_blocked_while_training_active(client, datas
         files = [("files", ("b.png", b"x", "image/png"))],
     )
     assert up.status_code == 409, up.text
-    cap = client.put(
-        "/api/train/diffusion/dataset/locked/caption/a.png", json = {"caption": "hi"}
-    )
+    cap = client.put("/api/train/diffusion/dataset/locked/caption/a.png", json = {"caption": "hi"})
     assert cap.status_code == 409, cap.text
     dele = client.delete("/api/train/diffusion/dataset/locked/image/a.png")
     assert dele.status_code == 409, dele.text

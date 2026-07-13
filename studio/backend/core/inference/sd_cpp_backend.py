@@ -700,9 +700,7 @@ class SdCppDiffusionBackend:
             # Same per-variant encoder selection as _asset_specs, keyed on the loaded repo id, so the
             # cache-deletion guard protects the encoder repo this load actually downloaded (the 9B
             # variant's Qwen3-8B, not the 4B default).
-            repos.extend(
-                terepo for terepo, _f, _k in sd_cpp_text_encoders_for(fam, state.repo_id)
-            )
+            repos.extend(terepo for terepo, _f, _k in sd_cpp_text_encoders_for(fam, state.repo_id))
             return tuple(dict.fromkeys(r for r in repos if r))
 
     # ── Generate ───────────────────────────────────────────────────────────

@@ -108,7 +108,7 @@ def test_discover_tolerates_non_object_and_invalid_utf8_jsonl(tmp_path):
     # must be skipped per-line rather than crash the trainer in .get(); a valid row still resolves.
     _touch(tmp_path / "x.png")
     (tmp_path / "metadata.jsonl").write_text(
-        "[]\nnull\n\"str\"\n123\n{not json\n"
+        '[]\nnull\n"str"\n123\n{not json\n'
         + json.dumps({"file_name": "x.png", "text": "hi"})
         + "\n",
         encoding = "utf-8",
