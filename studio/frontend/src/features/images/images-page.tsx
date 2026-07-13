@@ -137,11 +137,10 @@ const WORKFLOW_TABS: Array<{
   },
 ];
 
-// Per-model generation defaults (steps + guidance), matched by repo-id substring,
-// most specific first. Distilled "turbo/schnell" models want few steps and little
-// guidance; the full "dev" models want more steps and real CFG.
-// Generation defaults when the model is unrecognised: the distilled few-step /
-// no-CFG shape. Also seeds the sliders' initial state.
+// Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific
+// first. Distilled "turbo/schnell" models want few steps and little guidance; the full "dev" models
+// want more steps and real CFG. Generation defaults when the model is unrecognised: the distilled
+// few-step / no-CFG shape. Also seeds the sliders' initial state.
 const DEFAULT_GEN = { steps: 9, guidance: 0 };
 
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
@@ -162,9 +161,8 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   { match: "flux.2-dev", steps: 28, guidance: 4 },
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 20, guidance: 4 },
-  // Ideogram 4's model-card settings (48 steps, guidance 7). At exactly these
-  // defaults the backend keeps the pipeline's recommended tapered guidance schedule
-  // instead of a flat constant.
+  // Ideogram 4's model-card settings (48 steps, guidance 7). At exactly these defaults the backend
+  // keeps the pipeline's recommended tapered guidance schedule instead of a flat constant.
   { match: "ideogram", steps: 48, guidance: 7 },
   // SDXL: Turbo is distilled (few steps, no CFG); base/full SDXL wants ~30 steps and
   // real CFG (~7). "sdxl-turbo" must precede the generic "sdxl" substring match.
@@ -204,9 +202,8 @@ const CONTROL_TYPE_LABELS: Record<string, string> = {
 // Z-Image accepts 256–2048, in multiples of 16. Snap any value into range.
 const MIN_DIM = 256;
 const MAX_DIM = 2048;
-// Convenient drag range for the Runs slider. The number box accepts higher typed
-// values on purpose (set it large to generate all night); the loop only floors at
-// 1 and ignores non-numeric input.
+// Convenient drag range for the Runs slider. The number box accepts higher typed values on purpose
+// (set it large to generate all night); the loop only floors at 1 and ignores non-numeric input.
 const RUNS_SLIDER_MAX = 128;
 function snapDim(value: number): number {
   if (!Number.isFinite(value)) return 1024;
@@ -223,9 +220,8 @@ function matchAspect(width: number, height: number): { key: string; portrait: bo
   return { key: found ? found[0] : "custom", portrait: height > width };
 }
 
-// Module cache of the backend-persisted gallery, so a tab switch re-renders
-// instantly. Object URLs are revoked only on delete (not unmount), so they stay
-// valid across remounts.
+// Module cache of the backend-persisted gallery, so a tab switch re-renders instantly. Object URLs
+// are revoked only on delete (not unmount), so they stay valid across remounts.
 const galleryCache: {
   images: GalleryImage[];
   hasMore: boolean;
@@ -320,9 +316,8 @@ function formatTimestamp(epochSeconds: number): string {
 // Bar label for an in-flight generation: step count plus an ETA once it's known
 // (formatEta returns "" for non-positive, so the last step shows just the step).
 function genStepLabel(p: DiffusionGenerateProgress): string {
-  // Text encoding (and any first-run warmup) happens before the first scheduler
-  // tick, so step 0 means "working, not denoising yet" -- label it that way
-  // instead of sitting on "Step 0/N".
+  // Text encoding (and any first-run warmup) happens before the first scheduler tick, so step 0
+  // means "working, not denoising yet" -- label it that way instead of sitting on "Step 0/N".
   if (p.step === 0) return "Preparing (text encoding + warmup)…";
   const base = `Step ${p.step}/${p.total_steps}`;
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
@@ -338,9 +333,8 @@ const LOAD_TOAST_CLASSNAMES = {
   description: "mt-0 w-full",
 } as const;
 
-// Render the chat ModelLoadDescription for a progress poll. The base repo
-// (text-encoder/VAE) downloads alongside the GGUF, so the total exceeds the
-// picked quant's size.
+// Render the chat ModelLoadDescription for a progress poll. The base repo (text-encoder/VAE)
+// downloads alongside the GGUF, so the total exceeds the picked quant's size.
 function loadToastDescription(p: DiffusionLoadProgress) {
   // "Downloading" only when bytes actually remain to fetch — a cached model (or
   // the pre-estimate window, total still 0) shouldn't claim a download.
@@ -1402,8 +1396,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         setStatus(await getDiffusionStatus());
         toast.success("Model loaded");
         setBusy(null);
-        // Load succeeded: the optimistic quant is now the real one, so drop the
-        // pending revert.
+        // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
         quantRevert.current = null;
         return;
       }

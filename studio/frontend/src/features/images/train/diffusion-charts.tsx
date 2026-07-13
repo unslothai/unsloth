@@ -43,10 +43,9 @@ function fullStepDomain(steps: number[]): [number, number] {
   return [min, max];
 }
 
-// A diffusion-only metrics view: Training Loss and Grad Norm, side by side, with a note
-// under the loss card explaining why per-step loss looks noisy. Always renders both cards
-// (even with no data) so the parent can decide when to mount them; we never early-return
-// null here.
+// A diffusion-only metrics view: Training Loss and Grad Norm, side by side, with a note under the
+// loss card explaining why per-step loss looks noisy. Always renders both cards (even with no data)
+// so the parent can decide when to mount them; we never early-return null here.
 export function DiffusionCharts({
   lossHistory,
   gradNormHistory,

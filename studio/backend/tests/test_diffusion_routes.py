@@ -592,10 +592,9 @@ def test_invalid_attention_backend_returns_422(client):
 
 
 def test_prequant_path_doc_describes_allowlist_not_toggle():
-    # The field help must match the code: UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH is a
-    # directory allowlist, not a =1 toggle (diffusion_prequant._allowed_prequant_roots
-    # drops bare on/off tokens), so operators following the doc don't get every
-    # request silently refused.
+    # The field help must match the code: UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH is a directory
+    # allowlist, not a =1 toggle (diffusion_prequant._allowed_prequant_roots drops bare on/off
+    # tokens), so operators following the doc don't get every request silently refused.
     from models.inference import DiffusionLoadRequest
 
     desc = DiffusionLoadRequest.model_fields["transformer_prequant_path"].description

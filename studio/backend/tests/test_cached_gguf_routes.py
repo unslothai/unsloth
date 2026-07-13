@@ -784,10 +784,9 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     # A real LLM arch stays a chat model; None passes through.
     assert models_route._arch_to_task("llama") == "text-generation"
     assert models_route._arch_to_task(None) is None
-    # Known-but-unsupported diffusion archs get a task that is NEITHER chat
-    # ("text-generation") NOR a loadable image task ("text-to-image"), so the chat
-    # picker hides them (they'd die in llama.cpp) and the Images picker leaves them
-    # out (they'd 400 in validate_load).
+    # Known-but-unsupported diffusion archs get a task that is NEITHER chat ("text-generation") NOR
+    # a loadable image task ("text-to-image"), so the chat picker hides them (they'd die in
+    # llama.cpp) and the Images picker leaves them out (they'd 400 in validate_load).
     for arch in ("sdxl", "sd1", "sd3", "lumina2", "hidream", "cosmos", "hyvid"):
         task = models_route._arch_to_task(arch)
         assert task == models_route._UNSUPPORTED_DIFFUSION_TASK
@@ -831,9 +830,8 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
 
 
 def test_delete_cached_refuses_diffusion_loaded_repo(monkeypatch):
-    # The cached-delete guard refuses deleting a repo the diffusion (Images)
-    # backend has loaded, mirroring the chat guard, so its GGUF can't be removed
-    # from under a live pipeline.
+    # The cached-delete guard refuses deleting a repo the diffusion (Images) backend has loaded,
+    # mirroring the chat guard, so its GGUF can't be removed from under a live pipeline.
     from fastapi import HTTPException
     import core.inference.diffusion as diffusion_mod
     import routes.inference as routes_inference

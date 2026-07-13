@@ -323,9 +323,8 @@ export interface DiffusionTrainingStartRequest {
   // DiT-family quantised base precision (nf4 QLoRA by default). Ignored for sdxl, which
   // uses mixed_precision instead. "auto" lets the backend pick per family.
   base_precision?: "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto";
-  // Whether to torch.compile the transformer (any family whose /info reports
-  // supports_compile; that includes the SDXL U-Net). "auto" lets the backend decide;
-  // "off"/"on" force it.
+  // Whether to torch.compile the transformer (any family whose /info reports supports_compile; that
+  // includes the SDXL U-Net). "auto" lets the backend decide; "off"/"on" force it.
   compile_transformer?: "off" | "on" | "auto";
   // Precompute + cache the VAE latents before the loop (skips re-encoding each epoch).
   cache_latents?: boolean;

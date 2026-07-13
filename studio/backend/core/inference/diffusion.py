@@ -2470,9 +2470,8 @@ class DiffusionBackend:
                         from PIL import Image as _PILImage
                         mask_pil = mask_pil.resize(init_pil.size, _PILImage.NEAREST)
                 if init_pil is not None:
-                    # Keep the VAE encode dtype consistent with the input image. Pass the
-                    # engaged vae_quant so a quantised (fp8) VAE skips the re-align (must not
-                    # be re-cast).
+                    # Keep the VAE encode dtype consistent with the input image. Pass the engaged
+                    # vae_quant so a quantised (fp8) VAE skips the re-align (must not be re-cast).
                     self._align_vae_dtype(pipe, state.family.denoiser_attr, state.vae_quant)
 
                 # Pipelines vary in accepted kwargs, so gate every optional one on the signature.

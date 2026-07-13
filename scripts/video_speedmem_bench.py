@@ -850,9 +850,8 @@ def _run_config(
         except Exception:
             pass
 
-    # Report the GENERATION-time cache state, not the load-time one: the per-generation recheck
-    # can toggle an auto cache off or re-size a magcache. The marker's mode prefix IS the live
-    # state.
+    # Report the GENERATION-time cache state, not the load-time one: the per-generation recheck can
+    # toggle an auto cache off or re-size a magcache. The marker's mode prefix IS the live state.
     cache_marker = getattr(getattr(pipe, "transformer", None), "_unsloth_step_cache", None)
     row = {
         "config": name,

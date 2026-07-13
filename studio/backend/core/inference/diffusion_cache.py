@@ -34,13 +34,12 @@ TC_MODES = (TC_FBCACHE, TC_MAGCACHE)
 DEFAULT_FBCACHE_THRESHOLD = 0.08
 QUANT_FBCACHE_THRESHOLD = 0.12
 
-# MagCache (diffusers >= 0.39): skips whole steps from a PRE-CALIBRATED residual-magnitude
-# curve with an accumulated-error budget, a skip cap, and an early-step no-skip retention
-# window -- so unlike FBCache the divergence from the uncached trajectory is bounded.
-# Measured (HunyuanVideo-1.5-720p, B200, 50 steps): threshold 0.12 = 1.5x e2e at LPIPS
-# 0.147 vs the same uncached stack with the SAME composition (FBCache at its 0.08 default
-# reached 2.4x but LPIPS 0.54: a brighter, different clip -- why the fbcache auto policy
-# excludes this family).
+# MagCache (diffusers >= 0.39): skips whole steps from a PRE-CALIBRATED residual-magnitude curve
+# with an accumulated-error budget, a skip cap, and an early-step no-skip retention window -- so
+# unlike FBCache the divergence from the uncached trajectory is bounded. Measured
+# (HunyuanVideo-1.5-720p, B200, 50 steps): threshold 0.12 = 1.5x e2e at LPIPS 0.147 vs the same
+# uncached stack with the SAME composition (FBCache at its 0.08 default reached 2.4x but LPIPS 0.54:
+# a brighter, different clip -- why the fbcache auto policy excludes this family).
 DEFAULT_MAGCACHE_THRESHOLD = 0.12
 MAGCACHE_MAX_SKIP_STEPS = 3
 MAGCACHE_RETENTION_RATIO = 0.2
@@ -302,13 +301,12 @@ _MAGCACHE_WAN5B_RATIOS = (
     0.9208,
 )
 
-# All curves are calibrated at the 50-step schedule, so a single-DiT curve has 50 entries
-# and MagCacheConfig interpolates it to the actual step count. A dual-expert MoE
-# (Wan2.2-A14B) runs each expert on a SLICE of the schedule and the hook counts each
-# expert's OWN forwards from 0, so each expert carries its own curve (keyed
-# "family::transformer_2" for the second), sized to that expert's steps in the 50-step
-# calibration; engage-time scales it by the requested step count (the boundary split is a
-# fixed fraction of the schedule).
+# All curves are calibrated at the 50-step schedule, so a single-DiT curve has 50 entries and
+# MagCacheConfig interpolates it to the actual step count. A dual-expert MoE (Wan2.2-A14B) runs each
+# expert on a SLICE of the schedule and the hook counts each expert's OWN forwards from 0, so each
+# expert carries its own curve (keyed "family::transformer_2" for the second), sized to that
+# expert's steps in the 50-step calibration; engage-time scales it by the requested step count (the
+# boundary split is a fixed fraction of the schedule).
 _MAGCACHE_CALIBRATION_STEPS = 50
 
 _MAGCACHE_FAMILY_RATIOS: dict[str, tuple[float, ...]] = {
@@ -328,18 +326,17 @@ def _magcache_ratio_key(family: Optional[str], expert: Optional[str]) -> str:
     return f"{fam}::{exp}"
 
 
-# Families whose AUTO step-cache decision engages MagCache instead of FBCache. On
-# HunyuanVideo-1.5 FBCache free-runs and derails the trajectory (LPIPS 0.54 + a luma shift
-# at its default), while MagCache holds the same composition at 1.5x. On Wan2.2-TI2V-5B
-# both stay composition-true but MagCache dominates (B200, 1280x704/33f/50 steps, pairwise
-# LPIPS): balanced MagCache 1.65x/0.034 vs FBCache 0.08 at 1.49x/0.031, fast points
-# 1.73x/0.044 vs 1.71x/0.083. On Wan2.2-A14B (dual-expert MoE) the OPPOSITE holds (B200,
-# 1280x720/33f/50 steps, per-expert curves): FBCache 0.12 at 2.88x/0.128 dominates balanced
-# MagCache (1.80x/0.145), and FBCache 0.08 at 1.28x/0.098 beats MagCache quality's
-# 1.14x/0.074 -- the 16-step high-noise expert leaves MagCache too few forwards to skip
-# within its budget -- so it keeps FBCache and ships no curve (an explicit magcache request
-# runs uncached with a warning). Every other family keeps FBCache. An EXPLICIT
-# "fbcache"/"magcache" request always wins.
+# Families whose AUTO step-cache decision engages MagCache instead of FBCache. On HunyuanVideo-1.5
+# FBCache free-runs and derails the trajectory (LPIPS 0.54 + a luma shift at its default), while
+# MagCache holds the same composition at 1.5x. On Wan2.2-TI2V-5B both stay composition-true but
+# MagCache dominates (B200, 1280x704/33f/50 steps, pairwise LPIPS): balanced MagCache 1.65x/0.034 vs
+# FBCache 0.08 at 1.49x/0.031, fast points 1.73x/0.044 vs 1.71x/0.083. On Wan2.2-A14B (dual-expert
+# MoE) the OPPOSITE holds (B200, 1280x720/33f/50 steps, per-expert curves): FBCache 0.12 at
+# 2.88x/0.128 dominates balanced MagCache (1.80x/0.145), and FBCache 0.08 at 1.28x/0.098 beats
+# MagCache quality's 1.14x/0.074 -- the 16-step high-noise expert leaves MagCache too few forwards
+# to skip within its budget -- so it keeps FBCache and ships no curve (an explicit magcache request
+# runs uncached with a warning). Every other family keeps FBCache. An EXPLICIT "fbcache"/"magcache"
+# request always wins.
 _FAMILY_AUTO_CACHE_MODE: dict[str, str] = {
     "hunyuanvideo-1.5": TC_MAGCACHE,
     "hunyuanvideo-1.5-720p": TC_MAGCACHE,

@@ -3615,11 +3615,10 @@ async def delete_cached_model(
                     status_code = 400,
                     detail = "Unload the model before deleting",
                 )
-        # The native sd.cpp engine re-reads companion VAE / text-encoder files from the HF
-        # cache every generation, so deleting a companion repo (e.g.
-        # comfyanonymous/flux_text_encoders) while a native GGUF is loaded bricks the next
-        # generation. status().repo_id covers only the main GGUF, so also refuse the
-        # committed companion repos the engine reads from disk.
+        # The native sd.cpp engine re-reads companion VAE / text-encoder files from the HF cache
+        # every generation, so deleting a companion repo (e.g. comfyanonymous/flux_text_encoders)
+        # while a native GGUF is loaded bricks the next generation. status().repo_id covers only the
+        # main GGUF, so also refuse the committed companion repos the engine reads from disk.
         for lid in getattr(engine, "loaded_repo_ids", tuple)():
             if _loaded_id_matches_repo(str(lid).lower(), repo_id):
                 raise HTTPException(

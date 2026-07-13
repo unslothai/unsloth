@@ -363,10 +363,9 @@ class _VideoLoadState:
     # VAE quant engaged ("fp8" layerwise | "fp8_dynamic" torchao conv) or None. The
     # conv decoder shrinks in place; vae_force_fp32 families (Wan) stay dense.
     vae_quant: Optional[str] = None
-    # Dual-GPU CFG branch parallelism: "on" when a DiT replica on a second CUDA device
-    # runs the pred_cond branch (bit-identical under the family's auto step cache;
-    # ~1.7x e2e). The handle is the proxy -- generate() plans each run on it and
-    # _teardown_state frees the replica through it.
+    # Dual-GPU CFG branch parallelism: "on" when a DiT replica on a second CUDA device runs the
+    # pred_cond branch (bit-identical under the family's auto step cache; ~1.7x e2e). The handle is
+    # the proxy -- generate() plans each run on it and _teardown_state frees the replica through it.
     cfg_parallel: Optional[str] = None
     cfg_parallel_handle: Any = None
     # Pre-warmed torch.compile cache context (CacheContext) when a compiled tier ran
@@ -501,10 +500,9 @@ class VideoBackend:
         # Post-load compile prewarm thread (None until a compiled load spawns one);
         # kept for tests/diagnostics, never joined on the hot path.
         self._prewarm_thread: Optional[threading.Thread] = None
-        # The prewarm's cancel event, set only while the prewarm runs. Real generations
-        # signal it on entry so they preempt the warmup at its next step boundary
-        # instead of queueing behind it; unlike _active_generate_cancel it can never
-        # point at a real job.
+        # The prewarm's cancel event, set only while the prewarm runs. Real generations signal it on
+        # entry so they preempt the warmup at its next step boundary instead of queueing behind it;
+        # unlike _active_generate_cancel it can never point at a real job.
         self._prewarm_cancel: Optional[threading.Event] = None
 
     # ── validation ───────────────────────────────────────────────────────────
@@ -1501,9 +1499,8 @@ class VideoBackend:
             is_gguf = gguf_transformer,
             family = fam,
             speed_mode = effective_speed,
-            # An auto cache that could still engage mid-session also drops
-            # fullgraph: enabling FBCache under a fullgraph-compiled DiT would
-            # crash the first cached generation.
+            # An auto cache that could still engage mid-session also drops fullgraph: enabling
+            # FBCache under a fullgraph-compiled DiT would crash the first cached generation.
             cache_active = cache_engaged is not None or cache_may_toggle,
             offload_active = plan.offload_policy != "none",
         )
@@ -2182,14 +2179,13 @@ class VideoBackend:
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
                 elif state.transformer_cache == TC_MAGCACHE:
-                    # An EXPLICIT magcache never toggles off, but its ratio curve,
-                    # retention window, and skip budget are interpolated over the
-                    # CONFIGURED step count: a clip at a different step count re-engages
-                    # (marker carries "#s{steps}") to keep skips aligned. This only
-                    # re-sizes the already-engaged cache; the on choice is preserved.
-                    # Transactional across MoE experts (like the load / AUTO paths): refuse to
-                    # stack a fresh cache over one whose removal failed, and roll back a mixed
-                    # resize so status never reports MagCache over an asymmetric pair.
+                    # An EXPLICIT magcache never toggles off, but its ratio curve, retention window,
+                    # and skip budget are interpolated over the CONFIGURED step count: a clip at a
+                    # different step count re-engages (marker carries "#s{steps}") to keep skips
+                    # aligned. This only re-sizes the already-engaged cache; the on choice is
+                    # preserved. Transactional across MoE experts (like the load / AUTO paths):
+                    # refuse to stack a fresh cache over one whose removal failed, and roll back a
+                    # mixed resize so status never reports MagCache over an asymmetric pair.
                     def _resize_explicit_magcache(view: Any, expert_name: str) -> Optional[str]:
                         transformer = getattr(view, "transformer", None)
                         marker = getattr(transformer, "_unsloth_step_cache", None)

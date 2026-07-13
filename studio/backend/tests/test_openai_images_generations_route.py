@@ -235,9 +235,8 @@ def test_local_load_uses_base_repo_for_defaults(monkeypatch):
 
 
 def test_pipeline_runtime_error_is_sanitized_500(monkeypatch):
-    # A RuntimeError raised inside the pipeline while the model stays loaded (e.g.
-    # CUDA OOM, a RuntimeError subclass) must be a sanitized 500, not a 503 that
-    # echoes the raw exception text.
+    # A RuntimeError raised inside the pipeline while the model stays loaded (e.g. CUDA OOM, a
+    # RuntimeError subclass) must be a sanitized 500, not a 503 that echoes the raw exception text.
     oom = RuntimeError("CUDA out of memory. Tried to allocate 20.00 GiB (GPU 0; 47.5 GiB total)")
     backend = _FakeBackend(generate_error = oom)
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)

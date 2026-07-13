@@ -391,13 +391,12 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 — optimisation only
             _warn(logger, "compile_repeated_blocks", exc)
             continue
-        # A step cache engaged BEFORE this compile (the production load order) already
-        # wrapped each block's forward in a @torch.compiler.disable'd hook, so the compute
-        # branch would run eager on every non-skipped step and forfeit the regional compile
-        # (measured 1.69 vs 1.09 s/step on HunyuanVideo-1.5). Re-point the hooks' inner
-        # forward at compiled wrappers; no-op when no cache hooks. The toggle path (cache
-        # after load) is armed by apply_step_cache. Lazy import to keep the dependency
-        # one-directional.
+        # A step cache engaged BEFORE this compile (the production load order) already wrapped each
+        # block's forward in a @torch.compiler.disable'd hook, so the compute branch would run eager
+        # on every non-skipped step and forfeit the regional compile (measured 1.69 vs 1.09 s/step
+        # on HunyuanVideo-1.5). Re-point the hooks' inner forward at compiled wrappers; no-op when
+        # no cache hooks. The toggle path (cache after load) is armed by apply_step_cache. Lazy
+        # import to keep the dependency one-directional.
         try:
             from .diffusion_cache import _compile_hooked_block_inners
             _compile_hooked_block_inners(transformer, logger)

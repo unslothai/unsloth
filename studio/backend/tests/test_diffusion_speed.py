@@ -673,11 +673,10 @@ def _stub_inductor_config(
 
 
 def test_regional_compile_enables_emulate_precision_casts(monkeypatch):
-    # Inductor's fused pointwise kernels keep intermediates in fp32 where eager rounds
-    # to bf16 between ops; over a multi-step denoise that compounds to a visible drift
-    # (LPIPS 0.221 vs bit-exact on HunyuanVideo-1.5-720p). emulate_precision_casts
-    # restores eager's rounding at zero measured speed cost (LPIPS 0.052), so the
-    # regional compile path must switch it on.
+    # Inductor's fused pointwise kernels keep intermediates in fp32 where eager rounds to bf16
+    # between ops; over a multi-step denoise that compounds to a visible drift (LPIPS 0.221 vs
+    # bit-exact on HunyuanVideo-1.5-720p). emulate_precision_casts restores eager's rounding at zero
+    # measured speed cost (LPIPS 0.052), so the regional compile path must switch it on.
     torch = _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     cfg = _stub_inductor_config(monkeypatch, torch, emulate = False)

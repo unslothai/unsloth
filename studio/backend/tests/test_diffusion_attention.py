@@ -263,9 +263,8 @@ def test_active_attention_backend_reads_tuple_return():
 # ── on-demand wheel-only install of optional kernels ─────────────────────────────
 @pytest.fixture(autouse = True)
 def _no_real_installs(monkeypatch):
-    # Unit tests must never shell out to pip: the apply path probes installable
-    # backends (sage/flash*), so hard-disable the gate; install tests re-enable it
-    # with a stubbed subprocess.
+    # Unit tests must never shell out to pip: the apply path probes installable backends
+    # (sage/flash*), so hard-disable the gate; install tests re-enable it with a stubbed subprocess.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
     # The install once-per-process memo is module state; clear it so each test starts
     # with a fresh "not yet attempted" set (otherwise an earlier test's attempt would

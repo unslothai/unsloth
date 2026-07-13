@@ -474,10 +474,9 @@ export function DiffusionTrainPanel({
   // than resetting in an effect) means a fresh run never inherits a stale "Stopping..." state.
   const stopRequested = running && stopRequestedLocal;
 
-  // Whether there is a run to show live: running, or ANY terminal run (completed /
-  // stopped / error) the user has not dismissed yet. Dismissing must cover every
-  // terminal status, or "Train another" after a stop (and any error) would trap the
-  // run view with no way back to the settings.
+  // Whether there is a run to show live: running, or ANY terminal run (completed / stopped / error)
+  // the user has not dismissed yet. Dismissing must cover every terminal status, or "Train another"
+  // after a stop (and any error) would trap the run view with no way back to the settings.
   const terminalStatuses = ["completed", "stopped", "error"];
   const hasRun = Boolean(
     status &&

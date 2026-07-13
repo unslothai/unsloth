@@ -73,8 +73,7 @@ def test_sdxl_base_repos_are_trusted_non_gguf():
     assert _is_trusted_diffusion_repo("stabilityai/stable-diffusion-xl-base-1.0")
     assert _is_trusted_diffusion_repo("stabilityai/sdxl-turbo")
     # The refiner is img2img-only and is intentionally NOT allowlisted (see
-    # test_sdxl_refiner_not_trusted).
-    # Case-insensitive match.
+    # test_sdxl_refiner_not_trusted). Case-insensitive match.
     assert _is_trusted_diffusion_repo("StabilityAI/SDXL-Turbo")
     # A random repo (even one that detects as SDXL) is NOT trusted for a non-GGUF load.
     assert not _is_trusted_diffusion_repo("randomorg/my-sdxl-merge")

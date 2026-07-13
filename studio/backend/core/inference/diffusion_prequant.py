@@ -198,9 +198,8 @@ def load_prequantized_transformer(
 
         with init_empty_weights():
             transformer = transformer_cls.from_config(config)
-        # assign=True swaps in the loaded tensors rather than copying into meta (a copy into
-        # meta is a no-op); strict=True since the saved dict is the full state dict of the
-        # same class.
+        # assign=True swaps in the loaded tensors rather than copying into meta (a copy into meta is
+        # a no-op); strict=True since the saved dict is the full state dict of the same class.
         transformer.load_state_dict(state_dict, strict = True, assign = True)
         if _has_meta_tensors(transformer):
             # Non-persistent buffers (built in __init__, absent from the state dict) stay on
