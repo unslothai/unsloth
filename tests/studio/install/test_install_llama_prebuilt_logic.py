@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -2296,6 +2297,9 @@ def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
 
 
 def test_setup_sh_cleanup_unlinks_instruction_symlink_only(tmp_path: Path):
+    if shutil.which("bash") is None:
+        pytest.skip("bash is not available")
+
     setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
     start = setup_sh.index("_remove_agent_instruction_files() {")
     end = setup_sh.index("\n}\n", start) + 2
@@ -2315,7 +2319,7 @@ def test_setup_sh_cleanup_unlinks_instruction_symlink_only(tmp_path: Path):
         check = True,
     )
 
-    assert not instruction.exists()
+    assert not os.path.lexists(instruction)
     assert external.read_text(encoding = "utf-8") == "external"
 
 
