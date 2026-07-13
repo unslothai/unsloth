@@ -41,6 +41,12 @@ _QUIET_POLL_PATHS = {
     "/api/auth/status",
     "/api/inference/status",
     "/api/inference/monitor",
+    # List polls the training/export/chat tabs refetch on a timer and on every
+    # tab switch; collapse to a heartbeat (first hit and errors still log).
+    "/api/train/runs",
+    "/api/models/checkpoints",
+    "/api/models/local",
+    "/api/rag/knowledge-bases",
 }
 _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
