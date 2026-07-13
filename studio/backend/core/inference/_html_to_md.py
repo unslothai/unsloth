@@ -749,18 +749,27 @@ def _render(source_html: str, scope_tags: frozenset[str] | None) -> str:
     return _cleanup(raw)
 
 
-def _largest_scope_candidate_len(source_html: str, tag: str) -> int:
-    """Length of the largest individual ``<tag>`` subtree's boilerplate-stripped
-    render. Sizing candidates one at a time stops many tiny sibling cards from
-    clearing the main-content threshold together and displacing the real subtree."""
+def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
+    """Length and boilerplate-stripped render of the largest single ``<tag>``
+    subtree.
+
+    Sizing candidates one at a time stops many tiny sibling cards from clearing
+    the main-content threshold together and displacing the real subtree. The
+    same chosen subtree is returned as the render, so unrelated sibling
+    ``<tag>`` elements (related-post cards, comment threads, teasers) never leak
+    into the output even when the largest one passes the size gate."""
     renderer = _MarkdownRenderer(scope_tags = frozenset({tag}))
     renderer.feed(source_html)
     renderer.close()
     renderer.flush_pending()
-    return max(
-        (len(_strip_boilerplate_lines(_cleanup(seg))) for seg in renderer.scope_segments),
-        default = 0,
-    )
+    best_len = 0
+    best_render = ""
+    for seg in renderer.scope_segments:
+        rendered = _strip_boilerplate_lines(_cleanup(seg))
+        if len(rendered) > best_len:
+            best_len = len(rendered)
+            best_render = rendered
+    return best_len, best_render
 
 
 # A scoped conversion below this size is judged not to be the page's main
@@ -784,8 +793,11 @@ def html_to_markdown(source_html: str, *, main_content: bool = False) -> str:
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
     if main_content:
         for scope_tag in ("article", "main"):
-            # Gate on the largest single subtree, then return the full scoped render.
-            if _largest_scope_candidate_len(source_html, scope_tag) >= _MIN_MAIN_CONTENT_CHARS:
-                return _strip_boilerplate_lines(_render(source_html, frozenset({scope_tag})))
+            # Size candidates individually and render ONLY the chosen subtree, so
+            # sibling <article>/<main> elements (related cards, comment threads,
+            # teasers) do not leak in once the largest one passes the size gate.
+            length, rendered = _select_main_scope_render(source_html, scope_tag)
+            if length >= _MIN_MAIN_CONTENT_CHARS:
+                return rendered
         return _strip_boilerplate_lines(_render(source_html, None))
     return _render(source_html, None)

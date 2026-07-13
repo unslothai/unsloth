@@ -339,6 +339,19 @@ def test_tiny_article_stub_does_not_hijack_scope():
     assert "Real content paragraph." in out
 
 
+def test_sibling_articles_do_not_leak_after_main_selected():
+    # The size gate picks the largest single <article>, and only that subtree is
+    # rendered: unrelated sibling articles (related-post cards, comment threads)
+    # must not leak in just because the real article cleared the threshold.
+    real = "Main article body content for selection. " * 20
+    card = "Unrelated related-post card teaser blurb. " * 3
+    cards = "".join(f"<article><p>{card}</p></article>" for _ in range(5))
+    html = f"<body><article><h1>Real</h1><p>{real}</p></article>{cards}</body>"
+    out = html_to_markdown(html, main_content = True)
+    assert "Main article body content" in out
+    assert "Unrelated related-post" not in out
+
+
 def test_default_conversion_unscoped_and_unstripped():
     # Without main_content the whole document converts (backwards compatible),
     # boilerplate phrases included; only hidden subtrees are dropped.
