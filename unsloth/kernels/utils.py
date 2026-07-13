@@ -164,6 +164,7 @@ if bnb is not None:
 else:
     get_ptr = _bnb_required
 
+
 if DEVICE_TYPE == "xpu":
     HAS_XPU_STREAM = True
 

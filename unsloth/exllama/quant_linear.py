@@ -36,7 +36,6 @@ def _get_hf_linear_cls():
         return None
     try:
         from exllamav3.integration.transformers import Exl3HfLinear
-
         return Exl3HfLinear
     except Exception:
         return None
@@ -111,9 +110,7 @@ class Exl3QuantState:
         """
         inner = _inner_exl3(self.exl3_linear)
         if inner is None:
-            raise RuntimeError(
-                "Unsloth: EXL3 quant state has no reconstructable inner layer."
-            )
+            raise RuntimeError("Unsloth: EXL3 quant state has no reconstructable inner layer.")
         w = inner.get_weight_tensor()  # [in_features, out_features], fp16
         w = w.t().contiguous()  # -> [out_features, in_features]
         out_dtype = dtype or self.dtype
@@ -140,8 +137,11 @@ def is_exl3_linear(module: Any) -> bool:
 def get_exl3_quant_state(module_or_weight: Any) -> Optional[Exl3QuantState]:
     """Return the :class:`Exl3QuantState` for a weight/module, if any."""
     if isinstance(module_or_weight, torch.Tensor):
-        return getattr(module_or_weight, "quant_state", None) \
-            if isinstance(getattr(module_or_weight, "quant_state", None), Exl3QuantState) else None
+        return (
+            getattr(module_or_weight, "quant_state", None)
+            if isinstance(getattr(module_or_weight, "quant_state", None), Exl3QuantState)
+            else None
+        )
     weight = getattr(module_or_weight, "weight", None)
     if weight is not None:
         qs = getattr(weight, "quant_state", None)
@@ -164,7 +164,7 @@ def exl3_fast_dequantize(
         is what ``matmul_lora`` / ``fast_linear_forward`` want when they call
         ``fast_dequantize(W.t(), ...)``.
     """
-    w = quant_state.dequantize(dtype=dtype)  # [out, in]
+    w = quant_state.dequantize(dtype = dtype)  # [out, in]
     if transpose:
         w = w.t().contiguous()
     return w
@@ -200,9 +200,9 @@ class ExllamaV3Linear(torch.nn.Linear):
         super().__init__(
             int(in_features),
             int(out_features),
-            bias=False,
-            device="meta",
-            dtype=compute_dtype,
+            bias = False,
+            device = "meta",
+            dtype = compute_dtype,
         )
         # Store the EXL3 module off the nn tree (object.__setattr__) so it adds
         # no state_dict keys; it is only a handle for weight reconstruction.
@@ -211,24 +211,24 @@ class ExllamaV3Linear(torch.nn.Linear):
 
         quant_state = Exl3QuantState(
             exl3_linear,
-            in_features=in_features,
-            out_features=out_features,
-            compute_dtype=compute_dtype,
-            bias=bias,
+            in_features = in_features,
+            out_features = out_features,
+            compute_dtype = compute_dtype,
+            bias = bias,
         )
         # Real (not meta) placeholder so PEFT places adapters on the right
         # device (peft #1639), shaped [out, 1] like a bnb packed weight so
         # W.t() has shape[0]==1 (the fast_dequantize transpose signal).
         device = quant_state.device
-        placeholder = torch.zeros((1,), dtype=compute_dtype, device=device).expand(
+        placeholder = torch.zeros((1,), dtype = compute_dtype, device = device).expand(
             int(out_features), 1
         )
         placeholder.quant_state = quant_state
-        self.weight = torch.nn.Parameter(placeholder, requires_grad=False)
+        self.weight = torch.nn.Parameter(placeholder, requires_grad = False)
         self.weight.quant_state = quant_state
 
         if bias is not None:
-            self.bias = torch.nn.Parameter(bias, requires_grad=False)
+            self.bias = torch.nn.Parameter(bias, requires_grad = False)
         else:
             self.register_parameter("bias", None)
 
@@ -240,21 +240,20 @@ class ExllamaV3Linear(torch.nn.Linear):
         # Reconstruct then F.linear; the fused trellis kernel gave wrong logits.
         dtype = x.dtype
         qs = self.weight.quant_state
-        W = qs.dequantize(dtype=dtype)  # [out, in]
+        W = qs.dequantize(dtype = dtype)  # [out, in]
         out = torch.nn.functional.linear(
             x, W, self.bias.to(dtype) if self.bias is not None else None
         )
         return out
 
     def extra_repr(self) -> str:
-        return (
-            f"in_features={self.in_features}, out_features={self.out_features}, "
-            f"quant=exl3"
-        )
+        return f"in_features={self.in_features}, out_features={self.out_features}, " f"quant=exl3"
 
 
 @torch.no_grad()
-def attach_exl3_quant_states(model: torch.nn.Module, compute_dtype: torch.dtype = torch.float16) -> int:
+def attach_exl3_quant_states(
+    model: torch.nn.Module, compute_dtype: torch.dtype = torch.float16
+) -> int:
     """Walk ``model`` and attach an :class:`Exl3QuantState` to every EXL3 layer.
 
     ExLlamaV3's transformers integration replaces ``nn.Linear`` modules with
@@ -281,13 +280,9 @@ def attach_exl3_quant_states(model: torch.nn.Module, compute_dtype: torch.dtype 
             inner = _inner_exl3(child)
             if inner is None:
                 continue
-            in_features = (
-                getattr(child, "in_features", None)
-                or getattr(inner, "in_features", None)
-            )
-            out_features = (
-                getattr(child, "out_features", None)
-                or getattr(inner, "out_features", None)
+            in_features = getattr(child, "in_features", None) or getattr(inner, "in_features", None)
+            out_features = getattr(child, "out_features", None) or getattr(
+                inner, "out_features", None
             )
             if in_features is None or out_features is None:
                 continue
@@ -297,11 +292,11 @@ def attach_exl3_quant_states(model: torch.nn.Module, compute_dtype: torch.dtype 
         inner = _inner_exl3(wrapper)
         bias = getattr(inner, "bias", None)
         new_layer = ExllamaV3Linear(
-            in_features=in_features,
-            out_features=out_features,
-            exl3_linear=wrapper,  # keep wrapper so .inner is re-read lazily
-            bias=bias,
-            compute_dtype=compute_dtype,
+            in_features = in_features,
+            out_features = out_features,
+            exl3_linear = wrapper,  # keep wrapper so .inner is re-read lazily
+            bias = bias,
+            compute_dtype = compute_dtype,
         )
         # Drop the wrapper's dense placeholder weight (we only need .inner for
         # reconstruction) so each layer doesn't keep a full fp16 copy in VRAM.
@@ -309,8 +304,8 @@ def attach_exl3_quant_states(model: torch.nn.Module, compute_dtype: torch.dtype 
             w = getattr(wrapper, "weight", None)
             if isinstance(w, torch.Tensor) and w.numel() > 1:
                 wrapper.weight = torch.nn.Parameter(
-                    torch.zeros((1,), dtype=compute_dtype, device="meta"),
-                    requires_grad=False,
+                    torch.zeros((1,), dtype = compute_dtype, device = "meta"),
+                    requires_grad = False,
                 )
         except Exception:
             pass
@@ -354,19 +349,28 @@ def harmonize_nonquant_dtype(model, target_dtype) -> int:
     for module in model.modules():
         if id(module) in exl3_modules:
             continue
-        for pname, p in list(module.named_parameters(recurse=False)):
-            if p is not None and p.is_floating_point() and p.dtype != target_dtype \
-                    and not p.is_meta and getattr(p, "quant_state", None) is None:
+        for pname, p in list(module.named_parameters(recurse = False)):
+            if (
+                p is not None
+                and p.is_floating_point()
+                and p.dtype != target_dtype
+                and not p.is_meta
+                and getattr(p, "quant_state", None) is None
+            ):
                 p.data = p.data.to(target_dtype)
                 count += 1
-        for bname, b in list(module.named_buffers(recurse=False)):
+        for bname, b in list(module.named_buffers(recurse = False)):
             if b is None or not b.is_floating_point() or b.dtype == target_dtype or b.is_meta:
                 continue
             # Keep RoPE inv_freq (and similar) in float32; downcasting degrades
             # positional encoding.
             lname = bname.lower()
-            if "inv_freq" in lname or "rotary" in lname or lname.endswith("_freqs") \
-                    or "freqs" in lname:
+            if (
+                "inv_freq" in lname
+                or "rotary" in lname
+                or lname.endswith("_freqs")
+                or "freqs" in lname
+            ):
                 continue
             setattr(module, bname, b.to(target_dtype))
             count += 1
@@ -408,19 +412,19 @@ def densify_exl3_head(model: torch.nn.Module, compute_dtype: torch.dtype = torch
         new_head = torch.nn.Linear(
             qs.in_features,
             qs.out_features,
-            bias=qs.bias is not None,
-            device=qs.device,
-            dtype=compute_dtype,
+            bias = qs.bias is not None,
+            device = qs.device,
+            dtype = compute_dtype,
         )
         # Always reconstruct the real quantized head from its trellis; do NOT
         # tie it to the embedding even if tie_word_embeddings (the head is a
         # distinct quantized weight, and tying gave garbage logits).
-        dense_w = qs.dequantize(dtype=compute_dtype)  # [out, in] on cuda
-        new_head.weight = torch.nn.Parameter(dense_w, requires_grad=False)
+        dense_w = qs.dequantize(dtype = compute_dtype)  # [out, in] on cuda
+        new_head.weight = torch.nn.Parameter(dense_w, requires_grad = False)
         if qs.bias is not None:
             new_head.bias = torch.nn.Parameter(
-                qs.bias.to(device=new_head.weight.device, dtype=compute_dtype),
-                requires_grad=False,
+                qs.bias.to(device = new_head.weight.device, dtype = compute_dtype),
+                requires_grad = False,
             )
         setattr(parent, attr_name, new_head)
         count += 1
