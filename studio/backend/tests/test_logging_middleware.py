@@ -281,17 +281,25 @@ def test_quiet_success_is_get_only(logs):
 def test_chat_pre_auth_401_suppressed_other_errors_logged(logs):
     # The transient bootstrap 401 on a chat list GET is dropped, but a 500 (or any
     # other status) still logs so real failures stay visible.
-    _run(LoggingMiddleware(_status_app(401))(_http_scope("/api/chat/projects"), _noop_receive, _drop))
+    _run(
+        LoggingMiddleware(_status_app(401))(_http_scope("/api/chat/projects"), _noop_receive, _drop)
+    )
     assert logs.events == []
-    _run(LoggingMiddleware(_status_app(500))(_http_scope("/api/chat/projects"), _noop_receive, _drop))
+    _run(
+        LoggingMiddleware(_status_app(500))(_http_scope("/api/chat/projects"), _noop_receive, _drop)
+    )
     assert _paths_logged(logs) == ["/api/chat/projects"]
 
 
 def test_export_status_error_still_logs(logs):
     # 2xx suppressed, but an HTTP-level error on export status remains visible.
-    _run(LoggingMiddleware(_status_app(200))(_http_scope("/api/export/status"), _noop_receive, _drop))
+    _run(
+        LoggingMiddleware(_status_app(200))(_http_scope("/api/export/status"), _noop_receive, _drop)
+    )
     assert logs.events == []
-    _run(LoggingMiddleware(_status_app(500))(_http_scope("/api/export/status"), _noop_receive, _drop))
+    _run(
+        LoggingMiddleware(_status_app(500))(_http_scope("/api/export/status"), _noop_receive, _drop)
+    )
     assert _paths_logged(logs) == ["/api/export/status"]
 
 
