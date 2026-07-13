@@ -906,6 +906,21 @@ def run_inference_process(
                 )
         return
 
+    # ── Windows: check Triton availability (must precede import torch) ──
+    # Must run before the torchao stub below, which imports torch itself to detect ROCm --
+    # otherwise this check runs against an already-imported torch and TORCHDYNAMO_DISABLE
+    # would race the training/export workers' ordering (see their "1c" Triton gate).
+    if sys.platform == "win32":
+        try:
+            import triton  # noqa: F401
+            logger.info("Triton available — torch.compile enabled")
+        except ImportError:
+            os.environ["TORCHDYNAMO_DISABLE"] = "1"
+            logger.warning(
+                "Triton not found on Windows — torch.compile disabled. "
+                'Install for better performance: pip install "triton-windows<3.7"'
+            )
+
     # ── Stub torchao on Windows ROCm before ANY transformers import ──
     # Must precede every path that pulls transformers, not just the ML imports in section 2:
     # a local LoRA adapter with no recorded base reaches transformers here via
@@ -952,19 +967,7 @@ def run_inference_process(
         )
         return
 
-    # ── 1b. Windows: check Triton availability (must precede import torch) ──
-    if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
-
-    # ── 1c. Security gates, then SSM/Mamba kernels, BEFORE importing transformers ──
+    # ── 1b. Security gates, then SSM/Mamba kernels, BEFORE importing transformers ──
     # transformers snapshots its optional-backend gates at import, so a hybrid model's kernels
     # must be installed before the import below ("mamba-ssm is required" otherwise). The gates
     # are metadata-only, so run them first and refuse a blocked model before any native build.

@@ -52,7 +52,7 @@ def test_all_entrypoints_call_stub():
     exists in the file); ordering is asserted only for the inference worker below, the path this fix
     hardened. The other three import transformers at structurally different sites."""
     for path in _ENTRYPOINTS:
-        assert _stub_call_linenos(ast.parse(path.read_text())), (
+        assert _stub_call_linenos(ast.parse(path.read_text(encoding = "utf-8"))), (
             f"{path.relative_to(_BACKEND)} never calls {_STUB}() -- transformers would import "
             "unguarded and crash on a legacy Windows-ROCm venv (issue #6833)."
         )
@@ -65,7 +65,9 @@ def _imports_transformers(node) -> bool:
     if isinstance(node, ast.Import):
         return any(a.name.split(".")[0] == "transformers" for a in node.names)
     if isinstance(node, ast.ImportFrom) and node.module:
-        return node.module.split(".")[0] == "transformers" or node.module == "core.inference.inference"
+        return (
+            node.module.split(".")[0] == "transformers" or node.module == "core.inference.inference"
+        )
     return False
 
 
@@ -77,9 +79,11 @@ def test_inference_worker_stubs_before_transformers():
     Scoped to the function (mirrors ``test_ssm_runtime``) so a stub call elsewhere in the module can't
     mask a drop from the function that actually runs the import. The ``_activate_transformers_version``
     call inside the MLX branch is not an anchor: MLX is never Windows ROCm, so it needs no stub."""
-    tree = ast.parse((_CORE / "inference" / "worker.py").read_text())
+    tree = ast.parse((_CORE / "inference" / "worker.py").read_text(encoding = "utf-8"))
     fn = _func(tree, "run_inference_process")
-    assert fn is not None, "run_inference_process not found in inference/worker.py -- renamed? update this test."
+    assert (
+        fn is not None
+    ), "run_inference_process not found in inference/worker.py -- renamed? update this test."
 
     stub = _stub_call_linenos(fn)
     assert stub, f"run_inference_process must call {_STUB}()"
