@@ -59,7 +59,10 @@ def sandboxed_workdir(tmp_path, monkeypatch):
         # that flag is set, an unavailable sandbox here is a real regression, so
         # fail. Otherwise (local dev, or a runner that genuinely cannot create
         # unprivileged user namespaces) skip rather than turn the run red.
-        if os.environ.get("UNSLOTH_STUDIO_SANDBOX_CI_ENFORCE", "").strip().lower() in _TRUTHY_CI_VALUES:
+        if (
+            os.environ.get("UNSLOTH_STUDIO_SANDBOX_CI_ENFORCE", "").strip().lower()
+            in _TRUTHY_CI_VALUES
+        ):
             pytest.fail(
                 "sandbox unavailable but UNSLOTH_STUDIO_SANDBOX_CI_ENFORCE=1: the "
                 "CI runner confirmed bubblewrap/sandbox-exec works, so this "

@@ -1363,7 +1363,6 @@ def run_server(
     def _warm_sandbox_probe():
         try:
             from core.inference.sandbox import sandbox_available
-
             sandbox_available()
         except Exception as exc:  # never let the probe crash server startup
             logger.debug("sandbox availability probe failed at startup: %s", exc)
