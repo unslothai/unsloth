@@ -897,8 +897,7 @@ def test_confirm_gate_needs_stream():
     # But a selectable unsafe tool, an unrestricted (omitted) selection, MCP, or an
     # explicit confirm flag all still require streaming under auto.
     assert (
-        _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["terminal"]))
-        is True
+        _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["terminal"])) is True
     )
     assert _confirm_gate_needs_stream(req(permission_mode = "auto", enable_tools = True)) is True
     assert (
