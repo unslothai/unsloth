@@ -74,15 +74,12 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "ar-SA", label: "العربية" },
 ];
 
-// These are speech-recognition models, not synthesized voices. Include the
-// practical speed/accuracy tradeoff directly in the picker.
+// Speech-recognition models, not voices. Label is just name + download size;
+// the speed/accuracy note lives in the row description.
 const STT_MODEL_LABELS: Record<SttModel, string> = {
-  tiny: "Whisper Tiny · fastest/basic · ~75 MB",
-  base: "Whisper Base · fast/balanced · ~150 MB",
-  small: "Whisper Small · better accuracy · ~500 MB",
-  "distil-large-v3": "Distil-Whisper Large v3 · English/fast · ~1.5 GB",
-  "large-v3-turbo": "Whisper Large v3 Turbo · accurate/fast · ~1.6 GB",
-  "large-v3": "Whisper Large v3 · best accuracy/slowest · ~3 GB",
+  small: "Whisper Small · 970 MB",
+  "large-v3-turbo": "Whisper Large v3 Turbo · 1.6 GB",
+  "large-v3": "Whisper Large v3 · 3.1 GB",
 };
 
 const TTS_PREVIEW_TEXT =
