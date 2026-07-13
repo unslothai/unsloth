@@ -390,6 +390,107 @@ def test_repo_gguf_blob_map_collects_all_revision_blobs():
     assert CI._repo_gguf_blob_map(repo_info) == {"lfm2-350m-q4_k_m.gguf": {"OLDsha", "NEWsha"}}
 
 
+# ── no-symlink (Windows without Developer Mode) GGUF update detection ──
+#
+# Regression for the phantom "Update available" that NEVER clears (#7060). Without
+# the symlink privilege, hf_hub_download MOVES the blob into snapshots/ instead of
+# symlinking it, so blobs/ is empty and scan_cache_dir reports blob_path = the
+# snapshot file. Its name is the FILENAME, not an etag, so a remote-vs-local sha256
+# comparison can never match and every cached GGUF reports an update forever --
+# which re-downloading cannot fix, since the same file is rewritten with no blob.
+
+
+def _rev_no_symlink(*files):
+    """A revision whose GGUFs were MOVED into snapshots/ (no blobs/ entry)."""
+    return SimpleNamespace(
+        files = [
+            SimpleNamespace(
+                file_name = name,
+                blob_path = f"/hf/models--org--repo/snapshots/{'a' * 40}/{name}",
+                size_on_disk = size,
+            )
+            for name, size in files
+        ]
+    )
+
+
+def _requirement(*expected):
+    from hub.utils.download_manifest import ExpectedFile
+    from hub.utils.gguf_plan import GgufVariantPlan
+
+    expected_files = tuple(
+        ExpectedFile(path = path, size = size, sha256 = sha) for path, size, sha in expected
+    )
+    return GgufVariantPlan(
+        main_filenames = frozenset(e.path for e in expected_files),
+        target_filenames = tuple(e.path for e in expected_files),
+        main_hashes = frozenset(e.sha256 for e in expected_files if e.sha256),
+        required_hashes = frozenset(e.sha256 for e in expected_files if e.sha256),
+        companion_hashes = frozenset(),
+        mmproj_filenames = frozenset(),
+        mmproj_hashes = frozenset(),
+        expected_files = expected_files,
+        main_size_bytes = sum(e.size for e in expected_files),
+        download_size_bytes = sum(e.size for e in expected_files),
+    )
+
+
+def test_repo_gguf_blob_map_uses_size_identity_when_cache_has_no_blob():
+    """A snapshot-resident GGUF (no blobs/ entry) must NOT be recorded under its
+    filename as if that were a hash -- it gets a size identity instead."""
+    repo_info = SimpleNamespace(revisions = [_rev_no_symlink(("model-Q4_K_M.gguf", 4096))])
+
+    assert CI._repo_gguf_blob_map(repo_info) == {
+        "model-Q4_K_M.gguf": {CI.local_size_identity(4096)}
+    }
+
+
+def test_repo_gguf_blob_map_skips_snapshot_file_with_unknown_size():
+    """No blob and no readable size means no identity at all, rather than a
+    filename masquerading as a hash."""
+    repo_info = SimpleNamespace(revisions = [_rev_no_symlink(("model-Q4_K_M.gguf", 0))])
+
+    assert CI._repo_gguf_blob_map(repo_info) == {}
+
+
+def test_no_symlink_cache_matching_remote_size_reports_no_update():
+    """The #7060 repro: a GGUF stored directly in snapshots/ whose size matches the
+    remote is CURRENT, and must not show a phantom 'update available'."""
+    local_blobs = {"model-Q4_K_M.gguf": {CI.local_size_identity(4096)}}
+    requirement = _requirement(("model-Q4_K_M.gguf", 4096, "REMOTEsha256"))
+
+    assert (
+        GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is False
+    )
+
+
+def test_no_symlink_cache_with_different_remote_size_still_reports_update():
+    """A genuine upstream change is still detected in the no-symlink layout."""
+    local_blobs = {"model-Q4_K_M.gguf": {CI.local_size_identity(4096)}}
+    requirement = _requirement(("model-Q4_K_M.gguf", 8192, "REMOTEsha256"))
+
+    assert GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is True
+
+
+def test_symlinked_cache_with_stale_blob_still_reports_update():
+    """The blob-hash path is untouched: a real blob that does not match the remote
+    sha256 is still stale, and a size-identity fallback must not rescue it."""
+    local_blobs = {"model-Q4_K_M.gguf": {"OLDsha"}}
+    requirement = _requirement(("model-Q4_K_M.gguf", 4096, "NEWsha"))
+
+    assert GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is True
+
+
+def test_symlinked_cache_with_current_blob_reports_no_update():
+    """The blob-hash path is untouched: a matching blob is current."""
+    local_blobs = {"model-Q4_K_M.gguf": {"OLDsha", "NEWsha"}}
+    requirement = _requirement(("model-Q4_K_M.gguf", 4096, "NEWsha"))
+
+    assert (
+        GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is False
+    )
+
+
 def test_reclaim_replaced_gguf_variant_prunes_old_revision_only(monkeypatch, tmp_path):
     """After a verified update, stale same-variant files/blobs are removed while
     the freshly downloaded hash and sibling variants remain cached."""

@@ -49,6 +49,12 @@ _REPO_SIZE_NEG_TTL = 60.0
 _MODEL_METADATA_TIMEOUT_SECONDS = 5.0
 _repo_size_cache_lock = threading.Lock()
 
+# Marks a cached-file identity derived from size instead of an HF blob hash. Used
+# when the HF cache holds no blob for a file, which is the DEFAULT on Windows
+# without Developer Mode (no symlink privilege -> hf moves the blob into
+# snapshots/ and leaves blobs/ empty).
+_LOCAL_SIZE_IDENTITY_PREFIX = "size:"
+
 
 def get_repo_snapshot_metadata_cached(
     repo_id: str, hf_token: Optional[str] = None
@@ -135,18 +141,51 @@ def _cached_repo_file_name(file_obj) -> str:
     return str(getattr(file_obj, "file_name", "")).replace("\\", "/")
 
 
+def _cached_blob_hash(blob_path) -> Optional[str]:
+    """The HF cache blob hash for a cached file, or None when the cache has no
+    blob for it.
+
+    HF names each blob FILE by the file's etag (lfs.sha256 else blob_id), so a
+    blob's name IS the hash -- but ONLY when the file actually lives in the repo
+    cache's ``blobs/`` dir. When symlinks are unavailable (Windows without
+    Developer Mode) ``hf_hub_download`` MOVES the blob into ``snapshots/``
+    instead of symlinking it, leaving ``blobs/`` empty; ``scan_cache_dir`` then
+    reports ``blob_path`` = the snapshot file, whose name is the GGUF FILENAME,
+    not a hash. Treating that filename as a hash makes every remote-vs-local
+    comparison miss, so it is reported as "no blob" instead.
+    """
+    path = Path(blob_path)
+    return path.name if path.parent.name == "blobs" else None
+
+
+def local_size_identity(size: int) -> str:
+    """Identity token for a cached file whose blob hash is unknowable.
+
+    Without a ``blobs/`` entry the file's etag is never written to disk, and
+    re-hashing a multi-GB GGUF on every inventory scan is not viable on the UI
+    hot path. Size is the identity we can read for free. Hashes are hex, so a
+    ``size:``-prefixed token can never collide with one.
+    """
+    return f"{_LOCAL_SIZE_IDENTITY_PREFIX}{int(size)}"
+
+
 def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[str, set[str]]:
     """Map each cached GGUF file's repo-relative name to the SET of its local
-    blob hashes across all cached revisions.
+    identities across all cached revisions.
 
-    HF names each local cache blob FILE by the file's etag (lfs.sha256 else
-    blob_id), so a local file's blob hash == ``Path(blob_path).name``. An updated
-    repo keeps BOTH the old and new revision snapshots until HF garbage-collects
-    them, so the same file resolves to several blobs; collecting them ALL (not
-    just the first one seen, since ``repo_info.revisions`` is a frozenset and
-    yields them in arbitrary order) lets the remote-vs-local diff treat the file
-    as current when the remote (``main``) blob is present in any cached revision.
-    Mirrors the ``cached_blob_ids`` membership test in routes/models.py.
+    An identity is normally the file's blob hash (see ``_cached_blob_hash``). An
+    updated repo keeps BOTH the old and new revision snapshots until HF
+    garbage-collects them, so the same file resolves to several blobs; collecting
+    them ALL (not just the first one seen, since ``repo_info.revisions`` is a
+    frozenset and yields them in arbitrary order) lets the remote-vs-local diff
+    treat the file as current when the remote (``main``) blob is present in any
+    cached revision. Mirrors the ``cached_blob_ids`` membership test in
+    routes/models.py.
+
+    When the cache holds no blob for a file (Windows without Developer Mode: the
+    blob was moved into ``snapshots/``), fall back to a size identity so the file
+    still appears here. Dropping it would make the update check treat the file as
+    absent and report a phantom update forever.
 
     By default this keeps the historical MAIN-GGUF-only behavior. GGUF update
     checks opt into companions so a shared mmproj/MTP blob can be compared too.
@@ -163,7 +202,13 @@ def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[
             if not blob_path:
                 continue
             name = _cached_repo_file_name(f)
-            blob_map.setdefault(name, set()).add(Path(blob_path).name)
+            identity = _cached_blob_hash(blob_path)
+            if identity is None:
+                size = int(getattr(f, "size_on_disk", 0) or 0)
+                if size <= 0:
+                    continue
+                identity = local_size_identity(size)
+            blob_map.setdefault(name, set()).add(identity)
     return blob_map
 
 
