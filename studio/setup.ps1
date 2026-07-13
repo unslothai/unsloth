@@ -3358,19 +3358,26 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     $cudaForce = @()
     if ($script:PinChangedForceReinstall) { $cudaForce = @("--force-reinstall") }
     # An unknown-leaf custom pin (/simple, /current) routes through this branch
-    # with $CuTag set to that leaf. Bound torch like install.ps1's fresh pinned
-    # install and install_python_stack.py's verbatim path: a private mirror that
-    # serves newer torch must not lift the venv above the supported range while
-    # the marker records the pin as applied. Known cu* leaves keep the bare spec
+    # with $CuTag set to that leaf. Bound the WHOLE trio like install.ps1's fresh
+    # pinned install, install.sh, and install_python_stack.py's verbatim path
+    # (_CUSTOM_INDEX_TORCH_PKG_SPEC): a private mirror that also serves newer
+    # torchvision/torchaudio must not pull a companion built for a newer torch ABI
+    # while the marker records the pin as applied. Known cu* leaves keep bare specs
     # (the family index itself bounds what can resolve).
     $cudaTorchSpec = "torch"
-    if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) { $cudaTorchSpec = "torch>=2.4,<2.11.0" }
+    $cudaVisionSpec = "torchvision"
+    $cudaAudioSpec = "torchaudio"
+    if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) {
+        $cudaTorchSpec = "torch>=2.4,<2.11.0"
+        $cudaVisionSpec = "torchvision>=0.19,<0.26.0"
+        $cudaAudioSpec = "torchaudio>=2.4,<2.11.0"
+    }
     if ($script:UnslothVerbose) {
-        Fast-Install $cudaTorchSpec torchvision torchaudio @cudaForce --index-url $TorchInstallIndexUrl
+        Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec @cudaForce --index-url $TorchInstallIndexUrl
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install $cudaTorchSpec torchvision torchaudio @cudaForce --index-url $TorchInstallIndexUrl | Out-String
+        $output = Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec @cudaForce --index-url $TorchInstallIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {

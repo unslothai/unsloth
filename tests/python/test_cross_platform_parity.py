@@ -973,20 +973,25 @@ class TestPinnedIndexClearsUvEnvParity:
 
     def test_setup_ps1_bounds_unknown_leaf_pinned_torch(self):
         """A first-time/changed unknown-leaf custom pin routes through setup.ps1's
-        CUDA branch; install.ps1's fresh pinned install and the Python verbatim
-        path bound torch, so the Windows update path must too -- a private mirror
-        serving newer torch must not lift the venv above the supported range."""
+        CUDA branch; install.ps1's fresh pinned install, install.sh, and the Python
+        verbatim path bound the WHOLE trio, so the Windows update path must too -- a
+        private mirror serving newer torch OR newer companions must not lift the venv
+        above the supported range while the marker records the pin as applied."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        assert (
-            "if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) "
-            '{ $cudaTorchSpec = "torch>=2.4,<2.11.0" }'
-        ) in text, (
-            "setup.ps1 must bound torch for a pinned unknown-leaf install "
-            "(parity with install.ps1's fresh pinned install)"
+        # The custom-leaf branch bounds torch AND both companions (parity with
+        # _CUSTOM_INDEX_TORCH_PKG_SPEC), gated on a non-cu-family leaf.
+        for spec in (
+            '$cudaTorchSpec = "torch>=2.4,<2.11.0"',
+            '$cudaVisionSpec = "torchvision>=0.19,<0.26.0"',
+            '$cudaAudioSpec = "torchaudio>=2.4,<2.11.0"',
+        ):
+            assert spec in text, f"setup.ps1 must bound the custom-leaf trio: {spec}"
+        assert "if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) {" in text, (
+            "the custom-leaf trio bounds must be gated on a pinned non-cu-family leaf"
         )
         assert (
-            "Fast-Install $cudaTorchSpec torchvision torchaudio" in text
-        ), "setup.ps1's CUDA branch must install via the bounded spec variable"
+            "Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec" in text
+        ), "setup.ps1's CUDA branch must install via the bounded spec variables"
 
     def test_setup_ps1_stale_check_requires_rocm_digit(self):
         """The marker stale check must use the same rocm+digit gate as the

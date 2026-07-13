@@ -1741,16 +1741,21 @@ class TestEnsureRocmTorchMarker:
         url,
         flavor,
         marker = None,
+        no_torch = False,
     ):
         if marker is not None:
             self._seed(marker)
         env = {"UNSLOTH_TORCH_INDEX_URL": url} if url else {}
-        with patch.object(stack_mod, "_probe_torch_flavor", return_value = flavor):
-            with patch.dict(stack_mod.os.environ, env, clear = False):
-                if not url:
-                    stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
-                stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
-                return stack_mod._torch_pin_needs_apply()
+        # Pin NO_TORCH explicitly (default False): _torch_pin_needs_apply short-circuits
+        # on it, so a test process launched with UNSLOTH_NO_TORCH=1 would otherwise make
+        # every "needs apply" case return False spuriously (round-10 P3).
+        with patch.object(stack_mod, "NO_TORCH", no_torch):
+            with patch.object(stack_mod, "_probe_torch_flavor", return_value = flavor):
+                with patch.dict(stack_mod.os.environ, env, clear = False):
+                    if not url:
+                        stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
+                    stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                    return stack_mod._torch_pin_needs_apply()
 
     def test_probe_no_pin_keeps_fast_path(self):
         assert self._needs_apply("", None) is False
@@ -1761,16 +1766,16 @@ class TestEnsureRocmTorchMarker:
         # guard a torch-index env var + an absent marker would force the pass on EVERY
         # update (the failed-probe branch), with no marker ever written to stop it, since
         # the dependency pass also honors NO_TORCH and installs no torch (round-7 item 3).
-        with patch.object(stack_mod, "NO_TORCH", True):
-            assert self._needs_apply("https://mirror.local/cu128", None) is False
-            assert (
-                self._needs_apply(
-                    "https://mirror.local/cu128",
-                    ("cpu", "", "2.10.0"),
-                    marker = "https://mirror.local/cu126",
-                )
-                is False
+        assert self._needs_apply("https://mirror.local/cu128", None, no_torch = True) is False
+        assert (
+            self._needs_apply(
+                "https://mirror.local/cu128",
+                ("cpu", "", "2.10.0"),
+                marker = "https://mirror.local/cu126",
+                no_torch = True,
             )
+            is False
+        )
 
     def test_probe_absent_marker_forces_pass(self):
         # No marker seeded -> mismatch is None -> apply (the round-2 behavior).
