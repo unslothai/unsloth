@@ -1202,6 +1202,7 @@ def _build_browse_allowlist() -> list[Path]:
         legacy_hf_cache_dir,
         well_known_model_dirs,
     )
+    from utils.paths.external_media import linux_run_media_mount_roots
     from storage.studio_db import list_scan_folders
 
     candidates: list[Path] = []
@@ -1217,6 +1218,8 @@ def _build_browse_allowlist() -> list[Path]:
             candidates.append(resolved)
 
     _add(Path.home())
+    for p in linux_run_media_mount_roots():
+        _add(p)
     _add(_resolve_hf_cache_dir())
     try:
         _add(hf_default_cache_dir())
@@ -1336,6 +1339,8 @@ def _match_browse_child(current: Path, name: str) -> Optional[Path]:
 
 def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Path:
     """Resolve a requested browse path by walking from trusted allowlist roots."""
+    from storage.studio_db import contains_sensitive_path_component
+
     requested_path = _normalize_browse_request_path(path)
     resolved_roots: list[Path] = []
     seen_roots: set[str] = set()
@@ -1386,8 +1391,18 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                         "under your home folder."
                     ),
                 )
+            if contains_sensitive_path_component(str(resolved_child)):
+                raise HTTPException(
+                    status_code = 403,
+                    detail = "Credential or configuration directories are not browseable.",
+                )
             current = resolved_child
 
+        if contains_sensitive_path_component(str(current)):
+            raise HTTPException(
+                status_code = 403,
+                detail = "Credential or configuration directories are not browseable.",
+            )
         if not current.is_dir():
             raise HTTPException(
                 status_code = 400,
@@ -1435,7 +1450,8 @@ async def browse_folders(
     then hidden (if ``show_hidden=true``).
     """
     from utils.paths import hf_default_cache_dir, well_known_model_dirs
-    from storage.studio_db import list_scan_folders
+    from utils.paths.external_media import linux_run_media_mount_roots
+    from storage.studio_db import contains_sensitive_path_component, list_scan_folders
 
     # Build once; the sandbox check and suggestion chips share it.
     allowed_roots = _build_browse_allowlist()
@@ -1487,6 +1503,8 @@ async def browse_folders(
             name = child.name
             is_hidden = name.startswith(".")
             if is_hidden and not show_hidden:
+                continue
+            if contains_sensitive_path_component(name):
                 continue
             entries.append(
                 BrowseEntry(
@@ -1541,6 +1559,8 @@ async def browse_folders(
 
     # Home first -- the safe fallback when everything else is cold.
     _add_sug(Path.home())
+    for p in linux_run_media_mount_roots():
+        _add_sug(p)
     # The HF cache root the process is actually using.
     try:
         _add_sug(hf_default_cache_dir())

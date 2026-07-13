@@ -223,6 +223,49 @@ def _normalize_torchao_method(save_method):
     return TORCHAO_EXPORT_SCHEMES.get(key)
 
 
+def _loaded_via_remote_code(obj):
+    """True if `obj`'s class comes from downloaded custom code (an auto_map module).
+
+    Transformers loads auto_map code into the ``transformers_modules`` package, so a
+    ``transformers_modules`` class proves the original load actually ran that remote code
+    (which the caller's / Studio's consent gate scans at load time). Export paths derive their
+    reload trust_remote_code from this - the already approved load decision - instead of from a
+    checkpoint's static ``auto_map``: a model that loads with built-in classes must not have its
+    unvetted remote code run when it is re-read during quantization export. Walks PEFT / wrapper
+    layers so a LoRA over a custom-code base is still detected, and processor components so a
+    custom tokenizer held inside a built-in processor keeps its approved trust.
+    """
+    seen = set()
+    queue = [obj]
+    while queue and len(seen) < 16:
+        node = queue.pop(0)
+        if node is None or id(node) in seen:
+            continue
+        seen.add(id(node))
+        # __module__ can be None/absent on some dynamically created or C-extension classes;
+        # treat anything non-string as "not remote code" rather than crashing the export.
+        module = getattr(type(node), "__module__", None)
+        if isinstance(module, str) and module.startswith("transformers_modules"):
+            return True
+        if hasattr(node, "get_base_model"):
+            try:
+                queue.append(node.get_base_model())
+            except Exception:
+                pass
+        # PEFT / trainer wrappers hold the real model in base_model / model; a built-in
+        # ProcessorMixin holds its (possibly custom-code) components as attributes.
+        for attr in (
+            "base_model",
+            "model",
+            "tokenizer",
+            "image_processor",
+            "feature_extractor",
+            "video_processor",
+        ):
+            queue.append(getattr(node, attr, None))
+    return False
+
+
 def _normalize_compressed_method(save_method):
     """Return (scheme, needs_calibration, suffix) if `save_method` is an FP8/FP4 compressed
     export, else None (so normal lora / merged_16bit / merged_4bit handling proceeds).
@@ -2883,15 +2926,16 @@ def unsloth_save_pretrained_gguf(
                 "Unsloth: quantization_method can only be a string or a list of strings"
             )
         for i, quant_method in enumerate(quantization_method):
-            quant_method = quant_method.lower()
+            if quant_method is None:
+                quant_method = "q8_0"
+            else:
+                quant_method = quant_method.lower()
             if quant_method == "not_quantized":
                 quant_method = "f16"
             elif quant_method == "fast_quantized":
                 quant_method = "q8_0"
             elif quant_method == "quantized":
                 quant_method = "q4_k_m"
-            elif quant_method is None:
-                quant_method = "q8_0"
             quantization_methods.append(quant_method.lower())
 
     try:
@@ -3532,7 +3576,9 @@ def _unsloth_save_lora_gguf(
             cmd += ["--base", base_model_id]
         else:
             cmd += ["--base-model-id", base_model_id]
-        if bool(getattr(model.config, "auto_map", None)):
+        # Only pass --trust-remote-code when the loaded model actually came from custom code (the
+        # approved load decision), not merely because its config carries an auto_map entry.
+        if _loaded_via_remote_code(model):
             cmd.append("--trust-remote-code")
 
         # Expose the token to the converter so it can fetch a gated/private base config from the Hub.
@@ -3647,6 +3693,182 @@ from unsloth_zoo.llama_cpp import (
 )
 
 
+def _prewarm_base_model_hub_cache(
+    model,
+    save_method = "merged_16bit",
+    token = None,
+):
+    """Download the 16-bit base weights into the persistent HF hub cache before the merge.
+
+    merge_and_overwrite_lora fetches missing shards with hf_hub_download(local_dir = ...),
+    which never populates the hub cache. When the merge directory is temporary (GGUF
+    checkpoint exports delete it after conversion), every export re-downloads the full
+    base model (#6890). Pre-warming the cache makes the first export download once and
+    later exports copy from the cache. Best-effort: any failure or skip falls back to
+    the streaming download. Disable with UNSLOTH_PREWARM_HUB_CACHE=0.
+    """
+    _false = ("0", "false", "no", "off")
+    if os.environ.get("UNSLOTH_PREWARM_HUB_CACHE", "1").strip().lower() in _false:
+        return
+    if IS_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
+        return
+    _true = ("1", "true", "yes", "on")
+    if (
+        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _true
+        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _true
+    ):
+        return
+    # Only the 16bit / mxfp4 merges download the base model; merged_4bit and lora do not.
+    if save_method not in ("merged_16bit", "mxfp4"):
+        return
+    if not isinstance(model, PeftModel):
+        return
+
+    try:
+        # getattr so a model without a config / _name_or_path skips instead of raising.
+        name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
+        if not name_or_path:
+            return
+        try:
+            model_name = get_model_name(name_or_path, load_in_4bit = False)
+        except Exception:
+            model_name = name_or_path
+        if not model_name or os.path.isdir(model_name):
+            return  # local checkpoints are copied, never downloaded
+
+        # The merge may swap a gpt-oss "-BF16" repo for its MXFP4 variant, so skip it.
+        if save_method == "mxfp4" and model_name.endswith("-BF16"):
+            return
+
+        from unsloth_zoo.saving_utils import determine_base_model_source
+
+        model_name, is_local_path, _, base_is_quantized, quant_type = determine_base_model_source(
+            model_name, token
+        )
+        if not model_name or is_local_path:
+            return
+        # Mirror the merge: an FP8 base with a 16bit sibling merges onto the sibling, so
+        # pre-warm the sibling (what the merge downloads), not the FP8 repo (#6890).
+        if base_is_quantized and quant_type == "fp8" and save_method == "merged_16bit":
+            try:
+                from unsloth_zoo.saving_utils import _resolve_fp8_16bit_sibling
+                sibling = _resolve_fp8_16bit_sibling(model_name, token)
+            except Exception:
+                sibling = None
+            if sibling:
+                model_name, is_local_path, _, base_is_quantized, quant_type = (
+                    determine_base_model_source(sibling, token)
+                )
+                if not model_name or is_local_path:
+                    return
+        if base_is_quantized and quant_type in ("nf4", "fp4"):
+            return  # the 16bit merge refuses these bases; nothing worth caching
+
+        from huggingface_hub import HfFileSystem, hf_hub_download, snapshot_download
+
+        # Resolve the cache from the live env like the merge, not huggingface_hub's frozen
+        # constants: a runtime cache redirect (read-only default, Studio) would else miss (#6890).
+        try:
+            from unsloth_zoo.hf_cache import _active_caches
+            _hub_cache = _active_caches()[1]
+            hub_cache_dir = str(_hub_cache) if _hub_cache is not None else None
+        except Exception:
+            hub_cache_dir = None
+
+        # Mirror the zoo's shard listing (drop consolidated.safetensors when proper
+        # shards coexist) so the cached set is a superset of what the merge looks up.
+        shard_names = []
+        total_size_in_bytes = 0
+        for x in HfFileSystem(token = token).ls(model_name, detail = True):
+            if x["name"].endswith(".safetensors"):
+                shard_names.append((os.path.split(x["name"])[-1], int(x.get("size") or 0)))
+        if any(name != "consolidated.safetensors" for name, _ in shard_names):
+            shard_names = [x for x in shard_names if x[0] != "consolidated.safetensors"]
+        if not shard_names:
+            return
+
+        try:
+            for filename, _ in shard_names:
+                hf_hub_download(
+                    repo_id = model_name,
+                    filename = filename,
+                    cache_dir = hub_cache_dir,
+                    local_files_only = True,
+                    token = token,
+                )
+            return  # already fully cached
+        except Exception:
+            pass
+
+        # Mirror the merge's index filter (download path only): some repos ship leftover shards
+        # the index omits; keep only indexed ones, else the disk gate over-counts and we fetch
+        # unused shards.
+        if len(shard_names) > 1:
+            try:
+                import json as _json
+
+                _idx = hf_hub_download(
+                    repo_id = model_name,
+                    filename = "model.safetensors.index.json",
+                    cache_dir = hub_cache_dir,
+                    token = token,
+                )
+                with open(_idx, encoding = "utf-8") as _f:
+                    _indexed = {
+                        os.path.split(v)[-1] for v in _json.load(_f).get("weight_map", {}).values()
+                    }
+                if _indexed and not {n for n, _ in shard_names}.issubset(_indexed):
+                    _kept = [x for x in shard_names if x[0] in _indexed]
+                    if _kept:
+                        shard_names = _kept
+            except Exception:
+                pass
+        total_size_in_bytes = sum(size for _, size in shard_names)
+
+        # The cache copy is extra disk on top of the merge working copy; need room for both.
+        from huggingface_hub import constants as _hf_constants
+
+        # abspath so a relative HF_HUB_CACHE walks up to an existing root, not "".
+        cache_probe = os.path.abspath(
+            os.path.expanduser(str(hub_cache_dir or _hf_constants.HF_HUB_CACHE))
+        )
+        while cache_probe and not os.path.exists(cache_probe):
+            parent = os.path.dirname(cache_probe)
+            if parent == cache_probe:
+                break
+            cache_probe = parent
+        free_space = shutil.disk_usage(cache_probe).free if os.path.exists(cache_probe) else 0
+        if free_space < 2 * total_size_in_bytes:
+            print(
+                f"Unsloth: Not enough free disk to keep `{model_name}` in the Hugging Face "
+                f"cache (need ~{round(2 * total_size_in_bytes / 1024**3, 1)}GB free, have "
+                f"{round(free_space / 1024**3, 1)}GB). Downloading straight to the merge "
+                f"directory instead; the next export will re-download it."
+            )
+            return
+
+        if total_size_in_bytes >= 0.1 * 1024**3:
+            size_str = f"{round(total_size_in_bytes / 1024**3, 1)}GB"
+        else:
+            size_str = f"{max(1, round(total_size_in_bytes / 1024**2))}MB"
+        print(
+            f"Unsloth: Downloading `{model_name}` into the Hugging Face cache so future "
+            f"exports skip the {size_str} download..."
+        )
+        snapshot_download(
+            repo_id = model_name,
+            allow_patterns = [name for name, _ in shard_names]
+            + ["model.safetensors.index.json", "tokenizer.model"],
+            cache_dir = hub_cache_dir,
+            token = token,
+        )
+    except Exception as e:
+        print(
+            f"Unsloth: Could not pre-cache the base model weights ({e}). "
+            f"Falling back to downloading into the merge directory."
+        )
+
+
 @torch.inference_mode
 def save_to_gguf_generic(
     model,
@@ -3682,15 +3904,16 @@ def save_to_gguf_generic(
                 "Unsloth: quantization_method can only be a string or a list of strings"
             )
         for i, quant_method in enumerate(quantization_method):
-            quant_method = quant_method.lower()
+            if quant_method is None:
+                quant_method = "q8_0"
+            else:
+                quant_method = quant_method.lower()
             if quant_method == "not_quantized":
                 quant_method = "f16"
             elif quant_method == "fast_quantized":
                 quant_method = "q8_0"
             elif quant_method == "quantized":
                 quant_method = "q4_k_m"
-            elif quant_method is None:
-                quant_method = "q8_0"
             new_quantization_methods.append(quant_method.lower())
     else:
         new_quantization_methods.append(quantization_type.lower())
@@ -3841,6 +4064,7 @@ def unsloth_generic_save(
 
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
     else:
+        _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         merge_and_overwrite_lora(
             get_model_name,
             model = model,
@@ -4387,8 +4611,8 @@ def _unsloth_save_compressed_tensors(
         )
         unsloth_generic_save(**merge_args)
 
-        # 4) Detect VLM + trust_remote_code from the in-memory model config. A vision/multimodal
-        #    model exposes a vision_config or an explicitly vision-named architecture; a bare
+        # 4) Detect VLM from the in-memory model config. A vision/multimodal model exposes a
+        #    vision_config or an explicitly vision-named architecture; a bare
         #    *ForConditionalGeneration also matches text seq2seq models (T5/BART/Whisper), so it
         #    is not treated as a VLM on its own.
         is_vlm = False
@@ -4402,9 +4626,13 @@ def _unsloth_save_compressed_tensors(
                 "Unsloth: FP8/FP4 compressed export for vision / multimodal models is "
                 "experimental; vision-tower layers may be affected."
             )
-        trust_remote_code = (
-            bool(getattr(model.config, "auto_map", None)) if hasattr(model, "config") else False
-        )
+        # trust_remote_code must reflect the approved load decision (whether the model / tokenizer
+        # was actually loaded from custom code), not the config's static auto_map, so a
+        # built-in-loadable model carrying auto_map cannot run unvetted code in the subprocess.
+        # Model and tokenizer trust stay separate, like the torchao path: an approved custom
+        # tokenizer must not enable an unapproved model's code in the subprocess (or vice versa).
+        model_trust = _loaded_via_remote_code(model)
+        tok_trust = _loaded_via_remote_code(tokenizer)
 
         # 5) Marshal the calibration dataset for the subprocess: None -> ultrachat default; a
         #    str/PathLike is a local save_to_disk dir if it exists else a Hub id; Dataset -> temp.
@@ -4479,8 +4707,10 @@ def _unsloth_save_compressed_tensors(
             cmd += ["--calibration-dataset", calib_value]
         if is_vlm:
             cmd.append("--is-vlm")
-        if trust_remote_code:
+        if model_trust:
             cmd.append("--trust-remote-code")
+        if tok_trust:
+            cmd.append("--trust-remote-code-tokenizer")
         if variant:
             cmd += ["--variant", variant]
 
@@ -4679,35 +4909,19 @@ def _unsloth_save_torchao(
         )
         unsloth_generic_save(**merge_args)
 
-        # 2) Detect VLM + trust_remote_code so the right auto class reloads the staged checkpoint.
-        #    A bare *ForConditionalGeneration also matches text seq2seq (T5/BART/Whisper), so key off
-        #    vision_config / a vision-named architecture only, like the compressed path.
+        # 2) Detect VLM + reload class. A bare *ForConditionalGeneration also matches text seq2seq
+        #    (T5/BART/Whisper), so key off vision_config / a vision-named architecture only.
         is_vlm = False
-        trust_remote_code = False
         if hasattr(model, "config"):
             archs = getattr(model.config, "architectures", None) or []
             is_vlm = hasattr(model.config, "vision_config") or any(
                 x.endswith("ForVisionText2Text") for x in archs
             )
-            trust_remote_code = bool(getattr(model.config, "auto_map", None))
-        # Custom code can be declared only in the tokenizer/processor config, so also honor an
-        # auto_map in any staged config (the original load already had the user's consent).
-        if not trust_remote_code:
-            for _cfg in (
-                "config.json",
-                "tokenizer_config.json",
-                "processor_config.json",
-                "preprocessor_config.json",
-            ):
-                try:
-                    _p = os.path.join(staging, _cfg)
-                    if os.path.exists(_p):
-                        with open(_p, "r", encoding = "utf-8") as _f:
-                            if "auto_map" in json.load(_f):
-                                trust_remote_code = True
-                                break
-                except Exception:
-                    pass
+        # trust_remote_code must reflect the approved load decision - whether the in-memory model /
+        # tokenizer was itself loaded from custom code - not the staged config's auto_map, which an
+        # attacker can set on a built-in-loadable model to run unvetted code past the consent gate.
+        model_trust = _loaded_via_remote_code(model)
+        tok_trust = _loaded_via_remote_code(tokenizer)
         # Reload with the class that matches the checkpoint: an image-text VLM class (with a
         # fallback for older Transformers that lack AutoModelForImageTextToText); the model's own
         # architecture class for encoder-decoder seq2seq (T5/BART/Whisper are not causal LMs, and
@@ -4766,12 +4980,10 @@ def _unsloth_save_torchao(
             staging,
             device_map = "auto",
             quantization_config = TorchAoConfig(quant_type = quant_type),
-            trust_remote_code = trust_remote_code,
+            trust_remote_code = model_trust,
             **dtype_kw,
         )
-        staged_tokenizer = auto_processor.from_pretrained(
-            staging, trust_remote_code = trust_remote_code
-        )
+        staged_tokenizer = auto_processor.from_pretrained(staging, trust_remote_code = tok_trust)
 
         quantized_model.save_pretrained(out_dir, safe_serialization = safe_serialization)
         staged_tokenizer.save_pretrained(out_dir)
