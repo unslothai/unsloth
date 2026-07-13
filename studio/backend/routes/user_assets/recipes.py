@@ -49,8 +49,7 @@ def list_recipes(current_subject: str = Depends(get_current_subject)):
     status_code = status.HTTP_201_CREATED,
 )
 def create_recipe(
-    payload: RecipeCreateRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: RecipeCreateRequest, current_subject: str = Depends(get_current_subject)
 ):
     try:
         return user_assets_db.create_recipe(current_subject, _recipe_input(payload))

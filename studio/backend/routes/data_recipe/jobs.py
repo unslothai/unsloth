@@ -519,9 +519,7 @@ def job_dataset(
     current_subject: str = Depends(get_current_subject),
 ):
     mgr = get_job_manager()
-    result = mgr.get_dataset(
-        job_id, current_subject, limit = limit, offset = offset
-    )
+    result = mgr.get_dataset(job_id, current_subject, limit = limit, offset = offset)
     if result is None:
         raise HTTPException(status_code = 404, detail = "dataset not ready")
     if "error" in result:

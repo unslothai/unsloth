@@ -81,7 +81,7 @@ JsonPath: TypeAlias = tuple[JsonPathPart, ...]
 T = TypeVar("T")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class UserAssetValidationError(ValueError):
     """Safe structured validation failure consumed by storage/API layers."""
 
@@ -143,7 +143,9 @@ def _looks_like_secret_key(normalized_key: str) -> bool:
 
 def _is_mcp_env(path: JsonPath) -> bool:
     string_parts = [_normalize_key(part) for part in path if isinstance(part, str)]
-    return bool(string_parts and string_parts[-1] == "env" and any("mcp" in p for p in string_parts[:-1]))
+    return bool(
+        string_parts and string_parts[-1] == "env" and any("mcp" in p for p in string_parts[:-1])
+    )
 
 
 def _is_seed_source(path: JsonPath) -> bool:
@@ -186,7 +188,7 @@ def format_json_path(path: JsonPath) -> str:
         elif _IDENTIFIER_RE.fullmatch(part):
             rendered += f".{part}"
         else:
-            rendered += f"[{json.dumps(part, ensure_ascii=False)}]"
+            rendered += f"[{json.dumps(part, ensure_ascii = False)}]"
     return rendered
 
 
@@ -255,10 +257,10 @@ def canonical_json(value: Any, max_bytes: int, field_name: str) -> str:
     try:
         encoded = json.dumps(
             value,
-            ensure_ascii=False,
-            allow_nan=False,
-            separators=(",", ":"),
-            sort_keys=True,
+            ensure_ascii = False,
+            allow_nan = False,
+            separators = (",", ":"),
+            sort_keys = True,
         )
     except (TypeError, ValueError):
         raise UserAssetValidationError(
@@ -289,11 +291,7 @@ def _canonical_object(value: Any, max_bytes: int, field_name: str) -> dict[str, 
 
 
 def _validate_secret_policy(
-    value: Any,
-    *,
-    legacy: bool,
-    max_bytes: int,
-    field_name: str,
+    value: Any, *, legacy: bool, max_bytes: int, field_name: str
 ) -> dict[str, Any] | tuple[dict[str, Any], list[str]]:
     if legacy:
         clean, redacted_paths = redact_secret_fields(value)
@@ -313,7 +311,9 @@ def validate_recipe_payload(value: Any, legacy: bool = False) -> dict[str, Any]:
 
 
 @overload
-def validate_recipe_payload(value: Any, legacy: bool) -> dict[str, Any] | tuple[dict[str, Any], list[str]]: ...
+def validate_recipe_payload(
+    value: Any, legacy: bool
+) -> dict[str, Any] | tuple[dict[str, Any], list[str]]: ...
 
 
 def validate_recipe_payload(
@@ -323,9 +323,9 @@ def validate_recipe_payload(
 
     return _validate_secret_policy(
         value,
-        legacy=legacy,
-        max_bytes=MAX_RECIPE_JSON_BYTES,
-        field_name="recipe payload",
+        legacy = legacy,
+        max_bytes = MAX_RECIPE_JSON_BYTES,
+        field_name = "recipe payload",
     )
 
 
@@ -334,7 +334,9 @@ def validate_training_config(value: Any, legacy: bool = False) -> dict[str, Any]
 
 
 @overload
-def validate_training_config(value: Any, legacy: bool) -> dict[str, Any] | tuple[dict[str, Any], list[str]]: ...
+def validate_training_config(
+    value: Any, legacy: bool
+) -> dict[str, Any] | tuple[dict[str, Any], list[str]]: ...
 
 
 def validate_training_config(
@@ -344,16 +346,17 @@ def validate_training_config(
 
     return _validate_secret_policy(
         value,
-        legacy=legacy,
-        max_bytes=MAX_TRAINING_CONFIG_JSON_BYTES,
-        field_name="training preset config",
+        legacy = legacy,
+        max_bytes = MAX_TRAINING_CONFIG_JSON_BYTES,
+        field_name = "training preset config",
     )
 
 
 def validate_id(value: Any, field_name: str = "id") -> str:
     if not isinstance(value, str) or not value or len(value) > MAX_ID_CHARS:
         raise UserAssetValidationError(
-            "invalid_id", f"{field_name} must be a non-empty string of at most {MAX_ID_CHARS} characters"
+            "invalid_id",
+            f"{field_name} must be a non-empty string of at most {MAX_ID_CHARS} characters",
         )
     return value
 
@@ -364,7 +367,8 @@ def validate_name(value: Any, field_name: str = "name") -> str:
     trimmed = value.strip()
     if not trimmed or len(trimmed) > MAX_NAME_CHARS:
         raise UserAssetValidationError(
-            "invalid_name", f"{field_name} must be non-empty and at most {MAX_NAME_CHARS} characters"
+            "invalid_name",
+            f"{field_name} must be non-empty and at most {MAX_NAME_CHARS} characters",
         )
     return trimmed
 
@@ -372,12 +376,19 @@ def validate_name(value: Any, field_name: str = "name") -> str:
 def validate_timestamp(value: Any, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise UserAssetValidationError(
-            "invalid_timestamp", f"{field_name} must be a non-negative Unix epoch millisecond integer"
+            "invalid_timestamp",
+            f"{field_name} must be a non-negative Unix epoch millisecond integer",
         )
     return value
 
 
-def _require_string(value: Any, field: str, max_bytes: int, *, nullable: bool = False) -> Any:
+def _require_string(
+    value: Any,
+    field: str,
+    max_bytes: int,
+    *,
+    nullable: bool = False,
+) -> Any:
     if value is None and nullable:
         return None
     if not isinstance(value, str):
@@ -387,7 +398,12 @@ def _require_string(value: Any, field: str, max_bytes: int, *, nullable: bool = 
     return value
 
 
-def _require_nonnegative_int(value: Any, field: str, *, nullable: bool = False) -> Any:
+def _require_nonnegative_int(
+    value: Any,
+    field: str,
+    *,
+    nullable: bool = False,
+) -> Any:
     if value is None and nullable:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -397,7 +413,12 @@ def _require_nonnegative_int(value: Any, field: str, *, nullable: bool = False) 
     return value
 
 
-def _require_object(value: Any, field: str, *, nullable: bool = True) -> Any:
+def _require_object(
+    value: Any,
+    field: str,
+    *,
+    nullable: bool = True,
+) -> Any:
     if value is None and nullable:
         return None
     if not isinstance(value, Mapping):
@@ -447,10 +468,10 @@ def project_execution_metadata(value: Any) -> dict[str, Any]:
 
     for field, (limit, nullable) in string_fields.items():
         if field in value:
-            projected[field] = _require_string(value[field], field, limit, nullable=nullable)
+            projected[field] = _require_string(value[field], field, limit, nullable = nullable)
     for field, nullable in integer_fields.items():
         if field in value:
-            projected[field] = _require_nonnegative_int(value[field], field, nullable=nullable)
+            projected[field] = _require_nonnegative_int(value[field], field, nullable = nullable)
     for field in object_fields:
         if field in value:
             projected[field] = _require_object(value[field], field)
@@ -489,7 +510,9 @@ def validate_legacy_batch_size(recipes: Any, executions: Any) -> None:
             "invalid_legacy_batch", "legacy recipes and executions must be arrays"
         )
     if len(recipes) > MAX_LEGACY_RECIPES or len(executions) > MAX_LEGACY_EXECUTIONS:
-        raise UserAssetValidationError("legacy_batch_limit_exceeded", "legacy batch item limit exceeded")
+        raise UserAssetValidationError(
+            "legacy_batch_limit_exceeded", "legacy batch item limit exceeded"
+        )
     canonical_json(
         {"recipes": recipes, "executions": executions},
         MAX_LEGACY_BATCH_JSON_BYTES,

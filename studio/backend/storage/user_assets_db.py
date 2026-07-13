@@ -61,7 +61,7 @@ class AssetAlreadyExistsError(UserAssetStorageError):
         super().__init__(
             "already_exists",
             "An asset with this id already exists",
-            current_resource=current_resource,
+            current_resource = current_resource,
         )
 
 
@@ -70,7 +70,7 @@ class RevisionConflictError(UserAssetStorageError):
         super().__init__(
             "revision_conflict",
             "The asset was changed by another writer",
-            current_resource=current_resource,
+            current_resource = current_resource,
         )
 
 
@@ -91,9 +91,7 @@ def _require_owner(owner_subject: str) -> str:
 
 def _require_mapping(value: Any, field_name: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise UserAssetValidationError(
-            "invalid_json_object", f"{field_name} must be a JSON object"
-        )
+        raise UserAssetValidationError("invalid_json_object", f"{field_name} must be a JSON object")
     return value
 
 
@@ -250,10 +248,7 @@ def create_recipe(owner_subject: str, recipe: Mapping[str, Any]) -> dict[str, An
 
 
 def update_recipe(
-    owner_subject: str,
-    recipe_id: str,
-    recipe: Mapping[str, Any],
-    expected_revision: int,
+    owner_subject: str, recipe_id: str, recipe: Mapping[str, Any], expected_revision: int
 ) -> dict[str, Any] | None:
     owner = _require_owner(owner_subject)
     asset_id = validate_id(recipe_id, "recipe id")
@@ -311,9 +306,7 @@ def update_recipe(
         conn.close()
 
 
-def delete_recipe(
-    owner_subject: str, recipe_id: str, expected_revision: int
-) -> bool:
+def delete_recipe(owner_subject: str, recipe_id: str, expected_revision: int) -> bool:
     owner = _require_owner(owner_subject)
     asset_id = validate_id(recipe_id, "recipe id")
     expected_revision = _validate_expected_revision(expected_revision)
@@ -396,7 +389,11 @@ def list_recipe_executions(
 ) -> dict[str, Any] | None:
     owner = _require_owner(owner_subject)
     parent_id = validate_id(recipe_id, "recipe id")
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_EXECUTION_PAGE_LIMIT:
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= MAX_EXECUTION_PAGE_LIMIT
+    ):
         raise UserAssetValidationError(
             "invalid_page_limit",
             f"execution page limit must be between 1 and {MAX_EXECUTION_PAGE_LIMIT}",
@@ -465,7 +462,7 @@ def upsert_recipe_execution(
     owner = _require_owner(owner_subject)
     parent_id = validate_id(recipe_id, "recipe id")
     asset_id = validate_id(execution_id, "execution id")
-    expected_revision = _validate_expected_revision(expected_revision, optional=True)
+    expected_revision = _validate_expected_revision(expected_revision, optional = True)
     projected = project_execution_metadata(metadata)
     metadata_json = canonical_json(projected, MAX_EXECUTION_JSON_BYTES, "execution metadata")
     created_at = validate_timestamp(projected.get("createdAt"), "createdAt")
@@ -589,17 +586,13 @@ def get_training_preset(owner_subject: str, preset_id: str) -> dict[str, Any] | 
         conn.close()
 
 
-def create_training_preset(
-    owner_subject: str, preset: Mapping[str, Any]
-) -> dict[str, Any]:
+def create_training_preset(owner_subject: str, preset: Mapping[str, Any]) -> dict[str, Any]:
     owner = _require_owner(owner_subject)
     value = _require_mapping(preset, "training preset")
     asset_id = validate_id(value.get("id"), "preset id")
     name = validate_name(value.get("name"), "preset name")
     config = validate_training_config(value.get("config"))
-    config_json = canonical_json(
-        config, MAX_TRAINING_CONFIG_JSON_BYTES, "training preset config"
-    )
+    config_json = canonical_json(config, MAX_TRAINING_CONFIG_JSON_BYTES, "training preset config")
     now = _now_ms()
     conn = studio_db.get_connection()
     try:
@@ -638,10 +631,7 @@ def create_training_preset(
 
 
 def update_training_preset(
-    owner_subject: str,
-    preset_id: str,
-    preset: Mapping[str, Any],
-    expected_revision: int,
+    owner_subject: str, preset_id: str, preset: Mapping[str, Any], expected_revision: int
 ) -> dict[str, Any] | None:
     owner = _require_owner(owner_subject)
     asset_id = validate_id(preset_id, "preset id")
@@ -649,9 +639,7 @@ def update_training_preset(
     value = _require_mapping(preset, "training preset")
     name = validate_name(value.get("name"), "preset name")
     config = validate_training_config(value.get("config"))
-    config_json = canonical_json(
-        config, MAX_TRAINING_CONFIG_JSON_BYTES, "training preset config"
-    )
+    config_json = canonical_json(config, MAX_TRAINING_CONFIG_JSON_BYTES, "training preset config")
     now = _now_ms()
     conn = studio_db.get_connection()
     try:
@@ -690,9 +678,7 @@ def update_training_preset(
         conn.close()
 
 
-def delete_training_preset(
-    owner_subject: str, preset_id: str, expected_revision: int
-) -> bool:
+def delete_training_preset(owner_subject: str, preset_id: str, expected_revision: int) -> bool:
     owner = _require_owner(owner_subject)
     asset_id = validate_id(preset_id, "preset id")
     expected_revision = _validate_expected_revision(expected_revision)
@@ -748,9 +734,7 @@ def list_legacy_imports(owner_subject: str, source: str) -> dict[str, list[str]]
         ).fetchall()
         return {
             "recipes": [row["legacy_id"] for row in rows if row["entity_kind"] == "recipe"],
-            "executions": [
-                row["legacy_id"] for row in rows if row["entity_kind"] == "execution"
-            ],
+            "executions": [row["legacy_id"] for row in rows if row["entity_kind"] == "execution"],
         }
     finally:
         conn.close()
@@ -763,7 +747,10 @@ def _legacy_result(
     reason: str | None = None,
     redacted_paths: list[str] | None = None,
 ) -> dict[str, Any]:
-    result: dict[str, Any] = {"id": legacy_id if isinstance(legacy_id, str) else "", "outcome": outcome}
+    result: dict[str, Any] = {
+        "id": legacy_id if isinstance(legacy_id, str) else "",
+        "outcome": outcome,
+    }
     if reason is not None:
         result["reason"] = reason
     if redacted_paths:
@@ -819,10 +806,7 @@ def _already_imported(
 
 
 def import_legacy_assets(
-    owner_subject: str,
-    source: str,
-    recipes: list[Any],
-    executions: list[Any],
+    owner_subject: str, source: str, recipes: list[Any], executions: list[Any]
 ) -> dict[str, Any]:
     """Atomically import a bounded batch, ledgering only terminal outcomes."""
 
@@ -856,10 +840,10 @@ def import_legacy_assets(
                     outcome = "id_retired" if existing["deleted_at"] is not None else "rejected"
                     reason = "id_retired" if outcome == "id_retired" else "already_exists"
                     _ledger_outcome(conn, owner, source, "recipe", asset_id, outcome, reason, now)
-                    recipe_results.append(_legacy_result(asset_id, outcome, reason=reason))
+                    recipe_results.append(_legacy_result(asset_id, outcome, reason = reason))
                     continue
                 name = validate_name(item.get("name", "Unnamed"), "recipe name")
-                clean_payload, paths = validate_recipe_payload(item.get("payload"), legacy=True)
+                clean_payload, paths = validate_recipe_payload(item.get("payload"), legacy = True)
                 learning_id, learning_title = _validate_recipe_links(item)
                 payload_json = canonical_json(
                     clean_payload, MAX_RECIPE_JSON_BYTES, "recipe payload"
@@ -886,11 +870,9 @@ def import_legacy_assets(
                     ),
                 )
                 _ledger_outcome(conn, owner, source, "recipe", asset_id, outcome, None, now)
-                recipe_results.append(
-                    _legacy_result(asset_id, outcome, redacted_paths=paths)
-                )
+                recipe_results.append(_legacy_result(asset_id, outcome, redacted_paths = paths))
             except UserAssetValidationError as error:
-                result = _legacy_result(raw_id, "rejected", reason=error.code)
+                result = _legacy_result(raw_id, "rejected", reason = error.code)
                 recipe_results.append(result)
                 if ledger_id:
                     _ledger_outcome(
@@ -916,7 +898,7 @@ def import_legacy_assets(
                 ).fetchone()
                 if parent is None:
                     execution_results.append(
-                        _legacy_result(asset_id, "missing_parent", reason="missing_parent")
+                        _legacy_result(asset_id, "missing_parent", reason = "missing_parent")
                     )
                     continue
                 if parent["deleted_at"] is not None:
@@ -931,7 +913,7 @@ def import_legacy_assets(
                         now,
                     )
                     execution_results.append(
-                        _legacy_result(asset_id, "rejected", reason="parent_retired")
+                        _legacy_result(asset_id, "rejected", reason = "parent_retired")
                     )
                     continue
                 existing = conn.execute(
@@ -953,7 +935,7 @@ def import_legacy_assets(
                         now,
                     )
                     execution_results.append(
-                        _legacy_result(asset_id, "rejected", reason="already_exists")
+                        _legacy_result(asset_id, "rejected", reason = "already_exists")
                     )
                     continue
                 clean_item, paths = redact_secret_fields(item)
@@ -981,16 +963,10 @@ def import_legacy_assets(
                     ),
                 )
                 outcome = "redacted" if paths else "imported"
-                _ledger_outcome(
-                    conn, owner, source, "execution", asset_id, outcome, None, now
-                )
-                execution_results.append(
-                    _legacy_result(asset_id, outcome, redacted_paths=paths)
-                )
+                _ledger_outcome(conn, owner, source, "execution", asset_id, outcome, None, now)
+                execution_results.append(_legacy_result(asset_id, outcome, redacted_paths = paths))
             except UserAssetValidationError as error:
-                execution_results.append(
-                    _legacy_result(raw_id, "rejected", reason=error.code)
-                )
+                execution_results.append(_legacy_result(raw_id, "rejected", reason = error.code))
                 if ledger_id:
                     _ledger_outcome(
                         conn,
@@ -1009,9 +985,7 @@ def import_legacy_assets(
     finally:
         conn.close()
 
-    outcomes = Counter(
-        result["outcome"] for result in (*recipe_results, *execution_results)
-    )
+    outcomes = Counter(result["outcome"] for result in (*recipe_results, *execution_results))
     return {
         "recipes": recipe_results,
         "executions": execution_results,

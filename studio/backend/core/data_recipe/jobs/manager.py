@@ -505,9 +505,7 @@ class JobManager:
             self._subs = [subscription for subscription in self._subs if subscription is not sub]
 
     def _prepare_event_locked(
-        self,
-        generation: JobGeneration,
-        event: dict,
+        self, generation: JobGeneration, event: dict
     ) -> tuple[tuple[Subscription, ...], dict] | None:
         """Record an event only while its immutable generation is installed.
 
@@ -543,15 +541,14 @@ class JobManager:
         self._subs = retained
         return tuple(matching), published
 
-    def _fanout_prepared(
-        self,
-        prepared: tuple[tuple[Subscription, ...], dict] | None,
-    ) -> None:
+    def _fanout_prepared(self, prepared: tuple[tuple[Subscription, ...], dict] | None) -> None:
         """Deliver a prepared event without holding the manager lock."""
         if prepared is None:
             return
         subscriptions, event = prepared
-        failed = [subscription for subscription in subscriptions if not subscription.put_event(event)]
+        failed = [
+            subscription for subscription in subscriptions if not subscription.put_event(event)
+        ]
         if not failed:
             return
         with self._lock:
@@ -667,10 +664,11 @@ class JobManager:
                         and self._job.owner_subject == job.owner_subject
                         and self._proc is proc
                         and self._mp_q is mp_q
-                        and self._job.status in {
-                        "pending",
-                        "active",
-                        "cancelling",
+                        and self._job.status
+                        in {
+                            "pending",
+                            "active",
+                            "cancelling",
                         }
                     ):
                         if self._job.status == "cancelling":

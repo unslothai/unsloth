@@ -44,13 +44,10 @@ def list_training_presets(current_subject: str = Depends(get_current_subject)):
     status_code = status.HTTP_201_CREATED,
 )
 def create_training_preset(
-    payload: TrainingPresetCreateRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: TrainingPresetCreateRequest, current_subject: str = Depends(get_current_subject)
 ):
     try:
-        return user_assets_db.create_training_preset(
-            current_subject, _preset_input(payload)
-        )
+        return user_assets_db.create_training_preset(current_subject, _preset_input(payload))
     except UserAssetValidationError as error:
         raise_validation(error)
     except UserAssetStorageError as error:
@@ -58,10 +55,7 @@ def create_training_preset(
 
 
 @router.get("/training-presets/{preset_id}", response_model = TrainingPresetRecord)
-def get_training_preset(
-    preset_id: str,
-    current_subject: str = Depends(get_current_subject),
-):
+def get_training_preset(preset_id: str, current_subject: str = Depends(get_current_subject)):
     try:
         record = user_assets_db.get_training_preset(current_subject, preset_id)
     except UserAssetValidationError as error:
@@ -104,9 +98,7 @@ def delete_training_preset(
     current_subject: str = Depends(get_current_subject),
 ):
     try:
-        deleted = user_assets_db.delete_training_preset(
-            current_subject, preset_id, revision
-        )
+        deleted = user_assets_db.delete_training_preset(current_subject, preset_id, revision)
     except UserAssetValidationError as error:
         raise_validation(error)
     except UserAssetStorageError as error:

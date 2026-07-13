@@ -20,9 +20,7 @@ router = APIRouter(route_class = UserAssetsRoute)
 
 @router.get("/bootstrap", response_model = BootstrapResponse)
 def bootstrap(current_subject: str = Depends(get_current_subject)):
-    ledger = user_assets_db.list_legacy_imports(
-        current_subject, DEFAULT_LEGACY_SOURCE
-    )
+    ledger = user_assets_db.list_legacy_imports(current_subject, DEFAULT_LEGACY_SOURCE)
     return {
         "subject": current_subject,
         "importLedger": {"source": DEFAULT_LEGACY_SOURCE, **ledger},
@@ -31,8 +29,7 @@ def bootstrap(current_subject: str = Depends(get_current_subject)):
 
 @router.post("/legacy-import", response_model = LegacyImportResponse)
 def import_legacy_assets(
-    payload: LegacyImportRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: LegacyImportRequest, current_subject: str = Depends(get_current_subject)
 ):
     if payload.confirmSubject != current_subject:
         raise HTTPException(
