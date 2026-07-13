@@ -888,8 +888,11 @@ class InferenceOrchestrator:
     # Public API — same interface as InferenceBackend
     # ------------------------------------------------------------------
 
-    # Monotonic count of load attempts; lets the install route detect a load
+    # Monotonic count of PUBLISHED loads; lets the install route detect a load
     # (including a same-model reload) that completed while it waited on the gate.
+    # Bumped when the load result is published, not at load start: a start-time
+    # bump is already visible when the installer snapshots mid-load, so the
+    # completed reload would look unchanged and get unloaded by the swap.
     load_generation: int = 0
 
     def load_model(
@@ -911,7 +914,6 @@ class InferenceOrchestrator:
         Always spawns a fresh subprocess per load for a clean interpreter (no
         stale unsloth patches, torch.compile caches, or getsource failures).
         """
-        self.load_generation += 1
         from utils.transformers_version import needs_transformers_5
 
         model_name = config.identifier
@@ -1041,6 +1043,7 @@ class InferenceOrchestrator:
                         return False
                     model_info = resp.get("model_info", {})
                     self.active_model_name = model_info.get("identifier", model_name)
+                    self.load_generation += 1
                     # A load always spawns a fresh subprocess holding only this model, so
                     # mirror that. A lingering stale name would pass unload_model's "not in
                     # self.models" guard, and the worker's absent-name fallback would unload
