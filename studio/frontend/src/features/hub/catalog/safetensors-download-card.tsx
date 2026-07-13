@@ -161,7 +161,7 @@ export function SafetensorsDownloadCard({
   const showActionPair = isDownloaded && !downloading && (canRun || !!onTrain);
   const showUnavailableAction =
     isDownloaded && !downloading && !canRun && !onTrain;
-  const runActionsVisible = HUB_NON_GGUF_RUN_ACTIONS_VISIBLE;
+  const trainActionVisible = !!onTrain && HUB_POST_DOWNLOAD_ACTIONS_VISIBLE;
   const canDelete =
     (isDownloaded || isPartial) &&
     !downloading &&
@@ -243,15 +243,15 @@ export function SafetensorsDownloadCard({
           </div>
         </div>
         {/* Info/actions hairline; omitted before a lone Run button, matching the GGUF and on-device cards. */}
-        {(!showActionPair || (HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && !!onTrain)) && <CardDivider />}
+        {(!showActionPair || trainActionVisible) && <CardDivider />}
         {showActionPair ? (
           <div
             className={cn(
               "group/pair flex h-9 shrink-0 items-stretch gap-1.5",
-              !runActionsVisible && "hidden",
+              !HUB_NON_GGUF_RUN_ACTIONS_VISIBLE && "hidden",
             )}
           >
-            {onTrain && HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && (
+            {trainActionVisible && (
               <button
                 type="button"
                 onClick={onTrain}

@@ -504,17 +504,17 @@ export const ModelInspector = memo(function ModelInspector({
   const paramsLabel = model.totalParams
     ? formatCompact(model.totalParams)
     : "N/A";
-  const trainingSupported = unslothSupport.status !== "unsupported";
+  const unslothSupported = unslothSupport.status !== "unsupported";
   const canRunModel =
     !isDataset &&
     (model.runtimeCapabilities?.canChat ?? true) &&
-    (model.isGguf || unslothSupport.status !== "unsupported");
+    (model.isGguf || unslothSupported);
   const canTrainModel =
     !isDataset &&
     (model.runtimeCapabilities?.canTrain ?? false) &&
     model.modelFormat !== "gguf" &&
     model.modelFormat !== "adapter" &&
-    trainingSupported;
+    unslothSupported;
 
   const languages = parseLanguageTags(model.tags);
   const datasetSizeBytes =
