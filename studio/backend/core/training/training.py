@@ -1539,10 +1539,9 @@ class TrainingBackend:
             self._log_training_progress()
 
     def _log_training_progress(self) -> None:
-        """One throttled training-status line to the server log so a run's progress
-        is visible there (the per-step stream still goes to the UI via SSE). Logs
-        the first step, then at most every 30s, plus the final step; resyncs when a
-        new run restarts the step counter. Runs on the single pump thread."""
+        """One throttled training-status line to the server log (the per-step stream
+        still goes to the UI via SSE): first step, then at most every 30s, plus the
+        final step; resyncs on a new run. Runs on the pump thread."""
         p = self._progress
         step = int(p.step or 0)
         if step <= 0:

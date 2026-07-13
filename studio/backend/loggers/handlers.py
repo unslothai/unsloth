@@ -28,28 +28,24 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# Drop duplicate successful-GET access logs repeated within the window: the SPA
-# fans one cache invalidation into many identical list fetches; only the first
-# informs. Loading polls, mutations, and errors are unaffected. 0 = log all.
+# Collapse identical GET/2xx logs within the window (the SPA fans one invalidation
+# into many list fetches). Mutations and errors always log. 0 = off.
 _ACCESS_LOG_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS", 300)
-# Pure-liveness/UI polls whose access line carries no signal beyond "client still
-# polling" (state changes are logged by their own modules). Collapsed to a longer
-# heartbeat instead of one line per poll; first hit and any error still log. 0 = off.
+# Liveness/UI polls whose line means only "still polling"; collapse to a longer
+# heartbeat. First hit and errors still log. 0 = off.
 _QUIET_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS", 10000)
 _QUIET_POLL_PATHS = {
     "/api/health",
     "/api/auth/status",
     "/api/inference/status",
     "/api/inference/monitor",
-    # List polls the training/export/chat tabs refetch on a timer and on every
-    # tab switch; collapse to a heartbeat (first hit and errors still log).
+    # List polls the tabs refetch on a timer and on every tab switch.
     "/api/train/runs",
     "/api/models/checkpoints",
     "/api/models/local",
     "/api/rag/knowledge-bases",
-    # Legacy training-tab download polls. Unlike the /api/hub/* routes these do not
-    # emit hub_download_progress events, so heartbeat them (keep a signal) rather
-    # than suppress outright.
+    # Legacy download polls: no progress events (unlike /api/hub/*), so heartbeat
+    # them instead of suppressing, to keep a signal.
     "/api/models/download-progress",
     "/api/models/gguf-download-progress",
     "/api/datasets/download-progress",
@@ -74,11 +70,9 @@ _EXCLUDED_SUFFIXES = (
     ".woff2",
     ".ttf",
 )
-# GET polls whose 2xx access line carries no signal, so suppress it entirely; non-2xx
-# (errors) still log. These load, update, log-tail, export-status, and event-emitting
-# /api/hub download polls fire ~1-2x/s; the real signal is in their own progress or
-# phase events and the UI, not the per-poll line. (Legacy /api/models and /api/datasets
-# download polls emit no events, so they heartbeat via _QUIET_POLL_PATHS instead.)
+# GET polls whose 2xx line carries no signal (their progress/phase events and the UI
+# do), so drop it entirely; non-2xx still logs. Only /api/hub download polls emit
+# events; the legacy /api/models and /api/datasets ones heartbeat via _QUIET_POLL_PATHS.
 _QUIET_SUCCESS_PATHS = {
     "/api/inference/load-progress",
     "/api/llama/update-status",
@@ -94,11 +88,9 @@ _QUIET_SUCCESS_PATHS = {
     "/api/hub/datasets/active-downloads",
     "/api/hub/datasets/transport-status",
 }
-# Chat thread/project list-GET prefixes. Their 2xx line is covered by the
-# generation, tool-call, and stats events. On first load these also 401 until
-# /api/auth/refresh runs, so drop that transient pre-auth 401 too. Mutations
-# (POST/PUT/DELETE) and real auth failures still surface: the predicate is
-# GET-only, and /api/auth/* is never suppressed.
+# Chat list-GET prefixes; their 2xx is covered by generation/tool-call/stats events.
+# Also drop the transient pre-auth 401 before /api/auth/refresh runs. Mutations and
+# real auth failures still log (suppression is GET-only; /api/auth/* is never dropped).
 _QUIET_SUCCESS_PREFIXES = (
     "/api/chat/threads",
     "/api/chat/projects",
@@ -126,10 +118,9 @@ class LoggingMiddleware:
     def _is_redundant_repeat(
         self, method: str, path: str, query: bytes, status_code: int, now: float
     ) -> bool:
-        """True if an identical GET/2xx log fired < window ago. The query string
-        is part of the identity, so distinct query-driven GETs are not collapsed.
-        Mutations and non-2xx are never deduped. Quiet-poll paths use a longer
-        heartbeat window. Stamps only on emit, so steady polls still log."""
+        """True if an identical GET/2xx log fired < window ago (query string is part
+        of the identity). Non-GET/non-2xx never dedup; quiet-poll paths use the longer
+        heartbeat. Stamps only on emit, so steady polls still log."""
         if method != "GET" or not (200 <= status_code < 300):
             return False
         window_ms = _QUIET_POLL_DEDUP_MS if path in _QUIET_POLL_PATHS else _ACCESS_LOG_DEDUP_MS
