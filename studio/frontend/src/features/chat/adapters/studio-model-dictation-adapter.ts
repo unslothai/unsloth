@@ -16,9 +16,9 @@ import {
 
 // MediaRecorder emits a chunk this often; the growing buffer is re-transcribed
 // for a live preview so text appears while the user is still speaking.
-const STREAM_TIMESLICE_MS = 1000;
+const STREAM_TIMESLICE_MS = 700;
 // Do not start a new interim pass more often than this, and only one at a time.
-const MIN_INTERIM_INTERVAL_MS = 900;
+const MIN_INTERIM_INTERVAL_MS = 700;
 
 // Prefer Opus (small, widely supported); fall back to whatever the browser
 // records. The backend decodes any of these with PyAV.
@@ -158,6 +158,12 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     const interimAbort = new AbortController();
     let interimBusy = false;
     let lastInterimAt = 0;
+    // The most recent live transcript; committed instantly on stop so the
+    // session ends without waiting on another network round trip.
+    let lastInterimTranscript = "";
+    // True once stop is finalizing, so a second stop click is a no-op instead
+    // of ending the session early and dropping the result.
+    let finalizing = false;
     let resolveEnded: (() => void) | null = null;
     const endedPromise = new Promise<void>((resolve) => {
       resolveEnded = resolve;
@@ -166,11 +172,14 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     const session: StudioDictationSession = {
       status: { type: "starting" },
       stop: async () => {
-        if (!ended && recorder && recorder.state !== "inactive") {
-          recorder.stop();
-        } else if (!ended) {
-          finish("stopped");
+        if (!ended && !finalizing) {
+          if (recorder && recorder.state !== "inactive") {
+            recorder.stop();
+          } else {
+            finish("stopped");
+          }
         }
+        // A second stop while finalizing just waits for the result.
         await endedPromise;
       },
       cancel: () => {
@@ -251,6 +260,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
             true,
           );
           if (ended || cancelled || !transcript) return;
+          lastInterimTranscript = transcript;
           const corrected = applyDictationDictionary(transcript);
           for (const callback of speechCallbacks) {
             callback({ transcript: corrected, isFinal: false });
@@ -264,12 +274,24 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     };
 
     const handleRecorderStop = () => {
-      // Stop live previews; the accurate final pass follows.
+      // Stop live previews and release the mic immediately so recording ends
+      // the instant the user hits stop.
+      finalizing = true;
       interimAbort.abort();
+      stopStream(stream);
+      stream = null;
       if (cancelled) {
         finish("cancelled");
         return;
       }
+      // The live preview already showed text; commit it as the final result so
+      // stopping is instant, with no extra network round trip.
+      if (lastInterimTranscript) {
+        emitTranscript(lastInterimTranscript);
+        finish("stopped");
+        return;
+      }
+      // Too short for a preview to have run: do a single transcription pass.
       const type = recorder?.mimeType || "audio/webm";
       const blob = new Blob(chunks, { type });
       if (blob.size === 0) {
