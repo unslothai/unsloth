@@ -113,8 +113,10 @@ def _sanitize_preview_payload(
             "external_model": None,
             "encrypted_api_key": None,
             "provider_base_url": None,
+            # "none", not None: effort-style models coerce a plain thinking-off
+            # request to effort "low", which still reasons.
             "enable_thinking": False,
-            "reasoning_effort": None,
+            "reasoning_effort": "none",
             "preserve_thinking": False,
             "use_adapter": True if is_lora else None,
             "max_tokens": capped_max_tokens,

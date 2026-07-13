@@ -3593,6 +3593,7 @@ async def _auto_switch_from_request_body(request: Request, current_subject: str)
 
 _preview_slot_lock = threading.Lock()
 _preview_request_count = 0
+_preview_resident_ident: Optional[str] = None
 
 
 def note_preview_request(delta: int) -> None:
@@ -3604,6 +3605,18 @@ def note_preview_request(delta: int) -> None:
 def _other_preview_requests() -> int:
     with _preview_slot_lock:
         return max(0, _preview_request_count - 1)
+
+
+def _set_preview_resident(ident: Optional[str]) -> None:
+    global _preview_resident_ident
+    with _preview_slot_lock:
+        _preview_resident_ident = ident
+
+
+def _is_preview_resident(ident: str) -> bool:
+    with _preview_slot_lock:
+        marked = _preview_resident_ident
+    return marked is not None and marked.lower() == ident.lower()
 
 
 def _loaded_slot_ident() -> Optional[str]:
@@ -3629,7 +3642,10 @@ async def load_model_for_preview(
             async with inference_lifecycle_gate():
                 loaded = _loaded_slot_ident()
                 same_target = loaded is not None and loaded.lower() == request.model_path.lower()
-                if loaded is not None and not same_target:
+                # A checkpoint left resident by an earlier preview may be swapped for
+                # another preview; only a Studio-loaded model blocks the slot.
+                preview_resident = loaded is not None and _is_preview_resident(loaded)
+                if loaded is not None and not same_target and not preview_resident:
                     raise HTTPException(
                         status_code = 503,
                         detail = "Studio already has a different model loaded. Unload it before using this preview.",
@@ -3648,6 +3664,10 @@ async def load_model_for_preview(
                         headers = {"Retry-After": "10"},
                     )
                 await _load_model_impl(request, fastapi_request, current_subject)
+                # A same-target hit on a Studio-loaded model is only borrowed: don't
+                # mark it, or a later preview could swap away the owner's model.
+                if not same_target or preview_resident:
+                    _set_preview_resident(request.model_path)
         finally:
             _auto_switch_process_lock.release()
 
@@ -3908,6 +3928,8 @@ async def load_model(
 async def _load_model_impl(request: LoadRequest, fastapi_request: Request, current_subject: str):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
+    # Any load reclaims the slot for Studio; load_model_for_preview re-marks after.
+    _set_preview_resident(None)
     native_grant_backed = False
     model_log_label = request.model_path
     try:
