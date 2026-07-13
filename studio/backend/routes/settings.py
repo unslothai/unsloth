@@ -794,7 +794,8 @@ def update_personalization_settings(
         # exclude_unset so absent fields are not persisted as defaults; merge so
         # fields the request omits keep whatever the record already stored.
         incoming = payload.model_dump(exclude_unset = True)
-        set_personalization(_merge_personalization(get_personalization(), incoming))
+        merged = _merge_personalization(get_personalization(), incoming)
+        set_personalization(merged)
     except ValueError as exc:
         raise log_and_http_error(
             exc,
@@ -803,4 +804,6 @@ def update_personalization_settings(
             event = "settings.update_personalization_failed",
             log = logger,
         ) from exc
-    return payload
+    # Return the stored record, not the defaults-filled request, so the response
+    # matches storage (and the next GET) for fields the client omitted.
+    return PersonalizationPayload.model_validate(merged)

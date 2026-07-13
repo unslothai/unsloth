@@ -481,6 +481,13 @@ def test_personalization_put_preserves_existing_fields_on_stale_write(monkeypatc
     )
     assert put.status_code == 200
 
+    # The PUT response reflects the stored record, not the defaults-filled request:
+    # a stale write that omits palette/customization still echoes the preserved values.
+    put_body = put.json()
+    assert put_body["appearance"]["theme"] == "dark"
+    assert put_body["appearance"]["palette"] == "classic"
+    assert put_body["appearance"]["customization"]["uiFont"] == "Georgia"
+
     stored_appearance = store[pers.PERSONALIZATION_SETTING_KEY]["appearance"]
     assert stored_appearance["theme"] == "dark"
     assert stored_appearance["palette"] == "classic"
