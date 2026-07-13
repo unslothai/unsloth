@@ -158,6 +158,10 @@ export function ChatTab() {
   const archivedChatsRequested = useSettingsDialogStore(
     (s) => s.archivedChatsRequested,
   );
+  const setActiveSettingsTab = useSettingsDialogStore(
+    (state) => state.setActiveTab,
+  );
+
   const consumeArchivedChatsRequest = useSettingsDialogStore(
     (s) => s.consumeArchivedChatsRequest,
   );
@@ -617,7 +621,17 @@ export function ChatTab() {
                 : t("settings.chat.clearChatsTitle", { count: count ?? 0 })}
             </DialogTitle>
             <DialogDescription>
-              {t("settings.chat.clearChatsConfirmDescription")}
+              {t("settings.chat.clearChatsConfirmDescription")} {" "}
+              <button
+                type="button"
+                className="font-medium text-foreground underline underline-offset-4 hover:text-primary"
+                onClick={() => {
+                  setConfirmOpen(false);
+                  setActiveSettingsTab("profile");
+                }}
+              >
+                {t("settings.chat.manageMemories")}
+              </button>
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

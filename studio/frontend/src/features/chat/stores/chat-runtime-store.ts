@@ -643,6 +643,11 @@ type ChatRuntimeStore = {
    * consulted when `providerSupportsBuiltinWebFetch` is true.
    */
   webFetchToolsEnabled: boolean;
+  /** Persisted user preference: include saved memories in normal chats. */
+  referenceMemories: boolean;
+  /** Persisted user preference: schedule best-effort automatic capture. */
+  autoSaveMemories: boolean;
+
   toolStatus: string | null;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
@@ -729,6 +734,8 @@ type ChatRuntimeStore = {
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
   clearThreadCancel: (threadId: string) => void;
   setAutoTitle: (enabled: boolean) => void;
+  setReferenceMemories: (enabled: boolean) => void;
+  setAutoSaveMemories: (enabled: boolean) => void;
   setHfToken: (token: string) => void;
   setModelsError: (error: string | null) => void;
   setLastModelLoadError: (error: string | null) => void;
@@ -829,6 +836,8 @@ type PersistedInferenceParams = NonNullable<
 type PersistedInferenceParamKey = keyof PersistedInferenceParams;
 type ScalarSettingKey =
   | "autoTitle"
+  | "referenceMemories"
+  | "autoSaveMemories"
   | "reasoningEffort"
   | "preserveThinking"
   | "collapseHtmlArtifacts"
@@ -867,6 +876,8 @@ const PERSISTED_INFERENCE_PARAM_KEYS = [
 
 const SCALAR_SETTING_KEYS = [
   "autoTitle",
+  "referenceMemories",
+  "autoSaveMemories",
   "reasoningEffort",
   "preserveThinking",
   "collapseHtmlArtifacts",
@@ -1048,6 +1059,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   runningByThreadId: {},
   cancelByThreadId: {},
   autoTitle: false,
+  referenceMemories: true,
+  autoSaveMemories: true,
   hfToken: loadString(HF_TOKEN_KEY, ""),
   modelsError: null,
   lastModelLoadError: null,
@@ -1245,6 +1258,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       setScalarSettingVersion("autoTitle", autoTitle, state.autoTitle);
       return { autoTitle };
+    }),
+  setReferenceMemories: (referenceMemories) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "referenceMemories",
+        referenceMemories,
+        state.referenceMemories,
+      );
+      return { referenceMemories };
+    }),
+  setAutoSaveMemories: (autoSaveMemories) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "autoSaveMemories",
+        autoSaveMemories,
+        state.autoSaveMemories,
+      );
+      return { autoSaveMemories };
     }),
   setHfToken: (hfToken) => {
     saveString(HF_TOKEN_KEY, hfToken);
