@@ -1720,9 +1720,9 @@ def _mcp_arguments_mutate(arguments) -> bool:
 
     def walk(value) -> bool:
         if isinstance(value, str):
-            return bool(
-                _MCP_ARG_MUTATION_RE.search(_SQL_COMMENT_RE.sub(" ", value))
-            ) or bool(_GRAPHQL_MUTATION_RE.search(value))
+            return bool(_MCP_ARG_MUTATION_RE.search(_SQL_COMMENT_RE.sub(" ", value))) or bool(
+                _GRAPHQL_MUTATION_RE.search(value)
+            )
         if isinstance(value, dict):
             return any(walk(v) for v in value.values())
         if isinstance(value, (list, tuple)):

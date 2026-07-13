@@ -1788,7 +1788,9 @@ class TestAnthropicMessagesToolRouting:
         # tool could need the gate this channel lacks.
         for local_payload in (
             _basic_payload(tools = [{"type": "terminal", "name": "terminal"}]),
-            _basic_payload(tools = [{"type": "terminal", "name": "terminal"}], permission_mode = "auto"),
+            _basic_payload(
+                tools = [{"type": "terminal", "name": "terminal"}], permission_mode = "auto"
+            ),
             _basic_payload(tools = safe_tools, enable_tools = True, enabled_tools = ["python"]),
         ):
             backend = _mock_backend(monkeypatch)
