@@ -7184,12 +7184,12 @@ class LlamaCppBackend:
                 # (above), not here.
                 # A deliberate zero-offload load with no GPU companions runs
                 # entirely on CPU, yet a visible CUDA device still costs the
-                # child a ~0.5 GB context + compute scratch that the guard's
-                # zero estimate and the CPU-only classification deliberately
-                # report as free. Hide the GPUs so the load is exactly what it
-                # claims: zero VRAM (verified: GPU stays at idle baseline and
-                # generation runs). Companion loads keep the normal masking, and
-                # a user --device in extras keeps control of its own devices.
+                # child a ~0.5 GB context + compute scratch that the CPU-only
+                # classification below deliberately reports as free. Hide the
+                # GPUs so the load is exactly what it claims: zero VRAM
+                # (verified: GPU stays at idle baseline and generation runs).
+                # Companion loads keep the normal masking, and a user --device
+                # in extras keeps control of its own devices.
                 _cpu_only_zero_offload = (
                     gpu_memory_mode == "manual"
                     and gpu_layers == 0
