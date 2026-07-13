@@ -505,6 +505,9 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "http",
         "httpx",
         "aiohttp",
+        # websockets.connect / websockets.serve open a bidirectional network
+        # connection the sandbox does not namespace off, like aiohttp/httpx.
+        "websockets",
         "ftplib",
         "smtplib",
         "telnetlib",
@@ -583,6 +586,10 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "mkfifo",
         "mknod",
         "utime",
+        # os.setxattr / os.removexattr mutate a file's extended attributes, a
+        # filesystem write like chmod/chown.
+        "setxattr",
+        "removexattr",
         "import_module",
         "FileIO",
         # asyncio process spawners run an arbitrary program without the terminal
@@ -600,6 +607,13 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "create_server",
         "create_unix_connection",
         "create_unix_server",
+        # asyncio.start_server / open_unix_connection listen or connect, and the
+        # loop.create_datagram_endpoint / sock_connect helpers open a UDP or raw
+        # socket, all outbound network the sandbox does not namespace off.
+        "start_server",
+        "open_unix_connection",
+        "create_datagram_endpoint",
+        "sock_connect",
         # os.chdir escapes the workdir; runpy helpers run arbitrary code.
         "chdir",
         "fchdir",
@@ -635,6 +649,7 @@ _AUTO_UNSAFE_PY_WRITE_METHODS = frozenset(
         "to_excel",
         "to_stata",
         "to_sql",
+        "to_xml",
         "imwrite",
         "imsave",
         "write_image",
@@ -663,6 +678,21 @@ _AUTO_UNSAFE_PY_WRITE_METHODS = frozenset(
         "HDFStore",
     }
 )
+# Archive / compressed-file constructors that take the mode as their 2nd arg
+# like builtin open: ZipFile(name, "w") / gzip.GzipFile(name, "w") write, while
+# the same call without a write mode reads, so they are gated only in write
+# mode. gzip/bz2/lzma single-stream writers sit alongside the zip/tar archives
+# (their modules are not blanket-unsafe: reading a .gz is fine).
+_ARCHIVE_CTOR_NAMES = frozenset({"ZipFile", "TarFile", "GzipFile", "BZ2File", "LZMAFile"})
+# The stdlib module each archive constructor is imported from, so
+# `from gzip import GzipFile` is tracked like `from zipfile import ZipFile`.
+_ARCHIVE_CTOR_MODULES = {
+    "zipfile": "ZipFile",
+    "tarfile": "TarFile",
+    "gzip": "GzipFile",
+    "bz2": "BZ2File",
+    "lzma": "LZMAFile",
+}
 _PY_WRITE_MODE_RE = re.compile(r"[wax+]")
 # A file-mode literal ("w", "rb", "a+"): letters/flags only, no path chars.
 # Used to tell a Path.open("w") mode from a ZipFile.open("name.txt") filename.
@@ -1435,7 +1465,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 arg.attr == "open"
                 or arg.attr in _AUTO_UNSAFE_PY_ATTRS
                 or arg.attr in _AUTO_UNSAFE_PY_WRITE_METHODS
-                or arg.attr in ("ZipFile", "TarFile")
+                or arg.attr in _ARCHIVE_CTOR_NAMES
             )
         return False
 
@@ -1485,14 +1515,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 for alias in node.names:
                     if alias.name == "partial":
                         partial_aliases.add(alias.asname or "partial")
-            if node.module == "zipfile":
+            if node.module in _ARCHIVE_CTOR_MODULES:
+                _ctor = _ARCHIVE_CTOR_MODULES[node.module]
                 for alias in node.names:
-                    if alias.name == "ZipFile":
-                        archive_ctor_aliases.add(alias.asname or "ZipFile")
-            if node.module == "tarfile":
-                for alias in node.names:
-                    if alias.name == "TarFile":
-                        archive_ctor_aliases.add(alias.asname or "TarFile")
+                    if alias.name == _ctor:
+                        archive_ctor_aliases.add(alias.asname or _ctor)
             for alias in node.names:
                 if alias.name in _AUTO_UNSAFE_PY_WRITE_METHODS:
                     writer_aliases.add(alias.asname or alias.name)
@@ -1542,7 +1569,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # builtin open's is 2nd), so fail closed on the call rather than
                 # guess the write mode.
                 dynamic_aliases.update(targets)  # p = Path('out').open; p('w')
-            elif isinstance(value, ast.Attribute) and value.attr in ("ZipFile", "TarFile"):
+            elif isinstance(value, ast.Attribute) and value.attr in _ARCHIVE_CTOR_NAMES:
                 archive_ctor_aliases.update(targets)  # z = zipfile.ZipFile
             elif isinstance(value, ast.Subscript):
                 dynamic_aliases.update(targets)  # f = globals()["open"]
@@ -1745,9 +1772,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         return True
                     if func.attr == "open" and _attr_open_writes(node):
                         return True
-                    # ZipFile/TarFile take the mode as the 2nd arg (like builtin
-                    # open), so ZipFile(name, "w") writes but ZipFile(name) reads.
-                    if func.attr in ("ZipFile", "TarFile") and _builtin_open_writes(node):
+                    # ZipFile/TarFile/GzipFile/BZ2File/LZMAFile take the mode as
+                    # the 2nd arg (like builtin open), so ZipFile(name, "w") writes
+                    # but ZipFile(name) reads.
+                    if func.attr in _ARCHIVE_CTOR_NAMES and _builtin_open_writes(node):
                         return True
     except Exception:
         return True  # unexpected AST shape: fail closed
@@ -1794,6 +1822,18 @@ _MCP_ARG_MUTATION_RE = re.compile(
     r"copy\s+[^;]*?\b(?:from|to)\b)\b",
     re.IGNORECASE,
 )
+# SQLite-flavored statements the base DML/DDL regex misses: ATTACH/DETACH a
+# database file, a write-form PRAGMA (PRAGMA journal_mode=WAL / user_version=42
+# / foreign_keys(0), unlike the read-form PRAGMA journal_mode which only takes a
+# value with `=` or `(`), and load_extension() which loads and runs an arbitrary
+# shared library. "pragma"/"load_extension"/"attach database" are not natural
+# language, so a benign search string does not trip these.
+_MCP_ARG_SQLITE_MUTATION_RE = re.compile(
+    r"\b(?:attach|detach)\s+database\b"
+    r"|\bpragma\s+\w+\s*(?:=|\()"
+    r"|\bload_extension\s*\(",
+    re.IGNORECASE,
+)
 # SQL engines treat /* */ and -- comments as whitespace, so DELETE/**/FROM and
 # UPDATE/**/users evade the \s+ in the mutation regex; collapse comments to a
 # space before matching.
@@ -1814,8 +1854,11 @@ def _mcp_arguments_mutate(arguments) -> bool:
 
     def walk(value) -> bool:
         if isinstance(value, str):
-            return bool(_MCP_ARG_MUTATION_RE.search(_SQL_COMMENT_RE.sub(" ", value))) or bool(
-                _GRAPHQL_MUTATION_RE.search(_GRAPHQL_COMMENT_RE.sub(" ", value))
+            _sql = _SQL_COMMENT_RE.sub(" ", value)
+            return (
+                bool(_MCP_ARG_MUTATION_RE.search(_sql))
+                or bool(_MCP_ARG_SQLITE_MUTATION_RE.search(_sql))
+                or bool(_GRAPHQL_MUTATION_RE.search(_GRAPHQL_COMMENT_RE.sub(" ", value)))
             )
         if isinstance(value, dict):
             return any(walk(v) for v in value.values())

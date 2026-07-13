@@ -414,6 +414,36 @@ def test_terminal_classifier(command, unsafe):
             "import asyncio\nl = asyncio.get_event_loop()\nl.create_server(P, 'h', 80)",
             True,
         ),  # listener
+        ("import asyncio\nasyncio.start_server(cb, 'h', 80)", True),  # asyncio listener
+        (
+            "import asyncio\nasyncio.open_unix_connection('/tmp/s')",
+            True,
+        ),  # asyncio unix connect
+        (
+            "import asyncio\nl = asyncio.get_event_loop()\nl.create_datagram_endpoint(f)",
+            True,
+        ),  # UDP socket
+        (
+            "import asyncio\nl = asyncio.get_event_loop()\nl.sock_connect(s, ('h', 80))",
+            True,
+        ),  # raw socket connect
+        ("import asyncio\nasyncio.sleep(1)", False),  # benign asyncio helper stays safe
+        ("import os\nos.setxattr('f', 'user.x', b'v')", True),  # xattr write
+        ("import os\nos.removexattr('f', 'user.x')", True),  # xattr remove
+        ("import gzip\ngzip.GzipFile('o.gz', 'w')", True),  # gzip writer
+        ("import bz2\nbz2.BZ2File('o.bz2', 'w')", True),  # bz2 writer
+        ("import lzma\nlzma.LZMAFile('o.xz', mode='w')", True),  # lzma writer (mode kw)
+        (
+            "from gzip import GzipFile\nGzipFile('o.gz', 'wb')",
+            True,
+        ),  # bare-imported gzip writer
+        ("import gzip\ngzip.GzipFile('o.gz', 'r')", False),  # gzip read stays safe
+        ("import gzip\ngzip.GzipFile('o.gz')", False),  # gzip default (read) stays safe
+        ("df.to_xml('out.xml')", True),  # pandas to_xml writer
+        (
+            "import websockets\nwebsockets.connect('ws://h')",
+            True,
+        ),  # websockets outbound connection
         ("import numpy as np\nnp.mean([1, 2])", False),  # a benign numpy read stays safe
         (
             "from pathlib import Path\nP = Path\n(P('/etc') / 'passwd').read_text()",
@@ -660,6 +690,14 @@ def test_mcp_sensitive_arguments(args, unsafe):
         ({"query": "EXECUTE sp_drop"}, True),  # EXECUTE procedure
         ({"query": "VACUUM INTO 'backup.db'"}, True),  # VACUUM rewrites the database
         ({"query": "please call me back later"}, False),  # NL 'call' stays safe
+        ({"query": "ATTACH DATABASE '/tmp/x.db' AS x"}, True),  # attaches a database file
+        ({"query": "DETACH DATABASE x"}, True),  # detaches a database
+        ({"query": "PRAGMA user_version = 42"}, True),  # write-form PRAGMA
+        ({"query": "PRAGMA journal_mode=WAL"}, True),  # write-form PRAGMA (no spaces)
+        ({"query": "PRAGMA foreign_keys(0)"}, True),  # call-form PRAGMA write
+        ({"query": "SELECT load_extension('/tmp/evil.so')"}, True),  # loads native code
+        ({"query": "PRAGMA journal_mode"}, False),  # read-form PRAGMA stays safe
+        ({"query": "can you attach the report to the email"}, False),  # NL 'attach' stays safe
     ],
 )
 def test_mcp_mutating_arguments(args, unsafe):
