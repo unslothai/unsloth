@@ -105,7 +105,7 @@ def test_model_forget_requires_user_correction_evidence(tmp_path, monkeypatch):
         lambda *_: {
             "threadId": "thread",
             "role": "user",
-            "content": [{"type": "text", "text": "Actually, I no longer prefer dark mode"}],
+            "content": [{"type": "text", "text": "I no longer prefer dark mode"}],
         },
     )
     forgotten = memory.apply_capture(
@@ -227,8 +227,9 @@ def test_explicit_commands_accept_optional_please(tmp_path, monkeypatch):
     "command",
     (
         "forget my phone number",
-        "remove my phone number",
-        "delete my phone number",
+        "Can you forget my phone number?",
+        "remove my phone number from memory",
+        "delete the memory about my phone number",
     ),
 )
 def test_explicit_forget_matches_partial_targets_and_aliases(tmp_path, monkeypatch, command):
@@ -248,7 +249,31 @@ def test_explicit_forget_matches_partial_targets_and_aliases(tmp_path, monkeypat
     assert studio_db.get_chat_memory(saved["id"]) is None
 
 
-@pytest.mark.parametrize("command", ("remove my phone number", "delete my phone number"))
+def test_generic_delete_prompt_does_not_remove_memory(tmp_path, monkeypatch):
+    _setup_source(tmp_path, monkeypatch)
+    saved = memory.create_memory(content = "Use the dark mode CSS class", scope = "global")
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": "delete the dark mode CSS class"}],
+        },
+    )
+
+    assert memory.explicit_command("thread", "message") == []
+    assert studio_db.get_chat_memory(saved["id"]) == saved
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "remove my phone number from memory",
+        "delete the memory about my phone number",
+        "Can you forget my phone number?",
+    ),
+)
 def test_memory_removal_aliases_skip_recall(tmp_path, monkeypatch, command):
     _setup_source(tmp_path, monkeypatch)
     memory.create_memory(content = "My phone number is 415-555-0199", scope = "global")
@@ -281,6 +306,27 @@ def test_forget_command_skips_recall(tmp_path, monkeypatch):
     )
 
     assert memory.recall_context("thread", "message") is None
+
+
+def test_model_forget_rejects_ambiguous_evidence(tmp_path, monkeypatch):
+    _setup_source(tmp_path, monkeypatch)
+    saved = memory.create_memory(content = "I prefer dark mode", scope = "global")
+    output = '{"operations":[{"action":"forget","scope":"global","memory_id":"%s"}]}' % saved["id"]
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": "Actually, how do I configure dark mode?"}],
+        },
+    )
+
+    assert (
+        memory.apply_capture(thread_id = "thread", source_message_id = "message", raw_output = output)
+        == []
+    )
+    assert studio_db.get_chat_memory(saved["id"]) == saved
 
 
 def test_recall_requires_relevant_content(tmp_path, monkeypatch):

@@ -6333,7 +6333,7 @@ async def _openai_chat_completions_impl(
 
             request.state.memory_commit = _commit_deterministic_memory
         try:
-            if scope.recall and (payload.request_purpose == "memory_capture" or recall_enabled):
+            if scope.recall and recall_enabled:
                 context = chat_memory.recall_context(
                     scope.thread_id,
                     scope.source_message_id,

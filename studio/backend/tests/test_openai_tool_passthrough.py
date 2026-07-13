@@ -3418,6 +3418,43 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_memory_capture_recall_respects_persisted_setting(self, monkeypatch):
+        async def _run():
+            from core.inference import memory as chat_memory
+
+            recalls = []
+            monkeypatch.setattr(chat_memory, "get_memory_settings", lambda: (False, True))
+            monkeypatch.setattr(
+                chat_memory,
+                "recall_context",
+                lambda *_args, **_kwargs: recalls.append("recalled"),
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                scope = {},
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [],
+                logprobs = True,
+                request_purpose = "memory_capture",
+                memory_scope = MemoryScopeRequest(
+                    thread_id = "thread",
+                    source_message_id = "message",
+                    recall = True,
+                    allow_explicit_commands = False,
+                    auto_capture = False,
+                ),
+            )
+
+            with pytest.raises(HTTPException):
+                await openai_chat_completions(payload, request, current_subject = "test")
+            assert recalls == []
+
+        asyncio.run(_run())
+
     def test_deferred_memory_commit_requires_completed_stream(self):
         async def _consume(lines):
             commits = []

@@ -134,12 +134,23 @@ _AUTOMATIC_PROFILE_RE = re.compile(
     re.I,
 )
 _FORGET_EVIDENCE_RE = re.compile(
-    r"\b(?:forget|remove|delete|no longer|not anymore|instead|actually|"
-    r"do not|don't|stop(?:ped)?|used to)\b",
+    r"\b(?:forget|remove|delete|no longer|not anymore|used to|"
+    r"stopp(?:ed|ing)\s+(?:using|liking|preferring|working))\b",
     re.I,
 )
 _COMMAND_RE = re.compile(r"^\s*(?:please\s+)?remember(?:\s+that)?\s+(.+?)\s*$", re.I)
-_FORGET_RE = re.compile(r"^\s*(?:please\s+)?(?:forget|remove|delete)(?:\s+that)?\s+(.+?)\s*$", re.I)
+_FORGET_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?"
+    r"forget(?:\s+that)?\s+(.+?)\??\s*$",
+    re.I,
+)
+_MEMORY_DELETE_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:remove|delete)(?:\s+that)?\s+(?:"
+    r"(?P<before>.+?)\s+from\s+(?:saved\s+)?memor(?:y|ies)|"
+    r"(?:the\s+)?(?:saved\s+)?memor(?:y|ies)\s+(?:about|that)\s+(?P<after>.+?))\s*$",
+    re.I,
+)
+_FORGET_INTENT_RE = re.compile(r"\bforget\b", re.I)
 _DIRECT_RE = re.compile(
     r"^\s*(?:i (?:prefer|like|use)|i work (?:as|at|with|on)|my preference|"
     r"we (?:use|prefer)|this (?:project|repo|app) (?:uses|is))\b(.+)",
@@ -650,12 +661,30 @@ def apply_capture(*, thread_id: str, source_message_id: str, raw_output: str) ->
     return _commit_automatic_operations(source_message_id, prepared)
 
 
+def _forget_target(text: str) -> str | None:
+    match = _FORGET_RE.fullmatch(text)
+    if match:
+        return match.group(1)
+    match = _MEMORY_DELETE_RE.fullmatch(text)
+    if match:
+        return match.group("before") or match.group("after")
+    return None
+
+
+def _is_forget_intent(text: str) -> bool:
+    return (
+        "\n" not in text
+        and "```" not in text
+        and (_forget_target(text) is not None or _FORGET_INTENT_RE.search(text) is not None)
+    )
+
+
 def explicit_command(thread_id: str, source_message_id: str) -> list[dict]:
     thread, _, text = verify_source(thread_id, source_message_id)
     # Ignore commands embedded in examples or code.
     if "\n" in text or "```" in text:
         return []
-    remember, forget = _COMMAND_RE.fullmatch(text), _FORGET_RE.fullmatch(text)
+    remember, forget_target = _COMMAND_RE.fullmatch(text), _forget_target(text)
     if remember:
         content = remember.group(1)
         scope = (
@@ -673,8 +702,8 @@ def explicit_command(thread_id: str, source_message_id: str) -> list[dict]:
             return [item] if item else []
         except MemoryValidationError:
             return []
-    if forget:
-        target = normalize_content(forget.group(1)).casefold()
+    if forget_target:
+        target = normalize_content(forget_target).casefold()
         target_tokens = _tokens(target)
         candidates = [
             row
@@ -728,7 +757,7 @@ def recall_context(
 ) -> str | None:
     thread, _, text = verify_source(thread_id, source_message_id)
 
-    if "\n" not in text and "```" not in text and _FORGET_RE.fullmatch(text):
+    if _is_forget_intent(text):
         return None
     rows = [
         row
