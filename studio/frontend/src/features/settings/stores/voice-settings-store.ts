@@ -27,6 +27,21 @@ export const STT_MODELS = [
 ] as const;
 export type SttModel = (typeof STT_MODELS)[number];
 export const DEFAULT_STT_MODEL: SttModel = "base";
+export const ENGLISH_ONLY_STT_MODELS: ReadonlySet<SttModel> = new Set([
+  "distil-large-v3",
+]);
+
+/** Whether a model can honor the selected dictation language. */
+export function isSttModelLanguageCompatible(
+  model: SttModel,
+  language: string,
+): boolean {
+  if (!ENGLISH_ONLY_STT_MODELS.has(model)) {
+    return true;
+  }
+  const normalized = language.trim().replaceAll("_", "-").toLowerCase();
+  return normalized !== "auto" && normalized.split("-", 1)[0] === "en";
+}
 
 export type DictationEngine = "browser" | "model";
 
@@ -90,10 +105,27 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       setDictationEngine: (dictationEngine) => set({ dictationEngine }),
 
       sttModel: DEFAULT_STT_MODEL,
-      setSttModel: (sttModel) => set({ sttModel }),
+      setSttModel: (sttModel) =>
+        set((state) => ({
+          sttModel: isSttModelLanguageCompatible(
+            sttModel,
+            state.dictationLanguage,
+          )
+            ? sttModel
+            : DEFAULT_STT_MODEL,
+        })),
 
       dictationLanguage: "auto",
-      setDictationLanguage: (dictationLanguage) => set({ dictationLanguage }),
+      setDictationLanguage: (dictationLanguage) =>
+        set((state) => ({
+          dictationLanguage,
+          sttModel: isSttModelLanguageCompatible(
+            state.sttModel,
+            dictationLanguage,
+          )
+            ? state.sttModel
+            : DEFAULT_STT_MODEL,
+        })),
 
       dictionary: [],
       addDictionaryEntry: (value) =>
@@ -169,17 +201,25 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       name: "unsloth_voice_settings",
       merge: (persisted, current) => {
         const saved = persisted as Partial<VoiceSettingsState> | undefined;
+        const dictationLanguage = asString(saved?.dictationLanguage, "auto");
+        const savedSttModel = (STT_MODELS as readonly string[]).includes(
+          saved?.sttModel as string,
+        )
+          ? (saved?.sttModel as SttModel)
+          : DEFAULT_STT_MODEL;
+        const sttModel = isSttModelLanguageCompatible(
+          savedSttModel,
+          dictationLanguage,
+        )
+          ? savedSttModel
+          : DEFAULT_STT_MODEL;
         return {
           ...current,
           micDeviceId: asString(saved?.micDeviceId, "default"),
           dictationEngine:
             saved?.dictationEngine === "model" ? "model" : "browser",
-          sttModel: (STT_MODELS as readonly string[]).includes(
-            saved?.sttModel as string,
-          )
-            ? (saved?.sttModel as SttModel)
-            : DEFAULT_STT_MODEL,
-          dictationLanguage: asString(saved?.dictationLanguage, "auto"),
+          sttModel,
+          dictationLanguage,
           dictionary: Array.isArray(saved?.dictionary)
             ? saved.dictionary
                 .filter((v): v is string => typeof v === "string" && !!v.trim())

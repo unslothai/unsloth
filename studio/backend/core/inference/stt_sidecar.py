@@ -33,6 +33,7 @@ STT_MODELS: dict[str, str] = {
     "large-v3": "large-v3",
 }
 DEFAULT_STT_MODEL = "base"
+ENGLISH_ONLY_STT_MODELS = frozenset({"distil-large-v3"})
 
 # Bound decoded audio so a crafted upload cannot exhaust memory. Callers also
 # cap the encoded bytes; this bounds the decoded PCM length.
@@ -46,6 +47,33 @@ class SttUnavailableError(RuntimeError):
 
 class SttAudioDecodeError(ValueError):
     """The uploaded bytes could not be decoded as audio."""
+
+
+class SttLanguageError(ValueError):
+    """The requested language is not supported by the selected STT model."""
+
+
+_WHISPER_LANGUAGE_ALIASES = {
+    # Common legacy/browser BCP-47 primaries whose Whisper code differs.
+    "cmn": "zh",
+    "fil": "tl",
+    "in": "id",
+    "iw": "he",
+    "ji": "yi",
+    "nb": "no",
+    "nn": "no",
+}
+
+
+def normalize_whisper_language(language: Optional[str]) -> Optional[str]:
+    """Convert a BCP-47 locale into the short code faster-whisper expects."""
+    if not language:
+        return None
+    normalized = language.strip().replace("_", "-").lower()
+    if not normalized or normalized == "auto":
+        return None
+    primary = normalized.split("-", 1)[0]
+    return _WHISPER_LANGUAGE_ALIASES.get(primary, primary)
 
 
 def is_available() -> bool:
@@ -155,8 +183,25 @@ class WhisperSttSidecar:
         """
         whisper_model = self.load(model)
         # A specific language is faster and more accurate than auto-detect;
-        # "auto" (or unset) lets Whisper detect it.
-        lang = language if language and language != "auto" else None
+        # "auto" (or unset) lets Whisper detect it. The API accepts BCP-47
+        # locales, while faster-whisper accepts short codes such as en or fr.
+        lang = normalize_whisper_language(language)
+        supported_languages = getattr(whisper_model, "supported_languages", None)
+        model_id = self._model_id or resolve_model_id(model)
+        if lang is not None and model_id in ENGLISH_ONLY_STT_MODELS and lang != "en":
+            raise SttLanguageError(
+                f"STT model '{model_id}' only supports English. "
+                "Choose a multilingual model for this dictation language."
+            )
+        if lang is not None and supported_languages is not None and lang not in supported_languages:
+            if list(supported_languages) == ["en"]:
+                raise SttLanguageError(
+                    f"STT model '{model_id}' only supports English. "
+                    "Choose a multilingual model for this dictation language."
+                )
+            raise SttLanguageError(
+                f"Language '{language}' is not supported by STT model '{model_id}'."
+            )
         decode_options = {
             "beam_size": 5,
             "vad_filter": True,

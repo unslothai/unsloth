@@ -12,23 +12,23 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import {
-  StudioSpeechSynthesisAdapter,
-  createConfiguredUtterance,
-  curateSystemVoices,
-  generateStudioTtsAudio,
-} from "@/features/chat/adapters/studio-speech-synthesis-adapter";
 import { StudioDictationAdapter } from "@/features/chat/adapters/studio-dictation-adapter";
 import {
   StudioModelDictationAdapter,
   fetchSttStatus,
   loadSttModel,
 } from "@/features/chat/adapters/studio-model-dictation-adapter";
+import {
+  StudioSpeechSynthesisAdapter,
+  createConfiguredUtterance,
+  curateSystemVoices,
+  generateStudioTtsAudio,
+} from "@/features/chat/adapters/studio-speech-synthesis-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import { useT } from "@/i18n";
-import { toast } from "@/lib/toast";
-import { MicIcon } from "@/lib/mic-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { MicIcon } from "@/lib/mic-icon";
+import { toast } from "@/lib/toast";
 import {
   Copy01Icon,
   Delete02Icon,
@@ -43,10 +43,11 @@ import { SettingsSection } from "../components/settings-section";
 import {
   DEFAULT_STT_MODEL,
   STT_MODELS,
+  isSttModelLanguageCompatible,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 
-// Languages offered for browser speech recognition.
+// Languages shared by browser speech recognition and local STT.
 const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "auto", label: "" }, // label rendered via i18n
   { value: "en-US", label: "English (US)" },
@@ -555,7 +556,9 @@ export function VoiceTab() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {STT_MODELS.map((model) => (
+                    {STT_MODELS.filter((model) =>
+                      isSttModelLanguageCompatible(model, dictationLanguage),
+                    ).map((model) => (
                       <SelectItem key={model} value={model}>
                         {`${model}  ·  ${STT_MODEL_SIZES[model]}`}
                       </SelectItem>

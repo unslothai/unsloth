@@ -5339,6 +5339,7 @@ async def transcribe_audio(
     """
     from core.inference.stt_sidecar import (
         SttAudioDecodeError,
+        SttLanguageError,
         SttUnavailableError,
         get_stt_sidecar,
     )
@@ -5368,6 +5369,8 @@ async def transcribe_audio(
         )
     except SttUnavailableError as e:
         raise HTTPException(status_code = 501, detail = str(e))
+    except SttLanguageError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
     except SttAudioDecodeError as e:
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
