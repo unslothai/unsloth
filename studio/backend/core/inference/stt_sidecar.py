@@ -72,7 +72,6 @@ def _pick_device() -> tuple[str, str]:
     """
     try:
         from utils.hardware.hardware import DeviceType, get_device
-
         if get_device() == DeviceType.CUDA:
             return "cuda", "float16"
     except Exception as exc:
@@ -99,7 +98,7 @@ class WhisperSttSidecar:
 
     def is_loading(self) -> bool:
         # Loading holds the lock; a non-blocking acquire tells the UI to wait.
-        acquired = self._lock.acquire(blocking=False)
+        acquired = self._lock.acquire(blocking = False)
         if acquired:
             self._lock.release()
             return False
@@ -124,24 +123,16 @@ class WhisperSttSidecar:
             self._model = None
             self._model_id = None
             self._device = None
-            logger.info(
-                "Loading STT model %s (%s/%s)", model_id, device, compute_type
-            )
+            logger.info("Loading STT model %s (%s/%s)", model_id, device, compute_type)
             whisper_name = STT_MODELS[model_id]
             try:
-                self._model = WhisperModel(
-                    whisper_name, device=device, compute_type=compute_type
-                )
+                self._model = WhisperModel(whisper_name, device = device, compute_type = compute_type)
             except Exception as exc:
                 # CUDA libraries can be missing even when a GPU is present; the
                 # CPU path always works, so retry there before giving up.
                 if device != "cpu":
-                    logger.warning(
-                        "STT load on %s failed (%s); retrying on CPU", device, exc
-                    )
-                    self._model = WhisperModel(
-                        whisper_name, device="cpu", compute_type="int8"
-                    )
+                    logger.warning("STT load on %s failed (%s); retrying on CPU", device, exc)
+                    self._model = WhisperModel(whisper_name, device = "cpu", compute_type = "int8")
                     device, compute_type = "cpu", "int8"
                 else:
                     raise
@@ -185,7 +176,7 @@ class WhisperSttSidecar:
         try:
             segments, info = whisper_model.transcribe(
                 io.BytesIO(audio),
-                language=lang,
+                language = lang,
                 **decode_options,
             )
         except (ValueError, RuntimeError) as exc:

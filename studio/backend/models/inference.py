@@ -122,9 +122,7 @@ class TranscribeRequest(BaseModel):
 
     audio: str = Field(..., description = "Base64-encoded audio (any common format)")
     model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
-    language: Optional[str] = Field(
-        None, description = "BCP-47 language, or 'auto'/None to detect"
-    )
+    language: Optional[str] = Field(None, description = "BCP-47 language, or 'auto'/None to detect")
     fast: bool = Field(
         False,
         description = "Use low-latency single-candidate decoding for dictation",

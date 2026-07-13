@@ -5310,10 +5310,7 @@ async def stt_status(current_subject: str = Depends(get_current_subject)):
 
 
 @router.post("/audio/stt/load")
-async def stt_load(
-    payload: SttLoadRequest,
-    current_subject: str = Depends(get_current_subject),
-):
+async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_current_subject)):
     """Warm the STT sidecar so the first dictation is not slowed by a load."""
     from core.inference.stt_sidecar import (
         SttUnavailableError,
@@ -5328,15 +5325,12 @@ async def stt_load(
     except Exception as e:
         logger.error(f"STT load error: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = safe_error_detail(e))
-    return JSONResponse(
-        content = {"loaded_model": sidecar.loaded_model, "device": sidecar.device}
-    )
+    return JSONResponse(content = {"loaded_model": sidecar.loaded_model, "device": sidecar.device})
 
 
 @router.post("/audio/transcribe")
 async def transcribe_audio(
-    payload: TranscribeRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: TranscribeRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Transcribe dictation audio to text via the STT sidecar.
 
