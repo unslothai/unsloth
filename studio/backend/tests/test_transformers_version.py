@@ -2893,8 +2893,10 @@ class TestOverlayRepairsIncompleteSidecar:
             return False
 
         monkeypatch.setattr(tv, "_ensure_venv_t5_latest_exists", _fake_repair)
-        tv._overlay_transformers_dir("latest")
-        tv._overlay_transformers_dir("latest")
+        # A failed repair must not route through the broken sidecar, neither on
+        # the failing attempt nor while the backoff suppresses the next attempt.
+        assert tv._overlay_transformers_dir("latest") is None
+        assert tv._overlay_transformers_dir("latest") is None
         assert called["n"] == 1
 
 

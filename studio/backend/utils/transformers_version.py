@@ -986,11 +986,19 @@ def _overlay_transformers_dir(tier: str) -> str | None:
             # worker that cannot repair, failing every load until a manual
             # reinstall. Repair under the swap reservation; back off after a
             # failure so routing calls don't hammer pip.
+            repaired = False
             if time.time() - _latest_repair_failed_at >= _LATEST_REPAIR_BACKOFF_SECS:
                 if _ensure_venv_t5_latest_exists():
                     _latest_repair_failed_at = 0.0
+                    repaired = True
                 else:
                     _latest_repair_failed_at = time.time()
+            if not repaired:
+                # Still broken: treat the overlay as unavailable rather than route
+                # models to a tier whose worker activation is known to fail. Models
+                # an older tier supports keep loading there until a repair succeeds,
+                # matching the behavior when the sidecar dir is missing entirely.
+                return None
         return src if src and _safe_is_dir(Path(src)) else None
     # default: the base 4.x transformers. find_spec resolves to a 5.x sidecar if one
     # is already on sys.path, so skip any .venv_t5_* / llmcompressor overlay dir.
