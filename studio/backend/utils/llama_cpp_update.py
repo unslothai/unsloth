@@ -483,11 +483,8 @@ def _run_update(
     """Worker: put the backend into a maintenance state, run the installer for
     the latest prebuilt, then refresh caches so the next load uses the new build.
 
-    pin_release_tag pins the installer to that exact published release. Without
-    it the installer re-resolves "latest" itself (via GitHub's /releases/latest
-    pointer or list order, both commit-date based), which can lag the
-    published_at-newest release the update banner offered; the apply then
-    reinstalls the current build and the banner never clears (see #6219)."""
+    pin_release_tag pins the installer to that exact published release instead
+    of letting it re-resolve "latest" itself (see start_update for why)."""
     backend = None
     model_was_active = False
     try:
@@ -664,14 +661,12 @@ def start_update() -> dict:
         repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
         from_tag = marker.get("tag") or marker.get("release_tag")
         asset = marker.get("asset")
-        # Install exactly the release the banner offered, not whatever the
-        # installer's own "latest" resolves to at apply time (commit-date
-        # ordered, can lag the published_at pick above -- reinstalling the
-        # current build in a loop). Not on macOS: a pinned tag disables the
-        # older-release walk-back that skips prebuilts built for a newer macOS.
-        # Elsewhere losing the walk-back is accepted: a latest release that is
-        # unusable for this host fails the job loudly (retryable) rather than
-        # silently installing a release other than the one offered.
+        # Install exactly the release the banner offered: the installer's own
+        # "latest" is commit-date ordered and can lag the published_at pick
+        # above, reinstalling the current build in a loop (the #6219 class).
+        # Not on macOS, which needs the older-release walk-back a pin disables
+        # (skipping too-new prebuilts); elsewhere an unusable latest now fails
+        # the job loudly (retryable) instead of walking back.
         pin_release_tag = None if sys.platform == "darwin" else status.get("latest_tag")
     else:
         # Source build / custom path: only proceed when the same detection logic
