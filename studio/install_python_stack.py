@@ -150,7 +150,12 @@ def _normalize_family_leaf(leaf: str) -> str:
     Mirrors the gate in install.sh / setup.ps1. Pure function.
     """
     low = leaf.lower()
-    if low.startswith("gfx") or low == "cpu" or re.match(r"^rocm[0-9]", low) or re.fullmatch(r"cu[0-9]+", low):
+    if (
+        low.startswith("gfx")
+        or low == "cpu"
+        or re.match(r"^rocm[0-9]", low)
+        or re.fullmatch(r"cu[0-9]+", low)
+    ):
         return low
     return leaf
 

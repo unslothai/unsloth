@@ -631,9 +631,9 @@ class TestPinnedRocmLeafDigitParity:
         assert (
             "-match '^(rocm[0-9]|gfx)'" in setup
         ), "setup.ps1 Get-NormalizedFamilyLeaf must digit-gate rocm (^(rocm[0-9]|gfx))"
-        assert "-match '^cu[0-9]+$'" in setup, (
-            "setup.ps1 Get-NormalizedFamilyLeaf must match cu EXACTLY (^cu[0-9]+$)"
-        )
+        assert (
+            "-match '^cu[0-9]+$'" in setup
+        ), "setup.ps1 Get-NormalizedFamilyLeaf must match cu EXACTLY (^cu[0-9]+$)"
         stack = STACK_PY.read_text(encoding = "utf-8")
         assert re.search(
             r'r"\^rocm\[0-9\]"', stack
