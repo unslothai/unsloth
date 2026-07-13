@@ -110,6 +110,14 @@ _SENSITIVE_RE = re.compile(
 
 _STRUCTURED_IDENTIFIER_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b|(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 
+_STREET_ADDRESS_RE = re.compile(
+    r"\b(?:i\s+live\s+at\s+|my\s+home\s+is(?:\s+at)?\s+)?\d{1,6}\s+"
+    r"(?:[A-Z0-9][A-Z0-9.'-]*\s+){0,6}"
+    r"(?:street|st|road|rd|avenue|ave|boulevard|blvd|lane|ln|drive|dr|court|ct|way|"
+    r"parkway|pkwy)\b\.?",
+    re.I,
+)
+
 _CONTACT_PII_RE = re.compile(
     r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|"
     r"\b(?:(?:phone|mobile|cell|telephone|contact)(?:\s+number)?\s*(?:is|:|=)?|"
@@ -131,7 +139,7 @@ _FORGET_EVIDENCE_RE = re.compile(
     re.I,
 )
 _COMMAND_RE = re.compile(r"^\s*(?:please\s+)?remember(?:\s+that)?\s+(.+?)\s*$", re.I)
-_FORGET_RE = re.compile(r"^\s*(?:please\s+)?forget(?:\s+that)?\s+(.+?)\s*$", re.I)
+_FORGET_RE = re.compile(r"^\s*(?:please\s+)?(?:forget|remove|delete)(?:\s+that)?\s+(.+?)\s*$", re.I)
 _DIRECT_RE = re.compile(
     r"^\s*(?:i (?:prefer|like|use)|i work (?:as|at|with|on)|my preference|"
     r"we (?:use|prefer)|this (?:project|repo|app) (?:uses|is))\b(.+)",
@@ -242,6 +250,7 @@ def _validate_content(content: str, automatic: bool) -> str:
         or _SENSITIVE_RE.search(normalized)
         or _CONTACT_PII_RE.search(normalized)
         or _STRUCTURED_IDENTIFIER_RE.search(normalized)
+        or _STREET_ADDRESS_RE.search(normalized)
         or _TRANSIENT_RE.search(normalized)
     ):
         raise MemoryValidationError(
@@ -666,6 +675,7 @@ def explicit_command(thread_id: str, source_message_id: str) -> list[dict]:
             return []
     if forget:
         target = normalize_content(forget.group(1)).casefold()
+        target_tokens = _tokens(target)
         candidates = [
             row
             for row in list_chat_memories("global")
@@ -675,6 +685,7 @@ def explicit_command(thread_id: str, source_message_id: str) -> list[dict]:
                 else []
             )
             if row["content"].casefold() == target
+            or (target_tokens and target_tokens <= _tokens(row["content"]))
         ]
         if len(candidates) == 1 and delete_chat_memory(candidates[0]["id"]):
             return [candidates[0]]
@@ -683,7 +694,12 @@ def explicit_command(thread_id: str, source_message_id: str) -> list[dict]:
 
 def direct_statement(thread_id: str, source_message_id: str) -> list[dict]:
     thread, _, text = verify_source(thread_id, source_message_id)
-    if "\n" in text or "```" in text or not _DIRECT_RE.fullmatch(text):
+    if (
+        "\n" in text
+        or "```" in text
+        or text.rstrip().endswith("?")
+        or not _DIRECT_RE.fullmatch(text)
+    ):
         return []
     scope_name = "project" if re.search(r"\bthis (?:project|repo|app)\b", text, re.I) else "global"
     try:

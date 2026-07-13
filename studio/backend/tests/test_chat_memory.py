@@ -131,6 +131,18 @@ def test_automatic_capture_rejects_contact_pii(content):
 @pytest.mark.parametrize(
     "content",
     (
+        "I live at 123 Main Street",
+        "My home is 45 Park Ave",
+    ),
+)
+def test_automatic_capture_rejects_street_addresses(content):
+    with pytest.raises(memory.MemoryValidationError):
+        memory.create_memory(content = content, scope = "global", source_type = "model")
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
         "My password is hunter2",
         "My API key is abc123secret",
         "My private key is hidden-value",
@@ -171,6 +183,22 @@ def test_direct_statement_skips_transient_and_profile_claims(tmp_path, monkeypat
     assert studio_db.list_chat_memories() == []
 
 
+def test_direct_statement_skips_question_shaped_claims(tmp_path, monkeypatch):
+    _setup_source(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": "I prefer dark mode?"}],
+        },
+    )
+
+    assert memory.direct_statement("thread", "message") == []
+    assert studio_db.list_chat_memories() == []
+
+
 def test_explicit_commands_accept_optional_please(tmp_path, monkeypatch):
     _setup_source(tmp_path, monkeypatch)
     saved = memory.create_memory(content = "Use dark mode", scope = "global")
@@ -193,6 +221,48 @@ def test_explicit_commands_accept_optional_please(tmp_path, monkeypatch):
     )
     captured = memory.explicit_command("thread", "message")
     assert captured and captured[0]["sourceType"] == "explicit"
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "forget my phone number",
+        "remove my phone number",
+        "delete my phone number",
+    ),
+)
+def test_explicit_forget_matches_partial_targets_and_aliases(tmp_path, monkeypatch, command):
+    _setup_source(tmp_path, monkeypatch)
+    saved = memory.create_memory(content = "My phone number is 415-555-0199", scope = "global")
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": command}],
+        },
+    )
+
+    assert memory.explicit_command("thread", "message") == [saved]
+    assert studio_db.get_chat_memory(saved["id"]) is None
+
+
+@pytest.mark.parametrize("command", ("remove my phone number", "delete my phone number"))
+def test_memory_removal_aliases_skip_recall(tmp_path, monkeypatch, command):
+    _setup_source(tmp_path, monkeypatch)
+    memory.create_memory(content = "My phone number is 415-555-0199", scope = "global")
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": command}],
+        },
+    )
+
+    assert memory.recall_context("thread", "message") is None
 
 
 def test_forget_command_skips_recall(tmp_path, monkeypatch):
