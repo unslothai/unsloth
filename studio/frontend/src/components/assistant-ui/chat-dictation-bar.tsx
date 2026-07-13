@@ -1,24 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Spinner } from "@/components/ui/spinner";
+import { subscribeDictationLevel } from "@/features/chat/adapters/dictation-level";
 import { cancelActiveStudioDictation } from "@/features/chat/adapters/studio-dictation-adapter";
-import { subscribeDictationLevel } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { CheckIcon, XIcon } from "lucide-react";
 import { type FC, useEffect, useRef, useState } from "react";
-import { Spinner } from "@/components/ui/spinner";
 import { TooltipIconButton } from "./tooltip-icon-button";
 
-// Row of dots that rise into thin centered bars, ChatGPT-style.
-const BAR_COUNT = 56;
-// Peak multiple of a dot's height for the loudest audio (dot is ~3px tall).
-const MAX_SCALE = 11;
-// How often the waveform advances one dot. Slower than the mic frame rate so
-// bars glide across instead of racing by; peaks between ticks are kept.
-const PUSH_INTERVAL_MS = 60;
-// If no real mic level arrives for this long (e.g. the browser speech engine
-// gives us no stream), fall back to a gentle idle shimmer so the bar is alive.
-const IDLE_AFTER_MS = 350;
+// Dense row of dots that rise into centered recording bars.
+const BAR_COUNT = 84;
+// Peak multiple of a dot's height for the loudest audio (dot is 4px tall).
+const MAX_SCALE = 10;
+// Keep roughly nine seconds of movement visible. Peaks between these slower
+// advances are retained, so speech remains expressive without racing past.
+const PUSH_INTERVAL_MS = 110;
+// If no real mic level arrives for this long (for example, Web Audio is
+// unavailable), fall back to a gentle idle shimmer so the bar is alive.
+const IDLE_AFTER_MS = 450;
+const WAVE_BAR_IDS = Array.from(
+  { length: BAR_COUNT },
+  (_, index) => `wave-bar-${index}`,
+);
 
 function formatElapsed(ms: number): string {
   const total = Math.floor(ms / 1000);
@@ -28,11 +32,9 @@ function formatElapsed(ms: number): string {
 }
 
 /**
- * ChatGPT-style recording UI, rendered in place of the composer input while
- * dictating: a live waveform in the middle with a discard (X) and a confirm
- * (tick) on the right, matching ChatGPT's layout. The tick transcribes the
- * recording; X throws it away and keeps any text already in the composer. The
- * left composer tools (the "+") stay visible alongside it.
+ * Recording UI rendered in place of the composer input: a live waveform in
+ * the middle with discard and confirm controls on the right. Confirm
+ * transcribes the recording; discard keeps the existing composer text.
  */
 export const ChatDictationBar: FC = () => {
   const aui = useAui();
@@ -44,10 +46,13 @@ export const ChatDictationBar: FC = () => {
   const rowRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (!isDictating) return;
+    if (!isDictating) {
+      return;
+    }
 
     const startedAt = Date.now();
     let peak = 0; // loudest level seen since the last waveform advance
+    let smoothed = 0;
     let lastLevelAt = 0;
     const barEls = rowRef.current
       ? Array.from(rowRef.current.children).filter(
@@ -61,39 +66,52 @@ export const ChatDictationBar: FC = () => {
     // a thin centered bar.
     for (const el of barEls) {
       el.style.transform = "scaleY(1)";
-      el.style.opacity = "0.5";
+      el.style.opacity = "0.62";
     }
 
     // Advance the rolling waveform by one dot and paint it.
     const push = (level: number) => {
       const bars = barsRef.current;
       bars.push(level);
-      if (bars.length > BAR_COUNT) bars.shift();
+      if (bars.length > BAR_COUNT) {
+        bars.shift();
+      }
       for (let i = 0; i < barEls.length; i++) {
         const v = bars[i] ?? 0;
         barEls[i].style.transform = `scaleY(${1 + v * (MAX_SCALE - 1)})`;
-        barEls[i].style.opacity = `${0.5 + v * 0.5}`;
+        barEls[i].style.opacity = `${0.62 + v * 0.38}`;
       }
     };
 
     // Keep the loudest mic level between advances so quiet gaps at the mic frame
     // rate don't swallow peaks when we downsample to PUSH_INTERVAL_MS.
     const unsub = subscribeDictationLevel((level) => {
-      if (level > peak) peak = level;
+      if (level > peak) {
+        peak = level;
+      }
       lastLevelAt = Date.now();
     });
 
     // Single driver for the timer and the waveform. Frozen once the user
     // confirms, so the timer stops and the waveform holds on stop.
     const interval = window.setInterval(() => {
-      if (transcribingRef.current) return;
+      if (transcribingRef.current) {
+        return;
+      }
       setElapsed(Date.now() - startedAt);
       let level = peak;
       peak = 0;
       if (Date.now() - lastLevelAt > IDLE_AFTER_MS) {
-        level = 0.12 + 0.1 * Math.abs(Math.sin(Date.now() / 260));
+        level = 0.075 + 0.055 * (1 + Math.sin(Date.now() / 360));
       }
-      push(level);
+      // Quiet speech needs a perceptual lift. Fast attack plus a slower release
+      // removes twitching while preserving clear peaks and larger bars.
+      const visual = Math.min(1, Math.max(0, level) ** 0.62 * 1.45);
+      smoothed =
+        visual >= smoothed
+          ? smoothed * 0.2 + visual * 0.8
+          : smoothed * 0.78 + visual * 0.22;
+      push(smoothed);
     }, PUSH_INTERVAL_MS);
 
     // Reset in cleanup (runs when dictation ends or on unmount) so the next
@@ -108,7 +126,9 @@ export const ChatDictationBar: FC = () => {
     };
   }, [isDictating]);
 
-  if (!isDictating) return null;
+  if (!isDictating) {
+    return null;
+  }
 
   const discard = () => {
     cancelActiveStudioDictation();
@@ -123,22 +143,24 @@ export const ChatDictationBar: FC = () => {
   };
 
   return (
-    <div
-      // order-2 places the bar in the input's slot, after the left "+" tools
-      // (order 1) and matching ChatGPT's [+] [waveform] [X] [tick] layout.
-      className="unsloth-dictation-bar order-2 flex min-w-0 flex-1 items-center gap-2"
-      role="group"
+    <fieldset
+      // order-2 places the bar in the input's slot after the left "+" tools.
+      className="unsloth-dictation-bar order-2 m-0 flex min-w-0 flex-1 items-center gap-2 border-0 p-0"
       aria-label="Voice recording"
     >
       <div
         ref={rowRef}
         aria-hidden="true"
-        className="unsloth-dictation-wave flex h-9 min-w-0 flex-1 items-center justify-between overflow-hidden px-3"
+        className="unsloth-dictation-wave grid h-12 min-w-0 flex-1 items-center overflow-hidden px-2"
+        style={{
+          gridTemplateColumns: `repeat(${BAR_COUNT}, minmax(1px, 3px))`,
+          justifyContent: "space-between",
+        }}
       >
-        {Array.from({ length: BAR_COUNT }).map((_, i) => (
+        {WAVE_BAR_IDS.map((barId) => (
           <span
-            key={`wave-bar-${i}`}
-            className="h-[3px] w-[3px] shrink-0 origin-center rounded-full bg-foreground opacity-50 transition-transform duration-100"
+            key={barId}
+            className="h-1 w-full origin-center rounded-full bg-foreground opacity-[0.62] transition-[transform,opacity] duration-200 ease-out will-change-transform"
           />
         ))}
       </div>
@@ -171,6 +193,6 @@ export const ChatDictationBar: FC = () => {
           )}
         </TooltipIconButton>
       </div>
-    </div>
+    </fieldset>
   );
 };

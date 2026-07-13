@@ -8,12 +8,13 @@ Loads a faster-whisper (CTranslate2) model in the backend process, separate
 from the chat model that runs in the inference subprocess. This lets a user
 dictate into any chat model, including text-only ones, without evicting it.
 
-faster-whisper is torch-free, so this works on GGUF-only installs too. It is
-loaded lazily on first use and kept warm; switching models reloads in place.
+faster-whisper is torch-free, so this works on GGUF-only installs too. Model
+weights download lazily on first use and memory is released after dictation.
 """
 
 from __future__ import annotations
 
+import gc
 import io
 import threading
 from typing import Optional
@@ -108,7 +109,7 @@ def _pick_device() -> tuple[str, str]:
 
 
 class WhisperSttSidecar:
-    """Lazily-loaded, kept-warm faster-whisper model. Thread-safe."""
+    """Lazily loaded faster-whisper model with explicit release. Thread-safe."""
 
     def __init__(self) -> None:
         self._model = None
@@ -210,13 +211,15 @@ class WhisperSttSidecar:
         if fast:
             # Composer dictation is already split into short voiced clips. A
             # single greedy candidate avoids five-way beam search and all
-            # temperature fallback passes, and timestamp tokens are needless
-            # when the caller only consumes text.
+            # temperature fallback passes. Skip the second Silero VAD pass and
+            # timestamp tokens because the caller already supplies voiced,
+            # pause-separated clips and consumes only text.
             decode_options.update(
                 beam_size = 1,
                 best_of = 1,
                 temperature = 0.0,
                 without_timestamps = True,
+                vad_filter = False,
             )
         try:
             segments, info = whisper_model.transcribe(
@@ -243,9 +246,15 @@ class WhisperSttSidecar:
 
     def unload(self) -> None:
         with self._lock:
+            model = self._model
             self._model = None
             self._model_id = None
             self._device = None
+        # Drop CTranslate2's native allocations promptly instead of waiting for
+        # a later cyclic-GC pass. An in-flight transcription keeps its own
+        # reference and releases safely when that request finishes.
+        del model
+        gc.collect()
 
 
 _sidecar: Optional[WhisperSttSidecar] = None

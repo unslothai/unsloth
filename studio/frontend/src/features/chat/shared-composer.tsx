@@ -25,6 +25,7 @@ import {
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { StudioDictationAdapter } from "@/features/chat/adapters/studio-dictation-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { isMultimodalResponse } from "./types/api";
@@ -198,6 +199,8 @@ function formatReasoningDisabledLabel(
 function useDictation(
   setText: (value: string | ((prev: string) => string)) => void,
 ) {
+  // Re-render support state when the user switches recognition engines.
+  const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
   const [isDictating, setIsDictating] = useState(false);
   const sessionRef = useRef<StudioDictationSession | null>(null);
   const startingRef = useRef(false);
@@ -249,7 +252,7 @@ function useDictation(
     };
   }, []);
 
-  const supported = StudioDictationAdapter.isSupported();
+  const supported = StudioDictationAdapter.isSupported(dictationEngine);
 
   return { isDictating, start, stop, supported };
 }

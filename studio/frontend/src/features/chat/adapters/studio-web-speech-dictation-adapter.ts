@@ -9,6 +9,12 @@ import {
 } from "@/features/settings/stores/voice-settings-store";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
+import { startDictationLevelMeter } from "./dictation-level";
+
+// Give the browser a short chance to turn its latest interim hypothesis into a
+// final result. If it does not, promote that already-produced text instead of
+// leaving the composer behind a long service-finalization spinner.
+const STOP_FINALIZATION_GRACE_MS = 350;
 
 /**
  * A dictation session with an extra onEnd hook (not part of the assistant-ui
@@ -26,7 +32,9 @@ const getSpeechRecognitionAPI = ():
 };
 
 const stopStream = (stream: MediaStream | null) => {
-  stream?.getTracks().forEach((track) => track.stop());
+  for (const track of stream?.getTracks() ?? []) {
+    track.stop();
+  }
 };
 
 /** True for getUserMedia errors meaning the requested device is gone. */
@@ -54,7 +62,10 @@ export const describeMediaError = (error: unknown): string => {
   return error.message || "Dictation could not access the microphone.";
 };
 
-export const describeSpeechError = (error: string, message?: string): string => {
+export const describeSpeechError = (
+  error: string,
+  message?: string,
+): string => {
   if (error === "not-allowed") {
     return "Speech recognition was blocked by the browser. Check microphone permissions for this Unsloth page.";
   }
@@ -121,6 +132,13 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
     let finalTranscript = "";
     let ended = false;
     let started = false;
+    let stopping = false;
+    let stopRequestedAt = 0;
+    let stopFallbackTimer = 0;
+    let stopLevelMeter = () => {
+      // Replaced after microphone access succeeds.
+    };
+    const interimParts = new Map<number, string>();
     let resolveEnded: (() => void) | null = null;
     const endedPromise = new Promise<void>((resolve) => {
       resolveEnded = resolve;
@@ -131,7 +149,16 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
 
       stop: async () => {
         if (!ended && started) {
+          stopping = true;
+          stopRequestedAt = performance.now();
           recognition.stop();
+          // Ending the supplied track immediately gives the browser an audio
+          // endpoint to finalize and releases the microphone without waiting
+          // for its remote speech service.
+          stopLevelMeter();
+          stopStream(stream);
+          stream = null;
+          scheduleStopFallback();
         } else if (!ended) {
           finish("stopped");
         }
@@ -139,11 +166,9 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       },
 
       cancel: () => {
-        if (!ended && started) {
-          recognition.abort();
-        } else if (!ended) {
-          finish("cancelled");
-        }
+        if (ended) return;
+        if (started) recognition.abort();
+        finish("cancelled");
       },
 
       onSpeechStart: (callback) => {
@@ -177,21 +202,62 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       },
     };
 
+    const currentInterimTranscript = () =>
+      [...interimParts.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, transcript]) => transcript.trim())
+        .filter(Boolean)
+        .join(" ");
+
+    const promoteInterim = () => {
+      const interim = currentInterimTranscript();
+      interimParts.clear();
+      if (!interim) return false;
+      const corrected = applyDictationDictionary(interim).trim();
+      if (!corrected) return false;
+      finalTranscript = finalTranscript
+        ? `${finalTranscript} ${corrected}`
+        : corrected;
+      return true;
+    };
+
+    function scheduleStopFallback(): void {
+      if (!stopping || ended || stopFallbackTimer) return;
+      const elapsed = performance.now() - stopRequestedAt;
+      const delay = Math.max(0, STOP_FINALIZATION_GRACE_MS - elapsed);
+      stopFallbackTimer = window.setTimeout(() => {
+        stopFallbackTimer = 0;
+        if (!ended && promoteInterim()) {
+          finish("stopped");
+          // Stop any late recognition callbacks after the promoted result.
+          recognition.abort();
+        }
+      }, delay);
+    }
+
     const finish = (reason: "stopped" | "cancelled" | "error") => {
       if (ended) return;
       ended = true;
+      stopping = false;
+      if (stopFallbackTimer) window.clearTimeout(stopFallbackTimer);
+      stopFallbackTimer = 0;
       session.status = { type: "ended", reason };
+      stopLevelMeter();
       stopStream(stream);
       stream = null;
       if (finalTranscript) {
+        if (reason !== "cancelled") {
+          for (const callback of speechCallbacks) {
+            callback({ transcript: finalTranscript, isFinal: true });
+          }
+          recordRecentDictation(finalTranscript);
+        }
         for (const callback of speechEndCallbacks) {
           callback({ transcript: finalTranscript });
         }
-        if (reason !== "cancelled") {
-          recordRecentDictation(finalTranscript);
-        }
         finalTranscript = "";
       }
+      interimParts.clear();
       for (const callback of endCallbacks) callback();
       resolveEnded?.();
     };
@@ -205,6 +271,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
     });
 
     recognition.addEventListener("result", (event) => {
+      if (ended) return;
       const speechEvent = event as SpeechRecognitionEvent;
       for (
         let i = speechEvent.resultIndex;
@@ -215,6 +282,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         if (!result) continue;
         const transcript = result[0]?.transcript ?? "";
         if (result.isFinal) {
+          interimParts.delete(i);
           const corrected = applyDictationDictionary(transcript);
           // Join final chunks with a single space so recorded transcripts do
           // not merge words when a browser omits leading whitespace.
@@ -224,22 +292,26 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
               ? `${finalTranscript} ${trimmed}`
               : trimmed;
           }
-          for (const callback of speechCallbacks) {
-            callback({ transcript: corrected, isFinal: true });
-          }
         } else {
-          for (const callback of speechCallbacks) {
-            callback({ transcript, isFinal: false });
-          }
+          interimParts.set(i, transcript);
         }
+      }
+      const interim = currentInterimTranscript();
+      if (interim) {
+        scheduleStopFallback();
       }
     });
 
     recognition.addEventListener("end", () => {
+      if (ended) {
+        return;
+      }
+      promoteInterim();
       finish("stopped");
     });
 
     recognition.addEventListener("error", (event) => {
+      if (ended) return;
       const errorEvent = event as SpeechRecognitionErrorEvent;
       if (errorEvent.error === "aborted") {
         finish("cancelled");
@@ -292,6 +364,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
             "NotFoundError",
           );
         }
+        stopLevelMeter = startDictationLevelMeter(stream);
         try {
           recognition.start(audioTrack);
         } catch (error) {
@@ -302,6 +375,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
             "Dictation start(audioTrack) failed; retrying start().",
             error,
           );
+          stopLevelMeter();
           stopStream(stream);
           stream = null;
           recognition.start();

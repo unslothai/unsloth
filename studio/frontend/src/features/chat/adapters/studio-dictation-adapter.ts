@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
+import {
+  type DictationEngine,
+  useVoiceSettingsStore,
+} from "@/features/settings/stores/voice-settings-store";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { StudioModelDictationAdapter } from "./studio-model-dictation-adapter";
 import {
@@ -25,14 +28,15 @@ export function cancelActiveStudioDictation(): void {
 /**
  * Routes dictation to the engine chosen in Voice settings, resolved at listen()
  * time so switching engines applies without reloading the chat runtime.
- * Falls back to whichever engine the browser supports.
  */
 export class StudioDictationAdapter implements DictationAdapter {
-  static isSupported(): boolean {
-    return (
-      StudioWebSpeechDictationAdapter.isSupported() ||
-      StudioModelDictationAdapter.isSupported()
-    );
+  static isSupported(
+    dictationEngine: DictationEngine = useVoiceSettingsStore.getState()
+      .dictationEngine,
+  ): boolean {
+    return dictationEngine === "model"
+      ? StudioModelDictationAdapter.isSupported()
+      : StudioWebSpeechDictationAdapter.isSupported();
   }
 
   listen(): StudioDictationSession {
@@ -40,7 +44,9 @@ export class StudioDictationAdapter implements DictationAdapter {
     activeSession = session;
     // Forget the session once it ends so a later cancel is a no-op.
     const clear = () => {
-      if (activeSession === session) activeSession = null;
+      if (activeSession === session) {
+        activeSession = null;
+      }
     };
     session.onSpeechEnd(clear);
     session.onEnd?.(clear);
@@ -49,20 +55,16 @@ export class StudioDictationAdapter implements DictationAdapter {
 
   private createSession(): StudioDictationSession {
     const { dictationEngine } = useVoiceSettingsStore.getState();
-    const preferModel =
-      dictationEngine === "model" && StudioModelDictationAdapter.isSupported();
-
-    if (preferModel) {
-      return new StudioModelDictationAdapter().listen();
+    if (dictationEngine === "model") {
+      if (StudioModelDictationAdapter.isSupported()) {
+        return new StudioModelDictationAdapter().listen();
+      }
+      throw new Error("Local transcription is not supported in this browser.");
     }
     if (StudioWebSpeechDictationAdapter.isSupported()) {
       return new StudioWebSpeechDictationAdapter().listen();
     }
-    // "browser" was requested but is unsupported here (e.g. Firefox): use the
-    // model engine when it is available before giving up.
-    if (StudioModelDictationAdapter.isSupported()) {
-      return new StudioModelDictationAdapter().listen();
-    }
+    // Never download a local model as a hidden browser-engine fallback.
     throw new Error("Dictation is not supported in this browser.");
   }
 }

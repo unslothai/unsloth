@@ -16,7 +16,7 @@ import { StudioDictationAdapter } from "@/features/chat/adapters/studio-dictatio
 import {
   StudioModelDictationAdapter,
   fetchSttStatus,
-  loadSttModel,
+  unloadSttModel,
 } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import {
   StudioSpeechSynthesisAdapter,
@@ -43,6 +43,7 @@ import { SettingsSection } from "../components/settings-section";
 import {
   DEFAULT_STT_MODEL,
   STT_MODELS,
+  type SttModel,
   isSttModelLanguageCompatible,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
@@ -65,15 +66,15 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "ar-SA", label: "العربية" },
 ];
 
-// Approximate download sizes, shown in the STT model picker so users know
-// what a first-time selection will fetch.
-const STT_MODEL_SIZES: Record<string, string> = {
-  tiny: "~75 MB, fastest",
-  base: "~150 MB",
-  small: "~500 MB",
-  "distil-large-v3": "~1.5 GB",
-  "large-v3-turbo": "~1.6 GB",
-  "large-v3": "~3 GB",
+// These are speech-recognition models, not synthesized voices. Include the
+// practical speed/accuracy tradeoff directly in the picker.
+const STT_MODEL_LABELS: Record<SttModel, string> = {
+  tiny: "Whisper Tiny · fastest/basic · ~75 MB",
+  base: "Whisper Base · fast/balanced · ~150 MB",
+  small: "Whisper Small — better accuracy · ~500 MB",
+  "distil-large-v3": "Distil-Whisper Large v3 · English/fast · ~1.5 GB",
+  "large-v3-turbo": "Whisper Large v3 Turbo · accurate/fast · ~1.6 GB",
+  "large-v3": "Whisper Large v3 · best accuracy/slowest · ~3 GB",
 };
 
 const TTS_PREVIEW_TEXT =
@@ -115,7 +116,9 @@ function useAudioInputDevices() {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
       });
-      stream.getTracks().forEach((track) => track.stop());
+      for (const track of stream.getTracks()) {
+        track.stop();
+      }
       await refresh();
     } catch {
       toast.error(t("settings.voice.dictation.micAccessBlocked"));
@@ -299,8 +302,7 @@ export function VoiceTab() {
   const { devices, hasLabels, requestAccess } = useAudioInputDevices();
   const rawVoices = useSystemVoices();
   const voices = useMemo(
-    () => curateSystemVoices(rawVoices, ttsVoiceURI),
-    // dictationLanguage feeds the curation language filter.
+    () => curateSystemVoices(rawVoices, ttsVoiceURI, dictationLanguage),
     [rawVoices, ttsVoiceURI, dictationLanguage],
   );
   const [newEntry, setNewEntry] = useState("");
@@ -310,32 +312,40 @@ export function VoiceTab() {
   const modelSttSupported = StudioModelDictationAdapter.isSupported();
   const ttsSupported = StudioSpeechSynthesisAdapter.isSupported();
 
-  // Local STT warms automatically when the model engine is active so the first
-  // dictation is instant. Tracks the phase to show live status in the UI.
+  // Local STT stays on-demand. Track its phase without fetching model weights.
   type SttPhase =
     | "idle"
     | "checking"
+    | "on-demand"
     | "unavailable"
     | "loading"
     | "ready"
     | "error";
   const [sttPhase, setSttPhase] = useState<SttPhase>("idle");
   const [sttDevice, setSttDevice] = useState<string | null>(null);
-  const [warmNonce, setWarmNonce] = useState(0);
+  const [statusNonce, setStatusNonce] = useState(0);
 
   useEffect(() => {
     if (dictationEngine !== "model" || !modelSttSupported) {
       setSttPhase("idle");
+      setSttDevice(null);
       return;
     }
     let cancelled = false;
     void (async () => {
       setSttPhase("checking");
       try {
-        const status = await fetchSttStatus();
+        const status = await fetchSttStatus(statusNonce);
         if (cancelled) return;
         if (!status.available) {
           setSttPhase("unavailable");
+          return;
+        }
+        if (status.loading) {
+          setSttPhase("loading");
+          window.setTimeout(() => {
+            if (!cancelled) setStatusNonce((n) => n + 1);
+          }, 600);
           return;
         }
         if (status.loaded_model === sttModel && !status.loading) {
@@ -343,13 +353,10 @@ export function VoiceTab() {
           setSttPhase("ready");
           return;
         }
-        setSttPhase("loading");
-        await loadSttModel(sttModel);
-        if (cancelled) return;
-        const after = await fetchSttStatus();
-        if (cancelled) return;
-        setSttDevice(after.device);
-        setSttPhase("ready");
+        // Merely opening settings or selecting local STT never downloads a
+        // model. Loading begins only when the user starts recording.
+        setSttDevice(null);
+        setSttPhase("on-demand");
       } catch {
         if (!cancelled) setSttPhase("error");
       }
@@ -357,7 +364,7 @@ export function VoiceTab() {
     return () => {
       cancelled = true;
     };
-  }, [dictationEngine, sttModel, modelSttSupported, warmNonce]);
+  }, [dictationEngine, sttModel, modelSttSupported, statusNonce]);
 
   const sttStatusText = (() => {
     switch (sttPhase) {
@@ -365,6 +372,8 @@ export function VoiceTab() {
         return t("settings.voice.dictation.sttChecking");
       case "loading":
         return t("settings.voice.dictation.sttLoadingModel");
+      case "on-demand":
+        return t("settings.voice.dictation.sttOnDemand");
       case "ready":
         return t("settings.voice.dictation.sttReady", {
           device: (sttDevice ?? "cpu").toUpperCase(),
@@ -509,9 +518,13 @@ export function VoiceTab() {
         >
           <Select
             value={dictationEngine}
-            onValueChange={(value) =>
-              setDictationEngine(value as "browser" | "model")
-            }
+            onValueChange={(value) => {
+              const next = value === "model" ? "model" : "browser";
+              if (next === "browser") {
+                void unloadSttModel().catch(() => {});
+              }
+              setDictationEngine(next);
+            }}
           >
             <SelectTrigger
               aria-label="Dictation engine"
@@ -540,17 +553,21 @@ export function VoiceTab() {
               <div className="flex flex-col items-end gap-1.5">
                 <Select
                   value={sttModel}
-                  onValueChange={(value) =>
-                    setSttModel(
-                      (STT_MODELS as readonly string[]).includes(value)
-                        ? (value as (typeof STT_MODELS)[number])
-                        : DEFAULT_STT_MODEL,
+                  onValueChange={(value) => {
+                    const next = (STT_MODELS as readonly string[]).includes(
+                      value,
                     )
-                  }
+                      ? (value as (typeof STT_MODELS)[number])
+                      : DEFAULT_STT_MODEL;
+                    if (next !== sttModel) {
+                      void unloadSttModel().catch(() => {});
+                    }
+                    setSttModel(next);
+                  }}
                 >
                   <SelectTrigger
-                    aria-label="STT model"
-                    className="w-56"
+                    aria-label="Speech recognition model"
+                    className="w-64 sm:w-80"
                     size="sm"
                   >
                     <SelectValue />
@@ -560,7 +577,7 @@ export function VoiceTab() {
                       isSttModelLanguageCompatible(model, dictationLanguage),
                     ).map((model) => (
                       <SelectItem key={model} value={model}>
-                        {`${model}  ·  ${STT_MODEL_SIZES[model]}`}
+                        {STT_MODEL_LABELS[model]}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -578,7 +595,7 @@ export function VoiceTab() {
                         variant="ghost"
                         size="sm"
                         className="h-5 px-1.5 text-xs"
-                        onClick={() => setWarmNonce((n) => n + 1)}
+                        onClick={() => setStatusNonce((n) => n + 1)}
                       >
                         {t("settings.voice.dictation.sttRetry")}
                       </Button>

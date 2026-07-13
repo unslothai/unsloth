@@ -107,14 +107,18 @@ export const en = {
         sectionTitle: "Dictation",
         engineLabel: "Dictation engine",
         engineBrowser: "Browser",
-        engineModel: "Load STT model",
-        engineBrowserDescription: "Sends audio to the browser speech service, needs internet",
-        engineModelDescription: "Runs locally on this server, works offline and with any chat model",
-        sttModelLabel: "STT model",
-        sttModelDescription: "Downloaded once, then kept in memory for instant use",
+        engineModel: "Local transcription",
+        engineBrowserDescription:
+          "Sends audio to the browser speech service, needs internet",
+        engineModelDescription:
+          "Runs locally and works offline. The model loads only while you dictate, then releases memory.",
+        sttModelLabel: "Speech recognition model",
+        sttModelDescription:
+          "Converts your speech to text; it is not a voice. Smaller models are faster, while larger models are more accurate.",
         sttModelFailed: "Could not load the STT model",
         sttModelUnsupported: "Recording is not supported in this browser",
         sttChecking: "Checking…",
+        sttOnDemand: "Downloads on first use, then loads only during dictation",
         sttLoadingModel: "Loading model…",
         sttReady: "Ready on {device}",
         sttUnavailable:
@@ -528,8 +532,7 @@ export const en = {
       codingAgents: "Coding agents",
       codingAgentsHint:
         "Launch a coding agent against this server. It uses the loaded model; a local server mints an API key automatically, a remote one includes it in the command.",
-      codingAgentsSwap:
-        "Swap claude for codex, openclaw, opencode, hermes, or pi.",
+      codingAgentsSwap: "Swap claude for codex, openclaw, opencode, hermes, or pi.",
       codingAgentDetected: "Installed on this machine",
       codingAgentsDetectedHint: "Detected on this machine: {agents}.",
       relativeNever: "never",

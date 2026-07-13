@@ -33,6 +33,7 @@ import {
   useRef,
 } from "react";
 import { toast } from "sonner";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { StudioDictationAdapter } from "./adapters/studio-dictation-adapter";
 import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis-adapter";
 import {
@@ -883,6 +884,7 @@ function useStudioRuntimeAdapters(
   pairId?: string,
 ): StudioRuntimeAdapters {
   const aui = useAui();
+  const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
 
   const history = useMemo<ThreadHistoryAdapter>(
     () => ({
@@ -1024,10 +1026,10 @@ function useStudioRuntimeAdapters(
 
   const dictation = useMemo(
     () =>
-      StudioDictationAdapter.isSupported()
+      StudioDictationAdapter.isSupported(dictationEngine)
         ? new StudioDictationAdapter()
         : undefined,
-    [],
+    [dictationEngine],
   );
   const speech = useMemo(
     () =>

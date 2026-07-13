@@ -1864,8 +1864,8 @@ const Composer: FC<{
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <ComposerToolsMenu side={effectiveMenuSide} />
-          {/* While dictating, show only the "+" like ChatGPT; hide the mode
-              badge and tool toggles so just the waveform reads. */}
+          {/* While dictating, show only the "+"; hide the mode badge and tool
+              toggles so the waveform is the sole status indicator. */}
           {!isDictating ? (
             <>
               {/* Active-mode badge: always visible when bypass is on, even
@@ -1887,7 +1887,7 @@ const Composer: FC<{
           ) : null}
         </div>
         {isDictating ? (
-          // ChatGPT-style recording UI replaces the input + send controls while
+          // The recording UI replaces the input and send controls while
           // dictating; only the left plus stays visible alongside it.
           <ChatDictationBar />
         ) : (
@@ -3386,8 +3386,8 @@ const ComposerRightControls: FC<{
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
-      {/* Starts dictation; the recording bar (ChatDictationBar) then covers the
-          input row and owns stop/discard, ChatGPT-style. */}
+      {/* Starts dictation; the recording bar then covers the input row and owns
+          the stop and discard actions. */}
       <ComposerPrimitive.If dictation={false}>
         <ComposerPrimitive.Dictate asChild={true}>
           <TooltipIconButton

@@ -86,8 +86,8 @@ const MAX_CURATED_VOICES = 20;
 export function curateSystemVoices(
   voices: SpeechSynthesisVoice[],
   selectedVoiceURI?: string,
+  dictationLanguage = useVoiceSettingsStore.getState().dictationLanguage,
 ): SpeechSynthesisVoice[] {
-  const { dictationLanguage } = useVoiceSettingsStore.getState();
   const wantedLangs = new Set<string>(["en"]);
   if (typeof navigator !== "undefined" && navigator.language) {
     wantedLangs.add(langBase(navigator.language));
@@ -267,8 +267,14 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       if (res.status.type === "ended") return;
       // Surface genuine read-aloud failures; a cancelled/interrupted utterance
       // is a normal stop, not an error, and must not toast.
-      if (reason === "error" && error !== "interrupted" && error !== "canceled") {
-        toast.error(error instanceof Error ? error.message : "Read aloud failed.");
+      if (
+        reason === "error" &&
+        error !== "interrupted" &&
+        error !== "canceled"
+      ) {
+        toast.error(
+          error instanceof Error ? error.message : "Read aloud failed.",
+        );
       }
       res.status = { type: "ended", reason, error };
       for (const handler of subscribers) handler();

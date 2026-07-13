@@ -9,6 +9,7 @@ import {
 } from "@/features/settings/stores/voice-settings-store";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
+import { startDictationLevelMeter } from "./dictation-level";
 import {
   type StudioDictationSession,
   isMissingDeviceError,
@@ -26,24 +27,6 @@ const SILENCE_CUT_MS = 280;
 // Raw RMS (0..1) above which a frame counts as speech. Noise suppression keeps
 // the room floor well below this.
 const VOICE_RMS = 0.015;
-
-// Live microphone level (0..1), published while recording so the composer can
-// draw a waveform. One recording is active at a time, so a single module-level
-// emitter is enough.
-type LevelListener = (level: number) => void;
-const levelListeners = new Set<LevelListener>();
-
-/** Subscribe to the live mic level (0..1) during model dictation. */
-export function subscribeDictationLevel(listener: LevelListener): () => void {
-  levelListeners.add(listener);
-  return () => {
-    levelListeners.delete(listener);
-  };
-}
-
-function emitLevel(level: number): void {
-  for (const listener of levelListeners) listener(level);
-}
 
 // Prefer Opus (small, widely supported); fall back to whatever the browser
 // records. The backend decodes any of these with PyAV.
@@ -63,19 +46,10 @@ function pickMimeType(): string | undefined {
 }
 
 const stopStream = (stream: MediaStream | null) => {
-  stream?.getTracks().forEach((track) => track.stop());
-};
-
-async function blobToBase64(blob: Blob): Promise<string> {
-  const buffer = await blob.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  const chunk = 0x8000; // avoid call-stack limits on large recordings
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  for (const track of stream?.getTracks() ?? []) {
+    track.stop();
   }
-  return btoa(binary);
-}
+};
 
 /** POST audio to the STT sidecar and return the transcript. */
 export async function transcribeAudioBlob(
@@ -83,20 +57,17 @@ export async function transcribeAudioBlob(
   signal?: AbortSignal,
 ): Promise<string> {
   const { sttModel, dictationLanguage } = useVoiceSettingsStore.getState();
-  const audio = await blobToBase64(blob);
-  const response = await authFetch("/api/inference/audio/transcribe", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      audio,
-      model: sttModel,
-      language: dictationLanguage,
-      // Dictation values response time over multi-candidate decoding. The
-      // server keeps its accurate default for other callers.
-      fast: true,
-    }),
-    signal,
-  });
+  const params = new URLSearchParams({ model: sttModel, fast: "true" });
+  if (dictationLanguage) params.set("language", dictationLanguage);
+  const response = await authFetch(
+    `/api/inference/audio/transcribe/raw?${params.toString()}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": blob.type || "application/octet-stream" },
+      body: blob,
+      signal,
+    },
+  );
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as {
       detail?: string;
@@ -122,31 +93,59 @@ export interface SttStatus {
   models: string[];
 }
 
-/** Report whether STT is installed and which model, if any, is warm. */
-export async function fetchSttStatus(): Promise<SttStatus> {
-  const response = await authFetch("/api/inference/audio/stt/status");
+// Keep load and unload requests ordered. In particular, a new recording must
+// not race an unload still finishing for the previous recording.
+let sttLifecycle: Promise<void> = Promise.resolve();
+
+function queueSttLifecycle(operation: () => Promise<void>): Promise<void> {
+  const result = sttLifecycle.catch(() => {}).then(operation);
+  sttLifecycle = result.catch(() => {});
+  return result;
+}
+
+/** Report whether STT is installed and which model, if any, is resident. */
+export async function fetchSttStatus(refreshKey?: number): Promise<SttStatus> {
+  const suffix = refreshKey === undefined ? "" : `?refresh=${refreshKey}`;
+  const response = await authFetch(`/api/inference/audio/stt/status${suffix}`);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as SttStatus;
 }
 
-/** Warm the STT model so the first dictation is not delayed by a load. */
-export async function loadSttModel(model: string): Promise<void> {
-  const response = await authFetch("/api/inference/audio/stt/load", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model }),
+/** Load the selected model after local dictation has explicitly started. */
+export function loadSttModel(model: string): Promise<void> {
+  return queueSttLifecycle(async () => {
+    const response = await authFetch("/api/inference/audio/stt/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model }),
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as {
+        detail?: string;
+      } | null;
+      throw new Error(body?.detail ?? `HTTP ${response.status}`);
+    }
   });
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      detail?: string;
-    } | null;
-    throw new Error(body?.detail ?? `HTTP ${response.status}`);
-  }
+}
+
+/** Release the local STT model and its RAM/VRAM allocations. */
+export function unloadSttModel(): Promise<void> {
+  return queueSttLifecycle(async () => {
+    const response = await authFetch("/api/inference/audio/stt/unload", {
+      method: "POST",
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as {
+        detail?: string;
+      } | null;
+      throw new Error(body?.detail ?? `HTTP ${response.status}`);
+    }
+  });
 }
 
 /**
- * Dictation via a loaded STT model, ChatGPT style. While the user talks the
- * audio is split at natural pauses and each chunk is transcribed in the
+ * Dictation via a local STT model. While the user talks, audio is split at
+ * natural pauses and each chunk is transcribed in the
  * background, so when they confirm only the final short tail is left to
  * transcribe and the text appears almost immediately. Confirming keeps the
  * text; discarding throws it away. Stopping releases the mic immediately.
@@ -168,9 +167,11 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       throw new Error("Recording is not supported in this browser.");
     }
 
-    // Warm the model now, in parallel with recording, so the first transcription
-    // is not delayed by a cold load. A no-op if it is already resident.
-    void loadSttModel(useVoiceSettingsStore.getState().sttModel).catch(() => {});
+    // Load only after this explicit recording starts, in parallel with capture,
+    // so normal Studio startup and browser dictation never fetch model weights.
+    void loadSttModel(useVoiceSettingsStore.getState().sttModel).catch(
+      () => {},
+    );
 
     const speechStartCallbacks = new Set<() => void>();
     const speechEndCallbacks = new Set<
@@ -187,56 +188,11 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     let finalizing = false;
     const abortController = new AbortController();
     const mimeType = pickMimeType();
-    // Web Audio graph for the waveform + voice-activity detection; torn down
-    // with the session. onAudioFrame is wired to the VAD once segments start.
-    let audioContext: AudioContext | null = null;
-    let levelRaf = 0;
+    // Shared waveform meter also feeds this adapter's pause detector.
+    let stopLevelMeter = () => {
+      // Replaced after microphone access succeeds.
+    };
     let onAudioFrame: (rawRms: number, now: number) => void = () => {};
-
-    const stopLevelMeter = () => {
-      if (levelRaf) cancelAnimationFrame(levelRaf);
-      levelRaf = 0;
-      audioContext?.close().catch(() => {});
-      audioContext = null;
-      emitLevel(0);
-    };
-
-    // Tap the mic stream with an analyser: publish a smoothed RMS level for the
-    // waveform and feed the raw level to the pause detector.
-    const startLevelMeter = (source: MediaStream) => {
-      try {
-        const Ctx =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext?: typeof AudioContext })
-            .webkitAudioContext;
-        if (!Ctx) return;
-        audioContext = new Ctx();
-        // Browsers can create the context suspended; resume so the analyser
-        // actually receives samples.
-        void audioContext.resume().catch(() => {});
-        const node = audioContext.createMediaStreamSource(source);
-        const analyser = audioContext.createAnalyser();
-        analyser.fftSize = 512;
-        node.connect(analyser);
-        const data = new Uint8Array(analyser.frequencyBinCount);
-        const tick = () => {
-          analyser.getByteTimeDomainData(data);
-          let sum = 0;
-          for (let i = 0; i < data.length; i++) {
-            const v = (data[i] - 128) / 128;
-            sum += v * v;
-          }
-          const rms = Math.sqrt(sum / data.length);
-          onAudioFrame(rms, performance.now());
-          // Perceptual boost so quiet speech still moves the bars.
-          emitLevel(Math.min(1, rms * 3.2));
-          levelRaf = requestAnimationFrame(tick);
-        };
-        levelRaf = requestAnimationFrame(tick);
-      } catch {
-        // Waveform is cosmetic; ignore any Web Audio failure.
-      }
-    };
 
     let resolveEnded: (() => void) | null = null;
     const endedPromise = new Promise<void>((resolve) => {
@@ -265,7 +221,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
 
     const buildTranscript = () =>
       results
-        .filter((part) => part && part.trim())
+        .filter((part) => part?.trim())
         .join(" ")
         .trim();
 
@@ -298,6 +254,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       }
       for (const callback of endCallbacks) callback();
       resolveEnded?.();
+      // Local dictation should not reserve RAM/VRAM while the user is chatting.
+      // The downloaded weights stay cached on disk and load again on demand.
+      void unloadSttModel().catch(() => {});
     };
 
     // Finish once the final segment has been cut and the queue has drained.
@@ -354,7 +313,10 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         chunks: [],
         startedAt: performance.now(),
         voiced: false,
-        recorder: new MediaRecorder(stream, mimeType ? { mimeType } : undefined),
+        recorder: new MediaRecorder(
+          stream,
+          mimeType ? { mimeType } : undefined,
+        ),
       };
       currentSeg = seg;
       silenceMs = 0;
@@ -516,7 +478,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           stream = null;
           return;
         }
-        startLevelMeter(stream);
+        stopLevelMeter = startDictationLevelMeter(stream, (rawRms, now) => {
+          onAudioFrame(rawRms, now);
+        });
         startSegment();
         session.status = { type: "running" };
         for (const callback of speechStartCallbacks) callback();

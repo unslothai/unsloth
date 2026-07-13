@@ -35,7 +35,7 @@ def test_fast_transcription_uses_low_latency_decode_options(monkeypatch):
     assert model.options == {
         "language": "en",
         "beam_size": 1,
-        "vad_filter": True,
+        "vad_filter": False,
         "condition_on_previous_text": False,
         "best_of": 1,
         "temperature": 0.0,
@@ -116,3 +116,15 @@ def test_unknown_language_is_not_reported_as_bad_audio(monkeypatch):
 
     with pytest.raises(SttLanguageError, match = "is not supported"):
         sidecar.transcribe(b"encoded audio", language = "xx-YY")
+
+
+def test_unload_releases_model_and_device():
+    sidecar = WhisperSttSidecar()
+    sidecar._model = object()
+    sidecar._model_id = "base"
+    sidecar._device = "cuda"
+
+    sidecar.unload()
+
+    assert sidecar.loaded_model is None
+    assert sidecar.device is None

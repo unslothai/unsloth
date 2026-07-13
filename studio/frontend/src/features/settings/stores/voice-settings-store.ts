@@ -50,11 +50,11 @@ export interface VoiceSettingsState {
   micDeviceId: string;
   setMicDeviceId: (value: string) => void;
 
-  /** "browser": Web Speech API. "model": a loaded STT model via the backend. */
+  /** "browser": Web Speech API. "model": on-demand local transcription. */
   dictationEngine: DictationEngine;
   setDictationEngine: (value: DictationEngine) => void;
 
-  /** STT model to load when dictationEngine is "model". */
+  /** STT model to use when dictationEngine is "model". */
   sttModel: SttModel;
   setSttModel: (value: SttModel) => void;
 
