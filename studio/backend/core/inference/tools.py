@@ -3116,12 +3116,15 @@ def _python_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        # The child invocation is byte-identical with and without streaming:
-        # injecting PYTHONUNBUFFERED / -u to line-buffer stdout would be
-        # model-visible. CPython block-buffers piped stdout, so streaming
-        # granularity depends on the child flushing; the final result is
-        # unchanged either way.
-        proc = subprocess.Popen([sys.executable, tmp_path], **popen_kwargs)
+        # Force unbuffered child stdout with the interpreter's -u flag so a bare
+        # print() (no flush=True) streams to output_callback as it is produced
+        # instead of sitting in the pipe's ~8 KB block buffer until exit. -u is
+        # applied unconditionally (both the streaming and non-streaming path), so
+        # the child invocation stays byte-identical with and without streaming
+        # and the final result is unchanged. Unlike PYTHONUNBUFFERED=1 (removed
+        # earlier), -u does not pollute the child's os.environ, so it is not
+        # visible via os.getenv; buffering/timing changes never alter the bytes.
+        proc = subprocess.Popen([sys.executable, "-u", tmp_path], **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.

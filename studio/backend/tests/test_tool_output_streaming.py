@@ -331,6 +331,36 @@ def test_python_exec_streams_lines_incrementally():
     assert first_seen_at[0] - started < finished - started - 0.5
 
 
+def test_python_exec_unflushed_print_streams_live_and_result_identical():
+    # The common long-running case: a bare print() WITHOUT flush=True, then a
+    # sleep. -u forces the child's stdout unbuffered, so the line must reach the
+    # callback well before the process exits (otherwise CPython block-buffers the
+    # pipe and the live pane stays empty until exit). The final joined result is
+    # byte-identical to the non-streaming run: -u changes buffering/timing only.
+    code = (
+        "import time\n"
+        "print('progress')\n"  # no flush=True
+        "time.sleep(1.0)\n"
+        "print('done')\n"
+    )
+    first_seen_at: list[float] = []
+
+    def on_chunk(_text: str) -> None:
+        if not first_seen_at:
+            first_seen_at.append(time.monotonic())
+
+    baseline = _python_exec(code, timeout = 60)
+    started = time.monotonic()
+    streamed = _python_exec(code, timeout = 60, output_callback = on_chunk)
+    finished = time.monotonic()
+    assert streamed == baseline
+    assert "progress" in streamed and "done" in streamed
+    assert first_seen_at, "callback never invoked for unflushed print"
+    # The unflushed line arrived before the streamed run finished the sleep,
+    # proving it streamed live rather than at process exit.
+    assert first_seen_at[0] - started < finished - started - 0.5
+
+
 def test_python_exec_error_exit_identical_with_streaming():
     code = "print('before')\nraise SystemExit(3)\n"
     baseline = _python_exec(code, timeout = 60)
