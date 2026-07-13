@@ -1209,12 +1209,11 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     for c in (command, stripped, _decode_ansi_c(command)):
         c_param = _expand_param_defaults(c)
         candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
-    if (
-        _glob_hits_sensitive(command)
-        or _glob_hits_sensitive(_expand_param_defaults(command))
-        or _glob_hits_sensitive(_expand_shell_assignments(_expand_param_defaults(command)))
-        or any(_references_sensitive_path(c) for c in candidates)
-    ):
+    # Run BOTH the literal sensitive-path scan and the glob-sensitive scan over
+    # every candidate, so a brace-expanded glob (cat /e{t,}c/pass?d -> /etc/pass?d)
+    # is caught: the brace expansion alone yields no literal /etc/passwd, and the
+    # glob resolves it only once the brace group is expanded.
+    if any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates):
         return True
     # Newlines (and CR) separate commands in a shell but read as plain
     # whitespace to shlex, which would demote "ls\nrm x" to argument position.
@@ -1512,6 +1511,16 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 and value.value.id in builtins_aliases
             ):
                 code_exec_aliases.update(targets)  # e = builtins.eval
+            elif isinstance(value, ast.Attribute) and value.attr in _AUTO_UNSAFE_PY_WRITE_METHODS:
+                writer_aliases.update(targets)  # s = np.save
+            elif isinstance(value, ast.Attribute) and value.attr == "open":
+                # A captured .open bound method (p = Path('out').open) opens a file
+                # on any call; its mode position varies (Path.open mode is 1st arg,
+                # builtin open's is 2nd), so fail closed on the call rather than
+                # guess the write mode.
+                dynamic_aliases.update(targets)  # p = Path('out').open; p('w')
+            elif isinstance(value, ast.Attribute) and value.attr in ("ZipFile", "TarFile"):
+                archive_ctor_aliases.update(targets)  # z = zipfile.ZipFile
             elif isinstance(value, ast.Subscript):
                 dynamic_aliases.update(targets)  # f = globals()["open"]
             elif (

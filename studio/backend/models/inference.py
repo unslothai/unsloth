@@ -1062,19 +1062,24 @@ class ChatCompletionRequest(BaseModel):
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
         elif (
-            self.permission_mode in ("ask", "auto")
+            self.permission_mode == "ask"
             and not (self.provider_id or self.provider_type)
             and (self.enable_tools is True or bool(self.mcp_enabled))
         ):
-            # These modes gate on their own; a direct API caller that omits the
-            # legacy confirm flag must still hit the confirmation gate for
-            # Studio's own tool loop. Only self-enable when that loop is actually
-            # requested (enable_tools / mcp_enabled) -- the router enters the loop
-            # on those signals, not on enabled_tools alone (which merely filters
-            # which tools run). A plain client-tool passthrough (client-supplied
-            # `tools` that Studio does not execute) must route verbatim, and
-            # external-provider routing
-            # rejects confirm_tool_calls with tools, so skip the fold there too.
+            # "Ask" gates every call, so a direct API caller that omits the legacy
+            # confirm flag must still hit the confirmation gate for Studio's own
+            # tool loop. Only self-enable when that loop is actually requested
+            # (enable_tools / mcp_enabled) -- the router enters the loop on those
+            # signals, not on enabled_tools alone (which merely filters which tools
+            # run). A plain client-tool passthrough (client-supplied `tools` that
+            # Studio does not execute) must route verbatim, and external-provider
+            # routing rejects confirm_tool_calls with tools, so skip the fold there.
+            #
+            # "auto" is deliberately NOT folded: it only prompts for a call the
+            # classifier flags, so leaving confirm_tool_calls unset lets the route's
+            # _confirm_gate_needs_stream apply the safe-only exception (a safe-only
+            # auto selection needs no stream) instead of an explicit-confirm forcing
+            # stream=true. The mode still drives the loop's per-call gate.
             self.confirm_tool_calls = True
         return self
 

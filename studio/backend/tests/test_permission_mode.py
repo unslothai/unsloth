@@ -139,6 +139,9 @@ def _clear_pending():
         ("grep -R TOKEN ~/logs", True),  # tilde-home recursive root escapes
         ("cat /etc/pass{w,}d", True),  # brace expansion builds /etc/passwd
         ("cat report{1,2}.txt", False),  # benign brace stays safe
+        ("cat /e{t,}c/pass?d", True),  # brace-expanded candidate then a glob resolves it
+        ("cat /et{c,}/pass?d", True),  # brace + glob in the tail
+        ("cat repo/d{1,2}/f?.txt", False),  # benign brace + glob stays safe
         ("cat /etc/pass${x:-wd}", True),  # default param expansion builds path
         ("cat /etc/pass${x:=wd}", True),
         ("echo ${x:-hello}", False),  # benign default param stays safe
@@ -390,6 +393,10 @@ def test_terminal_classifier(command, unsafe):
         ("def f(o=open):\n    o('out', 'w').write('x')\nf()", True),  # open captured in a default
         ("g = lambda o=open: o('out', 'w')\ng()", True),  # open captured in a lambda default
         ("def f(o=len):\n    return o('x')\nf()", False),  # a benign default stays safe
+        ("import numpy as np\ns = np.save\ns('out.npy', arr)", True),  # attribute writer aliased
+        ("from pathlib import Path\np = Path('out').open\np('w')", True),  # bound .open aliased
+        ("import zipfile\nz = zipfile.ZipFile\nz('a.zip', 'w')", True),  # attribute archive ctor
+        ("import numpy as np\nx = np.mean\nx(a)", False),  # a benign attribute alias stays safe
         (
             "from pathlib import Path\nPath('/etc').joinpath('passwd').read_text()",
             True,
@@ -787,21 +794,28 @@ def test_bypass_permissions_folds_to_full_on_request_models():
 
 
 def test_ask_auto_self_enable_confirm_on_chat_request():
-    # A direct /chat/completions caller that requests ask/auto but omits the
-    # legacy confirm flag must still hit the confirmation gate when Studio's own
-    # tool loop is requested. Only the router's own loop-entry signals count
-    # (enable_tools / mcp_enabled); enabled_tools alone never starts the loop.
-    for mode in ("ask", "auto"):
-        for loop in (
-            {"enable_tools": True},
-            {"mcp_enabled": True},
-        ):
-            req = ChatCompletionRequest(
-                messages = [{"role": "user", "content": "hi"}],
-                permission_mode = mode,
-                **loop,
-            )
-            assert req.confirm_tool_calls is True
+    # "Ask" gates every call, so a direct /chat/completions caller that requests
+    # ask but omits the legacy confirm flag self-enables it when Studio's own tool
+    # loop is requested. Only the router's loop-entry signals count (enable_tools /
+    # mcp_enabled); enabled_tools alone never starts the loop.
+    for loop in ({"enable_tools": True}, {"mcp_enabled": True}):
+        req = ChatCompletionRequest(
+            messages = [{"role": "user", "content": "hi"}],
+            permission_mode = "ask",
+            **loop,
+        )
+        assert req.confirm_tool_calls is True
+    # "auto" is NOT folded: it only prompts for a classifier-flagged call, so
+    # leaving confirm unset lets the route apply the safe-only-selection exception
+    # (a safe-only auto request needs no stream) instead of an explicit confirm
+    # forcing stream=true. The mode still drives the loop's per-call gate.
+    for loop in ({"enable_tools": True}, {"mcp_enabled": True}):
+        req = ChatCompletionRequest(
+            messages = [{"role": "user", "content": "hi"}],
+            permission_mode = "auto",
+            **loop,
+        )
+        assert req.confirm_tool_calls is None
     # enabled_tools by itself is a passthrough filter, not a loop-entry signal:
     # a client-tool passthrough that also lists enabled_tools must route verbatim
     # (confirm stays unset), else the confirm-without-stream guard 400s it.
