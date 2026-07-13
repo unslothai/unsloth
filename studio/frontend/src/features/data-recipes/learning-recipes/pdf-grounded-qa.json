@@ -35,7 +35,7 @@
       {
         "column_type": "llm-structured",
         "name": "llm_structured_1",
-        "drop": false,
+        "drop": true,
         "model_alias": "provider_column",
         "prompt": "Given ONLY this chunk: {{ chunk_text }} generate one answerable question, answer, and exact supporting quote from chunk. If not answerable, skip.",
         "with_trace": "none",
@@ -60,9 +60,39 @@
             }
           }
         }
+      },
+      {
+        "column_type": "expression",
+        "name": "instruction",
+        "drop": false,
+        "expr": "{{ llm_structured_1.question }}",
+        "dtype": "str"
+      },
+      {
+        "column_type": "expression",
+        "name": "output",
+        "drop": false,
+        "expr": "{{ llm_structured_1.answer }}",
+        "dtype": "str"
+      },
+      {
+        "column_type": "expression",
+        "name": "metadata",
+        "drop": false,
+        "expr": "Evidence quote: {{ llm_structured_1.evidence_quote }}\n\nSource context: {{ chunk_text }}",
+        "dtype": "str"
       }
     ],
-    "processors": []
+    "processors": [
+      {
+        "processor_type": "drop_columns",
+        "name": "drop_seed_columns",
+        "column_names": [
+          "chunk_text",
+          "source_file"
+        ]
+      }
+    ]
   },
   "run": {
     "rows": 5,
@@ -102,7 +132,7 @@
         "width": 400,
         "node_type": "markdown_note",
         "name": "note_3",
-        "markdown": "- LLM prompt: `{{ chunk_text }}`\n- Expression block: combine/format values using `{{ chunk_text }}`\n- Processor templates: use `{{ chunk_text }}` during transforms\n\nTip:\n- Start with medium chunk size + small overlap.\n- Increase overlap only if answers lose context between chunks.",
+        "markdown": "The structured LLM block generates a question, answer, and evidence quote from `{{ chunk_text }}`.\n\nExpression blocks then project the result into a training-ready Alpaca row:\n\n- `instruction`: generated question\n- `output`: generated answer\n- `metadata`: evidence quote and source context\n\nThe source chunk, source-file field, and nested structured intermediate are dropped only after these fields are created.",
         "note_color": "#F3E8FF",
         "note_opacity": "35"
       },
@@ -129,6 +159,24 @@
         "x": 960,
         "y": 1077,
         "width": 400
+      },
+      {
+        "id": "instruction",
+        "x": 1440,
+        "y": 895,
+        "width": 400
+      },
+      {
+        "id": "output",
+        "x": 1440,
+        "y": 1077,
+        "width": 400
+      },
+      {
+        "id": "metadata",
+        "x": 1440,
+        "y": 1259,
+        "width": 400
       }
     ],
     "edges": [
@@ -147,11 +195,39 @@
         "target_handle": "data-in-top"
       },
       {
-        "from": "llm_structured_1",
-        "to": "seed",
+        "from": "seed",
+        "to": "llm_structured_1",
         "type": "canvas",
-        "source_handle": "data-out-left",
-        "target_handle": "data-in-right"
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "llm_structured_1",
+        "to": "instruction",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "llm_structured_1",
+        "to": "output",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "llm_structured_1",
+        "to": "metadata",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "seed",
+        "to": "metadata",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
       }
     ],
     "layout_direction": "LR",
