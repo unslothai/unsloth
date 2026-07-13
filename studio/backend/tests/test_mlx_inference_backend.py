@@ -404,10 +404,18 @@ def test_mlx_vlm_image_injection_reuses_media_aliases(monkeypatch):
 
     media = [{"type": "image"}]
     quoted = [{"role": "user", "content": media}, {"role": "user", "content": f"Explain {media}"}]
+    assert _prompt_serializes_vlm_media(f"<image>\n{media[0]}", quoted[:1])
     assert not _prompt_serializes_vlm_media(f"<image>\nExplain {media}", quoted)
     assert _prompt_serializes_vlm_media(f"User: {media}\nExplain {media}", quoted)
     quoted[1]["content"] = [{"type": "text", "text": f'Explain "this" {media}'}]
     assert not _prompt_serializes_vlm_media(f'<image>\nExplain "this" {media}', quoted)
+    json_media = [{"type": "image_url"}]
+    json_repr = '{"type": "image_url"}'
+    assert _prompt_serializes_vlm_media(f"<image>\n{json_repr}", [{"content": json_media}])
+    assert not _prompt_serializes_vlm_media(
+        f"<image>\nExplain {json_repr}",
+        [{"content": json_media}, {"content": f"Explain {json_repr}"}],
+    )
 
     backend = MLXInferenceBackend()
     backend._model = object()

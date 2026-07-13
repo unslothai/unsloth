@@ -5,6 +5,7 @@ Drop-in replacement for InferenceBackend — same interface, uses mlx-lm/mlx-vlm
 instead of torch/transformers for model loading and generation.
 """
 
+import json
 import os
 import threading
 from typing import Optional, Generator
@@ -62,13 +63,29 @@ def _count_vlm_images(content):
     return _count_vlm_images(content.get("content"))
 
 
+def _vlm_media_reprs(content):
+    if isinstance(content, list):
+        values = (
+            {str(content), json.dumps(content, ensure_ascii = False)}
+            if _count_vlm_images(content)
+            else set()
+        )
+        for item in content:
+            values.update(_vlm_media_reprs(item))
+        return values
+    if not isinstance(content, dict):
+        return set()
+    if str(content.get("type", "")).lower() in ("image", "image_url", "input_image"):
+        return {str(content), json.dumps(content, ensure_ascii = False)}
+    return _vlm_media_reprs(content.get("content"))
+
+
 def _prompt_serializes_vlm_media(prompt, messages):
     """Detect templates that embed the exact structured media object repr."""
-    media_reprs = {
-        str(message.get("content"))
-        for message in messages
-        if isinstance(message, dict) and _count_vlm_images(message.get("content"))
-    }
+    media_reprs = set()
+    for message in messages:
+        if isinstance(message, dict):
+            media_reprs.update(_vlm_media_reprs(message.get("content")))
     text_content = [
         content_to_text(message.get("content")) for message in messages if isinstance(message, dict)
     ]
