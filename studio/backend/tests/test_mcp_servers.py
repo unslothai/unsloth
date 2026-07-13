@@ -802,15 +802,20 @@ def test_update_rename_keeps_stdio_session(tmp_path, monkeypatch):
     monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
     monkeypatch.setattr(routes_mcp, "close_stdio_sessions", lambda *a, **k: closed.append(a))
     mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "npx demo-server",
-        headers_json = json.dumps({"API_KEY": "x"}), is_enabled = True,
+        id = "s1",
+        display_name = "A",
+        url = "npx demo-server",
+        headers_json = json.dumps({"API_KEY": "x"}),
+        is_enabled = True,
     )
     asyncio.run(
         routes_mcp.update_mcp_server(
             "s1",
             McpServerUpdate(
-                display_name = "B", url = "npx demo-server",
-                headers = {"API_KEY": "x"}, use_oauth = False,
+                display_name = "B",
+                url = "npx demo-server",
+                headers = {"API_KEY": "x"},
+                use_oauth = False,
             ),
             current_subject = "u",
         )
@@ -831,7 +836,10 @@ def test_update_stdio_command_change_closes_session(tmp_path, monkeypatch):
     monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
     monkeypatch.setattr(routes_mcp, "close_stdio_sessions", lambda *a, **k: closed.append(a))
     mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "npx demo-server", is_enabled = True,
+        id = "s1",
+        display_name = "A",
+        url = "npx demo-server",
+        is_enabled = True,
     )
     asyncio.run(
         routes_mcp.update_mcp_server(
