@@ -684,10 +684,14 @@ export function ChatSettingsPanel({
     : null;
   useEffect(() => {
     if (!pendingKey) return;
-    const saved = loadRememberedLoadSettings(pendingKey);
+    // GGUF-only, like the stageOrLoad / Hub restore paths: every remembered
+    // field is a llama.cpp knob, so a non-GGUF pick has nothing to restore --
+    // and applying its blob would clobber the standing gpuMemoryMode with a
+    // stale snapshot (the save on Load below is gated the same way).
+    const saved = pendingIsGguf ? loadRememberedLoadSettings(pendingKey) : null;
     setRemember(saved != null);
     if (saved) applyRememberedLoadSettings(saved);
-  }, [pendingKey, applyRememberedLoadSettings]);
+  }, [pendingKey, pendingIsGguf, applyRememberedLoadSettings]);
   // While staging, the sheet reflects the STAGED model, so its header context
   // takes precedence over the loaded model's (which may differ or be larger).
   const baseContext = pendingIsGguf ? stagedContextLength : ggufContextLength;
@@ -1603,14 +1607,18 @@ export function ChatSettingsPanel({
                     {Math.round((stagedDownloadFraction ?? 0) * 100)}%
                   </p>
                 )}
-                <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-[12px] text-muted-foreground">
-                  <Checkbox
-                    className="size-3.5 rounded-full [&_[data-slot=checkbox-indicator]_svg]:size-2.5"
-                    checked={remember}
-                    onCheckedChange={(v) => setRemember(v === true)}
-                  />
-                  Remember settings next time
-                </label>
+                {/* GGUF picks only: a non-GGUF pick shows none of the load
+                    knobs the blob captures, so there is nothing to remember. */}
+                {pendingIsGguf && (
+                  <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-[12px] text-muted-foreground">
+                    <Checkbox
+                      className="size-3.5 rounded-full [&_[data-slot=checkbox-indicator]_svg]:size-2.5"
+                      checked={remember}
+                      onCheckedChange={(v) => setRemember(v === true)}
+                    />
+                    Remember settings next time
+                  </label>
+                )}
                 {stagedLoading ? (
                   // Mid-load: nothing to load or abandon until it settles, so disable.
                   <Button
@@ -1630,9 +1638,10 @@ export function ChatSettingsPanel({
                         // Persist (or clear) this model's load knobs before loading.
                         // Context is stored as the override (null = auto), never the
                         // resolved native value, so restoring can't force an OOM.
-                        const pid = pendingSelection
-                          ? rememberedLoadSettingsKey(pendingSelection)
-                          : null;
+                        // GGUF-only, like the restore effect: saving for a
+                        // non-GGUF pick would snapshot leftover standing values
+                        // its hidden controls never showed.
+                        const pid = pendingIsGguf ? pendingKey : null;
                         if (pid) {
                           if (remember) {
                             saveRememberedLoadSettings(pid, {

@@ -2,7 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Per-model pre-load inference settings, persisted in localStorage so the load
-// dialog can offer "Remember settings for <model>".
+// dialog can offer "Remember settings for <model>". GGUF picks only: every
+// field is a llama.cpp load knob, so all save/restore call sites gate on
+// GGUF-ness (a non-GGUF blob would only snapshot leftover standing values).
 
 const KEY = "unsloth_load_settings";
 

@@ -1304,9 +1304,11 @@ export function ChatPage({
   // were already seeded on stage, so keepSpeculative only when a config was
   // saved -- otherwise the standing speculative preference should win.
   autoLoadStagedRef.current = (pending) => {
-    const remembered = loadRememberedLoadSettings(
-      rememberedLoadSettingsKey(pending),
-    );
+    // Blobs are saved for GGUF picks only (the sheet gates on it), so don't
+    // let a legacy non-GGUF blob claim a seeded config here.
+    const remembered = hasGgufSource(pending)
+      ? loadRememberedLoadSettings(rememberedLoadSettingsKey(pending))
+      : null;
     void selectModel({
       ...pending,
       isDownloaded: true,

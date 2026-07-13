@@ -1415,18 +1415,12 @@ async function autoLoadSmallestModel(): Promise<{
     max_seq_length: number;
     is_lora: boolean;
     gguf_variant?: string | null;
-    // GGUF-only, passed by the caller so the guard sizes the exact placement
-    // its /load will send (remembered-derived on the candidate path, live store
-    // on the default-download path). The safetensors fallback omits them: it
-    // loads via HF auto-placement (no gpu_ids), so validating an explicit-GPU/
-    // manual placement it won't use could wrongly skip a model that would fit.
+    // GGUF-only: scopes the training guard to the GPUs /load will use. The
+    // guard sizes conservatively (whole quantized model, plus KV for local
+    // files), so the offload/runtime knobs (gpu_layers/MoE/split/KV dtype/
+    // spec) are deliberately not sent. The safetensors fallback omits gpu_ids
+    // too: it loads via HF auto-placement.
     gpu_ids?: number[];
-    gpu_memory_mode?: "auto" | "manual";
-    gpu_layers?: number;
-    // Decides whether the guard charges the separate MTP drafter.
-    speculative_type?: string | null;
-    cache_type_kv?: string | null;
-    tensor_parallel?: boolean;
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
@@ -1453,12 +1447,18 @@ async function autoLoadSmallestModel(): Promise<{
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
-    const remembered = loadRememberedLoadSettings(
-      rememberedLoadSettingsKey({
-        id: candidate.id,
-        ggufVariant: candidate.ggufVariant,
-      }),
-    );
+    // Blobs are saved for GGUF picks only (the sheet gates on it), so don't
+    // let a legacy non-GGUF blob feed a stale context/spec choice into a
+    // safetensors auto-load.
+    const remembered =
+      candidate.kind === "gguf"
+        ? loadRememberedLoadSettings(
+            rememberedLoadSettingsKey({
+              id: candidate.id,
+              ggufVariant: candidate.ggufVariant,
+            }),
+          )
+        : null;
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
       ggufVariant: candidate.ggufVariant,
@@ -1513,16 +1513,9 @@ async function autoLoadSmallestModel(): Promise<{
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
-        // The same remembered-derived knobs the load below sends.
+        // The same remembered-derived GPU pick the load below sends.
         ...(candidate.kind === "gguf"
-          ? {
-              gpu_ids: effectiveGpuIds ?? undefined,
-              gpu_memory_mode: effectiveGpuMemoryMode,
-              gpu_layers: effectiveGpuLayers,
-              speculative_type: effectiveSpeculativeType,
-              cache_type_kv: remembered?.kvCacheDtype ?? null,
-              tensor_parallel: remembered?.tensorParallel ?? false,
-            }
+          ? { gpu_ids: effectiveGpuIds ?? undefined }
           : {}),
       }))
     ) {
@@ -1834,12 +1827,9 @@ async function autoLoadSmallestModel(): Promise<{
           max_seq_length: 0,
           is_lora: false,
           gguf_variant: "UD-Q4_K_XL",
-          // The same live-store knobs the load below sends (a fresh default
+          // The same live-store GPU pick the load below sends (a fresh default
           // model has no remembered settings to prefer).
           gpu_ids: rt.selectedGpuIds ?? undefined,
-          gpu_memory_mode: rt.gpuMemoryMode,
-          gpu_layers: rt.gpuLayers,
-          speculative_type: specSettings.speculativeType,
         }))
       ) {
         toast.dismiss(toastId);
