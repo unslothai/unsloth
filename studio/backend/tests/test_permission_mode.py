@@ -444,6 +444,35 @@ def test_terminal_classifier(command, unsafe):
             "import websockets\nwebsockets.connect('ws://h')",
             True,
         ),  # websockets outbound connection
+        (
+            "import asyncio\nasyncio.start_unix_server(cb, '/tmp/sock')",
+            True,
+        ),  # asyncio unix listener
+        ("import os\nos.startfile('calc.exe')", True),  # Windows startfile launches a program
+        (
+            "import socketserver\nsocketserver.TCPServer(('0.0.0.0', 80), H)",
+            True,
+        ),  # stdlib server binds a listener
+        (
+            "from gzip import open as gopen\ngopen('o.gz', 'w')",
+            True,
+        ),  # gzip open alias, write mode
+        (
+            "from gzip import open as gopen\ngopen('o.gz', 'rt')",
+            False,
+        ),  # gzip open alias, read stays safe
+        (
+            "open(chr(47) + 'etc/passwd').read()",
+            True,
+        ),  # dynamic '/' prefix forms /etc/passwd
+        (
+            "import os\nopen(os.sep + 'etc/passwd').read()",
+            True,
+        ),  # os.sep prefix forms /etc/passwd
+        (
+            "base = get_dir()\nopen(base + 'data/file.txt').read()",
+            False,
+        ),  # dynamic prefix + benign suffix stays safe
         ("import numpy as np\nnp.mean([1, 2])", False),  # a benign numpy read stays safe
         (
             "from pathlib import Path\nP = Path\n(P('/etc') / 'passwd').read_text()",
@@ -698,6 +727,19 @@ def test_mcp_sensitive_arguments(args, unsafe):
         ({"query": "SELECT load_extension('/tmp/evil.so')"}, True),  # loads native code
         ({"query": "PRAGMA journal_mode"}, False),  # read-form PRAGMA stays safe
         ({"query": "can you attach the report to the email"}, False),  # NL 'attach' stays safe
+        ({"query": "ATTACH '/tmp/x.db' AS x"}, True),  # ATTACH without DATABASE keyword
+        ({"query": "PRAGMA main.user_version = 1"}, True),  # schema-qualified write PRAGMA
+        ({"query": "attach it as draft"}, False),  # NL 'attach ... as' stays safe
+        ({"query": "DROP FUNCTION f()"}, True),  # DROP of a non-table object
+        ({"query": "ALTER INDEX idx RENAME TO idx2"}, True),  # ALTER of a non-table object
+        ({"query": "DROP MATERIALIZED VIEW mv"}, True),  # DROP with a modifier
+        ({"query": "ALTER USER bob WITH PASSWORD 'x'"}, True),  # ALTER USER mutates
+        ({"query": "SELECT dropped_at FROM t"}, False),  # 'drop' substring column stays safe
+        ({"query": "mutation M @audit { deleteIssue(id: 1) }"}, True),  # directive GraphQL mutation
+        (
+            {"query": "query Q @cached { issue(id: 1) { title } }"},
+            False,
+        ),  # directive GraphQL read stays safe
     ],
 )
 def test_mcp_mutating_arguments(args, unsafe):

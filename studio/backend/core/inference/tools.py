@@ -508,6 +508,9 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         # websockets.connect / websockets.serve open a bidirectional network
         # connection the sandbox does not namespace off, like aiohttp/httpx.
         "websockets",
+        # socketserver.TCPServer/UDPServer/UnixStreamServer bind a listening
+        # socket, like socket.bind; the stdlib server framework, not just clients.
+        "socketserver",
         "ftplib",
         "smtplib",
         "telnetlib",
@@ -563,6 +566,9 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "execvp",
         "spawnl",
         "spawnv",
+        # os.startfile launches a file with its associated Windows application,
+        # running an arbitrary program like os.system/os.popen.
+        "startfile",
         "fork",
         "kill",
         "killpg",
@@ -607,10 +613,12 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "create_server",
         "create_unix_connection",
         "create_unix_server",
-        # asyncio.start_server / open_unix_connection listen or connect, and the
-        # loop.create_datagram_endpoint / sock_connect helpers open a UDP or raw
-        # socket, all outbound network the sandbox does not namespace off.
+        # asyncio.start_server / start_unix_server / open_unix_connection listen
+        # or connect, and the loop.create_datagram_endpoint / sock_connect helpers
+        # open a UDP or raw socket, all outbound network the sandbox does not
+        # namespace off.
         "start_server",
+        "start_unix_server",
         "open_unix_connection",
         "create_datagram_endpoint",
         "sock_connect",
@@ -693,6 +701,10 @@ _ARCHIVE_CTOR_MODULES = {
     "bz2": "BZ2File",
     "lzma": "LZMAFile",
 }
+# Modules whose top-level open() takes the mode as its 2nd arg like builtin open
+# (gzip.open("o.gz", "w") writes), so `from gzip import open as gopen` binds an
+# open alias and gopen("o.gz", "w") is gated like open(..., "w").
+_OPEN_ALIAS_MODULES = frozenset({"gzip", "bz2", "lzma"})
 _PY_WRITE_MODE_RE = re.compile(r"[wax+]")
 # A file-mode literal ("w", "rb", "a+"): letters/flags only, no path chars.
 # Used to tell a Path.open("w") mode from a ZipFile.open("name.txt") filename.
@@ -1230,6 +1242,12 @@ def _folded_is_sensitive(folded) -> bool:
         "\x02" in folded
         or _references_sensitive_path(folded)
         or ("\x00" in folded and bool(_SENSITIVE_DIR_RE.search(folded)))
+        # A dynamic segment (NUL) can be the "/" that turns a relative-looking
+        # suffix into a sensitive absolute root: open(chr(47) + "etc/passwd") /
+        # open(os.sep + "etc/passwd") fold to "\x00etc/passwd". Re-run the
+        # credential-path scan with NUL treated as "/" so those read like
+        # /etc/passwd (a benign "\x00data/file" stays "/data/file", safe).
+        or ("\x00" in folded and _references_sensitive_path(folded.replace("\x00", "/")))
         or _glob_token_sensitive(folded)
     )
 
@@ -1503,6 +1521,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         open_aliases.add(alias.asname or "open")
                     elif alias.name in code_exec_aliases:
                         code_exec_aliases.add(alias.asname or alias.name)
+            if node.module in _OPEN_ALIAS_MODULES:
+                for alias in node.names:
+                    if alias.name == "open":
+                        # gzip/bz2/lzma open(file, mode) writes on "w"/"a"/"x",
+                        # mode in the 2nd arg like builtin open.
+                        open_aliases.add(alias.asname or "open")
             if node.module == "pathlib":
                 for alias in node.names:
                     if alias.name in _PATH_CTORS:
@@ -1797,20 +1821,30 @@ def _mcp_arguments_reference_sensitive(arguments) -> bool:
     return walk(arguments)
 
 
+# The DDL object types CREATE / DROP / ALTER can target; a statement against any
+# of them mutates the database, so all three verbs share the set (DROP FUNCTION
+# and ALTER INDEX mutate just like CREATE INDEX).
+_SQL_DDL_OBJECTS = (
+    r"table|database|schema|index|view|function|procedure|trigger|"
+    r"sequence|role|user|extension|type|domain|aggregate"
+)
+# Modifiers that can sit between the DDL verb and the object (CREATE OR REPLACE
+# VIEW, DROP MATERIALIZED VIEW, CREATE UNIQUE INDEX).
+_SQL_DDL_MODIFIERS = (
+    r"(?:(?:or\s+replace|unique|temp|temporary|global|local|materialized|"
+    r"recursive)\s+)*"
+)
 # A read-named MCP tool (query_database, run_query) can still carry a mutating
 # SQL statement; match DML/DDL as whole statements (DELETE FROM, DROP TABLE) so
 # a natural-language query that merely contains the word "delete" stays safe.
 _MCP_ARG_MUTATION_RE = re.compile(
-    r"\b(?:delete\s+from|drop\s+(?:table|database|schema|index|view)|"
+    r"\b(?:delete\s+from|"
+    r"drop\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
     r"truncate\s+(?:table\s+)?\w|update\s+\w+\s+set|insert\s+into|replace\s+into|"
-    r"alter\s+(?:table|database|schema)|"
-    # CREATE DDL, allowing modifiers (OR REPLACE / UNIQUE / TEMP[ORARY] /
-    # MATERIALIZED / GLOBAL / LOCAL / RECURSIVE) and the broader object set
-    # (function/trigger/sequence/...), so CREATE OR REPLACE VIEW and CREATE
-    # UNIQUE INDEX are caught too.
-    r"create\s+(?:(?:or\s+replace|unique|temp|temporary|global|local|materialized|"
-    r"recursive)\s+)*(?:table|database|schema|index|view|function|procedure|trigger|"
-    r"sequence|role|user|extension|type|domain|aggregate)|"
+    r"alter\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
+    # CREATE DDL, allowing the shared modifiers and object set, so CREATE OR
+    # REPLACE VIEW and CREATE UNIQUE INDEX are caught too.
+    r"create\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
     r"grant\s+\w|revoke\s+\w|merge\s+into|"
     # Stored-procedure invocation (CALL proc(...), EXEC/EXECUTE name) and VACUUM
     # (rewrites the database file) also mutate external state. CALL requires the
@@ -1823,13 +1857,19 @@ _MCP_ARG_MUTATION_RE = re.compile(
     re.IGNORECASE,
 )
 # SQLite-flavored statements the base DML/DDL regex misses: ATTACH/DETACH a
-# database file, a write-form PRAGMA (PRAGMA journal_mode=WAL / user_version=42
-# / foreign_keys(0), unlike the read-form PRAGMA journal_mode which only takes a
-# value with `=` or `(`), and load_extension() which loads and runs an arbitrary
-# shared library. "pragma"/"load_extension"/"attach database" are not natural
-# language, so a benign search string does not trip these.
+# database file (the DATABASE keyword is optional, so ATTACH '/x.db' AS y counts
+# via the quoted-expr form), a write-form PRAGMA (PRAGMA journal_mode=WAL /
+# user_version=42 / main.user_version=1 / foreign_keys(0), unlike the read-form
+# PRAGMA journal_mode which only takes a value with `=` or `(`), and
+# load_extension() which loads and runs an arbitrary shared library.
+# "pragma"/"load_extension"/"attach database" are not natural language, and the
+# no-keyword ATTACH form requires a quoted path, so a benign search string does
+# not trip these.
 _MCP_ARG_SQLITE_MUTATION_RE = re.compile(
-    r"\b(?:attach|detach)\s+database\b|\bpragma\s+\w+\s*(?:=|\()|\bload_extension\s*\(",
+    r"\b(?:attach|detach)\s+database\b"
+    r"|\battach\s+(?:database\s+)?['\"]"
+    r"|\bpragma\s+\w+(?:\.\w+)?\s*(?:=|\()"
+    r"|\bload_extension\s*\(",
     re.IGNORECASE,
 )
 # SQL engines treat /* */ and -- comments as whitespace, so DELETE/**/FROM and
@@ -1837,8 +1877,12 @@ _MCP_ARG_SQLITE_MUTATION_RE = re.compile(
 # space before matching.
 _SQL_COMMENT_RE = re.compile(r"/\*.*?\*/|--[^\n]*", re.DOTALL)
 # A GraphQL mutation operation (mutation { ... } / mutation Name(...) { ... })
-# changes external state on a read-named graphql tool.
-_GRAPHQL_MUTATION_RE = re.compile(r"\bmutation\b\s*\w*\s*[({]", re.IGNORECASE)
+# changes external state on a read-named graphql tool. Directives are valid
+# between the operation name and the selection set (mutation M @audit { ... }),
+# so allow zero or more @directive[(args)] before the "(" variables or "{" body.
+_GRAPHQL_MUTATION_RE = re.compile(
+    r"\bmutation\b\s*\w*\s*(?:@\w+(?:\s*\([^)]*\))?\s*)*[({]", re.IGNORECASE
+)
 # GraphQL # comments run to end-of-line and count as whitespace, so a comment
 # between `mutation` and the body (mutation # note\n { ... }) would otherwise
 # hide it; collapse them to a space before matching.
