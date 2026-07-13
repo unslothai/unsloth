@@ -710,7 +710,9 @@ class SdCppDiffusionBackend:
             # the 4B default and protect the wrong repo.
             repos.extend(
                 terepo
-                for terepo, _f, _k in sd_cpp_text_encoders_for(fam, state.repo_id, state.gguf_filename)
+                for terepo, _f, _k in sd_cpp_text_encoders_for(
+                    fam, state.repo_id, state.gguf_filename
+                )
             )
             return tuple(dict.fromkeys(r for r in repos if r))
 
