@@ -2412,8 +2412,8 @@ def _download_host_latest_release_tag(repo: str) -> str | None:
     authoritative latest tag the fast path pins every URL to, instead of trusting
     the checksum asset's own release_tag field. GitHub resolves /releases/latest
     by created_at/make_latest, which can lag the published_at newest the freshness
-    detection uses -- see docs/llama-cpp-prebuilt-resolution.md. Returns None when
-    the repo has no such release (404) so the caller falls back to the API."""
+    detection uses. Returns None when the repo has no such release (404) so the
+    caller falls back to the API."""
     url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/latest"
     request = urllib.request.Request(
         url,
