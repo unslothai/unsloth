@@ -29,6 +29,7 @@ def _extract(pattern: str, source: str) -> str:
     ("value", "expected"),
     [(value, "true") for value in TRUTHY_VALUES] + [(value, "false") for value in FALSEY_VALUES],
 )
+@pytest.mark.skipif(shutil.which("sh") is None, reason = "POSIX shell is unavailable")
 def test_posix_skip_autostart_value_parsing(value: str, expected: str):
     source = INSTALL_SH.read_text(encoding = "utf-8")
     parser = _extract(
