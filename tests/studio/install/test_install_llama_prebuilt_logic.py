@@ -2284,6 +2284,30 @@ def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
     assert (PACKAGE_ROOT / "studio" / "frontend" / "src" / "i18n" / "README.md").is_file()
 
 
+def test_setup_sh_cleanup_unlinks_instruction_symlink_only(tmp_path: Path):
+    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    start = setup_sh.index("_remove_agent_instruction_files() {")
+    end = setup_sh.index("\n}\n", start) + 2
+    function = setup_sh[start:end]
+    managed = tmp_path / "managed"
+    external = tmp_path / "external.md"
+    managed.mkdir()
+    external.write_text("external", encoding = "utf-8")
+    instruction = managed / "AGENTS.md"
+    try:
+        instruction.symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    subprocess.run(
+        ["bash", "-c", function + '\n_remove_agent_instruction_files "$1"', "bash", str(managed)],
+        check = True,
+    )
+
+    assert not instruction.exists()
+    assert external.read_text(encoding = "utf-8") == "external"
+
+
 def test_install_prebuilt_does_not_skip_unhealthy_existing_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

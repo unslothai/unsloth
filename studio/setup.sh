@@ -79,7 +79,7 @@ _remove_agent_instruction_files() {
     for _root in "$@"; do
         [ -d "$_root" ] || continue
         [ -L "$_root" ] && continue
-        find "$_root" -type f \( -name 'AGENTS.md' -o -name 'CLAUDE.md' \) \
+        find "$_root" \( -type f -o -type l \) \( -name 'AGENTS.md' -o -name 'CLAUDE.md' \) \
             -exec rm -f {} + 2>/dev/null || true
     done
 }
