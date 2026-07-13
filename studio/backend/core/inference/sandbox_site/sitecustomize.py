@@ -86,10 +86,37 @@ def _note(subject, original, mapped):
     )
 
 
+def _contained_join(cwd, rel):
+    """Join ``rel`` onto ``cwd`` so the result can never escape ``cwd``.
+
+    A hallucinated habit path can carry ``..`` segments (e.g.
+    ``/mnt/data/../other_session/file``) or repeated separators; joining the
+    suffix verbatim would let the mapped target climb above the per-conversation
+    sandbox and read or overwrite another session's files. Parent-traversal
+    components are dropped rather than allowed to ascend, and empty / ``.``
+    components are ignored, so the mapped path always stays under ``cwd`` while
+    preserving as much of the intended subpath as possible.
+    """
+    parts = []
+    for part in rel.split("/"):
+        if part == "" or part == ".":
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(part)
+    return os.path.join(cwd, *parts) if parts else cwd
+
+
 def _map_onto_cwd(prefix, text):
-    """Map ``<prefix>/rest`` onto ``./rest`` in the CWD and note it once."""
+    """Map ``<prefix>/rest`` onto ``./rest`` in the CWD and note it once.
+
+    The suffix is contained under the CWD (see ``_contained_join``) so a path
+    like ``/mnt/data/../other_session/file`` cannot escape the sandbox workdir.
+    """
     rel = text[len(prefix) :].lstrip("/")
-    mapped = os.path.join(os.getcwd(), rel) if rel else os.getcwd()
+    mapped = _contained_join(os.getcwd(), rel)
     _note(prefix, text, mapped)
     return mapped
 
@@ -150,7 +177,15 @@ def _remap_open(file, mode):
     # pass through untouched so real writes stay truthful.
     if parent and os.path.exists(parent):
         return file
-    remapped = os.path.join(cwd, os.path.basename(text))
+    base = os.path.basename(text)
+    # A path ending in a separator or a '.'/'..' component yields a basename
+    # that is not a real filename (os.path.basename('/a/b/..') == '..'). Joining
+    # it onto the CWD would point the redirect at the CWD itself or its parent --
+    # outside the sandbox file the model meant to create -- so refuse and let the
+    # original open raise instead of healing into an escaping target.
+    if base in ("", ".", ".."):
+        return file
+    remapped = os.path.join(cwd, base)
     # Never reinterpret an invented absolute path as permission to overwrite or
     # append to a different, already-present workspace file (lexists so a
     # dangling symlink counts as a collision too). Refuse and let the original

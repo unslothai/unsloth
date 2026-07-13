@@ -41,9 +41,13 @@ _SKIP_TAGS = frozenset(
         "button",
         "select",
         "datalist",
-        "aside",
     }
 )
+# <aside> is deliberately NOT skipped: documentation pages routinely use it for
+# notes, warnings, and examples (admonition callouts) that are real content, so
+# dropping it unconditionally loses page text. A page-furniture aside (a sidebar
+# outside the <article>/<main>) is already excluded by the main-content scoping
+# pass; an aside inside the selected scope is content and is kept.
 
 # Void elements never produce an end tag, so they must not join the
 # open-element stack used to bound hidden subtrees.

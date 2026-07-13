@@ -60,6 +60,48 @@ def test_always_remap_prefixes_map_into_cwd(monkeypatch, tmp_path):
     assert mod._remap("relative.txt") == "relative.txt"
 
 
+def test_prefix_remap_contains_parent_traversal_inside_cwd(monkeypatch, tmp_path):
+    # A hallucinated habit path can carry '..' in its suffix. The remapped
+    # target must stay under the per-conversation CWD, never climb above it into
+    # a sibling session's directory. '..' components are dropped (they cannot
+    # ascend past the sandbox root) while the rest of the subpath is preserved.
+    mod = _load_shim()
+    workdir = tmp_path / "session_current" / "work"
+    workdir.mkdir(parents = True)
+    monkeypatch.chdir(workdir)
+    cwd = os.getcwd()
+
+    for escaping in (
+        "/mnt/data/../other_session/file",
+        "/mnt/data/../../secrets.txt",
+        "/mnt/data/a/../../b/c.txt",
+        "/mnt/data/./sub/./x.txt",
+    ):
+        mapped = mod._remap(escaping)
+        # Never escapes the CWD subtree.
+        assert mapped == cwd or mapped.startswith(cwd + os.sep), (escaping, mapped)
+        assert os.path.realpath(mapped).startswith(os.path.realpath(cwd))
+    # The concrete containment: '../other_session/file' collapses to CWD/other_session/file.
+    assert mod._remap("/mnt/data/../other_session/file") == os.path.join(
+        cwd, "other_session", "file"
+    )
+    # A bare '/mnt/data/..' with nothing left maps onto the CWD itself.
+    assert mod._remap("/mnt/data/..") == cwd
+
+
+def test_write_fallback_refuses_dotdot_basename(monkeypatch, tmp_path):
+    # os.path.basename('/no/such/tree/..') == '..'; joining that onto the CWD
+    # would target the CWD's parent (outside the sandbox). The write fallback
+    # must refuse such non-filename basenames and return the path unchanged so
+    # the real open raises rather than healing into an escaping target.
+    mod = _load_shim()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    for escaping in ("/no/such/tree/..", "/no/such/tree/.", "/no/such/tree/"):
+        assert mod._remap_open(escaping, "w") == escaping
+
+
 def test_write_fallback_remaps_hallucinated_absolute_path(monkeypatch, tmp_path):
     # Models invent absolute paths from seeing their CWD (e.g.
     # /home/ubuntu/Sandbox/x.html). Prefix lists cannot enumerate these, so a

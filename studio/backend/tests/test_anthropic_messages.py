@@ -2032,3 +2032,88 @@ def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
     # The dropped call must not surface as a second tool_use block.
     tool_use_starts = [c for c in chunks if "content_block_start" in c and '"tool_use"' in c]
     assert len(tool_use_starts) == 1
+
+
+def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
+    """A chatty tool that streams tool_output/tool_args with no heartbeats keeps
+    the generator busy, so the stall keepalive never fires; the Anthropic path
+    cannot translate those events and drops them. Dropping without any wire
+    bytes would leave an idle-sensitive proxy free to kill the stream, so the
+    drop branch emits a rate-limited comment keepalive instead of silence."""
+    import threading as _threading
+
+    import routes.inference as inf_mod
+    from routes.inference import (
+        _OPENAI_PASSTHROUGH_SSE_KEEPALIVE,
+        _anthropic_tool_stream,
+    )
+
+    # Deterministic clock: only the drop-branch keepalive uses time.monotonic in
+    # this coroutine, so a monotonic that jumps well past the stall window per
+    # call makes each dropped event cross the rate-limit threshold. asyncio.wait
+    # uses the loop clock (unaffected), and next(gen) completes promptly, so the
+    # OUTER stall keepalive never fires -- every keepalive here is from the drop
+    # branch.
+    _real_time = inf_mod.time
+    _tick = {"v": 0.0}
+
+    def _fast_monotonic():
+        _tick["v"] += 100.0
+        return _tick["v"]
+
+    fake_time = SimpleNamespace(
+        monotonic = _fast_monotonic,
+        sleep = _real_time.sleep,
+        time = _real_time.time,
+        perf_counter = _real_time.perf_counter,
+    )
+    monkeypatch.setattr(inf_mod, "time", fake_time)
+
+    n_output = 4
+
+    def run_gen():
+        def gen():
+            yield {
+                "type": "tool_start",
+                "tool_name": "python",
+                "tool_call_id": "call_0",
+                "arguments": {},
+            }
+            # Chatty streamed stdout, no heartbeats between chunks.
+            for i in range(n_output):
+                yield {
+                    "type": "tool_output",
+                    "tool_name": "python",
+                    "tool_call_id": "call_0",
+                    "text": f"line {i}\n",
+                }
+            yield {
+                "type": "tool_end",
+                "tool_name": "python",
+                "tool_call_id": "call_0",
+                "result": "done",
+            }
+            yield {"type": "content", "text": "final answer"}
+
+        return gen()
+
+    async def _drive():
+        async def _is_disconnected():
+            return False
+
+        request = SimpleNamespace(is_disconnected = _is_disconnected)
+        resp = await _anthropic_tool_stream(
+            request,
+            _threading.Event(),
+            run_gen,
+            "msg_drop_ka",
+            "m",
+        )
+        return [chunk async for chunk in resp.body_iterator]
+
+    chunks = asyncio.run(_drive())
+    keepalives = [c for c in chunks if c == _OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
+    # Every dropped tool_output crossed the (deterministically advanced) window.
+    assert len(keepalives) == n_output
+    # The final answer text still reaches the client (drop is transport-only).
+    assert any("final answer" in c for c in chunks)

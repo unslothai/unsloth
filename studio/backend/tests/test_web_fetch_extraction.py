@@ -319,6 +319,25 @@ def test_boilerplate_not_stripped_inside_code_fences():
     assert "There was an error while loading" in out
 
 
+def test_aside_callout_inside_article_is_kept():
+    # Documentation pages render notes/warnings/examples as <aside> admonition
+    # callouts. An aside inside the selected article/main scope is real content
+    # and must survive; dropping it unconditionally loses page text.
+    body = (
+        "<article><h1>Guide</h1>"
+        "<p>%s</p>"
+        "<aside class='admonition warning'><strong>Warning:</strong> "
+        "This operation is destructive and cannot be undone.</aside>"
+        "<p>Trailing paragraph.</p></article>"
+    ) % ("Documentation body text to select the article scope. " * 6)
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "This operation is destructive and cannot be undone." in out
+    assert "Warning:" in out
+    # Also kept in the unscoped (backwards-compatible) conversion.
+    out_full = html_to_markdown(f"<body>{body}</body>")
+    assert "This operation is destructive and cannot be undone." in out_full
+
+
 # ── GitHub README rewrite ────────────────────────────────────────
 
 

@@ -11967,6 +11967,12 @@ async def _anthropic_tool_stream(
         ends_on_tool_use = False
         tool_blocks_emitted = 0
         drop_until_tool_end = False
+        # Monotonic timestamp of the last drop-branch keepalive. Seeded to the
+        # stream start so a chatty tool that keeps the generator busy for longer
+        # than the stall window still gets a comment keepalive even though the
+        # events themselves are untranslatable and dropped (see the tool_output
+        # / tool_args branch below).
+        _last_drop_keepalive = time.monotonic()
 
         gen = run_gen()
         _next_task = None
@@ -12019,6 +12025,19 @@ async def _anthropic_tool_stream(
                     # Live tool stdout / argument streaming are Studio-UI
                     # concepts with no Anthropic Messages equivalent; the full
                     # call and result follow in tool_use / tool_result blocks.
+                    # The OpenAI passthrough paths forward these verbatim, but
+                    # here they cannot be translated and are dropped. Dropping
+                    # them yields no wire bytes, and while they flow the stall
+                    # keepalive above never fires (next(gen) returns promptly)
+                    # and the tool wrapper emits heartbeats only while it is
+                    # IDLE, not while output streams. So a chatty multi-minute
+                    # tool (or large streamed tool_args) would leave the SSE
+                    # stream silent past an idle-sensitive proxy cap (~100s).
+                    # Emit a rate-limited comment keepalive instead of silence.
+                    _now = time.monotonic()
+                    if _now - _last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
+                        _last_drop_keepalive = _now
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
                 if etype == "metadata":
                     _fr = event.get("finish_reason")
