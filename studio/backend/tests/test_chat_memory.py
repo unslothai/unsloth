@@ -115,6 +115,19 @@ def test_model_forget_requires_user_correction_evidence(tmp_path, monkeypatch):
     assert studio_db.get_chat_memory(saved["id"]) is None
 
 
+@pytest.mark.parametrize(
+    "content",
+    (
+        "My email is me@example.com",
+        "My phone number is +1 (415) 555-0199",
+        "Text me at 415-555-0199",
+    ),
+)
+def test_automatic_capture_rejects_contact_pii(content):
+    with pytest.raises(memory.MemoryValidationError):
+        memory.create_memory(content = content, scope = "global", source_type = "model")
+
+
 def test_direct_statement_skips_transient_and_profile_claims(tmp_path, monkeypatch):
     _setup_source(tmp_path, monkeypatch)
 

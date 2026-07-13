@@ -2533,12 +2533,18 @@ export function createOpenAIStreamAdapter(
         : "";
       await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
       const memoryRuntime = useChatRuntimeStore.getState();
-      const memoryScope = await resolveForegroundMemoryScope({
-        threadId: resolvedThreadId,
-        sourceMessageId: latestUserMessage?.id,
-        referenceMemories: memoryRuntime.referenceMemories,
-        autoSaveMemories: memoryRuntime.autoSaveMemories,
-      }).catch(() => undefined);
+      const memoryScope =
+        !options.pairId &&
+        resolvedThreadId &&
+        memoryRuntime.activeThreadId === resolvedThreadId &&
+        ownsThread(resolvedThreadId)
+          ? await resolveForegroundMemoryScope({
+              threadId: resolvedThreadId,
+              sourceMessageId: latestUserMessage?.id,
+              referenceMemories: memoryRuntime.referenceMemories,
+              autoSaveMemories: memoryRuntime.autoSaveMemories,
+            }).catch(() => undefined)
+          : undefined;
 
       // ── Audio model path (non-streaming) ─────────────────────
       const activeModel = runtime.models.find(

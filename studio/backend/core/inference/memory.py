@@ -90,6 +90,13 @@ _SENSITIVE_RE = re.compile(
     r"routing number|latitude|longitude|address)\b",
     re.I,
 )
+
+_CONTACT_PII_RE = re.compile(
+    r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|"
+    r"\b(?:(?:phone|mobile|cell|telephone|contact)(?:\s+number)?\s*(?:is|:|=)?|"
+    r"(?:call|text|reach|contact)\s+me\s+at)\s*\+?\d[\d(). -]{5,}\d\b",
+    re.I,
+)
 _TRANSIENT_RE = re.compile(
     r"\b(?:today|tomorrow|yesterday|this afternoon|right now|for this question|"
     r"this turn|just now)\b",
@@ -214,6 +221,7 @@ def _validate_content(content: str, automatic: bool) -> str:
         or _is_profile_equivalent(normalized)
         or _SECRET_RE.search(normalized)
         or _SENSITIVE_RE.search(normalized)
+        or _CONTACT_PII_RE.search(normalized)
         or _TRANSIENT_RE.search(normalized)
     ):
         raise MemoryValidationError(
