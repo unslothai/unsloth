@@ -2579,6 +2579,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         _bnb_rocm_ver,
                     )
 
+            # Setting BNB_ROCM_VERSION makes bitsandbytes log a benign override
+            # notice on import; drop only that record so real errors and mismatch
+            # warnings still show.
+            if os.environ.get("BNB_ROCM_VERSION"):
+                import logging as _logging
+                _logging.getLogger("bitsandbytes.cextension").addFilter(
+                    lambda _r: "environment variable detected" not in _r.getMessage()
+                )
+
             # Parse HIP version for the kernel-fix gate below, falling back to
             # the rocm version embedded in torch.__version__ when version.hip is
             # unset (AMD SDK / Radeon wheels).
