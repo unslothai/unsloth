@@ -115,10 +115,9 @@ let _yamlLearningRate: number | undefined = undefined;
 let _datasetFormatBeforeCpt: DatasetFormat | null = null;
 let _datasetFormatAutoForcedByCpt = false;
 
-// isVisionModel / isAudioModel persist so multimodal-only UI paints right on
-// reload; the model-config fetch still re-derives them afterwards.
+// modelType / isVisionModel / isAudioModel persist so multimodal-only UI
+// paints right on reload; the model-config fetch still re-derives them.
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
-  "modelType",
   "isCheckingVision",
   "isEmbeddingModel",
   "isLoadingModelDefaults",
@@ -570,6 +569,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             visionImageSize?: number | null;
             trustRemoteCode?: boolean;
             approvedRemoteCodeFingerprint?: string | null;
+            isVisionModel?: boolean;
+            isAudioModel?: boolean;
+            isEmbeddingModel?: boolean;
           } = {
             selectedModel,
             modelDefaultsError: null,
@@ -581,6 +583,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             // re-applied below, and a custom-code model re-opens the dialog before start.
             patch.trustRemoteCode = false;
             patch.approvedRemoteCodeFingerprint = null;
+            // Reset capability flags so a mid-fetch reload can't persist the
+            // previous model's vision/audio flags against the new model.
+            patch.isVisionModel = false;
+            patch.isAudioModel = false;
+            patch.isEmbeddingModel = false;
           }
           set(patch);
 
