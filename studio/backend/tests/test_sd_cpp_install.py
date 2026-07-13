@@ -273,11 +273,12 @@ def test_install_into_empty_dir_claims_ownership(tmp_path, monkeypatch):
     assert (empty / ".unsloth-studio-owned").is_file()
 
 
-def test_install_into_nonempty_unowned_dir_does_not_claim_ownership(tmp_path, monkeypatch):
+def test_install_into_nonempty_unowned_dir_is_refused(tmp_path, monkeypatch):
     # A pre-existing, non-empty directory that Studio did not create (e.g. a user's own
-    # stable-diffusion.cpp checkout) must NOT be marked owned: writing the marker would make the
-    # uninstaller recursively delete the user's directory. The install still proceeds (extracts the
-    # binary) but leaves the directory unowned so the uninstaller keeps it.
+    # stable-diffusion.cpp checkout) must NOT be extracted into. Merging the release into it would
+    # overwrite or mix our binaries into the user's working tree, and leaving it unowned only stops
+    # the uninstaller from deleting it later. install() refuses up front and leaves the dir untouched
+    # so the user can point us at a fresh/empty location.
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
     target = tmp_path / "stable-diffusion.cpp"
@@ -285,13 +286,13 @@ def test_install_into_nonempty_unowned_dir_does_not_claim_ownership(tmp_path, mo
     user_file = target / "USER_WORK"
     user_file.write_text("keep", encoding = "utf-8")
 
-    sd_cli = install(install_dir = target)
+    with pytest.raises(RuntimeError, match = "not a Studio-managed directory"):
+        install(install_dir = target)
 
-    # The user's file survives and no ownership marker was written.
+    # The user's directory is left exactly as it was: file intact, no marker, nothing extracted.
     assert user_file.read_text(encoding = "utf-8") == "keep"
     assert not (target / ".unsloth-studio-owned").exists()
-    # The binary was still installed (install is not refused).
-    assert sd_cli.is_file() and sd_cli.name == "sd-cli"
+    assert list(target.iterdir()) == [user_file]
 
 
 def test_reinstall_into_owned_dir_keeps_ownership(tmp_path, monkeypatch):

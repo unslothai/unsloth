@@ -418,6 +418,18 @@ def install(
             _pre_existing_entries = True
         # Empty dir, or one we already own, may be (re)claimed; a non-empty unowned dir may not.
         _may_own = (not _pre_existing_entries) or marker.is_file()
+    # Refuse to extract into a pre-existing, non-empty directory we do not own (a user's own
+    # stable-diffusion.cpp checkout, or unrelated files beside a custom Studio root). Not writing
+    # the ownership marker only protects the uninstaller; extracting the release here would still
+    # merge our binaries into the user's working tree and can overwrite same-named files. Fail with
+    # a clear message so the user points us at a fresh/empty location instead of corrupting theirs.
+    if not _may_own:
+        raise RuntimeError(
+            f"sd.cpp install target already exists and is not a Studio-managed directory: {target}. "
+            f"Refusing to extract prebuilt binaries into it to avoid overwriting or mixing them "
+            f"into your files. Remove or move that directory, or install into a different, empty "
+            f"location (pass a different --install-dir / set the Studio sd.cpp install dir)."
+        )
     used_repo, release, chosen = _resolve_with_fallback(accelerator, token)
 
     if release is None or not chosen:
