@@ -1633,7 +1633,12 @@ def _fetch_url_raw(
 # and container tags a Markdown README never opens with as content: ``<div>``,
 # ``<p>``, ``<span>``, ``<a>``, ``<img>`` and ``<h1>``..``<h6>`` are excluded
 # because centered-logo READMEs legitimately begin with ``<p align=...>`` /
-# ``<div align=...>`` / ``<h1 align=...>`` and must stay Markdown.
+# ``<div align=...>`` / ``<h1 align=...>`` and must stay Markdown. ``<table>``
+# (and its ``<thead>``/``<tbody>``/``<tr>``/``<td>``/``<th>`` children) is
+# excluded for the same reason: Markdown READMEs routinely open with a raw HTML
+# ``<table>`` for a badge row or two-column logo layout, and converting the
+# whole document through ``html_to_markdown`` would collapse the Markdown body
+# (lists, fenced code, headings) onto one line.
 _HTML_LEADING_TAGS = (
     "html",
     "head",
@@ -1651,12 +1656,6 @@ _HTML_LEADING_TAGS = (
     "nav",
     "aside",
     "figure",
-    "table",
-    "thead",
-    "tbody",
-    "tr",
-    "td",
-    "th",
     "form",
     "ul",
     "ol",
@@ -1678,9 +1677,10 @@ def _looks_like_html(body: str) -> bool:
     ``html_to_markdown``. It also broadens detection to bare HTML fragments
     (``<body>...``, ``<article>...``, ``<section>...``) that carry no
     ``<html>``/doctype, so a page served with a missing or wrong Content-Type is
-    still converted. Ambiguous inline tags (``<div>``/``<p>``/``<h1>``) are
-    deliberately excluded: they open legitimate centered-header Markdown READMEs
-    and cannot be told apart from a fragment by content alone.
+    still converted. Ambiguous tags (``<div>``/``<p>``/``<h1>`` and ``<table>``)
+    are deliberately excluded: they open legitimate centered-header or
+    badge/layout Markdown READMEs and cannot be told apart from a fragment by
+    content alone.
     """
     probe = body.lstrip()[:256].lower()
     return bool(_HTML_LEADING_RE.match(probe))

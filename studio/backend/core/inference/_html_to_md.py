@@ -295,14 +295,18 @@ class _MarkdownRenderer(HTMLParser):
     # Tag handlers
     # ------------------------------------------------------------------
     # Structural bookkeeping shared by every start tag (skip/hidden/scope).
-    def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
-        """Track open/hidden/scope state; return True when the tag's content
-        should be rendered (False = suppressed)."""
-        # Optional end tags: before this tag opens, pop each implicitly-closed
-        # ancestor (and hidden marks ending with it). Searches the whole stack,
-        # not just the top, so an open <p>/<li> still closes when it has an
-        # unclosed inline descendant like <span> on top; inline tags aren't
-        # _IMPLICIT_CLOSERS keys, so they never trigger a spurious close.
+    def _close_implicit(self, tag: str) -> None:
+        """Apply HTML5 optional-end-tag recovery for a start tag about to open.
+
+        Pops each implicitly-closed ancestor (and hidden marks ending with it).
+        Searches the whole stack, not just the top, so an open ``<p>``/``<li>``
+        still closes when it has an unclosed inline descendant like ``<span>`` on
+        top; inline tags aren't ``_IMPLICIT_CLOSERS`` keys, so they never trigger
+        a spurious close. Runs even for skipped tags (``<nav>``/``<footer>``):
+        those are optional-end-tag closers of ``<p>`` too, so a hidden ``<p>``
+        without an explicit ``</p>`` must end before the skip begins, or its
+        hidden mark would suppress every following sibling.
+        """
         while True:
             close_at = next(
                 (
@@ -317,6 +321,14 @@ class _MarkdownRenderer(HTMLParser):
             del self._open_tags[close_at:]
             while self._hidden_marks and self._hidden_marks[-1] >= close_at:
                 self._hidden_marks.pop()
+
+    def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
+        """Track open/hidden/scope state; return True when the tag's content
+        should be rendered (False = suppressed).
+
+        The caller runs ``_close_implicit`` first so optional-end-tag recovery
+        also fires for skipped tags.
+        """
         if tag not in _VOID_TAGS:
             self._open_tags.append(tag)
             if _is_hidden_element(attr_dict):
@@ -358,10 +370,21 @@ class _MarkdownRenderer(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
 
+        if self._skip_depth:
+            # Already inside a skipped subtree: only track nested skip depth. The
+            # open-element stack is frozen here, so no implicit close applies.
+            if tag in _SKIP_TAGS:
+                self._skip_depth += 1
+            return
+
+        # Optional-end-tag recovery must run before the skip decision: a skipped
+        # <nav>/<footer> still implicitly closes an open <p>, so its hidden mark
+        # is released and the following siblings render instead of being
+        # swallowed by the never-closed hidden element.
+        self._close_implicit(tag)
+
         if tag in _SKIP_TAGS:
             self._skip_depth += 1
-            return
-        if self._skip_depth:
             return
 
         attr_dict = dict(attrs)

@@ -247,6 +247,19 @@ def test_hr_implicitly_closes_hidden_paragraph():
     assert "kept text" in out
 
 
+def test_skipped_tag_implicitly_closes_hidden_paragraph():
+    # A skipped block (<nav>/<footer>) is an HTML5 optional-end-tag closer of an
+    # open <p>. The optional-close bookkeeping must run before the skip begins,
+    # or the never-closed <p hidden> keeps its hidden mark and swallows every
+    # following sibling.
+    for skipped in ("nav", "footer"):
+        html = f"<body><p hidden>secret<{skipped}>chrome</{skipped}>VISIBLE</body>"
+        out = html_to_markdown(html)
+        assert "secret" not in out
+        assert "chrome" not in out
+        assert "VISIBLE" in out
+
+
 def test_hidden_void_element_is_suppressed():
     # A hidden void element (<hr>/<br>) never joins the open-element stack,
     # so it must be suppressed inline rather than emitting its markup.
@@ -571,7 +584,19 @@ def test_looks_like_html_detects_bare_fragments():
     assert _looks_like_html("<body><p>hello</p></body>")
     assert _looks_like_html("\n<article><h1>Title</h1><p>Body</p></article>")
     assert _looks_like_html("<section>content</section>")
-    assert _looks_like_html("<table><tr><td>cell</td></tr></table>")
+
+
+def test_looks_like_html_leading_table_stays_markdown():
+    # Markdown READMEs routinely open with a raw HTML <table> for a badge row or
+    # a two-column logo layout, then continue in Markdown. Sniffing that as HTML
+    # would run the whole document through html_to_markdown and collapse the
+    # Markdown body, so a leading <table> (and its row/cell children) must stay
+    # Markdown, exactly like the excluded <div align>/<p align> layout headers.
+    assert not _looks_like_html("<table><tr><td>cell</td></tr></table>")
+    assert not _looks_like_html(
+        '<table align="center"><tr><td><img src="logo.png"></td></tr></table>\n\n# Project\n'
+    )
+    assert not _looks_like_html("<tr><td>cell</td></tr>")
 
 
 def test_fetch_page_text_keeps_markdown_readme_with_html_example(monkeypatch):
@@ -600,6 +625,39 @@ def test_fetch_page_text_keeps_markdown_readme_with_html_example(monkeypatch):
     # Markdown preserved verbatim: the fence and literal tags survive.
     assert "```html" in out
     assert "<!DOCTYPE html>" in out
+    assert "# My Project" in out
+
+
+def test_fetch_page_text_keeps_markdown_readme_with_leading_table(monkeypatch):
+    # A README that opens with a raw HTML <table> badge/layout row and then
+    # continues in Markdown must be served verbatim from the README API, never
+    # run through html_to_markdown (which would collapse the list/fence/heading
+    # body onto one line).
+    md_readme = (
+        '<table align="center">\n'
+        "<tr><td><img src=\"logo.png\"></td><td>Badges</td></tr>\n"
+        "</table>\n\n"
+        "# My Project\n\n"
+        "- feature one\n"
+        "- feature two\n\n"
+        "```python\nprint('hi')\n```\n"
+    )
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+    ):
+        assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
+        return None, md_readme, "text/plain"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://github.com/unslothai/unsloth")
+    assert "README of https://github.com/unslothai/unsloth" in out
+    # Markdown body preserved verbatim: the list, fence and heading survive on
+    # their own lines instead of being collapsed by html_to_markdown.
+    assert "- feature one\n- feature two" in out
+    assert "```python" in out
     assert "# My Project" in out
 
 
