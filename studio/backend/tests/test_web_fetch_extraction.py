@@ -164,8 +164,7 @@ def test_inline_style_display_none_important_is_dropped():
 
 def test_inline_style_display_none_among_other_declarations():
     html = (
-        "<body><p>keep</p>"
-        '<div style="color: red; display : none ; margin:0">gone</div></body>'
+        "<body><p>keep</p>" '<div style="color: red; display : none ; margin:0">gone</div></body>'
     )
     out = html_to_markdown(html)
     assert "keep" in out
