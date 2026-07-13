@@ -21,11 +21,11 @@ import {
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import {
   DOWNLOAD_KIND,
   downloadManager,
-} from "@/features/hub/download-manager";
+  useLatestRef,
+} from "@/features/hub";
 import {
   type NativeIntent,
   NativeModelChip,
@@ -1303,29 +1303,34 @@ export function ChatPage({
   // opened, so on a load failure just drop the orphaned staged knobs. The knobs
   // were already seeded on stage, so keepSpeculative only when a config was
   // saved -- otherwise the standing speculative preference should win.
-  autoLoadStagedRef.current = (pending) => {
-    const remembered = loadRememberedLoadSettings(
-      rememberedLoadSettingsKey(pending),
-    );
-    void selectModel({
-      ...pending,
-      isDownloaded: true,
-      forceReload: true,
-      keepSpeculative: remembered != null,
-      throwOnError: true,
-    }).catch(() => {
-      const store = useChatRuntimeStore.getState();
-      // selectModel only clears pendingSelection on success, so a failed
-      // auto-load leaves our staged pick (and its edited load knobs) behind.
-      // Abandon it when it is still the active stage; otherwise just revert the
-      // settings if the stage was already cleared by something else.
-      if (pendingSelectionMatches(store.pendingSelection, pending)) {
-        store.abandonStagedModel();
-      } else if (!store.pendingSelection) {
-        store.resetModelSettingsToLoaded();
-      }
-    });
-  };
+  useEffect(() => {
+    autoLoadStagedRef.current = (pending) => {
+      const remembered = loadRememberedLoadSettings(
+        rememberedLoadSettingsKey(pending),
+      );
+      void selectModel({
+        ...pending,
+        isDownloaded: true,
+        forceReload: true,
+        keepSpeculative: remembered != null,
+        throwOnError: true,
+      }).catch(() => {
+        const store = useChatRuntimeStore.getState();
+        // selectModel only clears pendingSelection on success, so a failed
+        // auto-load leaves our staged pick (and its edited load knobs) behind.
+        // Abandon it when it is still the active stage; otherwise just revert the
+        // settings if the stage was already cleared by something else.
+        if (pendingSelectionMatches(store.pendingSelection, pending)) {
+          store.abandonStagedModel();
+        } else if (!store.pendingSelection) {
+          store.resetModelSettingsToLoaded();
+        }
+      });
+    };
+    return () => {
+      autoLoadStagedRef.current = null;
+    };
+  }, [selectModel]);
   const isExternalModel = useMemo(
     () => isExternalModelId(inferenceParams.checkpoint),
     [inferenceParams.checkpoint],
@@ -1744,9 +1749,14 @@ export function ChatPage({
             });
           }
         } else {
-          toast.info("Another model is already loading", {
-            description: "Wait for it to finish or cancel it first.",
-          });
+          const stopped = await cancelLoading();
+          if (stopped) {
+            await selectModel(selection);
+          } else {
+            toast.info("Another model is already loading", {
+              description: "Wait for it to finish or cancel it first.",
+            });
+          }
         }
         return;
       }
@@ -1765,7 +1775,7 @@ export function ChatPage({
         autoLoad: store.loadOnSelection,
       });
     },
-    [detachStaged, selectModel, loadingModel],
+    [cancelLoading, detachStaged, selectModel, loadingModel],
   );
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
@@ -1822,7 +1832,7 @@ export function ChatPage({
   });
 
   const handleCheckpointChange = useCallback(
-    (
+    async (
       value: string,
       meta?: {
         source?: string;
@@ -1843,6 +1853,9 @@ export function ChatPage({
       )
         return;
       if (meta?.source === "external" || isExternalModelId(value)) {
+        if (store.modelLoading) {
+          await cancelLoading();
+        }
         // Switching to an external model abandons any staged local pick: cancel
         // its download too (setCheckpoint below only clears the pending + knobs).
         abandonStaged();
@@ -2031,6 +2044,7 @@ export function ChatPage({
     [
       abandonStaged,
       activeThreadId,
+      cancelLoading,
       externalProvidersForChat,
       modelsFromStore,
       stageOrLoad,

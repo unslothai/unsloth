@@ -4,7 +4,7 @@
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
-import { consumeNativePathToken } from "@/features/native-intents/api";
+import { consumeNativePathToken } from "@/features/native-intents";
 import {
   notifyNative,
   primeNativeNotificationPermission,
@@ -367,9 +367,9 @@ export function useChatModelRuntime() {
     }
   }, [setCheckpoint, setLoras, setModels, setModelsError, setParams]);
 
-  const cancelLoading = useCallback(() => {
+  const cancelLoading = useCallback(async (): Promise<boolean> => {
     const model = loadingModelRef.current;
-    if (!model) return;
+    if (!model) return false;
     loadAbortRef.current?.abort();
     loadAbortRef.current = null;
     loadingModelRef.current = null;
@@ -388,16 +388,15 @@ export function useChatModelRuntime() {
     });
     cancelUnloadPendingRef.current = true;
     useChatRuntimeStore.getState().setModelLoading(true);
-    void (async () => {
-      try {
-        await unloadModel({ model_path: model.id }).catch(() => {});
-      } finally {
-        cancelUnloadPendingRef.current = false;
-        if (!loadingModelRef.current) {
-          useChatRuntimeStore.getState().setModelLoading(false);
-        }
+    try {
+      await unloadModel({ model_path: model.id }).catch(() => {});
+      return true;
+    } finally {
+      cancelUnloadPendingRef.current = false;
+      if (!loadingModelRef.current) {
+        useChatRuntimeStore.getState().setModelLoading(false);
       }
-    })();
+    }
   }, [clearCheckpoint, setLoadToastDismissedState]);
 
   const selectModel = useCallback(
@@ -439,13 +438,10 @@ export function useChatModelRuntime() {
         return;
       }
       // A load is already in flight. If it's this exact pick (id + GGUF variant +
-      // native path token), ignore the duplicate click. If it's a DIFFERENT model
-      // -- crucially including a different GGUF variant of the same repo, which the
-      // old id+token-only guard wrongly treated as a duplicate and silently
-      // no-op'd -- don't start a second concurrent load (the load path has no clean
-      // supersession) and don't silently swallow the request: surface it so the
-      // user knows to wait for, or cancel, the in-flight load. Centralized here so
-      // every entry point is covered, not just the staged Load button.
+      // native path token), ignore the duplicate click. If it's a different model
+      // -- including a different GGUF variant of the same repo -- cancel/unload the
+      // in-flight load first, then continue with the new selection. Centralized here
+      // so every entry point is covered, not just the staged Load button.
       const inFlightLoad = loadingModelRef.current;
       if (inFlightLoad) {
         const loadingSamePick =
@@ -453,14 +449,17 @@ export function useChatModelRuntime() {
           (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
           (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
         if (loadingSamePick) return;
-        const message =
-          "Another model is already loading. Wait for it to finish or cancel it first.";
-        setModelsError(message);
-        if (throwOnError) throw new Error(message);
-        toast.info("Another model is already loading", {
-          description: "Wait for it to finish or cancel it first.",
-        });
-        return;
+        const stopped = await cancelLoading();
+        if (!stopped) {
+          const message =
+            "Another model is already loading. Wait for it to finish or cancel it first.";
+          setModelsError(message);
+          if (throwOnError) throw new Error(message);
+          toast.info("Another model is already loading", {
+            description: "Wait for it to finish or cancel it first.",
+          });
+          return;
+        }
       }
 
       const explicitIsLora =

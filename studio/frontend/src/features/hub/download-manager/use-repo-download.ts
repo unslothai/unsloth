@@ -71,14 +71,32 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
     onCancelled,
     onError,
   });
+  const subscriptionTargetRef = useLatestRef({ kind, repoId });
   useEffect(() => {
+    const subscribedKind = kind;
+    const subscribedRepoId = repoId;
+    const stillCurrentSubscription = () => {
+      const current = subscriptionTargetRef.current;
+      return (
+        current.kind === subscribedKind && current.repoId === subscribedRepoId
+      );
+    };
+
     return subscribeJobListeners(kind, repoId, {
-      onComplete: (variant, bytes) =>
-        handlersRef.current.onComplete?.(variant, bytes),
-      onCancelled: (variant) => handlersRef.current.onCancelled?.(variant),
-      onError: (variant) => handlersRef.current.onError?.(variant),
+      onComplete: (variant, bytes) => {
+        if (!stillCurrentSubscription()) return;
+        handlersRef.current.onComplete?.(variant, bytes);
+      },
+      onCancelled: (variant) => {
+        if (!stillCurrentSubscription()) return;
+        handlersRef.current.onCancelled?.(variant);
+      },
+      onError: (variant) => {
+        if (!stillCurrentSubscription()) return;
+        handlersRef.current.onError?.(variant);
+      },
     });
-  }, [handlersRef, kind, repoId]);
+  }, [handlersRef, kind, repoId, subscriptionTargetRef]);
 
   useEffect(() => {
     if (!autoAdopt) return;

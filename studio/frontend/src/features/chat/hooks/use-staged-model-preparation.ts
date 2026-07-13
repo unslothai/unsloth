@@ -3,9 +3,7 @@
 
 import { useCallback, useEffect } from "react";
 
-import { useRepoDownload } from "@/features/hub/download-manager/use-repo-download";
-import type { DownloadJob } from "@/features/hub/download-manager/use-repo-download";
-import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
+import { type DownloadJob, useLatestRef, useRepoDownload } from "@/features/hub";
 
 import { fetchGgufContextLength } from "../api/chat-api";
 import {
@@ -54,15 +52,19 @@ export function useStagedModelPreparation(opts?: {
 
   // A failed or cancelled autoLoad download has no sheet to retry from, so drop
   // the staged pick rather than leave it waiting on a load that won't come.
-  const handleAutoLoadAbort = useCallback((variant: string | null) => {
-    const latest = useChatRuntimeStore.getState().pendingSelection;
-    if (
-      latest?.autoLoad &&
-      (latest.ggufVariant ?? null) === (variant ?? null)
-    ) {
-      useChatRuntimeStore.getState().abandonStagedModel();
-    }
-  }, []);
+  const handleAutoLoadAbort = useCallback(
+    (variant: string | null) => {
+      const latest = useChatRuntimeStore.getState().pendingSelection;
+      if (
+        latest?.autoLoad &&
+        latest.id === pendingId &&
+        (latest.ggufVariant ?? null) === (variant ?? null)
+      ) {
+        useChatRuntimeStore.getState().abandonStagedModel();
+      }
+    },
+    [pendingId],
+  );
 
   const fetchContextMetadata = useCallback(async () => {
     const current = useChatRuntimeStore.getState().pendingSelection;
@@ -103,6 +105,7 @@ export function useStagedModelPreparation(opts?: {
       const latest = useChatRuntimeStore.getState().pendingSelection;
       if (
         latest?.autoLoad &&
+        latest.id === pendingId &&
         (latest.ggufVariant ?? null) === (variant ?? null)
       ) {
         onAutoLoadRef.current?.(latest);
