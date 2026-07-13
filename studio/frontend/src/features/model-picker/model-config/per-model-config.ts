@@ -520,11 +520,17 @@ export function savePerModelConfig(
 export function deletePerModelConfig(
   modelId: string,
   ggufVariant?: string | null,
-): void {
+): boolean {
   const map = readMap();
-  if (deleteConfigEntriesForModelVariant(map, modelId, ggufVariant)) {
-    writeMap(map);
+  // Mirror savePerModelConfig: never let an older client destroy a
+  // future-schema entry it cannot interpret.
+  if (hasFutureConfigForModelVariant(map, modelId, ggufVariant)) {
+    return false;
   }
+  if (!deleteConfigEntriesForModelVariant(map, modelId, ggufVariant)) {
+    return true;
+  }
+  return writeMap(map);
 }
 
 export function resolveInitialConfig(

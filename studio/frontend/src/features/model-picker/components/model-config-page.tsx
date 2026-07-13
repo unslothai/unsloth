@@ -511,7 +511,7 @@ export function ModelConfigPage({
         runtimeConfig,
       );
     } else {
-      deletePerModelConfig(target.id, target.ggufVariant);
+      saveFailed = !deletePerModelConfig(target.id, target.ggufVariant);
     }
     if (persistenceOnly) {
       if (saveFailed) {
