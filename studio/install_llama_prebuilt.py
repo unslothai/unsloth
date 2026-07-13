@@ -4388,28 +4388,16 @@ def copy_directory_contents(source_dir: Path, destination: Path) -> None:
 
 def _is_link_or_junction(path: Path) -> bool:
     """Return whether ``path`` redirects to another filesystem location."""
-    try:
-        if path.is_symlink():
-            return True
-    except OSError:
-        return True
-
-    is_junction = getattr(path, "is_junction", None)
-    if is_junction is not None:
-        try:
-            if is_junction():
-                return True
-        except OSError:
-            return True
-
-    # Path.is_junction is unavailable on Python 3.10 and 3.11.
     if os.name == "nt":
         try:
             attributes = getattr(path.lstat(), "st_file_attributes", 0)
         except OSError:
             return True
         return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
-    return False
+    try:
+        return path.is_symlink()
+    except OSError:
+        return True
 
 
 def remove_agent_instruction_files(root: Path) -> int:
