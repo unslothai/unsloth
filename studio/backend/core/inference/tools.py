@@ -528,6 +528,14 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     # the bypassed tool writes under the per-session sandbox dir on every OS.
     env["TEMP"] = workdir
     env["TMP"] = workdir
+    # sitecustomize path shim: install the same /mnt/data-style remap the safe
+    # env gets (see _build_safe_env). Without it, model code that writes to
+    # /mnt/data succeeds in normal mode but FileNotFoundErrors in bypass mode.
+    # Bypass inherits the operator's PYTHONPATH, so prepend rather than replace.
+    inherited_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (_SANDBOX_SITE_DIR, inherited_pythonpath) if part
+    )
     # Windows SDKs read creds under the profile dirs, not $HOME; repoint set
     # ones to the workdir (HOMEDRIVE/HOMEPATH are dropped above).
     for var in _BYPASS_ENV_WINDOWS_PROFILE_VARS:
@@ -3137,28 +3145,18 @@ def _python_exec(
             )
             watcher.start()
 
-        if output_callback is not None:
-            output, timed_out = _drain_process_output(
-                proc, timeout, output_callback, cancel_event, pgid = pgid
-            )
-            if timed_out:
-                return _truncate(f"Execution timed out after {timeout} seconds.")
-        else:
-            try:
-                output, _ = proc.communicate(timeout = timeout)
-            except subprocess.TimeoutExpired:
-                _kill_process_tree(proc)
-                # The leader may have already exited while a grandchild holds
-                # stdout open (communicate waits for EOF, not just the leader);
-                # _kill_process_tree short-circuits on the reaped leader, so kill
-                # the captured group directly to reap the grandchild too --
-                # matching the streaming drain path's exited-leader handling.
-                _killpg_captured(pgid)
-                try:
-                    proc.communicate(timeout = 5)
-                except subprocess.TimeoutExpired:
-                    pass
-                return _truncate(f"Execution timed out after {timeout} seconds.")
+        # Always drain via _drain_process_output (output_callback may be None):
+        # it kills the captured process group on cancellation, so a grandchild
+        # that inherited stdout and outlived the leader is reaped instead of
+        # holding communicate() blocked (the cancel watcher loops on the leader's
+        # poll() and is already gone once the leader exits). The joined bytes are
+        # identical to communicate(), so the streaming vs non-streaming result
+        # stays byte-identical.
+        output, timed_out = _drain_process_output(
+            proc, timeout, output_callback, cancel_event, pgid = pgid
+        )
+        if timed_out:
+            return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled."
@@ -3274,26 +3272,18 @@ def _bash_exec(
             )
             watcher.start()
 
-        if output_callback is not None:
-            output, timed_out = _drain_process_output(
-                proc, timeout, output_callback, cancel_event, pgid = pgid
-            )
-            if timed_out:
-                return _truncate(f"Execution timed out after {timeout} seconds.")
-        else:
-            try:
-                output, _ = proc.communicate(timeout = timeout)
-            except subprocess.TimeoutExpired:
-                _kill_process_tree(proc)
-                # Leader may have exited while a grandchild holds stdout open;
-                # kill the captured group directly so the grandchild is reaped
-                # too (mirrors the streaming drain path).
-                _killpg_captured(pgid)
-                try:
-                    proc.communicate(timeout = 5)
-                except subprocess.TimeoutExpired:
-                    pass
-                return _truncate(f"Execution timed out after {timeout} seconds.")
+        # Always drain via _drain_process_output (output_callback may be None):
+        # it kills the captured process group on cancellation, so a short-lived
+        # shell leader that backgrounds a stdout-holding process is reaped
+        # instead of holding communicate() blocked once the leader exits and the
+        # cancel watcher (which loops on the leader's poll()) is gone. The joined
+        # bytes are identical to communicate(), so the streaming vs non-streaming
+        # result stays byte-identical.
+        output, timed_out = _drain_process_output(
+            proc, timeout, output_callback, cancel_event, pgid = pgid
+        )
+        if timed_out:
+            return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled."

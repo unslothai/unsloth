@@ -8996,7 +8996,7 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
-        from core.inference.tool_stream_exec import stream_tool_execution
+        from core.inference.tool_stream_exec import accepts_output_callback, stream_tool_execution
         from core.inference.tools import build_rag_autoinject, execute_tool
 
         if not self.is_loaded:
@@ -10137,15 +10137,23 @@ class LlamaCppBackend:
                         # idle connection). The returned result is byte-identical
                         # to a direct call.
                         def _invoke_tool(_output_callback, _decision = decision):
-                            return execute_tool(
-                                _decision.tool_name,
-                                _decision.arguments,
+                            # execute_tool is imported at call time and may be
+                            # monkey-patched with the pre-PR signature (no
+                            # output_callback); only forward the live-output kwarg
+                            # when the callable accepts it (matches safetensors).
+                            kwargs = dict(
                                 cancel_event = cancel_event,
                                 timeout = _effective_timeout,
                                 session_id = session_id,
                                 rag_scope = rag_scope,
                                 disable_sandbox = bypass_permissions,
-                                output_callback = _output_callback,
+                            )
+                            if accepts_output_callback(execute_tool):
+                                kwargs["output_callback"] = _output_callback
+                            return execute_tool(
+                                _decision.tool_name,
+                                _decision.arguments,
+                                **kwargs,
                             )
 
                         result = yield from stream_tool_execution(

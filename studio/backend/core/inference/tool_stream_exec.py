@@ -21,6 +21,7 @@ and healing downstream are untouched.
 
 from __future__ import annotations
 
+import inspect
 import queue
 import threading
 import time
@@ -29,6 +30,23 @@ from typing import Any, Callable, Generator
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+
+def accepts_output_callback(func: Callable[..., str]) -> bool:
+    """Whether an injectable ``execute_tool`` supports ``output_callback``.
+
+    The tool loops treat ``execute_tool`` as replaceable (tests and extensions
+    inject fakes / monkey-patch the pre-PR signature), so the live-output kwarg
+    must only be forwarded when the callable declares it (or takes ``**kwargs``).
+    Passing it unconditionally raises ``TypeError`` on an old-signature callable.
+    """
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+    if "output_callback" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 # Cadence of heartbeat events while a tool blocks with no output. Well under
 # common proxy idle caps (Cloudflare ~100 s, nginx default 60 s).
@@ -113,9 +131,31 @@ def stream_tool_execution(
     done_sentinel = object()
     outcome: dict[str, Any] = {}
 
+    # Bound accepted live output at the PRODUCER boundary. The consumer-side cap
+    # only limits the concatenated stream; it does not stop a fast worker (a
+    # tight print loop) from enqueuing unboundedly while the SSE consumer is
+    # backpressured by a slow/stalled client, growing the queue without limit.
+    # Accept at most one char past the cap so the consumer still crosses
+    # TOOL_OUTPUT_STREAM_MAX_CHARS and emits the capped notice, then discard the
+    # rest in place: callbacks past the budget never enter the queue, so a
+    # continuous post-cap producer can no longer keep _drain_and_drop spinning
+    # and starving heartbeats. The tool's returned result is captured
+    # independently (outcome["result"]), so dropping surplus live output never
+    # changes the byte-identical final result.
+    accepted_output_chars = 0
+    accepted_output_lock = threading.Lock()
+
     def _on_output(text: str) -> None:
-        if text:
-            output_queue.put(text)
+        nonlocal accepted_output_chars
+        if not text:
+            return
+        with accepted_output_lock:
+            remaining = TOOL_OUTPUT_STREAM_MAX_CHARS + 1 - accepted_output_chars
+            if remaining <= 0:
+                return
+            accepted = text[:remaining]
+            accepted_output_chars += len(accepted)
+        output_queue.put(accepted)
 
     def _run() -> None:
         try:

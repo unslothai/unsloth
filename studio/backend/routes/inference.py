@@ -7633,7 +7633,21 @@ async def openai_chat_completions(
                             asyncio.to_thread(next, gen, _gguf_sentinel)
                         )
                         try:
-                            cumulative = await asyncio.shield(next_task)
+                            # Wait with a stall timeout: when the backend
+                            # generator stays silent (e.g. long no-tool prompt
+                            # prefill), emit an SSE keepalive comment so proxies
+                            # don't drop the idle stream. asyncio.wait never
+                            # cancels next_task, matching the shield semantics the
+                            # finally-drain relies on (see the GGUF tool stream).
+                            while True:
+                                done_tasks, _ = await asyncio.wait(
+                                    {next_task},
+                                    timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                                )
+                                if done_tasks:
+                                    break
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            cumulative = next_task.result()
                         finally:
                             if next_task.done():
                                 next_task = None
@@ -8665,6 +8679,8 @@ async def openai_chat_completions(
         _tracker.__enter__()
 
         async def stream_chunks():
+            gen = None
+            _next_task = None
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -8679,23 +8695,40 @@ async def openai_chat_completions(
                 prev_text = ""
                 # Split prefilled <think> into reasoning_content deltas (GGUF parity); single turn, serves MLX.
                 reasoning_extractor = _new_sf_reasoning_extractor()
-                # Run the sync generator in a thread pool to avoid blocking the
-                # event loop. Critical for compare mode: two SSE requests arrive
-                # concurrently but the orchestrator serializes them via
-                # _gen_lock; without run_in_executor the second request's
-                # blocking lock acquisition would freeze the entire event loop,
-                # stalling both streams.
+                # Run the sync generator in a worker thread (asyncio.to_thread)
+                # to avoid blocking the event loop. Critical for compare mode:
+                # two SSE requests arrive concurrently but the orchestrator
+                # serializes them via _gen_lock; running next(gen) on the event
+                # loop, the second request's blocking lock acquisition would
+                # freeze the entire event loop, stalling both streams.
                 _DONE = object()  # sentinel for generator exhaustion
-                loop = asyncio.get_event_loop()
                 gen = generate()
                 while True:
                     if cancel_event.is_set():
                         backend.reset_generation_state()
                         break
-                    # next(gen, _DONE) returns _DONE instead of raising
-                    # StopIteration -- StopIteration can't propagate through
-                    # asyncio futures (Python limitation).
-                    cumulative = await loop.run_in_executor(None, next, gen, _DONE)
+                    # Stall keepalive (see the safetensors tool stream): a long
+                    # no-tool prefill or a silent decode step must not leave the
+                    # SSE stream idle past a proxy timeout. Run next(gen) in a
+                    # worker and emit a comment keepalive each stall window until
+                    # it returns. next(gen, _DONE) returns _DONE instead of
+                    # raising StopIteration -- StopIteration can't propagate
+                    # through asyncio futures (Python limitation).
+                    _next_task = asyncio.create_task(
+                        asyncio.to_thread(next, gen, _DONE)
+                    )
+                    while True:
+                        _done_tasks, _ = await asyncio.wait(
+                            {_next_task},
+                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                        )
+                        if _done_tasks:
+                            break
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    cumulative = _next_task.result()
+                    # Task is done; drop the reference so the finally-block drain
+                    # is a no-op on the happy path.
+                    _next_task = None
                     if cumulative is _DONE:
                         break
                     if await request.is_disconnected():
@@ -8818,6 +8851,17 @@ async def openai_chat_completions(
                 yield _openai_stream_error_sse(error_chunk)
             finally:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                # Drain a still-running next(gen) worker before closing the
+                # generator: closing while the thread is inside next(gen) raises
+                # ValueError('generator already executing') and leaves the
+                # generator's finally (state/resource cleanup) unrun. Matches the
+                # safetensors tool stream guarded cleanup.
+                await _drain_pending_next_task(_next_task, cancel_event)
+                if gen is not None:
+                    try:
+                        gen.close()
+                    except (RuntimeError, ValueError):
+                        pass
                 _tracker.__exit__(None, None, None)
 
         return _SameTaskStreamingResponse(
@@ -12137,6 +12181,7 @@ async def _anthropic_plain_stream(
         captured_finish_reason = None
 
         gen = run_gen()
+        _next_task = None
         # Watcher to cancel on disconnect: the in-loop poll fires only between
         # chunks, so a mid-prefill disconnect would otherwise hold the decode slot.
         disconnect_watcher = asyncio.create_task(
@@ -12147,7 +12192,23 @@ async def _anthropic_plain_stream(
                 if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
                     return
-                cumulative = await asyncio.to_thread(next, gen, _sentinel)
+                # Stall keepalive (see the Anthropic tool stream): a long no-tool
+                # prefill or a silent generation step must not leave the SSE
+                # stream idle past a proxy timeout. Run next(gen) in a worker and
+                # emit a comment keepalive each stall window until it returns.
+                _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                while True:
+                    _done_tasks, _ = await asyncio.wait(
+                        {_next_task},
+                        timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                    )
+                    if _done_tasks:
+                        break
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                cumulative = _next_task.result()
+                # Task is done; drop the reference so the finally-block drain is
+                # a no-op on the happy path.
+                _next_task = None
                 if cumulative is _sentinel:
                     break
                 if isinstance(cumulative, dict):
@@ -12169,6 +12230,17 @@ async def _anthropic_plain_stream(
                 return
         finally:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+            # Drain a still-running next(gen) worker, then close the generator so
+            # a mid-prefill disconnect releases the thread, generator, and model
+            # resources instead of leaking them. Closing before the drain would
+            # race the worker and raise ValueError('generator already
+            # executing') (matches the Anthropic tool stream guarded cleanup).
+            await _drain_pending_next_task(_next_task, cancel_event)
+            if gen is not None:
+                try:
+                    await asyncio.to_thread(gen.close)
+                except (RuntimeError, ValueError):
+                    pass
 
         stop_reason = openai_finish_to_anthropic_stop(captured_finish_reason, had_tool_calls = False)
         for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):

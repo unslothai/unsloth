@@ -537,3 +537,62 @@ def test_fetch_page_text_mislabeled_text_plain_html_converted(monkeypatch):
     out = _fetch_page_text("https://example.com/mislabeled")
     assert "Unsloth Studio" in out
     assert "<html" not in out
+
+
+# ── implicit-close past unclosed inline descendants (finding 14) ──
+
+
+def test_hidden_paragraph_with_inline_child_implicitly_closed_by_block():
+    # A browser closes an open <p> when a <div> arrives even with an unclosed
+    # <span> on top of it. The hidden region must end there instead of
+    # swallowing every following visible block.
+    html = (
+        "<body><p hidden><span>secret"
+        "<div>visible div</div>"
+        "<p>visible paragraph</body>"
+    )
+    out = html_to_markdown(html)
+    assert "secret" not in out
+    assert "visible div" in out
+    assert "visible paragraph" in out
+
+
+def test_hidden_list_item_with_inline_child_closed_by_next_item():
+    html = (
+        "<body><ul><li hidden><span>secret"
+        "<li>visible item</ul><p>after</p></body>"
+    )
+    out = html_to_markdown(html)
+    assert "secret" not in out
+    assert "visible item" in out
+    assert "after" in out
+
+
+# ── aggregate tiny <article> cards must not displace <main> (finding 15) ──
+
+
+def test_many_tiny_articles_do_not_displace_substantial_main():
+    cards = "".join(
+        f"<article><h2>Teaser {i}</h2><p>Advertisement card blurb.</p></article>"
+        for i in range(12)
+    )
+    main_body = "Authoritative main documentation content. " * 30
+    html = f"<body>{cards}<main><h1>Real page</h1><p>{main_body}</p></main></body>"
+    out = html_to_markdown(html, main_content = True)
+    assert "Authoritative main documentation content." in out
+    assert "Advertisement card blurb." not in out
+
+
+def test_single_substantial_article_still_preferred_over_main():
+    # Regression guard for the GitHub-README case: one substantial <article>
+    # inside <main> must still win over sibling <main> furniture.
+    article_body = "Real README documentation body text. " * 20
+    html = (
+        "<body><main>"
+        f"<article><h1>Guide</h1><p>{article_body}</p></article>"
+        "<div><h2>Languages</h2><p>JavaScript 89.3%</p></div>"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Real README documentation body text." in out
+    assert "JavaScript 89.3%" not in out

@@ -2219,3 +2219,87 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
     assert len(tool_use_starts) == 1
     # The final answer still reaches the client.
     assert any("final answer" in c for c in chunks)
+
+
+def test_plain_stream_emits_keepalive_during_prompt_stall(monkeypatch):
+    """No-tool Anthropic stream must emit SSE keepalives while a long prompt
+    prefill blocks next(gen), matching the tool stream (finding 5). Before the
+    fix the plain stream waited in a single unbounded to_thread(next, ...) and
+    could sit silent past a proxy idle cap."""
+    import threading as _threading
+    import time as _time
+
+    from routes import inference as inf_mod
+    from routes.inference import _OPENAI_PASSTHROUGH_SSE_KEEPALIVE, _anthropic_plain_stream
+
+    monkeypatch.setattr(inf_mod, "_LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S", 0.05)
+
+    def run_gen():
+        def gen():
+            _time.sleep(0.24)  # stall past several shortened keepalive windows
+            yield "hello world"
+
+        return gen()
+
+    async def _drive():
+        async def _is_disconnected():
+            return False
+
+        request = SimpleNamespace(is_disconnected = _is_disconnected)
+        resp = await _anthropic_plain_stream(
+            request, _threading.Event(), run_gen, "msg_plain_ka", "m"
+        )
+        return [chunk async for chunk in resp.body_iterator]
+
+    chunks = asyncio.run(_drive())
+    keepalives = [c for c in chunks if c == _OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
+    assert len(keepalives) >= 2
+    assert any("hello world" in c for c in chunks)
+
+
+def test_plain_stream_closes_generator_on_disconnect():
+    """On disconnect the no-tool teardown must drain any pending worker and
+    close the generator (finding 6). Before the fix the finally only stopped the
+    disconnect watcher and never closed the generator, leaking it. A fake
+    generator records close() so this asserts the teardown deterministically,
+    not via GC."""
+    import threading as _threading
+
+    from routes.inference import _anthropic_plain_stream
+
+    closed = _threading.Event()
+
+    class _FakeGen:
+        def __init__(self):
+            self._items = iter(["tok0", "tok1", "tok2", "tok3"])
+
+        def __next__(self):
+            return next(self._items)
+
+        def close(self):
+            closed.set()
+
+    def run_gen():
+        return _FakeGen()
+
+    state = {"disconnected": False}
+
+    async def _drive():
+        async def _is_disconnected():
+            return state["disconnected"]
+
+        request = SimpleNamespace(is_disconnected = _is_disconnected)
+        resp = await _anthropic_plain_stream(
+            request, _threading.Event(), run_gen, "msg_plain_close", "m"
+        )
+        out = []
+        async for chunk in resp.body_iterator:
+            out.append(chunk)
+            if "tok0" in chunk:
+                # Simulate the client dropping right after the first token; the
+                # next loop turn observes the disconnect and tears down.
+                state["disconnected"] = True
+        return out
+
+    asyncio.run(_drive())
+    assert closed.is_set()

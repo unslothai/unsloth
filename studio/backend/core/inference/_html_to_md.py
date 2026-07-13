@@ -177,6 +177,13 @@ class _MarkdownRenderer(HTMLParser):
         self._scope_tags = scope_tags
         self._scope_depth: int = 0
 
+        # Per-top-level-scope-element output boundaries. Recorded only for a
+        # single scope tag so a caller can size each candidate individually and
+        # a swarm of tiny siblings (e.g. 12 teaser <article> cards) cannot pass
+        # an aggregate threshold together and displace the real <main>.
+        self.scope_segments: list[str] = []
+        self._scope_seg_start: int | None = None
+
         # Hidden-subtree tracking (`hidden` / aria-hidden="true"): a stack of
         # currently-open non-void tags plus the stack indices where a hidden
         # element started. End tags pop to the matching open tag, so an
@@ -283,12 +290,29 @@ class _MarkdownRenderer(HTMLParser):
         # Optional end tags: pop implicitly-closed open elements (and any
         # hidden marks that end with them) before this tag opens. Runs for
         # void tags too (<hr> closes an open <p>), which never join the stack.
-        while self._open_tags:
-            closers = _IMPLICIT_CLOSERS.get(self._open_tags[-1])
-            if closers is None or tag not in closers:
+        # Search from the top of the stack down for the nearest ancestor this
+        # tag implicitly closes, drop it and everything nested under it (and the
+        # hidden marks that end with it), then repeat in case that exposes
+        # another closable ancestor. Checking only the top of the stack would
+        # miss a closable block that has an unclosed INLINE descendant on top:
+        # a browser closes an open <p>/<li> when a block/sibling start tag
+        # arrives even with an open <span> inside it, so a hidden
+        # <p hidden><span> region must end there too instead of swallowing every
+        # following visible block. Inline tags are not keys in _IMPLICIT_CLOSERS,
+        # so they are skipped by the search and never trigger a spurious close.
+        while True:
+            close_at = next(
+                (
+                    i
+                    for i in range(len(self._open_tags) - 1, -1, -1)
+                    if tag in _IMPLICIT_CLOSERS.get(self._open_tags[i], ())
+                ),
+                None,
+            )
+            if close_at is None:
                 break
-            self._open_tags.pop()
-            while self._hidden_marks and self._hidden_marks[-1] >= len(self._open_tags):
+            del self._open_tags[close_at:]
+            while self._hidden_marks and self._hidden_marks[-1] >= close_at:
                 self._hidden_marks.pop()
         if tag not in _VOID_TAGS:
             self._open_tags.append(tag)
@@ -301,6 +325,8 @@ class _MarkdownRenderer(HTMLParser):
             # <hr>/<br> emits nothing.
             return False
         if self._scope_tags is not None and tag in self._scope_tags:
+            if self._scope_depth == 0:
+                self._scope_seg_start = len(self._out)
             self._scope_depth += 1
         if self._hidden_marks:
             return False
@@ -324,6 +350,9 @@ class _MarkdownRenderer(HTMLParser):
                     break
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
             self._scope_depth -= 1
+            if self._scope_depth == 0 and self._scope_seg_start is not None:
+                self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
+                self._scope_seg_start = None
         return not suppressed
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -668,6 +697,22 @@ def _render(source_html: str, scope_tags: frozenset[str] | None) -> str:
     return _cleanup(raw)
 
 
+def _largest_scope_candidate_len(source_html: str, tag: str) -> int:
+    """Length of the largest INDIVIDUAL ``<tag>`` subtree's boilerplate-stripped
+    render. Sizing candidates one at a time (rather than the concatenated
+    ``_render(source, {tag})``) stops many tiny siblings -- 12 teaser/ad
+    ``<article>`` cards, a short ``<aside><article>`` -- from clearing the
+    main-content threshold together and displacing the authoritative subtree."""
+    renderer = _MarkdownRenderer(scope_tags = frozenset({tag}))
+    renderer.feed(source_html)
+    renderer.close()
+    renderer.flush_pending()
+    return max(
+        (len(_strip_boilerplate_lines(_cleanup(seg))) for seg in renderer.scope_segments),
+        default = 0,
+    )
+
+
 # A scoped conversion below this size is judged not to be the page's main
 # content (e.g. an empty <article> stub) and the next candidate is tried.
 _MIN_MAIN_CONTENT_CHARS = 200
@@ -688,9 +733,11 @@ def html_to_markdown(source_html: str, *, main_content: bool = False) -> str:
     # Normalize line endings before parsing.
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
     if main_content:
-        for scope in (frozenset({"article"}), frozenset({"main"})):
-            text = _strip_boilerplate_lines(_render(source_html, scope))
-            if len(text) >= _MIN_MAIN_CONTENT_CHARS:
-                return text
+        for scope_tag in ("article", "main"):
+            # Gate on the LARGEST single subtree, not the concatenated render, so
+            # a swarm of tiny cards cannot pass the threshold in aggregate; then
+            # return the full scoped render (all real content of that tag).
+            if _largest_scope_candidate_len(source_html, scope_tag) >= _MIN_MAIN_CONTENT_CHARS:
+                return _strip_boilerplate_lines(_render(source_html, frozenset({scope_tag})))
         return _strip_boilerplate_lines(_render(source_html, None))
     return _render(source_html, None)

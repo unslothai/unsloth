@@ -320,6 +320,27 @@ class TestSandboxEnvIsolation:
         env = _build_safe_env(str(tmp_path))
         assert env["TERM"] == "dumb"
 
+    def test_bypass_env_installs_sitecustomize_path_shim(self, tmp_path):
+        # Bypass mode must install the same /mnt/data path-remap shim the safe
+        # env gets (finding 17), or model code that writes to /mnt/data succeeds
+        # in normal mode and FileNotFoundErrors in bypass mode.
+        from core.inference.tools import _SANDBOX_SITE_DIR, _build_bypass_env
+
+        env = _build_bypass_env(str(tmp_path))
+        assert _SANDBOX_SITE_DIR in env["PYTHONPATH"].split(os.pathsep)
+
+    def test_bypass_env_prepends_shim_and_keeps_inherited_pythonpath(
+        self, monkeypatch, tmp_path
+    ):
+        from core.inference.tools import _SANDBOX_SITE_DIR, _build_bypass_env
+
+        monkeypatch.setenv("PYTHONPATH", "/operator/libs")
+        env = _build_bypass_env(str(tmp_path))
+        parts = env["PYTHONPATH"].split(os.pathsep)
+        # Shim first so its open()/makedirs remap wins, operator entries kept.
+        assert parts[0] == _SANDBOX_SITE_DIR
+        assert "/operator/libs" in parts
+
 
 class TestSandboxCpuRlimitDefault:
     """Pin the default so a regression below 600s without opt-in is caught."""

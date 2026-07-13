@@ -973,3 +973,136 @@ def test_bash_exec_local_failure_gets_no_hint():
     result = _bash_exec("cat definitely_missing_local_file.txt", timeout = 60)
     assert "No such file or directory" in result
     assert "working directory is writable" not in result
+
+
+def test_producer_queue_is_bounded_under_tight_print_loop(monkeypatch):
+    # The consumer-side cap only bounds the concatenated stream; a fast worker
+    # can still enqueue unboundedly while the SSE consumer is backpressured.
+    # The producer boundary now discards callbacks past the cap so the queue
+    # can never grow without limit (finding 12).
+    import queue as _queue
+
+    from core.inference import tool_stream_exec
+
+    observed = []
+
+    class _TrackingQueue(_queue.Queue):
+        def put(self, *args, **kwargs):
+            result = super().put(*args, **kwargs)
+            observed.append(self.qsize())
+            return result
+
+    monkeypatch.setattr(tool_stream_exec.queue, "Queue", _TrackingQueue)
+
+    def tool(callback):
+        for _ in range(200_000):
+            callback("x")
+        return "done"
+
+    events, result = _run_stream(tool, tool_name = "python")
+    assert result == "done"
+    # At most cap + 1 chars are ever accepted into the queue, so the number of
+    # queued items (1 char each) cannot exceed that, regardless of consumer lag.
+    assert observed
+    assert max(observed) <= TOOL_OUTPUT_STREAM_MAX_CHARS + 2
+
+
+def test_continuous_over_cap_output_does_not_starve_heartbeats():
+    # Once the cap is tripped, a continuously producing tool must not keep the
+    # drain spinning forever with no heartbeat: callbacks past the budget never
+    # enter the queue, so the idle heartbeat path resumes (finding 13).
+    release = threading.Event()
+
+    def tool(callback):
+        callback("x" * (TOOL_OUTPUT_STREAM_MAX_CHARS + 10))  # trip the cap
+        while not release.is_set():
+            callback("spam")  # discarded at the producer boundary
+        return "done"
+
+    watchdog = threading.Timer(8.0, release.set)
+    watchdog.start()
+    gen = stream_tool_execution(
+        tool,
+        tool_name = "python",
+        heartbeat_interval_s = 0.04,
+        poll_interval_s = 0.02,
+    )
+    events = []
+    result = None
+    try:
+        while True:
+            event = next(gen)
+            events.append(event)
+            if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
+                release.set()
+    except StopIteration as stop:
+        result = stop.value
+    finally:
+        release.set()
+        watchdog.cancel()
+    assert result == "done"
+    assert len([e for e in events if e["type"] == "heartbeat"]) >= 2
+
+
+def test_accepts_output_callback_signature_detection():
+    from core.inference.tool_stream_exec import accepts_output_callback
+
+    def legacy(name, arguments, cancel_event = None, timeout = None):
+        return "ok"
+
+    def modern(name, arguments, output_callback = None):
+        return "ok"
+
+    def kwargs_only(name, arguments, **kw):
+        return "ok"
+
+    assert accepts_output_callback(legacy) is False
+    assert accepts_output_callback(modern) is True
+    assert accepts_output_callback(kwargs_only) is True
+    # Uninspectable callables (e.g. some builtins) fall back to not-supported.
+    assert accepts_output_callback(len) is False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_path):
+    # NON-streaming (output_callback=None) cancellation: the shell leader exits
+    # immediately while a backgrounded grandchild holds stdout. The cancel
+    # watcher loops on the leader's poll() and is already gone, so before the fix
+    # communicate() blocked until the grandchild finished (running its side
+    # effect). The unified drain kills the captured group on cancel instead.
+    sentinel = tmp_path / "grandchild_ran"
+    command = f"( sleep 3; touch '{sentinel}' ) & echo parent-done"
+    cancel_event = threading.Event()
+    timer = threading.Timer(0.5, cancel_event.set)
+    timer.start()
+    started = time.monotonic()
+    try:
+        result = _bash_exec(command, cancel_event = cancel_event, timeout = 30)
+    finally:
+        timer.cancel()
+    assert time.monotonic() - started < 2.5
+    assert result == "Execution cancelled."
+    time.sleep(3.5)
+    assert not sentinel.exists(), "non-streaming cancel leaked a stdout-holding grandchild"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+def test_python_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_path):
+    sentinel = tmp_path / "grandchild_ran"
+    code = (
+        "import subprocess\n"
+        f"subprocess.Popen(['bash', '-c', \"sleep 3; touch '{sentinel}'\"])\n"
+        "print('parent-done')\n"
+    )
+    cancel_event = threading.Event()
+    timer = threading.Timer(0.5, cancel_event.set)
+    timer.start()
+    started = time.monotonic()
+    try:
+        result = _python_exec(code, cancel_event = cancel_event, timeout = 30)
+    finally:
+        timer.cancel()
+    assert time.monotonic() - started < 2.5
+    assert result == "Execution cancelled."
+    time.sleep(3.5)
+    assert not sentinel.exists(), "non-streaming cancel leaked a stdout-holding grandchild"
