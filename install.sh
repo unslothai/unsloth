@@ -2250,7 +2250,17 @@ _torch_index_url_leaf() {
 _expected_torch_flavor_tag() {
     _leaf=$(_torch_index_url_leaf "$1")
     case "$_leaf" in
-        cu[0-9]*)   echo "$_leaf" ;;
+        cu[0-9]*)
+            # Exact cu + digits only. A custom leaf that merely starts with a CUDA
+            # tag (e.g. cu128-private) is NOT the cu128 family: a correct +cu128
+            # wheel would otherwise be considered mismatched against "cu128-private"
+            # and force-reinstalled every run. Route it to the empty (custom) case,
+            # matching the Python re.fullmatch(cu[0-9]+) and PowerShell paths.
+            case "${_leaf#cu}" in
+                *[!0-9]*) echo "" ;;
+                *)        echo "$_leaf" ;;
+            esac
+            ;;
         cpu)        echo "cpu" ;;
         rocm*|gfx*) echo "rocm" ;;
         *)          echo "" ;;
@@ -2727,6 +2737,20 @@ case "$_torch_index_leaf" in
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
         ;;
 esac
+
+# A pinned custom/unknown-leaf index (a private /simple or /current mirror, or a
+# cu-suffixed custom leaf like /cu128-private) has no curated companion set, so bound
+# torchvision/torchaudio to the same <2.11 range the Python update path pins
+# (_CUSTOM_INDEX_TORCH_PKG_SPEC). Otherwise the bare defaults let a mirror that also
+# exposes newer companion wheels resolve a torch-2.12-built torchvision against the
+# capped <2.11 torch (ABI mismatch), even though torch itself is bounded. Known
+# families (cu*/cpu/rocm*/gfx*) keep their curated bare or floored companions from
+# above; _expected_torch_flavor_tag returns "" only for a genuine custom leaf.
+if [ "$_torch_index_pinned" = true ] && \
+   [ -z "$(_expected_torch_flavor_tag "$TORCH_INDEX_URL")" ]; then
+    TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"
+    TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
+fi
 
 # Auto-detect GPU for AMD ROCm based
 # get_torch_index_url must have chosen */rocm*

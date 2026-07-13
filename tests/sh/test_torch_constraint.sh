@@ -108,6 +108,20 @@ assert_eq "\$TORCH_CONSTRAINT used in pip install" "yes" "$_has_var"
 _hardcoded=$(grep -c '"torch>=2.4,<2.11.0"' "$INSTALL_SH" || true)
 assert_eq "hardcoded torch>=2.4 appears exactly once" "1" "$_hardcoded"
 
+# A pinned custom/unknown-leaf index must bound the companions like the Python
+# _CUSTOM_INDEX_TORCH_PKG_SPEC (round-9 P2), not leave them bare -- a private mirror
+# exposing newer companion wheels could otherwise resolve a torch-2.12-built
+# torchvision against the capped <2.11 torch. Structural checks (the block runs deep
+# in the resolved-index flow): the bounded assignments exist AND are gated on a custom
+# (empty) flavor tag, not applied unconditionally.
+_count=$(grep -c 'TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"' "$INSTALL_SH" || true)
+assert_eq "custom-leaf pin bounds torchvision (<0.26)" "1" "$_count"
+_count=$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"' "$INSTALL_SH" || true)
+assert_eq "custom-leaf pin bounds torchaudio (<2.11)" "1" "$_count"
+_gated=$(grep -c '_expected_torch_flavor_tag "$TORCH_INDEX_URL"' "$INSTALL_SH" || true)
+_has_gate=$([ "$_gated" -ge 1 ] && echo "yes" || echo "no")
+assert_eq "custom-companion bound gated on empty flavor tag" "yes" "$_has_gate"
+
 echo ""
 echo "=== Structural: tokenizers in no-torch-runtime.txt ==="
 

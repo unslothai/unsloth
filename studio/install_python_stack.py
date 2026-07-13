@@ -1781,8 +1781,18 @@ def _ensure_pinned_known_family_torch() -> None:
     flavor = _probe_torch_flavor()
     if flavor is None:
         return
-    if _torch_flavor_matches_pin(pin, flavor) is not False:
-        return  # matches (True) or unknown (None) -> nothing to enforce
+    # Reinstall when the installed flavor does not match the pin, OR when the marker
+    # records a DIFFERENT index of the SAME flavor -- a mirror or per-arch switch the
+    # wheel's flavor tag cannot see (one /cpu mirror to another, or gfx1151 ->
+    # gfx120x-all, both +rocm7.13.0), exactly as the Linux _ensure_{cuda,cpu}_torch
+    # helpers do. Without this a same-flavor repoint is never applied while
+    # _torch_pin_needs_apply keeps forcing the pass on the marker mismatch. An ABSENT
+    # marker on an already-matching venv is left to _record_torch_index_pin_baseline (no
+    # forced reinstall of a correct pre-marker venv -- backward compat). The reinstall
+    # rewrites the marker, so the next update matches and the fast path returns (no loop).
+    _flavor_ok = _torch_flavor_matches_pin(pin, flavor) is not False
+    if _flavor_ok and _marker_pin_mismatch(pin) is not True:
+        return
     if _is_win_rocm:
         # Mirror the spec the initial ROCm paths pin so this repair never resolves an
         # unbounded or ABI-mismatched trio from an exclusive --index-url:
@@ -1801,20 +1811,42 @@ def _ensure_pinned_known_family_torch() -> None:
             _spec = _ROCM_TORCH_PKG_SPECS.get(leaf, _ROCM_TORCH_PKG_SPECS["_default"])
     else:
         _spec = _CUDA_TORCH_PKG_SPEC
-    print(f"   torch drifted from the pinned {leaf} index -- reinstalling from it")
+    _why = "drifted from" if not _flavor_ok else "was repointed to"
+    print(f"   torch {_why} the pinned {leaf} index -- reinstalling from it")
     _torch_pkg, _vision_pkg, _audio_pkg = _spec
-    pip_install(
-        "torch (pinned family repair)",
-        "--force-reinstall",
-        "--no-cache-dir",
-        _torch_pkg,
-        _vision_pkg,
-        _audio_pkg,
-        "--index-url",
-        pin,
-        constrain = False,
-    )
-    _write_torch_index_marker(pin)
+    if _is_win_rocm:
+        # Nonfatal: when setup.ps1 took its CPU fallback (the pinned AMD index was
+        # unavailable/unsupported), torch is CPU and this repair would re-hit that same
+        # missing index. pip_install_try leaves the CPU base in place on failure and
+        # writes the marker only when the pinned ROCm wheels actually land, so the
+        # install still completes -- matching _ensure_rocm_torch's nonfatal Windows path.
+        if pip_install_try(
+            "torch (pinned family repair)",
+            "--force-reinstall",
+            "--no-cache-dir",
+            _torch_pkg,
+            _vision_pkg,
+            _audio_pkg,
+            "--index-url",
+            pin,
+            constrain = False,
+        ):
+            _write_torch_index_marker(pin)
+    else:
+        # cu*/cpu pins (pytorch.org or a user mirror) are the authoritative source, so a
+        # failure to reach them is fatal, same as the other known-family helpers.
+        pip_install(
+            "torch (pinned family repair)",
+            "--force-reinstall",
+            "--no-cache-dir",
+            _torch_pkg,
+            _vision_pkg,
+            _audio_pkg,
+            "--index-url",
+            pin,
+            constrain = False,
+        )
+        _write_torch_index_marker(pin)
 
 
 def _ensure_cuda_torch() -> None:

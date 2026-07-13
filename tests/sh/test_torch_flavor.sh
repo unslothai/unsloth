@@ -64,6 +64,12 @@ assert_eq "empty url"          ""      "$(_expected_torch_flavor_tag '')"
 # never equal the installed cu128 tag (which would reinstall on every run).
 assert_eq "query-bearing cu128" "cu128" "$(_expected_torch_flavor_tag 'https://m/whl/cu128?token=x')"
 assert_eq "fragment-bearing cpu" "cpu"  "$(_expected_torch_flavor_tag 'https://m/whl/cpu#frag')"
+# A cu-suffixed CUSTOM leaf (cu128-private, cu128x) is NOT the cu128 family: exact
+# cu+digits only, else a correct +cu128 wheel is force-reinstalled every run against a
+# leaf it can never equal. Mirrors the Python re.fullmatch(cu[0-9]+) / PowerShell.
+assert_eq "cu-suffix custom leaf" ""    "$(_expected_torch_flavor_tag 'https://m/whl/cu128-private')"
+assert_eq "cu-alnum custom leaf"  ""    "$(_expected_torch_flavor_tag 'https://m/whl/cu128x')"
+assert_eq "bare cu digits stays"  "cu126" "$(_expected_torch_flavor_tag 'https://m/whl/cu126')"
 
 echo "=== _torch_index_repairable ==="
 assert_eq "cu130 repairable"   "yes"   "$(_torch_index_repairable 'https://download.pytorch.org/whl/cu130')"

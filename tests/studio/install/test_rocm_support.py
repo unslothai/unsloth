@@ -1918,46 +1918,65 @@ class TestEnsureRocmTorchMarker:
         url,
         flavor,
         is_windows = False,
+        pip_try_result = True,
     ):
         """Run _ensure_pinned_known_family_torch with a pin + mocked flavor probe,
-        returning the pip_install mock so callers can assert on the reinstall. is_windows
-        pins stack_mod.IS_WINDOWS so the ROCm-on-Windows branch is exercised
-        deterministically (the runner is Linux, where IS_WINDOWS is False)."""
+        returning (pip_install_mock, pip_install_try_mock): a cu*/cpu repair uses the
+        fatal pip_install, while a Windows ROCm repair uses the nonfatal pip_install_try
+        (so a setup.ps1 CPU fallback is not aborted). pip_try_result sets what that
+        nonfatal call returns. is_windows pins stack_mod.IS_WINDOWS so the ROCm-on-Windows
+        branch is exercised deterministically (the runner is Linux, where it is False)."""
         env = {"UNSLOTH_TORCH_INDEX_URL": url}
         with patch.object(stack_mod, "NO_TORCH", False):
             with patch.object(stack_mod, "IS_MAC_INTEL", False):
                 with patch.object(stack_mod, "IS_WINDOWS", is_windows):
                     with patch.object(stack_mod, "_probe_torch_flavor", return_value = flavor):
                         with patch.object(stack_mod, "pip_install") as mock_pip:
-                            with patch.dict(stack_mod.os.environ, env, clear = False):
-                                stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
-                                stack_mod._ensure_pinned_known_family_torch()
-                            return mock_pip
+                            with patch.object(
+                                stack_mod, "pip_install_try", return_value = pip_try_result
+                            ) as mock_try:
+                                with patch.dict(stack_mod.os.environ, env, clear = False):
+                                    stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                                    stack_mod._ensure_pinned_known_family_torch()
+                                return mock_pip, mock_try
 
     def test_pinned_known_family_repairs_clobbered_cuda(self):
         """A cu128 pin whose main-venv torch was clobbered to a CPU wheel (Windows: a
         later dependency step after setup.ps1 applied the pin; the family helpers no-op
         there) is reinstalled from the pin, and the marker is rewritten."""
-        mock_pip = self._ensure_known("https://mirror.local/cu128", ("cpu", "", "2.10.0"))
+        mock_pip, _ = self._ensure_known("https://mirror.local/cu128", ("cpu", "", "2.10.0"))
         assert mock_pip.call_count == 1
         assert "https://mirror.local/cu128" in str(mock_pip.call_args)
         assert "https://mirror.local/cu128" in self._marker_path.read_text()
 
     def test_pinned_known_family_untagged_cuda_reinstalls(self):
         """An untagged CUDA build under a cu128 pin cannot be confirmed -> reinstall."""
-        mock_pip = self._ensure_known("https://mirror.local/cu128", ("cuda", "", "2.10.0"))
+        mock_pip, _ = self._ensure_known("https://mirror.local/cu128", ("cuda", "", "2.10.0"))
         assert mock_pip.call_count == 1
 
     def test_pinned_known_family_matching_no_reinstall(self):
-        """A cu128 build already matching the cu128 pin is left alone (no loop)."""
-        mock_pip = self._ensure_known(
+        """A cu128 build matching the cu128 pin with no marker change is left alone."""
+        mock_pip, _ = self._ensure_known(
             "https://mirror.local/cu128", ("cuda", "cu128", "2.10.0+cu128")
         )
         mock_pip.assert_not_called()
 
+    def test_pinned_known_family_same_flavor_marker_change_reinstalls(self):
+        """A cu128 build that already matches the cu128 FLAVOR but whose marker records a
+        DIFFERENT cu128 index (mirror A -> mirror B) is reinstalled from the new URL and
+        the marker rewritten -- the wheel tag cannot see a same-flavor source switch, so
+        without this _torch_pin_needs_apply would force the pass forever (round-9 P2)."""
+        self._seed("https://mirror.a/cu128")
+        mock_pip, _ = self._ensure_known(
+            "https://mirror.b/cu128", ("cuda", "cu128", "2.10.0+cu128")
+        )
+        assert mock_pip.call_count == 1
+        assert "https://mirror.b/cu128" in str(mock_pip.call_args)
+        assert "https://mirror.b/cu128" in self._marker_path.read_text()
+
     def test_pinned_known_family_cpu_pin_repairs(self):
         """A cpu pin whose torch drifted to a CUDA build is reinstalled from the pin."""
-        mock_pip = self._ensure_known("https://mirror.local/cpu", ("cuda", "cu128", "2.10.0+cu128"))
+        mock_pip, _ = self._ensure_known("https://mirror.local/cpu", ("cuda", "cu128", "2.10.0+cu128"))
         assert mock_pip.call_count == 1
 
     def test_pinned_known_family_skips_rocm_and_gfx_off_windows(self):
@@ -1965,24 +1984,26 @@ class TestEnsureRocmTorchMarker:
         NOT handled here: Apple Silicon has no ROCm, so a rocm/gfx pin is left to the
         verbatim/other paths and never reinstalled with a CUDA/CPU spec."""
         for url in ("https://mirror.local/rocm7.2", "https://repo.amd.com/rocm/whl/gfx1151"):
-            mock_pip = self._ensure_known(url, ("cpu", "", "2.10.0"), is_windows = False)
+            mock_pip, mock_try = self._ensure_known(url, ("cpu", "", "2.10.0"), is_windows = False)
             mock_pip.assert_not_called()
+            mock_try.assert_not_called()
 
     def test_pinned_known_family_windows_rocm_repairs_from_pin(self):
         """On Windows, an explicit rocm/gfx pin whose torch was clobbered to CPU is
         reinstalled FROM THE PINNED url (per-arch index, a rocm<d> mirror, or a private
-        mirror to a gfx family), and the marker is rewritten. Round-7 item 2:
-        _ensure_rocm_torch's Windows path would instead reinstall from the hipinfo-
-        detected arch (wrong source for a mismatched/private pin) and skip a headless
-        box; enforcing the pin here fixes both."""
+        mirror to a gfx family) via the NONFATAL pip_install_try, and the marker is
+        rewritten. Round-7 item 2: _ensure_rocm_torch's Windows path would instead
+        reinstall from the hipinfo-detected arch (wrong source for a mismatched/private
+        pin) and skip a headless box; enforcing the pin here fixes both."""
         for url in (
             "https://repo.amd.com/rocm/whl/gfx1151",  # AMD per-arch index
             "https://mirror.local/rocm7.2",  # rocm<d> mirror
             "https://private.example/whl/gfx1151",  # private mirror to a gfx family
         ):
-            mock_pip = self._ensure_known(url, ("cpu", "", "2.10.0"), is_windows = True)
-            assert mock_pip.call_count == 1, url
-            call = str(mock_pip.call_args)
+            mock_pip, mock_try = self._ensure_known(url, ("cpu", "", "2.10.0"), is_windows = True)
+            mock_pip.assert_not_called()  # ROCm repair is nonfatal, not the fatal path
+            assert mock_try.call_count == 1, url
+            call = str(mock_try.call_args)
             assert url in call, f"must reinstall from the pinned url, got {call}"
             assert url in self._marker_path.read_text()
             self._marker_path.unlink(missing_ok = True)
@@ -1993,8 +2014,8 @@ class TestEnsureRocmTorchMarker:
         that index -- a rocm7.2 mirror must NOT be left bare, or an exclusive --index-url
         could resolve an unbounded/ABI-mismatched trio (round-8 P2)."""
         for url in ("https://repo.amd.com/rocm/whl/gfx1151", "https://mirror.local/rocm7.2"):
-            hit = self._ensure_known(url, ("cpu", "", "2.10.0"), is_windows = True)
-            args = [str(a) for a in hit.call_args.args]
+            _, mock_try = self._ensure_known(url, ("cpu", "", "2.10.0"), is_windows = True)
+            args = [str(a) for a in mock_try.call_args.args]
             for spec in stack_mod._ROCM_TORCH_PKG_SPECS["rocm7.2"]:
                 assert spec in args, f"{url} must use the rocm7.2 floor spec {spec}"
             self._marker_path.unlink(missing_ok = True)
@@ -2002,32 +2023,49 @@ class TestEnsureRocmTorchMarker:
     def test_pinned_known_family_windows_older_rocm_uses_default_floor(self):
         """A rocm<d> mirror without a dedicated 2.11 floor (rocm7.1) falls back to the
         <2.11 default spec, never a bare trio."""
-        hit = self._ensure_known(
+        _, mock_try = self._ensure_known(
             "https://mirror.local/rocm7.1", ("cpu", "", "2.10.0"), is_windows = True
         )
-        args = [str(a) for a in hit.call_args.args]
+        args = [str(a) for a in mock_try.call_args.args]
         for spec in stack_mod._ROCM_TORCH_PKG_SPECS["_default"]:
             assert spec in args, f"rocm7.1 must use the <2.11 default spec {spec}"
 
+    def test_pinned_known_family_windows_rocm_fallback_nonfatal(self):
+        """When the pinned AMD index is unavailable (setup.ps1 took its CPU fallback), the
+        Windows ROCm repair must NOT abort: it uses pip_install_try, and on failure leaves
+        the CPU base in place and does NOT write the ROCm marker (round-9 P2)."""
+        _, mock_try = self._ensure_known(
+            "https://repo.amd.com/rocm/whl/gfx1151",
+            ("cpu", "", "2.10.0"),
+            is_windows = True,
+            pip_try_result = False,
+        )
+        assert mock_try.call_count == 1  # attempted the pinned reinstall (nonfatal)
+        assert not self._marker_path.exists()  # failed install -> no ROCm marker written
+
     def test_pinned_known_family_windows_rocm_matching_no_reinstall(self):
         """A Windows gfx pin whose torch already matches (an AMD per-arch +rocm7.13.0
-        wheel) is left alone -- loop-safe."""
-        mock_pip = self._ensure_known(
+        wheel) with a matching marker is left alone -- loop-safe."""
+        self._seed("https://repo.amd.com/rocm/whl/gfx1151")
+        mock_pip, mock_try = self._ensure_known(
             "https://repo.amd.com/rocm/whl/gfx1151",
             ("hip", "", "2.11.0+rocm7.13.0"),
             is_windows = True,
         )
         mock_pip.assert_not_called()
+        mock_try.assert_not_called()
 
     def test_pinned_known_family_skips_unknown_family(self):
         """An unknown-family pin is owned by _ensure_verbatim_torch_index, not here."""
-        mock_pip = self._ensure_known("https://mirror.local/simple", ("cpu", "", "2.10.0"))
+        mock_pip, mock_try = self._ensure_known("https://mirror.local/simple", ("cpu", "", "2.10.0"))
         mock_pip.assert_not_called()
+        mock_try.assert_not_called()
 
     def test_pinned_known_family_skips_failed_probe(self):
         """A broken/missing torch probe -> no forced reinstall (no loop)."""
-        mock_pip = self._ensure_known("https://mirror.local/cu128", None)
+        mock_pip, mock_try = self._ensure_known("https://mirror.local/cu128", None)
         mock_pip.assert_not_called()
+        mock_try.assert_not_called()
 
     def test_pinned_known_family_skips_no_torch_and_intel_mac(self):
         """NO_TORCH (headless no-torch) and Intel mac (already NO_TORCH) do nothing."""
