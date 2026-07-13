@@ -208,6 +208,71 @@ def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
     assert ns["_resolve_browse_target"](str(model_dir), allowlist) == model_dir.resolve()
 
 
+def test_build_browse_allowlist_reuses_passed_roots(monkeypatch, tmp_path):
+    # Regression guard for the double-probe fix: a browse request probes the
+    # drive/media roots once and passes them in, so _build_browse_allowlist must
+    # NOT scan windows_drive_roots() again (a disconnected mapped drive would
+    # otherwise double the per-request stall).
+    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
+    functions = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_build_browse_allowlist"
+    ]
+    module = ast.Module(body = functions, type_ignores = [])
+    ast.fix_missing_locations(module)
+
+    drive_root = tmp_path / "D_drive"
+    drive_root.mkdir()
+
+    calls = {"drive": 0, "media": 0}
+
+    def _drive_roots():
+        calls["drive"] += 1
+        return [drive_root]
+
+    def _media_roots():
+        calls["media"] += 1
+        return []
+
+    fake_paths = SimpleNamespace(
+        hf_default_cache_dir = lambda: tmp_path / "missing-default-hf",
+        legacy_hf_cache_dir = lambda: tmp_path / "missing-legacy-hf",
+        well_known_model_dirs = lambda: [],
+        studio_root = lambda: tmp_path / "missing-studio",
+        outputs_root = lambda: tmp_path / "missing-outputs",
+        exports_root = lambda: tmp_path / "missing-exports",
+    )
+    fake_external_media = SimpleNamespace(
+        linux_run_media_mount_roots = _media_roots,
+        windows_drive_roots = _drive_roots,
+    )
+    fake_studio_db = SimpleNamespace(list_scan_folders = lambda: [])
+    monkeypatch.setitem(sys.modules, "utils.paths", fake_paths)
+    monkeypatch.setitem(sys.modules, "utils.paths.external_media", fake_external_media)
+    monkeypatch.setitem(sys.modules, "storage.studio_db", fake_studio_db)
+
+    ns = {
+        "os": os,
+        "Path": Path,
+        "Optional": Optional,
+        "_safe_is_dir": lambda p: Path(p).is_dir(),
+        "_resolve_hf_cache_dir": lambda: tmp_path / "missing-hf",
+        "logger": SimpleNamespace(debug = lambda *_args, **_kwargs: None),
+    }
+    exec(compile(module, "<extracted routes/models.py>", "exec"), ns)
+    build = ns["_build_browse_allowlist"]
+
+    # Roots passed in -> neither helper is probed, but the roots still flow in.
+    allowlist = build([], [drive_root])
+    assert calls == {"drive": 0, "media": 0}
+    assert drive_root.resolve() in allowlist
+
+    # No args -> each helper is probed exactly once.
+    build()
+    assert calls == {"drive": 1, "media": 1}
+
+
 def test_is_path_inside_allowlist_real_descendants_and_siblings(tmp_path):
     # Component-wise containment (commonpath): a genuine descendant is allowed,
     # but a sibling that only shares a string prefix ("models_root_evil" vs

@@ -1188,7 +1188,10 @@ def _looks_like_model_dir(directory: Path) -> bool:
     return False
 
 
-def _build_browse_allowlist() -> list[Path]:
+def _build_browse_allowlist(
+    media_roots: Optional[list[Path]] = None,
+    drive_roots: Optional[list[Path]] = None,
+) -> list[Path]:
     """Return the root directories the folder browser may walk.
 
     The same list seeds the sidebar suggestion chips, so chip targets are
@@ -1196,6 +1199,11 @@ def _build_browse_allowlist() -> list[Path]:
     outputs/exports/studio root, registered scan folders, and well-known
     local-LLM dirs (LM Studio, Ollama, ``~/models``); each added only if
     it resolves to a real directory.
+
+    *media_roots* / *drive_roots* let the caller pass the already-probed
+    removable-media and Windows drive roots so they are not scanned again for
+    the suggestion chips (a disconnected mapped drive can make each probe slow);
+    when ``None`` they are probed here.
     """
     from utils.paths import (
         hf_default_cache_dir,
@@ -1221,9 +1229,13 @@ def _build_browse_allowlist() -> list[Path]:
             candidates.append(resolved)
 
     _add(Path.home())
-    for p in linux_run_media_mount_roots():
+    if media_roots is None:
+        media_roots = linux_run_media_mount_roots()
+    if drive_roots is None:
+        drive_roots = windows_drive_roots()
+    for p in media_roots:
         _add(p)
-    for p in windows_drive_roots():
+    for p in drive_roots:
         _add(p)
     _add(_resolve_hf_cache_dir())
     try:
@@ -1498,8 +1510,13 @@ async def browse_folders(
         list_scan_folders,
     )
 
+    # Probe removable-media and Windows drive roots once; the allowlist and the
+    # suggestion chips reuse the result so a disconnected mapped drive is not
+    # scanned twice per request.
+    media_roots = linux_run_media_mount_roots()
+    drive_roots = windows_drive_roots()
     # Build once; the sandbox check and suggestion chips share it.
-    allowed_roots = _build_browse_allowlist()
+    allowed_roots = _build_browse_allowlist(media_roots, drive_roots)
 
     try:
         target = _resolve_browse_target(path, allowed_roots)
@@ -1619,10 +1636,11 @@ async def browse_folders(
 
     # Home first -- the safe fallback when everything else is cold.
     _add_sug(Path.home())
-    for p in linux_run_media_mount_roots():
+    # Reuse the roots probed for the allowlist above (no second drive scan).
+    for p in media_roots:
         _add_sug(p)
     # Windows drive roots so the user can hop between C:, D:, E: ...
-    for p in windows_drive_roots():
+    for p in drive_roots:
         _add_sug(p)
     # The HF cache root the process is actually using.
     try:
