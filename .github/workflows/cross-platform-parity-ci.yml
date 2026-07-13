@@ -60,6 +60,8 @@ jobs:
           cache: 'pip'
       - run: python -m pip install -U pip pytest
       - name: Cross-platform parity tests
+        env:
+          UNSLOTH_NO_TORCH: '1'
         run: >-
           python -m pytest
           tests/python/test_cross_platform_parity.py

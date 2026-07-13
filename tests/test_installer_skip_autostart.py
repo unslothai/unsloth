@@ -30,22 +30,34 @@ def _extract(pattern: str, source: str) -> str:
     [(value, "true") for value in TRUTHY_VALUES] + [(value, "false") for value in FALSEY_VALUES],
 )
 @pytest.mark.skipif(shutil.which("sh") is None, reason = "POSIX shell is unavailable")
-def test_posix_skip_autostart_value_parsing(value: str, expected: str):
+def test_posix_skip_autostart_value_parsing_with_no_torch(value: str, expected: str):
     source = INSTALL_SH.read_text(encoding = "utf-8")
-    parser = _extract(
+    no_torch_parser = _extract(
+        r'case "\$\{UNSLOTH_NO_TORCH:-\}" in.*?esac',
+        source,
+    )
+    autostart_parser = _extract(
         r'case "\$\{UNSLOTH_SKIP_AUTOSTART:-\}" in.*?esac',
         source,
     )
     env = os.environ.copy()
+    env["UNSLOTH_NO_TORCH"] = "1"
     env["UNSLOTH_SKIP_AUTOSTART"] = value
     result = subprocess.run(
-        ["sh", "-c", f'_SKIP_AUTOSTART=false\n{parser}\nprintf "%s" "$_SKIP_AUTOSTART"'],
+        [
+            "sh",
+            "-c",
+            (
+                f"_NO_TORCH_FLAG=false\n_SKIP_AUTOSTART=false\n{no_torch_parser}\n"
+                f'{autostart_parser}\nprintf "%s %s" "$_NO_TORCH_FLAG" "$_SKIP_AUTOSTART"'
+            ),
+        ],
         check = True,
         capture_output = True,
         text = True,
         env = env,
     )
-    assert result.stdout == expected
+    assert result.stdout == f"true {expected}"
 
 
 def test_posix_skip_autostart_bypasses_only_the_interactive_prompt():
@@ -65,24 +77,33 @@ def test_posix_skip_autostart_bypasses_only_the_interactive_prompt():
     ("value", "expected"),
     [(value, "True") for value in TRUTHY_VALUES] + [(value, "False") for value in FALSEY_VALUES],
 )
-def test_windows_skip_autostart_value_parsing(value: str, expected: str):
+def test_windows_skip_autostart_value_parsing_with_no_torch(value: str, expected: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     parser = _extract(
-        r"\$SkipAutostart = \$false\s+.*?"
+        r"\$SkipTorch = \$false\s+\$SkipAutostart = \$false\s+.*?"
+        r"if \(\$env:UNSLOTH_NO_TORCH -in @\('1', 'true', 'yes', 'on'\)\) "
+        r"\{ \$SkipTorch = \$true \}\s+"
         r"if \(\$env:UNSLOTH_SKIP_AUTOSTART -in @\('1', 'true', 'yes', 'on'\)\) "
         r"\{ \$SkipAutostart = \$true \}",
         source,
     )
     env = os.environ.copy()
+    env["UNSLOTH_NO_TORCH"] = "1"
     env["UNSLOTH_SKIP_AUTOSTART"] = value
     result = subprocess.run(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", f"{parser}; $SkipAutostart"],
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f'{parser}; "$SkipTorch $SkipAutostart"',
+        ],
         check = True,
         capture_output = True,
         text = True,
         env = env,
     )
-    assert result.stdout.strip() == expected
+    assert result.stdout.strip() == f"True {expected}"
 
 
 def test_windows_skip_autostart_bypasses_only_the_interactive_prompt():
