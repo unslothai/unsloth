@@ -1374,36 +1374,39 @@ async def start_diffusion_training(
         _preflight_gated_base, config.get("base_model", ""), config.get("hf_token")
     )
 
-    # Preflight the dataset too: a missing/empty/uncaptionable data_dir otherwise fails inside
-    # the spawned trainer AFTER the user's model was evicted. Same discovery the trainer runs,
-    # so the two cannot disagree.
     from core.training import diffusion_train_common as _dtc
 
-    try:
-        await asyncio.to_thread(
-            _dtc.discover_image_caption_pairs,
-            config["data_dir"],
-            instance_prompt = config.get("instance_prompt") or None,
-            caption_column = config.get("caption_column") or "text",
-            # Decode-probe every image now (cheap PIL header check) so a corrupt/zero-byte upload
-            # 400s BEFORE _free_gpu_for_diffusion_training() tears down the user's models, rather
-            # than crashing the spawned trainer post-eviction.
-            verify_images = True,
-        )
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code = 400, detail = str(e))
-
     service = get_diffusion_training_service()
-    # Reserve the training slot BEFORE freeing residents: is_active() otherwise flips true only at
-    # service.start(), after the free, so a concurrent /images/load or /video/load would pass its
-    # training guard during the free-then-spawn window and double-allocate VRAM. reserve() is a
-    # compare-and-set: a second overlapping /diffusion/start raises RuntimeError (-> 409) before
-    # freeing anything, so two starts never both tear down residents. unreserve() runs in the
-    # finally ONLY when THIS request reserved, so a rejected second request can't clear the claim.
+    # Reserve the training slot BEFORE the dataset preflight (not just before freeing residents):
+    # is_active() otherwise flips true only at service.start(), so during this scan -- which
+    # decode-probes every image and can take noticeable time on a large folder -- a concurrent
+    # upload/caption/delete would pass _require_diffusion_dataset_mutable() and mutate the dataset
+    # the trainer is about to read (training the wrong data, or a missing file mid-step), and a
+    # concurrent /images/load or /video/load would pass its guard and double-allocate VRAM.
+    # reserve() is a compare-and-set: a second overlapping /diffusion/start raises RuntimeError
+    # (-> 409) before touching anything. unreserve() runs in the finally ONLY when THIS request
+    # reserved, so a rejected second request can't clear the claim, and any preflight failure below
+    # rolls the reservation back.
     reserved = False
     try:
         service.reserve()
         reserved = True
+        # Preflight the dataset: a missing/empty/uncaptionable data_dir otherwise fails inside the
+        # spawned trainer AFTER the user's model was evicted. Same discovery the trainer runs, so
+        # the two cannot disagree.
+        try:
+            await asyncio.to_thread(
+                _dtc.discover_image_caption_pairs,
+                config["data_dir"],
+                instance_prompt = config.get("instance_prompt") or None,
+                caption_column = config.get("caption_column") or "text",
+                # Decode-probe every image now (cheap PIL header check) so a corrupt/zero-byte
+                # upload 400s BEFORE _free_gpu_for_diffusion_training() tears down the user's
+                # models, rather than crashing the spawned trainer post-eviction.
+                verify_images = True,
+            )
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code = 400, detail = str(e))
         # Free resident GPU workloads (export / Images pipeline / chat) before the trainer loads
         # its own pipeline. Offload the blocking teardown (engine unload waits on generation
         # locks; export subprocess join can take seconds) to a worker thread so the event loop

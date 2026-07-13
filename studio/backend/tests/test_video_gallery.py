@@ -108,6 +108,30 @@ def test_video_path_returns_mp4_for_saved_id():
     assert path is not None and path.name == f"{record['id']}.mp4"
 
 
+def test_owned_video_path_serves_only_owned_clips():
+    # A hand-dropped orphan MP4 resolves via video_path (safe stem, on disk) but must NOT be
+    # served: owned_video_path applies the same sidecar check as delete/clear, so the serve and
+    # export routes can't stream/transcode a clip the listing hides.
+    orphan = gallery.gallery_dir() / "recording.mp4"
+    orphan.write_bytes(_mp4())
+    assert gallery.video_path("recording") is not None  # resolvable...
+    assert gallery.owned_video_path("recording") is None  # ...but not ours to serve
+
+    ours = gallery.save(_mp4(), _meta(prompt = "ours"))
+    assert gallery.owned_video_path(ours["id"]) is not None
+    assert gallery.owned_video_path("../../etc/passwd") is None
+    assert gallery.owned_video_path("missing") is None
+
+
+def test_transcode_refuses_orphan_mp4():
+    # Export starts from the same resolver as /file, so a guessed stem for an orphan MP4 (no
+    # readable sidecar) must not be re-encoded out either.
+    orphan = gallery.gallery_dir() / "recording.mp4"
+    orphan.write_bytes(_real_mp4_bytes())
+    assert gallery.transcode("recording", "gif") is None
+    assert gallery.transcode("recording", "webm") is None
+
+
 def test_delete_removes_both_files():
     record = gallery.save(_mp4(), _meta(prompt = "a"))
     gallery.save(_mp4(), _meta(prompt = "b"))

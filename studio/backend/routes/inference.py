@@ -14382,6 +14382,13 @@ async def load_diffusion_model(
         raise HTTPException(status_code = 409, detail = str(exc))
 
 
+# Count of finished generations still writing their PNG/gallery records. generate-progress reports
+# active while this is > 0 so a reload's mount probe never reads idle between the denoise finishing
+# (engine drops _gen) and the image reaching the gallery, which would refresh the gallery before the
+# record exists. Mutated only on the event loop (around the persist await), so no lock is needed.
+_diffusion_persist_active = 0
+
+
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
 async def generate_diffusion_image(
     request: DiffusionGenerateRequest, current_subject: str = Depends(get_current_subject)
@@ -14500,11 +14507,18 @@ async def generate_diffusion_image(
             )
         return records
 
+    # Hold generate-progress "active" across the persist so a concurrent reload's mount probe can't
+    # see idle and refresh the gallery before these records exist. Set synchronously right after the
+    # engine returned (no await between, so no idle gap), cleared in the finally.
+    global _diffusion_persist_active
+    _diffusion_persist_active += 1
     try:
         records = await asyncio.to_thread(_persist)
     except Exception as exc:
         logger.error("diffusion.persist_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
+    finally:
+        _diffusion_persist_active -= 1
 
     return DiffusionGenerateResponse(images = [GalleryImage(**r) for r in records])
 
@@ -14548,7 +14562,9 @@ async def get_gallery_image_file(
 ):
     from core.inference import image_gallery
 
-    path = await asyncio.to_thread(image_gallery.image_path, image_id)
+    # Ownership-gate the serve like delete/clear: resolve only a Studio-owned PNG (readable recipe),
+    # so a guessed stem for a hand-dropped foreign PNG the listing hides can't be streamed out.
+    path = await asyncio.to_thread(image_gallery.owned_image_path, image_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Image not found.")
     data = await asyncio.to_thread(path.read_bytes)
@@ -14623,7 +14639,13 @@ async def diffusion_load_progress(current_subject: str = Depends(get_current_sub
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
 async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
-    return DiffusionGenerateProgressResponse(**get_active_diffusion_engine().generate_progress())
+
+    progress = get_active_diffusion_engine().generate_progress()
+    # A finished generation still persisting its gallery record counts as active, so a reload's
+    # mount probe keeps polling instead of refreshing the gallery before the image lands.
+    if _diffusion_persist_active > 0 and not progress["active"]:
+        progress = {**progress, "active": True}
+    return DiffusionGenerateProgressResponse(**progress)
 
 
 # ──────────────────────────────────────────────────────────────────────────

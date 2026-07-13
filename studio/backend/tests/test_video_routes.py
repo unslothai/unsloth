@@ -578,6 +578,15 @@ def test_file_endpoint_404_for_bad_id(client):
     assert resp.status_code == 404
 
 
+def test_serve_and_export_refuse_orphan_mp4(client, tmp_path):
+    # A hand-dropped orphan MP4 (no readable sidecar) is hidden by the listing; the serve and
+    # export routes resolve through the ownership guard, so a guessed stem can neither stream nor
+    # transcode it out.
+    (tmp_path / "recording.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    assert client.get("/api/inference/video/gallery/recording/file").status_code == 404
+    assert client.get("/api/inference/video/gallery/recording/export?format=gif").status_code == 404
+
+
 def test_delete_and_clear(client):
     client.post(
         "/api/inference/video/load",

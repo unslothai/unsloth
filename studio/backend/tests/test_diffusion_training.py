@@ -431,6 +431,49 @@ def test_route_start_reserves_before_freeing_gpu(client, monkeypatch):
     assert "unreserve" in client._fake.calls
 
 
+def test_route_start_reserves_before_scanning_dataset(client, monkeypatch):
+    # The dataset preflight scan decode-probes every image and can take noticeable time on a large
+    # folder. It must run AFTER the slot is reserved (is_active -> true), so a concurrent
+    # upload/caption/delete guarded by _require_diffusion_dataset_mutable() can't mutate the dataset
+    # the trainer is about to read during that window. Assert reserve precedes the scan and the
+    # service is active while the scan is in flight.
+    order: list = []
+
+    def _record_scan(data_dir, **kw):
+        client._fake.calls.append("scan")
+        order.append(f"scan_active={client._fake.is_active()}")
+        return [("img.png", "caption")]
+
+    monkeypatch.setattr(
+        "core.training.diffusion_train_common.discover_image_caption_pairs", _record_scan
+    )
+
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 200, r.text
+    assert client._fake.calls.index("reserve") < client._fake.calls.index("scan")
+    assert order == ["scan_active=True"]
+    assert "unreserve" in client._fake.calls
+
+
+def test_route_start_unreserves_when_dataset_preflight_fails(client, monkeypatch):
+    # A dataset preflight failure AFTER the reservation must roll it back (unreserve), or a rejected
+    # start would leave training permanently "active" and keep blocking loads and dataset edits.
+    def _bad_scan(data_dir, **kw):
+        raise ValueError("no captioned images found")
+
+    monkeypatch.setattr(
+        "core.training.diffusion_train_common.discover_image_caption_pairs", _bad_scan
+    )
+
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 400
+    assert "no captioned images" in r.json()["detail"]
+    # Reserved, then rolled back; never started, and no longer active.
+    assert "reserve" in client._fake.calls and "unreserve" in client._fake.calls
+    assert "start" not in client._fake.calls
+    assert client._fake.is_active() is False
+
+
 def test_service_reserve_marks_active_and_rolls_back():
     # The real service: reserve() flips is_active true before any proc exists (so a load guard
     # refuses during the free window), and unreserve() clears it without a live proc, so a failed

@@ -128,6 +128,22 @@ def test_image_path_rejects_unsafe_ids():
     assert gallery.image_path("missing") is None
 
 
+def test_owned_image_path_serves_only_owned_pngs():
+    # A hand-dropped foreign PNG resolves via image_path (safe stem, on disk) but must NOT be
+    # served: owned_image_path applies the same recipe check as delete/clear, so the serve route
+    # can't stream a file the listing hides.
+    foreign = gallery.gallery_dir() / "family-photo.png"
+    _img().save(foreign, format = "PNG")
+    assert gallery.image_path("family-photo") is not None  # resolvable...
+    assert gallery.owned_image_path("family-photo") is None  # ...but not ours to serve
+
+    ours = gallery.save(_img(), _meta(prompt = "ours"))
+    assert gallery.owned_image_path(ours["id"]) is not None
+    # Unsafe / missing ids resolve to nothing, like image_path.
+    assert gallery.owned_image_path("../../etc/passwd") is None
+    assert gallery.owned_image_path("missing") is None
+
+
 def test_list_skips_foreign_pngs(tmp_path):
     # A PNG without our recipe chunk (user dropped a file) is ignored.
     foreign = gallery.gallery_dir() / "foreign.png"

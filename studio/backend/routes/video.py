@@ -272,7 +272,9 @@ async def get_gallery_video_file(
 ):
     from core.inference import video_gallery
 
-    path = await asyncio.to_thread(video_gallery.video_path, video_id)
+    # Ownership-gate the serve like delete/clear: resolve only a Studio-owned MP4 (readable
+    # sidecar), so a guessed stem for a foreign/orphan clip the listing hides can't be streamed out.
+    path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
     from fastapi.responses import FileResponse

@@ -136,6 +136,17 @@ def _read_meta(path: Path) -> Optional[dict[str, Any]]:
     return meta
 
 
+def owned_image_path(image_id: str) -> Optional[Path]:
+    """Resolve an id to its PNG only when it is a Studio-owned image (a readable recipe chunk),
+    else None. The serve route uses this instead of image_path() so a guessed stem for a
+    hand-dropped foreign PNG -- which list_images/delete/clear already treat as not ours -- can't
+    be streamed out. Mirrors the delete/clear ownership guard."""
+    path = image_path(image_id)
+    if path is None or _read_meta(path) is None:
+        return None
+    return path
+
+
 def _mtime(path: Path) -> float:
     try:
         return path.stat().st_mtime

@@ -111,6 +111,10 @@ class _FakeBackend:
             "repo_id": "x/z-image",
         }
 
+    def generate_progress(self):
+        # Idle by default; the persist-window override lives in the route, not here.
+        return {"active": False, "step": 0, "total_steps": 0, "fraction": 0.0, "eta_seconds": None}
+
     def unload(self):
         self.loaded = False
         return _unloaded_status()
@@ -197,6 +201,13 @@ def client(monkeypatch, tmp_path):
         "image_path",
         lambda i: (tmp_path / f"{i}.png") if i in store else None,
     )
+    # The serve route resolves through owned_image_path (ownership-gated); the fake store only ever
+    # holds owned records, so a stem not in it is treated as foreign and refused, like the real guard.
+    monkeypatch.setattr(
+        gallery_module,
+        "owned_image_path",
+        lambda i: (tmp_path / f"{i}.png") if i in store else None,
+    )
     monkeypatch.setattr(gallery_module, "delete", lambda i: store.pop(i, None) is not None)
     monkeypatch.setattr(gallery_module, "clear", _clear)
 
@@ -239,6 +250,49 @@ def test_load_generate_status_unload_roundtrip(client):
     unloaded = client.post("/api/inference/images/unload")
     assert unloaded.status_code == 200 and unloaded.json()["loaded"] is False
     assert client.get("/api/inference/images/status").json()["loaded"] is False
+
+
+def test_gallery_serve_refuses_unowned_id(client):
+    # The serve route resolves through the ownership guard, so a guessed stem for a PNG the gallery
+    # does not own (no record) is a 404, not a stream of foreign bytes.
+    assert client.get("/api/inference/images/gallery/family-photo/file").status_code == 404
+
+
+def test_generate_holds_progress_active_during_persist(client, monkeypatch):
+    # generate-progress must stay active while a finished generation is still writing its gallery
+    # record, so a concurrent reload's mount probe keeps polling instead of refreshing the gallery
+    # before the image lands. Probe the persist counter from inside the save call, and confirm it
+    # is cleared afterwards.
+    import core.inference.image_gallery as gallery_module
+    import routes.inference as inf
+
+    client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+            "base_repo": "unsloth/Z-Image-base",
+        },
+    )
+
+    # Idle before any generation.
+    assert client.get("/api/inference/images/generate-progress").json()["active"] is False
+
+    seen = {}
+    real_save = gallery_module.save
+
+    def _probe_save(image, meta):
+        seen["during"] = inf._diffusion_persist_active
+        return real_save(image, meta)
+
+    monkeypatch.setattr(gallery_module, "save", _probe_save)
+
+    gen = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
+    assert gen.status_code == 200
+    # Active while the record was being persisted, and back to idle once the route returned.
+    assert seen["during"] >= 1
+    assert inf._diffusion_persist_active == 0
+    assert client.get("/api/inference/images/generate-progress").json()["active"] is False
 
 
 def test_load_rejects_untrusted_base_repo(client):

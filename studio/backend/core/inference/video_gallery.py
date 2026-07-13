@@ -82,7 +82,9 @@ def transcode(video_id: str, fmt: str) -> Optional[bytes]:
     """Re-encode a stored MP4 for the Download menu: "webm" (VP9) or "gif". Returns the bytes, or
     None when the id doesn't resolve. Raises RuntimeError on missing codec/deps (route 501s). MP4
     downloads stream the original via /file, not here."""
-    path = video_path(video_id)
+    # Ownership-gate like /file: only transcode a Studio-owned clip (readable sidecar), so a
+    # guessed stem for a foreign/orphan MP4 the gallery hides can't be re-encoded out either.
+    path = owned_video_path(video_id)
     if path is None:
         return None
     normalized = fmt.strip().lower()
@@ -204,6 +206,17 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
     if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
         return None
     return meta
+
+
+def owned_video_path(video_id: str) -> Optional[Path]:
+    """Resolve an id to its MP4 only when it is a Studio-owned clip (a readable sidecar), else
+    None. The serve and export routes use this instead of video_path() so a guessed stem for a
+    hand-dropped/orphan MP4 -- which list_videos/delete/clear already treat as not ours -- can't
+    be streamed or transcoded out. Mirrors the delete/clear ownership guard."""
+    path = video_path(video_id)
+    if path is None or _read_meta(_sidecar_path(video_id)) is None:
+        return None
+    return path
 
 
 def _mtime(path: Path) -> float:

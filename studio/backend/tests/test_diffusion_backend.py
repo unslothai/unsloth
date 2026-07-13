@@ -541,6 +541,40 @@ def test_generate_progress_cleared_on_setup_error(fake_runtime, tmp_path, monkey
     assert backend.generate_progress()["active"] is False
 
 
+def test_generate_progress_active_through_compile_cache_save(fake_runtime, tmp_path, monkeypatch):
+    # Post-denoise work (the compile-cache save) still runs before the route persists the image, so
+    # progress must stay active through it; clearing early would let a reload's mount probe read idle
+    # and refresh the gallery before the result exists.
+    from core.inference import diffusion as dmod
+
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+        hf_token = "hf_secret",
+    )
+
+    seen = {}
+
+    def fake_save(ctx, *, logger = None):
+        seen["progress"] = backend.generate_progress()
+        return True
+
+    monkeypatch.setattr(dmod.compile_cache, "register_shape", lambda *a, **k: None)
+    monkeypatch.setattr(dmod.compile_cache, "save", fake_save)
+
+    gen = backend.generate(prompt = "a sloth", steps = 4)
+    assert len(gen["images"]) == 1
+    # Still active while the compile-cache save ran (after the denoise, before generate() returns).
+    assert seen["progress"]["active"] is True
+    assert seen["progress"]["total_steps"] == 4
+    # And cleared once the generation returns.
+    assert backend.generate_progress()["active"] is False
+
+
 def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_path, monkeypatch):
     # Dense models with speed unset stay bit-identical eager for the first two generations; the
     # 3rd engages the `default` profile mid-session (repeated use amortises the one-time compile),

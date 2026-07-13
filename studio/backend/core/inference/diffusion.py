@@ -2534,12 +2534,13 @@ class DiffusionBackend:
                     self._reset_step_cache(state.pipe)
 
                 self._gen = gen
-                try:
-                    # inference_mode is faster than no_grad and numerically identical here.
-                    with torch.inference_mode():
-                        images = pipe(**kwargs).images
-                finally:
-                    self._gen = None
+                # inference_mode is faster than no_grad and numerically identical here.
+                with torch.inference_mode():
+                    images = pipe(**kwargs).images
+                # Keep progress ACTIVE through the post-denoise work below (the compile-cache save can
+                # take a moment) -- don't null _gen here. The route persists the image AFTER this
+                # returns, so a reload's mount probe that read idle now would refresh the gallery
+                # before the result exists. The outer finally clears _gen on every exit (return/raise).
                 # A cancelled denoise returns a partial/garbage image; don't persist it.
                 if cancel.is_set():
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
@@ -2569,8 +2570,9 @@ class DiffusionBackend:
                 with self._lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
-                    # Drop the published progress state, covering a setup-time error that skips
-                    # the inner finally. Safe under _generate_lock.
+                    # Sole clear of the published progress state, on every exit (return, cancel, or a
+                    # setup/denoise error), so it stays active through post-denoise work but a crashed
+                    # generation never leaves the UI stuck "active". Safe under _generate_lock.
                     self._gen = None
 
     def generate_progress(self) -> dict[str, Any]:
