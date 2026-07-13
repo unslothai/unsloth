@@ -542,6 +542,41 @@ def test_upload_rolls_back_when_a_later_promotion_fails(ds_root, monkeypatch):
     assert not list(folder.glob(".upload-backup-*.part"))
 
 
+def test_upload_rechecks_training_state_before_commit(ds_root, monkeypatch):
+    # A /diffusion/start that reserves the training slot AFTER the upload passed its entry guard but
+    # BEFORE the commit must not have its dataset mutated: the recheck just before the tmp->dest
+    # promotion catches the now-active run, 409s, and leaves the on-disk dataset untouched.
+    import routes.training as tr
+
+    folder = ds_root / "styleset"
+    folder.mkdir()
+    (folder / "a.png").write_bytes(_png_bytes())  # a pre-existing image the overwrite would clobber
+
+    calls = {"n": 0}
+
+    def fake_active():
+        # Inactive at the entry guard (call 1), active by the pre-commit recheck (call 2+): the
+        # training run started while the upload was streaming.
+        calls["n"] += 1
+        return calls["n"] >= 2
+
+    monkeypatch.setattr(tr, "_diffusion_training_active", fake_active)
+
+    app = FastAPI()
+    app.include_router(training_router, prefix = "/api/train")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    noraise = TestClient(app, raise_server_exceptions = False)
+
+    parts = [("files", ("a.png", _png_bytes(color = (1, 2, 3)), "image/png"))]
+    r = noraise.post("/api/train/diffusion/dataset", data = {"name": "styleset"}, files = parts)
+    assert r.status_code == 409
+    assert calls["n"] >= 2  # both the entry guard and the pre-commit recheck ran
+    # The dataset is untouched: the original image survives and no staged temp lingers.
+    assert (folder / "a.png").read_bytes() == _png_bytes()
+    assert not list(folder.glob(".upload-*.part"))
+    assert not list(folder.glob(".upload-backup-*.part"))
+
+
 def test_resolve_dataset_folder_rejects_symlink(ds_root, tmp_path):
     # A dataset dir that is a symlink outside the datasets root must be rejected, else delete /
     # caption / read could operate on external files through the link.

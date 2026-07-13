@@ -571,6 +571,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const lastLoadSig = useRef<string | null>(null);
   // The quant to restore if the current optimistic swap fails.
   const quantRevert = useRef<{ prev: string | null } | null>(null);
+  // The Reapply target (and its canReapply flag) to restore if the optimistic swap fails.
+  // handleLoad overwrites lastLoad.current with the pending pick at load start; if the load then
+  // fails AFTER starting (error/eviction during download) the previous model stays resident, so
+  // the poll rolls lastLoad back rather than leave Reapply pointing at the failed pick.
+  const lastLoadRevert = useRef<{ prev: typeof lastLoad.current; canReapply: boolean } | null>(null);
 
   const dismissLoadToast = useCallback(() => {
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
@@ -854,6 +859,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         toast.success("Model loaded");
         setBusy(null);
         quantRevert.current = null;
+        // lastLoad.current already holds the now-resident pick, so drop its revert too.
+        lastLoadRevert.current = null;
         return;
       }
       if (p.phase === "error") {
@@ -863,6 +870,13 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         if (quantRevert.current) {
           setQuant(quantRevert.current.prev);
           quantRevert.current = null;
+        }
+        // Same rollback for the Reapply target: the previous model is still resident, so point
+        // Reapply back at it rather than the failed pick lastLoad was optimistically set to.
+        if (lastLoadRevert.current) {
+          lastLoad.current = lastLoadRevert.current.prev;
+          setCanReapply(lastLoadRevert.current.canReapply);
+          lastLoadRevert.current = null;
         }
         void refreshStatus();
         return;
@@ -875,6 +889,13 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         if (quantRevert.current) {
           setQuant(quantRevert.current.prev);
           quantRevert.current = null;
+        }
+        // Restore the Reapply target too (symmetric with the error/quant rollback), so it never
+        // lingers on the failed pick after the load is cancelled/evicted.
+        if (lastLoadRevert.current) {
+          lastLoad.current = lastLoadRevert.current.prev;
+          setCanReapply(lastLoadRevert.current.canReapply);
+          lastLoadRevert.current = null;
         }
         void refreshStatus();
         return;
@@ -1023,6 +1044,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       const prevCanReapply = canReapply;
       lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
       setCanReapply(true);
+      // Carry the prior target so the async poll can restore it if the background load fails
+      // after starting (the previous model stays resident); the sync catch clears it.
+      lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
       try {
         // Returns immediately -- the load runs in the background; we poll for it. The backend
         // infers the family + base diffusers repo from the repo id. Advanced options map
@@ -1041,6 +1065,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       } catch (err) {
         lastLoad.current = prevLastLoad;
         setCanReapply(prevCanReapply);
+        lastLoadRevert.current = null;
         dismissLoadToast();
         toast.error(err instanceof Error ? err.message : "Failed to start load");
         setBusy(null);

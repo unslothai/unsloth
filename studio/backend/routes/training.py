@@ -1765,6 +1765,12 @@ async def upload_diffusion_dataset(
             if Path(filename).suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS:
                 _validate_uploaded_training_image(tmp, filename)
             uploaded += 1
+        # Re-check the interlock immediately before the commit: the entry guard only saw the
+        # pre-upload state, so a /diffusion/start could have reserved the training slot while we
+        # were streaming (reserve() flips is_active before the run launches). Committing now would
+        # move images/captions underneath the trainer despite the guard; a 409 here leaves the
+        # staged temps to be cleaned by the finally below (committed stays False).
+        _require_diffusion_dataset_mutable()
         # Commit every staged file as one transaction. A plain replace loop is not atomic across
         # files: a mid-loop tmp.replace(dest) failure leaves earlier destinations already overwritten
         # while the request errors. Back up each pre-existing destination first, then on any failure

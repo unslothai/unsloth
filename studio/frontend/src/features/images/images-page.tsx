@@ -1082,6 +1082,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // during download) the old pipeline stays loaded, so the poll rolls the label back rather
   // than advertise the failed quant. `{ prev }` distinguishes "revert to null" from "nothing pending".
   const quantRevert = useRef<{ prev: string | null } | null>(null);
+  // The Reapply target to restore if the optimistic swap fails. handleLoad overwrites
+  // lastLoad.current with the pending pick at load start; if the load then fails AFTER starting
+  // (error/eviction during download) the previous pipeline stays loaded, so the poll rolls
+  // lastLoad back to what is actually resident rather than leave Reapply pointing at the failed
+  // pick. Mirrors quantRevert; `{ prev }` distinguishes "restore null" from "nothing pending".
+  const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
   // A trained adapter awaiting deployment: after Deploy loads the base, the LoRA discovery
   // effect applies this once the model is loaded + LoRA-capable for the matching family.
   const pendingDeploy = useRef<{ loraId: string; family: string } | null>(null);
@@ -1408,6 +1414,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // Load succeeded: the optimistic quant is now the real one, so drop the
         // pending revert.
         quantRevert.current = null;
+        // lastLoad.current already holds the now-resident pick, so drop its revert too.
+        lastLoadRevert.current = null;
         return;
       }
       if (p.phase === "error") {
@@ -1420,6 +1428,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         if (quantRevert.current) {
           setQuant(quantRevert.current.prev);
           quantRevert.current = null;
+        }
+        // Same rollback for the Reapply target: the previous pipeline is still resident, so
+        // point Reapply back at it rather than the failed pick lastLoad was optimistically set to.
+        if (lastLoadRevert.current) {
+          lastLoad.current = lastLoadRevert.current.prev;
+          setCanReapply(lastLoadRevert.current.prev != null);
+          lastLoadRevert.current = null;
         }
         // A failed load may have freed a previously-loaded model, so resync to
         // the real backend state (the synchronous failure path does the same).
@@ -1436,6 +1451,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         if (quantRevert.current) {
           setQuant(quantRevert.current.prev);
           quantRevert.current = null;
+        }
+        // Restore the Reapply target too (symmetric with the error/quant rollback), so it never
+        // lingers on the failed pick after the load is cancelled/evicted.
+        if (lastLoadRevert.current) {
+          lastLoad.current = lastLoadRevert.current.prev;
+          setCanReapply(lastLoadRevert.current.prev != null);
+          lastLoadRevert.current = null;
         }
         void refreshStatus();
         return;
@@ -1598,6 +1620,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const prevLastLoad = lastLoad.current;
       lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
       setCanReapply(true);
+      // Carry the prior target so the async poll can restore it if the background load fails
+      // after starting (the previous pipeline stays resident); the sync catch clears it.
+      lastLoadRevert.current = { prev: prevLastLoad };
       try {
         // Returns immediately -- the load runs in the background; we poll for it. The backend
         // infers the family + base diffusers repo from the id. Forward the saved HF token so
@@ -1619,6 +1644,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       } catch (err) {
         lastLoad.current = prevLastLoad;
         setCanReapply(prevLastLoad != null);
+        lastLoadRevert.current = null;
         dismissLoadToast();
         toast.error(err instanceof Error ? err.message : "Failed to start load");
         setBusy(null);

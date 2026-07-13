@@ -437,6 +437,18 @@ def install(
     asset = next(a for a in release["assets"] if a["name"] == chosen)
     url = asset["browser_download_url"]
     target.mkdir(parents = True, exist_ok = True)
+    # Claim ownership BEFORE any partial write (download/extract/cudart fetch below). An
+    # interrupted extraction (disk full, killed process, a raising _maybe_fetch_windows_cudart)
+    # leaves the target non-empty; without the marker the next lazy install would see it as
+    # non-empty-and-unowned and trip the refusal guard above, wedging native install until the
+    # user manually deletes the directory. Writing the marker first makes the retry treat this
+    # partial install as reclaimable (_may_own) and re-extract over it. Written only when
+    # _may_own (empty/new or already ours), so it never adopts a user's pre-existing files.
+    if _may_own:
+        try:
+            marker.touch()
+        except OSError:
+            pass
     archive = target / chosen
     print(f"downloading {chosen} -> {archive}", flush = True)
     try:
@@ -465,13 +477,9 @@ def install(
         _make_executable(sd_server)
     if sd_server is not None:
         print(f"installed sd-server -> {sd_server}", flush = True)
-    # Ownership marker (the same one setup.sh/_is_studio_root use) so the uninstaller deletes only
-    # Studio-installed sd.cpp, not a user's own checkout. Written only when _may_own (see above).
-    if _may_own:
-        try:
-            marker.touch()
-        except OSError:
-            pass
+    # The ownership marker (the same one setup.sh/_is_studio_root use, so the uninstaller deletes
+    # only Studio-installed sd.cpp) was already written above, before extraction, so a crashed
+    # partial install is still recognised as ours on a retry.
     return sd_cli
 
 

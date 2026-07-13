@@ -314,6 +314,36 @@ def test_install_sha256_mismatch_raises_and_cleans_up(tmp_path, monkeypatch):
     assert not (tmp_path / name).exists()  # the finally: drops the bad archive
 
 
+def test_partial_install_failure_is_reclaimed_on_retry(tmp_path, monkeypatch):
+    # A crash AFTER extraction (here the post-extract cudart fetch raises) leaves the target
+    # non-empty. Because ownership is marked BEFORE the partial writes, the retry recognises the
+    # debris as ours and re-extracts instead of tripping the "not a Studio-managed directory"
+    # refusal, so native install self-heals without the user manually deleting the directory.
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    target = tmp_path / "sdcpp"
+
+    state = {"failed": False}
+
+    def flaky_cudart(*a, **k):
+        if not state["failed"]:
+            state["failed"] = True
+            raise RuntimeError("simulated interrupted post-extract step")
+
+    monkeypatch.setattr(sdmod, "_maybe_fetch_windows_cudart", flaky_cudart)
+
+    with pytest.raises(RuntimeError, match = "simulated interrupted"):
+        install(install_dir = target)
+    # The partial install left extracted files AND the ownership marker (written before the writes).
+    assert (target / ".unsloth-studio-owned").is_file()
+    assert any(target.iterdir())
+
+    # The retry (cudart now succeeds) must NOT be refused; it re-extracts over the partial debris.
+    sd_cli = install(install_dir = target)
+    assert sd_cli.name == "sd-cli" and sd_cli.is_file()
+    assert (target / ".unsloth-studio-owned").is_file()
+
+
 # ── safe extraction (Zip-Slip guard) ─────────────────────────────────────────
 
 
