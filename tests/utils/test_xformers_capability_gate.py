@@ -36,10 +36,16 @@ def test_capability_gate(capability, probe_result, expect_disabled):
     not (torch.cuda.is_available() and ad.HAS_XFORMERS),
     reason = "needs a CUDA GPU with a working xformers build",
 )
+@pytest.mark.skipif(
+    torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 12,
+    reason = "on real sm_120+ the probe legitimately returns False when the build ships no "
+             "sm_120 kernel, so asserting True there would be a false failure",
+)
 def test_probe_shapes_are_valid_on_working_gpu():
     # Guards against a malformed probe that raises on every GPU and would silently
-    # disable xformers on Blackwell even where it works. On any GPU with a functional
-    # xformers (the CI/dev boxes are pre-sm_120), the real probe must succeed.
+    # disable xformers on Blackwell even where it works. On a pre-sm_120 GPU with a
+    # functional xformers the real probe must succeed; sm_120+ is skipped above because
+    # there a False is a correct answer, not a malformed probe.
     assert ad._xformers_runs_on_device() is True
 
 

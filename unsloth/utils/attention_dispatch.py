@@ -55,11 +55,12 @@ def _xformers_runs_on_device() -> bool:
 
 
 def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_device) -> bool:
-    # The shipped xformers wheels carry no native kernels for the newest GPUs (sm_120,
-    # e.g. RTX 50-series); there the op runs only if its cutlass kernel JIT-compiles
-    # forward from PTX, which some builds manage and some don't. Below sm_120 xformers
-    # is always supported, so skip the probe; at sm_120+ run one real forward and fall
-    # back to SDPA only when it genuinely can't run, instead of guessing by version.
+    # On the newest GPUs (sm_120, e.g. RTX 50-series) xformers' own cutlass kernel is
+    # capability-rejected (it caps at sm_90); memory_efficient_attention instead
+    # dispatches to the flash-2 op (torch's bundled FlashAttention-2), which runs only
+    # if the installed build ships an sm_120 kernel, and some don't. Below sm_120
+    # xformers is always supported, so skip the probe; at sm_120+ run one real forward
+    # and fall back to SDPA only when it genuinely can't run, instead of guessing by version.
     if capability[0] < 12:
         return False
     return not probe()
@@ -71,6 +72,16 @@ def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_devi
 if HAS_XFORMERS and not HAS_FLASH_ATTENTION and torch.cuda.is_available():
     if _xformers_disabled_for_capability(torch.cuda.get_device_capability()):
         HAS_XFORMERS = False
+
+# On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass kernel is capability-rejected
+# and only its flash-2 op runs, which takes fp16/bf16 only, so fp32 Q/K/V (DoRA promotes
+# them, #1013) must be downcast before the xformers call there or the op raises. Below
+# sm_100 the cutlass kernel handles fp32, so those inputs are left untouched. Read once
+# from the default device, like the probe gate above, so a mixed-GPU box keyed off a
+# lower-cc device 0 keeps main's behavior (no downcast) rather than gaining a new crash.
+_XFORMERS_FP32_UNSUPPORTED = (
+    torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10
+)
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
 
 # PrefixGrouper kernel, resolved once when the env gate is on so PG-off users never load
@@ -231,9 +242,13 @@ def run_attention(
     requires_grad = context.requires_grad
     sliding_window = context.sliding_window
 
-    # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects, so
-    # downcast any fp32 Q/K/V to a flash-supported dtype (#1013).
-    if backend in (FLASH_DENSE, FLASH_VARLEN) and torch.float32 in (
+    # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects (and so does
+    # the xformers flash-2 op on sm_100+, see _XFORMERS_FP32_UNSUPPORTED), so downcast any
+    # fp32 Q/K/V to a supported dtype (#1013).
+    if (
+        backend in (FLASH_DENSE, FLASH_VARLEN)
+        or (backend == XFORMERS and _XFORMERS_FP32_UNSUPPORTED)
+    ) and torch.float32 in (
         Q.dtype,
         K.dtype,
         V.dtype,
@@ -241,14 +256,14 @@ def run_attention(
         # Prefer the autocast dtype, else a non-fp32 input's dtype, then clamp.
         if torch.is_autocast_enabled():
             try:
-                flash_dtype = torch.get_autocast_dtype("cuda")
+                downcast_dtype = torch.get_autocast_dtype("cuda")
             except (AttributeError, TypeError):
-                flash_dtype = torch.get_autocast_gpu_dtype()
+                downcast_dtype = torch.get_autocast_gpu_dtype()
         else:
-            flash_dtype = next((d for d in (Q.dtype, K.dtype, V.dtype) if d != torch.float32), None)
-        if flash_dtype not in (torch.float16, torch.bfloat16):
-            flash_dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
-        Q, K, V = Q.to(flash_dtype), K.to(flash_dtype), V.to(flash_dtype)
+            downcast_dtype = next((d for d in (Q.dtype, K.dtype, V.dtype) if d != torch.float32), None)
+        if downcast_dtype not in (torch.float16, torch.bfloat16):
+            downcast_dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
+        Q, K, V = Q.to(downcast_dtype), K.to(downcast_dtype), V.to(downcast_dtype)
 
     if backend == FLASH_VARLEN:
         Q_f = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
