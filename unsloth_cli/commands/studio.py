@@ -758,27 +758,28 @@ def _enforce_password_change_before_exposure(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     ):
         return
-    # Before public exposure we must not serve the seeded default credential.
-    # If the auth DB will not open, optimistically strip any seeded file and fall
-    # back to the backend auth + shutdown timer: an admin committed by a prior run
-    # means an old child finds it and won't regenerate. But if the DB opens and we
-    # then cannot SEED+COMMIT a fresh admin (below), no admin is committed, so an
-    # old child would regenerate and serve a fresh default credential -- stripping
-    # cannot stop that, so that case fails closed. A failure AFTER the user typed a
-    # new password also stays fatal, below.
+    # Before public exposure we must PROVE the admin password is no longer the
+    # seeded default. If we cannot -- the auth DB will not open, or a fresh admin
+    # cannot be seeded + committed (below) -- an old studio-venv child (no pre-bind
+    # gate) could find no admin, regenerate a fresh bootstrap credential, and serve
+    # it publicly; stripping a file we cannot vouch for cannot stop a regeneration.
+    # So those cases fail closed. A failure AFTER the user typed a new password
+    # also stays fatal, below.
     try:
         conn = _connect_auth_db()
     except (OSError, sqlite3.Error) as exc:
-        # A seeded .bootstrap_password may be on disk from a prior run; strip it so
-        # a re-exec'd old child cannot serve it (fail closed if we cannot), then
-        # fall back to the backend auth + bootstrap shutdown timer.
+        # Cannot open the auth DB, so we cannot confirm a committed admin exists.
+        # Refuse rather than risk a re-exec'd child serving the default login; a
+        # transient lock clears on retry.
         typer.echo(
-            f"Warning: could not inspect the Studio auth database ({exc}); "
-            "removing any seeded bootstrap password before public exposure.",
+            "Error: refusing to publish Studio on a public Cloudflare URL: could "
+            f"not open the Studio auth database ({exc}) to confirm the admin "
+            "password was changed. Retry (a transient database lock clears), or "
+            "change the password first (run `unsloth studio` locally with a "
+            "terminal attached, or `unsloth studio reset-password`).",
             err = True,
         )
-        _strip_seeded_bootstrap_password_or_exit(context = "auth DB not readable")
-        return
+        raise typer.Exit(1)
     try:
         try:
             _ensure_cli_default_admin(conn)

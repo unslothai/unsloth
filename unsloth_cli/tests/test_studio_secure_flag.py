@@ -206,13 +206,23 @@ class _RunServerCaptured(SystemExit):
         self.kwargs = dict(kwargs)
 
 
-def test_run_in_venv_passes_secure_and_forces_host(monkeypatch):
+def test_run_in_venv_passes_secure_and_forces_host(monkeypatch, tmp_path):
     import types
 
     studio_mod = _studio()
-    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    # Real STUDIO_HOME with an already-changed admin (must_change_password=0) so
+    # the pre-exposure gate is a no-op and the in-venv path reaches run_server.
+    # (The gate now fails closed if it cannot open the auth DB, so a fake path
+    # would refuse the launch before this assertion.)
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed = studio_mod._connect_auth_db()
+    studio_mod._ensure_cli_default_admin(_seed)
+    _seed.execute("UPDATE auth_user SET must_change_password = 0")
+    _seed.commit()
+    _seed.close()
+
+    fake_venv = tmp_path / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
-    monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
 
     from unsloth_cli import _tool_policy as _tp_mod
 

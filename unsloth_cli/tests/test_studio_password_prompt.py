@@ -366,12 +366,13 @@ class _FailingCommitConn:
         return getattr(self._inner, name)
 
 
-def test_studio_default_connect_failure_strips_bootstrap_file(monkeypatch, tmp_path):
+def test_studio_default_connect_failure_fails_closed(monkeypatch, tmp_path):
     # If the auth DB cannot even be opened (transient lock / unwritable home) we
-    # cannot confirm the password was changed, but a seeded .bootstrap_password
-    # may already be on disk from a prior run. Re-exec'ing without removing it
-    # would let an old studio-venv child serve it publicly, so strip it first;
-    # the launch still proceeds behind the backend auth + shutdown timer.
+    # cannot confirm a committed admin exists, so a re-exec'd old studio-venv child
+    # could find no admin, regenerate a fresh bootstrap credential, and serve it
+    # publicly -- stripping a file we cannot vouch for would not stop that. Refuse
+    # rather than publish; a transient lock clears on retry, and the existing
+    # credential file is left untouched so a retry can still prompt.
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
     _seed_auth(studio_mod)
@@ -383,42 +384,6 @@ def test_studio_default_connect_failure_strips_bootstrap_file(monkeypatch, tmp_p
         "_connect_auth_db",
         lambda: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
     )
-
-    result = _invoke_studio_default(monkeypatch, events, ["--secure"])
-
-    assert not bootstrap_file.exists()
-    kinds = [kind for kind, _ in events]
-    assert kinds == ["exec"], events
-    assert _auth_state(studio_mod)["must_change_password"] == 1
-    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "removing any seeded bootstrap password" in combined.lower()
-
-
-def test_studio_default_connect_failure_fails_closed_when_strip_fails(monkeypatch, tmp_path):
-    # Same DB-open failure, but now the defensive strip also fails (locked file /
-    # read-only auth dir). The seeded credential is still on disk for an old child
-    # to serve, so the launch must fail closed rather than publish it.
-    import pathlib
-
-    studio_mod = _studio()
-    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
-    _seed_auth(studio_mod)
-    bootstrap_file = tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
-    assert bootstrap_file.exists()
-
-    monkeypatch.setattr(
-        studio_mod,
-        "_connect_auth_db",
-        lambda: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
-    )
-    _real_unlink = pathlib.Path.unlink
-
-    def _boom_unlink(self, *a, **k):
-        if self.name == studio_mod.BOOTSTRAP_PASSWORD_FILE:
-            raise OSError("locked")
-        return _real_unlink(self, *a, **k)
-
-    monkeypatch.setattr(pathlib.Path, "unlink", _boom_unlink)
 
     result = _invoke_studio_default(monkeypatch, events, ["--secure"])
 
@@ -427,6 +392,7 @@ def test_studio_default_connect_failure_fails_closed_when_strip_fails(monkeypatc
     assert result.exit_code == 1, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
     assert "refusing to publish" in combined.lower()
+    # Not stripped: a retry can still prompt/strip once the lock clears.
     assert bootstrap_file.exists()
 
 
