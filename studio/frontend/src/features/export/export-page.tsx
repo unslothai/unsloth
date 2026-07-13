@@ -223,8 +223,11 @@ export function ExportPage() {
   const [ggufTarget, setGgufTarget] = useState<"model" | "lora">("model");
 
   const hardware = useHardwareInfo();
+  const deviceType = usePlatformStore((s) => s.deviceType);
   // GGUF LoRA conversion is rejected on the macOS / MLX path, so gate it out on a Mac host.
-  const isMacHost = usePlatformStore((s) => s.deviceType) === "mac";
+  const isMacHost = deviceType === "mac";
+  // Windows ROCm has no torch.distributed, so portable torchao (FP8/INT8) is unavailable there.
+  const isWindowsRocm = deviceType === "windows" && hardware.rocm != null;
   // Real CUDA (not ROCm); gates the NVIDIA-only compressed-tensors formats.
   const hasNvidia = hardware.cuda != null && hardware.rocm == null;
   // Only gray out on an authoritative unsupported response; while unloaded the backend route guard
@@ -240,13 +243,14 @@ export function ExportPage() {
         // compressed-tensors (llm-compressor) is the NVIDIA path; shown only on an NVIDIA GPU.
         if (f.backend === "compressed") return hasNvidia;
         // Portable torchao is the fallback for hosts without the NVIDIA compressed path, i.e. a
-        // CPU / non-NVIDIA box. Hidden on NVIDIA (use compressed-tensors) and on macOS/MLX (the
-        // backend rejects quantized export there).
-        if (f.backend === "torchao") return !hasNvidia && !isMacHost;
+        // CPU / non-NVIDIA box. Hidden on NVIDIA (use compressed-tensors), on macOS/MLX (the
+        // backend rejects quantized export there), and on Windows ROCm (torchao is unavailable:
+        // no torch.distributed, so its config classes are import-stubbed to None).
+        if (f.backend === "torchao") return !hasNvidia && !isMacHost && !isWindowsRocm;
         // Plain 16-bit is available everywhere.
         return true;
       }),
-    [hasNvidia, isMacHost],
+    [hasNvidia, isMacHost, isWindowsRocm],
   );
   const toggleFormat = useCallback((value: string) => {
     setSelectedFormats((prev) =>
@@ -1434,11 +1438,18 @@ export function ExportPage() {
                       </div>
                     )}
 
-                    {!hasNvidia && (
+                    {!hasNvidia && !isWindowsRocm && (
                       <div className="text-[11px] text-muted-foreground">
                         No NVIDIA GPU detected: compressed-tensors formats are
                         hidden. 16-bit and portable FP8/INT8 (torchao) still
                         work here and load in vLLM.
+                      </div>
+                    )}
+
+                    {isWindowsRocm && (
+                      <div className="text-[11px] text-muted-foreground">
+                        Windows ROCm: quantized FP8/INT8 (torchao) export is
+                        unavailable (no torch.distributed). Use 16-bit or GGUF.
                       </div>
                     )}
                   </div>
