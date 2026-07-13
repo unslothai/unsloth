@@ -458,6 +458,37 @@ def test_studio_default_seed_commit_failure_fails_closed(monkeypatch, tmp_path):
         verify.close()
 
 
+def test_studio_default_missing_venv_exits_before_stripping_bootstrap(monkeypatch, tmp_path):
+    # Regression: the venv/run.py launchability check must run BEFORE the headless
+    # gate strips .bootstrap_password. Otherwise a failed launch leaves the admin
+    # at must_change_password=1 with no password to log in (lockout until
+    # reset-password). With the venv missing, exit without stripping the file.
+    import typer as _typer
+
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+    bootstrap_file = tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    assert bootstrap_file.exists()
+
+    monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: None)  # venv missing
+    monkeypatch.setattr(studio_mod, "_find_run_py", lambda: None)
+
+    app = _typer.Typer()
+    app.command()(studio_mod.studio_default)
+    result = CliRunner().invoke(app, ["--secure"], catch_exceptions = True)
+
+    assert result.exit_code == 1, result.output
+    # The seeded file survives: launchability failed BEFORE the gate could strip it.
+    assert bootstrap_file.exists()
+    assert _auth_state(studio_mod)["must_change_password"] == 1
+    # The gate never ran (no prompt, no strip).
+    assert events == [], events
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "not set up" in combined.lower()
+
+
 def test_studio_default_query_failure_strips_bootstrap_file(monkeypatch, tmp_path):
     # The DB opens and the admin is seeded + committed (so .bootstrap_password is
     # on disk), but reading must_change_password back fails. Returning here would

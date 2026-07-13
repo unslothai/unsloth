@@ -1103,19 +1103,28 @@ def studio_default(
     if verbose:
         _enable_verbose_access_logs()
 
+    # Use the studio venv if it exists and we aren't already in it. Resolve the
+    # child launcher BEFORE the gate: a headless gate strips the seeded
+    # .bootstrap_password, so aborting the launch afterward (venv/run.py missing)
+    # would leave the admin at must_change_password=1 with no password to log in
+    # (locked out until `unsloth studio reset-password`).
+    studio_venv_dir = STUDIO_HOME / "unsloth_studio"
+    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    studio_python = run_py = None
+    if not in_studio_venv:
+        studio_python = _studio_venv_python()
+        run_py = _find_run_py()
+        if not (studio_python and run_py):
+            typer.echo("Studio not set up. Run install.sh first.")
+            raise typer.Exit(1)
+
     # Public (tunnel) exposure with the seeded default password: force a
     # terminal password change first, before any re-exec or server exists.
     _enforce_password_change_before_exposure(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     )
 
-    # Use the studio venv if it exists and we aren't already in it.
-    studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
-
     if not in_studio_venv:
-        studio_python = _studio_venv_python()
-        run_py = _find_run_py()
         if studio_python and run_py:
             if not silent:
                 typer.echo("Launching Unsloth Studio... Please wait...")
@@ -1509,16 +1518,14 @@ def run(
         silent = silent,
     )
 
-    # Public (tunnel) exposure with the seeded default password: force a
-    # terminal password change first, before any re-exec or server exists.
-    _enforce_password_change_before_exposure(
-        cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
-    )
-
-    # 1. Re-exec into the studio venv (same pattern as studio_default).
+    # 1. Re-exec into the studio venv (same pattern as studio_default). Resolve
+    # the child launcher BEFORE the gate: a headless gate strips the seeded
+    # .bootstrap_password, so aborting the launch afterward (venv/entry point
+    # missing) would leave the admin at must_change_password=1 with no password
+    # to log in (locked out until `unsloth studio reset-password`).
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
-
+    studio_bin = None
     if not in_studio_venv:
         studio_python = _studio_venv_python()
         if not studio_python:
@@ -1529,6 +1536,14 @@ def run(
         if not studio_bin.is_file():
             typer.echo("Studio venv missing 'unsloth' entry point. Re-run: unsloth studio setup")
             raise typer.Exit(1)
+
+    # Public (tunnel) exposure with the seeded default password: force a
+    # terminal password change first, before any re-exec or server exists.
+    _enforce_password_change_before_exposure(
+        cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
+    )
+
+    if not in_studio_venv:
         args = [
             str(studio_bin),
             "studio",
