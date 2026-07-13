@@ -209,11 +209,14 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_tool_calling": True,
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
+        "body_omit": ("presence_penalty",),
         "notes": (
-            "OpenAI-compatible API. API key from platform.minimax.io. "
+            "OpenAI- and Anthropic-compatible APIs. API key from platform.minimax.io. "
             "MiniMax-M3 has a 1M-token context window with image and video input; "
             "MiniMax-M2.7 has a 204.8K-token context window with text input. "
-            "China mainland: override base URL to https://api.minimaxi.com/v1"
+            "Global endpoints: https://api.minimax.io/v1 and "
+            "https://api.minimax.io/anthropic. China mainland endpoints: "
+            "https://api.minimaxi.com/v1 and https://api.minimaxi.com/anthropic"
         ),
     },
     "huggingface": {

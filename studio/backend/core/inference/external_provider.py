@@ -775,6 +775,35 @@ class ExternalProviderClient:
         # between bytes, but a dead upstream must eventually error, not hang forever.
         self._stream_timeout = httpx.Timeout(timeout, connect = 10.0, read = 300.0)
 
+    def _uses_minimax_anthropic_api(self) -> bool:
+        """Return whether this connection targets an official MiniMax Messages base."""
+        if self.provider_type != "minimax":
+            return False
+        parsed = urlparse(self.base_url)
+        return (
+            (parsed.hostname or "").lower() in {"api.minimax.io", "api.minimaxi.com"}
+            and parsed.path.rstrip("/") == "/anthropic"
+            and not parsed.query
+            and not parsed.fragment
+        )
+
+    def _request_base_url(self) -> str:
+        """Return the internal versioned base used for upstream requests."""
+        if self._uses_minimax_anthropic_api():
+            return f"{self.base_url}/v1"
+        return self.base_url
+
+    def _apply_minimax_thinking_control(
+        self, body: dict[str, Any], model: str, enable_thinking: Optional[bool]
+    ) -> None:
+        """Map Studio's thinking toggle to the MiniMax-M3 request shape."""
+        if self.provider_type != "minimax" or model != "MiniMax-M3":
+            return
+        if enable_thinking is True:
+            body["thinking"] = {"type": "adaptive"}
+        elif enable_thinking is False:
+            body["thinking"] = {"type": "disabled"}
+
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
         from core.inference.providers import get_provider_info
@@ -805,6 +834,8 @@ class ExternalProviderClient:
         from core.inference.providers import get_provider_info
 
         info = get_provider_info(self.provider_type) or {}
+        if self._uses_minimax_anthropic_api():
+            return False
         # Google-hosted Gemini uses the native translator; non-Google bases
         # stay on OAI-compat so LiteLLM / custom proxies still work.
         if self.provider_type == "gemini":
@@ -969,6 +1000,8 @@ class ExternalProviderClient:
         provider_info = get_provider_info(self.provider_type) or {}
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
+
+        self._apply_minimax_thinking_control(body, model, enable_thinking)
 
         # Kimi thinking is a top-level body field. kimi-k2-thinking is always
         # on (ignore the toggle); kimi-k2.6 defaults on, can be disabled.
@@ -1955,16 +1988,21 @@ class ExternalProviderClient:
                 else:
                     head.append(tail)
                 last_msg["content"] = head
-        thinking_spec = _anthropic_thinking_spec(model)
+        is_minimax = self.provider_type == "minimax"
+        thinking_spec = None if is_minimax else _anthropic_thinking_spec(model)
         allowed_efforts = (
             thinking_spec.efforts if thinking_spec else ("none", "low", "medium", "high")
         )
-        effort = reasoning_effort if reasoning_effort in allowed_efforts else None
+        effort = (
+            None
+            if is_minimax
+            else (reasoning_effort if reasoning_effort in allowed_efforts else None)
+        )
         # Claude 4.6 takes top-tier adaptive effort as "max" only ("xhigh" is
         # 4.7-only), so map "xhigh" -> "max" for 4.6 outbound requests.
         if effort == "xhigh" and model.startswith(("claude-opus-4-6", "claude-sonnet-4-6")):
             effort = "max"
-        if effort is None:
+        if effort is None and not is_minimax:
             if enable_thinking is False:
                 effort = "none"
             elif enable_thinking is True:
@@ -2000,6 +2038,8 @@ class ExternalProviderClient:
                 # thinking.budget_tokens on the manual-thinking path.
                 if body.get("max_tokens", 0) <= budget_tokens:
                     body["max_tokens"] = budget_tokens + 1024
+
+        self._apply_minimax_thinking_control(body, model, enable_thinking)
 
         # tool_choice="none" or pinned-function suppresses hosted tools so a
         # stale UI toggle can't fire server-side search/code-exec.
@@ -2099,7 +2139,7 @@ class ExternalProviderClient:
         if fast_mode_active:
             body["speed"] = "fast"
 
-        url = f"{self.base_url}/messages"
+        url = f"{self._request_base_url()}/messages"
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
 
         # Log outgoing config keys (not messages) to prove which thinking /
@@ -5995,7 +6035,7 @@ class ExternalProviderClient:
         """
         try:
             response = await _http_client.get(
-                f"{self.base_url}/models",
+                f"{self._request_base_url()}/models",
                 headers = self._auth_headers(),
                 timeout = self._timeout,
             )
@@ -6088,7 +6128,7 @@ class ExternalProviderClient:
         Used for providers with enormous catalogs (e.g. OpenRouter, Hugging Face
         router) where downloading the full JSON would be prohibitive.
         """
-        url = f"{self.base_url}/models"
+        url = f"{self._request_base_url()}/models"
         try:
             async with _http_client.stream(
                 "GET",
