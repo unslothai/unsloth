@@ -445,7 +445,13 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
     text-to-image so the chat picker hides it, while a plain checkpoint isn't."""
     diffusion = _repo(
         "Tongyi-MAI/Z-Image-Turbo",
-        [_file("model_index.json", 1_000), _file("text_encoder/model.safetensors", 9_000)],
+        [
+            _file("model_index.json", 1_000),
+            _file("text_encoder/model.safetensors", 9_000),
+            # A complete pipeline carries its denoiser weights; without them the row is a
+            # companion-only prefetch and would be marked partial (see the dedicated test).
+            _file("transformer/diffusion_pytorch_model.safetensors", 9_000),
+        ],
         tmp_path / "models--Tongyi-MAI--Z-Image-Turbo",
     )
     checkpoint = _repo(
@@ -466,6 +472,43 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
         "Tongyi-MAI/Z-Image-Turbo": "text-to-image",
         "unsloth/Llama-3.2-1B-Instruct": None,
     }
+
+
+def test_list_cached_models_marks_companion_only_pipeline_partial(monkeypatch, tmp_path):
+    """A GGUF image load prefetches its companion base repo's VAE / text-encoder / model_index.json
+    but deliberately skips the multi-GB transformer (the GGUF supplies it). That snapshot carries a
+    root model_index.json yet is not a loadable BF16 pipeline, so it must be marked partial (the
+    picker drops partial rows) rather than advertised as fully on-device. A sibling repo that DOES
+    ship its transformer shards stays complete."""
+    companion_only = _repo(
+        "black-forest-labs/FLUX.1-dev",
+        [
+            _file("model_index.json", 1_000),
+            _file("vae/diffusion_pytorch_model.safetensors", 9_000),
+            _file("text_encoder/model.safetensors", 9_000),
+        ],
+        tmp_path / "models--black-forest-labs--FLUX.1-dev",
+    )
+    complete = _repo(
+        "Tongyi-MAI/Z-Image-Turbo",
+        [
+            _file("model_index.json", 1_000),
+            _file("text_encoder/model.safetensors", 9_000),
+            _file("transformer/diffusion_pytorch_model.safetensors", 9_000),
+        ],
+        tmp_path / "models--Tongyi-MAI--Z-Image-Turbo",
+    )
+
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [companion_only, complete])],
+    )
+
+    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+    by_repo = {c["repo_id"]: c for c in result["cached"]}
+    assert by_repo["black-forest-labs/FLUX.1-dev"].get("partial") is True
+    assert by_repo["Tongyi-MAI/Z-Image-Turbo"].get("partial") is None
 
 
 def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeypatch, tmp_path):

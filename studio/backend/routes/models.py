@@ -304,11 +304,26 @@ def _has_non_gguf_weights(path: Path) -> bool:
         return False
 
 
+def _local_pipeline_index(d: Path) -> bool:
+    """True when *d* is a standard diffusers PIPELINE root: component weights/configs live in
+    subdirs (``transformer/``, ``vae/``, ...) under a top-level ``model_index.json``, so
+    ``_is_model_directory`` (which wants a root config + loose weights) rejects it."""
+    try:
+        return (d / "model_index.json").is_file()
+    except OSError:
+        return False
+
+
 def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
-    _is_self_model = _is_model_directory(models_dir)
+    # A scan folder can point directly at a diffusers PIPELINE dir, not only at a parent of
+    # model repos. _is_model_directory rejects such a root (weights live in transformer/, vae/,
+    # ... not beside a root config.json), so without this the child scan below surfaces the
+    # component subdirs as bogus models and hides the real pipeline. The Images/Video load path
+    # loads a local pipeline dir, so admit the root as one model (task tagging classifies it).
+    _is_self_model = _is_model_directory(models_dir) or _local_pipeline_index(models_dir)
 
     if _is_self_model:
         try:
@@ -343,7 +358,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             # root, so the checks above miss it. The Images/Video load path accepts such a
             # local pipeline dir, so admit it here too (task tagging then classifies it via
             # _local_is_diffusers); otherwise it is hidden from the On Device picker.
-            has_pipeline_index = (child / "model_index.json").is_file()
+            has_pipeline_index = _local_pipeline_index(child)
             has_model_files = has_gguf or has_non_gguf_weights or has_config or has_pipeline_index
         except OSError:
             # Skip unreadable children rather than failing the scan.
@@ -3261,6 +3276,25 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
     return None
 
 
+def _local_family_needles(model: "LocalModelInfo") -> tuple[str, ...]:
+    """Family-detection hints for a local (non-GGUF) checkpoint: its model id, display name, and
+    leaf directory name, plus -- for a bare single-file directory -- the sole checkpoint's
+    filename. A generically named folder holding one loadable ``qwen-image-*.safetensors`` /
+    ``ltx-*.safetensors`` identifies its family only from that filename, and the load route already
+    resolves that sole file via ``resolve_local_single_file``, so feed the same name here or a
+    task-scoped Images/Video picker (which rejects ``task: null``) hides the on-device model. Only
+    the basename is used (not the parent path), so a family token in a parent dir can't match."""
+    needles = [model.model_id, model.display_name, Path(model.id).name]
+    try:
+        from core.inference.diffusion import resolve_local_single_file
+        single = resolve_local_single_file(model.path)
+        if single:
+            needles.append(single)
+    except Exception:
+        pass
+    return tuple(n for n in needles if n)
+
+
 def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
     """Classify a local model into an HF pipeline task so the Images picker can filter.
 
@@ -3293,12 +3327,8 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
         try:
             from core.inference.video import _is_trusted_video_repo
             from core.inference.video_families import detect_video_family
-            for needle in (model.model_id, model.display_name, Path(model.id).name):
-                if (
-                    needle
-                    and detect_video_family(needle) is not None
-                    and _is_trusted_video_repo(path)
-                ):
+            for needle in _local_family_needles(model):
+                if detect_video_family(needle) is not None and _is_trusted_video_repo(path):
                     return _VIDEO_GEN_TASK
         except Exception:
             pass
@@ -3311,8 +3341,9 @@ def _local_is_diffusers(model: "LocalModelInfo") -> bool:
     ``_repo_is_diffusers`` heuristics: a full pipeline carries a top-level
     ``model_index.json``, while single-file / safetensors image checkpoints ship none, so
     fall back to the model id resolving to a known diffusion family (the same resolver the
-    Images backend loads from). Family detection uses the clean model id / name, not the
-    on-disk path, so a parent directory keyword can't spuriously match."""
+    Images backend loads from). Family detection uses the clean model id / name and the sole
+    checkpoint's filename (via _local_family_needles), not the on-disk path, so a parent
+    directory keyword can't spuriously match while a filename-only family is still caught."""
     try:
         p = Path(model.path)
         if p.is_dir() and (p / "model_index.json").is_file():
@@ -3321,20 +3352,21 @@ def _local_is_diffusers(model: "LocalModelInfo") -> bool:
         pass
     try:
         from core.inference.diffusion_families import detect_family
-        for needle in (model.model_id, model.display_name, Path(model.id).name):
-            if needle and detect_family(needle) is not None:
+        for needle in _local_family_needles(model):
+            if detect_family(needle) is not None:
                 return True
     except Exception:
         pass
     # A single-file VIDEO checkpoint (LTX / Wan / Hunyuan .safetensors, no model_index.json) has no
     # pipeline index and no image family, so the checks above miss it. The video load route loads it
     # as a single_file (routes/video.py), so it must be surfaced or _local_model_task returns
-    # task=null and the picker hides it. Match clean id / name needles (not the raw path) so a
-    # parent-dir token can't spuriously match; _local_model_task then routes it to text-to-video.
+    # task=null and the picker hides it. Match clean id / name / checkpoint-filename needles (not
+    # the raw path) so a parent-dir token can't spuriously match; _local_model_task then routes it
+    # to text-to-video.
     try:
         from core.inference.video_families import detect_video_family
-        for needle in (model.model_id, model.display_name, Path(model.id).name):
-            if needle and detect_video_family(needle) is not None:
+        for needle in _local_family_needles(model):
+            if detect_video_family(needle) is not None:
                 return True
     except Exception:
         pass
@@ -3438,6 +3470,47 @@ def _repo_is_diffusers(repo_info) -> bool:
     return False
 
 
+def _repo_pipeline_missing_denoiser(repo_info) -> bool:
+    """True for a diffusers-pipeline snapshot (root ``model_index.json``) whose denoiser
+    component (``transformer/`` or ``unet/``) carries NO weight file. This is the shape of a
+    companion-only prefetch: a GGUF image load pulls the base repo's VAE / text-encoder /
+    ``model_index.json`` into the cache but deliberately skips the multi-GB transformer (the GGUF
+    supplies it), so the snapshot has a pipeline manifest yet is not a loadable BF16 pipeline --
+    ``from_pretrained`` on it re-downloads the missing shards. ``_cached_repo_partial`` misses this
+    (no cancel marker / .incomplete blob, and hf_hub_download writes no manifest), so ``/cached-models``
+    would advertise it as fully on-device. The caller marks such rows partial. Best-effort: any scan
+    error reports not-missing so a glitch never hides a genuinely complete pipeline."""
+    if not _repo_has_pipeline_index(repo_info):
+        return False
+    _DENOISER_DIRS = ("transformer", "unet")
+    _WEIGHT_SUFFIXES = (".safetensors", ".bin")
+    try:
+        for rev in repo_info.revisions:
+            snapshot = getattr(rev, "snapshot_path", None)
+            for f in rev.files:
+                name = str(getattr(f, "file_name", "") or "")
+                path = getattr(f, "file_path", None)
+                parts: tuple[str, ...] = ()
+                if path is not None and snapshot is not None:
+                    try:
+                        parts = Path(path).relative_to(Path(snapshot)).parts
+                    except ValueError:
+                        parts = ()
+                if not parts:
+                    # No snapshot scoping (or file outside it): fall back to the recorded name,
+                    # which may itself carry the component subdir (e.g. 'transformer/model...').
+                    parts = Path(name).parts
+                if (
+                    len(parts) >= 2
+                    and parts[0].lower() in _DENOISER_DIRS
+                    and parts[-1].lower().endswith(_WEIGHT_SUFFIXES)
+                ):
+                    return False
+        return True
+    except Exception:
+        return False
+
+
 def _cached_repo_partial(repo_id: str, repo_cache_dir: Optional[Path] = None) -> bool:
     """Whether the cached model snapshot is incomplete (cancelled/partial download).
     Reuses the hub inventory scan's snapshot-partial detector (cancel marker, legacy
@@ -3517,7 +3590,12 @@ async def list_cached_models(
                     )
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
-                    is_partial = _cached_repo_partial(repo_id, Path(repo_info.repo_path))
+                    # A companion-only prefetch (root model_index.json + VAE / text-encoder but no
+                    # transformer/ shards, pulled to back a GGUF load) is not a loadable BF16
+                    # pipeline; treat it as partial so the picker does not advertise it as on-device.
+                    is_partial = _cached_repo_partial(
+                        repo_id, Path(repo_info.repo_path)
+                    ) or _repo_pipeline_missing_denoiser(repo_info)
                     # Prefer the most COMPLETE snapshot, then largest. The picker drops partial
                     # rows, so a partial copy in one cache root must not shadow a smaller complete
                     # copy in another (size only breaks ties among equal completeness).
