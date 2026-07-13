@@ -3642,8 +3642,6 @@ async def load_model_for_preview(
             async with inference_lifecycle_gate():
                 loaded = _loaded_slot_ident()
                 same_target = loaded is not None and loaded.lower() == request.model_path.lower()
-                # A checkpoint left resident by an earlier preview may be swapped for
-                # another preview; only a Studio-loaded model blocks the slot.
                 preview_resident = loaded is not None and _is_preview_resident(loaded)
                 if loaded is not None and not same_target and not preview_resident:
                     raise HTTPException(
@@ -3664,8 +3662,6 @@ async def load_model_for_preview(
                         headers = {"Retry-After": "10"},
                     )
                 await _load_model_impl(request, fastapi_request, current_subject)
-                # A same-target hit on a Studio-loaded model is only borrowed: don't
-                # mark it, or a later preview could swap away the owner's model.
                 if not same_target or preview_resident:
                     _set_preview_resident(request.model_path)
         finally:
@@ -3928,7 +3924,6 @@ async def load_model(
 async def _load_model_impl(request: LoadRequest, fastapi_request: Request, current_subject: str):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
-    # Any load reclaims the slot for Studio; load_model_for_preview re-marks after.
     _set_preview_resident(None)
     native_grant_backed = False
     model_log_label = request.model_path

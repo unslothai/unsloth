@@ -272,7 +272,6 @@ def test_chat_payload_sanitized(client, captured):
     assert p.provider_base_url is None
     assert p.external_model is None
     assert p.enable_thinking is False
-    # "none", not None: None maps to effort "low" downstream, which still reasons.
     assert p.reasoning_effort == "none"
     assert p.preserve_thinking is False
     # Adapter pinned on for LoRA: a caller can't flip the shared backend to base.
@@ -611,8 +610,6 @@ def test_preview_waiters_do_not_trip_busy_guard(fake_slot):
 
 
 def test_preview_can_swap_out_prior_preview_model(fake_slot):
-    # A checkpoint left resident by preview A must not block preview B forever:
-    # while Studio is idle, B may swap it out.
     for path in ("/outputs/run/ckpt-a", "/outputs/run/ckpt-b"):
         asyncio.run(
             inference.load_model_for_preview(
@@ -624,7 +621,6 @@ def test_preview_can_swap_out_prior_preview_model(fake_slot):
 
 
 def test_preview_swap_refused_while_studio_traffic_in_flight(fake_slot):
-    # Even a preview-owned checkpoint stays put while non-preview requests run.
     asyncio.run(
         inference.load_model_for_preview(
             LoadRequest(model_path = "/outputs/run/ckpt-a"), SimpleNamespace(app = None), "admin"
@@ -647,8 +643,6 @@ def test_preview_swap_refused_while_studio_traffic_in_flight(fake_slot):
 
 
 def test_borrowed_studio_model_stays_studio_owned(fake_slot):
-    # Studio loaded the very checkpoint a preview targets: serving on it is fine,
-    # but the borrow must not license a later preview to swap it away.
     fake_slot["ident"] = "/outputs/run/ckpt-a"
     asyncio.run(
         inference.load_model_for_preview(
