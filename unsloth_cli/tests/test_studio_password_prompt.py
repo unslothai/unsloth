@@ -425,9 +425,7 @@ def test_studio_default_query_failure_strips_bootstrap_file(monkeypatch, tmp_pat
     assert bootstrap_file.exists()
 
     real_connect = studio_mod._connect_auth_db
-    monkeypatch.setattr(
-        studio_mod, "_connect_auth_db", lambda: _FailingSelectConn(real_connect())
-    )
+    monkeypatch.setattr(studio_mod, "_connect_auth_db", lambda: _FailingSelectConn(real_connect()))
 
     result = _invoke_studio_default(monkeypatch, events, ["--secure"])
 
